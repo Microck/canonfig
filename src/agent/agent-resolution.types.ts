@@ -1,9 +1,7 @@
-import type { ProfileChangeProposal, ProfileResourceInput } from "../domain/profile.ts";
 import type {
   AgentTask,
   ExecutableAuthorization,
 } from "../domain/synchronization.ts";
-import type { DiscoveryEvidenceRecord } from "../domain/profile.ts";
 
 export type AgentPolicy =
   | "deterministic-only"
@@ -179,21 +177,4 @@ export interface ControlledProcessInput {
   readonly maximumOutputBytes: number;
   readonly secrets: ReadonlyArray<string>;
   readonly signal?: AbortSignal | undefined;
-}
-
-export interface SourceDiscoveryResolution {
-  readonly reason: string;
-  readonly additions: ReadonlyArray<ProfileResourceInput>;
-  readonly modifications: ReadonlyArray<ProfileResourceInput>;
-  readonly removals: ReadonlyArray<string>;
-  readonly evidence: ReadonlyArray<DiscoveryEvidenceRecord>;
-}
-
-/**
- * Agent-originated discovery changes are deliberately pending review and carry
- * no publication operation. Publication remains an explicit ProfileCatalog act.
- */
-export interface ReviewedProfileChangeProposal {
-  readonly reviewStatus: "pending";
-  readonly proposal: ProfileChangeProposal;
 }

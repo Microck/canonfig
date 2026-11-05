@@ -1,5 +1,5 @@
 import { renderCliResult } from "../../cli/render.ts";
-import { toCliPayload } from "../../harness-configuration/cli-output.ts";
+import { toCliPayload } from "../../cli/command-output.ts";
 import { Predicate } from "effect";
 import { readSettings } from "./settings.ts";
 import type { UpdateResult } from "./core.ts";

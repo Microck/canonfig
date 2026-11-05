@@ -19,6 +19,8 @@ import {
   RecipeIndexPolicy,
   type RecipeSource,
   type BuildPolicy,
+  AgentInstallBounds,
+  ToolRecipeRef,
 } from "./resource.ts";
 
 import {
@@ -28,8 +30,10 @@ import {
 } from "./recipe-versions.ts";
 import {
   InstallerRecipeProvenance,
+  McpQualificationInput,
   type InstallerRecipeProvenance as InstallerRecipeProvenanceType,
 } from "./mcp-qualification.ts";
+import { PublishedResourceSchema, VerificationInputSchema } from "./profile.ts";
 /**
  * Synchronization domain types: plans, actions, outcomes, drift, agent tasks,
  * and human action records.
@@ -67,18 +71,6 @@ export type ActionDetail =
     /** Normalized regular-file executable intent; absent for non-file writes. */
     readonly executable?: boolean | undefined;
     readonly mode?: number | undefined;
-    /** Source baseline retained by a persisted append-local action. */
-    readonly previousSourceDigest?: string | undefined;
-    /**
-     * First-adoption ambiguity report. Present when an append-local target is
-     * adopted with pre-existing content that differs from the Source payload:
-     * the existing bytes are preserved as follower-local text because the
-     * planner cannot distinguish an old shared rule from a deliberate local
-     * addition, so the operator is told explicitly.
-     */
-    readonly adoptionNotice?: string | undefined;
-    /** Exact unmanaged bytes retained locally; no text enters the public plan. */
-    readonly retainedLocalDigest?: string | undefined;
   }
   | {
     readonly kind: "write-config";
@@ -95,7 +87,7 @@ export type ActionDetail =
     readonly removes?: ReadonlyArray<string> | undefined;
     /**
      * Keys Canonfig owned that the revision no longer declares but that stay,
-     * because a Local Overlay key overlaps them. Canonfig stops managing them
+     * because a declared key now owns part of them. Canonfig stops managing them
      * and leaves their current values, so the plan names them instead of
      * reading as if nothing were left behind.
      */
@@ -173,7 +165,7 @@ export type SynchronizationOutcome =
   | { readonly outcome: "Converged"; readonly run: RunId; readonly verified: ReadonlyArray<ResourceId> }
   | { readonly outcome: "HumanActionRequired"; readonly run: RunId; readonly actions: ReadonlyArray<HumanAction> }
   | { readonly outcome: "FollowerDrift"; readonly run: RunId; readonly conflicts: ReadonlyArray<DriftConflict> }
-  | { readonly outcome: "Failed"; readonly run: RunId; readonly reason: string }
+  | { readonly outcome: "Failed"; readonly run: RunId; readonly reason: string; readonly rollbackIncomplete?: boolean; readonly failedRollbackResources?: ReadonlyArray<ResourceId> }
   | { readonly outcome: "Interrupted"; readonly run: RunId; readonly completedActions: ReadonlyArray<ActionId> };
 
 export interface DriftConflict {
@@ -217,8 +209,6 @@ export type ObservedResourceState =
   | {
     readonly state: "present";
     readonly digest: string;
-    /** Digest of the marked Source payload, independent of local additions. */
-    readonly managedSourceDigest?: string | undefined;
     readonly executable: boolean;
     readonly mode?: number | undefined;
     /**
@@ -232,6 +222,13 @@ export type ObservedResourceState =
      * installed, when it lists the package. Undefined when it cannot say.
      */
     readonly installedVersion?: string | undefined;
+    /**
+     * Configs: the current values at the Applied Resource Record's keys,
+     * rendered like `digest`, so they compare with the record's digest even
+     * when the desired key set changed. Undefined when none of those keys is
+     * present or nothing was applied.
+     */
+    readonly appliedKeysDigest?: string | undefined;
   }
   | {
     readonly state: "directory";
@@ -248,7 +245,7 @@ export interface AppliedResourceRecord {
   readonly digest: string;
   readonly appliedAt: string;
   readonly kind?: "file" | "directory" | "config" | "skill" | "tool" | "credential" | undefined;
-  readonly policy?: "replace" | "mirror-owned" | "merge" | "replace-if-unmodified" | "append-local" | "ensure" | "require-local" | undefined;
+  readonly policy?: "replace" | "mirror-owned" | "merge" | "replace-if-unmodified" | "ensure" | "require-local" | undefined;
   readonly target?: string | undefined;
   readonly executable?: boolean | undefined;
   readonly mode?: number | undefined;
@@ -326,9 +323,6 @@ export const ActionDetailSchema = Schema.Union([
     digest: ContentDigest,
     executable: Schema.optional(Schema.Boolean),
     mode: Schema.optional(Schema.Int),
-    previousSourceDigest: Schema.optional(ContentDigest),
-    adoptionNotice: Schema.optional(Schema.NonEmptyString),
-    retainedLocalDigest: Schema.optional(ContentDigest),
   }),
   Schema.Struct({
     kind: Schema.Literal("write-config"),
@@ -464,6 +458,8 @@ export const SynchronizationOutcomeSchema = Schema.Union([
     outcome: Schema.Literal("Failed"),
     run: RunId,
     reason: Schema.NonEmptyString,
+    rollbackIncomplete: Schema.optional(Schema.Boolean),
+    failedRollbackResources: Schema.optional(Schema.Array(ResourceIdSchema)),
   }),
   Schema.Struct({
     outcome: Schema.Literal("Interrupted"),
@@ -477,12 +473,12 @@ export const ObservedResourceStateSchema = Schema.Union([
   Schema.Struct({
     state: Schema.Literal("present"),
     digest: ContentDigest,
-    managedSourceDigest: Schema.optional(ContentDigest),
     executable: Schema.Boolean,
     mode: Schema.optional(Schema.Int),
     objectKind: Schema.optional(ObservedObjectKind),
     symlinkTo: Schema.optional(Schema.NonEmptyString),
     installedVersion: Schema.optional(Schema.NonEmptyString),
+    appliedKeysDigest: Schema.optional(ContentDigest),
   }),
   Schema.Struct({
     state: Schema.Literal("directory"),
@@ -527,7 +523,6 @@ export const AppliedResourceRecordSchema = Schema.Struct({
     "mirror-owned",
     "merge",
     "replace-if-unmodified",
-    "append-local",
     "ensure",
     "require-local",
   ])),
@@ -657,3 +652,78 @@ export type ExitCode = (typeof ExitCode)[keyof typeof ExitCode];
 
 /** Agent policy schema re-exported for the profile authoring boundary. */
 export { AgentPolicy } from "./identity.ts";
+
+/**
+ * The follower id of runs that project this machine's own Canonical Folder.
+ * Enrolled followers are named `follower-<hash>`, so this never collides.
+ */
+export const localProjectionFollower = Schema.decodeUnknownSync(FollowerId)("local");
+
+const DesiredFileSchema = Schema.Struct({
+  path: Schema.NonEmptyString,
+  digest: ContentDigest,
+  executable: Schema.Boolean,
+  mode: Schema.Int,
+  symlinkTo: Schema.optional(Schema.NonEmptyString),
+});
+
+/**
+ * The stored form of a revision this machine built: a local projection
+ * (`folder`, `snapshot`) or a follower run built from a Source revision
+ * (`revision`), which also mirrors items and installs tools.
+ */
+export const PlanningLocalRevisionSchema = Schema.Struct({
+  origin: Schema.Literals(["folder", "snapshot", "revision"]),
+  id: ProfileRevisionId,
+  originDigest: ContentDigest,
+  resources: Schema.Array(PublishedResourceSchema),
+  desired: Schema.Array(Schema.Struct({
+    resource: ResourceIdSchema,
+    desired: Schema.Union([
+      Schema.Struct({
+        kind: Schema.Literal("file"),
+        digest: ContentDigest,
+        executable: Schema.Boolean,
+        mode: Schema.Int,
+        symlinkTo: Schema.optional(Schema.NonEmptyString),
+      }),
+      Schema.Struct({
+        kind: Schema.Literal("directory"),
+        mode: Schema.Int,
+        directories: Schema.Array(Schema.Struct({ path: Schema.NonEmptyString, mode: Schema.Int })),
+        files: Schema.Array(DesiredFileSchema),
+      }),
+      Schema.Struct({
+        kind: Schema.Literal("config"),
+        digest: ContentDigest,
+        format: Schema.Literals(["toml", "json", "yaml"]),
+        keys: Schema.Array(Schema.String),
+        releases: Schema.optional(Schema.Array(Schema.String)),
+      }),
+      Schema.Struct({
+        kind: Schema.Literal("skill"),
+        digest: ContentDigest,
+        mode: Schema.Int,
+        directories: Schema.Array(Schema.Struct({ path: Schema.NonEmptyString, mode: Schema.Int })),
+        files: Schema.Array(DesiredFileSchema),
+      }),
+      Schema.Struct({
+        kind: Schema.Literal("tool"),
+        toolId: Schema.NonEmptyString,
+        recipes: Schema.Array(ToolRecipeRef),
+        loginRequired: Schema.Boolean,
+        loginInstructions: Schema.optional(Schema.String),
+        qualification: Schema.optional(McpQualificationInput),
+        agentInstall: Schema.optional(AgentInstallBounds),
+      }),
+      Schema.Struct({
+        kind: Schema.Literal("credential"),
+        reference: Schema.NonEmptyString,
+        instructions: Schema.String,
+      }),
+    ]),
+    verification: VerificationInputSchema,
+  })),
+  blobs: Schema.Array(Schema.Struct({ id: BlobId, bytes: Schema.Int })),
+  removedResources: Schema.optional(Schema.Array(ResourceIdSchema)),
+});

@@ -25,7 +25,7 @@ The Configuration Agent is part of the product contract, but it is not the sourc
 ```text
                          Source Machine
 
-   files + AGENTS.md + tool configs
+         ~/.canonfig/ (Canonical Folder)
                  |
                  v
        +--------------------+
@@ -115,7 +115,7 @@ The agent cannot directly change the published profile. Discovery or repair sugg
 - source and follower identities
 - published revision metadata and content references
 - follower enrollment and group membership
-- durable Local Overlay ownership entries
+- harness takeovers with their pinned roots and local projection revisions
 - synchronization runs and their plans
 - per-action progress and verification evidence
 - Applied Resource Records
@@ -126,28 +126,33 @@ The live adapter uses the matching Effect v4 SQLite package. Tests use a tempora
 
 ## Profile contract
 
-The Source Machine owns JSONC authoring files under its Canonfig source directory:
+The Source Machine authors its Machine Profile as the Canonical Folder:
 
 ```text
-~/.canonfig/source/
-  profile.jsonc
-  tools.jsonc
+~/.canonfig/
+  canonfig.jsonc      profile, harnesses, mcp, hooks, settings, tools, credentials, groups, scheduleDefault, local
+  AGENTS.md
+  rules/<id>.md
+  skills/<name>/SKILL.md
+  agents/<id>.md
+  commands/<id>.md
+  hooks/<script>
+  local/              machine-local, never published
 ```
 
-`profile.jsonc` declares groups, resources, policies, dependencies, and an optional suggested schedule default. A Machine Profile does not apply a schedule: the native synchronization job belongs to the Follower Machine, which accepts the profile's suggestion with `canonfig schedule set --default` or chooses its own calendar with `canonfig schedule set`. Sync never installs, re-enables, or recreates a job; when no decision exists it only reports that a schedule is available. Reconciling that job happens after a converged run rather than as part of one, so a follower whose native scheduler does not work still converges. `tools.jsonc` is an agent-readable catalog of every discovered CLI or tool, including invocation evidence, upstream URL, supported platforms, installation recipes, verification, configuration files, and login requirements.
+The folder is the authoring format; the signed Profile Revision is the wire format. `canonfig source publish` compiles the folder into one Profile Resource per item, encodes the canonical Profile Revision, and signs it. Comments and authoring layout never affect the revision digest. The reviewer and signed revision digest commit in the same SQLite transaction as the immutable revision. Followers mirror each authorized item into their own `~/.canonfig/` and project the mirror plus `local/` into their Target Harnesses. Resource ids, the follower mirror, projection, takeover snapshots and restore are described in [global-folder.md](global-folder.md).
 
-Publishing converts JSONC into a canonical encoded Profile Revision. Comments and authoring layout never affect the revision digest. The accepted proposal digest, reviewer, and signed revision digest commit in the same SQLite transaction as the immutable revision.
+`scheduleDefault` is an optional suggested schedule. A Machine Profile does not apply a schedule: the native synchronization job belongs to the Follower Machine, which accepts the profile's suggestion with `canonfig schedule set --default` or chooses its own calendar with `canonfig schedule set`. Sync never installs, re-enables, or recreates a job; when no decision exists it only reports that a schedule is available. Repairing that job happens after a converged run rather than as part of one, so a follower whose native scheduler does not work still converges. `tools.<id>` entries in `canonfig.jsonc` declare executables, installation recipes, login requirements, bounded agent installation and verification.
 
 ### Profile Resource kinds
 
-| Kind | Desired outcome | Default Apply Policy |
+| Kind | Desired outcome | Apply Policy |
 |---|---|---|
-| `file` | Exact regular-file content and mode, or raw symlink target | `replace` |
-| `directory` | A source-owned tree with explicit directories and modes | `mirror-owned` |
-| `config` | Format-aware declared keys | `merge` |
 | `skill` | Canonical skill tree | `replace-if-unmodified` |
 | `tool` | Installed executable and configuration | `ensure` |
 | `credential` | A usable local credential reference | `require-local` |
+
+Instructions, rules, agents, commands and hook scripts travel as `file` resources and `canonfig.jsonc` entries as JSON `config` resources. These are wire encodings of folder items: they are never authored, and a follower refuses any resource that is not a Canonical Folder item. Projection plans internal `file`, `directory` and `config` resources at the targets each harness adapter computes.
 
 A Machine Profile's `scheduleDefault` accepts only daily and weekly calendars
 in the follower's own timezone, because those are the only shapes every
@@ -163,104 +168,41 @@ writable path and no origin cannot install anything.
 Apply Policies mean:
 
 - `replace`: atomically replace the target after recording rollback material.
-- `mirror-owned`: add and update desired files, then remove only files previously owned by Canonfig and still unmodified. Files Canonfig never wrote are preserved.
-- `replace` on a directory: the managed subtree ends up exactly the desired subtree. The whole directory is listed, so entries Canonfig never wrote are removed too. Use `mirror-owned` to keep them.
-- `merge`: update declared keys through a format-specific codec while preserving the Local Overlay. A key Canonfig owned that the profile no longer declares is removed, unless the follower claimed it through its Local Overlay, which is how an operator keeps a key the profile has dropped.
-- `replace-if-unmodified`: replace only when current content equals the Applied Resource Record or already equals desired content. An absent target is reinstalled, because absence is not a local edit; a target that exists but cannot be verified is left alone and reported.
-- `append-local`: compose a regular UTF-8 text file from a marked Source section
-  followed by follower-owned text. On first adoption an existing file that differs
-  from Source is preserved in full as local text; an identical file is not
-  duplicated. Later runs replace only the Source section and preserve the local
-  suffix byte for byte. Edits to the Source section or malformed markers stop the
-  update. Removing the resource removes only its unchanged Source section.
+- `merge`: update declared keys through a format-specific codec. A key Canonfig owned that the profile no longer declares is removed; keys the harness owns are preserved.
+- `replace-if-unmodified`: replace only when current content equals the Applied Resource Record or already equals desired content. An absent target is reinstalled, because absence is not a local edit; a target that exists but cannot be verified is left alone and reported. On a directory the whole tree is listed, so an entry Canonfig never wrote is a local edit.
 - `ensure`: reach and verify a declared capability without removing unrelated software.
 - `require-local`: verify a local credential and return Human Action Required when it is absent.
 
-Policy compatibility is kind-specific: files support `replace`,
-`replace-if-unmodified`, and `append-local`; directories support `mirror-owned` and `replace`;
-configs support `merge` and `replace`; skills support `replace-if-unmodified`
-and `replace`; tools and credentials support only their listed kind-specific
-policies. A file's verification is also shape-specific:
-symlink files require `symlink` verification, while regular files require
-digest verification. Exact numeric modes are part of file and directory
-convergence even when content is unchanged. Directory resources can declare
-empty directories and their modes. Symlink targets retain their authored text,
-including relative targets, rather than resolving against the Canonfig process.
-Follower observation uses no-follow final-component semantics and records the
-actual object kind. A symlink, directory, reparse point, or special object at
-a regular-file target is drift; Canonfig never reads through it to decide
-content or permission convergence. The same no-follow contract applies during
-post-apply verification.
-
-`append-local` is opt-in and is intended for Markdown instructions such as
-`AGENTS.md`. Its Source text must not contain the reserved
-`<!-- canonfig:source:start -->` or `<!-- canonfig:source:end -->` markers, NUL
-bytes, or invalid Unicode. Symlinks and executable files cannot use this policy.
-The file starts with the opening marker and a newline, the exact Source text,
-a newline and the closing marker, then two newlines and the exact local text.
-The Applied Resource Record and digest verification cover the Source payload,
-not the follower-owned suffix; observation also retains the whole-file digest.
-The persisted write action records the previous Source digest, so execution and
-recovery cannot overwrite an unexpected edit to that section. Rollback captures
-the whole file and its permissions before composition, just as for replacement.
-The text-file byte limit applies before rollback hashing and copying. It does
-not impose the text limit on binary replacement resources.
-Restoration requires the exact pre-write or expected post-write state. If local
-text changes after a write, rollback stops without overwriting it and retains the
-action's backup for manual recovery. Terminal cleanup removes the other action
-backups, including those restored successfully; policy presence alone never
-retains a backup. Removing the Source section leaves a
-regular file, including an empty file when no local text remains.
-These state checks do not lock external editors. Avoid saving the file while a
-sync is writing it; an editor can race the final atomic replacement.
-There is no semantic merge or instruction-precedence rule: first adoption may
-retain overlapping or contradictory text, which the operator can edit in the
-local suffix. Daily synchronization never infers local additions from a new
-text diff and never publishes them back to Source.
-
-First-adoption writes for existing files carry `retainedLocalDigest`, not local
-text, including when the file exactly matches Source.
-`sync --plan --review-local` verifies differing files again, then writes exact
-Source text, retained local text and proposed composed text to a unique protected
-directory under the Canonfig data directory. The review includes the revision
-and deterministic plan digest; its path is reported separately and never alters
-the plan. Native protected writes enforce private permissions and Windows ACLs.
-Only the explicit option creates this potentially secret-bearing material.
-Operators inspect it locally and delete the review directory afterward.
-Execution checks the retained digest against its rollback snapshot before first
-adoption, so a target changed after planning cannot silently replace reviewed
-bytes. Reviews do not approve future plans; changes require another review.
+Exact numeric modes are part of file convergence even when content is
+unchanged. Follower observation uses no-follow final-component semantics and
+records the actual object kind. A symlink, directory, reparse point, or
+special object at a regular-file target is drift; Canonfig never reads through
+it to decide content or permission convergence. The same no-follow contract
+applies during post-apply verification.
 
 Resource dependencies form a directed acyclic graph. Canonfig observes independent resources with bounded concurrency and applies actions in dependency order. Mutating actions for one target are serialized.
 
 Publication rejects distinct resource IDs that claim the same normalized filesystem
-target or unsafe parent/child targets. Directory and skill file paths participate
+target or unsafe parent/child targets. Skill file paths participate
 in that check, as do normalized aliases such as `./` and Windows separators.
-Within one directory or skill resource, the target itself is the explicitly
-represented directory ancestry; every declared file path must otherwise be a
-unique, canonical relative leaf with no file/descendant overlap. Validation
-uses the follower platform's path and case rules and rejects names that are
-reserved or ambiguous on that platform.
+Validation uses the follower platform's path and case rules and rejects names
+that are reserved or ambiguous on that platform.
 
 ## Tool discovery and installation
 
-Discovery scans the agent instruction files, tool configuration, hooks, MCP definitions, executable references, and known package-manager metadata that the operator names. It runs no processes. Markdown prose alone is not executable evidence. Canonfig records the file, line, command shape, and resolved executable or package when available. Discovery proposes only `tool` resources; file, directory, config, and skill resources are authored in the profile file.
+Discovery (`canonfig source scan`) reads the folder's instructions, skills, hook scripts, and MCP commands, plus any extra files `setup plan --file` names. It runs no processes. Markdown prose alone is not executable evidence. Canonfig records the file, line, command shape, and resolved executable or package when available. Discovery proposes only `tools` entries; `source scan --write` adds the accepted ones to `canonfig.jsonc`, keeping its comments. Every other item is authored as a folder file or `canonfig.jsonc` entry.
 
-Each tool entry contains:
+Each `tools.<id>` entry in `canonfig.jsonc` contains:
 
 ```jsonc
-{
-  "id": "ripgrep",
-  "upstream": "https://github.com/BurntSushi/ripgrep",
-  "evidence": [
-    { "source": "~/.codex/AGENTS.md", "line": 42, "invocation": "rg" }
+"ripgrep": {
+  "executable": "rg",
+  "recipes": [
+    { "platform": "linux", "method": "apt", "package": "ripgrep", "version": "declared-version", "upstream": "https://github.com/BurntSushi/ripgrep" },
+    { "platform": "macos", "method": "brew", "package": "ripgrep", "version": "declared-version" },
+    { "platform": "windows", "method": "winget", "package": "BurntSushi.ripgrep.MSVC", "version": "declared-version" }
   ],
-  "recipes": {
-    "linux": { "method": "apt", "package": "ripgrep", "version": "declared-version" },
-    "macos": { "method": "brew", "formula": "ripgrep", "version": "declared-version" },
-    "windows": { "method": "winget", "id": "BurntSushi.ripgrep.MSVC", "version": "declared-version" }
-  },
-  "verify": { "command": ["rg", "--version"], "expect": "declared-version" },
+  "verify": { "method": "command", "command": ["rg", "--version"], "expectContains": "declared-version" },
   "login": { "required": false }
 }
 ```
@@ -392,10 +334,10 @@ Every Agent Task declares:
 - expected structured completion result
 
 The task and follower harness policies must both authorize the same executable
-execution model. Executables classified as launchers — tools that run a nested
+execution model. Executables classified as launchers (tools that run a nested
 command selected by an argument or embedded in program text, such as `xargs`,
 `find -exec`, `awk`, `perl`, `make`, `npx`, elevation wrappers, and package or
-task runners — cannot be authorized by any configuration because their
+task runners) cannot be authorized by any configuration because their
 descendant command is not derivable from argv. They stop with Human Action
 Required before spawn. Inline interpreter programs and unclassified executables
 fail the same way. An allowlisted utility never implicitly authorizes
@@ -414,15 +356,9 @@ observed == last applied  -> safe to update or remove
 otherwise                 -> Follower Drift; preserve follower content
 ```
 
-Canonfig does not merge modified canonical skills. The user can keep the follower copy, replace it with the source revision, or move the changes into a Local Overlay. This keeps the automatic rule deterministic.
+Canonfig does not merge modified canonical skills. The user can move the changes into `~/.canonfig/local/skills/` under a different name, or discard them so the next sync replaces the skill. This keeps the automatic rule deterministic.
 
-Local Overlays are follower-owned records for `config` resources using the
-`merge` policy. Each record stores the authorized resource ID, its normalized
-managed target, and normalized config key paths. Overlay commands must resolve
-the selected authorized revision and match its target exactly; they cannot
-introduce external paths, bypass group authorization, or change source-owned
-content. The records live in follower state and are loaded on every plan, so
-ownership decisions survive synchronization and process restart.
+The Local folder (`~/.canonfig/local/`) holds machine-owned rules, skills, agents and commands as files, and MCP servers and settings in `local/local.jsonc`. Projection adds them within the categories the Source's `local.allow` names. They are never published and never replaced; a local item named like a published one is Human Action Required.
 
 ## Synchronization flow
 
@@ -430,7 +366,7 @@ ownership decisions survive synchronization and process restart.
 1. Authenticate follower and fetch revision metadata.
 2. Verify the source signature and content digests.
 3. Download only missing content-addressed blobs.
-4. Load Applied Resource Records and the Local Overlay.
+4. Load Applied Resource Records and the Local folder.
 5. Observe every target resource.
 6. Build a complete Synchronization Plan and persist it before apply mode can
    mutate the follower.
@@ -446,9 +382,9 @@ ownership decisions survive synchronization and process restart.
 
 Signed revision metadata contains file paths, modes, symlink targets, blob
 digests, and exact byte lengths, but never embeds file content. At publication,
-inline UTF-8/base64 values and `source` paths (resolved relative to the authored
-profile file) become immutable per-file blobs. A `source` file is hashed by
-streaming it from disk (`canonfig source digest` uses the same path), then
+every folder file item, named by its `source` path relative to the Canonical
+Folder, becomes an immutable per-file blob. A `source` file is hashed by
+streaming it from disk, then
 streamed again into the Source state database as fixed 1 MiB chunks
 (`resource_blob_chunks`, committed with a `resource_blob_manifests` row in one
 transaction); a file that changed between the two reads fails publication.
@@ -464,7 +400,7 @@ A run outcome is one of `Converged`, `HumanActionRequired`, `FollowerDrift`, `Fa
 
 ## Failure and recovery
 
-Before each mutation, Canonfig writes an action journal entry and any rollback material needed for owned files. File writes use a sibling temporary file, durability sync where supported, and atomic rename.
+Before each mutation, Canonfig writes an action journal entry and any rollback material needed for owned files. File writes use a sibling temporary file, durability sync where supported, and atomic rename. Before the first write to a harness surface, local projection also writes a Takeover Snapshot under `~/.canonfig/.backups/`; see [file-rollback.md](file-rollback.md).
 
 If a later deterministic action fails, the executor rolls back earlier file,
 directory, and config mutations from the same run in reverse order. It restores the prior
@@ -529,31 +465,30 @@ discovery or approval.
 ## CLI contract
 
 ```text
-canonfig setup plan --role source --file AGENTS.md --intent "prepare source"
+canonfig setup plan --role source --intent "prepare source"
 canonfig setup approve --approver operator
 canonfig setup apply
 canonfig setup status
 
 canonfig source init
-canonfig source scan --file AGENTS.md
-canonfig source digest --profile-file profile.jsonc
-canonfig source publish --profile-file profile.jsonc --reviewer operator
-canonfig source publish --proposal proposal.json --profile workstation --name Workstation --reviewer operator
+canonfig source scan --write
+canonfig source publish --reviewer operator
 canonfig source serve
 canonfig source service install
 canonfig source invite --endpoint https://127.0.0.1:17342 --output ./canonfig-invite
 canonfig source revoke follower-one
 
-cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop --profile workstation
+cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop
 canonfig follower unenroll
 canonfig tunnel start
 canonfig tunnel stop --forget
+canonfig harnesses
+canonfig harnesses exclude cursor
 canonfig sync --plan
+canonfig sync --apply --no-backup
+canonfig restore
 canonfig recover --no-input
 canonfig status --json
-canonfig overlay list
-canonfig overlay set resource-one --target config.json --key config.path
-canonfig overlay remove resource-one
 canonfig doctor --no-input
 canonfig schedule set daily@00:00
 canonfig schedule set --default
@@ -567,7 +502,8 @@ Commands print a concise human-readable summary by default (the message, one lin
 ```text
 src/
   domain/                 schemas and pure decisions
-  profile/                ProfileCatalog service, layer, errors, and source adapters
+  profile/                ProfileCatalog service, layer, errors, and folder compilation
+  projection/             Canonical Folder loading, harness adapters, projection, import, and takeover snapshots
   synchronization/        Synchronization service, planner, executor, and recovery
   enrollment/             Enrollment service, HTTPS transport, and identities
   machine/                MachineState seam and Linux/macOS/Windows adapters

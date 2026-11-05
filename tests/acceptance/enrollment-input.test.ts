@@ -14,32 +14,32 @@ import {
 import { invitationEnvelopeEof } from
   "../../src/enrollment/invitation-envelope-format.ts";
 
-const argv = ["follower", "enroll", "--stdin", "--name", "laptop", "--profile", "workstation"];
+const argv = ["follower", "enroll", "--stdin", "--name", "laptop"];
 
 describe("private enrollment input", () => {
   it("recognizes only follower enrollment and keeps the original argv unchanged", () => {
     expect(isPrivateEnrollmentCommand(argv)).toBe(true);
     expect(isPrivateEnrollmentCommand(["source", "invite", "--stdin"])).toBe(false);
     expect(privateEnrollmentArguments(argv)).toEqual([
-      "follower", "enroll", "--name", "laptop", "--profile", "workstation",
+      "follower", "enroll", "--name", "laptop",
     ]);
     expect(argv[2]).toBe("--stdin");
   });
 
 describe("public enrollment refusal", () => {
   it("flags invitations carried as arguments", () => {
-    expect(isPublicEnrollmentCommand(["follower", "enroll", "INVITE", "--name", "n", "--profile", "p"])).toBe(true);
-    expect(isPublicEnrollmentCommand(["--json", "follower", "enroll", "--name", "n", "--profile", "p", "INVITE"])).toBe(true);
+    expect(isPublicEnrollmentCommand(["follower", "enroll", "INVITE", "--name", "n"])).toBe(true);
+    expect(isPublicEnrollmentCommand(["--json", "follower", "enroll", "--name", "n", "INVITE"])).toBe(true);
   });
 
   it("flags positionals even beside stdin or help flags", () => {
-    expect(isPublicEnrollmentCommand(["follower", "enroll", "INVITE", "--stdin", "--name", "n", "--profile", "p"])).toBe(true);
+    expect(isPublicEnrollmentCommand(["follower", "enroll", "INVITE", "--stdin", "--name", "n"])).toBe(true);
     expect(isPublicEnrollmentCommand(["follower", "enroll", "INVITE", "--help"])).toBe(true);
   });
 
   it("leaves the pipe form and bare options for the dispatcher", () => {
-    expect(isPublicEnrollmentCommand(["follower", "enroll", "--stdin", "--name", "n", "--profile", "p"])).toBe(false);
-    expect(isPublicEnrollmentCommand(["follower", "enroll", "--name", "n", "--profile", "p"])).toBe(false);
+    expect(isPublicEnrollmentCommand(["follower", "enroll", "--stdin", "--name", "n"])).toBe(false);
+    expect(isPublicEnrollmentCommand(["follower", "enroll", "--name", "n"])).toBe(false);
     expect(isPublicEnrollmentCommand(["follower", "enroll", "--help"])).toBe(false);
     expect(isPublicEnrollmentCommand(["source", "invite", "--stdin"])).toBe(false);
   });
@@ -48,7 +48,7 @@ describe("public enrollment refusal", () => {
     const timed = [...argv, "--timeout-ms", "300000"];
     expect(isPublicEnrollmentCommand(timed)).toBe(false);
     expect(privateEnrollmentArguments(timed)).toEqual([
-      "follower", "enroll", "--name", "laptop", "--profile", "workstation",
+      "follower", "enroll", "--name", "laptop",
       "--timeout-ms", "300000",
     ]);
     expect(isPublicEnrollmentCommand([...timed, "INVITE"])).toBe(true);
@@ -60,7 +60,7 @@ describe("public enrollment refusal", () => {
     expect(isPrivateEnrollmentCommand(leading)).toBe(true);
     expect(isPrivateEnrollmentCommand(["follower", "--json", "enroll", "--stdin"])).toBe(true);
     expect(privateEnrollmentArguments(leading)).toEqual([
-      "--json", "follower", "enroll", "--name", "laptop", "--profile", "workstation",
+      "--json", "follower", "enroll", "--name", "laptop",
     ]);
   });
 
@@ -70,7 +70,9 @@ describe("public enrollment refusal", () => {
     [...argv, "--unknown"],
     [...argv, "literal-invitation"],
     [...argv, "--name", "another"],
-    ["follower", "enroll", "--stdin", "--name", "--profile", "workstation"],
+    ["follower", "enroll", "--stdin", "--name", "--timeout-ms", "300000"],
+    // A Source publishes one profile; enrollment takes no --profile.
+    [...argv, "--profile", "workstation"],
     [...argv, "--timeout-ms"],
     [...argv, "--timeout-ms", "300000", "--timeout-ms", "300000"],
   ].map((arguments_) => ({ arguments_ })))("rejects malformed non-secret options before reading stdin: $arguments_", ({ arguments_ }) => {

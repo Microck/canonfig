@@ -21,7 +21,7 @@ export const installerHelp = [
 /**
  * One command group as it appears in help. `areas` are the first argv tokens
  * that select the group, so `canonfig abandon --help` finds the recovery
- * group. Groups dispatched before `evaluateCli` (secrets, harness, installer)
+ * group. Groups dispatched before `evaluateCli` (secrets, skills, installer)
  * print their own detailed help; the global listing still names them so no
  * group is discoverable only from the website.
  */
@@ -44,11 +44,8 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     areas: ["source"],
     usage: [
       "source init",
-      "source scan --file <path> [--file <path>...]",
-      "source reconcile-skills --profile-file <profile.jsonc> [--apply] [--watch] [--interval <seconds>]",
-      "source digest --profile-file <profile.jsonc> [--resource <id>]",
-      "source publish --profile-file <profile.jsonc> --reviewer <name> [--proposal <path>] [--allow-empty]",
-      "source publish --proposal <path> --profile <id> --name <name> --reviewer <name> [--allow-empty]",
+      "source scan [--write]",
+      "source publish --reviewer <name>",
       "source serve [--host <127.0.0.1|::1>] [--port <port>]",
       "source service install [--host <127.0.0.1|::1>] [--port <port>]",
       "source service status",
@@ -58,13 +55,14 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
       "source revoke <follower-id>",
     ],
     notes: [
-      "scan is tool discovery: it proposes tool resources from evidence in the named",
-      "files and never proposes file, config, or skill resources. Author those in a",
-      "profile file and publish it with --profile-file.",
-      "digest validates a profile and prints each content digest without publishing.",
-      "publish refuses a revision with no resources unless --allow-empty is given.",
-      "Republishing content equal to the latest revision returns that revision; any",
-      "other content, including an older revision's, becomes the next sequence.",
+      "publish compiles ~/.canonfig/ (canonfig.jsonc, AGENTS.md, rules/, skills/,",
+      "agents/, commands/, hooks/) into the next signed revision; nothing else in the",
+      "folder is published. Republishing content equal to the latest revision returns",
+      "that revision; any other content, including an older revision's, becomes the next",
+      "sequence.",
+      "scan is tool discovery: it reads the folder's instructions, skills, hook scripts and",
+      "MCP commands and proposes tools entries. --write adds the accepted ones to",
+      "~/.canonfig/canonfig.jsonc, keeping its comments.",
       "service installs a native user service that runs source serve (systemd user",
       "unit, launchd agent, or Task Scheduler at-logon task); serve runs in the foreground.",
       "invite writes a mode-0600 single-use envelope; move it over a private channel.",
@@ -74,17 +72,20 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     title: "Follower enrollment",
     areas: ["follower"],
     usage: [
-      "follower enroll --stdin --name <name> --profile <id> [--replace] [--timeout-ms <milliseconds>]",
+      "follower enroll --stdin --name <name> [--replace] [--timeout-ms <milliseconds>]",
       "follower unenroll",
     ],
     notes: [
       "Pipe the invitation envelope: cat ./canonfig-invite | canonfig follower enroll --stdin ...",
-      "The invitation is never accepted as an argument.",
+      "The invitation is never accepted as an argument. A Source publishes one profile;",
+      "the follower follows it.",
+      "Enrolling hands this machine's own projection records to the follower identity, so",
+      "later syncs update those harness surfaces from the Source.",
       "--timeout-ms bounds each enrollment network phase (default 10000; maximum 300000).",
       "An active follower name cannot be enrolled again; revoke it on the Source first.",
       "Re-enrolling a revoked name keeps local settings. --replace enrolls a new identity,",
       "revokes the old one, and",
-      "lists what it reset (agent policy, harness and secret bindings, schedule, overlays).",
+      "lists what it reset (agent policy, harness and secret bindings, schedule).",
       "unenroll revokes this identity on the Source, deletes its local credential and",
       "received shared secrets, and leaves applied files in place.",
     ],
@@ -93,26 +94,57 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     title: "Synchronization",
     areas: ["sync"],
     usage: [
-      "sync [--plan | --apply] [--no-input] [--review-local]",
+      "sync [--plan | --apply] [--no-input] [--no-backup]",
     ],
     notes: [
-      "--plan (the default) downloads and compares without changing managed targets.",
-      "--review-local with --plan writes exact append-local first-adoption reviews to protected",
-      "local JSON files. They may contain secrets: inspect locally, never share or upload them.",
-      "--apply journals every action and verifies each resource independently.",
+      "On an enrolled follower, sync fetches the latest authorized revision, mirrors its",
+      "items into ~/.canonfig/ and projects the mirror plus ~/.canonfig/local/ in one run.",
+      "A mirror file edited on this machine is drift: it is kept, reported, and its",
+      "projections hold.",
+      "On the Source or an unenrolled machine, sync projects ~/.canonfig/ into the",
+      "harnesses listed in ~/.canonfig/canonfig.jsonc that are installed and not",
+      "excluded on this machine. A listed harness that is not installed is reported as",
+      "not installed; what Canonfig applied to it earlier stays as it was.",
+      "--plan (the default) compares without changing managed targets; a projection plan",
+      "lists every harness surface it would take over and whether it keeps a backup.",
+      "--apply journals every action and verifies each resource independently. Before",
+      "Canonfig first writes a harness surface it copies the prior content to a takeover",
+      "snapshot in ~/.canonfig/.backups/ (the first snapshot and the 4 most recent are kept).",
+      "--no-backup takes over without a snapshot, as does \"backups\": false in",
+      "~/.canonfig/local/local.jsonc.",
       "--no-input never prompts. Native schedules run: sync --apply --no-input --scheduled",
     ],
   },
   {
     title: "Recovery",
-    areas: ["recover", "abandon"],
+    areas: ["recover", "abandon", "restore"],
     usage: [
       "recover [--no-input]",
       "abandon",
+      "restore [<snapshot>]",
     ],
     notes: [
       "recover resumes or rolls back the interrupted run from its journal.",
       "abandon closes a run recover cannot resolve; it does not roll anything back.",
+      "restore writes a takeover snapshot back (the latest by default) as a journaled run,",
+      "releases those surfaces and excludes their harnesses in ~/.canonfig/local/local.jsonc.",
+      "It refuses a surface that changed since Canonfig last applied it.",
+    ],
+  },
+  {
+    title: "Harnesses",
+    areas: ["harnesses"],
+    usage: [
+      "harnesses",
+      "harnesses include|exclude <harness>",
+    ],
+    notes: [
+      "harnesses lists every harness: installed or not, listed in ~/.canonfig/canonfig.jsonc,",
+      "excluded on this machine, the root pinned at takeover, and its latest takeover snapshot.",
+      "Installed means an executable resolves through Canonfig's install directories,",
+      "~/.local/bin, then PATH, without running it; Cursor's generic agent counts only",
+      "with ~/.cursor present.",
+      "exclude and include edit only this machine's exclusions in ~/.canonfig/local/local.jsonc.",
     ],
   },
   {
@@ -124,15 +156,6 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     notes: [
       "On a follower, status reports enrollment, the applied revision, and the",
       "completion receipt. On the Source, --follower <id> reports that follower's enrollment.",
-    ],
-  },
-  {
-    title: "Local overlays",
-    areas: ["overlay"],
-    usage: [
-      "overlay list",
-      "overlay set <resource-id> --target <path> --key <config.path> [--key <config.path>...]",
-      "overlay remove <resource-id>",
     ],
   },
   {
@@ -166,7 +189,6 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     usage: [
       "profile list",
       "profile show <revision-id>",
-      "profile select <profile-id>",
     ],
   },
   {
@@ -184,8 +206,9 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     title: "Journaled setup",
     areas: ["setup"],
     usage: [
-      "setup plan --role <source|follower> [--scope <full|cli-only|project-only>] [--file <path>...]",
+      "setup plan --role <source|follower> [--scope <full|cli-only>] [--file <path>...]",
       "  [--mode <simple|advanced>] [--intent <text>]",
+      "  [--harness <id>...] [--import <harness|item-id>... | --import-all | --no-import]",
       "setup approve --approver <name>",
       "setup apply",
       "setup status",
@@ -195,6 +218,16 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
       "the published profile does. --mode records the interview depth you chose; it",
       "does not change the plan. setup status shows role, scope, mode, discovery paths,",
       "approver, and completed stages.",
+      "A full Source plan has a harnesses stage: it lists the installed harnesses (or",
+      "the ones ~/.canonfig/canonfig.jsonc already lists) and scaffolds ~/.canonfig/",
+      "(canonfig.jsonc, AGENTS.md, skills/). --harness replaces that list.",
+      "The plan offers each selected harness's instructions, rules, skills, agents,",
+      "commands and MCP servers for a one-time import and imports none by default.",
+      "--import names a harness or an offered item id; --import-all takes every item;",
+      "--no-import does not read the harnesses at all. Items whose names collide are",
+      "listed as exclusions until one is named. Credential-looking MCP values become",
+      "fromEnv references, and the plan lists each one. The plan digest covers the",
+      "harness list and every chosen item, so changing either needs a new approval.",
     ],
   },
   {
@@ -227,15 +260,6 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     title: "Upstream skills (details: canonfig skills --help)",
     areas: ["skills"],
     usage: ["skills track|list|check|update [--root <path>] [--name <id>...] [--apply]", "skills auto [--root <path>] [--name <id>...] [--apply] [--once] [--interval <seconds>]"],
-  },
-  {
-    title: "Harness configuration (details: canonfig harness --help)",
-    areas: ["harness"],
-    usage: [
-      "harness init [--format yaml|json]",
-      "harness export --output <archive.zip|archive.tar.gz> [--target <id>...] [--include-source|--source-only]",
-      "harness validate|targets|plan|apply|status|diff|clean|doctor [--target <id>...] [--strict]",
-    ],
   },
   {
     title: "Installer bindings (details: canonfig installer --help)",

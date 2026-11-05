@@ -33,7 +33,7 @@ const colsMin = 72 + 200 + 140 + 110 + 120 + 4 * 12 + 20;
 
 Cell text: the name in `text-base` (with `font-medium` or `font-mono`), everything else `text-sm text-muted-foreground`, times and counts `tabular-nums`. A leading icon is `size-3.5 shrink-0 text-faint`.
 
-`GroupRow` is the 36px band that heads a group of rows inside one list (resources by kind), with an optional count and a `hint` that shows on hover.
+`GroupRow` is the 36px band that heads a group of rows inside one list (folder items by category), with an optional count and a `hint` that shows on hover.
 
 Rows that come and go animate with `RowPresence` and `AnimatedRow` (see [motion](motion.md)).
 

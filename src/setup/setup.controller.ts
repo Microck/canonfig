@@ -17,7 +17,15 @@ import {
   minimumSupportedNodeMajor,
   nodeRuntimeIsSupported,
 } from "../runtime/build-identity.ts";
+import type { SetupImportRequest } from "../cli/setup-commands.ts";
+import type { StateRepository } from "../state/state-repository.service.ts";
 import { SetupError } from "./setup.errors.ts";
+import {
+  executeFolderScaffold,
+  executeHarnessImport,
+  planSourceFolder,
+  type SourceFolderPlan,
+} from "./setup.folder.ts";
 import {
   findSetupDependencyCycle,
   isSetupApproved,
@@ -48,6 +56,7 @@ import {
   type SetupDiscoveryInput,
   type SetupStageRecord,
   type SetupApproval,
+  type SetupImportReview,
 } from "./setup.types.ts";
 
 /** The journal lives next to the state database, like the schedule fires. */
@@ -84,7 +93,7 @@ export const establishSetupScope = (value: string): Effect.Effect<SetupRequestSc
         "setup scope",
         `unknown setup scope: ${value}`,
         "usage",
-        "Run setup with --scope full, --scope cli-only, or --scope project-only.",
+        "Run setup with --scope full or --scope cli-only.",
       )
     ),
   );
@@ -734,21 +743,19 @@ const reuseCatalog = (
     entry.platform === platform && current.has(entry.resource));
 };
 
-const defaultSetupIntent = (role: SetupRole, requestScope: SetupRequestScope): string => {
-  if (requestScope === "cli-only") return "verify the CLI runs without machine changes";
-  if (requestScope === "project-only") return `prepare project resources without establishing a ${role} identity`;
-  return `establish this machine as ${role}`;
-};
+const defaultSetupIntent = (role: SetupRole, requestScope: SetupRequestScope): string =>
+  requestScope === "cli-only" ? "verify the CLI runs without machine changes" : `establish this machine as ${role}`;
 
-/** The operator's choices that are recorded but do not shape the plan. */
+/** The operator's choices and listings that are recorded but do not shape the plan digest. */
 interface SetupDecisionRecord {
   readonly mode: SetupMode | undefined;
   readonly discoveryPaths: ReadonlyArray<string>;
+  readonly imports: SetupImportReview | undefined;
 }
 
 /**
- * Keep an unchanged plan and its approvals, updating only the recorded mode
- * and discovery paths when they changed.
+ * Keep an unchanged plan and its approvals, updating only the recorded mode,
+ * discovery paths and import listing when they changed.
  */
 const recordSetupDecisions = (
   machine: MachineState["Service"],
@@ -759,12 +766,14 @@ const recordSetupDecisions = (
   const recordedPaths = journal.discoveryPaths ?? [];
   const unchanged = journal.mode === decision.mode
     && recordedPaths.length === decision.discoveryPaths.length
-    && recordedPaths.every((path, index) => path === decision.discoveryPaths[index]);
+    && recordedPaths.every((path, index) => path === decision.discoveryPaths[index])
+    && JSON.stringify(journal.imports) === JSON.stringify(decision.imports);
   if (unchanged) return Effect.succeed(journal);
   const updated: SetupJournal = {
     ...journal,
     mode: decision.mode,
     discoveryPaths: [...decision.discoveryPaths],
+    imports: decision.imports,
     updatedAt: new Date().toISOString(),
   };
   return writeJournal(machine, journalPath, updated).pipe(Effect.as(updated));
@@ -776,12 +785,46 @@ export interface SetupPlanInput {
   readonly modeText?: string | undefined;
   readonly files: ReadonlyArray<string>;
   readonly intent?: string | undefined;
+  /** `--harness` values (full Source setup only). */
+  readonly harnesses?: ReadonlyArray<string> | undefined;
+  readonly imports: SetupImportRequest;
+  /** The environment harness roots resolve from (`CODEX_HOME` and similar). */
+  readonly environment: (name: string) => string | undefined;
 }
+
+/**
+ * The `harnesses` stage of a full Source plan, or nothing for other plans.
+ * Harness and import flags are refused where the stage does not exist.
+ */
+const planHarnessStage = (
+  input: SetupPlanInput,
+  role: SetupRole,
+  requestScope: SetupRequestScope,
+  journalPath: string,
+): Effect.Effect<SourceFolderPlan | undefined, SetupError, MachineState | StateRepository> => {
+  if (role === "source" && requestScope === "full") {
+    return planSourceFolder({
+      folder: dirname(journalPath),
+      environment: input.environment,
+      harnesses: input.harnesses,
+      imports: input.imports,
+    });
+  }
+  if (input.harnesses !== undefined || input.imports.kind !== "offer") {
+    return Effect.fail(fail(
+      "setup plan",
+      "--harness, --import, --import-all and --no-import apply only to a full Source setup",
+      "usage",
+      "Plan with --role source and the default --scope full to choose harnesses and imports.",
+    ));
+  }
+  return Effect.succeed(undefined);
+};
 
 export const planSetup = (
   input: SetupPlanInput,
   journalPath: string,
-): Effect.Effect<SetupJournal, SetupError, MachineState | Enrollment> =>
+): Effect.Effect<SetupJournal, SetupError, MachineState | Enrollment | StateRepository> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     // The role is established before any role-specific inspection runs.
@@ -797,7 +840,8 @@ export const planSetup = (
       discoveryEvidence: discovery.evidence,
       discoveryDigest: discovery.digest,
     };
-    const items = planItemsFor(role, requestScope, inventory.tools, discovery.recipes);
+    const folder = yield* planHarnessStage(input, role, requestScope, journalPath);
+    const items = [...planItemsFor(role, requestScope, inventory.tools, discovery.recipes), ...folder?.items ?? []];
     const cycle = findSetupDependencyCycle(items);
     if (cycle !== undefined) {
       return yield* fail(
@@ -828,13 +872,15 @@ export const planSetup = (
     const decision: SetupDecisionRecord = {
       mode: chosenMode ?? previous?.mode,
       discoveryPaths: discovery.paths,
+      imports: folder?.imports,
     };
     const intent = input.intent ?? defaultSetupIntent(role, requestScope);
+    const exclusions = [...discovery.exclusions, ...folder?.exclusions ?? []];
     const planDigest = setupPlanDigest({
       role,
       scope: requestScope,
       intent,
-      exclusions: discovery.exclusions,
+      exclusions,
       inventory,
       items,
       discoveryInputs: discovery.inputs,
@@ -863,8 +909,10 @@ export const planSetup = (
         catalog.length > 0
           ? `${catalog.length} qualified tool provenance record(s) reused`
           : "no prior qualified tool provenance to reuse",
+        ...folder?.decisions ?? [],
       ],
-      exclusions: [...discovery.exclusions],
+      exclusions,
+      imports: decision.imports,
       evidence: [
         `inventory: ${inventory.platform} ${inventory.osRelease}, ${inventory.tools.length} tool(s), `
         + `${discovery.files} discovery file(s), ${discovery.evidence} evidence record(s)`,
@@ -883,6 +931,7 @@ export const planSetup = (
           digest: sha256Hex(canonicalJson(asJson(inventory))),
           completedAt: timestamp,
         },
+        ...folder === undefined ? [] : [{ ...folder.stage, completedAt: timestamp }],
         { stage: "plan", digest: planDigest, completedAt: timestamp },
       ],
       records: items.map((item) => ({ id: item.id, status: "pending" as const, updatedAt: timestamp })),
@@ -938,6 +987,7 @@ type SetupItemOutcome =
 const executeSetupItem = (
   item: SetupPlanItem,
   journal: SetupJournal,
+  environment: (name: string) => string | undefined,
 ): Effect.Effect<
   { readonly evidence: string; readonly catalog?: SetupProvenance | undefined },
   SetupError,
@@ -1141,6 +1191,8 @@ const executeSetupItem = (
           .map((record) => record.id);
         return { evidence: `toolchain verified: ${verified.join(", ") || "no tools"}` };
       }
+      case "folder-scaffold": return yield* executeFolderScaffold(item);
+      case "harness-import": return yield* executeHarnessImport(item, environment);
     }
   });
 
@@ -1181,6 +1233,7 @@ const recordItem = (
 
 export const applySetup = (
   journalPath: string,
+  environment: (name: string) => string | undefined,
 ): Effect.Effect<SetupJournal, SetupError, MachineState | Enrollment> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
@@ -1235,7 +1288,7 @@ export const applySetup = (
         );
         continue;
       }
-      const outcome: SetupItemOutcome = yield* executeSetupItem(item, journal).pipe(
+      const outcome: SetupItemOutcome = yield* executeSetupItem(item, journal, environment).pipe(
         Effect.map((result) => ({ ok: true as const, ...result })),
         Effect.catch((cause) => Effect.succeed({ ok: false as const, cause })),
       );

@@ -4,32 +4,38 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalJson,
   digestOf,
-  InexactJsonNumberError,
   parseJsonc,
   sha256Hex,
   stripJsonc,
 } from "../src/profile/profile-codec.ts";
 import {
-  decodeMachineProfileJsonc,
   ProfileResourceInputSchema,
+  PublishedResourceSpecSchema,
   ResourceSpecInputSchema,
+  ScheduleDefault,
   validateProfileResources,
   type ProfileResourceInput,
 } from "../src/domain/profile.ts";
-import { ActionDetailSchema } from "../src/domain/synchronization.ts";
-import { FileResourceSpec } from "../src/domain/resource.ts";
-import { composeTextFile, parseTextComposition, sourceTextEnd, sourceTextStart } from "../src/domain/text-composition.ts";
 
 const digestA = "a".repeat(64);
-const digestB = "b".repeat(64);
 
 const fileResource = (id: string, over: Partial<ProfileResourceInput> = {}): ProfileResourceInput => ({
   id,
   kind: "file",
   target: `~/.codex/${id}.txt`,
-  spec: { kind: "file", content: "hello" },
+  spec: { kind: "file", source: `${id}.txt` },
   verify: { method: "digest", digest: sha256Hex("hello") },
   ...over,
+});
+
+const skillResource = (
+  files: ReadonlyArray<{ readonly path: string; readonly mode?: number }>,
+): ProfileResourceInput => ({
+  id: "tree",
+  kind: "skill",
+  target: "~/.canonfig/skills/tree",
+  spec: { kind: "skill", name: "tree", files: files.map((file) => ({ ...file, source: `skills/tree/${file.path}` })) },
+  verify: { method: "digest", digest: digestA },
 });
 
 describe("canonical JSON", () => {
@@ -80,31 +86,6 @@ describe("JSONC parsing", () => {
     expect(() => parseJsonc(`{"a": `)).toThrow();
   });
 
-  it("rejects authored numbers JavaScript would round, naming their path", () => {
-    const profileWith = (literal: string): string => `{
-      "id": "numbers", "name": "Numbers",
-      "resources": [{
-        "id": "limits", "kind": "config", "target": "~/.limits.json",
-        "spec": { "kind": "config", "format": "json",
-          "keys": [{ "path": "limits", "value": { "max.id": ${literal} } }] },
-        "verify": { "method": "digest" }
-      }]
-    }`;
-    for (const literal of ["9007199254740993", "-9007199254740992", "1e400"]) {
-      let failure: unknown;
-      try {
-        decodeMachineProfileJsonc(profileWith(literal));
-      } catch (error) {
-        failure = error;
-      }
-      expect(failure).toBeInstanceOf(InexactJsonNumberError);
-      expect(failure).toMatchObject({ path: `$.resources[0].spec.keys[0].value["max.id"]` });
-    }
-    const exact = decodeMachineProfileJsonc(profileWith("9007199254740991"));
-    expect(exact.resources[0]?.spec).toMatchObject({
-      keys: [{ path: "limits", value: { "max.id": Number.MAX_SAFE_INTEGER } }],
-    });
-  });
 
   it("rejects an unsafe integer that reaches validation without JSON text", () => {
     const errors = validateProfileResources([{
@@ -121,56 +102,19 @@ describe("JSONC parsing", () => {
   });
 });
 
-describe("filesystem authoring fidelity", () => {
-  it("preserves exact modes and canonicalizes non-semantic symlink permissions", () => {
-    const profile = decodeMachineProfileJsonc(JSON.stringify({
-      id: "filesystem-fidelity",
-      name: "Filesystem fidelity",
-      resources: [{
-        id: "tree",
-        kind: "directory",
-        target: "~/.canonfig/tree",
-        spec: {
-          kind: "directory",
-          mode: 0o755,
-          directories: [{ path: "empty", mode: 0o750 }],
-          files: [{
-            path: "tool-link",
-            content: "",
-            mode: 0o777,
-            symlinkTo: "../bin/tool",
-          }],
-        },
-        verify: { method: "digest", digest: digestA },
-      }],
-    }));
-
-    expect(profile.resources[0]?.spec).toEqual({
-      kind: "directory",
-      mode: 0o755,
-      directories: [{ path: "empty", mode: 0o750 }],
-      files: [{
-        path: "tool-link",
-        content: "",
-        mode: 0,
-        executable: false,
-        symlinkTo: "../bin/tool",
-      }],
-    });
-  });
-
+describe("filesystem mode bounds", () => {
   it.each([-1, 0o10000])(
     "rejects out-of-range mode %i at authoring and publication boundaries",
     (mode) => {
       expect(() => Schema.decodeUnknownSync(ResourceSpecInputSchema)({
         kind: "file",
-        content: "hello",
+        source: "hello.txt",
         mode,
       })).toThrow();
-      expect(() => Schema.decodeUnknownSync(FileResourceSpec)({
+      expect(() => Schema.decodeUnknownSync(PublishedResourceSpecSchema)({
         kind: "file",
-        content: "hello",
-        digest: sha256Hex("hello"),
+        blob: sha256Hex("hello"),
+        bytes: 5,
         executable: false,
         mode,
       })).toThrow();
@@ -178,81 +122,9 @@ describe("filesystem authoring fidelity", () => {
   );
 });
 
-describe("append-local text contract", () => {
-  it.each(["", "shared", "shared\n", "\uFEFFshared\r\n東京\n"])("preserves exact Source and local payloads: %j", (source) => {
-    const local = "\uFEFFlocal\r\n\r\n";
-    const bytes = composeTextFile(source, { kind: "unmanaged", local });
-    expect(parseTextComposition(bytes)).toEqual({ kind: "managed", source, local });
-    expect(composeTextFile(source, parseTextComposition(bytes))).toEqual(bytes);
-    expect(parseTextComposition(composeTextFile("new Source", parseTextComposition(bytes))))
-      .toEqual({ kind: "managed", source: "new Source", local });
-  });
-
-  it.each([
-    sourceTextStart,
-    sourceTextEnd,
-    `prefix\n${sourceTextStart}\nshared\n${sourceTextEnd}\n\nlocal`,
-    `${sourceTextStart}\nshared\n${sourceTextEnd}\nlocal`,
-    `${sourceTextStart}\nshared\n${sourceTextEnd}\n\n${sourceTextStart}`,
-    "binary\0text",
-  ])("rejects malformed local text without adopting it: %j", (text) => {
-    expect(() => parseTextComposition(new TextEncoder().encode(text))).toThrow();
-  });
-
-  it("rejects invalid UTF-8 instead of replacing bytes", () => {
-    expect(() => parseTextComposition(Uint8Array.of(0xff))).toThrow();
-  });
-
-  it.each([
-    { content: "text", executable: true },
-    { content: "text", mode: 0o610 },
-    { content: "text", symlinkTo: "elsewhere" },
-    { content: "binary\0text" },
-    { content: "invalid\uD800" },
-    { content: sourceTextStart },
-    { content: sourceTextEnd },
-  ])("rejects unsupported Source spec: %j", (spec) => {
-    const resource = fileResource("instructions", {
-      policy: "append-local", spec: { kind: "file", ...spec },
-      verify: { method: "digest", digest: sha256Hex(spec.content) },
-    });
-    expect(() => Schema.decodeUnknownSync(ProfileResourceInputSchema)(resource)).toThrow();
-    expect(validateProfileResources([resource]).map((error) => error._tag)).toContain("InvalidTextCompositionError");
-  });
-
-  it("accepts an opt-in ordinary text file and persists the Source baseline", () => {
-    expect(Schema.decodeUnknownSync(ProfileResourceInputSchema)(fileResource("instructions", { policy: "append-local" })).policy)
-      .toBe("append-local");
-    const action = { kind: "write-file", target: "~/AGENTS.md", digest: digestA, previousSourceDigest: digestB };
-    expect(Schema.decodeUnknownSync(ActionDetailSchema)(action)).toEqual(action);
-  });
-});
-
 describe("profile schedule default portability", () => {
-  interface CandidateScheduleDefault {
-    readonly type: string;
-    readonly at?: string | undefined;
-    readonly days?: ReadonlyArray<string> | undefined;
-    readonly expression?: string | undefined;
-    readonly timezone: string;
-  }
-
-  /** Builds authoring input, including shapes the decoder must reject. */
-  const profileWith = (scheduleDefault: CandidateScheduleDefault) => JSON.stringify({
-    id: "workstation",
-    version: 2,
-    name: "Workstation",
-    groups: [],
-    resources: [],
-    scheduleDefault,
-  });
-
   it("accepts a daily default in the follower timezone", () => {
-    expect(() =>
-      decodeMachineProfileJsonc(
-        profileWith({ type: "daily", at: "03:30", timezone: "local" }),
-      )
-    ).not.toThrow();
+    expect(() => Schema.decodeUnknownSync(ScheduleDefault)({ type: "daily", at: "03:30", timezone: "local" })).not.toThrow();
   });
 
   it.each([
@@ -263,9 +135,10 @@ describe("profile schedule default portability", () => {
     // them at publication only moved the discovery to a follower that then
     // silently ended up with no scheduled synchronization. A follower that
     // wants either sets it locally with `canonfig schedule set`.
-    expect(() => decodeMachineProfileJsonc(profileWith(scheduleDefault))).toThrow();
+    expect(() => Schema.decodeUnknownSync(ScheduleDefault)(scheduleDefault)).toThrow();
   });
 });
+
 
 describe("agent install bounds", () => {
   interface CandidateBounds {
@@ -376,61 +249,27 @@ describe("resource graph validation", () => {
   it.each([
     {
       name: "regular file with symlink verification",
-      spec: { kind: "file" as const, content: "hello" },
       verify: { method: "symlink" as const, target: "/tmp/target" },
     },
     {
       name: "regular file with executable verification",
-      spec: { kind: "file" as const, content: "hello", executable: true },
       verify: { method: "executable-present" as const, executable: "hello" },
     },
-    {
-      name: "symlink file with digest verification",
-      spec: {
-        kind: "file" as const,
-        content: "",
-        symlinkTo: "/tmp/target",
-      },
-      verify: { method: "digest" as const, digest: sha256Hex("hello") },
-    },
-    {
-      name: "symlink file with executable verification",
-      spec: {
-        kind: "file" as const,
-        content: "",
-        symlinkTo: "/tmp/target",
-      },
-      verify: { method: "executable-present" as const, executable: "target" },
-    },
-  ] as const)("rejects $name", ({ spec, verify }) => {
-    const errors = validateProfileResources([fileResource("invalid", { spec, verify })]);
+  ] as const)("rejects $name", ({ verify }) => {
+    const errors = validateProfileResources([fileResource("invalid", { verify })]);
     expect(errors.map((error) => error._tag)).toEqual(["VerificationKindMismatchError"]);
   });
 
   it.each([
-    {
-      name: "regular",
-      spec: { kind: "file" as const, content: "hello", executable: false },
-      verify: { method: "digest" as const, digest: sha256Hex("hello") },
-    },
-    {
-      name: "executable",
-      spec: { kind: "file" as const, content: "hello", executable: true },
-      verify: { method: "digest" as const, digest: sha256Hex("hello") },
-    },
-    {
-      name: "symlink",
-      spec: { kind: "file" as const, content: "", symlinkTo: "/tmp/target" },
-      verify: { method: "symlink" as const, target: "/tmp/target" },
-    },
-  ] as const)("accepts valid $name file verification", ({ spec, verify }) => {
-    expect(validateProfileResources([fileResource("valid", { spec, verify })])).toEqual([]);
+    { name: "regular", spec: { kind: "file" as const, source: "valid.txt", executable: false } },
+    { name: "executable", spec: { kind: "file" as const, source: "valid.txt", executable: true } },
+  ] as const)("accepts valid $name file verification", ({ spec }) => {
+    expect(validateProfileResources([fileResource("valid", { spec })])).toEqual([]);
   });
 
   it("accepts default policies for every kind", () => {
     const resources: Array<ProfileResourceInput> = [
-      { id: "f", kind: "file", target: "~/f", spec: { kind: "file", content: "x" }, verify: { method: "digest", digest: sha256Hex("x") } },
-      { id: "d", kind: "directory", target: "~/d", spec: { kind: "directory", files: [] }, verify: { method: "digest", digest: "d".repeat(64) } },
+      { id: "f", kind: "file", target: "~/f", spec: { kind: "file", source: "f" }, verify: { method: "digest", digest: sha256Hex("x") } },
       { id: "c", kind: "config", target: "~/c.toml", spec: { kind: "config", format: "toml", keys: [{ path: "a.b", value: 1 }] }, verify: { method: "digest", digest: "d".repeat(64) } },
       { id: "s", kind: "skill", target: "~/skills/s", spec: { kind: "skill", name: "s", files: [] }, verify: { method: "digest", digest: "d".repeat(64) } },
       { id: "t", kind: "tool", target: "~", spec: { kind: "tool", toolId: "rg", recipes: [] }, verify: { method: "executable-present", executable: "rg" } },
@@ -438,6 +277,7 @@ describe("resource graph validation", () => {
     ];
     expect(validateProfileResources(resources)).toEqual([]);
   });
+
 
   it("rejects required build policies without complete reviewed bounds", () => {
     const errors = validateProfileResources([{
@@ -478,20 +318,12 @@ describe("resource graph validation", () => {
     expect(errors).toHaveLength(2);
   });
 
+
   it("rejects normalized and parent-child resource target conflicts", () => {
     const errors = validateProfileResources([
       fileResource("file", { target: "~/.config/canonfig" }),
       fileResource("alias", { target: "~/.config/./CANONFIG" }),
-      {
-        id: "directory",
-        kind: "directory",
-        target: "~/.config/skills",
-        spec: {
-          kind: "directory",
-          files: [{ path: "SKILL.md", content: "managed" }],
-        },
-        verify: { method: "digest", digest: digestA },
-      },
+      { ...skillResource([{ path: "SKILL.md" }]), id: "directory", target: "~/.config/skills" },
       fileResource("child", { target: "~/.config/skills/SKILL.md" }),
     ]);
 
@@ -502,6 +334,7 @@ describe("resource graph validation", () => {
       ["child", "directory"],
     ]);
   });
+
 
   it.each([
     {
@@ -545,51 +378,8 @@ describe("resource graph validation", () => {
     paths,
     expected,
   }) => {
-    const errors = validateProfileResources([{
-      id: "tree",
-      kind: "directory",
-      target: "~/.canonfig/tree",
-      spec: {
-        kind: "directory",
-        files: paths.map((path) => ({ path, content: path })),
-      },
-      verify: { method: "digest", digest: digestA },
-    }], undefined, platform);
+    const errors = validateProfileResources([skillResource(paths.map((path) => ({ path })))], undefined, platform);
     expect(errors.map((error) => error._tag)).toEqual(expected);
-  });
-
-  it("validates explicit directory claims without rejecting their descendants", () => {
-    const valid = validateProfileResources([{
-      id: "tree",
-      kind: "directory",
-      target: "~/.canonfig/tree",
-      spec: {
-        kind: "directory",
-        directories: [{ path: "nested", mode: 0o700 }],
-        files: [{ path: "nested/file.txt", content: "managed" }],
-      },
-      verify: { method: "digest", digest: digestA },
-    }]);
-    expect(valid).toEqual([]);
-
-    const invalid = validateProfileResources([{
-      id: "tree",
-      kind: "directory",
-      target: "~/.canonfig/tree",
-      spec: {
-        kind: "directory",
-        directories: [
-          { path: "../escape", mode: 0o700 },
-          { path: "collision", mode: 0o700 },
-        ],
-        files: [{ path: "collision", content: "managed" }],
-      },
-      verify: { method: "digest", digest: digestA },
-    }]);
-    expect(invalid.map((error) => error._tag)).toEqual([
-      "InvalidTargetError",
-      "ConflictingResourceTargetError",
-    ]);
   });
 
   it("rejects filesystem modes that prevent deterministic verification", () => {
@@ -598,66 +388,28 @@ describe("resource graph validation", () => {
         id: "file",
         kind: "file",
         target: "~/.canonfig/file",
-        spec: { kind: "file", content: "managed", mode: 0o200 },
+        spec: { kind: "file", source: "file", mode: 0o200 },
         verify: { method: "digest", digest: digestA },
       },
-      {
-        id: "tree",
-        kind: "directory",
-        target: "~/.canonfig/tree",
-        spec: {
-          kind: "directory",
-          mode: 0o600,
-          directories: [{ path: "locked", mode: 0o400 }],
-          files: [{ path: "write-only.txt", content: "managed", mode: 0o200 }],
-        },
-        verify: { method: "digest", digest: digestA },
-      },
-      {
-        id: "link",
-        kind: "file",
-        target: "~/.canonfig/link",
-        spec: { kind: "file", content: "", mode: 0o000, symlinkTo: "target" },
-        verify: { method: "symlink", target: "target" },
-      },
+      skillResource([{ path: "write-only.txt", mode: 0o200 }]),
     ]);
 
     expect(errors.filter((error) => error._tag === "UnmanageableFilesystemModeError"))
       .toMatchObject([
         { id: "file", path: "~/.canonfig/file", mode: 0o200 },
-        { id: "tree", path: "~/.canonfig/tree", mode: 0o600 },
-        { id: "tree", path: "locked", mode: 0o400 },
         { id: "tree", path: "write-only.txt", mode: 0o200 },
       ]);
   });
 
   it("applies case folding only on case-insensitive targets", () => {
-    const resources: Array<ProfileResourceInput> = [{
-      id: "tree",
-      kind: "directory",
-      target: "~/.canonfig/tree",
-      spec: {
-        kind: "directory",
-        files: [
-          { path: "Readme.md", content: "one" },
-          { path: "README.md", content: "two" },
-        ],
-      },
-      verify: { method: "digest", digest: digestA },
-    }];
+    const resources = [skillResource([{ path: "Readme.md" }, { path: "README.md" }])];
     expect(validateProfileResources(resources, undefined, "linux")).toEqual([]);
     expect(validateProfileResources(resources, undefined, "windows")
       .map((error) => error._tag)).toEqual(["ConflictingResourceTargetError"]);
   });
 
-  it.each([
-    { kind: "file" as const, symlinkTo: undefined },
-    { kind: "file" as const, symlinkTo: "/outside/target" },
-  ])("rejects a $kind resource parent claim before a descendant", ({ symlinkTo }) => {
-    const parent = fileResource("parent", {
-      target: "~/.canonfig/tree",
-      spec: { kind: "file", content: "parent", symlinkTo },
-    });
+  it("rejects a file resource parent claim before a descendant", () => {
+    const parent = fileResource("parent", { target: "~/.canonfig/tree" });
     const child = fileResource("child", {
       target: "~/.canonfig/tree/nested/file.txt",
     });

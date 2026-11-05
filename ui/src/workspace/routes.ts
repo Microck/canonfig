@@ -3,7 +3,9 @@ import type { Role } from "@/shared/data";
 import type { FollowerView, SourceView, View } from "./store";
 
 export type WorkspaceRole = Exclude<Role, "unconfigured">;
-export type ProfileTab = "resources" | "groups" | "defaults";
+/** Profile tabs: the folder's items, its harness list, Follower Groups, and the profile's name, schedule and local policy. */
+export type ProfileTab = "items" | "harnesses" | "groups" | "defaults";
+const PROFILE_TABS: Exclude<ProfileTab, "items">[] = ["harnesses", "groups", "defaults"];
 export type MachinesMode = "map" | "list";
 
 const SOURCE_PATHS: Record<SourceView, string> = {
@@ -11,10 +13,10 @@ const SOURCE_PATHS: Record<SourceView, string> = {
   profile: "profile",
   machines: "machines",
   revisions: "revisions",
+  backups: "backups",
   secrets: "secrets",
   service: "settings/service",
   agent: "settings/agent",
-  harness: "settings/harness",
   installers: "settings/installers",
   setup: "settings/setup",
   doctor: "settings/health",
@@ -25,11 +27,11 @@ const FOLLOWER_PATHS: Record<FollowerView, string> = {
   machines: "machines",
   sync: "sync",
   schedule: "schedule",
-  overlays: "local-settings",
+  local: "local-settings",
+  backups: "backups",
   secrets: "secrets",
   tunnel: "settings/tunnel",
   agent: "settings/agent",
-  harness: "settings/harness",
   doctor: "settings/health",
   machine: "settings/enrollment",
 };
@@ -56,7 +58,7 @@ export function workspaceHref(role: WorkspaceRole, view: View, options: {
   const segment = paths[view];
   if (!segment) throw new Error(`No ${role} route for ${view}`);
   let path = `/${role}/${segment}`;
-  if (view === "profile" && options.profileTab && options.profileTab !== "resources") path += `/${options.profileTab}`;
+  if (view === "profile" && options.profileTab && options.profileTab !== "items") path += `/${options.profileTab}`;
   if (view === "machines" && options.machinesMode === "list") path += "/list";
   if (options.focus != null) path += `?${new URLSearchParams({ focus: options.focus })}`;
   return path;
@@ -74,11 +76,12 @@ export function parseRoute(href: string): AppRoute {
   const segment = parts.join("/");
   const paths: Partial<Record<View, string>> = role === "source" ? SOURCE_PATHS : FOLLOWER_PATHS;
   let view = (Object.keys(paths) as View[]).find((key) => paths[key] === segment);
-  let profileTab: ProfileTab = "resources";
+  let profileTab: ProfileTab = "items";
   let machinesMode: MachinesMode = "map";
-  if (role === "source" && (segment === "profile/groups" || segment === "profile/defaults")) {
+  const tab = PROFILE_TABS.find((t) => segment === `profile/${t}`);
+  if (role === "source" && tab) {
     view = "profile";
-    profileTab = segment === "profile/groups" ? "groups" : "defaults";
+    profileTab = tab;
   }
   if (segment === "machines/list") {
     view = "machines";

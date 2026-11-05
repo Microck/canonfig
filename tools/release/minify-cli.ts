@@ -29,11 +29,11 @@ await build({
   target: "node24",
 });
 
-// Compress internal decoder and harness-renderer identifiers while retaining
+// Compress internal decoder, setup, skills and projection identifiers while retaining
 // exports and Function.name values. This keeps the corrective work within
 // the existing package-size budgets without removing checks or features.
 await build({
-  entryPoints: ["dist/machine/installed-scheduler-command.js", ...globSync("dist/runtime/self-update/**/*.js"), ...globSync("dist/harness-configuration/**/*.js")].sort(),
+  entryPoints: ["dist/machine/installed-scheduler-command.js", ...globSync("dist/runtime/self-update/**/*.js"), ...globSync("dist/{projection,setup,skills}/**/*.js")].sort(),
   outbase: "dist",
   outdir: "dist",
   allowOverwrite: true,
@@ -45,10 +45,10 @@ await build({
   target: "node24",
 });
 
-// Internal declarations retain every type and exported name, but do not ship
-// duplicated source comments. Public profile-compiler declarations stay intact.
+// Declarations retain every type and exported name, but do not ship
+// duplicated source comments.
 const printer = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed });
-for (const file of globSync("dist/{harness-configuration,machine,runtime,enrollment,cli,schedule,synchronization}/**/*.d.ts").sort()) {
+for (const file of globSync("dist/{projection,setup,skills,machine,runtime,enrollment,cli,schedule,synchronization}/**/*.d.ts").sort()) {
   const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
   writeFileSync(file, printer.printFile(source));
 }

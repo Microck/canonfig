@@ -8,6 +8,7 @@ import {
 import { SetupCommands } from "../cli/setup-commands.ts";
 import { Enrollment } from "../enrollment/enrollment.service.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
+import { StateRepository } from "../state/state-repository.service.ts";
 import {
   applySetup,
   approveSetup,
@@ -33,25 +34,28 @@ const setupFailure = (error: SetupError): CliCommandFailure => {
 };
 
 /**
- * The setup command graph. Only the local machine state and enrollment take
- * part: no agent adapters are required, so known recipes complete with the
- * outer agent unavailable.
+ * The setup command graph. Only the local machine state, enrollment and the
+ * state database (harness takeovers) take part: no agent adapters are
+ * required, so known recipes complete with the outer agent unavailable.
  */
 export const setupCommandsLayer = (
   statePath: string,
-): Layer.Layer<SetupCommands, never, MachineState | Enrollment> =>
+): Layer.Layer<SetupCommands, never, MachineState | Enrollment | StateRepository> =>
   Layer.effect(
     SetupCommands,
     Effect.gen(function*() {
       const machine = yield* MachineState;
       const enrollment = yield* Enrollment;
+      const repository = yield* StateRepository;
       const journalPath = setupJournalPath(statePath);
+      const environment = (name: string) => process.env[name];
       const run = (
-        effect: Effect.Effect<SetupJournal, SetupError, MachineState | Enrollment>,
+        effect: Effect.Effect<SetupJournal, SetupError, MachineState | Enrollment | StateRepository>,
       ): Effect.Effect<CliPayload, CliCommandFailure> =>
         effect.pipe(
           Effect.provideService(MachineState, machine),
           Effect.provideService(Enrollment, enrollment),
+          Effect.provideService(StateRepository, repository),
           Effect.mapBoth({
             onFailure: setupFailure,
             onSuccess: (value) => toPayload(value),
@@ -64,9 +68,12 @@ export const setupCommandsLayer = (
           modeText: input.mode,
           files: input.files,
           intent: input.intent,
+          harnesses: input.harnesses,
+          imports: input.imports,
+          environment,
         }, journalPath)),
         approve: (input) => run(approveSetup(input.approver, journalPath)),
-        apply: () => run(applySetup(journalPath)),
+        apply: () => run(applySetup(journalPath, environment)),
         status: () =>
           setupStatus(journalPath).pipe(
             Effect.provideService(MachineState, machine),

@@ -47,7 +47,7 @@ What is the page's main content?
 
 ## Toolbar and ToolbarTab
 
-A second 44px bar under the header for switching views of one page (Profile items, groups and defaults; Machines map and list). `ToolbarTab` is a 28px round pill link with an optional animated `count`. Use it for views with their own URL. Never use the `Tabs` primitive: it has no call sites and does not match the pills.
+A second 44px bar under the header for switching views of one page (Profile items, harnesses, groups and defaults; Machines map and list). `ToolbarTab` is a 28px round pill link with an optional animated `count`. Use it for views with their own URL. Never use the `Tabs` primitive: it has no call sites and does not match the pills.
 
 ```tsx
 // Correct (machines.tsx): each view is a URL; the active icon goes bold
@@ -83,7 +83,7 @@ Desktop: 244px sidebar, 44px page header and toolbar, 28px view pills, 44px list
 
 ## Adding a workspace page
 
-1. Write the component where its role's pages live: `follower.tsx` for Follower-only pages, `source.tsx` for Source-only pages (Profile and Machines are big enough for their own files), `settings.tsx` for settings both roles have. Export it as `<Name>View`.
+1. Write the component where its role's pages live: `follower.tsx` for Follower-only pages, `source.tsx` for Source-only pages (Profile and Machines are big enough for their own files), `settings.tsx` for settings both roles have, `harnesses.tsx` for the harness list and Backups, which both roles share. Export it as `<Name>View`.
 2. Add the view to the role's union in `store.tsx` (`SourceView` or `FollowerView`).
 3. Give it a path in `routes.ts` (`SOURCE_PATHS` or `FOLLOWER_PATHS`; settings live under `settings/`) and a row in `routes.test.ts`.
 4. Add a nav entry with a Solar icon in `nav.ts` (`*_NAV` for main pages, `*_SETTINGS` for settings). The sidebar, command palette "Go to" list and tour previews read it.

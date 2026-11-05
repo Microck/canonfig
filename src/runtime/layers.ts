@@ -1,6 +1,5 @@
 import { runtimeCredentialPolicy } from "./credential-policy.ts";
 import { runtimeStateLayer } from "./state-layer.ts";
-import { ProfileMetadataBudgetError } from "../profile/metadata-budget.ts";
 import {
   createPrivateKey,
   createPublicKey,
@@ -12,10 +11,10 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { Effect, Layer, Option, Redacted, Schema, SchemaIssue } from "effect";
+import { Effect, Layer, Option, Redacted, Schema } from "effect";
 
-import { SourceSignature } from "../domain/brand.ts";
-import { configPathIssue } from "../domain/config-path.ts";
+import { ProfileId, SourceSignature } from "../domain/brand.ts";
+import { localProjectionFollower } from "../domain/synchronization.ts";
 import { AgentPolicy } from "../domain/identity.ts";
 import { AgentResolutionWithSecretsLive } from "../agent/agent-resolution.layer.ts";
 import { AgentResolution } from "../agent/agent-resolution.service.ts";
@@ -24,7 +23,6 @@ import { Enrollment } from "../enrollment/enrollment.service.ts";
 import {
   cancelFollowerEnrollment,
   enrollFollower,
-  getRevisionMetadata,
   finalizeFollowerEnrollment,
   listRevisions,
   queryFollowerLifecycle,
@@ -44,11 +42,6 @@ import { startSourceServer } from "../enrollment/source-server.ts";
 import { sourceServiceLayer } from "../source-service/source-service.layer.ts";
 import { SourceService } from "../source-service/source-service.service.ts";
 import { CredentialStorageError } from "../machine/machine-state.errors.ts";
-import {
-  decodeMachineProfileJsonc,
-  ProfileContractError,
-  type MachineProfile,
-} from "../domain/profile.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { linuxMachineStateLayer } from "../machine/linux.layer.ts";
 import { macosMachineStateLayer } from "../machine/macos.layer.ts";
@@ -60,16 +53,9 @@ import {
   InvalidPublicationResourcesError,
   PublicationSigningError,
 } from "../profile/profile-catalog.errors.ts";
-import { profileContentDigests } from "../profile/compiler.ts";
+import { scanFolder } from "../profile/discovery.ts";
 import {
-  scanDiscovery,
-  type DiscoveryScanResult,
-} from "../profile/discovery.ts";
-import { InexactJsonNumberError, jsonPathText } from "../profile/profile-codec.ts";
-import {
-  acceptPublicationProposal,
   makePublication,
-  resolveResourceSources,
   type ProfileRevisionSigner,
 } from "../profile/publication.ts";
 import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
@@ -106,6 +92,15 @@ import {
   synchronizeFollower,
 } from "../synchronization/follower-orchestration.ts";
 import {
+  abandonLocal,
+  harnessesLocal,
+  hasOpenLocalRun,
+  recoverLocal,
+  restoreLocal,
+  synchronizeLocal,
+} from "../projection/sync.ts";
+import { authoredEntries } from "../projection/folder.ts";
+import {
   FollowerCommands,
   type FollowerCommandsService,
 } from "../cli/follower-commands.ts";
@@ -120,7 +115,6 @@ import {
   type SourceCommandsService,
 } from "../cli/source-commands.ts";
 import type { CliFailureCategory } from "../cli/exit-codes.ts";
-import type { LocalOverlayInput } from "../cli/follower-commands.ts";
 import {
   doctorFailureCategory,
   runDoctorProbes,
@@ -186,70 +180,6 @@ const commandFailure = (
   });
 };
 
-const emptyDiscoveryProposal: DiscoveryScanResult = {
-  resources: [],
-  tools: [],
-  skills: [],
-  evidence: [],
-  agentTasks: [],
-  scannedPaths: [],
-};
-
-const isSymbol = Schema.is(Schema.Symbol);
-
-/** Render typed schema structure and trusted expectations, never reported input. */
-const schemaDiagnostic = (cause: Schema.SchemaError): string | undefined => {
-  const problems: Array<{ readonly path: ReadonlyArray<PropertyKey>; readonly reason: string }> = [];
-  const visit = (issue: SchemaIssue.Issue, path: ReadonlyArray<PropertyKey>): void => {
-    switch (issue._tag) {
-      case "Pointer":
-        return visit(issue.issue, [...path, ...issue.path]);
-      case "Encoding":
-        return visit(issue.issue, path);
-      case "Composite":
-      case "AnyOf":
-        for (const child of issue.issues) visit(child, path);
-        if (issue.issues.length === 0) problems.push({ path, reason: "Expected a matching schema" });
-        return;
-      case "Filter":
-        if (issue.issue._tag !== "InvalidValue") return visit(issue.issue, path);
-        problems.push({
-          path,
-          reason: SchemaIssue.defaultLeafHook(new SchemaIssue.InvalidValue({
-            expected: issue.issue.annotations?.expected ?? issue.filter.annotations?.expected,
-          })),
-        });
-        return;
-      case "InvalidType":
-        problems.push({ path, reason: SchemaIssue.defaultLeafHook(new SchemaIssue.InvalidType(issue.ast)) });
-        return;
-      case "InvalidValue":
-        problems.push({
-          path,
-          reason: SchemaIssue.defaultLeafHook(new SchemaIssue.InvalidValue({ expected: issue.annotations?.expected })),
-        });
-        return;
-      case "MissingKey":
-        problems.push({ path, reason: "missing required field" });
-        return;
-      case "UnexpectedKey":
-        problems.push({ path, reason: "unexpected field" });
-        return;
-      case "OneOf":
-        problems.push({ path, reason: "Expected exactly one matching schema" });
-        return;
-      case "Forbidden":
-        problems.push({ path, reason: "schema operation is unavailable" });
-    }
-  };
-  visit(cause.issue, []);
-  if (problems.length === 0) return undefined;
-  return problems.sort((left, right) => right.path.length - left.path.length).slice(0, 5)
-    .map(({ path, reason }) =>
-      `${jsonPathText("profile", path.map((key) => isSymbol(key) ? "[symbol]" : key))}: ${reason}`
-    ).join("; ").slice(0, 300);
-};
-
 /**
  * Every problem a profile contract or publication found, as operator text
  * from the failure taxonomy, bounded so a large invalid profile still reads.
@@ -259,70 +189,6 @@ const profileProblems = (errors: ReadonlyArray<TaggedRuntimeError>): string => {
   const hidden = errors.length - shown.length;
   return hidden > 0 ? `${shown.join("; ")}; and ${hidden} more` : shown.join("; ");
 };
-
-/**
- * Build the failure for an unreadable or invalid authored profile file. The
- * underlying complaint is included in sanitized form so operators can fix
- * their authoring without trial and error. Raw parser messages are never
- * echoed: a JSON syntax error quotes the offending source text, which may be
- * profile content, so it is replaced with a static diagnostic. Contract
- * errors render through the failure taxonomy, which names resources and
- * paths but not values. Schema errors render typed paths and expected values
- * from the schema; reported input and custom issue messages are never rendered.
- */
-export const profileFileFailure = (cause: unknown): CliCommandFailure => {
-  if (cause instanceof SyntaxError) {
-    return new CliCommandFailure({
-      category: "usage-or-configuration",
-      message: "authored profile file is malformed or invalid: profile is not valid JSONC",
-    });
-  }
-  if (cause instanceof ProfileContractError) {
-    return new CliCommandFailure({
-      category: "usage-or-configuration",
-      message: `authored profile file is malformed or invalid: ${profileProblems(cause.errors)}`,
-    });
-  }
-  if (cause instanceof InexactJsonNumberError) {
-    return new CliCommandFailure({
-      category: "usage-or-configuration",
-      message: `authored profile file is malformed or invalid: ${cause.message}`,
-    });
-  }
-  if (cause instanceof Error) {
-    const detail = cause instanceof Schema.SchemaError
-      ? schemaDiagnostic(cause) ?? "profile validation failed"
-      : "profile validation failed";
-    return new CliCommandFailure({
-      category: "usage-or-configuration",
-      message: `authored profile file is malformed or invalid: ${detail}`,
-    });
-  }
-  return new CliCommandFailure({
-    category: "usage-or-configuration",
-    message: "authored profile file is malformed or invalid: unknown validation failure",
-  });
-};
-
-const readAuthoredProfile = (
-  path: string,
-): Effect.Effect<MachineProfile, CliCommandFailure> =>
-  Effect.tryPromise({
-    try: () => readFile(path, "utf8"),
-    catch: (cause) => new CliCommandFailure({
-      category: "usage-or-configuration",
-      message: `authored profile file ${path} could not be read: ${
-        cause instanceof Error ? cause.message : String(cause)
-      }`,
-    }),
-  }).pipe(
-    Effect.flatMap((text) =>
-      Effect.try({
-        try: () => decodeMachineProfileJsonc(text),
-        catch: (cause) => profileFileFailure(cause),
-      })
-    ),
-  );
 
 /** A publication whose resources fail the profile contract, one line per problem. */
 const invalidResourcesFailure = (
@@ -488,11 +354,12 @@ const supervisedSourceModes =
   "Unlock the Source credential store in the session that runs the service, then supervise it with `canonfig source service install`. "
   + "Linux linger (`loginctl enable-linger <user>`) extends the user manager lifecycle to boot and logout, but does not unlock an encrypted login keyring. Verify `canonfig source service status` reports `serving: true` in the intended mode";
 
-const sourceCommandsLayer: Layer.Layer<
+/** Source commands; `folder` is the Canonical Folder that holds the state database. */
+const sourceCommandsLayer = (folder: string): Layer.Layer<
   SourceCommands,
   never,
   Enrollment | MachineState | ProfileCatalog | StateRepository | SourceService
-> = Layer.effect(
+> => Layer.effect(
   SourceCommands,
   Effect.gen(function*() {
     const enrollment = yield* Enrollment;
@@ -509,128 +376,16 @@ const sourceCommandsLayer: Layer.Layer<
 
     const service: SourceCommandsService = {
       initialize: () => mapFailure(enrollment.initializeSource()).pipe(Effect.map(payload)),
-      scan: (input) => mapFailure(profiles.scan(input)).pipe(Effect.map(payload)),
+      scan: (input) => mapFailure(profiles.scan({ folder, write: input.write })).pipe(Effect.map(payload)),
       publish: (input) =>
-        Effect.gen(function*() {
-          const authored = input.profilePath === undefined
-            ? undefined
-            : yield* readAuthoredProfile(input.profilePath);
-          const proposal = input.proposalPath === undefined
-            ? emptyDiscoveryProposal
-            : yield* mapFailure(profiles.scan({
-              files: [{ path: input.proposalPath }],
-            }));
-          if (authored === undefined && (input.profile === undefined || input.name === undefined)) {
-            return yield* new CliCommandFailure({
-              category: "usage-or-configuration",
-              message: "source publish requires profile metadata or an authored profile file",
-            });
-          }
-          if (
-            authored !== undefined
-            && input.profile !== undefined
-            && input.profile !== authored.id
-          ) {
-            return yield* new CliCommandFailure({
-              category: "usage-or-configuration",
-              message: "authored profile id conflicts with --profile",
-            });
-          }
-          if (
-            authored !== undefined
-            && input.name !== undefined
-            && input.name !== authored.name
-          ) {
-            return yield* new CliCommandFailure({
-              category: "usage-or-configuration",
-              message: "authored profile name conflicts with --name",
-            });
-          }
-          const profile = authored === undefined
-            ? {
-              id: input.profile!,
-              name: input.name!,
-            }
-            : {
-              id: authored.id,
-              name: authored.name,
-              groups: authored.groups,
-              resources: authored.resources,
-              scheduleDefault: authored.scheduleDefault,
-              directory: dirname(input.profilePath!),
-            };
-          const now = new Date().toISOString();
-          const revision = yield* profiles.publish({
-            proposal,
-            profile,
-            review: acceptPublicationProposal(proposal, input.reviewer, now),
-            publishedAt: now,
-            allowEmpty: input.allowEmpty,
-          }).pipe(
-            Effect.mapError((error) =>
-              error instanceof InvalidPublicationResourcesError
-                ? invalidResourcesFailure(error.errors)
-                : commandFailure(error)
-            ),
-          );
-          return payload(revision);
-        }),
-      digest: (input) =>
-        Effect.gen(function*() {
-          const authored = yield* readAuthoredProfile(input.profilePath);
-          if (
-            input.resource !== undefined
-            && !authored.resources.some((resource) => resource.id === input.resource)
-          ) {
-            return yield* new CliCommandFailure({
-              category: "usage-or-configuration",
-              message: `profile ${authored.id} in ${input.profilePath} declares no resource ${input.resource}`,
-            });
-          }
-          const resolved = yield* mapFailure(resolveResourceSources(
-            authored.resources,
-            dirname(input.profilePath),
-          ));
-          const digests = yield* Effect.try({
-            try: () =>
-              profileContentDigests(
-                { ...authored, resources: resolved.resources },
-                resolved.sources,
-              ),
-            catch: (cause) =>
-              cause instanceof ProfileContractError
-                ? invalidResourcesFailure(cause.errors)
-                : cause instanceof ProfileMetadataBudgetError
-                ? new CliCommandFailure({ category: "usage-or-configuration", message: cause.message })
-                : new CliCommandFailure({
-                  category: "internal",
-                  message: `resource digests could not be computed: ${String(cause)}`,
-                }),
-          });
-          const selected = digests.filter((entry) =>
-            input.resource === undefined || entry.id === input.resource
-          );
-          if (input.resource !== undefined && selected.length === 0) {
-            return yield* new CliCommandFailure({
-              category: "usage-or-configuration",
-              message: `resource ${input.resource} has no content digest; only file, directory, config, and skill resources carry one`,
-            });
-          }
-          return payload({
-            profile: authored.id,
-            resources: selected.map((entry) => ({
-              id: entry.id,
-              kind: entry.kind,
-              verify: entry.verifyMethod,
-              digest: entry.computedDigest,
-              // `payload` drops both fields when no digest was declared.
-              declaredDigest: entry.declaredDigest,
-              matches: entry.declaredDigest === undefined
-                ? undefined
-                : entry.declaredDigest === entry.computedDigest,
-            })),
-          });
-        }),
+        profiles.publish({ folder, reviewer: input.reviewer, publishedAt: new Date().toISOString() }).pipe(
+          Effect.mapError((error) =>
+            error instanceof InvalidPublicationResourcesError
+              ? invalidResourcesFailure(error.errors)
+              : commandFailure(error)
+          ),
+          Effect.map(payload),
+        ),
       serve: (input) =>
         mapFailure(startSourceServer(input).pipe(
           Effect.provideService(Enrollment, enrollment),
@@ -738,7 +493,7 @@ const runtimeProfileCatalogLayer: Layer.Layer<
     const enrollment = yield* Enrollment;
     const repository = yield* StateRepository;
     return ProfileCatalog.of({
-      scan: scanDiscovery,
+      scan: scanFolder,
       publish: (input) =>
         Effect.gen(function*() {
           // The signing key is checked against the recorded Source identity:
@@ -916,102 +671,6 @@ const followerCommandsLayer = (
       return Effect.succeed(payload(value));
     };
 
-    const authorizedOverlayResource = (
-      configuration: FollowerSynchronizationConfiguration,
-      resourceId: string,
-    ) =>
-      Effect.gen(function*() {
-        const revisions = yield* listRevisions({
-          endpoint: configuration.source.endpoint,
-          tlsFingerprint: configuration.source.tlsFingerprint,
-          sourceFingerprint: configuration.source.signingFingerprint,
-          credentialReference: configuration.credentialReference,
-          timeoutMilliseconds: configuration.scheduledInvocation.timeoutMilliseconds,
-        }).pipe(
-          Effect.provideService(MachineState, machine),
-          Effect.mapError(commandFailure),
-        );
-        const revision = revisions.revisions
-          .filter((candidate) => candidate.profileId === configuration.selectedProfile)
-          .sort((left, right) => right.sequence - left.sequence)[0];
-        if (revision === undefined) {
-          return yield* new CliCommandFailure({
-            category: "usage-or-configuration",
-            message: `selected profile ${configuration.selectedProfile} has no authorized revision`,
-          });
-        }
-        const metadata = yield* getRevisionMetadata({
-          endpoint: configuration.source.endpoint,
-          tlsFingerprint: configuration.source.tlsFingerprint,
-          sourceFingerprint: configuration.source.signingFingerprint,
-          credentialReference: configuration.credentialReference,
-          revisionId: revision.id,
-          timeoutMilliseconds: configuration.scheduledInvocation.timeoutMilliseconds,
-        }).pipe(
-          Effect.provideService(MachineState, machine),
-          Effect.mapError(commandFailure),
-        );
-        const resource = metadata.resources.find((candidate) =>
-          candidate.id === resourceId
-        );
-        if (resource === undefined) {
-          return yield* new CliCommandFailure({
-            category: "usage-or-configuration",
-            message: `resource ${resourceId} is not authorized in the selected profile`,
-          });
-        }
-        if (resource.kind !== "config" || resource.policy !== "merge") {
-          return yield* new CliCommandFailure({
-            category: "usage-or-configuration",
-            message: `resource ${resourceId} does not support Local Overlay ownership`,
-          });
-        }
-        return resource;
-      });
-
-    const normalizedOverlay = (
-      configuration: FollowerSynchronizationConfiguration,
-      input: LocalOverlayInput,
-    ) =>
-      Effect.gen(function*() {
-        const resource = yield* authorizedOverlayResource(configuration, input.resource);
-        const canonicalTarget = yield* machine.normalizePath({ path: resource.target }).pipe(
-          Effect.mapError(commandFailure),
-        );
-        const requestedTarget = yield* machine.normalizePath({ path: input.target }).pipe(
-          Effect.mapError(commandFailure),
-        );
-        if (
-          canonicalTarget.platform !== requestedTarget.platform
-          || canonicalTarget.absolute !== requestedTarget.absolute
-        ) {
-          return yield* new CliCommandFailure({
-            category: "usage-or-configuration",
-            message: `overlay target must match the authorized target for resource ${input.resource}`,
-          });
-        }
-        const keys = [...new Set(input.keys.map((key) => key.trim()))].sort();
-        if (
-          keys.length === 0
-          || keys.some((key) =>
-            key.length === 0
-            || key !== key.trim()
-            || configPathIssue(key) !== undefined
-            || /\p{Cc}/u.test(key)
-          )
-        ) {
-          return yield* new CliCommandFailure({
-            category: "usage-or-configuration",
-            message: "Local Overlay keys must be non-empty normalized config paths",
-          });
-        }
-        return {
-          resource: resource.id,
-          target: canonicalTarget.absolute,
-          keys,
-        };
-      });
-
     const completionReceipt = (
       configuration: FollowerSynchronizationConfiguration,
     ) =>
@@ -1129,17 +788,14 @@ const followerCommandsLayer = (
 
     const service: FollowerCommandsService = {
       enroll: (input) =>
-        input.selectedProfile === undefined
-          ? Effect.fail(new CliCommandFailure({
-            category: "usage-or-configuration",
-            message: "follower enrollment requires an explicit --profile",
-          }))
-          : Effect.gen(function*() {
-            const selectedProfile = input.selectedProfile;
-            if (selectedProfile === undefined) {
+        Effect.gen(function*() {
+            // This machine's own projection becomes the follower's at
+            // enrollment (adoptLocalProjection below), so an unfinished
+            // local run has to be resolved first.
+            if ((yield* mapFailure(repository.loadOpenRunIdentity(localProjectionFollower))) !== undefined) {
               return yield* new CliCommandFailure({
-                category: "usage-or-configuration",
-                message: "follower enrollment requires an explicit --profile",
+                category: "conflict-or-drift",
+                message: "this machine has an unfinished local sync; run 'canonfig recover' or 'canonfig abandon', then enroll",
               });
             }
             const existing = yield* mapFailure(
@@ -1169,6 +825,28 @@ const followerCommandsLayer = (
               // Replacing is explicit. The superseded identity is revoked on
               // its Source and its credential removed once the new identity
               // is enrolled, so a failed replacement keeps the working one.
+            }
+            // A follower's authoring entries are the Source's mirror. Items
+            // this machine authored there itself would block its first sync
+            // as drift, so the machine moves them into local/ (or removes
+            // them) before it enrolls. A completed enrollment already holds
+            // its mirror there, so rotation and --replace skip the check.
+            if (existing === undefined || existing.enrollmentPending === true) {
+              const folder = dirname(statePath);
+              const authored = yield* Effect.tryPromise({
+                try: () => authoredEntries(folder),
+                catch: (cause) => new CliCommandFailure({
+                  category: "usage-or-configuration",
+                  message: `${folder} could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
+                }),
+              });
+              if (authored.length > 0) {
+                return yield* new CliCommandFailure({
+                  category: "usage-or-configuration",
+                  message:
+                    `${folder} already holds authored items (${authored.join(", ")}), where a follower keeps its Source's mirror; move what this machine should keep into ${join(folder, "local")} (rules, skills, agents and commands as files, MCP servers and settings in local.jsonc) or remove them, then enroll again`,
+                });
+              }
             }
             if (existing?.enrollmentPending === true) {
               const resumed = yield* finalizeFollowerEnrollment({
@@ -1211,11 +889,13 @@ const followerCommandsLayer = (
                     updatedAt: new Date().toISOString(),
                   },
                 }));
+                const adopted = yield* mapFailure(repository.adoptLocalProjection(existing.follower.id));
                 return payload({
                   follower: existing.follower,
-                  selectedProfile: existing.selectedProfile,
+                  profile: existing.profile,
                   source: state.sourceIdentity,
                   resumed: true,
+                  adoptedLocalRecords: adopted,
                 });
               }
             }
@@ -1237,9 +917,10 @@ const followerCommandsLayer = (
                 timeoutMilliseconds:
                   input.timeoutMilliseconds ?? defaultScheduledInvocation.timeoutMilliseconds,
               }).pipe(Effect.provideService(MachineState, machine)))).revisions;
-            if (!authorizedProfiles.some((revision) =>
-              revision.profileId === selectedProfile
-            )) {
+            // One Source publishes one Machine Profile: the follower follows
+            // whichever profile its authorized revisions name.
+            const profiles = [...new Set(authorizedProfiles.map((revision) => revision.profileId))];
+            if (profiles.length !== 1) {
               yield* cancelFollowerEnrollment({
                 endpoint: input.invitation.endpoint,
                 tlsFingerprint: prepared.tlsFingerprint,
@@ -1250,10 +931,12 @@ const followerCommandsLayer = (
               );
               return yield* new CliCommandFailure({
                 category: "usage-or-configuration",
-                message:
-                  `profile ${selectedProfile} has no authorized revision`,
+                message: profiles.length === 0
+                  ? "the Source has no revision this follower may sync; run 'canonfig source publish' on the Source first"
+                  : `the Source publishes more than one profile (${profiles.join(", ")}); a Source publishes one`,
               });
             }
+            const profile = Schema.decodeUnknownSync(ProfileId)(profiles[0]);
             const source = prepared.source;
             const capability = yield* mapFailure(machine.credentialCapability());
             const enrolledCredentialPolicy:
@@ -1283,9 +966,6 @@ const followerCommandsLayer = (
                 ...(previous.scheduleOverride === undefined
                   ? []
                   : [`schedule choice ${previous.scheduleOverride.kind} removed`]),
-                ...((previous.localOverlay?.length ?? 0) === 0
-                  ? []
-                  : [`${previous.localOverlay?.length ?? 0} local overlay entries removed`]),
               ];
             const kept = rotated
               ? {
@@ -1293,14 +973,13 @@ const followerCommandsLayer = (
                 agentHarness: previous.agentHarness,
                 scheduleOverride: previous.scheduleOverride,
                 scheduleDefault: previous.scheduleDefault,
-                localOverlay: previous.localOverlay,
                 localExecution: previous.localExecution,
               }
               : {};
             const configuration = {
               schemaVersion: 1 as const,
               follower,
-              selectedProfile,
+              profile,
               source: {
                 endpoint: input.invitation.endpoint,
                 tlsFingerprint: prepared.tlsFingerprint,
@@ -1403,13 +1082,18 @@ const followerCommandsLayer = (
                 }),
                 Effect.tap(() => machine.removeCredential(previous.credentialReference).pipe(Effect.ignore)),
               );
+            // The harness surfaces this machine projected from its own
+            // folder now belong to the follower's runs, which update them
+            // under the same three-way rule.
+            const adopted = yield* mapFailure(repository.adoptLocalProjection(follower.id));
             return payload({
               follower,
-              selectedProfile,
+              profile,
               source: prepared.source,
               rotated,
               resets,
               previousIdentity,
+              adoptedLocalRecords: adopted,
             });
           }),
       unenroll: () =>
@@ -1482,19 +1166,29 @@ const followerCommandsLayer = (
           Effect.map((status) => status.generation),
           Effect.catch(() => Effect.succeed(undefined)),
         ) : Effect.succeed(undefined);
-        const run: Effect.Effect<CliPayload, CliCommandFailure> = mapFailure(synchronizeFollower(
-          statePath,
-          input.mode,
-          undefined,
-          scheduled || input.noInput,
-          input.reviewLocal === true,
-        ).pipe(
+        const projection = { noBackup: input.noBackup === true, environment: (name: string) => process.env[name] };
+        const follower: Effect.Effect<CliPayload, CliCommandFailure> = mapFailure(synchronizeFollower(
+            statePath,
+            input.mode,
+            projection,
+            undefined,
+            scheduled || input.noInput,
+          ).pipe(
+            Effect.provideService(StateRepository, repository),
+            Effect.provideService(MachineState, machine),
+            Effect.provideService(Synchronization, synchronization),
+            Effect.provideService(AgentResolution, agentResolution),
+            Effect.provideService(ScheduleManager, schedules),
+          )).pipe(Effect.flatMap(outcomePayload));
+        // The Source and unenrolled machines project their own folder.
+        const local: Effect.Effect<CliPayload, CliCommandFailure> = mapFailure(synchronizeLocal(statePath, input.mode, projection).pipe(
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),
           Effect.provideService(Synchronization, synchronization),
-          Effect.provideService(AgentResolution, agentResolution),
-          Effect.provideService(ScheduleManager, schedules),
         )).pipe(Effect.flatMap(outcomePayload));
+        const run: Effect.Effect<CliPayload, CliCommandFailure> = mapFailure(
+          repository.getFollowerSynchronizationConfiguration(),
+        ).pipe(Effect.flatMap((configuration) => configuration === undefined ? local : follower));
         return installedGeneration.pipe(Effect.flatMap((generation) => {
           const record = (outcome: string, reason?: string) => scheduled
             ? recordScheduleFire(statePath, outcome, reason, generation, startedAt) : Effect.void;
@@ -1526,18 +1220,46 @@ const followerCommandsLayer = (
           );
         }));
       },
+      // An open local projection run is resolved before any follower run.
       abandon: () =>
-        mapFailure(abandonFollowerRun(statePath).pipe(
+        mapFailure(Effect.gen(function*() {
+          return (yield* hasOpenLocalRun)
+            ? yield* abandonLocal(statePath)
+            : yield* abandonFollowerRun(statePath);
+        }).pipe(
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),
         )).pipe(Effect.map(payload)),
       recover: () =>
-        mapFailure(recoverFollower(statePath).pipe(
+        mapFailure(Effect.gen(function*() {
+          return (yield* hasOpenLocalRun)
+            ? yield* recoverLocal(statePath)
+            : yield* recoverFollower(statePath);
+        }).pipe(
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),
           Effect.provideService(Synchronization, synchronization),
           Effect.provideService(ScheduleManager, schedules),
         )).pipe(Effect.flatMap(outcomePayload)),
+      // A restore belongs to whoever projected the surfaces: the follower
+      // identity once enrolled (enrollment re-keys local records), else this
+      // machine's local projection.
+      restore: (input) =>
+        mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
+          Effect.flatMap((configuration) =>
+            mapFailure(restoreLocal(statePath, input.snapshot, configuration?.follower.id ?? localProjectionFollower).pipe(
+              Effect.provideService(StateRepository, repository),
+              Effect.provideService(MachineState, machine),
+              Effect.provideService(Synchronization, synchronization),
+            ))
+          ),
+          Effect.flatMap(outcomePayload),
+        ),
+      harnesses: (input) =>
+        mapFailure(harnessesLocal(statePath, (name) => process.env[name], input.change).pipe(
+          Effect.provideService(StateRepository, repository),
+          Effect.provideService(MachineState, machine),
+        )).pipe(Effect.map(payload)),
       status: (follower) =>
         follower === undefined
           ? mapFailure(
@@ -1590,7 +1312,7 @@ const followerCommandsLayer = (
                   credentialReference: configuration.credentialReference,
                   timeoutMilliseconds:
                     configuration.scheduledInvocation.timeoutMilliseconds,
-                  selectedProfile: configuration.selectedProfile,
+                  profile: configuration.profile,
                   appliedRevisions: revisions,
                 }).pipe(Effect.provideService(MachineState, machine));
                 const receipt = yield* completionReceipt(configuration);
@@ -1609,7 +1331,6 @@ const followerCommandsLayer = (
                   },
                   ...state,
                   activeRecovery: openRun,
-                  localOverlay: configuration.localOverlay ?? [],
                   lifecycle: {
                     ...lifecycle,
                     converged: followerConvergence(
@@ -1638,9 +1359,6 @@ const followerCommandsLayer = (
                       activeRecovery: state.activeRecovery === undefined
                         ? undefined
                         : openRunReport(state.activeRecovery, yield* runLockHolder(statePath)),
-                      localOverlay: configuration?.follower.id === follower
-                        ? configuration.localOverlay ?? []
-                        : [],
                     };
                     return receipt === undefined
                       ? base
@@ -1651,58 +1369,6 @@ const followerCommandsLayer = (
             ),
             Effect.map(payload),
           ),
-      setLocalOverlay: (input) =>
-        mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
-          Effect.flatMap((configuration) =>
-            configuration === undefined
-              ? Effect.fail(new CliCommandFailure({
-                category: "usage-or-configuration",
-                message: "follower synchronization configuration is not enrolled",
-              }))
-              : normalizedOverlay(configuration, input).pipe(
-                Effect.flatMap((entry) =>
-                  mapFailure(repository.saveLocalOverlay({
-                    entry,
-                    updatedAt: new Date().toISOString(),
-                  })).pipe(Effect.as(entry))
-                ),
-                Effect.map((entry) => payload({ ...entry, saved: true })),
-              )
-          ),
-        ),
-      listLocalOverlays: () =>
-        mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
-          Effect.flatMap((configuration) =>
-            configuration === undefined
-              ? Effect.fail(new CliCommandFailure({
-                category: "usage-or-configuration",
-                message: "follower synchronization configuration is not enrolled",
-              }))
-              : mapFailure(repository.listLocalOverlays())
-          ),
-          Effect.map((overlays) => payload({
-            overlays: overlays.map((overlay) => ({
-              resource: overlay.resource,
-              target: overlay.target,
-              keys: overlay.keys,
-            })),
-          })),
-        ),
-      removeLocalOverlay: (resource) =>
-        mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
-          Effect.flatMap((configuration) =>
-            configuration === undefined
-              ? Effect.fail(new CliCommandFailure({
-                category: "usage-or-configuration",
-                message: "follower synchronization configuration is not enrolled",
-              }))
-              : mapFailure(repository.removeLocalOverlay({
-                resource,
-                updatedAt: new Date().toISOString(),
-              })),
-          ),
-          Effect.map(() => payload({ resource, removed: true })),
-        ),
       setAgentPolicy: (policy) =>
         mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
           Effect.flatMap((configuration) => {
@@ -1791,54 +1457,6 @@ const followerCommandsLayer = (
               : Effect.succeed(configuration.agentHarness)
           ),
           Effect.map(payload),
-        ),
-      selectProfile: (profile) =>
-        mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
-          Effect.flatMap((configuration) => {
-            if (configuration === undefined) {
-              return Effect.fail(new CliCommandFailure({
-                category: "usage-or-configuration",
-                message: "follower synchronization configuration is not enrolled",
-              }));
-            }
-            return mapFailure(listRevisions({
-              endpoint: configuration.source.endpoint,
-              tlsFingerprint: configuration.source.tlsFingerprint,
-              sourceFingerprint: configuration.source.signingFingerprint,
-              credentialReference: configuration.credentialReference,
-              timeoutMilliseconds:
-                configuration.scheduledInvocation.timeoutMilliseconds,
-            }).pipe(Effect.provideService(MachineState, machine))).pipe(
-              Effect.flatMap((revisions) =>
-                revisions.revisions.some((revision) =>
-                    revision.profileId === profile
-                  )
-                  ? mapFailure(repository.loadState(configuration.follower.id))
-                  : Effect.fail(new CliCommandFailure({
-                    category: "usage-or-configuration",
-                    message: `profile ${profile} has no authorized revision`,
-                  }))
-              ),
-              Effect.flatMap((state) =>
-                state.sourceIdentity === undefined
-                  ? Effect.fail(new CliCommandFailure({
-                    category: "usage-or-configuration",
-                    message: "follower source identity is not configured",
-                  }))
-                  : mapFailure(
-                    repository.saveFollowerSynchronizationConfiguration({
-                      sourceIdentity: state.sourceIdentity,
-                      configuration: {
-                        ...configuration,
-                        selectedProfile: profile,
-                        updatedAt: new Date().toISOString(),
-                      },
-                    }),
-                  )
-              ),
-              Effect.as(payload({ selectedProfile: profile })),
-            );
-          }),
         ),
       setSchedule: (input) =>
         // Record the decision before installing it, so the schedule survives
@@ -1995,6 +1613,7 @@ const followerCommandsLayer = (
               ...input,
               statePath,
               policyPath,
+              environment: (name) => process.env[name],
               agentPolicy: configuration?.agentPolicy,
               schedule,
               fires: readScheduleFires(statePath),
@@ -2082,7 +1701,7 @@ export const runtimeLayer = (
   );
   const agentResolution = AgentResolutionWithSecretsLive.pipe(Layer.provide(machine));
   const setup = setupCommandsLayer(statePath).pipe(
-    Layer.provide(Layer.merge(machine, enrollment)),
+    Layer.provide(Layer.mergeAll(machine, enrollment, state)),
   );
   const dependencies = Layer.mergeAll(
     state,
@@ -2096,7 +1715,7 @@ export const runtimeLayer = (
     sourceService,
   );
   return Layer.mergeAll(
-    sourceCommandsLayer.pipe(Layer.provide(dependencies)),
+    sourceCommandsLayer(dirname(statePath)).pipe(Layer.provide(dependencies)),
     followerCommandsLayer(
       statePath,
       options.policyPath ?? join(root, "policy.json"),

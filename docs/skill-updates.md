@@ -11,7 +11,7 @@ filter, and never invokes another skill-manager CLI.
 Start with an existing skill that exactly matches a known upstream revision:
 
 ```sh
-canonfig skills track --name review --path .canonfig/skills/review --source https://github.com/example/skills.git --ref main --subdir skills/review
+canonfig skills track --name review --path skills/review --source https://github.com/example/skills.git --ref main --subdir skills/review
 canonfig skills list
 canonfig skills check --name review
 canonfig skills update --name review
@@ -35,19 +35,18 @@ filenames and commit IDs, never skill contents or remote error output.
 
 ## Configuration and scope
 
-The default source configuration is `.canonfig/skills-sources.json`, relative
-to `--root` (default: the current working directory). It is deliberately
-separate from harness-generated-file ownership and signed Machine Profiles.
+The default source configuration is `skills-sources.json`, relative to `--root`
+(default: `~/.canonfig`, the Canonical Folder whose `skills/` the Source
+publishes). It is machine-local, never published, and separate from signed
+Machine Profiles.
 
 Use `--config settings/skill-sources.json` for another root-relative file.
-Installed paths are also root-relative, so canonical `.canonfig/skills`,
-project `.agents/skills`, or another explicit directory can be tracked. For
-user-scoped skills, explicitly set `--root` to your home directory and select a
-configuration and installed path beneath it. There is no implicit scan of home
-directories or credential stores. Do not track generated projections when their
-canonical source is available: update the source, then run `harness plan/apply`.
-For Source/Follower synchronization, update and review on the Source Machine,
-then publish a new profile; do not independently update follower-owned copies.
+Installed paths are also root-relative; set `--root` to track skills in
+another directory. There is no implicit scan of home directories or
+credential stores.
+Track and update skills on the Source Machine, then publish a new revision. On
+a follower, `~/.canonfig/skills/` is the managed mirror of what the Source
+publishes, so a local update there is only reported as Follower Drift.
 
 The version-1 configuration contains a `skills` array. Each entry has:
 
@@ -82,7 +81,7 @@ are omitted because the filesystem does not expose the POSIX bit contract.
 
 Any local difference from the recorded baseline, including an added/deleted
 file, blocks the entire selected update. Canonfig does not stash or overwrite
-it. Review the preview, reconcile or back up your changes, and track a matching
+it. Review the preview, move or back up your changes, and track a matching
 revision when appropriate. An upstream ref changing without a skill-content
 change does not rewrite the installation or baseline.
 
@@ -157,7 +156,7 @@ pass (a JSON stream), not one indefinitely growing array. If no pass runs (for
 example, no skills are tracked or the signal is already aborted), it emits one
 `skills.auto` envelope with a message, exit code 0 and no `data` field.
 
-Automatic upstream updates never publish a Machine Profile, apply harness
-projections, enroll a Follower, or run skill scripts. Review resulting changes
+Automatic upstream updates never publish a Machine Profile, enroll a Follower,
+or run skill scripts. Review resulting changes
 on the Source Machine and publish separately. Do not point this worker at
 Follower-owned or generated skill copies.

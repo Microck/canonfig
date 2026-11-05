@@ -4,6 +4,15 @@
 of an enrolled Follower Machine. Environment hints remain a fallback only before
 enrollment; they cannot silently replace its selected authority.
 
+`doctor` runs eight probes (`doctorProbeNames` in `src/runtime/doctor.ts`):
+`runtime`, `state`, `credentials`, `source`, `scheduler`, `package-managers`,
+`agent-adapter` and `harnesses`. The `harnesses` probe prints the same report
+as `canonfig harnesses`: the folder's list, local exclusions, detected
+harnesses, pinned roots and takeover snapshots. It is skipped while
+`~/.canonfig/canonfig.jsonc` does not exist, and warns
+`listed but not installed: <harnesses>` when a listed harness is missing; the
+run still converges without it.
+
 On macOS the credentials evidence goes beyond provider presence: the
 machine capability runs a disposable add/read-back/delete probe of a non-secret
 sentinel in a unique `dev.canonfig.session-probe.<uuid>` namespace under its own

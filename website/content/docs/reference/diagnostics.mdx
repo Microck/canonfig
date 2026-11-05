@@ -3,7 +3,7 @@ title: Doctor probes and exit codes
 description: Look up what each canonfig doctor probe checks, what its result proves, and which exit code each failure category returns.
 ---
 
-`canonfig doctor` checks this machine with seven probes. Each probe has its own
+`canonfig doctor` checks this machine with eight probes. Each probe has its own
 time limit, so one slow or failing probe does not hide the others. To fix a
 specific error, see [Recover from a failed or blocked sync](/how-to/recover).
 
@@ -46,7 +46,8 @@ A probe that runs past `--timeout-ms` fails with `<probe> probe timed out`.
 | `source` | That this Follower Machine can load its credential, reach the Source Machine, match its pinned certificate, and authenticate |
 | `scheduler` | The installed native job, its next run, and the last unattended run |
 | `package-managers` | Which of apt, brew, bun, cargo, npm, pnpm, uv, and winget Canonfig can start |
-| `agent-adapter` | The agent policy and whether the configured harness executable exists |
+| `agent-adapter` | The agent policy and whether the configured Configuration Agent executable exists |
+| `harnesses` | Which Target Harnesses are installed, listed in `canonfig.jsonc`, and excluded on this machine, with pinned roots and takeover snapshots |
 
 ### runtime
 
@@ -137,6 +138,23 @@ The probe honors installer bindings set with `canonfig installer set`.
 
 Set the harness with `canonfig agent harness`; see
 [Let a Configuration Agent resolve work](/how-to/configure-agent-policies).
+
+### harnesses
+
+The probe reports the same detection as `canonfig harnesses`. It runs nothing
+and changes nothing. `details` holds `listed`, `excluded`, `detected`,
+`notInstalled`, `snapshots` (the count), `latestSnapshot`, and one
+`root.<harness>` entry per pinned root.
+
+| Result | Message |
+| --- | --- |
+| pass | `<n> listed harness(es) installed` |
+| warning | `listed but not installed: <ids>`. Sync still converges; what Canonfig applied to those harnesses stays as it was. |
+| skipped | `<folder>/canonfig.jsonc does not exist yet` |
+| fail, configuration | `harness selection could not be read: <detail>`: `canonfig.jsonc` or `local/local.jsonc` does not validate. See [Validation failures](/reference/canonfig-folder#validation-failures). |
+
+See [Choose which harnesses Canonfig manages](/how-to/choose-harnesses) and
+the [harness reference](/reference/harnesses).
 
 ## Exit codes
 

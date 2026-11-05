@@ -1,27 +1,22 @@
-// Publishes and digests `source` files of increasing size through the real
-// catalog and repository in one process, and reports the peak RSS each run
-// adds over the RSS before it. Run by tests/publication.test.ts with the
-// profile directory holding warm.bin, medium.bin, and large.bin.
+// Publishes Canonical Folders holding files of increasing size through the
+// real catalog and repository in one process, and reports the peak RSS each
+// run adds over the RSS before it. Run by tests/publication.test.ts with the
+// root holding the folders warm/, medium/ and large/, each with one skill of
+// the same name whose data.bin is the large file.
 import { generateKeyPairSync, sign } from "node:crypto";
 import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { Effect, Schema } from "effect";
 
 import { SourceSignature } from "../../../src/domain/brand.ts";
-import type { ProfileResourceInput } from "../../../src/domain/profile.ts";
-import { profileContentDigests } from "../../../src/profile/compiler.ts";
 import { profileCatalogLayer } from "../../../src/profile/profile-catalog.layer.ts";
 import { ProfileCatalog } from "../../../src/profile/profile-catalog.service.ts";
-import type { DiscoveryScanResult } from "../../../src/profile/discovery.ts";
-import {
-  acceptPublicationProposal,
-  resolveResourceSources,
-  type ProfileRevisionSigner,
-} from "../../../src/profile/publication.ts";
+import type { ProfileRevisionSigner } from "../../../src/profile/publication.ts";
 import { stateRepositoryLayer } from "../../../src/state/state-repository.layer.ts";
 import { StateRepository } from "../../../src/state/state-repository.service.ts";
 
-const [database, directory, output] = process.argv.slice(2) as [string, string, string];
+const [database, root, output] = process.argv.slice(2) as [string, string, string];
 const keys = generateKeyPairSync("ed25519");
 const signer: ProfileRevisionSigner = {
   keyId: "test-source-key",
@@ -33,49 +28,23 @@ const signer: ProfileRevisionSigner = {
     ),
   verify: () => Effect.succeed(true),
 };
-const emptyDiscoveryProposal: DiscoveryScanResult = {
-  resources: [],
-  tools: [],
-  skills: [],
-  evidence: [],
-  agentTasks: [],
-  scannedPaths: [],
-};
-const sourced = (id: string, source: string): ProfileResourceInput => ({
-  id,
-  kind: "file",
-  target: `~/.canonfig/${id}`,
-  spec: { kind: "file", source },
-  verify: { method: "digest" },
-});
 
-const run = (resources: ReadonlyArray<ProfileResourceInput>) =>
+/** Publish one folder and read back the first 8 MiB of its large file's blob. */
+const run = (name: string) =>
   Effect.runPromise(
     Effect.gen(function*() {
       const catalog = yield* ProfileCatalog;
-      const now = new Date().toISOString();
-      const profile = {
-        id: Schema.decodeUnknownSync(Schema.String.pipe(Schema.brand("ProfileId")))("large-profile"),
-        name: "Large",
-      };
       const revision = yield* catalog.publish({
-        proposal: emptyDiscoveryProposal,
-        profile: { ...profile, resources, directory },
-        review: acceptPublicationProposal(emptyDiscoveryProposal, "reviewer@example.test", now),
-        publishedAt: now,
+        folder: join(root, name),
+        reviewer: "reviewer@example.test",
+        publishedAt: new Date().toISOString(),
       });
-      const resolved = yield* resolveResourceSources(resources, directory);
-      const digests = profileContentDigests(
-        { ...profile, version: 2, groups: [], resources: resolved.resources },
-        resolved.sources,
-      );
+      const spec = revision.resources.find((entry) => entry.id === `skills:${name}`)?.spec;
+      const file = spec?.kind === "skill" ? spec.files.find((entry) => entry.path === "data.bin") : undefined;
+      if (file?.blob === undefined) throw new Error(`the ${name} revision has no data.bin blob`);
       const repository = yield* StateRepository;
-      const range = yield* repository.readResourceBlobRange({
-        blob: digests.find((entry) => entry.id === resources.at(-1)!.id)!.computedDigest,
-        offset: 0,
-        maximumBytes: 8 * 1024 * 1024,
-      });
-      return { revision, digests, range };
+      const range = yield* repository.readResourceBlobRange({ blob: file.blob, offset: 0, maximumBytes: 8 * 1024 * 1024 });
+      return { blob: file.blob, bytes: file.bytes, range };
     }).pipe(
       Effect.provide(profileCatalogLayer(signer)),
       Effect.provide(stateRepositoryLayer(database)),
@@ -83,7 +52,7 @@ const run = (resources: ReadonlyArray<ProfileResourceInput>) =>
   );
 
 /** Peak RSS a run adds over the RSS before it, sampled while it runs. */
-const measure = async (resources: ReadonlyArray<ProfileResourceInput>) => {
+const measure = async (name: string) => {
   // Run with --expose-gc so the baseline excludes collectable garbage.
   if (typeof globalThis.gc === "function") globalThis.gc();
   // getrusage maxRSS is a process-lifetime high-water mark, so the peak is
@@ -93,7 +62,7 @@ const measure = async (resources: ReadonlyArray<ProfileResourceInput>) => {
   const sampler = setInterval(() => {
     peak = Math.max(peak, process.memoryUsage.rss());
   }, 5);
-  const result = await run(resources);
+  const result = await run(name);
   clearInterval(sampler);
   peak = Math.max(peak, process.memoryUsage.rss());
   return { result, growthKiB: Math.round((peak - baseline) / 1024) };
@@ -101,15 +70,14 @@ const measure = async (resources: ReadonlyArray<ProfileResourceInput>) => {
 
 // The warm-up file grows the SQLite page cache and allocator pools to their
 // steady size, so later runs add only what depends on file size.
-await measure([sourced("warm", "warm.bin")]);
-const medium = await measure([sourced("medium", "medium.bin")]);
-const large = await measure([sourced("large", "large.bin")]);
-const spec = large.result.revision.resources.find((entry) => entry.id === "large")?.spec;
+await measure("warm");
+const medium = await measure("medium");
+const large = await measure("large");
 writeFileSync(output, JSON.stringify({
   mediumGrowthKiB: medium.growthKiB,
   largeGrowthKiB: large.growthKiB,
-  digest: large.result.digests.find((entry) => entry.id === "large")!.computedDigest,
-  blobBytes: spec?.kind === "file" ? spec.bytes : undefined,
+  digest: large.result.blob,
+  blobBytes: large.result.bytes,
   rangeBytes: large.result.range?.byteLength,
   rangeChunks: large.result.range?.chunks.length,
 }));

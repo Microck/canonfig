@@ -1,5 +1,5 @@
 // Settings shared by both machine roles where the feature exists on both.
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Check, Circle, HourglassMedium, Warning, X } from "@/components/icons";
 import { cn, removeKeepingFocus } from "@/lib/utils";
@@ -10,9 +10,9 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DitherProgress, Hint, Mono, StatusMark, Term } from "@/shared/shared";
-import { DEMO, agentPolicy, doctor, harnessProject, installers } from "@/shared/data";
+import { DEMO, agentPolicy, doctor, installers } from "@/shared/data";
 import { useSharedState, useWorkspace } from "./store";
-import { Body, CommandBox, DetailPanel, Field, ListHead, ListRow, PageHeader, Prop, SectionLabel, SettingRow, settingsGroup, useLeaveGuard } from "./kit";
+import { Body, CommandBox, Field, ListHead, ListRow, PageHeader, SectionLabel, SettingRow, settingsGroup, useLeaveGuard } from "./kit";
 
 const LINGER_FIX = "sudo loginctl enable-linger ubuntu";
 /** Ends the toasts below, which report simulated work; only the demo says where it happened. */
@@ -21,7 +21,7 @@ const IN_DEMO = DEMO ? " in this demo workspace" : "";
 /**
  * Absolute (`/`), home (`~` or `~/`) or explicitly relative (`./`), on one line. A shape check only:
  * the demo can't see this machine's filesystem, so it never claims the path exists.
- * Used by Writable paths and harness project folders.
+ * Used by Writable paths.
  */
 const PATH_SHAPE = /^(?:~|(?:\/|~\/|\.\/)[^\r\n]*)$/;
 const PATH_SHAPE_ERROR = "Enter a path that starts with /, ~/ or ./.";
@@ -568,205 +568,6 @@ export function AgentPolicyView() {
   );
 }
 
-interface Project {
-  path: string;
-  targets: string[];
-  pending: number;
-  status: "valid" | "invalid" | "applied";
-}
-
-const PROJECT_SEED: Project[] = [
-  { path: harnessProject.path, targets: harnessProject.targets, pending: harnessProject.pending, status: "valid" },
-  { path: "~/code/canonfig", targets: ["claude", "codex"], pending: 0, status: "applied" },
-];
-
-// Match DetailPanel's md breakpoint: only the side-by-side layout gets a default selection.
-const HARNESS_DETAIL_QUERY = "(min-width: 48rem)";
-function subscribeHarnessDetailLayout(onChange: () => void) {
-  const query = window.matchMedia(HARNESS_DETAIL_QUERY);
-  query.addEventListener("change", onChange);
-  return () => query.removeEventListener("change", onChange);
-}
-
-export function HarnessView() {
-  const ws = useWorkspace();
-  // Shared so added projects and applied plans survive leaving the page.
-  const [projects, setProjects] = useSharedState("harness-projects", PROJECT_SEED);
-  const sideBySide = useSyncExternalStore(
-    subscribeHarnessDetailLayout,
-    () => window.matchMedia(HARNESS_DETAIL_QUERY).matches,
-    () => false,
-  );
-  // Explicit focus works at every width; an empty focus keeps a closed panel closed.
-  const selected = ws.focus ?? (sideBySide ? harnessProject.path : null);
-  const [initOpen, setInitOpen] = useState(false);
-  const [folder, setFolder] = useState("");
-  const [tried, setTried] = useState(false);
-  const current = projects.find((p) => p.path === selected);
-  const cols = "minmax(220px,360px) minmax(160px,240px) minmax(140px,1fr)";
-  const path = folder.trim().replace(/\/+$/, "");
-  // The shape applies to what was typed, so "./" passes before its trailing slash is dropped.
-  const folderProblem = !path
-    ? "Enter a folder."
-    : !PATH_SHAPE.test(folder.trim())
-      ? PATH_SHAPE_ERROR
-      : projects.some((p) => p.path === path)
-        ? "That folder is already a harness project."
-        : null;
-  const folderError = tried ? folderProblem : null;
-  // Only an open dialog holds a draft: Cancel and Escape close it, and reopening starts blank.
-  const { dialog: leaveDialog, leaveWithoutAsking } = useLeaveGuard(initOpen && folder !== "", "this new harness project");
-  return (
-    <>
-      <PageHeader
-        crumbs={["Settings", "Harness projects"]}
-        actions={
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => {
-              setFolder("");
-              setTried(false);
-              setInitOpen(true);
-            }}
-          >
-            Add project
-          </Button>
-        }
-      />
-      <Body
-        detail={
-          current && (
-            <HarnessDetail key={current.path} project={current} onClose={() => ws.go("harness", "")} onChange={(p) => setProjects((all) => all.map((x) => (x.path === p.path ? p : x)))} />
-          )
-        }
-      >
-        <p data-tour="harness-projects" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
-          A harness project keeps one <Mono>{harnessProject.file}</Mono> in a repository and writes each agent's instruction files from it. It's separate from the profile your machines sync.
-        </p>
-        <ListHead cols={cols} data-tour="harness-projects">
-          <span>Folder</span>
-          <span>Agents</span>
-          <span>State</span>
-        </ListHead>
-        {projects.map((p) => (
-          <ListRow key={p.path} cols={cols} selected={selected === p.path} onClick={() => ws.go("harness", p.path)} data-tour="harness-projects">
-            <Mono className="truncate text-foreground">{p.path}</Mono>
-            <span className="truncate text-sm text-muted-foreground">{p.targets.join(", ")}</span>
-            <span className={cn("text-sm tabular-nums", p.pending ? "text-warn" : "text-muted-foreground")}>{p.pending ? `${p.pending} files to write` : "Up to date"}</span>
-          </ListRow>
-        ))}
-      </Body>
-      <Dialog open={initOpen} onOpenChange={setInitOpen}>
-        <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md">
-          <form
-            className="contents"
-            onSubmit={(e) => {
-              e.preventDefault();
-              setTried(true);
-              if (folderProblem) return;
-              setProjects((p) => [...p, { path, targets: ["claude", "codex"], pending: 2, status: "valid" }]);
-              // Creating settles the draft, so opening the new project must not ask about it.
-              leaveWithoutAsking(() => ws.go("harness", path));
-              setInitOpen(false);
-              toast.success(`Added ${path}${DEMO ? " to this demo workspace" : ""}`);
-            }}
-          >
-            <DialogHeader>
-              <DialogTitle>Add a harness project</DialogTitle>
-              <DialogDescription className="text-base text-pretty">Creates {harnessProject.file} in the folder with your current agent files as a starting point.</DialogDescription>
-            </DialogHeader>
-            <Field label="Project folder" htmlFor="h-folder" error={folderError}>
-              <Input
-                id="h-folder"
-                value={folder}
-                onChange={(e) => setFolder(e.target.value)}
-                aria-invalid={!!folderError}
-                aria-describedby={folderError ? "h-folder-note" : undefined}
-                placeholder="~/code/my-repo"
-                autoComplete="off"
-                spellCheck={false}
-                className="font-mono text-sm"
-              />
-            </Field>
-            <DialogFooter>
-              <Button type="button" variant="ghost" onClick={() => setInitOpen(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" variant="primary">
-                Create harness file
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-      {leaveDialog}
-    </>
-  );
-}
-
-function HarnessDetail({ project, onClose, onChange }: { project: Project; onClose: () => void; onChange: (p: Project) => void }) {
-  // Separate on purpose: Validation reports only what Validate found, while `planned` gates Apply
-  // and is used up by it. Neither step implies the other.
-  const [validated, setValidated] = useState(false);
-  const [planned, setPlanned] = useState(false);
-  const plan = ["AGENTS.md", "CLAUDE.md", ".cursor/rules/project.mdc", "GEMINI.md"].slice(0, Math.max(project.pending, 0));
-  return (
-    <DetailPanel
-      title={<Mono className="text-base text-foreground">{project.path}</Mono>}
-      onClose={onClose}
-      footer={
-        <>
-          <Button variant="ghost" size="sm" onClick={() => (setValidated(true), toast.success(`${harnessProject.file} is valid${IN_DEMO}`))}>
-            Validate
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => setPlanned(true)}>
-            Plan
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            className="ml-auto"
-            disabled={!planned || project.pending === 0}
-            onClick={() => {
-              onChange({ ...project, pending: 0, status: "applied" });
-              setPlanned(false);
-              toast.success(`Updated ${plan.length} agent files for ${project.path}${IN_DEMO}`);
-            }}
-          >
-            Apply
-          </Button>
-        </>
-      }
-    >
-      <div className="px-4 py-3">
-        <Prop label="File">
-          <Mono className="text-foreground">{harnessProject.file}</Mono>
-        </Prop>
-        <Prop label="Agents">{project.targets.join(", ")}</Prop>
-        <Prop label="Validation">{validated ? <span className="text-ok">Valid</span> : <span className="text-muted-foreground">Not run yet</span>}</Prop>
-      </div>
-      <div className="border-t border-border px-4 pt-3">
-        <SectionLabel>Plan</SectionLabel>
-        {!planned ? (
-          <p className="pb-4 text-sm text-pretty text-muted-foreground">Run Plan to list the files Apply would write.</p>
-        ) : plan.length === 0 ? (
-          <p className="pb-4 text-sm text-muted-foreground">Every agent file already matches {harnessProject.file}.</p>
-        ) : (
-          <div className="pb-3">
-            {plan.map((f) => (
-              <div key={f} className="flex h-8 items-center gap-2 text-base">
-                <span className="rounded bg-warn/12 px-1 font-mono text-xs text-warn">write</span>
-                <Mono className="text-foreground">{f}</Mono>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </DetailPanel>
-  );
-}
-
 export function InstallersView() {
   const ws = useWorkspace();
   // Shared and finished through ws.later for the same reasons as the service's busy state:
@@ -779,7 +580,7 @@ export function InstallersView() {
       <Body>
         <div className="flex items-center gap-1.5 border-b border-border px-[18px] py-3 text-sm text-muted-foreground">
           Installer bindings point tool recipes at a package manager on this machine.
-          <Hint label="installer bindings">Tool resources carry an installation recipe per platform, like brew on macOS or apt on Linux. A binding points that recipe at a real executable.</Hint>
+          <Hint label="installer bindings">Tools in canonfig.jsonc carry an installation recipe per platform, like brew on macOS or apt on Linux. A binding points that recipe at a real executable.</Hint>
         </div>
         <ListHead cols={cols} data-tour="installers-list">
           <span>Installer</span>
@@ -818,15 +619,15 @@ export function InstallersView() {
   );
 }
 
-function setupSteps(profileFile: string) {
-  return [
-    { id: "state", label: "Create state directory", detail: "~/.local/state/canonfig" },
-    { id: "keys", label: "Generate signing key", detail: "Stored in Secret Service" },
-    { id: "profile", label: "Write profile file", detail: profileFile },
-    { id: "service", label: "Install source service", detail: "systemd user unit" },
-    { id: "linger", label: "You turn on linger", detail: LINGER_FIX },
-  ];
-}
+/** The Source's `canonfig setup plan` steps (src/setup), in order, then the one step a person does. */
+const SETUP_STEPS = [
+  { id: "keys", label: "Initialize the Source", detail: "Signing key in Secret Service" },
+  { id: "state", label: "Create the Canonfig folder", detail: "~/.canonfig" },
+  { id: "profile", label: "Write canonfig.jsonc with your harnesses", detail: "~/.canonfig/canonfig.jsonc" },
+  { id: "import", label: "Import what you chose from your harnesses", detail: "Into ~/.canonfig" },
+  { id: "service", label: "Install source service", detail: "systemd user unit" },
+  { id: "linger", label: "You turn on linger", detail: LINGER_FIX },
+];
 
 interface Journal {
   phase: "planned" | "approved" | "applying" | "paused" | "complete";
@@ -847,7 +648,7 @@ export function SetupView() {
   const [, setSince] = useSharedState("service-since", SERVICE_SINCE_SEED);
   const [, setLingerMarked] = useSharedState("linger-marked", false);
   const { phase, at } = journal;
-  const steps = setupSteps(ws.profileFile);
+  const steps = SETUP_STEPS;
   const last = steps.length - 1;
   const serviceStep = steps.findIndex((s) => s.id === "service");
   const apply = () => {
@@ -978,6 +779,16 @@ export function useChecks(): DoctorCheck[] {
   const [policy] = useAgentPolicy();
   const agent: Partial<DoctorCheck> =
     policy.mode === "deterministic-only" ? { detail: "Not used: agent policy is deterministic only" } : { detail: policy.harness === "custom" ? `${policy.executable} found` : `${policy.executable || policy.harness} ${HARNESS_VERSION[policy.harness]} found` };
+  // The harnesses probe warns about listed harnesses that are not installed and not excluded here
+  // (src/runtime/doctor.ts); excluding one on this machine clears it.
+  const missing = ws.harnesses.filter((h) => h.listed && !h.installed && !h.excluded);
+  const harnessCheck: Partial<DoctorCheck> = missing.length
+    ? {
+        result: "warn",
+        detail: `Not installed: ${missing.map((h) => h.name).join(", ")} ${missing.length === 1 ? "gets" : "get"} nothing on this machine`,
+        fix: { why: "Install it, or exclude it on this machine so Canonfig stops reporting it.", command: `canonfig harnesses exclude ${missing[0].id}` },
+      }
+    : { detail: `${ws.harnesses.filter((h) => h.listed && h.installed && !h.excluded).length} listed harnesses installed` };
   const overrides: Record<string, Partial<DoctorCheck>> =
     ws.role === "source"
       ? {
@@ -994,6 +805,7 @@ export function useChecks(): DoctorCheck[] {
             ? { result: "ok", detail: "On: you marked it done in setup" }
             : { fix: { why: "To keep user services running after you log out, run this yourself. Canonfig won't change it.", command: LINGER_FIX } },
           "Configuration Agent": agent,
+          Harnesses: harnessCheck,
         }
       : {
           "Credential storage": { detail: "macOS Keychain unlocked" },
@@ -1009,7 +821,9 @@ export function useChecks(): DoctorCheck[] {
                   fix: { why: "Start it so this machine can fetch updates from atlas.", command: "canonfig tunnel start" },
                 },
           Linger: { result: "ok", detail: "Not used on macOS" },
+          "Package managers": { detail: "brew and npm found" },
           "Configuration Agent": agent,
+          Harnesses: harnessCheck,
         };
   const checks = doctor.map((c) => ({ ...c, ...overrides[c.check] }));
   // Linger only matters for a service that exists; the Source service warning already covers its absence.

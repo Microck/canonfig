@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { access, readFile, realpath, stat } from "node:fs/promises";
+import { access, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { basename, delimiter, extname, join, resolve, sep } from "node:path";
 
 import { Effect, Schema } from "effect";
@@ -11,7 +11,14 @@ import {
   RecipeIndexPolicy,
 } from "../domain/resource.ts";
 import { parseNpmPackageSpecification } from "../domain/npm-package-spec.ts";
-import { parseJsonc, type JsonValue } from "./profile-codec.ts";
+import {
+  CanonicalFolderError,
+  decodeFolderConfig,
+  listFolderFiles,
+  readFolderConfig,
+} from "../projection/folder.ts";
+import { setJsoncValue } from "../synchronization/config-jsonc.ts";
+import { asJson, parseJsonc, type JsonValue } from "./profile-codec.ts";
 import {
   DiscoveryFilesystemError,
   DiscoveryParseError,
@@ -20,6 +27,7 @@ import {
 } from "./profile-catalog.errors.ts";
 import {
   buildToolCatalog,
+  folderToolEntry,
   type DiscoveredPackageMetadata,
   type ExecutableCandidate,
   type DiscoveredSkill,
@@ -1101,3 +1109,99 @@ export const scanDiscovery = (
     }),
   );
 };
+
+export interface FolderScanInput {
+  /** The Canonical Folder, `~/.canonfig/`. */
+  readonly folder: string;
+  /** Insert accepted tools that `canonfig.jsonc` does not declare yet. */
+  readonly write: boolean;
+  readonly path?: string | undefined;
+}
+
+export interface FolderScanResult extends DiscoveryScanResult {
+  /** Accepted tools `--write` inserted into `canonfig.jsonc`. */
+  readonly written: ReadonlyArray<string>;
+  /** Accepted tools `canonfig.jsonc` already declares; their entries stay as authored. */
+  readonly declared: ReadonlyArray<string>;
+}
+
+const folderFailure = (path: string, operation: "read" | "write", cause: unknown) =>
+  cause instanceof CanonicalFolderError
+    ? new InvalidDiscoveryInputError({ reason: `${cause.path} ${cause.message}` })
+    : new DiscoveryFilesystemError({ path, operation, reason: String(cause) });
+
+/**
+ * The folder's authored files: instructions, rules, agents, commands, skills,
+ * hook scripts and `canonfig.jsonc` (for MCP commands). `local/` and
+ * everything machine-local are not read.
+ */
+const folderScanFiles = async (folder: string): Promise<ReadonlyArray<DiscoveryFile>> => {
+  const files: Array<string> = [];
+  for (const name of ["AGENTS.md", "canonfig.jsonc"]) {
+    const found = await stat(join(folder, name)).catch(() => undefined);
+    if (found?.isFile() === true) files.push(name);
+  }
+  for (const directory of ["rules", "agents", "commands", "skills", "hooks"]) {
+    files.push(...(await listFolderFiles(folder, directory)).map((file) => `${directory}/${file.path}`));
+  }
+  return files.map((path) => ({ path: join(folder, ...path.split("/")) }));
+};
+
+/**
+ * `canonfig source scan`: discover the tools the Canonical Folder invokes.
+ * Nothing runs. With `write`, each accepted tool that `canonfig.jsonc` does
+ * not declare yet is inserted under `tools`, keeping the file's comments and
+ * layout; tools that need review are only reported.
+ */
+export const scanFolder = (
+  input: FolderScanInput,
+): Effect.Effect<FolderScanResult, ProfileCatalogScanError> =>
+  Effect.gen(function*() {
+    const configPath = join(input.folder, "canonfig.jsonc");
+    const files = yield* Effect.tryPromise({
+      try: () => folderScanFiles(input.folder),
+      catch: (cause) => folderFailure(input.folder, "read", cause),
+    });
+    if (files.length === 0) {
+      return yield* new InvalidDiscoveryInputError({
+        reason: `${input.folder} holds no authored files; scaffold it with 'canonfig setup plan --role source'`,
+      });
+    }
+    const result = yield* scanDiscovery({ files, path: input.path });
+    const config = yield* Effect.tryPromise({
+      try: () => readFolderConfig(input.folder),
+      catch: (cause) => folderFailure(configPath, "read", cause),
+    });
+    const declaredIds = new Set(Object.keys(config?.tools ?? {}));
+    const accepted = result.tools.filter((tool) => tool.reviewStatus === "accepted");
+    const declared = accepted.filter((tool) => declaredIds.has(tool.id)).map((tool) => tool.id);
+    const fresh = accepted.filter((tool) => !declaredIds.has(tool.id));
+    if (!input.write || fresh.length === 0) return { ...result, written: [], declared };
+    if (config === undefined) {
+      return yield* new InvalidDiscoveryInputError({ reason: `${configPath} does not exist; --write adds tools to it` });
+    }
+    const text = yield* readDiscoveryFile(configPath);
+    const updated = yield* Effect.try({
+      try: () => {
+        const edited = fresh.reduce(
+          (current, tool) => setJsoncValue(current, ["tools", tool.id], Schema.decodeUnknownSync(Schema.Json)(asJson(folderToolEntry(tool)))),
+          text,
+        );
+        // The edited file must still be a valid canonfig.jsonc.
+        decodeFolderConfig(configPath, edited);
+        return edited;
+      },
+      catch: (cause) => cause instanceof CanonicalFolderError
+        ? new InvalidDiscoveryInputError({ reason: `the discovered tools would make ${cause.path} invalid: ${cause.message}` })
+        : new InvalidDiscoveryInputError({ reason: `${configPath} could not be edited: ${String(cause)}` }),
+    });
+    yield* Effect.tryPromise({
+      try: async () => {
+        const temporary = `${configPath}.canonfig-scan-${process.pid}`;
+        await writeFile(temporary, updated, { mode: 0o600 });
+        await rename(temporary, configPath);
+      },
+      catch: (cause) => folderFailure(configPath, "write", cause),
+    });
+    return { ...result, written: fresh.map((tool) => tool.id), declared };
+  });

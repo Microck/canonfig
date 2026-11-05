@@ -57,9 +57,6 @@ interface WriteFileActionDetail {
   readonly digest: ContentDigest;
   executable?: boolean;
   mode?: number;
-  previousSourceDigest?: string;
-  adoptionNotice?: string;
-  retainedLocalDigest?: string;
 }
 
 interface WriteFileDraft extends ResourceActionDraft {
@@ -344,10 +341,6 @@ const writeFile = (
   };
   if (executable !== undefined) detail.executable = executable;
   if (mode !== undefined) detail.mode = mode;
-  if (context.resource.policy === "append-local" && context.observed.state === "present"
-    && context.observed.managedSourceDigest !== undefined) {
-    detail.previousSourceDigest = context.observed.managedSourceDigest;
-  }
   return { kind: "write-file", detail };
 };
 
@@ -565,45 +558,6 @@ const planReplace = (context: ResourcePlanningContext): ReadonlyArray<ResourceAc
   ];
 };
 
-/** Local additions are outside the owned digest; Source edits remain drift. */
-const planAppendLocal = (context: ResourcePlanningContext): ReadonlyArray<ResourceActionDraft> => {
-  const desired = context.desired;
-  if (desired.kind !== "file") {
-    throw new InvalidObservedStateError({ resource: context.resource.id, kind: context.resource.kind, observedState: context.observed.state });
-  }
-  const observed = context.observed;
-  if (observed.state === "unverifiable") {
-    return [{ kind: "human-action", detail: {
-      kind: "human-action",
-      reason: `Cannot read append-local target: ${observed.reason}`,
-      instructions: `Inspect ${context.resource.target}. Restore valid UTF-8 text and the Canonfig Source markers before retrying.`,
-    } }];
-  }
-  if (observed.state === "absent") return [writeFile(context, desired.digest, false, desired.mode)];
-  if (observed.state !== "present" || observed.objectKind !== "regular"
-    || (observed.managedSourceDigest === undefined && context.applied?.policy === "append-local")) {
-    return [driftConflict(context, desired.digest, observedDigest(context) ?? sha256Hex("canonfig:invalid-text-target"))];
-  }
-  if (observed.managedSourceDigest === undefined) {
-    const draft = writeFile(context, desired.digest, false, desired.mode);
-    const current = observedDigest(context);
-    if (current !== undefined) {
-      return [{
-        kind: "write-file",
-        detail: {
-          ...draft.detail,
-          adoptionNotice: "First adoption preserves the entire existing file as local text. Matching Source bytes do not establish ownership. Inspect exact Source and retained local text before applying: canonfig sync --plan --review-local",
-          retainedLocalDigest: current,
-        },
-      }];
-    }
-    return [draft];
-  }
-  const sourceObserved = { ...observed, digest: observed.managedSourceDigest };
-  // Reuse the file permission and three-way drift rules with the owned payload.
-  return planReplaceIfUnmodified({ ...context, observed: sourceObserved });
-};
-
 const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActionDraft> => {
   if (context.desired.kind !== "config") {
     const desiredDigest = desiredResourceDigest(context.desired);
@@ -640,20 +594,6 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
       },
     }];
   }
-  const conflicts = context.desired.keys.filter((key) =>
-    context.overlayKeys.some((local) => configPathsOverlap(key, local))
-  );
-  if (conflicts.length > 0) {
-    const keys = sortedUnique(conflicts);
-    return [{
-      kind: "human-action",
-      detail: {
-        kind: "human-action",
-        reason: `Local Overlay conflicts with canonical keys: ${keys.join(", ")}`,
-        instructions: `Remove or rename the conflicting Local Overlay keys for ${context.resource.id}, then rerun synchronization.`,
-      },
-    }];
-  }
   // Keys Canonfig owned that this revision no longer declares. Merge is a
   // three-way operation: leaving them behind meant a key dropped from the
   // profile kept its old value forever and the plan read `no-op`, so only
@@ -668,15 +608,13 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
   // A whole-object write replaces former child ownership without a separate delete.
   const prunable = dropped.filter((key) =>
     !declaredKeys.some((declaredKey) => configPathsOverlap(key, declaredKey))
-    && !context.overlayKeys.some((local) => configPathsOverlap(key, local))
   );
   const retained = dropped.filter((key) =>
     declaredKeys.some((declaredKey) => declaredKey.startsWith(`${key}.`))
-    || context.overlayKeys.some((local) => configPathsOverlap(key, local))
   );
   const retention = retained.length === 0 ? {} : {
     retains: retained,
-    retentionNotice: `Canonfig no longer owns all of ${retained.join(", ")} in ${context.resource.target}: ownership narrowed or Local Overlay keys overlap. Values outside the current Source-owned keys stay, including anything the Source wrote there earlier. Edit or remove stale values by hand.`,
+    retentionNotice: `Canonfig no longer owns all of ${retained.join(", ")} in ${context.resource.target}: ownership narrowed. Values outside the current Source-owned keys stay, including anything the Source wrote there earlier. Edit or remove stale values by hand.`,
   };
   if (prunable.length > 0) {
     return [{
@@ -765,9 +703,38 @@ const planMirror = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
   }];
 };
 
+/**
+ * Three-way merge for owned config keys: write them unless their values
+ * changed since Canonfig last applied them. The comparison uses the keys the
+ * Applied Resource Record owns, so declaring a new key is not mistaken for a
+ * local edit. Without a record, or with none of its keys left in the file,
+ * there is nothing to protect and the keys are merged.
+ */
+const planConfigIfUnmodified = (
+  context: ResourcePlanningContext,
+  desired: Extract<DesiredResource, { readonly kind: "config" }>,
+): ReadonlyArray<ResourceActionDraft> => {
+  const observed = context.observed;
+  if (
+    context.applied !== undefined
+    && observed.state === "present"
+    && (observed.objectKind === undefined || observed.objectKind === "regular")
+    && observed.appliedKeysDigest !== undefined
+    && observed.appliedKeysDigest !== context.applied.digest
+  ) {
+    return [driftConflict(
+      context,
+      desired.digest,
+      Schema.decodeUnknownSync(ContentDigestSchema)(observed.digest),
+    )];
+  }
+  return planMerge(context);
+};
+
 const planReplaceIfUnmodified = (
   context: ResourcePlanningContext,
 ): ReadonlyArray<ResourceActionDraft> => {
+  if (context.desired.kind === "config") return planConfigIfUnmodified(context, context.desired);
   const desiredDigest = desiredResourceDigest(context.desired);
   if (desiredDigest === undefined) {
     return [unresolvedAgentTask(context, `Resolve ${context.resource.kind} ${context.resource.id}`)];
@@ -791,14 +758,17 @@ const planReplaceIfUnmodified = (
       },
     }];
   }
-  // A skill already at the desired tree needs no write, regardless of which
+  // A tree already at the desired state needs no write, regardless of which
   // directories the previous revision declared. Otherwise compare to that
   // previous tree so Source path changes do not look like follower edits.
-  if (context.desired.kind === "skill"
+  const tree = context.desired.kind === "skill" || context.desired.kind === "directory"
+    ? context.desired
+    : undefined;
+  if (tree !== undefined
     && context.observed.state === "directory"
-    && observedMatchesDesired(context.desired, context.observed)) return [noOp()];
-  const currentDigest = context.desired.kind === "skill" && context.observed.state === "directory"
-    ? observedDirectoryDigest(context.observed, context.applied?.ownedFiles ?? desiredDirectoryEntries(context.desired))
+    && observedMatchesDesired(tree, context.observed)) return [noOp()];
+  const currentDigest = tree !== undefined && context.observed.state === "directory"
+    ? observedDirectoryDigest(context.observed, context.applied?.ownedFiles ?? desiredDirectoryEntries(tree))
     : observedDigest(context);
   if (
     context.desired.kind === "file"
@@ -830,7 +800,7 @@ const planReplaceIfUnmodified = (
     );
   const compareFilePermissions = context.desired.kind === "file"
     && context.desired.symlinkTo === undefined;
-  const compareSkillRootPermissions = context.desired.kind === "skill"
+  const compareSkillRootPermissions = tree !== undefined
     && context.observed.state === "directory";
   const drift = detectSkillDrift({
     desiredDigest,
@@ -848,7 +818,7 @@ const planReplaceIfUnmodified = (
       ? context.applied?.executable
       : undefined,
     desiredMode: compareFilePermissions || compareSkillRootPermissions
-      ? context.desired.mode
+      ? desiredResourceMode(context.desired)
       : undefined,
     observedMode: compareFilePermissions && context.observed.state === "present"
       ? context.observed.mode
@@ -1139,18 +1109,6 @@ const planRemovedResource = (
   ) {
     return [];
   }
-  if (context.resource.policy === "append-local") {
-    const observed = context.observed;
-    const ownedContext = observed.state === "present" && observed.managedSourceDigest !== undefined
-      ? { ...context, observed: { ...observed, digest: observed.managedSourceDigest } }
-      : context;
-    if (observed.state !== "absent" && (observed.state !== "present"
-      || observed.managedSourceDigest === undefined || !observedMatchesApplied(ownedContext))) {
-      return [driftConflict(context, Schema.decodeUnknownSync(ContentDigestSchema)(applied.digest),
-        observedDigest(context) ?? sha256Hex("canonfig:invalid-text-target"))];
-    }
-    return [{ kind: "remove-resource", detail: { kind: "remove-resource", target: applied.target, paths: [], keys: [] } }];
-  }
   if (!observedMatchesApplied(context)) return [];
   switch (context.resource.kind) {
     case "file":
@@ -1180,7 +1138,7 @@ const planRemovedResource = (
         }];
       }
       if (
-        context.resource.policy !== "merge"
+        (context.resource.policy !== "merge" && context.resource.policy !== "replace-if-unmodified")
         || applied.ownedKeys === undefined
         || applied.configFormat === undefined
       ) {
@@ -1263,8 +1221,6 @@ export const planResource = (
       return planMerge(context);
     case "replace-if-unmodified":
       return planReplaceIfUnmodified(context);
-    case "append-local":
-      return planAppendLocal(context);
     case "ensure":
       return planEnsure(context);
     case "require-local":

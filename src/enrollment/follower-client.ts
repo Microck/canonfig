@@ -50,7 +50,6 @@ import {
   InvitationNotFoundError,
   InvitationReplayError,
   InvalidFollowerCredentialError,
-  LegacyRevisionFormatError,
   MalformedEnrollmentRequestError,
   RevokedFollowerCredentialError,
   TransportIntegrityError,
@@ -322,8 +321,6 @@ export const reconstructEnrollmentWireError = (
       return new TransportSizeLimitError({ artifact: "transport-response", limit: 0 });
     case "TransportIntegrityError":
       return new TransportIntegrityError({ artifact: "source", message });
-    case "LegacyRevisionFormatError":
-      return new LegacyRevisionFormatError({ message });
     default:
       return new EnrollmentTransportError({
         operation: "source enrollment request",
@@ -778,7 +775,7 @@ export const probeSourceDescriptor = (
 };
 
 export interface FollowerLifecycleInput extends FollowerTransportInput {
-  readonly selectedProfile: string;
+  readonly profile: string;
   readonly appliedRevisions: ReadonlyArray<string>;
 }
 
@@ -815,7 +812,7 @@ export const queryFollowerLifecycle = (
     };
     const selected: FollowerLifecycleState = {
       reached: true,
-      detail: `profile ${input.selectedProfile} is selected locally`,
+      detail: `following profile ${input.profile}`,
     };
     const probe = yield* probeSourceDescriptor({
       endpoint: input.endpoint,
@@ -865,14 +862,14 @@ export const queryFollowerLifecycle = (
         Effect.match({ onFailure: () => undefined, onSuccess: (result) => result }),
       );
     const latest = revisions?.revisions
-      .filter((revision) => revision.profileId === input.selectedProfile)
+      .filter((revision) => revision.profileId === input.profile)
       .sort((left, right) => right.sequence - left.sequence)[0];
     const converged: FollowerLifecycleState = latest === undefined
       ? {
         reached: false,
         detail: revisions === undefined
           ? "convergence could not be checked"
-          : `profile ${input.selectedProfile} has no authorized revision`,
+          : `profile ${input.profile} has no authorized revision`,
       }
       : input.appliedRevisions.some((applied) => appliesPublishedRevision(applied, latest.id))
       ? { reached: true, detail: `applied revision ${latest.id}` }
@@ -1354,14 +1351,10 @@ export const fetchRevision = (
     for (const resource of metadata.resources) {
       const files = resource.spec.kind === "file"
         ? [resource.spec]
-        : resource.spec.kind === "directory" || resource.spec.kind === "skill"
+        : resource.spec.kind === "skill"
         ? resource.spec.files
         : [];
-      const references = files.flatMap((file) =>
-        file.blob === undefined || file.bytes === undefined
-          ? []
-          : [{ id: file.blob, bytes: file.bytes }]
-      );
+      const references = files.map((file) => ({ id: file.blob, bytes: file.bytes }));
       if (
         [...new Set(references.map((reference) => reference.id))].sort().join("\0")
           !== [...resource.blobs].sort().join("\0")

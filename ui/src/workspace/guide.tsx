@@ -43,7 +43,7 @@ export function getStartedItems(ws: Workspace): GetStartedItem[] {
       {
         id: "profile",
         label: "Choose what to sync",
-        why: "Add the files, settings, skills and tools your machines should share.",
+        why: "Add the instructions, skills, MCP servers, settings and tools your machines should share.",
         done: ws.latest > 0 || ws.resources.some((r) => !ws.proposed.includes(r.id)),
         run: () => ws.setView("profile"),
       },

@@ -9,6 +9,7 @@ import type {
   GroupName,
   ProfileId,
   ProfileRevisionId,
+  ResourceId,
   RunId,
 } from "../domain/brand.ts";
 import type { SourceIdentity } from "../domain/identity.ts";
@@ -20,6 +21,7 @@ import type {
   ConsumeEnrollmentInvitationInput,
   CreateEnrollmentInvitationInput,
   DeploymentReceipt,
+  HarnessTakeover,
   EnrollmentSourceRecord,
   FollowerCredentialRecord,
   FinalizeEnrollmentInput,
@@ -30,11 +32,9 @@ import type {
   RecordDriftInput,
   RecoveryState,
   RegisterFollowerInput,
-  RemoveLocalOverlayInput,
   ResourceBlobRange,
   RevisionApprovalRecord,
   RunEvidenceSummary,
-  SaveLocalOverlayInput,
   StateSnapshot,
   RevisionBlobCandidate,
   StoredEnrollmentInvitation,
@@ -43,7 +43,7 @@ import type {
 } from "./state-repository.types.ts";
 import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
-import type { LocalOverlayEntry } from
+import type { PlanningLocalRevision } from
   "../synchronization/synchronization.types.ts";
 
 export class StateRepository extends Context.Service<StateRepository, {
@@ -58,14 +58,6 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly saveFollowerSynchronizationConfiguration: (
     input: SaveFollowerSynchronizationConfigurationInput,
   ) => Effect.Effect<void, StateRepositoryError>;
-  readonly saveLocalOverlay: (
-    input: SaveLocalOverlayInput,
-  ) => Effect.Effect<void, StateRepositoryError>;
-  readonly removeLocalOverlay: (
-    input: RemoveLocalOverlayInput,
-  ) => Effect.Effect<void, StateRepositoryError>;
-  readonly listLocalOverlays: (
-  ) => Effect.Effect<ReadonlyArray<LocalOverlayEntry>, StateRepositoryError>;
   readonly getFollowerSynchronizationConfiguration: (
   ) => Effect.Effect<
     FollowerSynchronizationConfiguration | undefined,
@@ -136,6 +128,45 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly readResourceBlobRange: (
     input: ReadResourceBlobRangeInput,
   ) => Effect.Effect<ResourceBlobRange | undefined, StateRepositoryError>;
+  /** Store the planning revision of a local projection; equal content is a no-op. */
+  readonly recordLocalRevision: (
+    revision: PlanningLocalRevision,
+    recordedAt: string,
+  ) => Effect.Effect<void, StateRepositoryError>;
+  readonly getLocalRevision: (
+    revision: ProfileRevisionId,
+  ) => Effect.Effect<PlanningLocalRevision, StateRepositoryError>;
+  readonly loadHarnessTakeovers: (
+  ) => Effect.Effect<ReadonlyArray<HarnessTakeover>, StateRepositoryError>;
+  readonly recordHarnessTakeovers: (
+    takeovers: ReadonlyArray<HarnessTakeover>,
+  ) => Effect.Effect<void, StateRepositoryError>;
+  /** Forget the takeovers a run recorded, after that run rolled back. */
+  readonly removeRunTakeovers: (
+    run: RunId,
+  ) => Effect.Effect<void, StateRepositoryError>;
+  /** Forget surfaces a restore gave back to their harness. */
+  readonly releaseTakeovers: (
+    surfaces: ReadonlyArray<{ readonly harness: string; readonly surface: string }>,
+  ) => Effect.Effect<void, StateRepositoryError>;
+  /**
+   * The resources of a run's actions that started (journaled running,
+   * succeeded or failed), whether the run is open or finished. A started
+   * action may have written its target even without an Applied Resource
+   * Record, for example when the process died before journaling success.
+   */
+  readonly loadStartedResources: (
+    run: RunId,
+  ) => Effect.Effect<ReadonlyArray<ResourceId>, StateRepositoryError>;
+  /**
+   * Hand this machine's local projection records to the follower identity it
+   * enrolled as, in one transaction: the follower's runs then own the harness
+   * surfaces the machine projected while it projected its own folder. Run
+   * history stays under the local projection. Returns how many records moved.
+   */
+  readonly adoptLocalProjection: (
+    follower: FollowerId,
+  ) => Effect.Effect<number, StateRepositoryError>;
   readonly loadAppliedResources: (
     follower: FollowerId,
   ) => Effect.Effect<ReadonlyArray<AppliedResourceRecord>, StateRepositoryError>;
@@ -170,9 +201,9 @@ export class StateRepository extends Context.Service<StateRepository, {
     follower: FollowerId,
   ) => Effect.Effect<{
     readonly run: string;
-    readonly creatingVersion: string | null;
-    readonly creatingIdentity: string | null;
-    readonly stateFormat: number | null;
+    readonly creatingVersion: string;
+    readonly creatingIdentity: string;
+    readonly stateFormat: number;
   } | undefined, StateRepositoryError>;
   readonly loadState: (
     follower: FollowerId,

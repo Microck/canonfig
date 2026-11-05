@@ -3,7 +3,7 @@ import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useRef
 import { toast } from "sonner";
 import { AnimatePresence, motion, usePresence, useReducedMotion, type Transition } from "motion/react";
 import { Skeleton } from "skullet/react";
-import { Check, Copy, FileText, Folder, Key, Question, SlidersHorizontal, Sparkle, WarningCircle, Wrench, X, type IconComponent } from "@/components/icons";
+import { Check, Circuitry, Copy, FileCode, FileText, Key, ListBullets, Plug, Question, Robot, SlidersHorizontal, Sparkle, WarningCircle, Wrench, X, type IconComponent } from "@/components/icons";
 import { cn, SNAP, SNAP_EASING } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -11,18 +11,22 @@ import { Label } from "@/components/ui/label";
 import { Kbd } from "@/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AnimatedNumber, DitherBlock, Hint, StateBand, StatusMark, type StatusKind } from "@/shared/shared";
-import { PLAIN, profile, type ResourceKind } from "@/shared/data";
+import { PLAIN, profile, type ItemCategory } from "@/shared/data";
 import { useSharedState, useWorkspace } from "./store";
 import { PAGE_TIPS } from "./page-tips";
 import { followLink, holdNavigation } from "./routes";
 
-export const KIND_ICON: Record<ResourceKind, IconComponent> = {
-  file: FileText,
-  directory: Folder,
-  config: SlidersHorizontal,
-  skill: Sparkle,
-  tool: Wrench,
-  credential: Key,
+export const CATEGORY_ICON: Record<ItemCategory, IconComponent> = {
+  instructions: FileText,
+  rules: ListBullets,
+  skills: Sparkle,
+  agents: Robot,
+  commands: FileCode,
+  mcp: Plug,
+  hooks: Circuitry,
+  settings: SlidersHorizontal,
+  tools: Wrench,
+  credentials: Key,
 };
 
 /** 150ms state change, or nothing at all under reduced motion. */
@@ -311,7 +315,7 @@ export function ListRow({
 }
 
 /**
- * Group header inside a list, e.g. resources of one kind: a faint rounded band, no rule.
+ * Group header inside a list, e.g. the items of one folder category: a faint rounded band, no rule.
  * Its (?) shows on hover or keyboard focus with a fine pointer, so a list of groups doesn't repeat
  * the same mark down the page; touch screens, which can't hover, always show it.
  */

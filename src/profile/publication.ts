@@ -1,7 +1,7 @@
 import { assertProfileMetadataBudget } from "./metadata-budget.ts";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, readlink, realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep, win32 } from "node:path";
 
 import { Effect, Schema } from "effect";
@@ -9,17 +9,13 @@ import { Effect, Schema } from "effect";
 import {
   BlobId,
   ProfileRevisionId,
-  ResourceId,
   Timestamp,
-  ToolId,
-  type ContentDigest,
   type SourceSignature,
 } from "../domain/brand.ts";
 import {
   normalizeMachineProfile,
   ProfileContractError,
   type MachineProfile,
-  type ManagedFileInput,
   type ProfileGroup,
   type ProfileResourceInput,
   type ProfileRevision,
@@ -27,7 +23,14 @@ import {
   type ScheduleDefault,
   validateMachineProfile,
 } from "../domain/profile.ts";
-import type { Platform } from "../domain/resource.ts";
+import { ConfigValue } from "../domain/resource.ts";
+import {
+  CanonicalFolderError,
+  hookScript,
+  itemResourceId,
+  listFolderFiles,
+  loadAuthoredFolder,
+} from "../projection/folder.ts";
 import { RevisionImmutableError } from "../state/state-repository.errors.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import {
@@ -35,66 +38,31 @@ import {
   type ResolvedSourceFile,
   type ResolvedSourceFiles,
 } from "./compiler.ts";
-import type { DiscoveryScanResult } from "./discovery.ts";
 import { publicationCredentialIssue } from "./publication-credentials.ts";
 import {
-  EmptyPublicationError,
   InvalidPublicationInputError,
   InvalidPublicationResourcesError,
   InvalidPublicationSignatureError,
   PublicationSigningError,
   PublicationSourceError,
-  PublicationReviewRequiredError,
   type ProfileCatalogPublishError,
-  UnresolvedPublicationProposalError,
 } from "./profile-catalog.errors.ts";
-import {
-  asJson,
-  canonicalJson,
-  digestOf,
-  directoryVerificationDigest,
-  sha256Hex,
-} from "./profile-codec.ts";
-import type {
-  DiscoveredSkill,
-  DiscoveredTool,
-  InstallationRecipe,
-} from "./tool-catalog.ts";
+import { asJson, canonicalJson } from "./profile-codec.ts";
 
-export type PublicationReview =
-  | {
-    readonly decision: "accepted";
-    readonly reviewer: string;
-    readonly reviewedAt: string;
-    readonly proposalDigest: ContentDigest;
-  }
-  | {
-    readonly decision: "pending" | "rejected";
-    readonly reviewer?: string | undefined;
-    readonly reviewedAt?: string | undefined;
-  };
+/**
+ * Publication: `canonfig source publish` compiles the Canonical Folder into
+ * one Profile Resource per item and signs the result as the next Profile
+ * Revision. Only the authoring allowlist is read, every file must resolve
+ * inside the folder, MCP and hook secrets stay environment references, and a
+ * credential-looking literal stops publication before anything is signed.
+ */
 
-export interface PublicationProfileMetadata {
-  readonly id: MachineProfile["id"];
-  readonly name: string;
-  readonly groups?: ReadonlyArray<ProfileGroup> | undefined;
-  /**
-   * Directory containing the authored profile. Relative file `source` values
-   * are resolved here, never against the process working directory, and must
-   * stay inside it.
-   */
-  readonly directory?: string | undefined;
-  readonly resources?: ReadonlyArray<ProfileResourceInput> | undefined;
-  readonly scheduleDefault?: ScheduleDefault | undefined;
-}
-
-export interface PublishProfileInput {
-  readonly proposal: DiscoveryScanResult;
-  readonly profile: PublicationProfileMetadata;
-  readonly review: PublicationReview;
+export interface PublishFolderInput {
+  /** The Canonical Folder, `~/.canonfig/`. */
+  readonly folder: string;
+  /** Who reviewed the folder content being published. */
+  readonly reviewer: string;
   readonly publishedAt: string;
-  /** Sign a revision with no resources. Without it, an empty publication fails. */
-  readonly allowEmpty?: boolean | undefined;
 }
 
 /**
@@ -115,284 +83,218 @@ export interface ProfileRevisionSigner {
 const compareText = (left: string, right: string): number =>
   left < right ? -1 : left > right ? 1 : 0;
 
+/** Mode of every published file: private, executable when the authored file is. */
+const fileMode = (executable: boolean): number => executable ? 0o700 : 0o600;
 
-/** Stable digest reviewers accept; it binds acceptance to the exact proposal. */
-export const digestDiscoveryProposal = (
-  proposal: DiscoveryScanResult,
-): ContentDigest => digestOf(asJson(proposal));
-
-export const acceptPublicationProposal = (
-  proposal: DiscoveryScanResult,
-  reviewer: string,
-  reviewedAt: string,
-): PublicationReview => ({
-  decision: "accepted",
-  reviewer,
-  reviewedAt,
-  proposalDigest: digestDiscoveryProposal(proposal),
+/**
+ * Where a JSON item lives in `canonfig.jsonc`. Each such item is a `config`
+ * resource whose single key is its place in the file; followers render their
+ * own `canonfig.jsonc` from the items they are authorized to see.
+ */
+const jsonItem = <Authored>(
+  id: string,
+  key: string,
+  authored: Authored,
+  dependsOn: ReadonlyArray<string> = [],
+): ProfileResourceInput => ({
+  id,
+  kind: "config",
+  policy: "merge",
+  target: `canonfig.jsonc#${key}`,
+  dependsOn,
+  // Decoded authoring values never hold null; the JSON round trip drops
+  // absent optional fields.
+  spec: { kind: "config", format: "json", keys: [{ path: key, value: Schema.decodeUnknownSync(ConfigValue)(asJson(authored)) }] },
+  verify: { method: "digest" },
 });
 
-const packageForRecipe = (recipe: InstallationRecipe): string => {
-  switch (recipe.method) {
-    case "npm":
-    case "uv":
-      return recipe.package;
-    case "homebrew":
-      return recipe.formula;
-    case "winget":
-      return recipe.id;
-    case "cargo":
-      return recipe.crate;
-    case "source":
-      return recipe.repository;
-  }
-};
-
-const platformsForRecipe = (
-  recipe: InstallationRecipe,
-): ReadonlyArray<Platform> => {
-  switch (recipe.method) {
-    case "homebrew":
-      return ["macos"];
-    case "winget":
-      return ["windows"];
-    case "npm":
-    case "uv":
-    case "cargo":
-    case "source":
-      return ["linux", "macos", "windows"];
-  }
-};
-
-const resourceForTool = (tool: DiscoveredTool): ProfileResourceInput => ({
-  id: Schema.decodeUnknownSync(ResourceId)(tool.id),
-  kind: "tool",
-  policy: "ensure",
-  target: tool.executable,
-  dependsOn: [],
-  spec: {
-    kind: "tool",
-    toolId: Schema.decodeUnknownSync(ToolId)(tool.id),
-    recipes: tool.recipes
-      .flatMap((recipe) =>
-        platformsForRecipe(recipe).map((platform) => ({
-          platform,
-          method: recipe.method,
-          package: packageForRecipe(recipe),
-          version: recipe.version,
-          indexPolicy: recipe.indexPolicy,
-          source: recipe.integrity === undefined
-            ? recipe.source
-            : {
-              source: recipe.source,
-              integrity: recipe.integrity,
-            },
-          buildPolicy: recipe.buildPolicy,
-        }))
-      )
-      .sort((left, right) =>
-        compareText(
-          `${left.platform}\0${left.method}\0${left.package}\0${left.version}\0${JSON.stringify(left.source)}`,
-          `${right.platform}\0${right.method}\0${right.package}\0${right.version}\0${JSON.stringify(right.source)}`,
-        )
-      ),
-    login: { required: false },
-  },
-  verify: tool.verify.method === "command"
-    ? { method: "command", command: [...tool.verify.command] }
-    : { method: "executable-present", executable: tool.verify.executable },
+/** A file item the follower mirrors at the same place in its folder. */
+const fileItem = (id: string, path: string, executable: boolean): ProfileResourceInput => ({
+  id,
+  kind: "file",
+  policy: "replace-if-unmodified",
+  target: path,
+  spec: { kind: "file", source: path, executable, mode: fileMode(executable) },
+  verify: { method: "digest" },
 });
 
-const skillFilesDigest = (
-  files: ReadonlyArray<{
-    readonly path: string;
-    readonly content: string;
-    readonly executable?: boolean | undefined;
-  }>,
-): ContentDigest =>
-  directoryVerificationDigest(files.map((file) => ({
-    path: file.path,
-    digest: sha256Hex(file.content),
-    executable: file.executable,
-  })));
+/** The resource id of a hook script: `hooks/lib/run.sh` is `hook-scripts:lib:run.sh`. */
+const hookScriptId = (script: string, path: string): string => {
+  const id = `hook-scripts:${script.slice("hooks/".length).split("/").join(":")}`;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(id)) {
+    throw new CanonicalFolderError({
+      path,
+      message: `hook script ${script} needs a name of letters, digits, '.', '_' or '-'`,
+    });
+  }
+  return id;
+};
 
-const resourceForSkill = (skill: DiscoveredSkill): ProfileResourceInput => {
-  const files = skill.files ?? [];
-  return {
-    id: Schema.decodeUnknownSync(ResourceId)(skill.id),
-    kind: "skill",
-    policy: "replace-if-unmodified",
-    target: skill.target ?? `skills/${skill.id}`,
-    dependsOn: [],
-    spec: {
+/** `daily@HH:mm` or `weekly:Mon,Thu@HH:mm` as the schedule a revision suggests. */
+const scheduleDefaultOf = (calendar: string): ScheduleDefault => {
+  const weekly = /^weekly:(?<days>[^@]+)@(?<at>.+)$/u.exec(calendar)?.groups;
+  const at = calendar.slice(calendar.indexOf("@") + 1);
+  return weekly === undefined
+    ? { type: "daily", at, timezone: "local" }
+    : { type: "weekly", days: [...new Set(weekly.days!.toLowerCase().split(","))], at, timezone: "local" };
+};
+
+/**
+ * The Machine Profile a folder publishes: one resource per item, with file
+ * sources relative to the folder. Groups and `requires` must name items the
+ * folder declares, and every file under `hooks/` must be a script a hook runs.
+ */
+export const folderProfile = async (folder: string): Promise<MachineProfile> => {
+  const authored = await loadAuthoredFolder(folder);
+  const config = authored.config;
+  const configPath = resolve(folder, "canonfig.jsonc");
+  const refuse = (message: string) => new CanonicalFolderError({ path: configPath, message });
+  if (config.profile === undefined) {
+    throw refuse("needs \"profile\": { \"id\": ..., \"name\": ... } to publish; the id names the Machine Profile followers sync");
+  }
+  const resources: Array<ProfileResourceInput> = [];
+  if (authored.instructions !== undefined) resources.push(fileItem("instructions", "AGENTS.md", false));
+  for (const [category, ids] of [
+    ["rules", authored.rules.map((rule) => rule.id)],
+    ["agents", authored.agents.map((agent) => agent.id)],
+    ["commands", authored.commands.map((command) => command.id)],
+  ] as const) {
+    for (const id of ids) resources.push(fileItem(`${category}:${id}`, `${category}/${id}.md`, false));
+  }
+  for (const skill of authored.skills) {
+    resources.push({
+      id: `skills:${skill.name}`,
       kind: "skill",
-      name: skill.id,
-      files: files.map((file) => ({
-        path: file.path,
-        content: file.content,
-        executable: file.executable ?? false,
-      })),
-    },
-    verify: {
-      method: "digest",
-      digest: skillFilesDigest(files),
-    },
-  };
-};
-
-const skillEvidenceId = (invocation: string | undefined): string | undefined => {
-  const match = /^skills\/([A-Za-z0-9._-]+)\/SKILL\.md$/iu.exec(invocation ?? "");
-  return match?.[1]?.toLowerCase();
-};
-
-const unresolvedReasons = (
-  proposal: DiscoveryScanResult,
-): ReadonlyArray<string> => {
-  const reasons: Array<string> = [];
-  for (const task of proposal.agentTasks) {
-    reasons.push(`agent-task:${task.id}`);
+      policy: "replace-if-unmodified",
+      target: `skills/${skill.name}`,
+      spec: {
+        kind: "skill",
+        name: skill.name,
+        files: skill.files.map((file) => ({
+          path: file.path,
+          source: `skills/${skill.name}/${file.path}`,
+          executable: file.executable,
+          mode: fileMode(file.executable),
+        })),
+      },
+      verify: { method: "digest" },
+    });
   }
-  for (const resource of proposal.resources) {
-    // Skills are reviewable discovery proposals and can be omitted without
-    // preventing unrelated reviewed tools from publishing.
-    if (resource.kind === "skill") continue;
-    if (resource.reviewStatus !== "accepted") {
-      reasons.push(`resource-needs-review:${resource.kind}:${resource.id}`);
+
+  // Hooks: the definition is a JSON item, the script it runs a file item.
+  const scripts = new Map((await listFolderFiles(folder, "hooks")).map((file) => [`hooks/${file.path}`, file.executable]));
+  const scriptUsers = new Map<string, Array<string>>();
+  const enabledScripts = new Set<string>();
+  for (const [position, hook] of (config.hooks ?? []).entries()) {
+    const script = hookScript(hook, configPath);
+    const dependsOn: Array<string> = [];
+    if (script !== undefined) {
+      if (!scripts.has(script)) throw refuse(`hook ${hook.id} runs ${script}, which does not exist`);
+      const id = hookScriptId(script, configPath);
+      dependsOn.push(id);
+      scriptUsers.set(script, [...scriptUsers.get(script) ?? [], `hooks:${hook.id}`]);
+      if (hook.enabled !== false) enabledScripts.add(script);
     }
-    for (const evidence of resource.evidence) {
-      if (
-        evidence.reviewStatus !== "accepted"
-        || evidence.confidence === "review"
-        || evidence.kind === "prose"
-      ) {
-        reasons.push(
-          `evidence-needs-review:${evidence.sourcePath}:${evidence.kind}`,
-        );
-      }
+    resources.push(jsonItem(`hooks:${hook.id}`, `hooks.${hook.id}`, { position, hook: asJson(hook) }, dependsOn));
+  }
+  for (const [script, executable] of [...scripts].sort(([left], [right]) => compareText(left, right))) {
+    if (!scriptUsers.has(script)) {
+      throw new CanonicalFolderError({
+        path: resolve(folder, script),
+        message: "is not run by any hook in canonfig.jsonc, so it would never reach a follower; reference it from a hook or remove it",
+      });
+    }
+    // Windows cannot report POSIX execute bits. An enabled hook that names a
+    // script directly expresses the author's intent to run it; preserve that
+    // intent for Unix followers. Disabled-only scripts keep their observed mode.
+    const intendedExecutable = executable || (process.platform === "win32" && enabledScripts.has(script));
+    resources.push(fileItem(hookScriptId(script, configPath), script, intendedExecutable));
+  }
+
+  const tools = config.tools ?? {};
+  for (const [name, server] of Object.entries(config.mcp ?? {})) {
+    const requires = server.requires ?? [];
+    const missing = requires.find((reference) => tools[reference.slice("tools/".length)] === undefined);
+    if (missing !== undefined) throw refuse(`mcp.${name} requires ${missing}, which "tools" does not declare`);
+    resources.push(jsonItem(`mcp:${name}`, `mcp.${name}`, asJson(server), requires.map(itemResourceId)));
+  }
+  for (const [harness, keys] of Object.entries(config.settings ?? {})) {
+    resources.push(jsonItem(`settings:${harness}`, `settings.${harness}`, asJson(keys)));
+  }
+  resources.push(jsonItem("harnesses", "harnesses", [...new Set(config.harnesses)]));
+  if (config.local !== undefined) resources.push(jsonItem("local-policy", "local", asJson(config.local)));
+  for (const [id, tool] of Object.entries(tools)) {
+    resources.push({
+      id: `tools:${id}`,
+      kind: "tool",
+      policy: "ensure",
+      target: tool.executable,
+      spec: {
+        kind: "tool",
+        toolId: id,
+        recipes: tool.recipes,
+        login: tool.login ?? { required: false },
+        agentInstall: tool.agentInstall,
+      },
+      verify: tool.verify ?? { method: "executable-present", executable: tool.executable },
+    });
+  }
+  for (const [id, credential] of Object.entries(config.credentials ?? {})) {
+    resources.push({
+      id: `credentials:${id}`,
+      kind: "credential",
+      policy: "require-local",
+      target: credential.reference,
+      spec: { kind: "credential", reference: credential.reference },
+      verify: { method: "credential-present", reference: credential.reference },
+    });
+  }
+
+  // A grouped item reaches only followers in one of its groups. A script
+  // goes wherever one of the hooks running it goes.
+  const byId = new Map(resources.map((resource) => [resource.id, resource]));
+  const groupsOf = new Map<string, Array<string>>();
+  for (const [group, references] of Object.entries(config.groups ?? {})) {
+    for (const reference of references) {
+      const id = itemResourceId(reference);
+      if (!byId.has(id)) throw refuse(`groups.${group} names ${reference}, which the folder does not declare`);
+      groupsOf.set(id, [...new Set([...groupsOf.get(id) ?? [], group])].sort(compareText));
     }
   }
-  for (const evidence of proposal.evidence) {
-    if (skillEvidenceId(evidence.invocation[0]) !== undefined) continue;
-    if (
-      evidence.reviewStatus !== "accepted"
-      || evidence.confidence === "review"
-      || evidence.kind === "prose"
-    ) {
-      reasons.push(
-        `evidence-needs-review:${evidence.sourcePath}:${evidence.kind}`,
-      );
-    }
+  for (const [script, users] of scriptUsers) {
+    if (users.some((user) => !groupsOf.has(user))) continue;
+    groupsOf.set(hookScriptId(script, configPath), [...new Set(users.flatMap((user) => groupsOf.get(user)!))].sort(compareText));
   }
-  return [...new Set(reasons)].sort(compareText);
-};
-
-const validateReview = (
-  input: PublishProfileInput,
-): Effect.Effect<void, ProfileCatalogPublishError> => {
-  const review = input.review;
-  if (review.decision !== "accepted") {
-    return Effect.fail(
-      new PublicationReviewRequiredError({ decision: review.decision }),
-    );
-  }
-  if (review.reviewer.trim().length === 0) {
-    return Effect.fail(
-      new InvalidPublicationInputError({ reason: "reviewer is required" }),
-    );
-  }
-  try {
-    Schema.decodeUnknownSync(Timestamp)(review.reviewedAt);
-    Schema.decodeUnknownSync(Timestamp)(input.publishedAt);
-  } catch (cause) {
-    return Effect.fail(new InvalidPublicationInputError({
-      reason: `invalid publication timestamp: ${String(cause)}`,
-    }));
-  }
-  if (review.proposalDigest !== digestDiscoveryProposal(input.proposal)) {
-    return Effect.fail(new InvalidPublicationInputError({
-      reason: "accepted proposal digest does not match publication proposal",
-    }));
-  }
-  return Effect.void;
-};
-
-const publicationApproval = (input: PublishProfileInput) =>
-  input.review.decision === "accepted"
-    ? {
-      proposalDigest: input.review.proposalDigest,
-      reviewer: input.review.reviewer,
-      reviewedAt: input.review.reviewedAt,
-      recordedAt: input.publishedAt,
-    }
-    : undefined;
-
-const validateProposal = (
-  proposal: DiscoveryScanResult,
-): Effect.Effect<void, UnresolvedPublicationProposalError> => {
-  const reasons = unresolvedReasons(proposal);
-  return reasons.length === 0
-    ? Effect.void
-    : Effect.fail(new UnresolvedPublicationProposalError({ reasons }));
-};
-
-const machineProfileFor = (
-  input: PublishProfileInput,
-): MachineProfile => {
-  const discoveryStatus = new Map(
-    input.proposal.resources.map((resource) => [resource.id, resource.reviewStatus]),
-  );
-  const discoveryAccepted = (id: string, status: string): boolean =>
-    status === "accepted" && (discoveryStatus.get(id) ?? "accepted") === "accepted";
-  const acceptedDiscoveryResources = [
-    ...input.proposal.tools
-      .filter((tool) => discoveryAccepted(tool.id, tool.reviewStatus))
-      .map(resourceForTool),
-    ...input.proposal.skills
-      .filter((skill) => discoveryAccepted(skill.id, skill.reviewStatus))
-      .map(resourceForSkill),
-  ];
-  const resources = new Map<string, ProfileResourceInput>(
-    acceptedDiscoveryResources.map((resource) => [resource.id, resource]),
-  );
-  for (const resource of input.profile.resources ?? []) {
-    resources.set(resource.id, resource);
-  }
-  return {
-    id: input.profile.id,
+  return normalizeMachineProfile({
+    id: config.profile.id,
     version: 2,
-    name: input.profile.name,
-    groups: [...(input.profile.groups ?? [])],
-    resources: [...resources.values()],
-    scheduleDefault: input.profile.scheduleDefault,
-  };
+    name: config.profile.name,
+    groups: Object.keys(config.groups ?? {}).sort(compareText).map((name): ProfileGroup => ({ name })),
+    resources: resources.map((resource) => {
+      const groups = groupsOf.get(resource.id);
+      return groups === undefined ? resource : { ...resource, groups };
+    }),
+    scheduleDefault: config.scheduleDefault === undefined ? undefined : scheduleDefaultOf(config.scheduleDefault),
+  });
 };
 
 /** `..` as a whole path segment, in either separator style. */
 const parentSegment = /(?:^|[\\/])\.\.(?:[\\/]|$)/u;
 
 /**
- * Resolve an authored `source` strictly inside the profile directory. The
- * containment check runs on the real path, so neither `..` nor a symlink at
- * any depth can make the Source sign content from elsewhere on its disk. A
- * source that is itself a symlink to something inside the directory is still
- * published as that symlink; a link meant to point elsewhere is authored as
- * `symlinkTo`.
+ * Resolve a `source` strictly inside the folder. The containment check runs
+ * on the real path, so neither `..` nor a symlink at any depth can make the
+ * Source sign content from elsewhere on its disk.
  */
 const resolveSourcePath = async (
   resource: string,
-  directory: string | undefined,
+  directory: string,
   source: string,
 ): Promise<string> => {
   const failure = (reason: string) =>
     new PublicationSourceError({ resource, path: source, reason });
-  if (isAbsolute(source) || win32.isAbsolute(source)) {
-    throw failure("absolute paths are not allowed; write the source relative to the profile file's directory");
-  }
-  if (parentSegment.test(source)) {
-    throw failure("\"..\" segments are not allowed; keep the source inside the profile file's directory");
-  }
-  if (directory === undefined) {
-    throw failure("a relative source needs the authored profile file (--profile-file) it is relative to");
+  if (isAbsolute(source) || win32.isAbsolute(source) || parentSegment.test(source)) {
+    throw failure("a source must be a relative path inside the Canonical Folder");
   }
   const root = await realpath(directory);
   const path = resolve(root, source);
@@ -401,15 +303,11 @@ const resolveSourcePath = async (
     target = await realpath(path);
   } catch (cause) {
     const code = cause instanceof Error && "code" in cause ? String(cause.code) : String(cause);
-    throw failure(
-      `${path} cannot be resolved (${code}); a source must exist inside the profile directory ${root}, and a link to a path that exists only on followers is authored as "symlinkTo"`,
-    );
+    throw failure(`${path} cannot be resolved (${code})`);
   }
   const fromRoot = relative(root, target);
   if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
-    throw failure(
-      `${path} resolves to ${target}, outside the profile directory ${root}; copy the content into the profile directory, or author an intentional link as "symlinkTo"`,
-    );
+    throw failure(`${path} resolves to ${target}, outside the Canonical Folder ${root}; copy the content into the folder`);
   }
   return path;
 };
@@ -427,97 +325,50 @@ const digestSourceFile = async (path: string): Promise<{ readonly blob: string; 
   return { blob: hash.digest("hex"), bytes };
 };
 
-const resolveManagedFile = async (
+/** Hash one `source` found inside the folder. Links are never published. */
+const resolveSource = async (
   resource: string,
-  file: ManagedFileInput,
-  directory: string | undefined,
+  source: string,
+  directory: string,
   sources: Map<string, ResolvedSourceFile>,
-): Promise<ManagedFileInput> => {
-  if (file.symlinkTo !== undefined || file.source === undefined) return file;
-  const path = await resolveSourcePath(resource, directory, file.source);
-  const status = await lstat(path);
-  if (status.isSymbolicLink()) {
-    return {
-      path: file.path,
-      executable: false,
-      mode: 0,
-      symlinkTo: await readlink(path),
-    };
-  }
-  if (!status.isFile()) {
+): Promise<void> => {
+  const path = await resolveSourcePath(resource, directory, source);
+  if (!(await lstat(path)).isFile()) {
     throw new PublicationSourceError({
       resource,
-      path: file.source,
-      reason: `${path} is not a regular file or symlink`,
+      path: source,
+      reason: `${path} is not a regular file; links are not published`,
     });
   }
   const digested = await digestSourceFile(path);
-  sources.set(file.source, {
+  sources.set(source, {
     path,
     blob: Schema.decodeUnknownSync(BlobId)(digested.blob),
     bytes: digested.bytes,
   });
-  const mode = file.mode ?? (status.mode & 0o7777);
-  return {
-    path: file.path,
-    source: file.source,
-    executable: file.executable ?? ((mode & 0o111) !== 0),
-    mode,
-  };
 };
-
-const resolveResourceSource = async (
-  resource: ProfileResourceInput,
-  directory: string | undefined,
-  sources: Map<string, ResolvedSourceFile>,
-): Promise<ProfileResourceInput> => {
-  if (resource.spec.kind === "file") {
-    const resolved = await resolveManagedFile(
-      resource.id,
-      { path: "", ...resource.spec },
-      directory,
-      sources,
-    );
-    const { path: _, ...spec } = resolved;
-    return { ...resource, spec: { kind: "file", ...spec } };
-  }
-  if (resource.spec.kind !== "directory" && resource.spec.kind !== "skill") {
-    return resource;
-  }
-  const files = await Promise.all(
-    resource.spec.files.map((file) => resolveManagedFile(resource.id, file, directory, sources)),
-  );
-  return { ...resource, spec: { ...resource.spec, files } };
-};
-
-/** Resources whose `source` files were hashed, with the digests the compiler consumes. */
-export interface ResolvedResourceSources {
-  readonly resources: ReadonlyArray<ProfileResourceInput>;
-  readonly sources: ResolvedSourceFiles;
-}
 
 /**
- * Hash every authored `source` read from inside `directory` (the authored
- * profile file's directory) by streaming it; symlink sources become
- * `symlinkTo`. File bytes are never held whole in memory: publication streams
- * them into storage again and rejects a file that changed in between.
- * Publication and `canonfig source digest` share this so both see the same
- * content.
+ * Hash every `source` read from inside the folder by streaming it. File
+ * bytes are never held whole in memory: publication streams them into
+ * storage again and rejects a file that changed in between.
  */
-export const resolveResourceSources = (
+const resolveResourceSources = (
   resources: ReadonlyArray<ProfileResourceInput>,
-  directory: string | undefined,
-): Effect.Effect<
-  ResolvedResourceSources,
-  PublicationSourceError | InvalidPublicationInputError
-> =>
+  directory: string,
+): Effect.Effect<ResolvedSourceFiles, PublicationSourceError | InvalidPublicationInputError> =>
   Effect.tryPromise({
     try: async () => {
       const sources = new Map<string, ResolvedSourceFile>();
-      const resolved = await Promise.all(
-        resources.map((resource) => resolveResourceSource(resource, directory, sources)),
-      );
-      return { resources: resolved, sources };
+      for (const resource of resources) {
+        const files = resource.spec.kind === "file"
+          ? [resource.spec.source]
+          : resource.spec.kind === "skill" ? resource.spec.files.map((file) => file.source) : [];
+        for (const source of files) {
+          if (source !== undefined) await resolveSource(resource.id, source, directory, sources);
+        }
+      }
+      return sources;
     },
     catch: (cause) =>
       cause instanceof PublicationSourceError
@@ -526,7 +377,6 @@ export const resolveResourceSources = (
           reason: `resource source could not be read: ${String(cause)}`,
         }),
   });
-
 
 interface UnsignedRevision {
   readonly id: ProfileRevision["id"];
@@ -545,8 +395,7 @@ export const revisionSigningPayload = (
   revision: UnsignedRevision,
 ): string => {
   // The profile's canonical bytes already authenticate scheduleDefault. Keep
-  // it out of this legacy payload shape so revisions written before schedule
-  // metadata transport remain signature-compatible.
+  // it out of this payload shape so the signed fields stay the transport's.
   const { scheduleDefault: _, ...signed } = revision;
   return canonicalJson(asJson(signed));
 };
@@ -556,31 +405,33 @@ export const makePublication = (
   repository: StateRepository["Service"],
 ) => {
   const publish = (
-    input: PublishProfileInput,
+    input: PublishFolderInput,
   ): Effect.Effect<ProfileRevision, ProfileCatalogPublishError> =>
     Effect.gen(function*() {
-      yield* validateReview(input);
-      yield* validateProposal(input.proposal);
-
-      const unresolvedProfile = yield* Effect.try({
-        try: () => machineProfileFor(input),
+      if (input.reviewer.trim().length === 0) {
+        return yield* new InvalidPublicationInputError({ reason: "reviewer is required" });
+      }
+      yield* Effect.try({
+        try: () => Schema.decodeUnknownSync(Timestamp)(input.publishedAt),
+        catch: (cause) => new InvalidPublicationInputError({ reason: `invalid publication timestamp: ${String(cause)}` }),
+      });
+      const profile = yield* Effect.tryPromise({
+        try: () => folderProfile(input.folder),
         catch: (cause) => new InvalidPublicationInputError({
-          reason: `invalid publication metadata: ${String(cause)}`,
+          reason: cause instanceof CanonicalFolderError
+            ? `${cause.path} ${cause.message}`
+            : `the Canonical Folder could not be read: ${String(cause)}`,
         }),
       });
-      if (unresolvedProfile.resources.length === 0 && input.allowEmpty !== true) {
-        return yield* new EmptyPublicationError({
-          scannedPaths: [...input.proposal.scannedPaths],
+      // One Source publishes one Machine Profile. Followers select it by id,
+      // so a second id would leave them on the first.
+      const published = (yield* repository.listRevisions()).find((revision) => revision.profileId !== profile.id);
+      if (published !== undefined) {
+        return yield* new InvalidPublicationInputError({
+          reason: `this Source publishes profile ${published.profileId}; set "profile.id" in canonfig.jsonc back to ${published.profileId}`,
         });
       }
-      const resolved = yield* resolveResourceSources(
-        unresolvedProfile.resources,
-        input.profile.directory,
-      );
-      const profile = normalizeMachineProfile({
-        ...unresolvedProfile,
-        resources: resolved.resources,
-      });
+      const sources = yield* resolveResourceSources(profile.resources, input.folder);
       const errors = validateMachineProfile(profile);
       if (errors.length > 0) {
         return yield* Effect.fail(new InvalidPublicationResourcesError(errors));
@@ -591,16 +442,22 @@ export const makePublication = (
       }
 
       const encoded = yield* Effect.try({
-        try: () => compileProfileCandidate(profile, resolved.sources),
+        try: () => compileProfileCandidate(profile, sources),
         catch: (cause) =>
           cause instanceof ProfileContractError
             ? new InvalidPublicationResourcesError(cause.errors)
             : new InvalidPublicationInputError({
-              reason: `resource bytes could not be encoded: ${String(cause)}`,
+              reason: cause instanceof Error ? cause.message : `resource bytes could not be encoded: ${String(cause)}`,
             }),
       });
       const canonicalBytes = encoded.canonicalBytes;
       const digest = encoded.digest;
+      const approval = {
+        proposalDigest: digest,
+        reviewer: input.reviewer,
+        reviewedAt: input.publishedAt,
+        recordedAt: input.publishedAt,
+      };
       const transportResources = encoded.resources.map((resource, index) => ({
         ...resource, verify: encoded.profile.resources[index]!.verify,
       }));
@@ -627,11 +484,7 @@ export const makePublication = (
           });
         }
         yield* validateMetadata(latest);
-        yield* repository.publishRevision({
-          revision: latest,
-          blobs: encoded.blobs,
-          approval: publicationApproval(input),
-        });
+        yield* repository.publishRevision({ revision: latest, blobs: encoded.blobs, approval });
         return latest;
       }
 
@@ -694,11 +547,7 @@ export const makePublication = (
         scheduleDefault: unsigned.scheduleDefault,
       };
       yield* validateMetadata(revision);
-      yield* repository.publishRevision({
-        revision,
-        blobs: encoded.blobs,
-        approval: publicationApproval(input),
-      });
+      yield* repository.publishRevision({ revision, blobs: encoded.blobs, approval });
       return revision;
     });
 

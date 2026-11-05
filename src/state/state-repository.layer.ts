@@ -27,20 +27,20 @@ import { ProfileRevision, ProfileRevisionSchema } from "../domain/profile.ts";
 import {
   AppliedResourceRecordSchema,
   DriftConflictSchema,
+  localProjectionFollower,
+  PlanningLocalRevisionSchema,
   SynchronizationPlanSchema,
   type AppliedResourceRecord,
   type DriftConflict,
   type SynchronizationOutcome,
   type SynchronizationPlan,
 } from "../domain/synchronization.ts";
-import { sha256BytesHex } from "../profile/profile-codec.ts";
 import {
   InstallerRecipeProvenance,
   McpQualificationReceipt,
 } from "../domain/mcp-qualification.ts";
 import {
   FollowerSynchronizationConfiguration,
-  LocalOverlayEntrySchema,
 } from "../synchronization/follower-sync-config.ts";
 import {
   ActionNotInPlanError,
@@ -49,6 +49,7 @@ import {
   FollowerNotFoundError,
   InvalidRunTransitionError,
   RepositoryDecodeError,
+  EarlierStateFormatError,
   RepositorySqlError,
   RevisionImmutableError,
   RevisionNotFoundError,
@@ -64,6 +65,7 @@ import type {
   CreateEnrollmentInvitationInput,
   DeploymentReceipt,
   DriftRecord,
+  HarnessTakeover,
   EnrollmentSourceRecord,
   FinalizeEnrollmentInput,
   FollowerCredentialRecord,
@@ -75,39 +77,41 @@ import type {
   RegisterFollowerInput,
   RevisionApprovalRecord,
   RevisionBlobCandidate,
-  RemoveLocalOverlayInput,
   ResourceBlobRange,
   RunEvidenceSummary,
   SaveFollowerSynchronizationConfigurationInput,
-  SaveLocalOverlayInput,
   StartRunInput,
   StateSnapshot,
   StoredEnrollmentInvitation,
   StoredResourceBlob,
   VerificationEvidence,
 } from "./state-repository.types.ts";
-import { stateFormatVersion, stateMigrations } from "./state-schema.ts";
+import { stateFormatVersion, stateMigrations, stateSchemaMigration } from "./state-schema.ts";
 import { buildIdentity } from "../runtime/build-identity.ts";
-import { storedRevisionJson } from "../profile/legacy-revision.ts";
-import type { LocalOverlayEntry } from "../synchronization/synchronization.types.ts";
+import type {
+  PlanningLocalRevision,
+} from "../synchronization/synchronization.types.ts";
 
 const CountRow = Schema.Struct({ count: Schema.Number });
+const HarnessTakeoverRow = Schema.Struct({
+  harness: Schema.String,
+  surface: Schema.String,
+  root: Schema.String,
+  snapshot: Schema.NullOr(Schema.String),
+  run_id: RunId,
+  taken_over_at: Schema.String,
+});
 const RevisionJsonRow = Schema.Struct({ revision_json: Schema.String });
 const RevisionBlobCandidateRow = Schema.Struct({
   blob_id: ContentDigest,
   revision_id: ProfileRevisionId,
   resource_id: ResourceId,
 });
-const ResourceBlobRangeHexRow = Schema.Struct({
-  content_hex: Schema.String,
-  total_bytes: Schema.Number,
-});
 const ResourceBlobManifestRow = Schema.Struct({
   total_bytes: Schema.Number,
   chunk_bytes: Schema.Number,
 });
-const LegacyResourceBlobLengthRow = Schema.Struct({ total_bytes: Schema.Number });
-const LegacyResourceBlobSliceRow = Schema.Struct({ content: Schema.Uint8Array });
+const MigrationRow = Schema.Struct({ migration_id: Schema.Number, name: Schema.String });
 const ResourceBlobChunkRow = Schema.Struct({
   chunk_index: Schema.Number,
   content: Schema.Uint8Array,
@@ -131,9 +135,9 @@ const ActiveRunRow = Schema.Struct({
 });
 const OpenRunIdentityRow = Schema.Struct({
   id: Schema.String,
-  creating_version: Schema.NullOr(Schema.String),
-  creating_identity: Schema.NullOr(Schema.String),
-  state_format: Schema.NullOr(Schema.Number),
+  creating_version: Schema.String,
+  creating_identity: Schema.String,
+  state_format: Schema.Number,
 });
 const DeploymentReceiptRow = Schema.Struct({
   run_id: RunId,
@@ -302,6 +306,7 @@ const parseJson = <S extends Schema.Constraint>(
 
 type RepositoryJson =
   | ProfileRevision
+  | PlanningLocalRevision
   | SynchronizationPlan
   | SynchronizationOutcome
   | DriftConflict
@@ -327,6 +332,24 @@ const statusCount = Effect.fn("StateRepository.statusCount")(function*(
 
 const makeRepository = Effect.gen(function*() {
   const sql = yield* SqlClient.SqlClient;
+
+  // A database from before state format 6 has a different migration history.
+  // Running the current migration over it would fail halfway or, worse,
+  // succeed against tables whose rows this release cannot decode.
+  const history = yield* sql`
+    SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
+  `.pipe(
+    Effect.flatMap((tables) => tables.length === 0
+      ? Effect.succeed([])
+      : sql`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`),
+    Effect.flatMap((rows) => Schema.decodeUnknownEffect(Schema.Array(MigrationRow))(rows)),
+    Effect.mapError((error) => new RepositorySqlError({ operation: "read state schema history", message: String(error) })),
+  );
+  if (history.some((row) => row.migration_id !== stateSchemaMigration.id || row.name !== stateSchemaMigration.name)) {
+    return yield* new EarlierStateFormatError({
+      migrations: history.map((row) => `${String(row.migration_id).padStart(4, "0")}_${row.name}`),
+    });
+  }
 
   yield* SqliteMigrator.run({ loader: stateMigrations }).pipe(
     Effect.mapError((error) =>
@@ -517,84 +540,6 @@ const makeRepository = Effect.gen(function*() {
     );
     return removed > 0;
   });
-
-  const saveLocalOverlay = Effect.fn("StateRepository.saveLocalOverlay")(
-    function*(input: SaveLocalOverlayInput): Effect.fn.Return<void, StateRepositoryError> {
-      const configuration = yield* getFollowerSynchronizationConfiguration();
-      if (configuration === undefined) {
-        return yield* new RepositoryDecodeError({
-          entity: "follower synchronization configuration",
-          id: "1",
-          message: "follower synchronization configuration is not enrolled",
-        });
-      }
-      const entry = yield* Schema.decodeUnknownEffect(LocalOverlayEntrySchema)(
-        input.entry,
-      ).pipe(Effect.mapError(decodeError("local overlay", input.entry.resource)));
-      const localOverlay = [
-        ...(configuration.localOverlay ?? []).filter((candidate) =>
-          candidate.resource !== entry.resource
-        ),
-        entry,
-      ].sort((left, right) => left.resource.localeCompare(right.resource));
-      const nextConfiguration = yield* Schema.decodeUnknownEffect(
-        FollowerSynchronizationConfiguration,
-      )({
-        ...configuration,
-        localOverlay,
-        updatedAt: input.updatedAt,
-      }).pipe(
-        Effect.mapError(
-          decodeError("follower synchronization configuration", entry.resource),
-        ),
-      );
-      yield* sql`
-        UPDATE follower_sync_configuration
-        SET configuration_json = ${JSON.stringify(nextConfiguration)},
-            updated_at = ${nextConfiguration.updatedAt}
-        WHERE singleton = 1
-      `.pipe(Effect.mapError(sqlError("save local overlay")));
-    },
-  );
-
-  const removeLocalOverlay = Effect.fn("StateRepository.removeLocalOverlay")(
-    function*(input: RemoveLocalOverlayInput): Effect.fn.Return<void, StateRepositoryError> {
-      const configuration = yield* getFollowerSynchronizationConfiguration();
-      if (configuration === undefined) {
-        return yield* new RepositoryDecodeError({
-          entity: "follower synchronization configuration",
-          id: "1",
-          message: "follower synchronization configuration is not enrolled",
-        });
-      }
-      const localOverlay = (configuration.localOverlay ?? [])
-        .filter((entry) => entry.resource !== input.resource);
-      const nextConfiguration = yield* Schema.decodeUnknownEffect(
-        FollowerSynchronizationConfiguration,
-      )({
-        ...configuration,
-        localOverlay,
-        updatedAt: input.updatedAt,
-      }).pipe(
-        Effect.mapError(
-          decodeError("follower synchronization configuration", input.resource),
-        ),
-      );
-      yield* sql`
-        UPDATE follower_sync_configuration
-        SET configuration_json = ${JSON.stringify(nextConfiguration)},
-            updated_at = ${nextConfiguration.updatedAt}
-        WHERE singleton = 1
-      `.pipe(Effect.mapError(sqlError("remove local overlay")));
-    },
-  );
-
-  const listLocalOverlays = Effect.fn("StateRepository.listLocalOverlays")(
-    function*(): Effect.fn.Return<ReadonlyArray<LocalOverlayEntry>, StateRepositoryError> {
-      const configuration = yield* getFollowerSynchronizationConfiguration();
-      return configuration?.localOverlay ?? [];
-    },
-  );
 
   const saveEnrollmentSource = Effect.fn("StateRepository.saveEnrollmentSource")(
     function*(source: EnrollmentSourceRecord): Effect.fn.Return<void, StateRepositoryError> {
@@ -1308,23 +1253,17 @@ const makeRepository = Effect.gen(function*() {
 
   /**
    * Store one blob as fixed-size chunks, hashing as it writes, or verify the
-   * copy already stored. Only one chunk of the blob is in memory at a time; a
-   * file blob is read from disk again, and a file that changed since it was
-   * hashed fails the publication instead of storing other bytes.
+   * copy already stored. Only one chunk of the blob is in memory at a time:
+   * the source file is read from disk again, and a file that changed since
+   * it was hashed fails the publication instead of storing other bytes.
    */
   const storeResourceBlob = Effect.fn("StateRepository.storeResourceBlob")(
     function*(revision: ProfileRevisionIdType, blob: StoredResourceBlob) {
-      const expectedBytes = "content" in blob ? blob.content.byteLength : blob.bytes;
+      const expectedBytes = blob.bytes;
       const differentContent = new RevisionImmutableError({
         revision,
         message: `resource blob ${blob.id} names different immutable content`,
       });
-      if ("content" in blob && sha256BytesHex(blob.content) !== blob.id) {
-        return yield* new RevisionImmutableError({
-          revision,
-          message: `resource blob ${blob.id} does not match its digest`,
-        });
-      }
       const manifestRows = yield* sql`
         SELECT total_bytes, chunk_bytes
         FROM resource_blob_manifests
@@ -1344,33 +1283,6 @@ const makeRepository = Effect.gen(function*() {
         if (stored !== blob.id) return yield* differentContent;
         return;
       }
-      // A blob stored before chunking is one resource_blobs row. It stays
-      // where it is and is compared one chunk-sized slice at a time.
-      const legacyRows = yield* sql`
-        SELECT length(content) AS total_bytes FROM resource_blobs WHERE id = ${blob.id}
-      `;
-      const legacy = (yield* decodeRows(
-        LegacyResourceBlobLengthRow,
-        legacyRows,
-        "resource blob",
-        blob.id,
-      ))[0];
-      if (legacy !== undefined) {
-        if (legacy.total_bytes !== expectedBytes) return yield* differentContent;
-        const hash = createHash("sha256");
-        for (let offset = 0; offset < legacy.total_bytes; offset += resourceBlobChunkBytes) {
-          const slices = yield* sql`
-            SELECT substr(content, ${offset + 1}, ${resourceBlobChunkBytes}) AS content
-            FROM resource_blobs
-            WHERE id = ${blob.id}
-          `;
-          const slice = (yield* decodeRows(LegacyResourceBlobSliceRow, slices, "resource blob", blob.id))[0];
-          if (slice === undefined) return yield* differentContent;
-          hash.update(slice.content);
-        }
-        if (hash.digest("hex") !== blob.id) return yield* differentContent;
-        return;
-      }
       yield* sql`
         INSERT INTO resource_blob_manifests (id, total_bytes, chunk_bytes)
         VALUES (${blob.id}, ${expectedBytes}, ${resourceBlobChunkBytes})
@@ -1385,45 +1297,37 @@ const makeRepository = Effect.gen(function*() {
           VALUES (${blob.id}, ${index}, ${content})
         `;
       };
-      if ("content" in blob) {
-        for (let offset = 0, index = 0; offset < blob.content.byteLength; offset += resourceBlobChunkBytes, index += 1) {
-          yield* insertChunk(index, blob.content.subarray(offset, offset + resourceBlobChunkBytes));
-        }
-      } else {
-        const unreadable = (cause: unknown) =>
-          new RevisionImmutableError({
-            revision,
-            message: `resource source ${blob.path} could not be read while publishing: ${String(cause)}`,
-          });
-        yield* Effect.acquireUseRelease(
-          Effect.tryPromise({ try: () => open(blob.path, "r"), catch: unreadable }),
-          (handle) =>
-            Effect.gen(function*() {
-              // SQLite copies a bound value, so one buffer serves every chunk.
-              const buffer = Buffer.allocUnsafe(resourceBlobChunkBytes);
-              for (let index = 0; ; index += 1) {
-                let filled = 0;
-                while (filled < buffer.byteLength) {
-                  const { bytesRead } = yield* Effect.tryPromise({
-                    try: () => handle.read(buffer, filled, buffer.byteLength - filled, null),
-                    catch: unreadable,
-                  });
-                  if (bytesRead === 0) break;
-                  filled += bytesRead;
-                }
-                if (filled > 0) yield* insertChunk(index, buffer.subarray(0, filled));
-                if (filled < buffer.byteLength || written > expectedBytes) return;
+      const unreadable = (cause: unknown) =>
+        new RevisionImmutableError({
+          revision,
+          message: `resource source ${blob.path} could not be read while publishing: ${String(cause)}`,
+        });
+      yield* Effect.acquireUseRelease(
+        Effect.tryPromise({ try: () => open(blob.path, "r"), catch: unreadable }),
+        (handle) =>
+          Effect.gen(function*() {
+            // SQLite copies a bound value, so one buffer serves every chunk.
+            const buffer = Buffer.allocUnsafe(resourceBlobChunkBytes);
+            for (let index = 0; ; index += 1) {
+              let filled = 0;
+              while (filled < buffer.byteLength) {
+                const { bytesRead } = yield* Effect.tryPromise({
+                  try: () => handle.read(buffer, filled, buffer.byteLength - filled, null),
+                  catch: unreadable,
+                });
+                if (bytesRead === 0) break;
+                filled += bytesRead;
               }
-            }),
-          (handle) => Effect.promise(() => handle.close()),
-        );
-      }
+              if (filled > 0) yield* insertChunk(index, buffer.subarray(0, filled));
+              if (filled < buffer.byteLength || written > expectedBytes) return;
+            }
+          }),
+        (handle) => Effect.promise(() => handle.close()),
+      );
       if (written !== expectedBytes || hash.digest("hex") !== blob.id) {
         return yield* new RevisionImmutableError({
           revision,
-          message: "content" in blob
-            ? `resource blob ${blob.id} does not match its digest`
-            : `resource source ${blob.path} changed while it was being published; publish again`,
+          message: `resource source ${blob.path} changed while it was being published; publish again`,
         });
       }
     },
@@ -1550,7 +1454,7 @@ const makeRepository = Effect.gen(function*() {
       if (row === undefined) return yield* new RevisionNotFoundError({ revision });
       return yield* parseJson(
         ProfileRevisionSchema,
-        storedRevisionJson(row.revision_json),
+        row.revision_json,
         "profile revision",
         revision,
       );
@@ -1574,7 +1478,7 @@ const makeRepository = Effect.gen(function*() {
       if (row === undefined) return undefined;
       return yield* parseJson(
         ProfileRevisionSchema,
-        storedRevisionJson(row.revision_json),
+        row.revision_json,
         "profile revision",
         revision,
       );
@@ -1600,7 +1504,7 @@ const makeRepository = Effect.gen(function*() {
       if (row === undefined) return undefined;
       return yield* parseJson(
         ProfileRevisionSchema,
-        storedRevisionJson(row.revision_json),
+        row.revision_json,
         "profile revision",
         profile,
       );
@@ -1624,7 +1528,7 @@ const makeRepository = Effect.gen(function*() {
       for (const row of decoded) {
         revisions.push(yield* parseJson(
           ProfileRevisionSchema,
-          storedRevisionJson(row.revision_json),
+          row.revision_json,
           "profile revision",
           "all",
         ));
@@ -1692,66 +1596,40 @@ const makeRepository = Effect.gen(function*() {
       "resource blob manifest",
       input.blob,
     ))[0];
-    if (manifest !== undefined) {
-      const end = Math.min(manifest.total_bytes, input.offset + input.maximumBytes);
-      if (end <= input.offset) {
-        return { chunks: [], byteLength: 0, totalBytes: manifest.total_bytes };
-      }
-      const first = Math.floor(input.offset / manifest.chunk_bytes);
-      const last = Math.floor((end - 1) / manifest.chunk_bytes);
-      const rows = yield* sql`
-        SELECT chunk_index, content
-        FROM resource_blob_chunks
-        WHERE blob_id = ${input.blob} AND chunk_index BETWEEN ${first} AND ${last}
-        ORDER BY chunk_index
-      `.pipe(Effect.mapError(sqlError("read resource blob range")));
-      const stored = yield* decodeRows(ResourceBlobChunkRow, rows, "resource blob range", input.blob);
-      const chunks: Array<Uint8Array> = [];
-      let byteLength = 0;
-      for (const [position, row] of stored.entries()) {
-        const chunkStart = row.chunk_index * manifest.chunk_bytes;
-        if (row.chunk_index !== first + position || row.content.byteLength > manifest.chunk_bytes) break;
-        const piece = row.content.subarray(
-          Math.max(0, input.offset - chunkStart),
-          Math.min(row.content.byteLength, end - chunkStart),
-        );
-        chunks.push(piece);
-        byteLength += piece.byteLength;
-      }
-      if (byteLength !== end - input.offset) {
-        return yield* new RepositoryDecodeError({
-          entity: "resource blob range",
-          id: input.blob,
-          message: "stored blob chunks are missing or inconsistent with the blob length",
-        });
-      }
-      return { chunks, byteLength, totalBytes: manifest.total_bytes };
+    if (manifest === undefined) return undefined;
+    const end = Math.min(manifest.total_bytes, input.offset + input.maximumBytes);
+    if (end <= input.offset) {
+      return { chunks: [], byteLength: 0, totalBytes: manifest.total_bytes };
     }
-    // Blobs stored before chunking: SQLite slices the one row.
+    const first = Math.floor(input.offset / manifest.chunk_bytes);
+    const last = Math.floor((end - 1) / manifest.chunk_bytes);
     const rows = yield* sql`
-      SELECT
-        hex(substr(content, ${input.offset + 1}, ${input.maximumBytes})) AS content_hex,
-        length(content) AS total_bytes
-      FROM resource_blobs
-      WHERE id = ${input.blob}
+      SELECT chunk_index, content
+      FROM resource_blob_chunks
+      WHERE blob_id = ${input.blob} AND chunk_index BETWEEN ${first} AND ${last}
+      ORDER BY chunk_index
     `.pipe(Effect.mapError(sqlError("read resource blob range")));
-    const decoded = yield* decodeRows(
-      ResourceBlobRangeHexRow,
-      rows,
-      "resource blob range",
-      input.blob,
-    );
-    const row = decoded[0];
-    if (row === undefined) return undefined;
-    if (row.content_hex.length % 2 !== 0) {
+    const stored = yield* decodeRows(ResourceBlobChunkRow, rows, "resource blob range", input.blob);
+    const chunks: Array<Uint8Array> = [];
+    let byteLength = 0;
+    for (const [position, row] of stored.entries()) {
+      const chunkStart = row.chunk_index * manifest.chunk_bytes;
+      if (row.chunk_index !== first + position || row.content.byteLength > manifest.chunk_bytes) break;
+      const piece = row.content.subarray(
+        Math.max(0, input.offset - chunkStart),
+        Math.min(row.content.byteLength, end - chunkStart),
+      );
+      chunks.push(piece);
+      byteLength += piece.byteLength;
+    }
+    if (byteLength !== end - input.offset) {
       return yield* new RepositoryDecodeError({
         entity: "resource blob range",
         id: input.blob,
-        message: "stored blob range has invalid hexadecimal content",
+        message: "stored blob chunks are missing or inconsistent with the blob length",
       });
     }
-    const content = Buffer.from(row.content_hex, "hex");
-    return { chunks: [content], byteLength: content.byteLength, totalBytes: row.total_bytes };
+    return { chunks, byteLength, totalBytes: manifest.total_bytes };
   });
 
   const loadAppliedResources = Effect.fn(
@@ -1826,6 +1704,161 @@ const makeRepository = Effect.gen(function*() {
     );
   });
 
+  const recordLocalRevision = Effect.fn("StateRepository.recordLocalRevision")(
+    function*(revision: PlanningLocalRevision, recordedAt: string): Effect.fn.Return<void, StateRepositoryError> {
+      const encoded = encodeJson(revision);
+      const transaction = Effect.gen(function*() {
+        const rows = yield* sql`
+          SELECT revision_json FROM local_revisions WHERE id = ${revision.id}
+        `;
+        const existing = yield* decodeRows(RevisionJsonRow, rows, "local revision row", revision.id);
+        if (existing.length > 0) {
+          if (existing[0]!.revision_json !== encoded) {
+            return yield* new RevisionImmutableError({
+              revision: revision.id,
+              message: "the local revision id already names different content",
+            });
+          }
+          return;
+        }
+        yield* sql`
+          INSERT INTO local_revisions (id, origin_digest, revision_json, recorded_at)
+          VALUES (${revision.id}, ${revision.originDigest}, ${encoded}, ${recordedAt})
+        `;
+      });
+      yield* sql.withTransaction(transaction).pipe(
+        Effect.mapError((error) =>
+          "_tag" in error && error._tag !== "SqlError"
+            ? error
+            : sqlError("record local revision")(error)
+        ),
+      );
+    },
+  );
+
+  const getLocalRevision = Effect.fn("StateRepository.getLocalRevision")(
+    function*(revision: ProfileRevisionIdType): Effect.fn.Return<PlanningLocalRevision, StateRepositoryError> {
+      const rows = yield* sql`
+        SELECT revision_json FROM local_revisions WHERE id = ${revision}
+      `.pipe(Effect.mapError(sqlError("load local revision")));
+      const row = (yield* decodeRows(RevisionJsonRow, rows, "local revision row", revision))[0];
+      if (row === undefined) return yield* new RevisionNotFoundError({ revision });
+      return yield* parseJson(PlanningLocalRevisionSchema, row.revision_json, "local revision", revision);
+    },
+  );
+
+  const loadHarnessTakeovers = Effect.fn("StateRepository.loadHarnessTakeovers")(
+    function*(): Effect.fn.Return<ReadonlyArray<HarnessTakeover>, StateRepositoryError> {
+      const rows = yield* sql`
+        SELECT harness, surface, root, snapshot, run_id, taken_over_at
+        FROM harness_takeovers
+        ORDER BY harness, surface
+      `.pipe(Effect.mapError(sqlError("load harness takeovers")));
+      const decoded = yield* decodeRows(HarnessTakeoverRow, rows, "harness takeover", "*");
+      return decoded.map((row) => ({
+        harness: row.harness,
+        surface: row.surface,
+        root: row.root,
+        snapshot: row.snapshot ?? undefined,
+        run: row.run_id,
+        takenOverAt: row.taken_over_at,
+      }));
+    },
+  );
+
+  const recordHarnessTakeovers = Effect.fn("StateRepository.recordHarnessTakeovers")(
+    function*(takeovers: ReadonlyArray<HarnessTakeover>): Effect.fn.Return<void, StateRepositoryError> {
+      const transaction = Effect.forEach(takeovers, (takeover) => sql`
+        INSERT INTO harness_takeovers (harness, surface, root, snapshot, run_id, taken_over_at)
+        VALUES (
+          ${takeover.harness}, ${takeover.surface}, ${takeover.root},
+          ${takeover.snapshot ?? null}, ${takeover.run}, ${takeover.takenOverAt}
+        )
+      `, { discard: true });
+      yield* sql.withTransaction(transaction).pipe(
+        Effect.mapError(sqlError("record harness takeovers")),
+      );
+    },
+  );
+
+  const removeRunTakeovers = Effect.fn("StateRepository.removeRunTakeovers")(
+    function*(run: RunIdType): Effect.fn.Return<void, StateRepositoryError> {
+      yield* sql`DELETE FROM harness_takeovers WHERE run_id = ${run}`.pipe(
+        Effect.mapError(sqlError("remove run takeovers")),
+      );
+    },
+  );
+
+  const releaseTakeovers = Effect.fn("StateRepository.releaseTakeovers")(
+    function*(
+      surfaces: ReadonlyArray<{ readonly harness: string; readonly surface: string }>,
+    ): Effect.fn.Return<void, StateRepositoryError> {
+      const transaction = Effect.forEach(surfaces, (entry) => sql`
+        DELETE FROM harness_takeovers
+        WHERE harness = ${entry.harness} AND surface = ${entry.surface}
+      `, { discard: true });
+      yield* sql.withTransaction(transaction).pipe(
+        Effect.mapError(sqlError("release harness takeovers")),
+      );
+    },
+  );
+
+  const loadStartedResources = Effect.fn("StateRepository.loadStartedResources")(
+    function*(run: RunIdType): Effect.fn.Return<ReadonlyArray<ResourceId>, StateRepositoryError> {
+      const runRows = yield* sql`SELECT plan_json FROM synchronization_runs WHERE id = ${run}`.pipe(
+        Effect.mapError(sqlError("load synchronization run plan")),
+      );
+      const row = (yield* decodeRows(Schema.Struct({ plan_json: Schema.String }), runRows, "synchronization run plan", run))[0];
+      if (row === undefined) return [];
+      const plan = yield* parseJson(SynchronizationPlanSchema, row.plan_json, "synchronization plan", run);
+      const startedRows = yield* sql`
+        SELECT DISTINCT action_id FROM action_journal
+        WHERE run_id = ${run} AND state IN ('running', 'succeeded', 'failed')
+      `.pipe(Effect.mapError(sqlError("load started actions")));
+      const started = new Set(
+        (yield* decodeRows(Schema.Struct({ action_id: ActionId }), startedRows, "started actions", run)).map((entry) => entry.action_id),
+      );
+      return [...new Set(plan.actions.filter((action) => started.has(action.id)).map((action) => action.resource))];
+    },
+  );
+
+  const adoptLocalProjection = Effect.fn("StateRepository.adoptLocalProjection")(
+    function*(follower: FollowerIdType): Effect.fn.Return<number, StateRepositoryError> {
+      const transaction = Effect.gen(function*() {
+        const open = yield* statusCount(
+          sql,
+          sql`
+            SELECT COUNT(*) AS count FROM synchronization_runs
+            WHERE follower_id = ${localProjectionFollower} AND status IN ('applying', 'Interrupted')
+          `,
+          "open local runs",
+          localProjectionFollower,
+        );
+        if (open > 0) return yield* new ActiveRunExistsError({ follower: localProjectionFollower });
+        const moved = yield* statusCount(
+          sql,
+          sql`SELECT COUNT(*) AS count FROM applied_resources WHERE follower_id = ${localProjectionFollower}`,
+          "local applied resources",
+          localProjectionFollower,
+        );
+        // A record the follower already holds for the same resource is older
+        // than the machine's own projection of it; the local one wins.
+        yield* sql`
+          UPDATE OR REPLACE applied_resources SET follower_id = ${follower}
+          WHERE follower_id = ${localProjectionFollower}
+        `;
+        return moved;
+      });
+      return yield* sql.withTransaction(transaction).pipe(
+        Effect.mapError((error) =>
+          "_tag" in error && error._tag !== "SqlError"
+            ? error
+            : sqlError("adopt local projection records")(error)
+        ),
+      );
+    },
+  );
+
   const startRun = Effect.fn("StateRepository.startRun")(
     function*(input: StartRunInput): Effect.fn.Return<void, StateRepositoryError> {
       const transaction = Effect.gen(function*() {
@@ -1835,12 +1868,17 @@ const makeRepository = Effect.gen(function*() {
           "follower",
           input.follower,
         );
-        if (followerCount === 0) {
+        if (followerCount === 0 && input.follower !== localProjectionFollower) {
           return yield* new FollowerNotFoundError({ follower: input.follower });
         }
         const revisionCount = yield* statusCount(
           sql,
-          sql`SELECT COUNT(*) AS count FROM profile_revisions WHERE id = ${input.revision}`,
+          sql`
+            SELECT
+              (SELECT COUNT(*) FROM profile_revisions WHERE id = ${input.revision})
+              + (SELECT COUNT(*) FROM local_revisions WHERE id = ${input.revision})
+              AS count
+          `,
           "profile revision",
           input.revision,
         );
@@ -2637,17 +2675,16 @@ const makeRepository = Effect.gen(function*() {
   /**
    * What the still-open run of this follower knows about the build that
    * created it. An undefined answer means no open run: nothing blocks an
-   * upgrade. A null identity means a run created before builds recorded
-   * their identity, which the upgrade gate treats as foreign.
+   * upgrade.
    */
   const loadOpenRunIdentity = Effect.fn("StateRepository.loadOpenRunIdentity")(
     function*(
       follower: FollowerIdType,
     ): Effect.fn.Return<{
       readonly run: string;
-      readonly creatingVersion: string | null;
-      readonly creatingIdentity: string | null;
-      readonly stateFormat: number | null;
+      readonly creatingVersion: string;
+      readonly creatingIdentity: string;
+      readonly stateFormat: number;
     } | undefined, StateRepositoryError> {
       const rows = yield* sql`
         SELECT
@@ -2750,9 +2787,6 @@ const makeRepository = Effect.gen(function*() {
     saveFollowerSynchronizationConfiguration,
     getFollowerSynchronizationConfiguration,
     removeFollowerSynchronizationConfiguration,
-    saveLocalOverlay,
-    removeLocalOverlay,
-    listLocalOverlays,
     saveEnrollmentSource,
     getEnrollmentSource,
     createEnrollmentInvitation,
@@ -2774,6 +2808,14 @@ const makeRepository = Effect.gen(function*() {
     listRevisionBlobCandidates,
     readResourceBlobRange,
     loadAppliedResources,
+    recordLocalRevision,
+    getLocalRevision,
+    loadHarnessTakeovers,
+    recordHarnessTakeovers,
+    removeRunTakeovers,
+    releaseTakeovers,
+    loadStartedResources,
+    adoptLocalProjection,
     startRun,
     journalAction,
     recordDrift,

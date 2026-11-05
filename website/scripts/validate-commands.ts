@@ -2,12 +2,10 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { parseReconciliationArguments } from "../../src/profile/skill-reconciliation-cli.ts";
 import { parseSelfUpdateArguments } from "../../src/runtime/self-update/cli.ts";
-import { parseSkillsArguments } from "../../src/harness-configuration/skills/cli.ts";
+import { parseSkillsArguments } from "../../src/skills/cli.ts";
 import { evaluateCli } from "../../src/cli/cli.ts";
-import { parseHarnessArguments } from "../../src/harness-configuration/cli-arguments.ts";
-import { isSourceSkillReconciliation, sourceSkillReconciliationArguments, installerArguments } from "../../src/runtime/command-routing.ts";
+import { installerArguments } from "../../src/runtime/command-routing.ts";
 import { parseInstallerArguments } from "../../src/runtime/installer-cli.ts";
 import {
   isPrivateEnrollmentCommand,
@@ -113,16 +111,7 @@ const validSecretsCommand = (arguments_: ReadonlyArray<string>): boolean => {
   return false;
 };
 
-const validHarnessCommand = (arguments_: ReadonlyArray<string>): boolean => {
-  try {
-    parseHarnessArguments(arguments_.slice(1));
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-/** The installer command is handled before evaluateCli, like secrets and harness. */
+/** The installer command is handled before evaluateCli, like secrets and skills. */
 const validInstallerCommand = (arguments_: ReadonlyArray<string>): boolean => {
   if (arguments_.includes("--help") || arguments_.includes("-h")) return true;
   try {
@@ -160,18 +149,11 @@ export const validateDocumentation = async (
         if (!validSecretsCommand(arguments_)) {
           throw new Error(`${path} contains an invalid CLI example: ${example}`);
         }
-      } else if (isSourceSkillReconciliation(arguments_)) {
-        try { parseReconciliationArguments(sourceSkillReconciliationArguments(arguments_)); }
-        catch { throw new Error(`${path} contains an invalid CLI example: ${example}`); }
       } else if (arguments_[0] === "self-update") {
         parseSelfUpdateArguments(arguments_.slice(1));
       } else if (arguments_[0] === "skills") {
         try { parseSkillsArguments(arguments_.slice(1)); }
         catch { throw new Error(`${path} contains an invalid CLI example: ${example}`); }
-      } else if (arguments_[0] === "harness") {
-        if (!validHarnessCommand(arguments_)) {
-          throw new Error(`${path} contains an invalid CLI example: ${example}`);
-        }
       } else if (arguments_[0] === "installer") {
         if (!validInstallerCommand(arguments_)) {
           throw new Error(`${path} contains an invalid CLI example: ${example}`);

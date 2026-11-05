@@ -13,7 +13,6 @@ import {
   type RecipeSource,
 } from "../domain/resource.ts";
 import type { PlannedAction } from "../domain/synchronization.ts";
-import { composeTextFile, parseTextComposition, sourceTextIssue } from "../domain/text-composition.ts";
 import {
   McpQualificationReceipt,
   mcpQualificationReady,
@@ -202,7 +201,6 @@ const readIfPresent = (
 
 const captureStoredFile = (
   path: MachinePath,
-  maximumBytes?: number | undefined,
 ): Effect.Effect<StoredFile, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
@@ -224,7 +222,7 @@ const captureStoredFile = (
     if (symlink !== undefined) {
       return { path: path.absolute, state: "symlink", target: symlink };
     }
-    const digest = yield* machine.digestFile({ path, maximumBytes });
+    const digest = yield* machine.digestFile({ path });
     const permissions = yield* machine.snapshotPermissions(path);
     return {
       path: path.absolute,
@@ -239,7 +237,6 @@ const restoreStoredFile = (
   reference: string,
   root?: MachinePath | undefined,
   directoryPermissions: "restore" | "writable" = "restore",
-  maximumBytes?: number | undefined,
 ): Effect.Effect<void, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
@@ -302,7 +299,7 @@ const restoreStoredFile = (
         return;
       }
       case "regular": {
-        const content = { file: backupFile(reference, entry.path), digest: entry.digest, maximumBytes };
+        const content = { file: backupFile(reference, entry.path), digest: entry.digest };
         if (root === undefined) {
           yield* machine.atomicWrite({ path, content, permissions: entry.permissions });
         } else {
@@ -699,22 +696,12 @@ const captureRollback = (
           && !sameMachinePath(path, root)
           ? Effect.succeed({ path: path.absolute, state: "absent" } as const)
           : Effect.gen(function*() {
-            const appendLocalTarget = context.resource.policy === "append-local"
-              && paths.some((target) => sameMachinePath(target, path));
-            const maximumBytes = appendLocalTarget ? context.limits.maximumFileBytes : undefined;
-            const entry = yield* captureStoredFile(path, maximumBytes);
-            const detail = context.action.detail;
-            if (appendLocalTarget && detail.kind === "write-file" && detail.retainedLocalDigest !== undefined
-              && (entry.state !== "regular" || entry.digest !== detail.retainedLocalDigest)) {
-              return yield* new InvalidExecutionPlanError({
-                message: `First-adoption local text changed after planning: ${path.absolute}. Replan and review synchronization.`,
-              });
-            }
+            const entry = yield* captureStoredFile(path);
             if (entry.state === "regular") {
               const backup = yield* machine.normalizePath({ path: backupFile(rollbackPath.absolute, entry.path) });
               yield* machine.atomicWrite({
                 path: backup,
-                content: { file: entry.path, digest: entry.digest, maximumBytes },
+                content: { file: entry.path, digest: entry.digest },
                 mode: 0o600,
               });
             }
@@ -726,10 +713,9 @@ const captureRollback = (
       path: rollbackPath,
       content: encoder.encode(JSON.stringify([...stored, ...createdParents])),
     });
-    const restore = (context.resource.policy === "append-local"
-      ? restoreAppendLocal(context, stored, rollbackPath.absolute)
-      : restoreStoredFiles(stored, rollbackPath.absolute, root)
-    ).pipe(Effect.andThen(removeCreatedParents(createdParents, false)));
+    const restore = restoreStoredFiles(stored, rollbackPath.absolute, root).pipe(
+      Effect.andThen(removeCreatedParents(createdParents, false)),
+    );
     return { reference: rollbackPath.absolute, stored, restore };
   });
 
@@ -876,11 +862,7 @@ export const restoreRollbackReference = (
 > =>
   Effect.gen(function*() {
     const { stored, createdParents, root } = yield* loadRollbackMaterial(context, reference);
-    if (context.resource.policy === "append-local") {
-      yield* restoreAppendLocal(context, stored, reference);
-    } else {
-      yield* restoreStoredFiles(stored, reference, root);
-    }
+    yield* restoreStoredFiles(stored, reference, root);
     yield* removeCreatedParents(createdParents, true);
   });
 
@@ -948,12 +930,6 @@ const intendedStates = (
     const desired = context.desired;
     const single = stored[0];
     const intended = new Map<string, IntendedState>();
-    if (context.resource.policy === "append-local") {
-      const before = yield* textSnapshot(stored);
-      const { content } = yield* appendLocalOutput(context, before, reference);
-      intended.set(before.path, regularState(content));
-      return intended;
-    }
     switch (detail.kind) {
       case "write-file":
         if (single !== undefined) {
@@ -1102,153 +1078,12 @@ const targetPath = (
     return yield* machine.normalizePath({ path: target });
   });
 
-type StoredTextFile = Extract<StoredFile, { readonly state: "absent" | "regular" }>;
-
-const textSnapshot = (stored: ReadonlyArray<StoredFile>): Effect.Effect<StoredTextFile, InvalidExecutionPlanError> => {
-  const entry = stored[0];
-  return stored.length === 1 && entry !== undefined
-    && (entry.state === "absent" || entry.state === "regular")
-    ? Effect.succeed(entry)
-    : Effect.fail(new InvalidExecutionPlanError({ message: "append-local requires a regular text file" }));
-};
-
-/** Derive the post-write bytes from the very snapshot kept for rollback. */
-const appendLocalOutput = (
-  context: ResourceExecutionContext,
-  before: StoredTextFile,
-  reference: string,
-): Effect.Effect<{ readonly content: Uint8Array | undefined; readonly mode: number }, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
-  Effect.gen(function*() {
-    const desired = context.desired;
-    if (desired.kind !== "file" || desired.symlinkTo !== undefined || desired.executable
-      || ((desired.mode ?? 0) & 0o111) !== 0) {
-      return yield* new InvalidExecutionPlanError({ message: "append-local requires a non-executable regular text file" });
-    }
-    const machine = yield* MachineState;
-    const bytesBefore = before.state === "absent" ? undefined : yield* machine.readFile({
-      path: yield* targetPath(backupFile(reference, before.path)),
-      maximumBytes: context.limits.maximumFileBytes,
-    });
-    if (before.state === "regular" && bytesBefore !== undefined && sha256BytesHex(bytesBefore) !== before.digest) {
-      return yield* new InvalidExecutionPlanError({ message: `rollback backup digest mismatch: ${before.path}` });
-    }
-    const current = bytesBefore === undefined ? undefined : yield* Effect.try({
-      try: () => parseTextComposition(bytesBefore),
-      catch: (error) => new InvalidExecutionPlanError({ message: `cannot compose ${before.path}: ${String(error)}` }),
-    });
-    const mode = context.action.detail.kind === "remove-resource" && before.state === "regular"
-      ? before.permissions.mode : desired.mode ?? 0o600;
-    if (context.action.detail.kind === "remove-resource") {
-      if (current === undefined) return { content: undefined, mode };
-      if (current.kind !== "managed" || sha256Hex(current.source) !== desired.digest) {
-        return yield* new InvalidExecutionPlanError({ message: `Source text changed before removal: ${before.path}. Replan synchronization.` });
-      }
-      return { content: encoder.encode(current.local), mode };
-    }
-    const detail = context.action.detail;
-    if (detail.kind !== "write-file") {
-      return yield* new InvalidExecutionPlanError({ message: "append-local requires a write-file or removal action" });
-    }
-    if (detail.retainedLocalDigest !== undefined
-      && (before.state !== "regular" || before.digest !== detail.retainedLocalDigest
-        || current?.kind !== "unmanaged")) {
-      return yield* new InvalidExecutionPlanError({
-        message: `First-adoption local text changed after planning: ${before.path}. Replan and review synchronization.`,
-      });
-    }
-    const currentSourceDigest = current?.kind === "managed" ? sha256Hex(current.source) : undefined;
-    if (current !== undefined && (current.kind === "managed"
-      ? currentSourceDigest !== detail.previousSourceDigest && currentSourceDigest !== desired.digest
-      : detail.previousSourceDigest !== undefined)) {
-      return yield* new InvalidExecutionPlanError({ message: `Source text changed before writing: ${before.path}. Replan synchronization.` });
-    }
-    const bytes = yield* artifact(context.artifacts, desired.digest);
-    const source = yield* Effect.try({
-      try: () => {
-        const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-        const issue = sourceTextIssue(text);
-        if (issue !== undefined) throw new Error(issue);
-        return text;
-      },
-      catch: (error) => new InvalidArtifactError({ digest: desired.digest, message: String(error) }),
-    });
-    const content = composeTextFile(source, current);
-    if (content.byteLength > context.limits.maximumFileBytes) {
-      return yield* new InvalidExecutionPlanError({ message: `composed text exceeds the ${context.limits.maximumFileBytes}-byte file limit: ${before.path}` });
-    }
-    return { content, mode };
-  });
-
-const sameTextSnapshot = (left: StoredFile, right: StoredTextFile): boolean =>
-  left.state === "absent" && right.state === "absent"
-    || left.state === "regular" && right.state === "regular"
-      && left.digest === right.digest && left.permissions.mode === right.permissions.mode
-      && (left.permissions.platform !== "windows"
-        ? right.permissions.platform !== "windows"
-        : right.permissions.platform === "windows"
-          && left.permissions.securityDescriptor === right.permissions.securityDescriptor);
-
-/** Refuse links and special objects before any file read, including recovery. */
-const inspectTextTarget = (path: MachinePath) => Effect.gen(function*() {
-  const machine = yield* MachineState;
-  const kind = yield* machine.inspectPath(path).pipe(
-    Effect.catchTag("MachineFilesystemError", (error) => error.message.includes("ENOENT")
-      ? Effect.succeed(undefined) : Effect.fail(error)),
-  );
-  if (kind !== undefined && kind.kind !== "regular") {
-    return yield* new InvalidExecutionPlanError({ message: `append-local target is not a regular file: ${path.absolute}` });
-  }
-});
-
-/**
- * A full backup is evidence, not permission to overwrite later local edits.
- * Recovery accepts only the exact pre- or post-write state of this action.
- */
-const restoreAppendLocal = (context: ResourceExecutionContext, stored: ReadonlyArray<StoredFile>, reference: string) =>
-  Effect.gen(function*() {
-    const before = yield* textSnapshot(stored);
-    const path = yield* targetPath(before.path);
-    yield* inspectTextTarget(path);
-    const current = yield* captureStoredFile(path, context.limits.maximumFileBytes);
-    if (sameTextSnapshot(current, before)) return;
-    const { content, mode } = yield* appendLocalOutput(context, before, reference);
-    // The intended write has a portable mode, not the preimage's native ACL.
-    const matchesAfter = content === undefined ? current.state === "absent"
-      : current.state === "regular" && current.digest === sha256BytesHex(content)
-        && current.permissions.mode === mode;
-    if (!matchesAfter) {
-      return yield* new InvalidExecutionPlanError({ message: `append-local target changed after the action: ${before.path}. Inspect the retained rollback backup before recovering.` });
-    }
-    yield* restoreStoredFile(before, reference, undefined, "restore", context.limits.maximumFileBytes);
-  });
-
-const prepareAppendLocal = (context: ResourceExecutionContext, target: string) =>
-  Effect.gen(function*() {
-    const path = yield* targetPath(target);
-    yield* inspectTextTarget(path);
-    const rollback = yield* captureRollback(context, [path]);
-    const before = yield* textSnapshot(rollback.stored);
-    const { content, mode } = yield* appendLocalOutput(context, before, rollback.reference);
-    const execute = Effect.gen(function*() {
-      yield* inspectTextTarget(path);
-      const current = yield* captureStoredFile(path, context.limits.maximumFileBytes);
-      if (!sameTextSnapshot(current, before)) {
-        return yield* new InvalidExecutionPlanError({ message: `append-local target changed while preparing: ${target}. Replan synchronization.` });
-      }
-      if (content === undefined) return;
-      const machine = yield* MachineState;
-      yield* machine.atomicWrite({ path, content, mode });
-    });
-    return { rollbackReference: rollback.reference, execute, rollback: rollback.restore };
-  });
-
 const prepareWrite = (
   context: ResourceExecutionContext,
   target: string,
   digest: string,
 ): Effect.Effect<PreparedResourceAction, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
   Effect.gen(function*() {
-    if (context.resource.policy === "append-local") return yield* prepareAppendLocal(context, target);
     const path = yield* targetPath(target);
     const rollback = yield* captureRollback(context, [path]);
     const execute = Effect.gen(function*() {
@@ -1555,7 +1390,6 @@ const prepareRemoval = (
   Effect.gen(function*() {
     switch (context.resource.kind) {
       case "file": {
-        if (context.resource.policy === "append-local") return yield* prepareAppendLocal(context, detail.target);
         const path = yield* targetPath(detail.target);
         const rollback = yield* captureRollback(context, [path]);
         const execute = Effect.gen(function*() {
@@ -1689,6 +1523,17 @@ const prepareRemoval = (
           if (restorationResult._tag === "Failure") {
             return yield* Effect.fail(restorationResult.failure);
           }
+          // The root is the resource's target, so once its owned paths are
+          // gone an empty root goes too. Leaving it made a later
+          // resource at the same target observe an empty directory it had no
+          // record of, which planned as Follower Drift. A root that still
+          // holds entries holds someone else's files and stays. Rollback
+          // captured the root, so it recreates it.
+          yield* machine.removeEmptyDirectory({ path: root }).pipe(
+            Effect.catchTag("MachineFilesystemError", (error) =>
+              /\b(?:ENOTEMPTY|EEXIST|ENOENT)\b/u.test(error.message) ? Effect.void : Effect.fail(error)
+            ),
+          );
         });
         return { rollbackReference: rollback.reference, execute, rollback: rollback.restore };
       }
@@ -2264,9 +2109,7 @@ export const verifyResource = (
   switch (desired.kind) {
     case "file":
       return Effect.gen(function*() {
-        const digest = yield* (context.resource.policy === "append-local"
-          ? verifyAppendLocal(context, declaredDigest)
-          : verifyDigest(context.resource.target, declaredDigest));
+        const digest = yield* verifyDigest(context.resource.target, declaredDigest);
         if (!digest.passed) return digest;
         const machine = yield* MachineState;
         const path = yield* machine.normalizePath({
@@ -2318,20 +2161,6 @@ export const verifyResource = (
       }));
   }
 };
-
-const verifyAppendLocal = (context: ResourceExecutionContext, declaredDigest: string) =>
-  Effect.gen(function*() {
-    const path = yield* targetPath(context.resource.target);
-    yield* inspectTextTarget(path);
-    const machine = yield* MachineState;
-    const bytes = yield* machine.readFile({ path, maximumBytes: context.limits.maximumFileBytes });
-    const composition = yield* Effect.try({
-      try: () => parseTextComposition(bytes),
-      catch: (error) => new InvalidExecutionPlanError({ message: `cannot verify Source text: ${String(error)}` }),
-    });
-    const observedDigest = composition.kind === "managed" ? sha256Hex(composition.source) : undefined;
-    return { passed: observedDigest === declaredDigest, method: "sha256-source", observedDigest };
-  });
 
 /** A tool's own install destinations come first for bare verifier names. */
 const verifierInstallMethods = (context: ResourceExecutionContext) =>

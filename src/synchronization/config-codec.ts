@@ -13,6 +13,7 @@ import { Schema } from "effect";
 
 import type { ResourceSpecInput } from "../domain/profile.ts";
 import { configPathSegments } from "../domain/config-path.ts";
+import { sha256BytesHex } from "../profile/profile-codec.ts";
 import { parseJsoncObject, removeJsoncValue, setJsoncValue } from "./config-jsonc.ts";
 import { readTomlDocument, rejectNull, removeTomlValue, setTomlValue } from "./config-toml.ts";
 import {
@@ -144,6 +145,23 @@ export const renderConfigDocument = (spec: {
     setConfigPath(document, entry.path, sortedKeys(Schema.decodeUnknownSync(Schema.MutableJson)(entry.value)));
   }
   return new TextEncoder().encode(serializeConfigDocument(spec.format, document));
+};
+
+/**
+ * The digest of `keys`' values in a document, rendered exactly as a desired
+ * config digest is, or undefined when none of them is present. Observation and
+ * Applied Resource Records both use it, so they compare like with like.
+ */
+export const configKeysDigest = (
+  format: ConfigFormat,
+  document: ConfigDocument,
+  keys: ReadonlyArray<string>,
+): string | undefined => {
+  const present = keys.flatMap((key) => {
+    const value = getConfigPath(document, key);
+    return value === undefined ? [] : [{ path: key, value }];
+  });
+  return present.length === 0 ? undefined : sha256BytesHex(renderConfigDocument({ format, keys: present }));
 };
 
 export const setConfigPath = (

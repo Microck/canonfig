@@ -1,28 +1,18 @@
 # Canonfig skills
 
-- [`sync-harnesses`](sync-harnesses/SKILL.md): start from existing Codex, Claude
-  Code, or other harness settings, migrate reviewed fields into canonical
-  project sources, and project to selected harnesses. Includes Simple/Advanced
-  choices and explicitly approved remote delivery/projection or handoff,
-  including existing followers. No automatic native importer or remote harness
-  command is implied.
 - [`setup-canonfig`](setup-canonfig/SKILL.md): guided setup in Simple or Advanced
   (in-depth) mode. It inspects first, offers numbered choices plus custom input,
-  explains each question, recommends safe defaults, then plans and verifies the
-  requested Source Machine, Follower Machine, or project harness outcome.
+  explains each question, recommends safe defaults, chooses harnesses and what
+  to import into `~/.canonfig/`, then plans and verifies the requested Source
+  Machine or Follower Machine outcome.
 - [`install-canonfig`](install-canonfig/SKILL.md): direct installation of
-  `@microck/canonfig@5.0.1`, first-time role establishment, profile authoring
-  and publication, and follower enrollment.
-- [`operate-canonfig`](operate-canonfig/SKILL.md): evidence-first tool
-  discovery, profile digests and publication, the Source service and tunnel,
-  synchronization, client trust after apply, scheduling, diagnostics, drift
-  handling, recovery, and unenrollment.
-
-For harness-to-harness work, start with `Use $sync-harnesses in simple mode to
-sync my Codex project configuration to Claude Code and Antigravity`.
-Add selected remote machines explicitly. The skill separates source delivery,
-projection, and runtime verification; follower sync alone does not project
-harness configuration. See its capability boundary before planning automation.
+  `@microck/canonfig@5.0.1`, first-time role establishment, the first
+  `~/.canonfig/` projection and publication, and follower enrollment.
+- [`operate-canonfig`](operate-canonfig/SKILL.md): evidence-first folder edits
+  and publication, tool discovery, the Source service and tunnel,
+  synchronization, harness exclusions, takeover snapshots and restore, `local/`
+  items, client trust after apply, scheduling, diagnostics, drift handling,
+  recovery, and unenrollment.
 
 Start with `Use $setup-canonfig in simple mode to set up this machine` or
 `Use $setup-canonfig in advanced mode to review my configuration`.

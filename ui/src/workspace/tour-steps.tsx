@@ -46,7 +46,7 @@ export function tourChapters(ws: Workspace, live: () => Workspace): TourChapter[
     title: "Quick tour",
     summary: ws.role === "source" ? "Your Source, the profile, your machines and what to do next." : "This machine, Sync, Local settings and what to do next.",
     // The short tour points at sidebar entries rather than visiting them, then ends on Overview.
-    pages: ws.role === "source" ? ["profile", "machines", "overview"] : ["sync", "overlays", "overview"],
+    pages: ws.role === "source" ? ["profile", "machines", "overview"] : ["sync", "local", "overview"],
     steps: tourSteps(ws, live),
   };
   const chapters = ws.role === "source" ? sourceChapters(ws) : followerChapters(ws);
@@ -87,7 +87,7 @@ function tourSteps(ws: Workspace, live: () => Workspace): TourStep[] {
       {
         target: ["nav-profile"],
         title: "Profile: what gets synced",
-        body: "Add files, settings, skills and tools here. Nothing reaches another machine until you publish.",
+        body: "Your Canonfig folder: instructions, rules, skills, MCP servers, settings and tools. Nothing reaches another machine until you publish.",
       },
       {
         target: ["nav-machines"],
@@ -109,21 +109,21 @@ function tourSteps(ws: Workspace, live: () => Workspace): TourStep[] {
       body: "See exactly what an update would change here, then apply it.",
     },
     {
-      target: ["nav-overlays"],
-      title: "Keep something different",
-      body: "Keep a setting on this machine only. Canonfig leaves it alone.",
+      target: ["nav-local"],
+      title: "Items only this machine has",
+      body: "Add rules, skills, MCP servers or settings to this machine's local folder, and choose which harnesses Canonfig manages here.",
     },
     handOver,
   ];
 }
 
-/** Both roles have the same Agent policy and Harness projects pages, so they share one chapter. */
+/** Both roles have the same Agent policy page, so they share one chapter. */
 function agentsChapter(ws: Workspace): TourChapter {
   return {
     id: "agents",
     title: "AI agents",
     summary: "When an AI agent may help, and what it may change.",
-    pages: ["agent", "harness"],
+    pages: ["agent"],
     steps: [
       {
         target: ["agent-mode"],
@@ -143,18 +143,12 @@ function agentsChapter(ws: Workspace): TourChapter {
         body: "The agent can write only in these folders; everything else is read-only to it. Click Save policy to keep your changes.",
         before: () => ws.setView("agent"),
       },
-      {
-        target: ["harness-projects"],
-        title: "Harness projects",
-        body: "Add a repository, and Canonfig writes each agent's instruction files from one .canonfig/harness.yaml in it. This is separate from the profile your machines sync.",
-        before: () => ws.setView("harness"),
-      },
     ],
   };
 }
 
 function sourceChapters(ws: Workspace): TourChapter[] {
-  const profileTab = (tab: "groups" | "defaults") => () => ws.navigate(workspaceHref("source", "profile", { profileTab: tab }));
+  const profileTab = (tab: "harnesses" | "groups" | "defaults") => () => ws.navigate(workspaceHref("source", "profile", { profileTab: tab }));
   return [
     {
       id: "source",
@@ -203,20 +197,20 @@ function sourceChapters(ws: Workspace): TourChapter[] {
         {
           target: ["profile-items"],
           title: "What your machines get",
-          body: "The profile lists the files, folders, settings, skills and tools your machines get. A letter beside an item marks a change they don't have yet.",
+          body: "Each item is a file in ~/.canonfig or an entry in its canonfig.jsonc: instructions, rules, skills, agents, commands, MCP servers, hooks, settings and tools. A letter beside an item marks a change machines don't have yet.",
           before: () => ws.setView("profile"),
         },
         {
-          target: ["profile-add"],
-          title: "Add to the profile",
-          body: "Add item takes a file, folder, setting, skill or tool. Discover tools reads your agent config and proposes the tools it uses.",
+          target: ["profile-folder"],
+          title: "The Canonfig folder",
+          body: "~/.canonfig holds the profile. Canonfig writes your edits into its files and keeps the comments in canonfig.jsonc, and your own edits to the folder show up here.",
           before: () => ws.setView("profile"),
         },
         {
-          target: ["profile-file"],
-          title: "The profile file",
-          body: "This file holds the profile. Canonfig writes your edits into it and keeps your comments, and your own edits to the file show up here.",
-          before: () => ws.setView("profile"),
+          target: ["profile-harnesses"],
+          title: "Harnesses",
+          body: "Tick the harnesses Canonfig writes the folder into. Each machine manages the listed ones it has installed, and can exclude any for itself.",
+          before: profileTab("harnesses"),
         },
         {
           target: ["profile-groups"],
@@ -326,8 +320,8 @@ function sourceChapters(ws: Workspace): TourChapter[] {
     {
       id: "health",
       title: "Service and health",
-      summary: "The source service, setup, installers and health check.",
-      pages: ["service", "setup", "installers", "doctor"],
+      summary: "The source service, setup, installers, health check and backups.",
+      pages: ["service", "setup", "installers", "doctor", "backups"],
       steps: [
         {
           target: ["service-status"],
@@ -353,6 +347,12 @@ function sourceChapters(ws: Workspace): TourChapter[] {
           body: "Run checks to test whether this machine can run Canonfig. It changes nothing, and each problem shows the command that fixes it.",
           before: () => ws.setView("doctor"),
         },
+        {
+          target: ["backups-about"],
+          title: "Backups",
+          body: "Before Canonfig first writes to a harness, it backs up what was there. Restore a backup here to put it back.",
+          before: () => ws.setView("backups"),
+        },
       ],
     },
   ];
@@ -363,8 +363,8 @@ function followerChapters(ws: Workspace): TourChapter[] {
     {
       id: "machine",
       title: "This machine",
-      summary: "Where this machine stands, and which profile it follows.",
-      pages: ["overview", "machines", "machine"],
+      summary: "Where this machine stands, and what it can see.",
+      pages: ["overview", "machines"],
       steps: [
         {
           target: ["overview-head"],
@@ -375,7 +375,7 @@ function followerChapters(ws: Workspace): TourChapter[] {
         {
           target: ["follower-this-machine"],
           title: "This machine at a glance",
-          body: "Shows this machine's revision, profile, next check, kept keys and tunnel. Click Next check, Kept here or Tunnel to open that page.",
+          body: "Shows this machine's revision, next check, harnesses, local items, backups and tunnel. Click a row to open its page.",
           before: () => ws.setView("overview"),
         },
         {
@@ -389,12 +389,6 @@ function followerChapters(ws: Workspace): TourChapter[] {
           title: "What this machine can see",
           body: "The map shows the Source and this machine. Followers can't see each other.",
           before: () => ws.navigate(workspaceHref("follower", "machines")),
-        },
-        {
-          target: ["enrollment-profile"],
-          title: "Which profile it follows",
-          body: "Switch to another profile from the Source. Nothing changes here until you review the update in Sync and apply it.",
-          before: () => ws.setView("machine"),
         },
       ],
     },
@@ -417,21 +411,21 @@ function followerChapters(ws: Workspace): TourChapter[] {
           before: () => ws.setView("sync"),
         },
         {
-          target: ["sync-plan", "sync-paused"],
+          target: ["sync-plan", "sync-held"],
           title: "Every change, before it happens",
           body: "Each row says what Canonfig will do, to which file, and why. Click a row for details.",
           before: () => ws.setView("sync"),
         },
         {
-          target: ["sync-paused"],
-          title: "Paused items",
-          body: "Canonfig pauses a file you edited here instead of overwriting it. Click it to choose between your edit and the revision's copy.",
+          target: ["sync-held"],
+          title: "Items you edited here",
+          body: "Canonfig never overwrites a file you edited here. It keeps your edit and holds what it writes from it. Click it to see how to settle it.",
           before: () => ws.setView("sync"),
         },
         {
           target: ["sync-apply"],
           title: "Apply changes",
-          body: "Nothing changes on this machine until you apply. Paused items wait until you decide.",
+          body: "Nothing changes on this machine until you apply. Items you edited here stay as you left them.",
           before: () => ws.setView("sync"),
         },
       ],
@@ -465,26 +459,38 @@ function followerChapters(ws: Workspace): TourChapter[] {
     {
       id: "local",
       title: "Local settings",
-      summary: "Settings that stay different on this machine.",
-      pages: ["overlays", "sync"],
+      summary: "Items, harnesses and backups that are this machine's own.",
+      pages: ["local", "backups"],
       steps: [
         {
-          target: ["overlays-list"],
-          title: "Keys kept on this machine",
-          body: "Canonfig doesn't overwrite these keys, and never sends their values to the Source.",
-          before: () => ws.setView("overlays"),
+          target: ["local-list"],
+          title: "Your local folder",
+          body: "Rules, skills, MCP servers and settings in ~/.canonfig/local. Canonfig adds them to what the Source publishes and never sends them to it.",
+          before: () => ws.setView("local"),
         },
         {
-          target: ["overlays-add"],
-          title: "Keep a key on this machine",
-          body: "Pick a settings file and the keys to keep, like a model or editor setting. Whole files can't be kept, only keys.",
-          before: () => ws.setView("overlays"),
+          target: ["local-add"],
+          title: "Add a local item",
+          body: "Pick a kind the Source allows and a name it doesn't publish. A clashing name would stop the update until you rename one.",
+          before: () => ws.setView("local"),
         },
         {
-          target: ["sync-plan", "sync-paused"],
-          title: "Kept keys during an update",
-          body: "Updates leave kept keys alone. If the Source also sets one, Sync pauses that file until you decide which value wins.",
-          before: () => ws.setView("sync"),
+          target: ["local-harnesses"],
+          title: "Harnesses on this machine",
+          body: "Untick a harness to exclude it here. The Source's list stays as it is.",
+          before: () => ws.setView("local"),
+        },
+        {
+          target: ["local-backups"],
+          title: "Backups",
+          body: "Canonfig backs up a harness before it first writes there. Only this machine can turn that off.",
+          before: () => ws.setView("local"),
+        },
+        {
+          target: ["backups-about"],
+          title: "Restore a backup",
+          body: "Restoring puts back what a harness had before Canonfig, then excludes that harness here so the next update leaves it alone.",
+          before: () => ws.setView("backups"),
         },
       ],
     },

@@ -30,6 +30,7 @@ import type {
   VerificationEvidence,
 } from "../state/state-repository.types.ts";
 import {
+  configOwnership,
   executionContexts,
   executionLimits,
   executeSynchronizationAction,
@@ -56,6 +57,7 @@ import {
 } from "./synchronization.errors.ts";
 import type {
   PlannedSynchronization,
+  PlanningProfileRevision,
   SynchronizationRecoveryInput,
   SynchronizationRunInput,
 } from "./synchronization.types.ts";
@@ -217,7 +219,7 @@ const validateJournal = (
     return latest;
   });
 
-const baseRevision = (revision: SynchronizationRecoveryInput["revision"]) => ({
+const baseRevision = (revision: PlanningProfileRevision) => ({
   id: revision.id,
   profileId: revision.profileId,
   sequence: revision.sequence,
@@ -423,12 +425,14 @@ export const recoverSynchronizationPlan = (
       });
     }
     const plan = yield* hydratePlan(recovery);
-    const persistedRevision = yield* repository.getRevision(recovery.run.revision);
-    if (
-      recoveryInput.revision.id !== recovery.run.revision
-      || JSON.stringify(baseRevision(recoveryInput.revision))
-        !== JSON.stringify(persistedRevision)
-    ) {
+    // A local revision is stored whole, so recovery resumes from exactly the
+    // stored value; a published revision is compared without its hydration.
+    const matchesPersisted = "origin" in recoveryInput.revision
+      ? JSON.stringify(yield* repository.getLocalRevision(recovery.run.revision))
+        === JSON.stringify(recoveryInput.revision)
+      : JSON.stringify(baseRevision(recoveryInput.revision))
+        === JSON.stringify(yield* repository.getRevision(recovery.run.revision));
+    if (recoveryInput.revision.id !== recovery.run.revision || !matchesPersisted) {
       return yield* integrityError(
         recovery,
         "hydrated revision does not match the persisted run revision",
@@ -745,9 +749,10 @@ export const recoverSynchronizationPlan = (
       for (const resource of outcome.verified) {
         if (removedResources.has(resource)) continue;
         const value = desired.get(resource);
+        const owned = value?.kind === "config" ? configOwnership(value, recoveryInput.artifacts) : undefined;
         const digest = value === undefined
           ? undefined
-          : desiredResourceDigest(value);
+          : owned?.digest ?? desiredResourceDigest(value);
         if (digest !== undefined) {
           const ownedFiles = value === undefined ? undefined : ownedFilesFor(value);
           appliedResources.push({
@@ -766,14 +771,20 @@ export const recoverSynchronizationPlan = (
               : undefined,
             symlinkTo: value?.kind === "file" ? value.symlinkTo : undefined,
             ownedFiles,
-            ownedKeys: value?.kind === "config" ? value.keys : undefined,
+            ownedKeys: owned?.ownedKeys,
             configFormat: value?.kind === "config" ? value.format : undefined,
           });
         }
       }
     }
     return {
-      outcome,
+      outcome: outcome.outcome === "Failed" ? {
+        ...outcome,
+        rollbackIncomplete: failedRollbacks.length > 0,
+        failedRollbackResources: recovery.run.plan.actions.flatMap((action) =>
+          failedRollbacks.includes(action.id) && action.resource !== undefined ? [action.resource] : []
+        ),
+      } : outcome,
       failedRollbacks,
       appliedResources,
       removedResources: outcome.outcome === "Converged"

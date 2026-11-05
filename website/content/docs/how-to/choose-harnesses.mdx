@@ -1,0 +1,188 @@
+---
+title: Choose which harnesses Canonfig manages
+description: List the harnesses Canonfig projects into, see what it detects on each machine, leave a harness out on one machine, and stop managing a harness.
+---
+
+Canonfig projects `~/.canonfig/` into a harness on a machine when three things
+are true: the harness is listed in `harnesses` in `~/.canonfig/canonfig.jsonc`,
+it is installed on that machine, and that machine has not excluded it. The
+list belongs to the Source Machine and reaches every Follower Machine. An
+exclusion belongs to one machine and is never published.
+
+## See what Canonfig sees
+
+On any machine:
+
+```bash
+canonfig harnesses
+```
+
+```text
+harnesses completed
+folder: /home/maria/.canonfig
+listed: codex, claude-code, opencode
+excluded on this machine: none
+snapshots: 1 (latest 2026-11-03T09-14-02-517Z)
+  codex          selected       pinned /home/maria/.codex (snapshot 2026-11-03T09-14-02-517Z)
+  claude-code    selected       pinned /home/maria/.claude (snapshot 2026-11-03T09-14-02-517Z)
+  amp            absent         /home/maria/.config/amp
+  opencode       not-installed  /home/maria/.config/opencode
+```
+
+The real output has one row for each of the 16 harnesses Canonfig supports.
+Each row shows the harness id, its status, and its root: the root pinned when
+Canonfig took the harness over, or else the root it would use now.
+
+| Status | Meaning |
+| --- | --- |
+| `selected` | Listed, installed, and not excluded. Sync projects into it. |
+| `not-installed` | Listed, but not installed on this machine. Sync reports it and leaves what it wrote there earlier as it was. |
+| `excluded` | Excluded on this machine. Sync does not project into it. |
+| `detected` | Installed, but not listed. Sync ignores it. |
+| `absent` | Neither listed nor installed. |
+
+`canonfig doctor` reports the same in its `harnesses` probe.
+
+## How Canonfig detects a harness
+
+A harness is installed when one of its executables resolves through
+Canonfig's install directories, then `~/.local/bin`, then `PATH`. Canonfig
+never runs the executable to check. A configuration directory alone does not
+count: `~/.gemini`, for example, is shared by several Google products.
+
+| Harness id | Executable |
+| --- | --- |
+| `codex` | `codex` |
+| `claude-code` | `claude` |
+| `amp` | `amp` |
+| `oh-my-pi` | `omp` |
+| `pi` | `pi` |
+| `factory-droid` | `droid` |
+| `cursor` | `cursor-agent`, or `agent` when `~/.cursor` exists |
+| `devin` | `devin` |
+| `opencode` | `opencode` |
+| `grok-build` | `grok` |
+| `antigravity` | `agy` |
+| `copilot-cli` | `copilot` |
+| `kimi` | `kimi` |
+| `kilo` | `kilo` |
+| `hermes` | `hermes` |
+| `qwen` | `qwen` |
+
+[Harnesses](/reference/harnesses) lists each harness's root, the environment
+variable that moves it, and the files and keys Canonfig owns there.
+
+A scheduled run starts with a narrower `PATH` than your shell. If a scheduled
+run cannot find an executable your shell finds, it reports the harness as not
+installed and leaves its files as last applied. Install the harness under
+`~/.local/bin` or through a package manager Canonfig knows, or see
+[Run Canonfig unattended](/how-to/run-unattended).
+
+## Change the list for every machine
+
+On the Source Machine, edit `harnesses` in `~/.canonfig/canonfig.jsonc`, then
+apply and publish:
+
+```jsonc title="part of ~/.canonfig/canonfig.jsonc"
+{
+  "harnesses": ["codex", "claude-code", "opencode"]
+}
+```
+
+```bash
+canonfig sync --plan
+canonfig sync --apply
+canonfig source publish --reviewer "$USER"
+```
+
+On each Follower Machine, the next apply takes over every listed harness that
+is installed there and not yet managed, with a Takeover Snapshot. A listed
+harness that is not installed appears on a
+`not installed (listed, not projected)` line in the plan and result, and the
+run still converges. When you install it later, the next run takes it over.
+
+During Source setup, `canonfig setup plan --role source --harness <id>` sets
+the list before the folder exists. Without `--harness`, setup lists the
+installed harnesses it detects.
+
+## Leave a harness out on one machine
+
+On the machine that should not use the harness:
+
+```bash
+canonfig harnesses exclude opencode
+```
+
+This adds `opencode` to `excludeHarnesses` in `~/.canonfig/local/local.jsonc`,
+which is never published. The next `canonfig sync --apply` removes what
+Canonfig wrote into OpenCode, except files someone changed since. It does not
+put back what OpenCode had before Canonfig took it over. To get that back as
+well, run `canonfig restore` instead; see
+[Restore a harness from a backup](/how-to/restore-from-a-backup). Restore
+excludes the harness for you.
+
+To manage the harness again on this machine:
+
+```bash
+canonfig harnesses include opencode
+canonfig sync --apply
+```
+
+`include` only removes this machine's exclusion. If the harness is not in the
+Source Machine's list, the output warns "opencode is not listed in
+/home/maria/.canonfig/canonfig.jsonc; add it to "harnesses" there to project
+it".
+
+## Keep a harness in one place
+
+Canonfig records the root it resolved when it took a harness over, including
+an override such as `CODEX_HOME` or `CLAUDE_CONFIG_DIR`, and pins it. If a
+later run resolves a different root, for example a scheduled run that does not
+see a variable you set in your shell profile, Canonfig stops with Human Action
+Required (exit 3) instead of writing a second copy:
+
+> codex was taken over at /home/maria/.codex but now resolves to
+> /home/maria/work/.codex, for example because an environment override such as
+> CODEX_HOME changed. Canonfig will not project into a second location:
+> restore the environment, or run 'canonfig restore' and sync again
+
+Fix it one of two ways:
+
+- **Keep the old root.** Make the variable the same in every environment that
+  runs Canonfig, including the scheduler, or unset it everywhere.
+- **Move to the new root.** Run `canonfig restore` to give the old root its
+  original files back and release it, then `canonfig harnesses include codex`
+  and `canonfig sync --apply` with the new environment. The next run takes over
+  the new root. A restore puts back every harness in the snapshot, so include
+  each harness it excludes; see
+  [Restore a harness from a backup](/how-to/restore-from-a-backup).
+
+Roots must resolve inside your home directory. A root outside it stops the run
+with "codex resolves to `<root>`, outside the home directory `<home>`;
+Canonfig projects only into roots inside the home directory".
+
+## Stop managing a harness everywhere
+
+Remove the harness from `harnesses` on the Source Machine, apply, and publish.
+On every machine, the next apply removes what Canonfig wrote into that
+harness, except files someone changed there. It does not restore the
+harness's earlier configuration.
+
+<Callout title="Restore first if you want the old configuration back" type="warning">
+  After Canonfig removes its files, a restore of that harness refuses with
+  "Canonfig has no applied state for it". To give a machine back its earlier
+  configuration, run `canonfig restore` there before the harness leaves the
+  list.
+</Callout>
+
+## If something fails
+
+| Message | Cause | Fix |
+| --- | --- | --- |
+| "Unknown harness: claude; expected one of codex, claude-code, ..." (exit 2) | `harnesses include` or `exclude` takes a harness id. | Use an id from the table above. |
+| "unknown harness: claude" (`setup plan --harness`, exit 2) | `--harness` takes a harness id. | Use an id from the table above. |
+| "... was taken over at ... but now resolves to ..." (exit 3) | The harness root changed after takeover. | See [Keep a harness in one place](#keep-a-harness-in-one-place). |
+| "... resolves to ..., outside the home directory ...; Canonfig projects only into roots inside the home directory" (exit 3) | An environment override points the harness outside your home directory. | Point the override inside your home directory, or unset it. |
+| "settings.hermes: hermes has no settings file Canonfig writes" (exit 2) | `settings` in `canonfig.jsonc` names a harness whose settings Canonfig does not manage. | Remove that `settings` entry. |
+| A harness you expect shows `detected` | It is installed but not listed. | Add it to `harnesses` on the Source Machine and publish. |
+| A harness you expect shows `absent` or `not-installed` | Canonfig cannot find its executable. | Check that the executable in the table above resolves from `~/.local/bin` or `PATH`. |

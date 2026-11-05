@@ -5,7 +5,6 @@ import {
   CertificateFingerprint,
   CredentialReference,
   ProfileId,
-  ResourceId,
   Timestamp,
 } from "../domain/brand.ts";
 import { AgentPolicy, FollowerIdentity } from "../domain/identity.ts";
@@ -58,19 +57,11 @@ export const FollowerAgentHarnessConfiguration = Schema.Struct({
 export type FollowerAgentHarnessConfiguration =
   typeof FollowerAgentHarnessConfiguration.Type;
 
-export const LocalOverlayEntrySchema = Schema.Struct({
-  resource: ResourceId,
-  /** Optional for schemaVersion 1 configurations written before targets were recorded. */
-  target: Schema.optional(Schema.NonEmptyString),
-  keys: Schema.Array(Schema.NonEmptyString),
-});
-
-export type LocalOverlayEntry = typeof LocalOverlayEntrySchema.Type;
-
 export const FollowerSynchronizationConfiguration = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   follower: FollowerIdentity,
-  selectedProfile: ProfileId,
+  /** The one profile its Source publishes, recorded at enrollment. */
+  profile: ProfileId,
   source: Schema.Struct({
     endpoint: Schema.NonEmptyString,
     tlsFingerprint: CertificateFingerprint,
@@ -122,7 +113,6 @@ export const FollowerSynchronizationConfiguration = Schema.Struct({
     }),
   ])),
   agentHarness: Schema.optional(FollowerAgentHarnessConfiguration),
-  localOverlay: Schema.optional(Schema.Array(LocalOverlayEntrySchema)),
   /**
    * Bounds on requests to the Source Machine. `timeoutMilliseconds` is an HTTP
    * timeout and belongs to the transport, not to work run on this machine; see

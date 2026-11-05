@@ -17,7 +17,6 @@ import type {
   SynchronizationOutcome,
   SynchronizationPlan,
 } from "../domain/synchronization.ts";
-import type { LocalOverlayEntry } from "../synchronization/synchronization.types.ts";
 import type { McpQualificationReceipt } from "../domain/mcp-qualification.ts";
 import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
@@ -119,16 +118,6 @@ export interface SaveFollowerSynchronizationConfigurationInput {
   readonly sourceIdentity: SourceIdentity;
 }
 
-export interface SaveLocalOverlayInput {
-  readonly entry: LocalOverlayEntry;
-  readonly updatedAt: string;
-}
-
-export interface RemoveLocalOverlayInput {
-  readonly resource: ResourceId;
-  readonly updatedAt: string;
-}
-
 export interface EnrollmentSourceRecord {
   readonly identity: SourceIdentity;
   readonly signingKeyReference: CredentialReference;
@@ -194,6 +183,18 @@ export interface FollowerCredentialRecord {
   readonly follower: FollowerIdentity;
   readonly credentialDigest: ContentDigest;
   readonly credentialReference: CredentialReference;
+}
+
+/** One harness surface Canonfig has taken over, with the root pinned at takeover. */
+export interface HarnessTakeover {
+  /** A harness id, or `agents` for the shared `~/.agents/skills/` surface. */
+  readonly harness: string;
+  readonly surface: string;
+  readonly root: string;
+  /** The takeover snapshot holding the surface's prior content; absent without a backup. */
+  readonly snapshot?: string | undefined;
+  readonly run: RunId;
+  readonly takenOverAt: string;
 }
 
 export interface StartRunInput {

@@ -29,6 +29,7 @@ import type { MachinePath } from "../machine/machine-state.types.ts";
 import { mutationPathLengths, type PathMutationKind } from "../machine/temporary-entries.ts";
 import { canonicalJson, sha256Hex } from "../profile/profile-codec.ts";
 import { redactKnownValues } from "../cli/redaction.ts";
+import { configKeysDigest, parseConfigDocument } from "./config-codec.ts";
 import {
   desiredDirectoryEntries,
   desiredResourceDigest,
@@ -50,6 +51,8 @@ import {
   type SynchronizationExecutionInputError,
 } from "./synchronization.errors.ts";
 import type {
+  DesiredResource,
+  SynchronizationArtifact,
   SynchronizationExecutionLimits,
   SynchronizationRunInput,
 } from "./synchronization.types.ts";
@@ -425,6 +428,27 @@ export const ownedFilesFor = (
     }))
     : undefined;
 
+/**
+ * What a written config resource owns afterward: its keys minus the ones the
+ * run gives back (`releases`), and the digest of only the kept values, so a
+ * later drift check compares the same keys the record names.
+ */
+export const configOwnership = (
+  desired: Extract<DesiredResource, { readonly kind: "config" }>,
+  artifacts: ReadonlyArray<SynchronizationArtifact>,
+) => {
+  if (desired.releases === undefined) return { ownedKeys: desired.keys, digest: desired.digest };
+  const released = new Set(desired.releases);
+  const ownedKeys = desired.keys.filter((key) => !released.has(key));
+  const content = artifacts.find((artifact) => artifact.digest === desired.digest)?.content;
+  const digest = content === undefined
+    ? undefined
+    : configKeysDigest(desired.format, parseConfigDocument(desired.format, new TextDecoder().decode(content)), ownedKeys);
+  // A run only gives keys back while it keeps others whose values it writes.
+  if (digest === undefined) throw new Error(`config ${desired.digest} keeps no written key after releasing ${desired.releases.join(", ")}`);
+  return { ownedKeys, digest };
+};
+
 const appliedResourceFor = (
   input: SynchronizationRunInput,
   state: ActionState,
@@ -438,7 +462,8 @@ const appliedResourceFor = (
   const installerRecipe = detail.kind === "install-tool" || detail.kind === "no-op"
     ? detail.provenance ?? previous?.installerRecipe
     : undefined;
-  const digest = desiredResourceDigest(desired) ?? installerRecipe?.fingerprint;
+  const owned = desired.kind === "config" ? configOwnership(desired, input.artifacts) : undefined;
+  const digest = owned?.digest ?? desiredResourceDigest(desired) ?? installerRecipe?.fingerprint;
   if (digest === undefined) return undefined;
   return {
     resource: state.action.resource,
@@ -454,7 +479,7 @@ const appliedResourceFor = (
       : undefined,
     symlinkTo: desired.kind === "file" ? desired.symlinkTo : undefined,
     ownedFiles: ownedFilesFor(desired),
-    ownedKeys: desired.kind === "config" ? desired.keys : undefined,
+    ownedKeys: owned?.ownedKeys,
     configFormat: desired.kind === "config" ? desired.format : undefined,
     installerRecipe,
   };
@@ -1194,7 +1219,8 @@ export const executeSynchronizationPlan = (
       for (const resource of outcome.verified) {
         if (removedResources.has(resource)) continue;
         const desired = desiredByResource.get(resource);
-        const digest = desired === undefined ? undefined : desiredResourceDigest(desired);
+        const owned = desired?.kind === "config" ? configOwnership(desired, input.artifacts) : undefined;
+        const digest = desired === undefined ? undefined : owned?.digest ?? desiredResourceDigest(desired);
         if (digest !== undefined) {
           const ownedFiles = desired === undefined ? undefined : ownedFilesFor(desired);
           applied.push({
@@ -1213,14 +1239,20 @@ export const executeSynchronizationPlan = (
               : undefined,
             symlinkTo: desired?.kind === "file" ? desired.symlinkTo : undefined,
             ownedFiles,
-            ownedKeys: desired?.kind === "config" ? desired.keys : undefined,
+            ownedKeys: owned?.ownedKeys,
             configFormat: desired?.kind === "config" ? desired.format : undefined,
           });
         }
       }
     }
     return {
-      outcome,
+      outcome: outcome.outcome === "Failed" ? {
+        ...outcome,
+        rollbackIncomplete: failedRollbacks.length > 0,
+        failedRollbackResources: input.plan.actions.flatMap((action) =>
+          failedRollbacks.includes(action.id) && action.resource !== undefined ? [action.resource] : []
+        ),
+      } : outcome,
       failedRollbacks,
       appliedResources: applied,
       removedResources: outcome.outcome === "Converged"

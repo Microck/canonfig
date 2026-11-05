@@ -89,7 +89,11 @@ function StepPane({ direction, reduced, children }: { direction: 1 | -1; reduced
   const pane = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     if (first || reduced) return;
-    riseIn(pane.current!.querySelectorAll(":scope > * > *"), { gap: 30, duration: 200, distance: 6, cap: 3 });
+    // Start the rise on the frame the step changed, where the pane's slide (motion's own clock) starts.
+    // Left alone, WAAPI starts on the first frame it renders, so a large step whose first frame runs
+    // long (Import's offer list) would rise its items that much behind the slide.
+    const start = document.timeline.currentTime;
+    for (const animation of riseIn(pane.current!.querySelectorAll(":scope > * > *"), { gap: 30, duration: 200, distance: 6, cap: 3 })) animation.startTime = start;
     // Mount only: a step that turns around mid-exit is already built.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -249,7 +253,8 @@ export const PROGRESS_MARK = "progress-mark";
 export function Stepper({ steps, step }: { steps: string[]; step: number }) {
   const reduced = useReducedMotion();
   return (
-    <ol aria-label="Steps" className="mt-4 grid grid-cols-3 gap-2 text-sm sm:flex sm:flex-wrap sm:items-center">
+    // From sm up the steps sit on one row: the Source wizard's five fit the 600px card with these gaps and connectors.
+    <ol aria-label="Steps" className="mt-4 grid grid-cols-3 gap-2 text-sm sm:flex sm:flex-wrap sm:items-center sm:gap-x-1.5">
       {steps.map((title, i) => (
         <li key={title} className="flex min-w-0 flex-col items-start gap-2 sm:flex-row sm:items-center" aria-current={i === step ? "step" : undefined}>
           {/* Markers and labels change colour at state speed; a newly completed step draws its check (check-draw).
@@ -284,7 +289,7 @@ export function Stepper({ steps, step }: { steps: string[]; step: number }) {
           <span className={cn("transition-colors duration-150 ease-snap", i === step ? "text-foreground" : i < step ? "text-muted-foreground" : "text-faint")}>{title}</span>
           {/* The connector fills left to right once the step before it is done, as the ring leaves it. */}
           {i < steps.length - 1 && (
-            <span aria-hidden className="relative mx-1 hidden h-px w-5 bg-border sm:block">
+            <span aria-hidden className="relative mx-1 hidden h-px w-4 bg-border sm:block">
               <span className={cn("absolute inset-0 origin-left bg-ok/60 transition-transform duration-240 ease-snap", i < step ? "scale-x-100" : "scale-x-0")} />
             </span>
           )}

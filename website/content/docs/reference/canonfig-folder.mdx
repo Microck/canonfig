@@ -1,0 +1,401 @@
+---
+title: Canonical Folder reference
+description: Look up every file in ~/.canonfig/, every canonfig.jsonc key, the frontmatter each document takes, the local/ folder, and the messages a folder that does not validate produces.
+---
+
+The Canonical Folder, `~/.canonfig/`, holds your agent setup in one place. On
+the Source Machine you edit it, and `canonfig source publish` signs it as the
+next Profile Revision. On a Follower Machine, `canonfig sync` writes the
+authorized items into the same places in its own `~/.canonfig/` (the mirror)
+and projects the mirror plus `local/` into the harnesses. Which file goes where
+in each harness is in the [harness reference](/reference/harnesses).
+
+## Layout
+
+```text
+~/.canonfig/
+  canonfig.jsonc          harness list, MCP servers, hooks, settings, tools, credentials, groups, schedule, local policy
+  AGENTS.md               global instructions
+  rules/<id>.md           rules
+  skills/<name>/SKILL.md  Agent Skills, one directory each
+  agents/<id>.md          subagents
+  commands/<id>.md        slash commands
+  hooks/...               scripts that hooks in canonfig.jsonc run
+  local/                  this machine's own items, never published
+  .backups/               takeover snapshots
+  .runtime/               the generated hook runner
+  state.sqlite  setup.json  policy.json  canonfig.log  installers/  skills-sources.json  tunnel/  cache/
+```
+
+The first seven entries are the **authoring allowlist**. Publication reads only
+those, and a Follower Machine writes only those. Everything else in the folder
+belongs to the machine it is on: Canonfig never publishes, mirrors, or replaces
+it.
+
+| Entry | Published | Contents |
+| --- | --- | --- |
+| `canonfig.jsonc` | Yes | See [canonfig.jsonc](#canonfigjsonc). Required. |
+| `AGENTS.md` | Yes | Global instructions, in Markdown. |
+| `rules/`, `agents/`, `commands/` | Yes | One `<id>.md` document per item. See [Documents](#documents). |
+| `skills/` | Yes | One directory per skill, each with a `SKILL.md`. |
+| `hooks/` | Yes | Scripts a hook runs. Every file here must be run by a hook. |
+| `local/` | No | Items only this machine projects. See [The local folder](#the-local-folder). |
+| `.backups/` | No | Takeover snapshots. See [Restore a harness from a backup](/how-to/restore-from-a-backup). |
+| `.runtime/` | No | `hook-runner.mjs`, which every projected hook calls. |
+| `state.sqlite` | No | Enrollment, Profile Revisions, run journal, and Applied Resource Records. |
+| `setup.json` | No | The `canonfig setup` plan, approval, and progress. |
+| `policy.json` | No | The agent policy of a machine that is not enrolled. |
+| `canonfig.log` | No | The command log. |
+| `installers/` | No | Installer bindings. |
+| `skills-sources.json` | No | Where tracked upstream skills came from. |
+| `tunnel/`, `cache/` | No | The managed SSH tunnel record and downloaded revision files. |
+
+Every file Canonfig reads from the allowlist must be a regular file or
+directory inside the folder. Symbolic links are refused, so neither a link nor
+`..` can make Canonfig publish content from elsewhere on your disk.
+
+On a Follower Machine the allowlist entries are the mirror of what its Source
+Machine publishes, and the mirrored `canonfig.jsonc` starts with a comment
+saying so. Do not edit mirror files. An edited mirror file is Follower Drift:
+Canonfig keeps your edit, reports it, and stops with exit 4 while its
+projections stay as they were last applied. Put this machine's own items in
+`local/`. `canonfig follower enroll` refuses a folder that already holds
+authored items; see [Enrollment](#enrollment).
+
+## `canonfig.jsonc`
+
+```jsonc
+{
+  "version": 1,
+  "profile": { "id": "workstation", "name": "Developer workstation" },
+  "harnesses": ["claude-code", "codex", "opencode"],
+  "mcp": {
+    "docs": {
+      "transport": "streamable-http",
+      "url": "https://docs.example.com/mcp",
+      "headers": { "Authorization": { "fromEnv": "DOCS_MCP_TOKEN" } }
+    },
+    "git": { "transport": "stdio", "command": "uvx", "args": ["mcp-server-git"], "requires": ["tools/uv"] }
+  },
+  "hooks": [
+    {
+      "id": "format",
+      "event": "after_tool",
+      "matcher": { "capabilities": ["write"] },
+      "run": ["hooks/format.sh"],
+      "timeoutMs": 5000,
+      "onFailure": "warn"
+    }
+  ],
+  "settings": {
+    "codex": { "model_reasoning_effort": "high" },
+    "claude-code": { "model": "opus" }
+  },
+  "tools": {
+    "uv": {
+      "executable": "uv",
+      "recipes": [
+        { "platform": "macos", "method": "brew", "package": "uv", "version": "0.9.7" }
+      ]
+    }
+  },
+  "credentials": { "docs-token": { "reference": "DOCS_MCP_TOKEN" } },
+  "groups": { "work": ["mcp/docs"] },
+  "scheduleDefault": "daily@09:00",
+  "local": { "allow": ["skills", "mcp", "settings"] }
+}
+```
+
+The file accepts `//` and `/* */` comments and trailing commas. A key the table
+does not list is an error, so a typo fails instead of being ignored.
+
+| Key | Required | Type | Meaning |
+| --- | --- | --- | --- |
+| `version` | Yes | `1` | The file format. |
+| `profile` | To publish | `{ "id": string, "name": string }` | The Machine Profile this folder publishes. `id` starts with a letter or digit and contains letters, digits, `.`, `_`, `:`, and `-`. Projection does not use it. |
+| `harnesses` | Yes | array of harness ids | The Target Harnesses to project into. Ids are listed in the [harness reference](/reference/harnesses). |
+| `mcp` | No | object: name to [MCP server](#mcp-servers) | MCP servers every listed harness gets. |
+| `hooks` | No | array of [hooks](#hooks) | Lifecycle hooks, in the order they run. |
+| `settings` | No | object: harness id to object of key path to value | Keys written into that harness's settings file. See [Settings](#settings). |
+| `tools` | No | object: id to [tool](#tools) | Command-line tools every Follower Machine installs and verifies. |
+| `credentials` | No | object: id to `{ "reference": string }` | A credential each Follower Machine must already hold, by name. The value never leaves the Follower Machine. |
+| `groups` | No | object: group name to array of item references | Items only Follower Machines in that Follower Group receive. See [Groups](#groups). |
+| `scheduleDefault` | No | `daily@HH:mm` or `weekly:Mon,Thu@HH:mm` | A suggested schedule. Sync never installs it; a Follower Machine accepts it with `canonfig schedule set --default`. |
+| `local` | No | `{ "allow": array }` | Which categories Follower Machines may add in `local/`: any of `rules`, `skills`, `agents`, `commands`, `mcp`, `settings`. Default: none. |
+
+Names used as object keys (MCP servers, hook ids, tools, credentials, groups)
+start with a letter or digit and contain only letters, digits, `-`, and `_`.
+
+### MCP servers
+
+```jsonc
+"mcp": {
+  "git": { "transport": "stdio", "command": "uvx", "args": ["mcp-server-git"], "env": { "GIT_AUTHOR": "dana" } },
+  "docs": { "transport": "streamable-http", "url": "https://docs.example.com/mcp" }
+}
+```
+
+| Field | Transport | Type | Meaning |
+| --- | --- | --- | --- |
+| `transport` | all | `stdio`, `streamable-http`, or `sse` | Required. |
+| `command` | `stdio` | string | Required. A command name or absolute path. |
+| `args` | `stdio` | array of strings | Arguments. |
+| `env` | `stdio` | object of [secret values](#secret-values) | Environment variables for the server. |
+| `cwd` | `stdio` | string | Working directory. |
+| `url` | `streamable-http`, `sse` | string | Required. |
+| `headers` | `streamable-http`, `sse` | object of [secret values](#secret-values) | HTTP headers. |
+| `enabled` | all | boolean | `false` keeps the server in the file but projects nothing. |
+| `timeoutMs` | all | positive integer | Timeout in milliseconds, where the harness has one. |
+| `enabledTools`, `disabledTools` | all | array of strings | Tool filters, where the harness has them. |
+| `requires` | all | array of `tools/<id>` | Tools to install and verify before the server is projected. Each must be declared under `tools`. |
+
+A harness that cannot express a field, or the `sse` transport, gets a warning
+in the plan naming the server; Canonfig does not write the field somewhere
+else. The [harness reference](/reference/harnesses) lists what each harness
+lacks.
+
+### Secret values
+
+An `env` or `headers` value is either a literal string or an environment
+reference:
+
+```jsonc
+{ "fromEnv": "DOCS_MCP_TOKEN" }
+{ "fromEnv": "DOCS_REGION", "default": "eu" }
+```
+
+A reference names a variable that the harness reads on each machine when it
+starts the server; Canonfig never copies the value. A literal that looks like a
+credential stops publication; see [Publication failures](#publication-failures).
+
+### Hooks
+
+| Field | Required | Type | Meaning |
+| --- | --- | --- | --- |
+| `id` | Yes | name | Unique in the array. |
+| `event` | Yes | event name | `session_start`, `session_end`, `prompt_submit`, `before_agent`, `after_agent`, `before_tool`, `after_tool`, `before_compact`, `after_compact`, `stop`, `subagent_start`, or `subagent_stop`. |
+| `run` | Yes | array of strings, at least one | The command and its arguments. `run[0]` is a command name looked up on `PATH`, an absolute path, or a script under `hooks/`, such as `hooks/format.sh`. |
+| `matcher` | No | `{ "capabilities"?, "tools"?, "inputRegex"? }` | Limits a tool event to tools with one of these capabilities (`read`, `write`, `search`, `shell`, `web`, `mcp`, `subagent`, `test`, `git`), these tool names, or input matching the regular expression. |
+| `timeoutMs` | No | positive integer | Default `30000`. |
+| `onFailure` | No | `block`, `warn`, or `ignore` | Default `warn`. |
+| `enabled` | No | boolean | `false` skips the hook. |
+
+Each projected hook calls its versioned runner under `~/.canonfig/.runtime/`,
+which runs `run`. A script under `hooks/` is run by its absolute path in the folder, so it
+works from any directory. An event a harness does not emit is reported as a
+warning for that harness.
+
+### Settings
+
+```jsonc
+"settings": {
+  "codex": { "model_reasoning_effort": "high" },
+  "claude-code": { "permissions.deny": ["Read(./.env)"] }
+}
+```
+
+Each key is a path into the harness's settings file, with `.` between nested
+keys: `permissions.deny` is the `deny` key inside `permissions`. Write `\.` for
+a dot inside a key name and `\\` for a backslash. In JSONC each backslash is
+itself escaped, so Amp's top-level key `amp.mcpServers` is the path
+`"amp\\.mcpServers"`. A value is a string, number, boolean, array, or object.
+`null` is not allowed.
+
+Canonfig owns each declared key's whole value and leaves every other key in the
+file as it is. Two keys for one harness must not overlap: `mcp` and `mcp.git`
+cannot both be declared. A key must not overlap a key Canonfig already writes
+from the folder (for example `mcpServers`) or a key the harness keeps for its
+own credentials. The [harness reference](/reference/harnesses#settings-files)
+lists each harness's settings file and reserved keys.
+
+### Tools
+
+```jsonc
+"tools": {
+  "ripgrep": {
+    "executable": "rg",
+    "recipes": [
+      { "platform": "linux", "method": "apt", "package": "ripgrep", "version": "14.1.0-1" },
+      { "platform": "macos", "method": "brew", "package": "ripgrep", "version": "14.1.1" },
+      { "platform": "windows", "method": "winget", "package": "BurntSushi.ripgrep.MSVC", "version": "14.1.1" }
+    ],
+    "verify": { "method": "command", "command": ["rg", "--version"], "expectContains": "ripgrep 14.1" }
+  }
+}
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `executable` | Yes | The command name or entry file the tool provides. Planning checks it. |
+| `recipes` | Yes | One Installation Recipe per platform: `platform` (`linux`, `macos`, `windows`), `method`, `package`, and `version`. |
+| `login` | No | `{ "required": false }`, or `{ "required": true, "howTo": string }` for a tool that needs a person to sign in. |
+| `agentInstall` | No | `{ "paths": [string, ...], "origins"?: [https-origin, ...] }`: where a Configuration Agent may install the tool when no recipe fits. |
+| `verify` | No | `command`, `executable-present`, or `mcp-qualification`. Default: `executable-present` on `executable`. |
+
+`method` is `apt`, `brew`, `bun`, `cargo`, `npm`, `pnpm`, `uv`, `winget`, or
+`source`. Every method except `source` needs an exact `version`. Recipe
+fields, verification, and logins are explained in
+[How Canonfig installs and verifies tools](/explanation/tools-and-recipes).
+`canonfig source scan --write` adds entries here for you.
+
+### Groups
+
+```jsonc
+"groups": {
+  "work": ["mcp/docs", "skills/deploy", "tools/ripgrep"],
+  "design": ["instructions"]
+}
+```
+
+An item reference is `instructions` (the `AGENTS.md` file) or
+`<category>/<name>`, where the category is `rules`, `skills`, `agents`,
+`commands`, `hooks`, `mcp`, `settings` (the name is a harness id), `tools`, or
+`credentials`. A grouped item reaches only Follower Machines enrolled in one of
+its groups. An item no group names reaches every Follower Machine. A hook script
+reaches the machines that one of its hooks reaches. The harness list and
+`local` always reach every Follower Machine.
+
+Grant a Follower Group with `canonfig source invite --group <name>`.
+
+## Documents
+
+Rules, subagents, and commands are Markdown files with YAML frontmatter
+between `---` lines. The file name, without `.md`, is the item's id: letters,
+digits, `-`, and `_`. A frontmatter field the table does not list is an error.
+
+```md title="~/.canonfig/rules/typescript.md"
+---
+description: TypeScript conventions
+paths: ["src/**/*.ts"]
+---
+Use `unknown` instead of `any`, and narrow it before use.
+```
+
+| Document | Field | Required | Value |
+| --- | --- | --- | --- |
+| `rules/<id>.md` | `description` | No | One line about the rule. |
+| | `paths` | No | Glob patterns the rule applies to. |
+| | `activation` | No | `always`, `path`, `manual`, or `model`. Default: `path` when `paths` is set, else `always`. |
+| `agents/<id>.md` | `description` | Yes | When to use the subagent. |
+| | `model` | No | A model name the harness understands. Default `inherit`, the harness default. |
+| | `tools` | No | Capabilities: `read`, `write`, `search`, `shell`, `web`, `mcp`, `subagent`, `test`, `git`. Each harness maps them to its own tool names. |
+| | `writable` | No | `true` lets the subagent change files. Default `false`. |
+| `commands/<id>.md` | `description` | Yes | What the command does. |
+| | `argumentHint` | No | The argument hint the harness shows, for example `<file>`. |
+| `skills/<name>/SKILL.md` | `name` | Yes | Equal to the directory name: lowercase letters, digits, and `-`. |
+| | `description` | Yes | When to use the skill. |
+
+A skill's `SKILL.md` may carry other Agent Skills fields, such as `license` or
+`metadata`; Canonfig reads only `name` and `description`. Every file in the
+skill directory is published, with its executable bit.
+
+## The local folder
+
+`~/.canonfig/local/` holds what only this machine projects. It is never
+published and never replaced by a sync.
+
+```text
+~/.canonfig/local/
+  rules/<id>.md
+  skills/<name>/SKILL.md
+  agents/<id>.md
+  commands/<id>.md
+  local.jsonc
+```
+
+Documents use the same frontmatter as in the folder itself. `local.jsonc`
+takes these keys:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `mcp` | object: name to [MCP server](#mcp-servers) | MCP servers only this machine adds. |
+| `settings` | object: harness id to object of key path to value | Settings keys only this machine adds. |
+| `excludeHarnesses` | array of harness ids | Harnesses this machine never projects, even when listed. `canonfig harnesses exclude` and `canonfig restore` edit it. |
+| `backups` | boolean | `false` turns takeover snapshots off on this machine. Default `true`. |
+
+The Source Machine decides which categories local items may add, with
+`local.allow` in `canonfig.jsonc`. A local category that `local.allow` does not
+name is skipped and reported in the plan:
+
+> local/skills/ is not admitted by canonfig.jsonc local.allow and was not projected
+
+`excludeHarnesses` and `backups` always apply: a Source Machine cannot turn
+off a Follower Machine's exclusions or backups. On the Source Machine itself,
+`local.allow` applies the same way. See
+[Add items only one machine uses](/how-to/add-machine-local-items).
+
+A local item with the same name as a published one stops the run with Human
+Action Required (exit 3), because Canonfig will not choose between them:
+
+| Message | Fix |
+| --- | --- |
+| `<path>: local <kind> <name> has the same name as a published one; rename or remove one of them` (kind is `rule`, `skill`, `agent`, `command`, or `MCP server`) | Rename the local item, or ask the Source Machine to drop the published one. |
+| `<path>: local setting <harness> <key> overlaps published setting <key>; remove one of them` | Remove the local key, or change it so neither key contains the other. |
+
+## Enrollment
+
+A Follower Machine's allowlist entries hold its Source Machine's mirror, so
+`canonfig follower enroll` refuses a folder that already holds authored items:
+
+> /home/dana/.canonfig already holds authored items (AGENTS.md, skills), where a
+> follower keeps its Source's mirror; move what this machine should keep into
+> /home/dana/.canonfig/local (rules, skills, agents and commands as files, MCP
+> servers and settings in local.jsonc) or remove them, then enroll again
+
+Empty directories do not count. The command exits 2 and nothing is enrolled.
+
+## Validation failures
+
+Canonfig checks the folder when it publishes, plans, and syncs. A failure
+exits 2 and names the file, in the form `<path>: <message>`.
+
+| Message | Cause |
+| --- | --- |
+| `does not exist; scaffold the folder with 'canonfig setup plan --role source', or enroll this machine as a follower` | There is no `canonfig.jsonc`. |
+| `is not valid JSONC: <error> at offset <n>` | `canonfig.jsonc` or `local/local.jsonc` does not parse. |
+| A schema message naming the key | A key has the wrong type or value, or is unknown. |
+| `is not valid UTF-8` | A text file holds invalid bytes. |
+| `resolves outside the Canonical Folder` | A path resolves to somewhere outside `~/.canonfig/`. |
+| `is not a regular file; links and special files are not authoring input` | An authored path is a link or a special file. |
+| `is a link; links are not authoring input` | A directory entry is a symbolic link. |
+| `is not a directory` | `rules`, `skills`, `agents`, `commands`, or `hooks` is a file. |
+| `only <id>.md documents belong here` | `rules/`, `agents/`, or `commands/` holds a directory or a file without `.md`. |
+| `file names must be letters, digits, '-' or '_' followed by .md` | A document's file name has other characters. |
+| `has invalid frontmatter: <detail>` | The YAML between the `---` lines does not parse. |
+| `every entry of skills/ is a skill directory` | `skills/` holds a file. |
+| `skill directory names are lowercase letters, digits and '-'` | A skill directory name has other characters. |
+| `has no SKILL.md` | A skill directory has no `SKILL.md`. |
+| `needs a name and a description: <detail>` | `SKILL.md` lacks `name` or `description`. |
+| `names the skill <name>, but its directory is <directory>` | `name` differs from the directory name. |
+| `hook id <id> is declared twice` | Two hooks share an id. |
+| `hook command <command> must be a command name, an absolute path, or a script under hooks/` | `run[0]` is a relative path outside `hooks/`. |
+| `hook script <script> does not exist` | `run[0]` names a missing file under `hooks/`. |
+| `settings names unknown harness <name>` | A `settings` key is not a harness id. |
+| `settings.<harness> key <key>: <issue>` | A settings key path is malformed, for example an unknown `\` escape. |
+| `settings.<harness> keys <key> and <key> overlap` | One declared key contains another. |
+| `settings.<harness>: <harness> has no settings file Canonfig writes` | The harness has no settings file; see the [harness reference](/reference/harnesses#settings-files). |
+| `settings.<harness>.<key> overlaps <reserved>, which <harness> keeps for itself` | The key names harness credentials or provider keys. |
+| `settings.<harness>.<key> overlaps <key>, which Canonfig already writes from the folder` | The key overlaps a key Canonfig projects from `mcp` or `hooks`. |
+
+## Publication failures
+
+`canonfig source publish --reviewer <name>` checks more before it signs. Each
+failure exits 2 and nothing is signed. Most messages start with
+`the publication input is not valid:`, followed by the reason below.
+
+| Reason | Fix |
+| --- | --- |
+| `<path> needs "profile": { "id": ..., "name": ... } to publish; the id names the Machine Profile followers sync` | Add `profile` to `canonfig.jsonc`. |
+| `this Source publishes profile <id>; set "profile.id" in canonfig.jsonc back to <id>` | One Source Machine publishes one Machine Profile. Restore the original id. |
+| `<path> hook <id> runs <script>, which does not exist` | Add the script under `hooks/`, or fix `run`. |
+| `<path> is not run by any hook in canonfig.jsonc, so it would never reach a follower; reference it from a hook or remove it` | A file under `hooks/` is unused. |
+| `<path> hook script <script> needs a name of letters, digits, '.', '_' or '-'` | Rename the script. |
+| `<path> mcp.<name> requires <tools/id>, which "tools" does not declare` | Declare the tool, or drop it from `requires`. |
+| `<path> groups.<group> names <reference>, which the folder does not declare` | Fix the reference, or add the item. |
+| `config resource <id> at <path> contains a literal credential [REDACTED]; ...` | Replace the value with a `{ "fromEnv": ... }` reference, or store it with `canonfig secrets set`. |
+| `installer <method> requires an exact "version" so every follower installs the same build` | Add the exact version to the recipe. |
+
+Publishing content equal to the latest Profile Revision returns that
+revision. Any other content, including an older revision's, becomes the next
+sequence number, which is how you roll back. See
+[Publish changes from the folder](/how-to/publish-from-the-folder).

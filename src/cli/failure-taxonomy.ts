@@ -22,9 +22,9 @@ export interface TaggedRuntimeError extends Error {
   readonly command?: ReadonlyArray<string> | undefined;
   readonly computedDigest?: string | undefined;
   readonly conflictsWith?: string | undefined;
-  readonly creatingIdentity?: string | null | undefined;
-  readonly creatingStateFormat?: number | null | undefined;
-  readonly creatingVersion?: string | null | undefined;
+  readonly creatingIdentity?: string | undefined;
+  readonly creatingStateFormat?: number | undefined;
+  readonly creatingVersion?: string | undefined;
   readonly currentIdentity?: string | undefined;
   readonly currentStateFormat?: number | undefined;
   readonly currentVersion?: string | undefined;
@@ -217,6 +217,10 @@ export const failureTaxonomy = {
     "human-action-required",
     (error) => declaredMessage(error) ?? "the local state storage is unavailable; preserve it and check permissions or restore a known-good backup",
   ),
+  EarlierStateFormatError: declared(
+    "human-action-required",
+    () => "the local state was created by an earlier Canonfig version and cannot be read; move the state database aside and set this machine up again",
+  ),
   RepositorySqlError: declared(
     "internal",
     (error) => `the local database failed during ${text(error.operation)}`,
@@ -261,10 +265,6 @@ export const failureTaxonomy = {
     "usage-or-configuration",
     (error) => `invalid config key ${text(error.path)} for ${text(error.id)}: ${text(error.reason)}`,
   ),
-  InvalidTextCompositionError: describe(
-    "usage-or-configuration",
-    (error) => `resource ${text(error.id)} cannot use append-local: ${text(error.reason)}. Correct its file specification before publishing.`,
-  ),
   MissingDependencyError: describe(
     "usage-or-configuration",
     (error) => `resource ${text(error.id)} depends on a resource the profile does not declare`,
@@ -284,10 +284,6 @@ export const failureTaxonomy = {
   UnmanageableFilesystemModeError: describe(
     "usage-or-configuration",
     (error) => `resource ${text(error.id)} declares a filesystem mode Canonfig cannot manage`,
-  ),
-  VerificationContentMismatchError: describe(
-    "usage-or-configuration",
-    (error) => `resource ${text(error.id)} declares ${text(error.method)} verification that does not match its content: ${text(error.reason)}`,
   ),
   VerificationDigestMismatchError: describe(
     "usage-or-configuration",
@@ -335,10 +331,6 @@ export const failureTaxonomy = {
     (error) =>
       `resource ${text(error.resource)} was published as ${text(error.publishedKind)} but is now declared ${text(error.desiredKind)}`,
   ),
-  PlannerTextCompositionError: describe(
-    "usage-or-configuration",
-    (error) => `resource ${text(error.resource)} cannot use append-local: ${text(error.reason)}. Correct the Source profile and publish a new revision.`,
-  ),
   PlannerVerificationContentMismatchError: describe(
     "usage-or-configuration",
     (error) =>
@@ -368,15 +360,6 @@ export const failureTaxonomy = {
   InvalidPublicationInputError: describe(
     "usage-or-configuration",
     (error) => `the publication input is not valid: ${text(error.reason)}`,
-  ),
-  EmptyPublicationError: describe(
-    "usage-or-configuration",
-    (error) =>
-      `nothing to publish: the profile declares no resources and ${
-        (error.scannedPaths ?? []).length === 0
-          ? "no proposal was given"
-          : `the proposal from ${list(error.scannedPaths)} found no accepted tool or skill`
-      }. Author resources in a profile file and publish it with --profile-file, or pass --allow-empty to publish an empty revision on purpose`,
   ),
   PublicationSourceError: describe(
     "usage-or-configuration",
@@ -456,6 +439,19 @@ export const failureTaxonomy = {
   InvalidAgentTaskError: declared(
     "usage-or-configuration",
     (error) => `agent task ${text(error.task)} is not valid`,
+  ),
+  CanonicalFolderError: describe(
+    "usage-or-configuration",
+    (error) => `${text(error.path)}: ${error.message}`,
+  ),
+  // A setup import item changed between approval and apply.
+  ImportChangedError: describe(
+    "conflict-or-drift",
+    (error) => `${text(error.path)}: ${error.message}; run 'canonfig setup plan' again and approve the new plan`,
+  ),
+  SnapshotNotFoundError: declared(
+    "usage-or-configuration",
+    (error) => `takeover snapshot ${text(error.snapshot)} does not exist`,
   ),
   FollowerSynchronizationConfigurationError: declared(
     "usage-or-configuration",
@@ -558,14 +554,6 @@ export const failureTaxonomy = {
     (error) =>
       `credential ${text(error.reference)} could not be ${text(error.operation)}`,
   ),
-  PublicationReviewRequiredError: describe(
-    "human-action-required",
-    (error) => `the proposal needs review before publication: ${text(error.decision)}`,
-  ),
-  UnresolvedPublicationProposalError: describe(
-    "human-action-required",
-    (error) => `the proposal has evidence that needs review: ${list(error.reasons)}`,
-  ),
   RecoveryIntegrityError: declared(
     "human-action-required",
     (error) => `the rollback material for run ${text(error.run)} is not intact`,
@@ -616,6 +604,15 @@ export const failureTaxonomy = {
     () => "the agent harness returned output Canonfig cannot use",
   ),
 
+  LocalItemCollisionError: describe(
+    "human-action-required",
+    (error) => `${text(error.path)}: ${error.message}`,
+  ),
+  ProjectionHumanActionError: declared(
+    "human-action-required",
+    (error) => `${text(error.harness)} needs human action before projection`,
+  ),
+
   // Something already on this machine blocks the requested change.
   ActiveRunExistsError: describe(
     "conflict-or-drift",
@@ -632,17 +629,14 @@ export const failureTaxonomy = {
   UpgradeGateError: describe(
     "conflict-or-drift",
     (error) => {
-      const creatingFormat = error.creatingStateFormat === null
-          || error.creatingStateFormat === undefined
-        ? "unknown"
-        : String(error.creatingStateFormat);
+      const creatingFormat = count(error.creatingStateFormat);
       const currentFormat = count(error.currentStateFormat);
       // The same build can meet a run recorded under another state format;
       // naming that build twice told the operator to use the build already
       // running.
       return error.creatingIdentity === error.currentIdentity
         ? `run ${text(error.run)} was recorded in state format ${creatingFormat}, but this canonfig ${text(error.currentVersion)} (source ${text(error.currentIdentity)}) uses state format ${currentFormat}. finish the run with a build that uses state format ${creatingFormat} or set CANONFIG_ACCEPT_FOREIGN_BUILD=1 to accept the migration`
-        : `run ${text(error.run)} was created by canonfig ${text(error.creatingVersion ?? "unknown")} (source ${text(error.creatingIdentity ?? "unknown")}, state format ${creatingFormat}); this is canonfig ${text(error.currentVersion)} (source ${text(error.currentIdentity)}, state format ${currentFormat}). finish the run with the creating build or set CANONFIG_ACCEPT_FOREIGN_BUILD=1 to accept the upgrade`;
+        : `run ${text(error.run)} was created by canonfig ${text(error.creatingVersion)} (source ${text(error.creatingIdentity)}, state format ${creatingFormat}); this is canonfig ${text(error.currentVersion)} (source ${text(error.currentIdentity)}, state format ${currentFormat}). finish the run with the creating build or set CANONFIG_ACCEPT_FOREIGN_BUILD=1 to accept the upgrade`;
     },
   ),
   DuplicateFollowerIdentityError: declared(
@@ -667,13 +661,6 @@ export const failureTaxonomy = {
     "usage-or-configuration",
     () => "the Source Machine and this follower run canonfig releases that do not interoperate",
   ),
-  // Only the Source operator can resolve it, by publishing the profile again.
-  LegacyRevisionFormatError: declared(
-    "human-action-required",
-    () =>
-      "a revision published by an earlier canonfig release cannot be served; publish the profile again on the Source Machine",
-  ),
-
   // Credentials, signatures and invitations.
   EnrollmentFingerprintMismatchError: declared(
     "authentication-or-revocation",
@@ -774,6 +761,11 @@ export const failureTaxonomy = {
         bytes === undefined ? "unknown" : `${bytes.toString()} bytes (${(bytes / 1048576n).toString()} MiB)`;
       return `the filesystem holding ${text(error.path)} needs ${amount(error.requiredBytes)} free but only ${amount(error.availableBytes)} are available; nothing was changed. Free space there, then retry`;
     },
+  ),
+  TakeoverSnapshotError: describe(
+    "verification-or-apply-failure",
+    (error) =>
+      `cannot take a takeover snapshot of ${text(error.path)}: ${error.message}. Nothing in the harness was changed`,
   ),
   ScheduleVerificationError: declared(
     "verification-or-apply-failure",

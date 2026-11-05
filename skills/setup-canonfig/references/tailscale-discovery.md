@@ -2,7 +2,7 @@
 
 Use only when machine selection matters. This is passive inventory from the
 current user's local Tailscale client, not subnet scanning or service discovery.
-Do not run it for CLI-only or project-harness-only setup.
+Do not run it for CLI-only setup.
 
 ## Consent and fallback
 
@@ -11,15 +11,15 @@ to list Tailscale peers, that is sufficient consent for this read-only step; do
 not ask again. A missing Tailscale binary is not permission to install or log in.
 
 ```text
-Question: DEVICE_SOURCE — Where should the machine choices come from?
+Question: [DEVICE_SOURCE] Where should the machine choices come from?
 Why it matters: Local Tailscale status can list visible devices without contacting each one.
 Detected: <local Tailscale executable available, or unavailable; no peer listing yet>
 Recommended: List visible peers only for a requested multi-machine setup with Tailscale already available.
 Options:
-1. This machine only — continue without network inventory.
-2. List Tailscale devices — read the current client's visible peer metadata once.
-3. Enter machines manually — provide names without discovery.
-4. Other (type your own) — describe a different inventory source for review.
+1. This machine only: continue without network inventory.
+2. List Tailscale devices: read the current client's visible peer metadata once.
+3. Enter machines manually: provide names without discovery.
+4. Other (type your own): describe a different inventory source for review.
 ```
 
 If discovery is unavailable, show This machine / Manual entry / Retry after the
@@ -63,14 +63,14 @@ and deferred, not automatically configured.
 Example only, not observed devices:
 
 ```text
-Question: SOURCE_DEVICE — Which computer owns the canonical configuration? (choose one)
+Question: [SOURCE_DEVICE] Which computer owns the canonical configuration? (choose one)
 Why it matters: Selecting a candidate does not initialize it or grant remote access.
 Recommended: Keep the previously verified Source; otherwise No automatic recommendation.
 Options:
-1. This machine — local setup, subject to existing role checks.
-2. studio-desktop · linux · 100.64.0.10 · reported online — unverified candidate.
-3. travel-laptop · macOS · 100.64.0.11 · reported offline — defer connectivity checks.
-4. Other (type your own) — provide another machine or request more results.
+1. This machine: local setup, subject to existing role checks.
+2. studio-desktop · linux · 100.64.0.10 · reported online: unverified candidate.
+3. travel-laptop · macOS · 100.64.0.11 · reported offline: defer connectivity checks.
+4. Other (type your own): provide another machine or request more results.
 ```
 
 For follower selection, mark multi-select and accept `1,3` or an explicit manual

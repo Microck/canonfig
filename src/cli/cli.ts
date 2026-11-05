@@ -5,15 +5,14 @@ import {
   FollowerId,
   GroupName,
   InvitationCode,
-  ProfileId,
   ProfileRevisionId,
-  ResourceId,
   Timestamp,
 } from "../domain/brand.ts";
 import { AgentPolicy } from "../domain/identity.ts";
 import type { EnrollmentInvitationGrant } from "../enrollment/enrollment.types.ts";
 import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
 import { ExecutableAuthorizationSchema } from "../domain/synchronization.ts";
+import { TARGET_IDS, type TargetId } from "../projection/model.ts";
 import {
   scheduleWeekdays,
   type SyncSchedule,
@@ -39,28 +38,19 @@ import {
   SourceCommands,
   type CliPayload,
 } from "./source-commands.ts";
-import { SetupCommands } from "./setup-commands.ts";
+import { SetupCommands, type SetupImportRequest } from "./setup-commands.ts";
 import { helpOrVersion, type HelpOrVersionOutcome } from "./help.ts";
 import { BlobTransferProgress } from "../enrollment/blob-transfer-progress.ts";
 import { humanTransferProgress } from "./transfer-progress.ts";
 
 export type CliCommand =
   | { readonly _tag: "SourceInit" }
-  | { readonly _tag: "SourceScan"; readonly files: ReadonlyArray<{ readonly path: string }> }
   | {
-    readonly _tag: "SourcePublish";
-    readonly proposalPath?: string | undefined;
-    readonly profile?: typeof ProfileId.Type | undefined;
-    readonly name?: string | undefined;
-    readonly profilePath?: string | undefined;
-    readonly reviewer: string;
-    readonly allowEmpty: boolean;
+    readonly _tag: "SourceScan";
+    /** Insert the reviewed tool entries into canonfig.jsonc. */
+    readonly write: boolean;
   }
-  | {
-    readonly _tag: "SourceDigest";
-    readonly profilePath: string;
-    readonly resource?: string | undefined;
-  }
+  | { readonly _tag: "SourcePublish"; readonly reviewer: string }
   | {
     readonly _tag: "SourceServe";
     readonly hostname: "127.0.0.1" | "::1";
@@ -86,7 +76,6 @@ export type CliCommand =
     readonly _tag: "FollowerEnroll";
     readonly invitation: EnrollmentInvitationGrant;
     readonly followerName: string;
-    readonly selectedProfile?: typeof ProfileId.Type | undefined;
     readonly timeoutMilliseconds?: number | undefined;
     /** Replace a completed enrollment instead of refusing. */
     readonly replace: boolean;
@@ -98,19 +87,17 @@ export type CliCommand =
     readonly noInput: boolean;
     /** Only the rendered native job passes this; it keys the fire evidence. */
     readonly scheduled: boolean;
-    readonly reviewLocal: boolean;
+    /** Take over harness surfaces without a takeover snapshot. */
+    readonly noBackup: boolean;
+  }
+  | { readonly _tag: "Restore"; readonly snapshot?: string | undefined }
+  | {
+    readonly _tag: "Harnesses";
+    readonly change?: { readonly action: "include" | "exclude"; readonly harness: TargetId } | undefined;
   }
   | { readonly _tag: "Recover"; readonly noInput: boolean }
   | { readonly _tag: "Abandon" }
   | { readonly _tag: "Status"; readonly follower?: typeof FollowerId.Type | undefined }
-  | { readonly _tag: "OverlayList" }
-  | {
-    readonly _tag: "OverlaySet";
-    readonly resource: typeof ResourceId.Type;
-    readonly target: string;
-    readonly keys: ReadonlyArray<string>;
-  }
-  | { readonly _tag: "OverlayRemove"; readonly resource: typeof ResourceId.Type }
   | {
     readonly _tag: "Doctor";
     readonly noInput: boolean;
@@ -143,6 +130,9 @@ export type CliCommand =
     readonly mode?: string | undefined;
     readonly files: ReadonlyArray<string>;
     readonly intent?: string | undefined;
+    /** `--harness` values; undefined keeps the detected or already listed harnesses. */
+    readonly harnesses?: ReadonlyArray<string> | undefined;
+    readonly imports: SetupImportRequest;
   }
   | { readonly _tag: "SetupApprove"; readonly approver: string }
   | { readonly _tag: "SetupApply" }
@@ -151,10 +141,6 @@ export type CliCommand =
   | {
     readonly _tag: "ProfileShow";
     readonly revision: typeof ProfileRevisionId.Type;
-  }
-  | {
-    readonly _tag: "ProfileSelect";
-    readonly profile: typeof ProfileId.Type;
   }
   | { readonly _tag: "AgentPolicyGet" }
   | { readonly _tag: "AgentPolicySet"; readonly policy: typeof AgentPolicy.Type }
@@ -538,11 +524,16 @@ const evaluateSetupCommand = (
   if (action === "plan") {
     const options = parseOptions(
       rest,
-      new Set(["--role", "--scope", "--mode", "--file", "--intent"]),
-      new Set(),
+      new Set(["--role", "--scope", "--mode", "--file", "--intent", "--harness", "--import"]),
+      new Set(["--import-all", "--no-import"]),
     );
     if (options.positionals.length > 0) {
       return invalid("setup plan accepts only named options");
+    }
+    const imports = options.values.get("--import") ?? [];
+    const importModes = [imports.length > 0, options.switches.has("--import-all"), options.switches.has("--no-import")];
+    if (importModes.filter(Boolean).length > 1) {
+      return invalid("--import, --import-all and --no-import are mutually exclusive");
     }
     return command({
       _tag: "SetupPlan",
@@ -551,6 +542,14 @@ const evaluateSetupCommand = (
       mode: one(options, "--mode"),
       files: options.values.get("--file") ?? [],
       intent: one(options, "--intent"),
+      harnesses: options.values.get("--harness"),
+      imports: options.switches.has("--no-import")
+        ? { kind: "none" }
+        : options.switches.has("--import-all")
+        ? { kind: "all" }
+        : imports.length > 0
+        ? { kind: "some", requested: imports }
+        : { kind: "offer" },
     }, format);
   }
   return invalid(`Unknown setup command: ${action ?? ""}`);
@@ -567,52 +566,14 @@ const evaluateSourceCommand = (
     return command({ _tag: "SourceInit" }, format);
   }
   if (action === "scan") {
-    const options = parseOptions(rest, new Set(["--file"]), new Set());
-    if (options.positionals.length > 0) return invalid("source scan accepts only --file inputs");
-    const files = (options.values.get("--file") ?? []).map((path) => ({ path }));
-    if (files.length === 0) return invalid("source scan requires at least one --file");
-    return command({ _tag: "SourceScan", files }, format);
+    const options = parseOptions(rest, new Set(), new Set(["--write"]));
+    if (options.positionals.length > 0) return invalid("source scan reads ~/.canonfig/ and accepts only --write");
+    return command({ _tag: "SourceScan", write: options.switches.has("--write") }, format);
   }
   if (action === "publish") {
-    const options = parseOptions(
-      rest,
-      new Set(["--proposal", "--profile", "--name", "--profile-file", "--reviewer"]),
-      new Set(["--allow-empty"]),
-    );
-    if (options.positionals.length > 0) return invalid("source publish accepts only named options");
-    const proposalPath = one(options, "--proposal");
-    const profilePath = one(options, "--profile-file");
-    const profileValue = one(options, "--profile");
-    const name = one(options, "--name");
-    if (proposalPath === undefined && profilePath === undefined) {
-      return invalid("source publish requires --proposal or --profile-file");
-    }
-    if (profilePath === undefined && (profileValue === undefined || name === undefined)) {
-      return invalid("source publish requires --profile and --name without --profile-file");
-    }
-    return command({
-      _tag: "SourcePublish",
-      proposalPath,
-      profile: profileValue === undefined
-        ? undefined
-        : decodeOption(Schema.decodeUnknownOption(ProfileId), profileValue, "profile id"),
-      name,
-      profilePath,
-      reviewer: one(options, "--reviewer", true)!,
-      allowEmpty: options.switches.has("--allow-empty"),
-    }, format);
-  }
-  if (action === "digest") {
-    const options = parseOptions(rest, new Set(["--profile-file", "--resource"]), new Set());
-    if (options.positionals.length > 0) return invalid("source digest accepts only named options");
-    const resource = one(options, "--resource");
-    return command({
-      _tag: "SourceDigest",
-      profilePath: one(options, "--profile-file", true)!,
-      resource: resource === undefined
-        ? undefined
-        : decodeOption(Schema.decodeUnknownOption(ResourceId), resource, "resource id"),
-    }, format);
+    const options = parseOptions(rest, new Set(["--reviewer"]), new Set());
+    if (options.positionals.length > 0) return invalid("source publish accepts only --reviewer");
+    return command({ _tag: "SourcePublish", reviewer: one(options, "--reviewer", true)! }, format);
   }
   if (action === "serve") {
     const options = parseOptions(rest, new Set(["--host", "--port"]), new Set());
@@ -715,69 +676,9 @@ const evaluateProfileCommand = (
       revision: decodeOption(Schema.decodeUnknownOption(ProfileRevisionId), options.positionals[0]!, "profile revision id"),
     }, format);
   }
-  if (action === "select") {
-    const options = parseOptions(rest, new Set(), new Set());
-    if (options.positionals.length !== 1) return invalid("Usage: canonfig profile select <profile-id>");
-    return command({
-      _tag: "ProfileSelect",
-      profile: decodeOption(
-        Schema.decodeUnknownOption(ProfileId),
-        options.positionals[0]!,
-        "profile id",
-      ),
-    }, format);
-  }
   return invalid(`Unknown profile command: ${action ?? ""}`);
 };
 
-const evaluateOverlayCommand = (
-  action: string | undefined,
-  rest: ReadonlyArray<string>,
-  format: CliOutputFormat,
-): CliOutcome => {
-  if (action === "list") {
-    const options = parseOptions(rest, new Set(), new Set());
-    if (options.positionals.length > 0) return invalid("canonfig overlay list accepts no arguments");
-    return command({ _tag: "OverlayList" }, format);
-  }
-  if (action === "remove") {
-    const options = parseOptions(rest, new Set(), new Set());
-    if (options.positionals.length !== 1) return invalid("Usage: canonfig overlay remove <resource-id>");
-    return command({
-      _tag: "OverlayRemove",
-      resource: decodeOption(
-        Schema.decodeUnknownOption(ResourceId),
-        options.positionals[0]!,
-        "resource id",
-      ),
-    }, format);
-  }
-  if (action === "set") {
-    const options = parseOptions(
-      rest,
-      new Set(["--target", "--key"]),
-      new Set(),
-    );
-    if (options.positionals.length !== 1) {
-      return invalid(
-        "Usage: canonfig overlay set <resource-id> --target <path> --key <config.path>",
-      );
-    }
-    const keys = options.values.get("--key") ?? [];
-    if (keys.length === 0) return invalid("overlay set requires at least one --key");
-    return command({
-      _tag: "OverlaySet",
-      resource: decodeOption(
-        Schema.decodeUnknownOption(ResourceId),
-        options.positionals[0]!,
-        "resource id",
-      ),
-      target: one(options, "--target", true)!,
-      keys,
-    }, format);
-  }
-  return invalid(`Unknown overlay command: ${action ?? ""}`);
-};
 
 const evaluateAgentHarnessCommand = (
   rest: ReadonlyArray<string>,
@@ -890,7 +791,7 @@ const evaluateCommand = (
 ): CliOutcome => {
   const [area, action, ...rest] = arguments_;
   try {
-    const groups = new Set(["source", "follower", "profile", "overlay", "tunnel", "setup", "agent", "schedule"]);
+    const groups = new Set(["source", "follower", "profile", "tunnel", "setup", "agent", "schedule"]);
     if (area !== undefined && groups.has(area) && action === undefined) {
       return invalid(`Missing ${area} command`);
     }
@@ -901,12 +802,12 @@ const evaluateCommand = (
     if (area === "follower" && action === "enroll") {
       const options = parseOptions(
         rest,
-        new Set(["--name", "--profile", "--timeout-ms"]),
+        new Set(["--name", "--timeout-ms"]),
         new Set(["--replace"]),
       );
       if (options.positionals.length !== 1) {
         return invalid(
-          "Usage: canonfig follower enroll <invite> --name <name> --profile <id> [--timeout-ms <milliseconds>]",
+          "Usage: canonfig follower enroll <invite> --name <name> [--timeout-ms <milliseconds>]",
         );
       }
       const timeout = one(options, "--timeout-ms");
@@ -914,11 +815,6 @@ const evaluateCommand = (
         _tag: "FollowerEnroll",
         invitation: decodeInvitation(options.positionals[0]!),
         followerName: one(options, "--name", true)!,
-        selectedProfile: decodeOption(
-          Schema.decodeUnknownOption(ProfileId),
-          one(options, "--profile", true)!,
-          "profile id",
-        ),
         replace: options.switches.has("--replace"),
         timeoutMilliseconds: timeout === undefined
           ? undefined
@@ -937,23 +833,35 @@ const evaluateCommand = (
         new Set(),
         // --scheduled is set by the rendered native job; typing it by hand
         // is harmless but pointless without the scheduler's provenance.
-        new Set(["--plan", "--apply", "--no-input", "--scheduled", "--review-local"]),
+        new Set(["--plan", "--apply", "--no-input", "--scheduled", "--no-backup"]),
       );
       if (options.positionals.length > 0) return invalid("sync accepts no positional arguments");
       if (options.switches.has("--plan") && options.switches.has("--apply")) {
         return invalid("--plan and --apply are mutually exclusive");
-      }
-      if (options.switches.has("--review-local")
-        && (options.switches.has("--apply") || options.switches.has("--scheduled") || options.switches.has("--no-input"))) {
-        return invalid("--review-local requires an interactive --plan, not --apply, --scheduled, or --no-input");
       }
       return command({
         _tag: "Synchronize",
         mode: options.switches.has("--apply") ? "apply" : "plan",
         noInput: options.switches.has("--no-input"),
         scheduled: options.switches.has("--scheduled"),
-        reviewLocal: options.switches.has("--review-local"),
+        noBackup: options.switches.has("--no-backup"),
       }, format);
+    }
+    if (area === "restore") {
+      const options = parseOptions(arguments_.slice(1), new Set(), new Set());
+      if (options.positionals.length > 1) return invalid("Usage: canonfig restore [<snapshot>]");
+      return command({ _tag: "Restore", snapshot: options.positionals[0] }, format);
+    }
+    if (area === "harnesses") {
+      const options = parseOptions(arguments_.slice(1), new Set(), new Set());
+      const [action, harness, ...extra] = options.positionals;
+      if (action === undefined) return command({ _tag: "Harnesses" }, format);
+      if ((action !== "include" && action !== "exclude") || harness === undefined || extra.length > 0) {
+        return invalid("Usage: canonfig harnesses [include|exclude <harness>]");
+      }
+      const target = TARGET_IDS.find((id) => id === harness);
+      if (target === undefined) return invalid(`Unknown harness: ${harness}; expected one of ${TARGET_IDS.join(", ")}`);
+      return command({ _tag: "Harnesses", change: { action, harness: target } }, format);
     }
     if (area === "abandon") {
       const options = parseOptions(arguments_.slice(1), new Set(), new Set());
@@ -981,7 +889,6 @@ const evaluateCommand = (
         ),
       }, format);
     }
-    if (area === "overlay") return evaluateOverlayCommand(action, rest, format);
     if (area === "tunnel") return evaluateTunnelCommand(action, rest, format);
     if (area === "setup") return evaluateSetupCommand(action, rest, format);
     if (area === "doctor") {
@@ -1048,7 +955,6 @@ export const commandName = (value: CliCommand): string => {
     case "SourceInit": return "source.init";
     case "SourceScan": return "source.scan";
     case "SourcePublish": return "source.publish";
-    case "SourceDigest": return "source.digest";
     case "SourceServe": return "source.serve";
     case "SourceServiceInstall": return "source.service.install";
     case "SourceServiceStatus": return "source.service.status";
@@ -1058,16 +964,14 @@ export const commandName = (value: CliCommand): string => {
     case "FollowerEnroll": return "follower.enroll";
     case "FollowerUnenroll": return "follower.unenroll";
     case "Synchronize": return `sync.${value.mode}`;
+    case "Restore": return "restore";
+    case "Harnesses": return value.change === undefined ? "harnesses" : `harnesses.${value.change.action}`;
     case "Recover": return "recover";
     case "Abandon": return "abandon";
     case "Status": return "status";
-    case "OverlayList": return "overlay.list";
-    case "OverlaySet": return "overlay.set";
-    case "OverlayRemove": return "overlay.remove";
     case "Doctor": return "doctor";
     case "ProfileList": return "profile.list";
     case "ProfileShow": return "profile.show";
-    case "ProfileSelect": return "profile.select";
     case "AgentPolicyGet": return "agent.policy.get";
     case "AgentPolicySet": return "agent.policy.set";
     case "TunnelStart": return "tunnel.start";
@@ -1099,21 +1003,8 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
   const setup = yield* SetupCommands;
   switch (value._tag) {
     case "SourceInit": return yield* source.initialize();
-    case "SourceScan": return yield* source.scan({ files: value.files });
-    case "SourcePublish":
-      return yield* source.publish({
-        proposalPath: value.proposalPath,
-        profile: value.profile,
-        name: value.name,
-        profilePath: value.profilePath,
-        reviewer: value.reviewer,
-        allowEmpty: value.allowEmpty,
-      });
-    case "SourceDigest":
-      return yield* source.digest({
-        profilePath: value.profilePath,
-        resource: value.resource,
-      });
+    case "SourceScan": return yield* source.scan({ write: value.write });
+    case "SourcePublish": return yield* source.publish({ reviewer: value.reviewer });
     case "SourceServe":
       return yield* source.serve({ hostname: value.hostname, port: value.port });
     case "SourceServiceInstall":
@@ -1133,7 +1024,6 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
       return yield* follower.enroll({
         invitation: value.invitation,
         followerName: value.followerName,
-        selectedProfile: value.selectedProfile,
         timeoutMilliseconds: value.timeoutMilliseconds,
         replace: value.replace,
       });
@@ -1143,19 +1033,13 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
         mode: value.mode,
         noInput: value.noInput,
         scheduled: value.scheduled,
-        reviewLocal: value.reviewLocal,
+        noBackup: value.noBackup,
       });
+    case "Restore": return yield* follower.restore({ snapshot: value.snapshot });
+    case "Harnesses": return yield* follower.harnesses({ change: value.change });
     case "Recover": return yield* follower.recover({ noInput: value.noInput });
     case "Abandon": return yield* follower.abandon();
     case "Status": return yield* follower.status(value.follower);
-    case "OverlayList": return yield* follower.listLocalOverlays();
-    case "OverlaySet":
-      return yield* follower.setLocalOverlay({
-        resource: value.resource,
-        target: value.target,
-        keys: value.keys,
-      });
-    case "OverlayRemove": return yield* follower.removeLocalOverlay(value.resource);
     case "Doctor":
       return yield* follower.doctor({
         noInput: value.noInput,
@@ -1173,13 +1057,14 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
         mode: value.mode,
         files: value.files,
         intent: value.intent,
+        harnesses: value.harnesses,
+        imports: value.imports,
       });
     case "SetupApprove": return yield* setup.approve({ approver: value.approver });
     case "SetupApply": return yield* setup.apply();
     case "SetupStatus": return yield* setup.status();
     case "ProfileList": return yield* source.listProfiles();
     case "ProfileShow": return yield* source.inspectProfile(value.revision);
-    case "ProfileSelect": return yield* follower.selectProfile(value.profile);
     case "AgentPolicyGet": return yield* follower.getAgentPolicy();
     case "AgentPolicySet": return yield* follower.setAgentPolicy(value.policy);
     case "AgentHarnessGet": return yield* follower.getAgentHarness();

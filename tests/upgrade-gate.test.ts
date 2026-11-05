@@ -19,10 +19,8 @@ import { stateFormatVersion } from "../src/state/state-schema.ts";
 import { StateRepository } from "../src/state/state-repository.service.ts";
 import { evaluateCli } from "../src/cli/cli.ts";
 import { describeRuntimeError } from "../src/cli/failure-taxonomy.ts";
-import { assertUpgradeGate } from "../src/synchronization/follower-orchestration.ts";
+import { assertUpgradeGate } from "../src/synchronization/upgrade-gate.ts";
 import { nodeRuntimeIsSupported } from "../src/runtime/build-identity.ts";
-import { SqliteClient, SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
-import { stateMigrations as v315StateMigrations } from "./fixtures/upgrade/v3.1.5-state-schema.ts";
 
 const decode = Schema.decodeUnknownSync;
 const asRunId = decode(RunId);
@@ -182,26 +180,6 @@ describe("upgrade gate", () => {
     }));
   });
 
-  it("grandfathers a run created before builds recorded identities", async () => {
-    const path = join(temporaryDirectory("canonfig-gate-"), "state.sqlite");
-    await runWithRepository(path, Effect.gen(function*() {
-      yield* seed;
-      const repository = yield* StateRepository;
-      yield* startOpenRun(repository);
-      // A pre-receipt run has a null creating_identity: upgrading followers
-      // with unfinished legacy runs must not be stranded by the gate.
-      const database = new DatabaseSync(path);
-      try {
-        database.prepare(
-          "UPDATE synchronization_runs SET creating_identity = NULL, creating_version = NULL",
-        ).run();
-      } finally {
-        database.close();
-      }
-      yield* assertUpgradeGate(follower.id);
-    }));
-  });
-
   it("stops an incompatible upgrade before the run is touched", async () => {
     const failure = await gateFailureAfterMutation((database) => {
       database.prepare(
@@ -298,103 +276,5 @@ describe("deployment receipts", () => {
     } finally {
       database.close();
     }
-  });
-
-  it("keeps an earlier release's receipt and lets its unfinished run be closed after the upgrade", async () => {
-    const path = join(temporaryDirectory("canonfig-gate-"), "state.sqlite");
-    await Effect.runPromise(
-      SqliteMigrator.run({ loader: v315StateMigrations }).pipe(
-        Effect.provide(SqliteClient.layer({ filename: path })),
-      ),
-    );
-    const legacy = new DatabaseSync(path);
-    try {
-      legacy.prepare(
-        `INSERT INTO followers (id, name, groups_json, revoked, credential_reference, enrolled_at)
-         VALUES (?, ?, '[]', 0, ?, ?)`,
-      ).run(follower.id, follower.name, follower.credentialReference, follower.enrolledAt);
-      legacy.prepare(
-        `INSERT INTO profile_revisions (
-          id, profile_id, sequence, canonical_bytes, digest, signature, published_at, revision_json
-        ) VALUES (?, ?, 1, ?, ?, ?, ?, ?)`,
-      ).run(
-        revision.id,
-        revision.profileId,
-        revision.canonicalBytes,
-        revision.digest,
-        revision.signature,
-        revision.publishedAt,
-        JSON.stringify(revision),
-      );
-      const insertRun = legacy.prepare(
-        `INSERT INTO synchronization_runs (
-          id, follower_id, revision_id, status, plan_json, started_at, completed_at, outcome_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      );
-      insertRun.run(
-        "run-legacy-converged",
-        follower.id,
-        revision.id,
-        "Converged",
-        JSON.stringify(plan()),
-        "2026-06-01T09:00:00Z",
-        "2026-06-01T09:01:00Z",
-        JSON.stringify({ outcome: "Converged", run: "run-legacy-converged", completedActions: [] }),
-      );
-      insertRun.run(
-        "run-legacy-open",
-        follower.id,
-        revision.id,
-        "applying",
-        JSON.stringify(plan()),
-        "2026-06-02T09:00:00Z",
-        null,
-        null,
-      );
-    } finally {
-      legacy.close();
-    }
-
-    const receipt = await runWithRepository(
-      path,
-      Effect.flatMap(StateRepository, (repository) =>
-        repository.latestDeploymentReceipt(follower.id)),
-    );
-    expect(receipt).toMatchObject({
-      run: "run-legacy-converged",
-      revision: revision.id,
-      outcome: "Converged",
-      packageVersion: "before 3.2.0",
-      buildIdentity: "unrecorded",
-      stateFormat: 1,
-      recordedAt: "2026-06-01T09:01:00Z",
-    });
-
-    // The run the earlier release left open is still recoverable state: the
-    // gate lets this build handle it, and abandoning it closes it with a
-    // receipt instead of stranding the follower.
-    const closed = await runWithRepository(path, Effect.gen(function*() {
-      const repository = yield* StateRepository;
-      const open = yield* repository.loadRecovery(follower.id);
-      yield* assertUpgradeGate(follower.id);
-      yield* repository.completeRun({
-        run: asRunId("run-legacy-open"),
-        completedAt: "2026-06-03T09:00:00Z",
-        outcome: {
-          outcome: "Failed",
-          run: asRunId("run-legacy-open"),
-          reason: "the interrupted run was abandoned by the operator",
-        },
-        appliedResources: [],
-      });
-      return {
-        open: open?.run.id,
-        after: yield* repository.loadRecovery(follower.id),
-        receipt: yield* repository.latestDeploymentReceipt(follower.id),
-      };
-    }));
-    expect(closed.open).toBe("run-legacy-open");
-    expect(closed.after).toBeUndefined();
-    expect(closed.receipt).toMatchObject({ run: "run-legacy-open", outcome: "Failed" });
   });
 });

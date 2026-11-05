@@ -155,7 +155,7 @@ describe("CLI failure taxonomy", () => {
       const tag of [
         "DuplicateFollowerIdentityError",
         "DiscoveryFilesystemError",
-        "UnresolvedPublicationProposalError",
+        "ImportChangedError",
         "PublicationSigningError",
         "RecoveryIntegrityError",
       ]

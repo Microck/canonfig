@@ -39,6 +39,7 @@ import {
 } from "../src/domain/mcp-qualification.ts";
 import {
   ActiveRunExistsError,
+  EarlierStateFormatError,
   RepositoryDecodeError,
   RepositorySqlError,
   RevisionImmutableError,
@@ -49,6 +50,8 @@ import {
 } from "../src/state/state-repository.layer.ts";
 import { sha256BytesHex } from "../src/profile/profile-codec.ts";
 import { StateRepository } from "../src/state/state-repository.service.ts";
+import { runtimeStateLayer } from "../src/runtime/state-layer.ts";
+import { StateInitializationError } from "../src/runtime/state-initialization.errors.ts";
 import {
   defaultScheduledInvocation,
 } from "../src/synchronization/follower-sync-config.ts";
@@ -204,7 +207,7 @@ describe("StateRepository SQLite adapter", () => {
         configuration: {
           schemaVersion: 1,
           follower: configuredFollower,
-          selectedProfile: decode(ProfileId)("profile-1"),
+          profile: decode(ProfileId)("profile-1"),
           source: {
             endpoint: "https://127.0.0.1:17342",
             tlsFingerprint: "tls-fingerprint",
@@ -228,7 +231,7 @@ describe("StateRepository SQLite adapter", () => {
     );
     expect(stored).toMatchObject({
       follower: { id: configuredFollower.id },
-      selectedProfile: "profile-1",
+      profile: "profile-1",
       credentialReference,
       agentPolicy: "deterministic-only",
       scheduledInvocation: { mode: "apply", noInput: true },
@@ -246,81 +249,32 @@ describe("StateRepository SQLite adapter", () => {
     expect(row.configuration_json).not.toContain("secret");
   });
 
-  it("persists Local Overlay ownership entries across repository restart", async () => {
+  it("refuses state an earlier release created and asks to reinitialize", async () => {
+    // A release before state format 6 recorded a different migration history.
     const path = databasePath();
-    const sourceIdentity = decode(SourceIdentity)({
-      keyId: "ed25519:source-fingerprint",
-      publicKeyFingerprint: "source-fingerprint",
-    });
-    const configuredFollower = {
-      ...follower(),
-      credentialReference: decode(CredentialReference)("secure-store://canonfig/follower"),
-    };
-    const configuration = {
-      schemaVersion: 1 as const,
-      follower: configuredFollower,
-      selectedProfile: decode(ProfileId)("profile-1"),
-      source: {
-        endpoint: "https://127.0.0.1:17342",
-        tlsFingerprint: "tls-fingerprint",
-        signingFingerprint: sourceIdentity.publicKeyFingerprint,
-      },
-      credentialReference: configuredFollower.credentialReference,
-      cacheDirectory: join(dirname(path), "cache"),
-      stateLocation: path,
-      agentPolicy: "deterministic-only" as const,
-      scheduledInvocation: defaultScheduledInvocation,
-      updatedAt: "2026-08-15T12:00:00Z",
-    };
-    await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
-      repository.saveFollowerSynchronizationConfiguration({
-        sourceIdentity,
-        configuration,
-      })
+    const database = new DatabaseSync(path);
+    database.exec(`
+      CREATE TABLE effect_sql_migrations (
+        migration_id integer PRIMARY KEY NOT NULL,
+        created_at datetime NOT NULL DEFAULT current_timestamp,
+        name VARCHAR(255) NOT NULL
+      );
+      INSERT INTO effect_sql_migrations (migration_id, name) VALUES (1, 'state_repository'), (22, 'local_projection');
+    `);
+    database.close();
+
+    const refused = await Effect.runPromise(Effect.flip(
+      Effect.flatMap(StateRepository, () => Effect.void).pipe(Effect.provide(stateRepositoryLayer(path))),
     ));
-    await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
-      repository.saveLocalOverlay({
-        entry: {
-          resource: asResourceId("managed-config"),
-          target: "/home/follower/settings.json",
-          keys: ["local.theme"],
-        },
-        updatedAt: "2026-08-15T12:01:00Z",
-      })
+    expect(refused).toBeInstanceOf(EarlierStateFormatError);
+    expect(refused).toMatchObject({ migrations: ["0001_state_repository", "0022_local_projection"] });
+
+    const runtime = await Effect.runPromise(Effect.flip(
+      Effect.flatMap(StateRepository, () => Effect.void).pipe(Effect.provide(runtimeStateLayer(path))),
     ));
-    const afterRestart = await runWithRepository(
-      path,
-      Effect.flatMap(StateRepository, (repository) =>
-        repository.listLocalOverlays()
-      ),
-    );
-    expect(afterRestart).toEqual([{
-      resource: asResourceId("managed-config"),
-      target: "/home/follower/settings.json",
-      keys: ["local.theme"],
-    }]);
-    await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
-      repository.saveLocalOverlay({
-        entry: {
-          resource: asResourceId("managed-config"),
-          target: "/home/follower/settings.json",
-          keys: ["local.theme", "local.editor"],
-        },
-        updatedAt: "2026-08-15T12:02:00Z",
-      })
-    ));
-    await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
-      repository.removeLocalOverlay({
-        resource: asResourceId("managed-config"),
-        updatedAt: "2026-08-15T12:03:00Z",
-      })
-    ));
-    expect(await runWithRepository(
-      path,
-      Effect.flatMap(StateRepository, (repository) =>
-        repository.listLocalOverlays()
-      ),
-    )).toEqual([]);
+    expect(runtime).toBeInstanceOf(StateInitializationError);
+    expect(runtime.message).toContain("created by an earlier Canonfig version");
+    expect(runtime.message).toContain(`move ${path} aside`);
   });
 
   it("publishes immutable revisions idempotently and rejects changed content", async () => {
@@ -351,18 +305,20 @@ describe("StateRepository SQLite adapter", () => {
   it("stores blobs as fixed-size chunks and serves ranges without joining them", async () => {
     const path = databasePath();
     const chunk = resourceBlobChunkBytes;
-    const inMemory = randomBytes(chunk * 2 + 17);
+    const large = randomBytes(chunk * 2 + 17);
+    const largePath = join(dirname(path), "large.bin");
+    writeFileSync(largePath, large);
     const onDisk = randomBytes(chunk + 5);
     const filePath = join(dirname(path), "source.bin");
     writeFileSync(filePath, onDisk);
-    const memoryId = decode(BlobId)(sha256BytesHex(inMemory));
+    const largeId = decode(BlobId)(sha256BytesHex(large));
     const fileId = decode(BlobId)(sha256BytesHex(onDisk));
     const ranges = await runWithRepository(
       path,
       Effect.gen(function*() {
         const repository = yield* StateRepository;
         const blobs = [
-          { id: memoryId, content: inMemory },
+          { id: largeId, bytes: large.byteLength, path: largePath },
           { id: fileId, bytes: onDisk.byteLength, path: filePath },
         ];
         yield* repository.publishRevision({ revision: revision(), blobs });
@@ -370,7 +326,7 @@ describe("StateRepository SQLite adapter", () => {
         yield* repository.publishRevision({ revision: revision(), blobs });
         return {
           spanning: yield* repository.readResourceBlobRange({
-            blob: memoryId,
+            blob: largeId,
             offset: chunk - 3,
             maximumBytes: chunk + 10,
           }),
@@ -389,81 +345,24 @@ describe("StateRepository SQLite adapter", () => {
     );
     expect(ranges.spanning?.chunks.length).toBe(3);
     expect(ranges.spanning?.byteLength).toBe(chunk + 10);
-    expect(ranges.spanning?.totalBytes).toBe(inMemory.byteLength);
+    expect(ranges.spanning?.totalBytes).toBe(large.byteLength);
     expect(Buffer.concat(ranges.spanning!.chunks))
-      .toEqual(inMemory.subarray(chunk - 3, chunk * 2 + 7));
+      .toEqual(large.subarray(chunk - 3, chunk * 2 + 7));
     expect(Buffer.concat(ranges.tail!.chunks)).toEqual(onDisk.subarray(chunk));
     expect(ranges.whole?.chunks.length).toBe(2);
     expect(Buffer.concat(ranges.whole!.chunks)).toEqual(onDisk);
 
     const database = new DatabaseSync(path);
     try {
-      expect(database.prepare("SELECT count(*) AS count FROM resource_blobs").get())
-        .toEqual({ count: 0 });
       expect(database.prepare(`
         SELECT blob_id, count(*) AS chunks, max(length(content)) AS largest, sum(length(content)) AS bytes
         FROM resource_blob_chunks GROUP BY blob_id ORDER BY bytes
       `).all().map((row) => ({ ...row }))).toEqual([
         { blob_id: fileId, chunks: 2, largest: chunk, bytes: onDisk.byteLength },
-        { blob_id: memoryId, chunks: 3, largest: chunk, bytes: inMemory.byteLength },
+        { blob_id: largeId, chunks: 3, largest: chunk, bytes: large.byteLength },
       ]);
     } finally {
       database.close();
-    }
-  });
-
-  it("keeps serving and verifying blobs stored as one row before chunking", async () => {
-    const path = databasePath();
-    const content = randomBytes(resourceBlobChunkBytes + 9);
-    const id = decode(BlobId)(sha256BytesHex(content));
-    const corrupted = Buffer.from(content);
-    corrupted[resourceBlobChunkBytes + 2] = corrupted[resourceBlobChunkBytes + 2]! ^ 0xff;
-    const corruptedId = decode(BlobId)(sha256BytesHex(randomBytes(32)));
-    await runWithRepository(path, Effect.gen(function*() {
-      yield* StateRepository;
-    }));
-    const database = new DatabaseSync(path);
-    const insert = database.prepare("INSERT INTO resource_blobs (id, content) VALUES (?, ?)");
-    insert.run(id, content);
-    // A row whose bytes no longer match the id it is stored under.
-    const sameLength = randomBytes(content.byteLength);
-    const sameLengthId = decode(BlobId)(sha256BytesHex(sameLength));
-    insert.run(sameLengthId, corrupted);
-    database.close();
-    const result = await runWithRepository(
-      path,
-      Effect.gen(function*() {
-        const repository = yield* StateRepository;
-        yield* repository.publishRevision({ revision: revision(), blobs: [{ id, content }] });
-        const range = yield* repository.readResourceBlobRange({
-          blob: id,
-          offset: 4,
-          maximumBytes: resourceBlobChunkBytes,
-        });
-        const conflict = yield* Effect.flip(repository.publishRevision({
-          revision: revision(),
-          blobs: [{ id: sameLengthId, content: sameLength }],
-        }));
-        const missing = yield* repository.readResourceBlobRange({
-          blob: corruptedId,
-          offset: 0,
-          maximumBytes: 1,
-        });
-        return { range, conflict, missing };
-      }),
-    );
-    expect(result.range?.totalBytes).toBe(content.byteLength);
-    expect(Buffer.concat(result.range!.chunks))
-      .toEqual(content.subarray(4, 4 + resourceBlobChunkBytes));
-    expect(result.conflict).toBeInstanceOf(RevisionImmutableError);
-    expect(result.conflict.message).toContain("names different immutable content");
-    expect(result.missing).toBeUndefined();
-    const after = new DatabaseSync(path);
-    try {
-      expect(after.prepare("SELECT count(*) AS count FROM resource_blob_chunks").get())
-        .toEqual({ count: 0 });
-    } finally {
-      after.close();
     }
   });
 

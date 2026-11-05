@@ -1,14 +1,16 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
+import { parse as parseJsonc } from "jsonc-parser";
 import { describe, expect, it } from "vitest";
 
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
 import { establishSetupScope, probeTools, runSetupPreflight, setupStatus } from "../src/setup/setup.controller.ts";
+import { scaffoldProfile } from "../src/setup/setup.folder.ts";
 
 import {
   nextEligibleSetupStage,
@@ -146,12 +148,10 @@ describe("setup controller decisions", () => {
           ],
           credentialPolicy: { kind: "secure-store" },
         });
-        for (const scope of ["cli-only", "project-only"] as const) {
-          const preflight = await Effect.runPromise(
-            runSetupPreflight("source", scope).pipe(Effect.provide(layer)),
-          );
-          expect(preflight.credentialStorage.kind).toBe("unavailable");
-        }
+        const preflight = await Effect.runPromise(
+          runSetupPreflight("source", "cli-only").pipe(Effect.provide(layer)),
+        );
+        expect(preflight.credentialStorage.kind).toBe("unavailable");
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
@@ -514,8 +514,9 @@ describe.runIf(process.platform === "linux" && existsSync(join(dirname(process.e
         expect(result.status, result.stderr || result.stdout).toBe(0);
         return JSON.parse(result.stdout).data;
       };
-      const plan = (scope = "project-only") => setup([
-        "plan", "--role", "source", "--scope", scope, "--file", file,
+      // A full follower plan installs accepted recipes without a Source identity.
+      const plan = (scope = "full") => setup([
+        "plan", "--role", "follower", "--scope", scope, "--file", file,
       ]);
       return { home, bin, file, writeRecipe, invoke, setup, plan };
     };
@@ -604,3 +605,182 @@ describe.runIf(process.platform === "linux" && existsSync(join(dirname(process.e
     );
   },
 );
+
+// Source setup's harnesses stage end to end through the real entrypoint: fake
+// harness executables on a temporary PATH, fake harness homes, local-file keys.
+describe.runIf(process.platform === "linux")("Source harness selection and import", () => {
+  const projectRoot = resolve(import.meta.dirname, "..");
+  const runtimeEntrypoint = resolve(projectRoot, "src/runtime/main.ts");
+  // Assembled at runtime so no token-shaped literal sits in the repository.
+  const token = ["gh", "p_", "Zq7x".repeat(9)].join("");
+  const write = (path: string, content: string, mode?: number) => {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
+    if (mode !== undefined) chmodSync(path, mode);
+  };
+  const fixture = () => {
+    const home = mkdtempSync(join(tmpdir(), "canonfig-setup-harnesses-"));
+    const bin = join(home, "bin");
+    for (const name of ["claude", "codex", "agent"]) write(join(bin, name), "#!/bin/sh\nexit 0\n", 0o755);
+    write(join(home, ".claude", "CLAUDE.md"), "Prefer small diffs.\n");
+    write(join(home, ".claude", "skills", "deploy", "SKILL.md"), "---\nname: deploy\ndescription: Deploy the service\n---\nRun the deploy script.\n");
+    write(join(home, ".claude.json"), JSON.stringify({
+      oauthAccount: { emailAddress: "operator@example.invalid" },
+      mcpServers: { github: { type: "stdio", command: "npx", args: ["-y", "server-github"], env: { GITHUB_TOKEN: token } } },
+    }));
+    // Never-touch credentials: unreadable, so a read would fail the plan.
+    write(join(home, ".claude", ".credentials.json"), JSON.stringify({ accessToken: token }), 0o000);
+    write(join(home, ".codex", "auth.json"), JSON.stringify({ token }), 0o000);
+    write(join(home, ".codex", "config.toml"), "[mcp_servers.docs]\nurl = \"https://example.invalid/mcp\"\n");
+    const invoke = (arguments_: ReadonlyArray<string>) => spawnSync(
+      process.execPath,
+      ["--import", "tsx", runtimeEntrypoint, "setup", ...arguments_, "--json"],
+      {
+        cwd: projectRoot,
+        encoding: "utf8",
+        timeout: 120_000,
+        env: {
+          ...process.env,
+          HOME: home,
+          USERPROFILE: home,
+          PATH: bin,
+          XDG_CONFIG_HOME: join(home, ".config"),
+          CODEX_HOME: "",
+          CLAUDE_CONFIG_DIR: "",
+          CANONFIG_LOCAL_CREDENTIAL_ROOT: join(home, ".canonfig-credentials"),
+          CANONFIG_LOG: "off",
+        },
+      },
+    );
+    const setup = (arguments_: ReadonlyArray<string>) => {
+      const result = invoke(arguments_);
+      expect(result.status, result.stderr || result.stdout).toBe(0);
+      expect(result.stdout).not.toContain(token);
+      return JSON.parse(result.stdout).data;
+    };
+    const item = (plan: { readonly items: ReadonlyArray<SetupPlanItem> }, id: string) =>
+      plan.items.find((entry) => entry.id === id);
+    // The ids and targets the plan's harness-import item would write.
+    const imported = (plan: { readonly items: ReadonlyArray<SetupPlanItem> }) =>
+      Schema.decodeUnknownSync(Schema.Struct({
+        items: Schema.Array(Schema.Struct({ id: Schema.String, target: Schema.String })),
+      }))(item(plan, "harness-import")?.detail).items;
+    const cleanup = () => {
+      chmodSync(join(home, ".claude", ".credentials.json"), 0o600);
+      chmodSync(join(home, ".codex", "auth.json"), 0o600);
+      rmSync(home, { recursive: true, force: true });
+    };
+    return { home, invoke, setup, item, imported, cleanup };
+  };
+  const filesBelow = (root: string): ReadonlyArray<string> =>
+    readdirSync(root, { withFileTypes: true }).flatMap((entry) =>
+      entry.isDirectory() ? filesBelow(join(root, entry.name)) : [join(root, entry.name)]);
+
+  it("preselects installed harnesses, ignores a generic agent without ~/.cursor, and binds approval to the list", () => {
+    const test = fixture();
+    try {
+      const planned = test.setup(["plan", "--role", "source"]);
+      expect(test.item(planned, "canonfig-folder")?.detail).toMatchObject({
+        harnesses: ["codex", "claude-code"],
+        detected: ["codex", "claude-code"],
+      });
+      expect(planned.stages.map((stage: { readonly stage: string }) => stage.stage))
+        .toEqual(["role", "preflight", "inventory", "harnesses", "plan"]);
+      // Offered for review, imported only on request.
+      expect(test.item(planned, "harness-import")).toBeUndefined();
+      expect(planned.imports.request).toBe("offer");
+      expect(planned.imports.offered).toContainEqual(expect.objectContaining({
+        id: "claude-code/mcp/github",
+        target: "canonfig.jsonc#mcp.github",
+        secrets: ["env.GITHUB_TOKEN -> fromEnv GITHUB_TOKEN"],
+      }));
+
+      const approved = test.setup(["approve", "--approver", "operator"]);
+      expect(test.setup(["plan", "--role", "source"]).planDigest).toBe(approved.planDigest);
+      expect(test.setup(["status"]).approved).toBe(true);
+
+      const narrowed = test.setup(["plan", "--role", "source", "--harness", "codex"]);
+      expect(narrowed.planDigest).not.toBe(approved.planDigest);
+      expect(test.item(narrowed, "canonfig-folder")?.detail).toMatchObject({ harnesses: ["codex"] });
+      const status = test.setup(["status"]);
+      expect(status.approved).toBe(false);
+      expect(status.stage).toBe("approve");
+
+      mkdirSync(join(test.home, ".cursor"));
+      const withCursor = test.setup(["plan", "--role", "source"]);
+      expect(test.item(withCursor, "canonfig-folder")?.detail).toMatchObject({
+        harnesses: ["codex", "claude-code", "cursor"],
+      });
+    } finally {
+      test.cleanup();
+    }
+  }, 180_000);
+
+  it("imports the chosen items with literal tokens as fromEnv references and never reads auth files", () => {
+    const test = fixture();
+    try {
+      const planned = test.setup(["plan", "--role", "source", "--import", "claude-code"]);
+      expect(test.imported(planned).map((entry) => entry.target).sort())
+        .toEqual(["AGENTS.md", "canonfig.jsonc#mcp.github", "skills/deploy"]);
+      test.setup(["approve", "--approver", "operator"]);
+      const applied = test.setup(["apply"]);
+      expect(applied.records.every((record: { readonly status: string }) => record.status === "completed")).toBe(true);
+
+      const folder = join(test.home, ".canonfig");
+      const config = parseJsonc(readFileSync(join(folder, "canonfig.jsonc"), "utf8"));
+      expect(config.harnesses).toEqual(["codex", "claude-code"]);
+      // The scaffold proposes the profile `source publish` requires.
+      expect(config.profile).toEqual(scaffoldProfile(hostname()));
+      expect(test.item(planned, "canonfig-folder")?.detail).toMatchObject({ profile: scaffoldProfile(hostname()) });
+      expect(config.mcp.github).toEqual({
+        transport: "stdio",
+        command: "npx",
+        args: ["-y", "server-github"],
+        env: { GITHUB_TOKEN: { fromEnv: "GITHUB_TOKEN" } },
+      });
+      expect(readFileSync(join(folder, "AGENTS.md"), "utf8")).toBe("Prefer small diffs.\n");
+      expect(readFileSync(join(folder, "skills", "deploy", "SKILL.md"), "utf8")).toContain("name: deploy");
+      for (const file of filesBelow(folder)) expect(readFileSync(file, "latin1"), file).not.toContain(token);
+      expect(statSync(join(test.home, ".codex", "auth.json")).mode & 0o777).toBe(0);
+      expect(statSync(join(test.home, ".claude", ".credentials.json")).mode & 0o777).toBe(0);
+      expect(JSON.parse(readFileSync(join(test.home, ".claude.json"), "utf8")).mcpServers.github.env.GITHUB_TOKEN).toBe(token);
+    } finally {
+      test.cleanup();
+    }
+  }, 180_000);
+
+  it("lists name collisions until one item is named, and reads nothing under --no-import", () => {
+    const test = fixture();
+    try {
+      // Codex reads skills from the shared ~/.agents/skills/.
+      write(join(test.home, ".agents", "skills", "deploy", "SKILL.md"), "---\nname: deploy\ndescription: Another deploy\n---\nDifferent.\n");
+      const all = test.setup(["plan", "--role", "source", "--import-all"]);
+      expect(all.exclusions).toContainEqual(expect.stringContaining("import collision: skills/deploy differs between"));
+      const allTargets = test.imported(all).map((entry) => entry.target);
+      expect(allTargets).not.toContain("skills/deploy");
+
+      const named = test.setup(["plan", "--role", "source", "--import", "claude-code/skills/deploy"]);
+      expect(test.imported(named).map((entry) => entry.id)).toEqual(["claude-code/skills/deploy"]);
+
+      const declined = test.setup(["plan", "--role", "source", "--no-import"]);
+      expect(declined.imports).toEqual({ request: "none", offered: [], present: [] });
+      expect(test.item(declined, "harness-import")).toBeUndefined();
+
+      rmSync(join(test.home, ".canonfig", "setup.json"));
+      const follower = test.invoke(["plan", "--role", "follower", "--harness", "codex"]);
+      expect(follower.status, follower.stderr || follower.stdout).toBe(2);
+      expect(follower.stderr).toContain("apply only to a full Source setup");
+    } finally {
+      test.cleanup();
+    }
+  }, 180_000);
+});
+
+describe("scaffoldProfile", () => {
+  it("slugs the hostname into a ProfileId and falls back to workstation", () => {
+    expect(scaffoldProfile("Mac-Book Pro.local")).toEqual({ id: "mac-book-pro.local", name: "Mac-Book Pro.local" });
+    expect(scaffoldProfile("--box_1--")).toEqual({ id: "box_1", name: "--box_1--" });
+    expect(scaffoldProfile("")).toEqual({ id: "workstation", name: "workstation" });
+    expect(scaffoldProfile("üï")).toEqual({ id: "workstation", name: "workstation" });
+  });
+});

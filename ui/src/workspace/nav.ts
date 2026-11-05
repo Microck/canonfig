@@ -1,12 +1,12 @@
 // Each role's sidebar: its pages, then its settings. The sidebar (frame.tsx) renders it, and the
 // tour picker (guide.tsx) draws a small copy of it to show where a chapter goes.
 import {
+  ArrowCounterClockwise,
   ArrowsClockwise,
   CalendarDots,
   ClockCounterClockwise,
   Devices,
   FileCode,
-  GitBranch,
   HardDrives,
   Key,
   ListChecks,
@@ -34,13 +34,13 @@ const SOURCE_NAV: NavItem[] = [
   { view: "profile", label: "Profile", icon: FileCode },
   { view: "machines", label: "Machines", icon: Devices },
   { view: "revisions", label: "Revisions", icon: ClockCounterClockwise },
+  { view: "backups", label: "Backups", icon: ArrowCounterClockwise },
   { view: "secrets", label: "Secrets", icon: Key },
 ];
 
 const SOURCE_SETTINGS: NavItem[] = [
   { view: "service", label: "Source service", icon: HardDrives },
   { view: "agent", label: "Agent policy", icon: Robot },
-  { view: "harness", label: "Harness projects", icon: GitBranch },
   { view: "installers", label: "Installers", icon: Package },
   { view: "setup", label: "Setup", icon: ListChecks },
   { view: "doctor", label: "Health check", icon: Stethoscope },
@@ -51,14 +51,14 @@ const FOLLOWER_NAV: NavItem[] = [
   { view: "machines", label: "Machines", icon: Devices },
   { view: "sync", label: "Sync", icon: ArrowsClockwise },
   { view: "schedule", label: "Schedule", icon: CalendarDots },
-  { view: "overlays", label: PLAIN.localNav, icon: Stack },
+  { view: "local", label: PLAIN.localNav, icon: Stack },
+  { view: "backups", label: "Backups", icon: ArrowCounterClockwise },
   { view: "secrets", label: "Secrets", icon: Key },
 ];
 
 const FOLLOWER_SETTINGS: NavItem[] = [
   { view: "tunnel", label: "SSH tunnel", icon: Plug },
   { view: "agent", label: "Agent policy", icon: Robot },
-  { view: "harness", label: "Harness projects", icon: GitBranch },
   { view: "doctor", label: "Health check", icon: Stethoscope },
   { view: "machine", label: "Enrollment", icon: Monitor },
 ];

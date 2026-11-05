@@ -15,31 +15,16 @@ const COMMAND_ACTIONS = new Map<string, ReadonlySet<string>>([
   ["self-update", new Set(["enable", "disable", "status", "check", "apply", "auto"])],
   ["agent", new Set(["harness", "policy"])],
   ["follower", new Set(["enroll"])],
-  [
-    "harness",
-    new Set([
-      "apply",
-      "clean",
-      "diff",
-      "doctor",
-      "help",
-      "init",
-      "plan",
-      "status",
-      "sync",
-      "targets",
-      "validate",
-    ]),
-  ],
-  ["overlay", new Set(["list", "remove", "set"])],
-  ["profile", new Set(["list", "select", "show"])],
+  ["harnesses", new Set(["exclude", "include"])],
+  ["profile", new Set(["list", "show"])],
   ["schedule", new Set(["remove", "set", "status"])],
   ["secrets", new Set(["bootstrap", "help", "list", "remove", "set", "sync"])],
-  ["source", new Set(["digest", "init", "invite", "publish", "revoke", "scan", "serve"])],
+  ["source", new Set(["init", "invite", "publish", "revoke", "scan", "serve"])],
 ]);
 const SINGLE_COMMANDS = new Set([
   "doctor",
   "recover",
+  "restore",
   "status",
   "sync",
 ]);
@@ -150,6 +135,8 @@ const commandName = (arguments_: ReadonlyArray<string>): string => {
   if (second !== undefined && actions?.has(second) === true) {
     return `${first}.${second}`;
   }
+  // `canonfig harnesses` is a command by itself as well as a group.
+  if (second === undefined && first === "harnesses") return first;
   if (
     actions?.has("help") === true
     && (second === undefined || HELP_OPTIONS.has(second))

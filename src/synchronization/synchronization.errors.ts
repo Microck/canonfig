@@ -49,11 +49,6 @@ export class PlannerVerificationKindMismatchError extends TaggedError<PlannerVer
   },
 ) {}
 
-export class PlannerTextCompositionError extends TaggedError<PlannerTextCompositionError>()(
-  "PlannerTextCompositionError",
-  { resource: Schema.String, reason: Schema.String },
-) {}
-
 export class PlannerVerificationContentMismatchError extends TaggedError<PlannerVerificationContentMismatchError>()(
   "PlannerVerificationContentMismatchError",
   {
@@ -213,7 +208,6 @@ export type SynchronizationPlanningError =
   | MissingObservedResourceError
   | PlannerResourceKindMismatchError
   | PlannerPolicyKindMismatchError
-  | PlannerTextCompositionError
   | PlannerVerificationKindMismatchError
   | PlannerVerificationContentMismatchError
   | PlannerInvalidRecipeError

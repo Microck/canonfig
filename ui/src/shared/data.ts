@@ -1,5 +1,8 @@
-// Demo data. Shapes follow src/domain/profile.ts and the CLI's
-// status, doctor, and schedule outputs for the simulated GUI.
+import { version } from "../../../package.json";
+
+// Demo data. Shapes follow the Canonical Folder (src/projection/folder.ts), the harness
+// report and takeover snapshots (src/projection), and the CLI's status, doctor and
+// schedule outputs for the simulated GUI.
 // Nothing here talks to a real machine.
 
 /**
@@ -15,7 +18,12 @@ export const DEMO = import.meta.env.DEV || import.meta.env.MODE === "demo";
 
 export type Role = "source" | "follower" | "unconfigured";
 
-export type ResourceKind = "file" | "directory" | "config" | "skill" | "tool" | "credential";
+/**
+ * The authored categories of ~/.canonfig/, in the order the folder view lists them. Each item compiles to one
+ * Profile Resource (src/projection/folder.ts): `instructions` is AGENTS.md, rules, skills, agents and commands
+ * are files under their folders, and the rest are keys of canonfig.jsonc.
+ */
+export type ItemCategory = "instructions" | "rules" | "skills" | "agents" | "commands" | "mcp" | "hooks" | "settings" | "tools" | "credentials";
 
 export type FollowerState =
   | "converged"
@@ -25,20 +33,22 @@ export type FollowerState =
   | "offline"
   | "never-synced";
 
+/** One item of the Canonical Folder, as the Source authors it. */
 export interface Resource {
+  /** `instructions` or `<category>/<name>`, the id canonfig.jsonc `groups` names it by. */
   id: string;
-  kind: ResourceKind;
-  target: string;
-  policy: string;
+  category: ItemCategory;
+  /** Where it lives, relative to ~/.canonfig/: a file, a folder, or a key of canonfig.jsonc. */
+  path: string;
   groups: string[];
   summary: string;
   /** Uncommitted relative to the latest Profile Revision. */
   change?: "added" | "modified" | "removed";
-  /** Editor metadata: the file format, Advanced settings and per-kind content. Never config keys. */
+  /** Editor fields by label (frontmatter, canonfig.jsonc fields, recipes) plus `Body`, the markdown after the frontmatter. */
   detail: Record<string, string>;
   /**
-   * Config keys Canonfig sets, by key path, each value as typed JSON text (`"zed"`, `42`, `false`).
-   * Kept apart from `detail` so a key can be named anything, including Format or Verify.
+   * Settings keys for one harness (`settings.<harness>`), by key path, each value as typed JSON text (`"zed"`, `42`,
+   * `false`). Kept apart from `detail` so a key can be named anything.
    */
   keys?: Record<string, string>;
 }
@@ -67,46 +77,39 @@ export interface Revision {
   changes: string;
 }
 
-export const KIND_LABEL: Record<ResourceKind, { label: string; hint: string }> = {
-  file: { label: "File", hint: "One file, copied exactly. For example an instructions file." },
-  directory: { label: "Folder", hint: "A folder of files copied to each machine." },
-  config: { label: "Settings", hint: "Only the settings you list inside a JSON, TOML or YAML file. Everything else in that file stays as it is." },
-  skill: { label: "Skill", hint: "An AI agent skill: its SKILL.md and the files it uses." },
-  tool: { label: "Tool", hint: "A program Canonfig installs the right way on each system, then checks that it runs." },
-  credential: { label: "Required secret", hint: "A token or key the machine must already have. Canonfig checks that it's there and never sends it." },
+/** Category names, what each holds, and where in ~/.canonfig/ it lives. */
+export const CATEGORY_LABEL: Record<ItemCategory, { label: string; hint: string; where: string }> = {
+  instructions: { label: "Instructions", where: "AGENTS.md", hint: "Global instructions every harness reads, written as its own instructions file." },
+  rules: { label: "Rules", where: "rules/", hint: "One rule per file, with an optional description, paths and activation." },
+  skills: { label: "Skills", where: "skills/", hint: "Agent Skills: a folder with its SKILL.md and the files it uses." },
+  agents: { label: "Agents", where: "agents/", hint: "Subagents, one per file, with a description, model, tools and whether they may write." },
+  commands: { label: "Commands", where: "commands/", hint: "Slash commands, one per file, with a description and argument hint." },
+  mcp: { label: "MCP servers", where: "canonfig.jsonc mcp", hint: "Servers each harness starts, by command or URL. Secrets stay environment variable references." },
+  hooks: { label: "Hooks", where: "canonfig.jsonc hooks", hint: "Scripts in hooks/ that run on agent events, like after a file edit." },
+  settings: { label: "Settings", where: "canonfig.jsonc settings", hint: "Keys set in one harness's own settings file. Every other key in that file stays as it is." },
+  tools: { label: "Tools", where: "canonfig.jsonc tools", hint: "Programs Canonfig installs with a recipe per system, then checks that they run." },
+  credentials: { label: "Required secrets", where: "canonfig.jsonc credentials", hint: "A token or key a machine must already have. Canonfig checks that it's there and never sends it." },
 };
 
-/** Plain title for each Apply Policy. The real policy id stays visible next to it in small mono. */
-export const POLICY_TITLE: Record<string, string> = {
-  replace: "Always overwrite",
-  "replace-if-unmodified": "Overwrite unless edited there",
-  "append-local": "Keep local lines after ours",
-  "mirror-owned": "Sync our files, leave others",
-  merge: "Set only these keys",
-  ensure: "Install if missing",
-  "require-local": "Must already exist there",
-};
+/** Where an item lives in ~/.canonfig/: its file or folder, or its key in canonfig.jsonc. */
+export function itemPath(category: ItemCategory, name: string): string {
+  if (category === "instructions") return "AGENTS.md";
+  if (category === "hooks") return "canonfig.jsonc hooks";
+  if (category === "skills") return `skills/${name}/`;
+  if (category === "rules" || category === "agents" || category === "commands") return `${category}/${name}.md`;
+  return `canonfig.jsonc ${category}.${name}`;
+}
 
-export const POLICY_HINT: Record<string, string> = {
-  replace: "The machine's copy always ends up exactly like yours.",
-  "replace-if-unmodified": "Updated only if nobody edited it on that machine. If someone did, Canonfig leaves their edit and shows it as edited there.",
-  "append-local": "Your content comes first. Lines the machine added itself stay after it.",
-  "mirror-owned": "Files Canonfig placed stay in sync. Other files in the folder are left alone.",
-  merge: "Only the keys you list are set. The rest of the file stays as it is.",
-  ensure: "Installed if it's missing, then checked that it runs.",
-  "require-local": "The machine must already have it. Canonfig checks and never sends it.",
-};
+/** Categories a follower's ~/.canonfig/local/ may add to, as canonfig.jsonc `local.allow` names them (LOCAL_CATEGORIES). */
+export type LocalCategory = "rules" | "skills" | "agents" | "commands" | "mcp" | "settings";
+export const LOCAL_CATEGORIES: LocalCategory[] = ["rules", "skills", "agents", "commands", "mcp", "settings"];
 
 /**
  * Everyday labels for Canonfig concepts that appear as section titles, nav
  * items and buttons. The Canonfig term stays one hover away (see `Term`).
  */
 export const PLAIN = {
-  /** Section title for the Apply Policy choice. */
-  applyPolicy: "If the machine's copy is different",
-  /** Local Overlay, as an action or section. */
-  localOverlay: "Keep on this machine",
-  /** Nav item for the follower's Local Overlays. */
+  /** Nav item for the follower's local folder page. */
   localNav: "Local settings",
   /** Unenroll. */
   unenroll: "Stop syncing this machine",
@@ -119,11 +122,116 @@ export const PLAIN = {
 /** The group whose members may receive shared secrets. */
 export const SECRETS_GROUP = "canonfig:secrets";
 
+/**
+ * The Canonfig version the GUI belongs to, read from the root package.json at build time so it matches
+ * `canonfig --version` without a second copy to bump.
+ */
+export const APP_VERSION: string = version;
+
+/** Harness ids, in the order of TARGET_IDS in src/projection/model.ts. */
+export type HarnessId =
+  | "codex"
+  | "claude-code"
+  | "amp"
+  | "oh-my-pi"
+  | "pi"
+  | "factory-droid"
+  | "cursor"
+  | "devin"
+  | "opencode"
+  | "grok-build"
+  | "antigravity"
+  | "copilot-cli"
+  | "kimi"
+  | "kilo"
+  | "hermes"
+  | "qwen";
+
+/** Display names, as each adapter in src/projection/adapters/ declares them. */
+export const HARNESS_NAMES: Record<HarnessId, string> = {
+  codex: "OpenAI Codex",
+  "claude-code": "Claude Code",
+  amp: "Amp",
+  "oh-my-pi": "Oh My Pi",
+  pi: "Pi Coding Agent",
+  "factory-droid": "Factory Droid CLI",
+  cursor: "Cursor",
+  devin: "Devin CLI",
+  opencode: "OpenCode",
+  "grok-build": "Grok Build CLI",
+  antigravity: "Google Antigravity CLI",
+  "copilot-cli": "GitHub Copilot CLI",
+  kimi: "Kimi Code CLI",
+  kilo: "Kilo Code CLI",
+  hermes: "Hermes Agent",
+  qwen: "Qwen Code",
+};
+
+/**
+ * One harness as `canonfig harnesses` reports it on this machine. Canonfig projects a harness that is listed
+ * in canonfig.jsonc, installed here and not excluded in local/local.jsonc.
+ */
+export interface Harness {
+  id: HarnessId;
+  name: string;
+  /** Its executable resolves on this machine. */
+  installed: boolean;
+  /** Named in canonfig.jsonc `harnesses`. */
+  listed: boolean;
+  /** Named in local/local.jsonc `excludeHarnesses`. */
+  excluded: boolean;
+  /** The root pinned at takeover, or null before Canonfig first wrote there. */
+  root: string | null;
+  /** The takeover snapshot holding what was there before, or null. */
+  snapshot: string | null;
+}
+
+/**
+ * Takeover snapshots in ~/.canonfig/.backups/, oldest first. Ids follow the folder names Canonfig writes
+ * (src/projection/takeover.ts). Canonfig keeps the first one plus the 4 most recent.
+ */
+export interface Snapshot {
+  id: string;
+  harnesses: HarnessId[];
+  /** Files and folders copied, counting keys.json once per harness with key-owned files. */
+  files: number;
+  /** The state before Canonfig ever wrote; always kept. */
+  first: boolean;
+}
+
+export const snapshots: Snapshot[] = [
+  { id: "2026-09-02T08-14-02-117Z", harnesses: ["codex", "claude-code"], files: 23, first: true },
+  { id: "2026-10-11T09-00-41-560Z", harnesses: ["opencode"], files: 7, first: false },
+  { id: "2026-10-19T09-00-12-004Z", harnesses: ["copilot-cli"], files: 4, first: false },
+  { id: "2026-10-24T09-00-07-918Z", harnesses: ["oh-my-pi"], files: 9, first: false },
+];
+
+type HarnessState = Omit<Harness, "id" | "name">;
+const notHere: HarnessState = { installed: false, listed: false, excluded: false, root: null, snapshot: null };
+const harnessState: Partial<Record<HarnessId, HarnessState>> = {
+  codex: { installed: true, listed: true, excluded: false, root: "~/.codex", snapshot: snapshots[0].id },
+  "claude-code": { installed: true, listed: true, excluded: false, root: "~/.claude", snapshot: snapshots[0].id },
+  opencode: { installed: true, listed: true, excluded: false, root: "~/.config/opencode", snapshot: snapshots[1].id },
+  "copilot-cli": { installed: true, listed: true, excluded: false, root: "~/.copilot", snapshot: snapshots[2].id },
+  // Restored from its snapshot, which excluded it on this machine.
+  "oh-my-pi": { installed: true, listed: true, excluded: true, root: "~/.omp/agent", snapshot: snapshots[3].id },
+  // Listed, not installed: reported as not installed, nothing projected.
+  amp: { installed: false, listed: true, excluded: false, root: null, snapshot: null },
+  // Installed, not listed: ignored.
+  cursor: { installed: true, listed: false, excluded: false, root: null, snapshot: null },
+};
+
+/** Every harness on this demo machine, in TARGET_IDS order. */
+export const harnesses: Harness[] = (Object.keys(HARNESS_NAMES) as HarnessId[]).map((id) => ({
+  id,
+  name: HARNESS_NAMES[id],
+  ...(harnessState[id] ?? notHere),
+}));
+
 export const machine = {
   hostname: "atlas",
   platform: "linux" as const,
-  version: "4.0.0",
-  profileFile: "~/canonfig.profile.jsonc",
+  folder: "~/.canonfig",
   endpoint: "https://127.0.0.1:17342",
   service: "running" as const,
 };
@@ -135,103 +243,128 @@ export const profile = {
     { name: "gpu", description: "Machines with a CUDA GPU" },
     { name: "canonfig:secrets", description: "May receive shared secrets" },
   ],
-  scheduleDefault: "Daily at 09:00, local time",
+  /** canonfig.jsonc `local.allow`: what a follower's ~/.canonfig/local/ may add. */
+  localAllow: ["rules", "skills", "mcp", "settings"] as LocalCategory[],
 };
 
 export const resources: Resource[] = [
   {
-    id: "claude-instructions",
-    kind: "file",
-    target: "~/.claude/CLAUDE.md",
-    policy: "replace",
+    id: "instructions",
+    category: "instructions",
+    path: "AGENTS.md",
     groups: [],
-    summary: "from .claude/CLAUDE.md",
-    detail: { Source: ".claude/CLAUDE.md", Mode: "0644", Verify: "digest" },
+    summary: "38 lines",
+    detail: { Body: "# Working agreements\n\n- Run the tests before you say a change works.\n- Keep diffs small and explain why, not what." },
   },
   {
-    id: "codex-agents",
-    kind: "file",
-    target: "~/.codex/AGENTS.md",
-    policy: "replace",
+    id: "rules/typescript",
+    category: "rules",
+    path: "rules/typescript.md",
     groups: [],
-    summary: "from .codex/AGENTS.md",
+    summary: "*.ts and *.tsx files",
     change: "modified",
-    detail: { Source: ".codex/AGENTS.md", Mode: "0644", Verify: "digest" },
+    detail: {
+      Description: "TypeScript conventions",
+      Paths: "**/*.ts, **/*.tsx",
+      Activation: "path",
+      Body: "Prefer type inference for locals. Never use any; use unknown and narrow it.",
+    },
   },
   {
-    id: "codex-config",
-    kind: "config",
-    target: "~/.codex/config.toml",
-    policy: "merge",
+    id: "skills/code-review",
+    category: "skills",
+    path: "skills/code-review/",
     groups: [],
-    summary: "2 TOML keys",
-    detail: { Format: "TOML", Verify: "digest" },
+    summary: "3 files",
+    detail: {
+      Description: "Review a diff for correctness, tests and clarity.",
+      Files: "SKILL.md, references/checklist.md, references/tone.md",
+      Body: "Read the diff twice. Check each changed function against references/checklist.md.",
+    },
+  },
+  {
+    id: "agents/researcher",
+    category: "agents",
+    path: "agents/researcher.md",
+    groups: [],
+    summary: "read-only",
+    detail: { Description: "Finds sources and summarizes them with links.", Model: "", Tools: "read, search, web", Writable: "false", Body: "Cite every claim. Prefer primary sources." },
+  },
+  {
+    id: "commands/ship",
+    category: "commands",
+    path: "commands/ship.md",
+    groups: [],
+    summary: "/ship [branch]",
+    change: "added",
+    detail: { Description: "Run the checks, then open a pull request.", "Argument hint": "[branch]", Body: "Run the test suite and the linter. If both pass, open a pull request for $ARGUMENTS." },
+  },
+  {
+    id: "mcp/context7",
+    category: "mcp",
+    path: "canonfig.jsonc mcp.context7",
+    groups: [],
+    summary: "stdio, npx",
+    detail: { Transport: "stdio", Command: "npx", Args: "-y @upstash/context7-mcp@2.1.0" },
+  },
+  {
+    id: "mcp/docs",
+    category: "mcp",
+    path: "canonfig.jsonc mcp.docs",
+    groups: [],
+    summary: "streamable-http",
+    detail: { Transport: "streamable-http", URL: "https://docs.example.com/mcp" },
+  },
+  {
+    id: "hooks/format",
+    category: "hooks",
+    path: "canonfig.jsonc hooks",
+    groups: [],
+    summary: "after_tool, hooks/format.sh",
+    detail: { Event: "after_tool", Run: "hooks/format.sh", Capabilities: "write", "On failure": "warn" },
+  },
+  {
+    id: "settings/codex",
+    category: "settings",
+    path: "canonfig.jsonc settings.codex",
+    groups: [],
+    summary: "2 keys",
+    detail: {},
     keys: { model_reasoning_effort: '"high"', sandbox_mode: '"workspace-write"' },
   },
   {
-    id: "claude-settings",
-    kind: "config",
-    target: "~/.claude/settings.json",
-    policy: "merge",
+    id: "settings/claude-code",
+    category: "settings",
+    path: "canonfig.jsonc settings.claude-code",
     groups: [],
-    summary: "3 JSON keys",
+    summary: "2 keys",
     change: "added",
-    detail: { Format: "JSON", Verify: "digest" },
-    keys: { "permissions.defaultMode": '"acceptEdits"', "env.DISABLE_TELEMETRY": '"1"', includeCoAuthoredBy: "false" },
+    detail: {},
+    keys: { "env.DISABLE_TELEMETRY": '"1"', includeCoAuthoredBy: "false" },
   },
   {
-    id: "claude-review-skill",
-    kind: "skill",
-    target: "~/.claude/skills/code-review",
-    policy: "replace-if-unmodified",
-    groups: [],
-    summary: "3 files",
-    detail: { Name: "code-review", Files: "SKILL.md, references/checklist.md, references/tone.md", Verify: "digest" },
-  },
-  {
-    id: "shared-skills",
-    kind: "directory",
-    target: "~/.agents/skills",
-    policy: "mirror-owned",
-    groups: [],
-    summary: "14 files",
-    detail: { Files: "14", Mode: "0755", Verify: "digest" },
-  },
-  {
-    id: "gh-cli",
-    kind: "tool",
-    target: "gh",
-    policy: "ensure",
+    id: "tools/gh",
+    category: "tools",
+    path: "canonfig.jsonc tools.gh",
     groups: [],
     summary: "brew, apt or winget",
-    detail: { macOS: "brew install gh", Linux: "apt install gh", Windows: "winget install GitHub.cli", Login: "Required: run `gh auth login`", Verify: "executable-present" },
+    detail: { Executable: "gh", macOS: "brew install gh", Linux: "apt install gh", Windows: "winget install GitHub.cli", Login: "gh auth login" },
   },
   {
-    id: "context7-mcp",
-    kind: "tool",
-    target: "@upstash/context7-mcp",
-    policy: "ensure",
-    groups: [],
-    summary: "MCP server via npm",
-    detail: { All: "npm install -g @upstash/context7-mcp@2.1.0", Verify: "mcp-qualification" },
-  },
-  {
-    id: "cuda-toolkit",
-    kind: "tool",
-    target: "nvcc",
-    policy: "ensure",
+    id: "tools/cuda-toolkit",
+    category: "tools",
+    path: "canonfig.jsonc tools.cuda-toolkit",
     groups: ["gpu"],
     summary: "gpu group only",
-    detail: { Linux: "apt install nvidia-cuda-toolkit", Verify: "executable-present" },
+    detail: { Executable: "nvcc", Linux: "apt install nvidia-cuda-toolkit" },
   },
   {
-    id: "github-token",
-    kind: "credential",
-    target: "github-token",
-    policy: "require-local",
+    id: "credentials/github-token",
+    category: "credentials",
+    path: "canonfig.jsonc credentials.github-token",
     groups: ["canonfig:secrets"],
     summary: "local reference",
-    detail: { Reference: "github-token", Verify: "credential-present" },
+    detail: { Reference: "github-token" },
   },
 ];
 
@@ -259,8 +392,8 @@ export const followers: Follower[] = [
     state: "drift",
     lastRun: "2 h ago",
     schedule: "Daily 09:00",
-    note: "Local edits to claude-review-skill",
-    resources: all("converged", { "claude-review-skill": "drift", "github-token": "excluded" }),
+    note: "Local edit to skills/code-review",
+    resources: all("converged", { "skills/code-review": "drift", "credentials/github-token": "excluded" }),
   },
   {
     id: "f_d417",
@@ -272,7 +405,7 @@ export const followers: Follower[] = [
     lastRun: "Yesterday",
     schedule: "Weekly Mon 08:00",
     note: "Run `gh auth login` on this machine",
-    resources: { ...all("converged", { "gh-cli": "human-action", "github-token": "excluded" }), "cuda-toolkit": "converged" },
+    resources: { ...all("converged", { "tools/gh": "human-action", "credentials/github-token": "excluded" }), "tools/cuda-toolkit": "converged" },
   },
   {
     id: "f_71ea",
@@ -285,38 +418,33 @@ export const followers: Follower[] = [
     schedule: "Daily 03:00",
     note: "Tunnel down since Sat",
     behind: "On revision 6 of 7: it can't reach the Source (tunnel down since Sat).",
-    resources: { ...all("converged", { "claude-settings": "never-synced" }), "cuda-toolkit": "converged" },
+    resources: { ...all("converged", { "agents/researcher": "never-synced" }), "tools/cuda-toolkit": "converged" },
   },
 ];
 
 export const revisions: Revision[] = [
-  { sequence: 7, digest: "sha256:4f1c…a09e", publishedAt: "Today 08:41", reviewer: "maria", changes: "+1 tool, 1 file changed" },
-  { sequence: 6, digest: "sha256:91de…77b2", publishedAt: "Oct 24", reviewer: "maria", changes: "claude-review-skill updated" },
-  { sequence: 5, digest: "sha256:0b3a…c4d1", publishedAt: "Oct 19", reviewer: "maria", changes: "+gpu group, +cuda-toolkit" },
-  { sequence: 4, digest: "sha256:e27f…1180", publishedAt: "Oct 11", reviewer: "maria", changes: "codex-config keys" },
+  { sequence: 7, digest: "sha256:4f1c…a09e", publishedAt: "Today 08:41", reviewer: "maria", changes: "+agents/researcher, ~instructions" },
+  { sequence: 6, digest: "sha256:91de…77b2", publishedAt: "Oct 24", reviewer: "maria", changes: "~skills/code-review" },
+  { sequence: 5, digest: "sha256:0b3a…c4d1", publishedAt: "Oct 19", reviewer: "maria", changes: "+gpu group, +tools/cuda-toolkit" },
+  { sequence: 4, digest: "sha256:e27f…1180", publishedAt: "Oct 11", reviewer: "maria", changes: "~settings/codex" },
 ];
-
-export const pendingChanges = resources.filter((r) => r.change);
-
-/** The key paths a config resource declares, for suggesting keys to keep on one machine. Empty for other kinds. */
-export function configKeysFor(resourceId: string): string[] {
-  const resource = resources.find((r) => r.id === resourceId);
-  if (resource?.kind !== "config") return [];
-  return Object.keys(resource.keys ?? {});
-}
 
 export const secrets = [
   { name: "github-token", updated: "Oct 20", sharedWith: 2 },
   { name: "openai-api-key", updated: "Sep 30", sharedWith: 2 },
 ];
 
+/** One row per `canonfig doctor` probe (src/runtime/doctor.ts), plus Linger, which the Service page tracks. */
 export const doctor = [
   { check: "Node.js runtime", result: "ok", detail: "v24.11.0" },
+  { check: "State database", result: "ok", detail: "~/.canonfig/state.sqlite healthy" },
   { check: "Credential storage", result: "ok", detail: "Secret Service unlocked" },
   { check: "Native scheduler", result: "ok", detail: "systemd user manager" },
   { check: "Source service", result: "ok", detail: "Listening on 127.0.0.1:17342" },
   { check: "Linger", result: "warn", detail: "Off: service stops when you log out" },
+  { check: "Package managers", result: "ok", detail: "npm, uv and apt found" },
   { check: "Configuration Agent", result: "ok", detail: "codex 0.62 found" },
+  { check: "Harnesses", result: "ok", detail: "Every listed harness is installed" },
 ] as const;
 
 export const agentPolicy = {
@@ -334,22 +462,32 @@ export const installers = [
   { name: "winget", path: "-", status: "not on this platform" },
 ];
 
-export const harnessProject = {
-  path: "~/code/acme-api",
-  file: ".canonfig/harness.yaml",
-  targets: ["claude", "codex", "cursor", "gemini"],
-  pending: 3,
-};
+/** An item in a follower's ~/.canonfig/local/: a file for rules, skills, agents and commands, a key of local.jsonc otherwise. */
+export interface LocalItem {
+  /** `<category>/<name>`, unique within local/. */
+  id: string;
+  category: LocalCategory;
+  /** Relative to ~/.canonfig/local/. */
+  path: string;
+  summary: string;
+  /** For settings: keys by path, as typed JSON text. */
+  keys?: Record<string, string>;
+  /** Editor fields by label: Description and Body for files, Transport, Command or URL for MCP servers. */
+  detail?: Record<string, string>;
+}
 
 export const followerSelf = {
   name: "laptop",
   source: "atlas (via SSH tunnel)",
   revision: 7,
   state: "converged" as FollowerState,
-  overlays: [
-    { resource: "codex-config", key: "model", value: '"gpt-5.5"' },
-    { resource: "claude-settings", key: "env.EDITOR", value: '"zed"' },
-  ],
+  /** Its ~/.canonfig/local/. commands/standup sits outside the Source's local.allow, so projection ignores it. */
+  local: [
+    { id: "skills/pdf-tools", category: "skills", path: "skills/pdf-tools/", summary: "2 files", detail: { Description: "Fill and split PDF forms.", Body: "Use the scripts in this folder." } },
+    { id: "mcp/notes", category: "mcp", path: "local.jsonc mcp.notes", summary: "stdio, uvx", detail: { Transport: "stdio", Command: "uvx mcp-notes" } },
+    { id: "settings/codex", category: "settings", path: "local.jsonc settings.codex", summary: "1 key", keys: { model: '"gpt-5.5"' } },
+    { id: "commands/standup", category: "commands", path: "commands/standup.md", summary: "/standup", detail: { Description: "Summarize yesterday's commits." } },
+  ] as LocalItem[],
 };
 
 export interface StateMeta {
@@ -372,8 +510,8 @@ export const STATE_META: Record<FollowerState | "excluded", StateMeta> = {
     selfLabel: "You edited this",
     tone: "warn",
     term: "Follower Drift",
-    hint: "Someone changed a file Canonfig manages, on that machine. Canonfig leaves the change alone until someone there decides whether to keep it.",
-    selfHint: "You changed a file Canonfig manages. Canonfig leaves your change alone until you decide whether to keep it.",
+    hint: "Someone changed a file Canonfig manages, on that machine. Canonfig keeps the change, reports it and holds what it writes from that file.",
+    selfHint: "You changed a file Canonfig manages. Canonfig keeps your change, reports it and holds what it writes from that file. Move the change into your local folder, or ask the Source to publish it.",
   },
   "human-action": { label: "Needs you", tone: "act", term: "Human Action Required", hint: "A step only a person can do, like signing in to a tool. Syncing continues once it's done." },
   failed: { label: "Update failed", tone: "bad", term: "a failed Synchronization Run", hint: "The last update failed, so Canonfig put back the files and settings it had changed. Tools it installed stay installed." },

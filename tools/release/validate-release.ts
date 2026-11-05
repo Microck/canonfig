@@ -42,12 +42,6 @@ const PackageMetadata = Schema.Struct({
   engines: Schema.Struct({ node: Schema.String }),
   dependencies: Schema.Record(Schema.String, Schema.String),
   devDependencies: Schema.Record(Schema.String, Schema.String),
-  exports: Schema.Struct({
-    "./profile-compiler": Schema.Struct({
-      types: Schema.Literal("./dist/profile/compiler.d.ts"),
-      import: Schema.Literal("./dist/profile/compiler.js"),
-    }),
-  }),
 });
 
 interface Invocation {
@@ -200,9 +194,10 @@ const validatePackageContents = (
   // Self-update adds staged activation, coordination and recovery modules.
   // These bounded budgets include those shipped safety checks; no files or
   // validation are removed to make the package appear smaller.
-  // The candidate measured 461,458 packed / 2,144,997 unpacked bytes.
-  // Keep a small build-identity margin while rejecting unintended assets.
-  if (artifact.size > 480_000 || artifact.unpackedSize > 2_200_000) {
+  // Harness detection, the Source setup import and its setup stage add about
+  // 60 KB unpacked; the candidate measured 474,809 packed / 2,206,433 unpacked
+  // bytes. Keep a small build-identity margin while rejecting unintended assets.
+  if (artifact.size > 480_000 || artifact.unpackedSize > 2_230_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );
@@ -213,8 +208,6 @@ const validatePackageContents = (
     "README.md",
     "package.json",
     "dist/runtime/main.js",
-    "dist/profile/compiler.js",
-    "dist/profile/compiler.d.ts",
   ]) {
     if (!paths.includes(required)) fail(`package omits required file: ${required}`);
   }
@@ -298,38 +291,19 @@ const validateBinary = (executable: string): void => {
     doctorEnvelope.command !== "doctor"
     || doctorEnvelope.data?.noInput !== true
     || !Array.isArray(doctorEnvelope.data?.probes)
-    || doctorEnvelope.data.probes.length !== 7
+    || doctorEnvelope.data.probes.length !== 8
   ) {
     fail("packed executable doctor returned an invalid envelope");
   }
 
+  // A clean home is neither enrolled nor holding a Canonical Folder, so the
+  // local projection stops on the missing canonfig.jsonc.
   const unattended = invokeExecutable(executable, ["sync", "--apply", "--no-input"]);
   if (
     unattended.status !== 2
     || unattended.stdout !== ""
-    || !unattended.stderr.includes("not enrolled")
+    || !unattended.stderr.includes("canonfig.jsonc: does not exist")
   ) fail("packed executable no-input route was not quiet and truthful");
-};
-
-const validateProfileCompiler = (root: string): void => {
-  const script = resolve(root, "profile-compiler-smoke.mjs");
-  writeFileSync(script, `import { compileProfile } from "@microck/canonfig/profile-compiler";
-const compiled = compileProfile({
-  id: "release-smoke",
-  name: "Release smoke",
-  resources: []
-});
-process.stdout.write(compiled.digest);
-`);
-  const result = run({
-    command: process.execPath,
-    arguments_: [script],
-    cwd: root,
-  });
-  requireSuccess("public profile compiler import", result);
-  if (!/^[a-f0-9]{64}$/u.test(result.stdout)) {
-    fail("public profile compiler returned an invalid digest");
-  }
 };
 
 try {
@@ -392,7 +366,6 @@ try {
   });
   requireSuccess("clean tarball install", installed);
   validateBinary(resolve(installRoot, "node_modules/.bin/canonfig"));
-  validateProfileCompiler(installRoot);
 
   const repositoryRoots = [
     "GLOSSARY.md",

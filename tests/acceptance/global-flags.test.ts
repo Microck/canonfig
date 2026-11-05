@@ -28,20 +28,19 @@ const logEntries = (home: string) => {
 describe("global CLI flags", () => {
   it.each([
     ["--json", "secrets", "list"], ["secrets", "--json", "list"],
-    ["--json", "harness", "targets"], ["harness", "--json", "targets"],
   ])("routes %j and records its command", (...args) => {
     const home = mkdtempSync(join(tmpdir(), "canonfig-global-flags-"));
     try {
       const result = invoke(home, args);
       expect(result.status, result.stdout + result.stderr).toBe(0);
-      const command = args.includes("secrets") ? "secrets.list" : "harness.targets";
+      const command = "secrets.list";
       expect(JSON.parse(result.stdout)).toMatchObject({ schema: "canonfig.cli/v1", command, exitCode: 0 });
       const entries = logEntries(home);
       expect(entries.every((entry) => entry.command === command)).toBe(true);
     } finally { rmSync(home, { recursive: true, force: true }); }
   }, 30000);
 
-  it.each(["secrets", "harness", "installer"])("answers %s --version without opening state", (group) => {
+  it.each(["secrets", "installer"])("answers %s --version without opening state", (group) => {
     const home = mkdtempSync(join(tmpdir(), "canonfig-global-version-"));
     try {
       const result = invoke(home, [group, "--version"]);
@@ -51,6 +50,20 @@ describe("global CLI flags", () => {
       const json = invoke(home, ["--json", group, "--version"]);
       expect(json.status, json.stdout + json.stderr).toBe(0);
       expect(JSON.parse(json.stdout).packageVersion).toBe(programVersion);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  }, 30000);
+
+  // Repository harness projects were removed: `harness` is an unknown group,
+  // so its help is the global listing and a subcommand is a usage error.
+  it("treats harness as an unknown command group", () => {
+    const home = mkdtempSync(join(tmpdir(), "canonfig-no-harness-"));
+    try {
+      const global = invoke(home, ["--help"]);
+      const help = invoke(home, ["harness", "--help"]);
+      expect(help.status, help.stdout + help.stderr).toBe(0);
+      expect(help.stdout).toBe(global.stdout);
+      const command = invoke(home, ["harness", "plan"]);
+      expect(command.status, command.stdout + command.stderr).toBe(2);
     } finally { rmSync(home, { recursive: true, force: true }); }
   }, 30000);
 });
@@ -84,30 +97,30 @@ it.each([
 });
 
 
-it.each(["secrets", "harness"])("retains %s JSON group help when version flags accompany it", (group) => {
+it("retains secrets JSON group help when version flags accompany it", () => {
   const home = mkdtempSync(join(tmpdir(), "canonfig-mixed-help-"));
   try {
     for (const flags of [["--help", "--version"], ["--version", "--help"], ["-V", "-h"]]) {
-      const result = invoke(home, ["--json", group, ...flags]);
+      const result = invoke(home, ["--json", "secrets", ...flags]);
       expect(result.status, result.stdout + result.stderr).toBe(0);
       const envelope = JSON.parse(result.stdout);
-      expect(envelope).toMatchObject({ schema: "canonfig.cli/v1", command: `${group}.help`, exitCode: 0 });
-      expect(envelope.data.commands).toContain(group === "secrets" ? "bootstrap" : "targets");
+      expect(envelope).toMatchObject({ schema: "canonfig.cli/v1", command: "secrets.help", exitCode: 0 });
+      expect(envelope.data.commands).toContain("bootstrap");
     }
     expect(existsSync(join(home, ".canonfig/state.sqlite"))).toBe(false);
   } finally { rmSync(home, { recursive: true, force: true }); }
 }, 30000);
 
 
-it.each(["secrets", "harness"])("preserves positional %s help over version", (group) => {
+it("preserves positional secrets help over version", () => {
   const home = mkdtempSync(join(tmpdir(), "canonfig-positional-help-"));
   try {
     for (const version of ["--version", "-V"]) {
-      const result = invoke(home, ["--json", group, "help", version]);
+      const result = invoke(home, ["--json", "secrets", "help", version]);
       expect(result.status, result.stdout + result.stderr).toBe(0);
-      expect(JSON.parse(result.stdout)).toMatchObject({ schema: "canonfig.cli/v1", command: `${group}.help`, exitCode: 0 });
+      expect(JSON.parse(result.stdout)).toMatchObject({ schema: "canonfig.cli/v1", command: "secrets.help", exitCode: 0 });
     }
     const entries = logEntries(home);
-    expect(entries.every((entry) => entry.command === `${group}.help`)).toBe(true);
+    expect(entries.every((entry) => entry.command === "secrets.help")).toBe(true);
   } finally { rmSync(home, { recursive: true, force: true }); }
 }, 30000);

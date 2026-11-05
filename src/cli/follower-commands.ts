@@ -1,8 +1,9 @@
 import { Context, type Effect } from "effect";
 
 import type { AgentPolicy } from "../domain/identity.ts";
-import type { FollowerId, ProfileId, ResourceId } from "../domain/brand.ts";
+import type { FollowerId } from "../domain/brand.ts";
 import type { EnrollmentInvitationGrant } from "../enrollment/enrollment.types.ts";
+import type { TargetId } from "../projection/model.ts";
 import type { SyncSchedule } from "../schedule/schedule-manager.types.ts";
 import type {
   CliCommandFailure,
@@ -14,7 +15,6 @@ import type { FollowerAgentHarnessConfiguration } from
 export interface FollowerEnrollInput {
   readonly invitation: EnrollmentInvitationGrant;
   readonly followerName: string;
-  readonly selectedProfile?: ProfileId | undefined;
   readonly timeoutMilliseconds?: number | undefined;
   /** Replace a completed enrollment instead of refusing. */
   readonly replace: boolean;
@@ -25,8 +25,17 @@ export interface SynchronizeInput {
   readonly noInput: boolean;
   /** Set by the rendered native job, so fired evidence is not fakeable. */
   readonly scheduled?: boolean | undefined;
-  /** Write exact append-local adoption reviews to protected local files, never output. */
-  readonly reviewLocal?: boolean | undefined;
+  /** Take over harness surfaces without a takeover snapshot. */
+  readonly noBackup?: boolean | undefined;
+}
+
+export interface RestoreInput {
+  /** Snapshot id under `~/.canonfig/.backups/`; the latest when absent. */
+  readonly snapshot?: string | undefined;
+}
+
+export interface HarnessesInput {
+  readonly change?: { readonly action: "include" | "exclude"; readonly harness: TargetId } | undefined;
 }
 
 export interface RecoverInput {
@@ -45,12 +54,6 @@ export type ScheduleInput =
   }
   /** `schedule set --default`: follow the selected profile's scheduleDefault. */
   | { readonly profileDefault: true };
-
-export interface LocalOverlayInput {
-  readonly resource: ResourceId;
-  readonly target: string;
-  readonly keys: ReadonlyArray<string>;
-}
 
 export interface TunnelStartCommandInput {
   readonly invitationPath: string;
@@ -83,15 +86,16 @@ export interface FollowerCommandsService {
   readonly recover: (
     input: RecoverInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
+  /** Write a takeover snapshot back and exclude its harnesses on this machine. */
+  readonly restore: (
+    input: RestoreInput,
+  ) => Effect.Effect<CliPayload, CliCommandFailure>;
+  /** Report harness detection and selection; optionally change a local exclusion. */
+  readonly harnesses: (
+    input: HarnessesInput,
+  ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly status: (
     follower?: FollowerId,
-  ) => Effect.Effect<CliPayload, CliCommandFailure>;
-  readonly setLocalOverlay: (
-    input: LocalOverlayInput,
-  ) => Effect.Effect<CliPayload, CliCommandFailure>;
-  readonly listLocalOverlays: () => Effect.Effect<CliPayload, CliCommandFailure>;
-  readonly removeLocalOverlay: (
-    resource: ResourceId,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly setAgentPolicy: (
     policy: AgentPolicy,
@@ -101,9 +105,6 @@ export interface FollowerCommandsService {
     configuration: FollowerAgentHarnessConfiguration,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly getAgentHarness: () => Effect.Effect<CliPayload, CliCommandFailure>;
-  readonly selectProfile: (
-    profile: ProfileId,
-  ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly setSchedule: (
     input: ScheduleInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;

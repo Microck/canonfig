@@ -245,13 +245,12 @@ const summarizeStatus = (data: PayloadRecord, outline: Outline): boolean => {
     outline.lines.push(`tunnel: ${textOf(tunnel.lifecycle) ?? "unknown"}${textOf(tunnel.detail) === undefined ? "" : ` (${textOf(tunnel.detail)})`}`);
     outlineRest(outline, tunnel, ["lifecycle", "detail"], "  ");
   }
-  if ("localOverlay" in data) outlineValue(outline, "", "local overlays: ", data.localOverlay, 1);
   outlineRest(
     outline,
     data,
     [
       "machineRole", "follower", "lifecycle", "completionReceipt", "tunnel",
-      "localOverlay", "sourceIdentity",
+      "sourceIdentity",
     ],
   );
   return true;
@@ -298,6 +297,27 @@ const summarizeSync = (data: PayloadRecord, outline: Outline): boolean => {
   if (downloaded !== undefined || reused !== undefined) {
     outline.lines.push(`content: ${downloaded ?? "0"} blob(s) downloaded, ${reused ?? "0"} reused`);
   }
+  const origin = objectOf(data.origin);
+  if (origin !== undefined) {
+    outline.lines.push(`folder: ${textOf(origin.folder) ?? ""} (digest ${textOf(origin.digest) ?? ""})`);
+  }
+  const harnesses = recordsOf(data.harnesses);
+  if (harnesses.length > 0) {
+    outline.lines.push("harnesses:");
+    for (const harness of harnesses) {
+      outline.lines.push(`  ${column(textOf(harness.harness), 14)} ${textOf(harness.root) ?? ""}`.trimEnd());
+    }
+  }
+  if (isList(data.notInstalled) && data.notInstalled.length > 0) {
+    outline.lines.push(`not installed (listed, not projected): ${data.notInstalled.map(textOf).join(", ")}`);
+  }
+  // Every takeover says whether it keeps a backup, so `no backup` is never silent.
+  for (const takeover of recordsOf(data.takeovers)) {
+    const surfaces = isList(takeover.surfaces) ? takeover.surfaces.map(textOf).join(", ") : "";
+    outline.lines.push(`takeover: ${textOf(takeover.harness) ?? ""} (${textOf(takeover.root) ?? ""}): ${surfaces}; ${textOf(takeover.backup) ?? ""}`);
+  }
+  const snapshot = textOf(data.snapshot);
+  if (snapshot !== undefined) outline.lines.push(`takeover snapshot: ${snapshot}`);
   const plan = objectOf(data.plan);
   const actions = recordsOf(plan?.actions);
   if (plan !== undefined) {
@@ -310,13 +330,7 @@ const summarizeSync = (data: PayloadRecord, outline: Outline): boolean => {
         outline.lines.push(
           `  ${column(textOf(action.kind), 16)} ${column(textOf(action.resource), 24)} ${actionTarget(detail)}`.trimEnd(),
         );
-        for (const notice of actionNotices(detail)) {
-          if (detail?.retainedLocalDigest !== undefined) {
-            outline.lines.push(`      ${notice}`);
-          } else {
-            pushText(outline, "      ", "", notice);
-          }
-        }
+        for (const notice of actionNotices(detail)) pushText(outline, "      ", "", notice);
       }
       if (actions.length > maximumListItems) {
         outline.elided = true;
@@ -347,16 +361,8 @@ const summarizeSync = (data: PayloadRecord, outline: Outline): boolean => {
   outlineRest(
     outline,
     data,
-    ["mode", "revision", "downloadedBlobs", "reusedBlobs", "plan", "outcome", "agentResolutions", "warnings", "clientSteps", "adoptionReviews"],
+    ["mode", "revision", "downloadedBlobs", "reusedBlobs", "plan", "outcome", "agentResolutions", "warnings", "clientSteps", "origin", "harnesses", "notInstalled", "takeovers", "snapshot"],
   );
-  const adoptionReviews = recordsOf(data.adoptionReviews);
-  if (adoptionReviews.length > 0) {
-    outline.lines.push("private adoption reviews (may contain secrets; inspect locally, never share or upload):");
-    for (const review of adoptionReviews) {
-      outline.lines.push(`  ${textOf(review.resource) ?? ""}: ${textOf(review.path) ?? ""}`);
-    }
-    outline.lines.push("  Open each JSON file locally. Delete its adoption-review directory when finished.");
-  }
   // Unshortened: a warning ends with the exact command that resolves it.
   const warnings = isList(data.warnings) ? data.warnings.map(textOf).filter((warning) => warning !== undefined) : [];
   if (warnings.length > 0) {
@@ -456,8 +462,8 @@ const summarizeProfileList = (data: PayloadRecord, outline: Outline): boolean =>
 const summarizeScan = (data: PayloadRecord, outline: Outline): boolean => {
   if (!isList(data.scannedPaths) || !isList(data.tools)) return false;
   outline.lines.push(
-    `scanned ${data.scannedPaths.length} file(s) for tool evidence`,
-    "(scan discovers tools only; author file, config, and skill resources in a profile file)",
+    `scanned ${data.scannedPaths.length} file(s) in ~/.canonfig/ for tool evidence`,
+    "(scan discovers tools only; --write adds accepted ones to canonfig.jsonc)",
   );
   const tools = recordsOf(data.tools);
   if (tools.length === 0) outline.lines.push("tools: none found");
@@ -482,8 +488,8 @@ const summarizeScan = (data: PayloadRecord, outline: Outline): boolean => {
       outline.lines.push(`  ${textOf(task.id) ?? "task"}: ${textOf(task.desiredOutcome) ?? ""}`.trimEnd());
     }
     outline.lines.push(
-      "  A proposal with unreviewed evidence cannot be published with --proposal. Author the",
-      "  tool resource (with a recipe) in your profile file, or scan only files whose evidence is accepted.",
+      "  Evidence that needs review is never written. Add the tool (with a recipe) to",
+      "  the tools section of ~/.canonfig/canonfig.jsonc yourself once you have reviewed it.",
     );
   }
   outlineRest(outline, data, ["scannedPaths", "tools", "skills", "agentTasks", "evidence", "resources"]);
@@ -560,10 +566,35 @@ const summarizeSetup = (data: PayloadRecord, outline: Outline): boolean => {
   return true;
 };
 
+// ── harnesses ─────────────────────────────────────────────────────────────
+
+const summarizeHarnesses = (data: PayloadRecord, outline: Outline): boolean => {
+  const rows = recordsOf(data.harnesses);
+  if (rows.length === 0) return false;
+  const listOf = (value: CliPayload | undefined) => isList(value) ? value.map(textOf).join(", ") || "none" : "none";
+  outline.lines.push(
+    `folder: ${textOf(data.folder) ?? ""}${data.configured === false ? " (no canonfig.jsonc yet)" : ""}`,
+    `listed: ${listOf(data.listed)}`,
+    `excluded on this machine: ${listOf(data.excluded)}`,
+    `snapshots: ${textOf(data.snapshots) ?? "0"}${textOf(data.latestSnapshot) === undefined ? "" : ` (latest ${textOf(data.latestSnapshot) ?? ""})`}`,
+  );
+  for (const row of rows) {
+    const pinned = textOf(row.pinnedRoot);
+    const snapshot = textOf(row.snapshot);
+    outline.lines.push(
+      `  ${column(textOf(row.harness), 14)} ${column(textOf(row.status), 14)} ${pinned === undefined ? textOf(row.root) ?? "" : `pinned ${pinned}`}`
+        + `${snapshot === undefined ? "" : ` (snapshot ${snapshot})`}`,
+    );
+  }
+  for (const warning of isList(data.warnings) ? data.warnings : []) outline.lines.push(`warning: ${textOf(warning) ?? ""}`);
+  return true;
+};
+
 const summaries: ReadonlyArray<readonly [(command: string) => boolean, (data: PayloadRecord, outline: Outline) => boolean]> = [
   [(command) => command === "doctor", summarizeDoctor],
   [(command) => command === "status", summarizeStatus],
-  [(command) => command.startsWith("sync."), summarizeSync],
+  [(command) => command.startsWith("sync.") || command === "restore", summarizeSync],
+  [(command) => command === "harnesses" || command.startsWith("harnesses."), summarizeHarnesses],
   [(command) => command === "source.publish" || command === "profile.show", summarizeRevision],
   [(command) => command === "profile.list", summarizeProfileList],
   [(command) => command === "source.digest", summarizeDigests],

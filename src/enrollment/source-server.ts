@@ -25,7 +25,6 @@ import {
   InvitationNotFoundError,
   InvitationReplayError,
   InvalidFollowerCredentialError,
-  LegacyRevisionFormatError,
   MalformedEnrollmentRequestError,
   RevokedFollowerCredentialError,
   SourceCredentialMismatchError,
@@ -128,7 +127,6 @@ const errorStatus = (error: EnrollmentError): number => {
   if (
     error instanceof EnrollmentSourceMismatchError
     || error instanceof EnrollmentFingerprintMismatchError
-    || error instanceof LegacyRevisionFormatError
   ) return 409;
   if (
     error instanceof InvitationNotFoundError
@@ -198,7 +196,6 @@ export const asEnrollmentError = (error: Error): EnrollmentError => {
     || error instanceof InvitationNotFoundError
     || error instanceof InvitationReplayError
     || error instanceof InvalidFollowerCredentialError
-    || error instanceof LegacyRevisionFormatError
     || error instanceof MalformedEnrollmentRequestError
     || error instanceof RevokedFollowerCredentialError
     || error instanceof SourceCredentialMismatchError

@@ -61,11 +61,13 @@ const prepareFollower = async () => {
   };
   try {
     requireSuccess(run(process.execPath, [main, "source", "init", "--json"], { env: sourceEnvironment }), "fixture Source initialization");
-    const profile = join(sourceHome, "profile.json");
-    writeFileSync(profile, JSON.stringify({ id: "scheduler-fire-fixture", version: 2,
-      name: "Scheduler fire fixture", groups: [], resources: [] }));
-    requireSuccess(run(process.execPath, [main, "source", "publish", "--profile-file", profile,
-      "--reviewer", "scheduler-fire-fixture", "--allow-empty", "--json"], { env: sourceEnvironment }), "fixture profile publication");
+    // The smallest publishable Canonical Folder: a profile, no harnesses, one instructions file.
+    const folder = join(sourceHome, ".canonfig");
+    writeFileSync(join(folder, "canonfig.jsonc"), JSON.stringify({ version: 1,
+      profile: { id: "scheduler-fire-fixture", name: "Scheduler fire fixture" }, harnesses: [] }));
+    writeFileSync(join(folder, "AGENTS.md"), "Scheduler fire fixture.\n");
+    requireSuccess(run(process.execPath, [main, "source", "publish",
+      "--reviewer", "scheduler-fire-fixture", "--json"], { env: sourceEnvironment }), "fixture profile publication");
     const listener = createServer();
     await new Promise((resolve, reject) => { listener.once("error", reject); listener.listen(0, "127.0.0.1", resolve); });
     const address = listener.address();
@@ -95,7 +97,7 @@ const prepareFollower = async () => {
     requireSuccess(run(process.execPath, [main, "source", "invite", "--endpoint", endpoint,
       "--expires", "5m", "--output", invitation, "--json"], { env: sourceEnvironment }), "fixture invitation");
     requireSuccess(run(process.execPath, [main, "follower", "enroll", "--stdin", "--name", "scheduler-fire-fixture",
-      "--profile", "scheduler-fire-fixture", "--json"], {
+      "--json"], {
       input: readFileSync(invitation, "utf8"),
       env: { ...process.env, CANONFIG_LOCAL_CREDENTIAL_ROOT: followerCredentials, NODE_NO_WARNINGS: "1" },
     }), "fixture follower enrollment");

@@ -3,10 +3,10 @@ import { mkdtemp, mkdir, writeFile, readFile, rm, cp, symlink, chmod, readdir, a
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { checkSkills, listSkills, parseConfig, trackSkill, updateSkills, type SkillLocation, skillUpdateOperations } from "../../src/harness-configuration/skills/manager.ts";
-import { atomicWrite } from "../../src/harness-configuration/core/filesystem.ts";
-import { fetchSkill, normalizeSource, safePath } from "../../src/harness-configuration/skills/upstream.ts";
-import { runSkillsCli } from "../../src/harness-configuration/skills/cli.ts";
+import { checkSkills, listSkills, parseConfig, trackSkill, updateSkills, type SkillLocation, skillUpdateOperations } from "../../src/skills/manager.ts";
+import { atomicWrite } from "../../src/skills/filesystem.ts";
+import { fetchSkill, normalizeSource, safePath } from "../../src/skills/upstream.ts";
+import { runSkillsCli } from "../../src/skills/cli.ts";
 import { isSkillsCommand, skillsArguments } from "../../src/runtime/command-routing.ts";
 
 const roots: string[] = [];
@@ -23,10 +23,11 @@ async function fixture() {
   await write(upstream, "skills/demo/SKILL.md", "---\nname: demo\ndescription: Fixture\n---\nVersion one\n");
   await write(upstream, "skills/demo/assets/data.bin", Buffer.from([0, 255, 128]));
   git(upstream, "add", "."); git(upstream, "commit", "-m", "initial");
-  await mkdir(path.join(root, ".canonfig", "skills"), { recursive: true });
-  await cp(path.join(upstream, "skills", "demo"), path.join(root, ".canonfig", "skills", "demo"), { recursive: true });
-  const location: SkillLocation = { root, config: ".canonfig/skills-sources.json" };
-  const input = { name: "demo", path: ".canonfig/skills/demo", source: upstream, ref: "main", subdir: "skills/demo" };
+  // `root` stands in for ~/.canonfig/, the skills CLI's default root.
+  await mkdir(path.join(root, "skills"), { recursive: true });
+  await cp(path.join(upstream, "skills", "demo"), path.join(root, "skills", "demo"), { recursive: true });
+  const location: SkillLocation = { root, config: "skills-sources.json" };
+  const input = { name: "demo", path: "skills/demo", source: upstream, ref: "main", subdir: "skills/demo" };
   return { root, upstream, location, input };
 }
 async function advance(upstream: string) {
@@ -56,14 +57,14 @@ describe("tracked upstream skill updates", () => {
   });
   it("preserves local edits and blocks the complete selected update", async () => {
     const { location, input, upstream } = await fixture(); await trackSkill(location, input);
-    await cp(path.join(location.root, input.path), path.join(location.root, ".canonfig/skills/second"), { recursive: true });
-    await trackSkill(location, { ...input, name: "second", path: ".canonfig/skills/second" });
+    await cp(path.join(location.root, input.path), path.join(location.root, "skills/second"), { recursive: true });
+    await trackSkill(location, { ...input, name: "second", path: "skills/second" });
     await write(location.root, `${input.path}/notes.md`, "my own notes");
     await advance(upstream);
     expect((await checkSkills(location, []))[0]?.status).toBe("local-edits");
     await expect(updateSkills(location, [])).rejects.toThrow("Local edits");
     expect(await readFile(path.join(location.root, input.path, "notes.md"), "utf8")).toBe("my own notes");
-    expect(await readFile(path.join(location.root, ".canonfig/skills/second/SKILL.md"), "utf8")).toContain("Version one");
+    expect(await readFile(path.join(location.root, "skills/second/SKILL.md"), "utf8")).toContain("Version one");
     expect(await readFile(path.join(location.root, input.path, "SKILL.md"), "utf8")).toContain("Version one");
   });
   it("refuses to invent a baseline for a modified or untracked skill", async () => {

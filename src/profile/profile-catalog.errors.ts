@@ -10,7 +10,7 @@ export class DiscoveryFilesystemError extends TaggedError<DiscoveryFilesystemErr
   "DiscoveryFilesystemError",
   {
     path: Schema.String,
-    operation: Schema.Literals(["read", "stat"]),
+    operation: Schema.Literals(["read", "stat", "write"]),
     reason: Schema.String,
   },
 ) {}
@@ -40,20 +40,6 @@ export class PublicationNotConfiguredError extends TaggedError<PublicationNotCon
   "PublicationNotConfiguredError",
   {
     operation: Schema.Literals(["publish", "getRevision"]),
-  },
-) {}
-
-export class PublicationReviewRequiredError extends TaggedError<PublicationReviewRequiredError>()(
-  "PublicationReviewRequiredError",
-  {
-    decision: Schema.String,
-  },
-) {}
-
-export class UnresolvedPublicationProposalError extends TaggedError<UnresolvedPublicationProposalError>()(
-  "UnresolvedPublicationProposalError",
-  {
-    reasons: Schema.Array(Schema.String),
   },
 ) {}
 
@@ -89,18 +75,7 @@ export class InvalidPublicationSignatureError extends TaggedError<InvalidPublica
   },
 ) {}
 
-/**
- * A publication with no resources that the author did not explicitly ask
- * for. `scannedPaths` names what the proposal scanned, if anything.
- */
-export class EmptyPublicationError extends TaggedError<EmptyPublicationError>()(
-  "EmptyPublicationError",
-  {
-    scannedPaths: Schema.Array(Schema.String),
-  },
-) {}
-
-/** An authored resource `source` that cannot be read from inside the profile directory. */
+/** A published file that cannot be read from inside the Canonical Folder. */
 export class PublicationSourceError extends TaggedError<PublicationSourceError>()(
   "PublicationSourceError",
   {
@@ -112,9 +87,6 @@ export class PublicationSourceError extends TaggedError<PublicationSourceError>(
 
 export type ProfileCatalogPublishError =
   | PublicationNotConfiguredError
-  | PublicationReviewRequiredError
-  | UnresolvedPublicationProposalError
-  | EmptyPublicationError
   | PublicationSourceError
   | InvalidPublicationResourcesError
   | InvalidPublicationInputError

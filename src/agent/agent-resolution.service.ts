@@ -44,8 +44,6 @@ import type {
   AgentHarnessConfiguration,
   PipRequirementFileAuthorization,
   ProposedProcessAction,
-  ReviewedProfileChangeProposal,
-  SourceDiscoveryResolution,
 } from "./agent-resolution.types.ts";
 import {
   controlledEnvironment,
@@ -56,10 +54,6 @@ export class AgentResolution extends Context.Service<AgentResolution, {
   readonly resolve: (
     input: AgentResolutionInput,
   ) => Effect.Effect<AgentResolutionOutcome, AgentResolutionError>;
-  readonly proposeProfileChange: (
-    resolution: SourceDiscoveryResolution,
-    createdAt: string,
-  ) => Effect.Effect<ReviewedProfileChangeProposal, InvalidAgentTaskError>;
 }>()("canonfig/agent/AgentResolution") {}
 
 const ProcessActionSchema = Schema.Struct({
@@ -2965,29 +2959,6 @@ export const validateProposal = (
   harness: AuthorizationBounds & AuthorizationEnvironment = taskBounds(task),
 ): Effect.Effect<void, DeniedAgentCapabilityError> =>
   resolveAuthorizedProposal(proposal, task, harness).pipe(Effect.asVoid);
-
-export const profileChangeProposalFromResolution = (
-  resolution: SourceDiscoveryResolution,
-  createdAt: string,
-): Effect.Effect<ReviewedProfileChangeProposal, InvalidAgentTaskError> => {
-  if (!Number.isFinite(Date.parse(createdAt))) {
-    return Effect.fail(new InvalidAgentTaskError({
-      task: "source-discovery-resolution",
-      message: "createdAt must be an ISO-compatible timestamp",
-    }));
-  }
-  return Effect.succeed({
-    reviewStatus: "pending",
-    proposal: {
-      createdAt,
-      reason: resolution.reason,
-      additions: resolution.additions,
-      modifications: resolution.modifications,
-      removals: resolution.removals,
-      evidence: resolution.evidence,
-    },
-  });
-};
 
 export const nonzeroProcessError = (
   executable: string,

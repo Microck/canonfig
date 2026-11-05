@@ -1,13 +1,6 @@
 import { Schema } from "effect";
 
-import {
-  BlobId,
-  ContentDigest,
-  CredentialReference,
-  GroupName,
-  ResourceId,
-  ToolId,
-} from "./brand.ts";
+import { ToolId } from "./brand.ts";
 import {
   AutomaticRecipeMethod as AutomaticRecipeMethodSchema,
   RecipeSourceMetadata as RecipeSourceMetadataSchema,
@@ -36,7 +29,6 @@ export const ApplyPolicy = Schema.Literals([
   "mirror-owned",
   "merge",
   "replace-if-unmodified",
-  "append-local",
   "ensure",
   "require-local",
 ]);
@@ -54,9 +46,9 @@ export const defaultPolicyForKind = {
 
 /** Which policies are compatible with which kinds. `ensure` and `require-local` are kind-specific. */
 const compatiblePolicies = {
-  file: ["replace", "replace-if-unmodified", "append-local"],
-  directory: ["mirror-owned", "replace"],
-  config: ["merge", "replace"],
+  file: ["replace", "replace-if-unmodified"],
+  directory: ["mirror-owned", "replace", "replace-if-unmodified"],
+  config: ["merge", "replace", "replace-if-unmodified"],
   skill: ["replace-if-unmodified", "replace"],
   tool: ["ensure"],
   credential: ["require-local"],
@@ -116,50 +108,11 @@ export { RecipeSourceMetadataSchema as RecipeSourceMetadata };
 export const RecipeIndexPolicy = RecipeIndexPolicySchema;
 export type RecipeIndexPolicy = Schema.Schema.Type<typeof RecipeIndexPolicySchema>;
 
-/**
- * A Profile Resource: one named item of desired configuration.
- * `spec` carries kind-specific fields decoded by `resourceSpecSchema`.
- */
-export const GroupFilter = Schema.Struct({
-  anyOf: Schema.Array(GroupName),
-});
-export type GroupFilter = Schema.Schema.Type<typeof GroupFilter>;
-
 /** Portable POSIX mode bits accepted by authoring and published resource contracts. */
 export const FilesystemMode = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(0),
   Schema.isLessThanOrEqualTo(0o7777),
 );
-
-export const DirectoryFile = Schema.Struct({
-  path: Schema.NonEmptyString,
-  blob: BlobId,
-  executable: Schema.Boolean,
-  mode: Schema.optional(FilesystemMode),
-  symlinkTo: Schema.optional(Schema.NonEmptyString),
-});
-export type DirectoryFile = Schema.Schema.Type<typeof DirectoryFile>;
-
-export const FileResourceSpec = Schema.Struct({
-  kind: Schema.Literal("file"),
-  content: Schema.String,
-  digest: ContentDigest,
-  executable: Schema.Boolean,
-  mode: Schema.optional(FilesystemMode),
-  symlinkTo: Schema.optional(Schema.NonEmptyString),
-});
-export type FileResourceSpec = Schema.Schema.Type<typeof FileResourceSpec>;
-
-export const DirectoryResourceSpec = Schema.Struct({
-  kind: Schema.Literal("directory"),
-  mode: Schema.optional(FilesystemMode),
-  directories: Schema.optional(Schema.Array(Schema.Struct({
-    path: Schema.NonEmptyString,
-    mode: FilesystemMode,
-  }))),
-  files: Schema.Array(DirectoryFile),
-});
-export type DirectoryResourceSpec = Schema.Schema.Type<typeof DirectoryResourceSpec>;
 
 export const ConfigFormat = Schema.Literals(["toml", "json", "yaml"]);
 export type ConfigFormat = Schema.Schema.Type<typeof ConfigFormat>;
@@ -187,31 +140,6 @@ export const ConfigValue: Schema.Codec<ConfigValue> = Schema.suspend(() => Schem
       : { path: [reserved], issue: "config value contains a reserved prototype field" };
   })),
 ]));
-
-export const ConfigKey = Schema.Struct({
-  path: Schema.NonEmptyString,
-  value: ConfigValue,
-});
-export type ConfigKey = Schema.Schema.Type<typeof ConfigKey>;
-
-export const ConfigResourceSpec = Schema.Struct({
-  kind: Schema.Literal("config"),
-  format: ConfigFormat,
-  keys: Schema.Array(ConfigKey),
-});
-export type ConfigResourceSpec = Schema.Schema.Type<typeof ConfigResourceSpec>;
-
-export const SkillResourceSpec = Schema.Struct({
-  kind: Schema.Literal("skill"),
-  name: Schema.NonEmptyString,
-  mode: Schema.optional(FilesystemMode),
-  directories: Schema.optional(Schema.Array(Schema.Struct({
-    path: Schema.NonEmptyString,
-    mode: FilesystemMode,
-  }))),
-  files: Schema.Array(DirectoryFile),
-});
-export type SkillResourceSpec = Schema.Schema.Type<typeof SkillResourceSpec>;
 
 const ToolRecipeRefSchema = Schema.Struct({
   platform: Platform,
@@ -293,91 +221,6 @@ export const AgentInstallBounds = Schema.Struct({
   ),
 });
 export type AgentInstallBounds = Schema.Schema.Type<typeof AgentInstallBounds>;
-
-export const ToolResourceSpec = Schema.Struct({
-  kind: Schema.Literal("tool"),
-  toolId: ToolId,
-  recipes: Schema.Array(ToolRecipeRef),
-  login: LoginRequirement,
-  agentInstall: Schema.optional(AgentInstallBounds),
-});
-export type ToolResourceSpec = Schema.Schema.Type<typeof ToolResourceSpec>;
-
-export const CredentialResourceSpec = Schema.Struct({
-  kind: Schema.Literal("credential"),
-  reference: CredentialReference,
-});
-export type CredentialResourceSpec = Schema.Schema.Type<typeof CredentialResourceSpec>;
-
-/**
- * The calendar grammar a Machine Profile may declare.
- *
- * Only shapes every follower backend can render are allowed. A `custom`
- * expression was accepted at publication and then refused at apply time by
- * launchd and Windows Task Scheduler, which left a macOS or Windows follower
- * unable to converge at all. A follower that wants a backend-specific calendar
- * sets one locally, where it is that machine's business.
- */
-export const ScheduleCalendar = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literal("daily"),
-    at: Schema.NonEmptyString,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("weekly"),
-    days: Schema.Array(Schema.NonEmptyString),
-    at: Schema.NonEmptyString,
-  }),
-]);
-export type ScheduleCalendar = Schema.Schema.Type<typeof ScheduleCalendar>;
-
-export const ResourceSpec = Schema.Union([
-  FileResourceSpec,
-  DirectoryResourceSpec,
-  ConfigResourceSpec,
-  SkillResourceSpec,
-  ToolResourceSpec,
-  CredentialResourceSpec,
-]);
-export type ResourceSpec = Schema.Schema.Type<typeof ResourceSpec>;
-
-/** How to verify a resource reached its desired state. */
-export const VerificationSpec = Schema.Union([
-  Schema.Struct({
-    method: Schema.Literal("digest"),
-    digest: ContentDigest,
-  }),
-  Schema.Struct({
-    method: Schema.Literal("command"),
-    command: Schema.Array(Schema.NonEmptyString),
-    expectContains: Schema.optional(Schema.String),
-  }),
-  Schema.Struct({
-    method: Schema.Literal("executable-present"),
-    executable: Schema.NonEmptyString,
-  }),
-  Schema.Struct({
-    method: Schema.Literal("credential-present"),
-    reference: CredentialReference,
-  }),
-  Schema.Struct({
-    method: Schema.Literal("symlink"),
-    target: Schema.NonEmptyString,
-  }),
-]);
-export type VerificationSpec = Schema.Schema.Type<typeof VerificationSpec>;
-
-export const ProfileResource = Schema.Struct({
-  id: ResourceId,
-  kind: ResourceKind,
-  policy: ApplyPolicy,
-  target: Schema.NonEmptyString,
-  group: Schema.optional(GroupFilter),
-  dependsOn: Schema.Array(ResourceId),
-  spec: ResourceSpec,
-  verify: VerificationSpec,
-});
-export type ProfileResource = Schema.Schema.Type<typeof ProfileResource>;
 
 /** A discovered tool entry from the source scan, per the profile contract. */
 export const InvocationEvidence = Schema.Struct({
