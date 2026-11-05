@@ -16,15 +16,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { AnimatedNumber, DitherProgress, Hint, Mono, Term } from "@/shared/shared";
 import {
+  APPEND_LOCAL_CATEGORIES,
+  APPEND_LOCAL_LABEL,
   CATEGORY_LABEL,
   DEMO,
   HARNESS_NAMES,
   LOCAL_CATEGORIES,
   PLAIN,
+  RESERVED_PATHS,
   SECRETS_GROUP,
   itemPath,
   machine,
   profile,
+  type AppendLocalCategory,
   type HarnessId,
   type ItemCategory,
   type LocalCategory,
@@ -87,6 +91,8 @@ interface FieldSpec {
 
 const BODY: FieldSpec = { label: "Body", key: "body", long: true, placeholder: "What the agent should know, in Markdown." };
 const stdio = (d: Record<string, string>) => (d.Transport ?? "stdio") === "stdio";
+/** A `resources.<id>` of kind config: keys merged into a file, with no source under files/ and no policy. */
+const isConfig = (d: Record<string, string>) => d.Type === "config";
 
 const FIELDS: Record<ItemCategory, FieldSpec[]> = {
   instructions: [{ ...BODY, placeholder: "# Working agreements" }],
@@ -130,6 +136,25 @@ const FIELDS: Record<ItemCategory, FieldSpec[]> = {
     { label: "Login", key: "login", placeholder: "gh auth login", hint: "A sign-in step only a person can do, if the tool needs one." },
   ],
   credentials: [{ label: "Reference", key: "reference", required: true, placeholder: "github-token", hint: "The name this machine's credential store keeps it under." }],
+  // src/projection/folder.ts ResourceInput: file and directory read `source` under files/ and take a policy; config merges keys.
+  resources: [
+    {
+      label: "Type",
+      key: "kind",
+      options: ["file", "directory", "config"],
+      hint: "file: one file from ~/.canonfig/files/.\ndirectory: every file under a folder there.\nconfig: only the keys below, merged into a JSON, TOML or YAML file. Every other key stays.",
+    },
+    { label: "Target", key: "target", required: true, placeholder: "~/.gitconfig", hint: "Where it goes on each machine, written ~/...\nNot inside ~/.canonfig, ~/.agents or any harness's folder." },
+    { label: "Source", key: "source", required: true, placeholder: "files/gitconfig", hint: "Its content, under ~/.canonfig/files/.", shown: (d) => !isConfig(d) },
+    {
+      label: "Policy",
+      key: "policy",
+      options: ["replace", "append-local"],
+      hint: "replace: Canonfig owns the whole file or folder.\nappend-local: Canonfig owns a marked section at the top of the file, or only the entries it writes in the folder, and keeps what each machine adds.",
+      shown: (d) => !isConfig(d),
+    },
+    { label: "Format", key: "format", options: ["json", "toml", "yaml"], shown: isConfig },
+  ],
 };
 
 /** Item names in the folder: src/projection/folder.ts namePattern. */
@@ -146,6 +171,7 @@ const NAME_PLACEHOLDER: Record<ItemCategory, string> = {
   settings: "",
   tools: "gh",
   credentials: "github-token",
+  resources: "gitconfig",
 };
 
 /** The name part of an item id: `code-review` for `skills/code-review`, empty for `instructions`. */
@@ -154,7 +180,7 @@ const nameOf = (r: Resource) => (r.category === "instructions" ? "" : r.id.slice
 function blankItem(category: ItemCategory): Resource {
   // Fields with a fixed set of values start on the first one, so the draft is valid as far as they go.
   const detail = Object.fromEntries(FIELDS[category].flatMap((f) => (f.options ? [[f.label, f.options[0]]] : [])));
-  return { id: category === "instructions" ? "instructions" : "", category, path: itemPath(category, ""), groups: [], summary: "", detail, keys: category === "settings" ? {} : undefined };
+  return { id: category === "instructions" ? "instructions" : "", category, path: itemPath(category, ""), groups: [], summary: "", detail, keys: category === "settings" || category === "resources" ? {} : undefined };
 }
 
 const listOf = (text: string | undefined) => (text ?? "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -185,6 +211,11 @@ function summaryOf(r: Resource): string {
       return ["macOS", "Linux", "Windows"].filter((os) => d[os]?.trim()).join(", ") || "no recipe yet";
     case "credentials":
       return "local reference";
+    case "resources": {
+      if (!isConfig(d)) return `${d.Target}, ${d.Policy ?? "replace"}`;
+      const n = Object.keys(r.keys ?? {}).length;
+      return `${d.Target}, merges ${n} ${n === 1 ? "key" : "keys"}`;
+    }
   }
 }
 
@@ -244,6 +275,13 @@ function preview(r: Resource): { where: string; text: string } | null {
     return { where, text: JSON.stringify(hook, null, 2) };
   }
   if (r.category === "credentials") return { where, text: `${key}: ${JSON.stringify({ reference: d.Reference ?? "" })}` };
+  if (r.category === "resources") {
+    // The authored entry as the how-to writes it: `policy` only when it isn't the default replace.
+    const entry = isConfig(d)
+      ? { kind: "config", target: d.Target, format: d.Format, keys: Object.fromEntries(Object.entries(r.keys ?? {}).map(([k, v]) => [k, JSON.parse(jsonValue(v))])) }
+      : { kind: d.Type, target: d.Target, source: d.Source, ...(d.Policy === "append-local" ? { policy: "append-local" } : {}) };
+    return { where, text: `${key}: ${JSON.stringify(entry, null, 2)}` };
+  }
   return null;
 }
 
@@ -295,11 +333,15 @@ function GroupPicker({ idPrefix, value, onChange }: { idPrefix: string; value: s
   );
 }
 
-/** What Profile → Defaults has saved: canonfig.jsonc `profile.name`, `scheduleDefault` and `local.allow`. The page header reads the name from here too. */
+/**
+ * What Profile → Defaults has saved: canonfig.jsonc `profile.name`, `scheduleDefault`, `local.allow` and
+ * `local.appendLocal`. The page header reads the name from here too.
+ */
 interface ProfileDefaults {
   name: string;
   schedule: Schedule;
   localAllow: LocalCategory[];
+  appendLocal: AppendLocalCategory[];
 }
 
 /**
@@ -313,6 +355,7 @@ function useProfileDefaults(which: "saved" | "published" = "saved") {
     name: ws.profileName,
     schedule: { cadence: "daily", days: [], time: "09:00" },
     localAllow: profile.localAllow,
+    appendLocal: profile.appendLocal,
   });
 }
 
@@ -321,7 +364,8 @@ function sameDefaults(a: ProfileDefaults, b: ProfileDefaults) {
   return (
     a.name === b.name &&
     scheduleDefaultOf(a.schedule) === scheduleDefaultOf(b.schedule) &&
-    LOCAL_CATEGORIES.every((c) => a.localAllow.includes(c) === b.localAllow.includes(c))
+    LOCAL_CATEGORIES.every((c) => a.localAllow.includes(c) === b.localAllow.includes(c)) &&
+    APPEND_LOCAL_CATEGORIES.every((c) => a.appendLocal.includes(c) === b.appendLocal.includes(c))
   );
 }
 
@@ -522,6 +566,38 @@ function keyRowsOf(r: Resource): KeyRow[] {
   return Object.entries(r.keys ?? {}).map(([name, value], i) => ({ id: i, name, value }));
 }
 
+/** A home-relative or files/-relative path: segments with no `/`, `\` or NUL, none empty (folder.ts relativeSegments). */
+const RESOURCE_TARGET = /^~\/(?:[^/\\\0]+\/)*[^/\\\0]+$/;
+const RESOURCE_SOURCE = /^files\/(?:[^/\\\0]+\/)*[^/\\\0]+$/;
+
+/**
+ * The checks Canonfig runs on `resources.<id>.target` and `.source`, with its own messages: the loader's shape,
+ * `.`/`..` and overlap rules (loadResources in src/projection/folder.ts) and projection's refusal of any place the
+ * Canonfig folder, ~/.agents or a harness owns (projectResources in src/projection/plan.ts). Overlap ignores case,
+ * as the loader does, because a folder reaches machines whose file systems do.
+ */
+function resourcePathError(field: "Target" | "Source", value: string, name: string, others: Resource[]): string | null {
+  const label = `resources.${name || "new"}`;
+  const dotted = (segments: string[]) => segments.some((s) => s === "." || s === "..");
+  if (field === "Source") {
+    if (!RESOURCE_SOURCE.test(value)) return "Write a path under files/, for example files/gitconfig.";
+    return dotted(value.split("/")) ? `Remove the . or .. part: “${label}.source ${value} has a . or .. segment”.` : null;
+  }
+  if (!RESOURCE_TARGET.test(value)) return "Write a path in the home folder, starting with ~/, for example ~/.gitconfig.";
+  if (dotted(value.slice(2).split("/"))) return `Remove the . or .. part: “${label}.target ${value} has a . or .. segment”.`;
+  const fold = value.toLowerCase();
+  const overlaps = (path: string) => {
+    const other = path.toLowerCase();
+    return fold === other || fold.startsWith(`${other}/`) || other.startsWith(`${fold}/`);
+  };
+  const sibling = others.find((r) => r.category === "resources" && r.change !== "removed" && overlaps(r.detail.Target ?? ""));
+  if (sibling) return `${sibling.id} already writes there: “${label}.target ${value} overlaps ${sibling.id.replace("/", ".")}.target ${sibling.detail.Target}”.`;
+  const reserved = RESERVED_PATHS.find(([path]) => overlaps(path));
+  return reserved
+    ? `That place belongs to ${reserved[1]}: “${label}.target ${value} overlaps ${reserved[0]}, which belongs to ${reserved[1]}; author harness configuration through the folder instead”.`
+    : null;
+}
+
 function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource; isNew: boolean; onClose: () => void; onSaved: (id: string) => void }) {
   const ws = useWorkspace();
   const [draft, setDraft] = useState<Resource>(resource);
@@ -532,6 +608,8 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
   const setDetail = (k: string, v: string) => setDraft((d) => ({ ...d, detail: { ...d.detail, [k]: v } }));
   const category = draft.category;
   const isSettings = category === "settings";
+  // Settings and config resources are both key maps written into another file; they share the key rows.
+  const hasKeys = isSettings || (category === "resources" && isConfig(draft.detail));
   const fields = FIELDS[category].filter((f) => f.shown?.(draft.detail) ?? true);
   const others = ws.resources.filter((r) => r.id !== resource.id);
   const Icon = CATEGORY_ICON[category];
@@ -595,13 +673,17 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
           : others.some((r) => r.id === id)
             ? `${id} is already in the folder. Choose another name.`
             : null;
-  const fieldError = (f: FieldSpec) => (f.required && !draft.detail[f.label]?.trim() ? `Enter ${f.label === "URL" ? "the URL" : `a ${f.label.toLowerCase()}`}.` : null);
+  const fieldError = (f: FieldSpec) => {
+    const value = draft.detail[f.label]?.trim() ?? "";
+    if (f.required && !value) return `Enter ${f.label === "URL" ? "the URL" : `a ${f.label.toLowerCase()}`}.`;
+    return category === "resources" && (f.label === "Target" || f.label === "Source") ? resourcePathError(f.label, value, trimmed, others) : null;
+  };
   const asWritten: Resource = { ...draft, id, path: itemPath(category, trimmed) };
 
   const save = (form: HTMLFormElement) => {
     setTried(true);
     const badField = fields.find(fieldError);
-    const badRow = isSettings ? rows.find((r) => !r.name.trim() || rows.some((x) => x.id !== r.id && x.name.trim() === r.name.trim())) : undefined;
+    const badRow = hasKeys ? rows.find((r) => !r.name.trim() || rows.some((x) => x.id !== r.id && x.name.trim() === r.name.trim())) : undefined;
     if (nameError || badField || badRow) {
       const selector = nameError ? "#item-name" : badField ? `#item-${badField.label.replace(/\W/g, "")}` : `#item-key-${badRow!.id}`;
       form.querySelector<HTMLElement>(selector)?.focus();
@@ -784,7 +866,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
           </Prop>
         )}
 
-        {isSettings && (
+        {hasKeys && (
           <div className="grid gap-2">
             <SectionLabel
               action={
@@ -805,7 +887,9 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
             >
               Keys Canonfig sets
             </SectionLabel>
-            {rows.length === 0 && <p className="text-sm text-faint">No keys yet. Add the first key Canonfig should set in this harness's settings file.</p>}
+            {rows.length === 0 && (
+              <p className="text-sm text-faint">No keys yet. Add the first key Canonfig should set in {isSettings ? "this harness's settings file" : "this file"}.</p>
+            )}
             {/* Key paths are long dotted names; values are short scalars, so the path gets the larger share. */}
             <div className="grid grid-cols-[minmax(0,3fr)_minmax(0,2fr)_24px] items-start gap-x-1.5 gap-y-1.5">
               {rows.length > 0 && (
@@ -825,7 +909,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
                         value={r.name}
                         title={r.name || undefined}
                         aria-label={`Key ${i + 1} path`}
-                        placeholder="permissions.defaultMode"
+                        placeholder={isSettings ? "permissions.defaultMode" : "lint.select"}
                         autoFocus={focusRow === r.id}
                         aria-invalid={!!err}
                         aria-describedby={err ? `item-key-${r.id}-note` : undefined}
@@ -865,8 +949,8 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
               })}
             </div>
             <p className="text-xs text-pretty text-faint">
-              Values are JSON: put text in quotes, like "high"; numbers and true/false without. Canonfig translates them into the harness's own file format and leaves every
-              other key in that file as it is.
+              Values are JSON: put text in quotes, like "high"; numbers and true/false without. Canonfig translates them into{" "}
+              {isSettings ? "the harness's own file format" : (draft.detail.Format ?? "json").toUpperCase()} and leaves every other key in that file as it is.
             </p>
           </div>
         )}
@@ -1168,14 +1252,16 @@ function DefaultsTab() {
   const [name, setName] = useState(saved.name);
   const [schedule, setSchedule] = useState<Schedule>(saved.schedule);
   const [localAllow, setLocalAllow] = useState<LocalCategory[]>(saved.localAllow);
+  const [appendLocal, setAppendLocal] = useState<AppendLocalCategory[]>(saved.appendLocal);
   const [tried, setTried] = useState(false);
   const trimmed = name.trim();
   const nameError = tried && !trimmed ? "Enter a display name." : null;
   const scheduleProblem = scheduleError(schedule);
   // Compares what Save would write, so day picks hidden under a daily cadence don't count as edits.
-  const dirty = !sameDefaults({ name, schedule, localAllow }, saved);
+  const dirty = !sameDefaults({ name, schedule, localAllow, appendLocal }, saved);
   const { dialog: leaveDialog } = useLeaveGuard(dirty, "the profile defaults");
   const allowed = LOCAL_CATEGORIES.filter((c) => localAllow.includes(c));
+  const shared = APPEND_LOCAL_CATEGORIES.filter((c) => appendLocal.includes(c));
   return (
     <Body>
       <form
@@ -1184,7 +1270,7 @@ function DefaultsTab() {
           e.preventDefault();
           setTried(true);
           if (!trimmed || scheduleProblem) return;
-          const next = { name: trimmed, schedule, localAllow: allowed };
+          const next = { name: trimmed, schedule, localAllow: allowed, appendLocal: shared };
           // Saving unchanged values is not an edit. Saving the published values back withdraws the edit,
           // so unpublished changes only ever list defaults that differ from the latest revision.
           const edited = ws.pending.some((c) => c.area === "defaults");
@@ -1238,6 +1324,24 @@ function DefaultsTab() {
           ))}
         </div>
 
+        <SectionLabel className="mt-6">
+          <Term term="Append-local">What machines keep of their own</Term>
+        </SectionLabel>
+        <p className="mb-3 text-sm text-pretty text-muted-foreground">
+          Ticked, Canonfig owns only its marked section at the top of each harness's instructions file, or only the skills it writes in each skills folder, on every
+          machine including this one. The text and skills a machine has there stay. Unticked, Canonfig owns the whole file or folder, and a machine with its own content
+          there has to move it into ~/.canonfig/local before its next update.
+        </p>
+        <div className="grid gap-0.5 sm:grid-cols-2">
+          {APPEND_LOCAL_CATEGORIES.map((c) => (
+            <Label key={c} htmlFor={`append-${c}`} className="flex h-7 cursor-pointer items-center gap-2 text-base font-normal">
+              <Checkbox id={`append-${c}`} checked={appendLocal.includes(c)} onCheckedChange={(on) => setAppendLocal((prev) => (on ? [...prev, c] : prev.filter((x) => x !== c)))} />
+              {APPEND_LOCAL_LABEL[c]}
+              <span className="font-mono text-xs text-faint">{c}</span>
+            </Label>
+          ))}
+        </div>
+
         {/* The defaults are canonfig.jsonc keys, not a command. An incomplete schedule has no valid value, so its line waits for a complete one. */}
         <div className="mt-6 grid gap-2">
           <pre
@@ -1248,7 +1352,7 @@ function DefaultsTab() {
             {[
               `"profile": ${JSON.stringify({ id: profile.id, name: trimmed || saved.name })},`,
               ...(scheduleProblem ? [] : [`"scheduleDefault": ${JSON.stringify(scheduleDefaultOf(schedule))},`]),
-              `"local": { "allow": [${allowed.map((c) => JSON.stringify(c)).join(", ")}] }`,
+              `"local": { "allow": [${allowed.map((c) => JSON.stringify(c)).join(", ")}]${shared.length ? `, "appendLocal": [${shared.map((c) => JSON.stringify(c)).join(", ")}]` : ""} }`,
             ].join("\n")}
           </pre>
           <p className="text-sm text-pretty text-faint">
@@ -1270,6 +1374,7 @@ function DefaultsTab() {
               setName(saved.name);
               setSchedule(saved.schedule);
               setLocalAllow(saved.localAllow);
+              setAppendLocal(saved.appendLocal);
               setTried(false);
             }}
           >

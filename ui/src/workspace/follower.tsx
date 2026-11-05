@@ -1,29 +1,39 @@
 // Follower screens use simulated sync plans, schedules, local folder edits, secrets, tunnels, and enrollment.
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { toast } from "sonner";
-import { ArrowRight, Check, DotsThree, HourglassMedium, Key, Plus, X } from "@/components/icons";
+import { ArrowRight, CaretRight, Check, DotsThree, HourglassMedium, Key, Plus, WarningCircle, X } from "@/components/icons";
 import { cn, removeKeepingFocus } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { AnimatedNumber, DitherProgress, Mono, StateBand, StateLabel, StatusMark, Term, type StatusKind } from "@/shared/shared";
 import {
+  APPEND_LOCAL_LABEL,
   CATEGORY_LABEL,
   DEMO,
   HARNESS_NAMES,
   LOCAL_CATEGORIES,
   PLAIN,
   SECRETS_GROUP,
+  SOURCE_TEXT_END,
+  SOURCE_TEXT_START,
+  SETTINGS_FILES,
+  followerSelf,
   machine,
   profile,
   resources,
   secrets as seedSecrets,
   type HarnessId,
+  type KeptSurface,
   type LocalCategory,
   type LocalItem,
+  type Resource,
 } from "@/shared/data";
 import { useSharedReader, useSharedState, useWorkspace, type PlanAction, type PlanItem } from "./store";
 import { GetStarted } from "./guide";
@@ -53,6 +63,7 @@ import { ScheduleFields, nextCheck, scheduleError, scheduleSummary, type Schedul
 
 const ACTION: Record<PlanAction, { label: string; cls: string; hint: string }> = {
   write: { label: "Write", cls: "bg-ok/12 text-ok", hint: "Replace the harness file or folder with the revision's copy." },
+  append: { label: "Add section", cls: "bg-ok/12 text-ok", hint: "Write Canonfig's marked section at the top of the file.\nEverything below it stays as this machine's text." },
   merge: { label: "Set keys", cls: "bg-ok/12 text-ok", hint: "Set only the keys Canonfig owns; every other key in the file stays as it is." },
   install: { label: "Install", cls: "bg-[oklch(0.72_0.12_240)]/14 text-[oklch(0.78_0.1_240)]", hint: "Run the tool's install recipe for this system, then check it runs." },
   "skip-drift": { label: "Held", cls: "bg-warn/12 text-warn", hint: "You edited this item's file here.\nCanonfig keeps your edit and holds what it writes from it." },
@@ -460,6 +471,9 @@ export function SyncView() {
   const rev = ws.targetRevision;
   const steps = ws.plan;
   const held = steps.filter(isHeld).length;
+  const collisions = unsettledCollisions(ws.local, ws.overlays);
+  // First adoptions only exist before the run that writes them; afterwards the file holds Canonfig's section.
+  const adoption = ws.phase === "plan" ? steps.find((p) => p.adoption) : undefined;
   const sideBySide = useSyncExternalStore(
     subscribeSyncDetailLayout,
     () => window.matchMedia(SYNC_DETAIL_QUERY).matches,
@@ -467,7 +481,7 @@ export function SyncView() {
   );
   // Explicit URL selections (including Overview's "How to settle it") work at every width.
   // An empty focus means the user closed the panel, so it must not select the default.
-  const selected = ws.focus ?? (sideBySide ? (steps.find(isHeld)?.resource ?? null) : null);
+  const selected = ws.focus ?? (sideBySide ? (steps.find(isHeld)?.resource ?? adoption?.resource ?? null) : null);
   const setSelected = (id: string | null) => ws.go("sync", id ?? "");
   const [checking, setChecking] = useSharedState(CHECKING_KEY, false);
   const blocks = useSyncBlocks();
@@ -504,7 +518,13 @@ export function SyncView() {
               {checking && <HourglassMedium />} {checking ? "Checking…" : "Check for updates"}
             </Button>
             {ws.phase !== "done" && (
-              <Button size="sm" variant="primary" disabled={running || ws.interrupted || blocks.blocked !== null} onClick={ws.applyPlan} data-tour="sync-apply">
+              <Button
+                size="sm"
+                variant="primary"
+                disabled={running || ws.interrupted || blocks.blocked !== null || collisions.length > 0}
+                onClick={ws.applyPlan}
+                data-tour="sync-apply"
+              >
                 {running ? "Applying…" : "Apply changes"}
               </Button>
             )}
@@ -514,7 +534,13 @@ export function SyncView() {
       <Body
         // Checking asks the Source for its latest revision, which rebuilds the plan below.
         reloading={checking}
-        detail={current?.drift ? <DriftPanel item={current} onClose={() => setSelected(null)} /> : undefined}
+        detail={
+          current?.drift ? (
+            <DriftPanel item={current} onClose={() => setSelected(null)} />
+          ) : current?.adoption ? (
+            <AdoptionPanel item={current} onClose={() => setSelected(null)} />
+          ) : undefined
+        }
       >
         <section data-tour="sync-summary" className="relative isolate overflow-hidden border-b border-border" aria-live="polite">
           <StateBand tone={ws.phase === "plan" || held > 0 ? "warn" : "ok"} mode={running ? "running" : "idle"} className="-z-10 opacity-70" />
@@ -543,7 +569,9 @@ export function SyncView() {
                   : ws.phase === "plan"
                     ? ws.interrupted
                       ? "Recover or abandon the interrupted update first."
-                      : "Nothing changes until you apply."
+                      : collisions.length > 0
+                        ? "Settle the name collision first."
+                        : "Nothing changes until you apply."
                     : ws.phase === "done" && held > 0
                       ? "What you edited here stays as you left it."
                       : null}
@@ -555,11 +583,26 @@ export function SyncView() {
             <DitherProgress value={ws.progress} running={running} label={`Applying revision ${rev}`} className={cn("mt-3", !running && "invisible")} />
           </div>
         </section>
-        {(ws.interrupted || ws.humanAction) && (
+        {(ws.interrupted || ws.humanAction || collisions.length > 0 || adoption) && (
           // 14px plus Attention's own 4px row inset puts the notice text on the list's 18px line.
           <div data-tour="sync-recover" className="px-[14px]">
             <InterruptedNotice />
             <HumanActionItem />
+            <CollisionNotice collisions={collisions} />
+            {adoption && (
+              <Attention
+                tone="warn"
+                title={`Check what ${adoption.target} keeps before you apply`}
+                actions={
+                  <Button variant="outline" size="xs" onClick={() => setSelected(adoption.resource)}>
+                    Review the text
+                  </Button>
+                }
+              >
+                Canonfig hasn't written this file before, so it keeps the entire file as your text, even where it matches what {SOURCE} publishes: matching text doesn't
+                show who wrote it. Look at the exact text Canonfig adds and the text it keeps.
+              </Attention>
+            )}
           </div>
         )}
         <ListHead cols={cols} minWidth={colsMin} data-tour="sync-plan">
@@ -650,9 +693,9 @@ function DriftPanel({ item, onClose }: { item: PlanItem; onClose: () => void }) 
         <SectionLabel>To settle it</SectionLabel>
         <ul className="grid list-disc gap-2 pl-4 text-sm text-pretty text-muted-foreground">
           <li>
-            <span className="text-foreground">Keep it on this machine.</span> Add your version under its own name in{" "}
-            <Mono>~/.canonfig/local/{item.category}</Mono>, then put this file back as revision {applied} had it. A local item with a published item's name stops the update
-            until you rename one of them.
+            <span className="text-foreground">Keep it on this machine.</span> Add your version to <Mono>~/.canonfig/local/{item.category}</Mono>, then put this file back as
+            revision {applied} had it. Under its own name it sits next to the published one; under this name the update stops until you rename it or let yours replace the
+            published one on this machine.
           </li>
           <li>
             <span className="text-foreground">Share it with every machine.</span> Ask {SOURCE} to publish the change. Once a revision holds the same content, the file
@@ -664,6 +707,153 @@ function DriftPanel({ item, onClose }: { item: PlanItem; onClose: () => void }) 
         </ul>
       </div>
     </DetailPanel>
+  );
+}
+
+/** Shared-state key for the private adoption review: what `sync --plan --review-local` writes, as it was written. */
+const REVIEW_KEY = "adoption-review";
+type AdoptionReview = { id: string; files: { target: string; sourceAddition: string; retainedLocal: string }[] } | null;
+/** The demo's review directory id; Canonfig names each one with a fresh UUID, which the real backend will report. */
+const DEMO_REVIEW_ID = "6b1d0e52-94c3-4f7a-8e21-0c5f3a9d7b14";
+
+/** The whole file `sync --apply` writes: Canonfig's marked section, a blank line, then the kept text (composeTextFile). */
+const proposedText = (sourceAddition: string, retainedLocal: string) => `${SOURCE_TEXT_START}\n${sourceAddition}\n${SOURCE_TEXT_END}\n\n${retainedLocal}`;
+
+/**
+ * The text Canonfig owns in an instructions file: the published AGENTS.md, then this machine's local/AGENTS.md when
+ * local.allow admits it (withLocalInstructions in src/projection/folder.ts), then links to the rules for harnesses
+ * that read rules from their instructions file, as Amp and Codex do (instructionsText in shared-documents.ts).
+ */
+function sourceSection(published: Resource[], local: LocalItem[], home: string): string {
+  const shared = published.find((r) => r.id === "instructions" && r.change !== "removed")?.detail.Body;
+  const mine = profile.localAllow.includes("instructions") ? local.find((l) => l.id === "instructions")?.detail?.Body : undefined;
+  const text = shared !== undefined && mine !== undefined ? `${shared}${shared.endsWith("\n") ? "\n" : "\n\n"}${mine}` : (shared ?? mine);
+  const sections = text?.trim() ? [text.trim()] : [];
+  const rules = [
+    ...published.filter((r) => r.category === "rules" && r.change !== "removed").map((r) => ({ path: `${home}/.canonfig/${r.path}`, detail: r.detail })),
+    ...(profile.localAllow.includes("rules") ? local.filter((l) => l.category === "rules").map((l) => ({ path: `${home}/.canonfig/local/${l.path}`, detail: l.detail ?? {} })) : []),
+  ];
+  if (rules.length > 0) {
+    const scope = (d: Record<string, string>) => {
+      const paths = (d.Paths ?? "").split(",").map((p) => p.trim()).filter(Boolean);
+      switch (d.Activation || (paths.length > 0 ? "path" : "always")) {
+        case "path":
+          return `applies to ${paths.map((p) => `\`${p}\``).join(", ")}`;
+        case "manual":
+          return "applies only when the user asks for it";
+        case "model":
+          return "applies when its description matches the task";
+        default:
+          return "always applies";
+      }
+    };
+    sections.push(
+      ["## Canonfig rules", "", "Read a rule file before doing work it covers:", "", ...rules.map((r) => `- \`${r.path}\` (${scope(r.detail)})${r.detail.Description ? `: ${r.detail.Description}` : ""}`)].join("\n"),
+    );
+  }
+  return sections.length > 0 ? `${sections.join("\n\n")}\n` : "";
+}
+
+/**
+ * An append-local first adoption (`sync --plan --review-local`). The text only appears after the person asks for it,
+ * because writing the review copies instructions that may hold secrets into ~/.canonfig/.reviews/. What shows is the
+ * review as written, so editing local/AGENTS.md afterwards needs a new review, as with the CLI.
+ */
+function AdoptionPanel({ item, onClose }: { item: PlanItem; onClose: () => void }) {
+  const ws = useWorkspace();
+  const [review, setReview] = useSharedState<AdoptionReview>(REVIEW_KEY, null);
+  const file = review?.files.find((f) => f.target === item.target);
+  const reviewDirOf = (id: string) => `~/.canonfig/.reviews/adoption-review-${id}/`;
+  const reviewDir = review && reviewDirOf(review.id);
+  const planned = ws.phase === "plan";
+  const write = () => {
+    const sourceAddition = sourceSection(ws.resources, ws.local, followerSelf.home);
+    const files = ws.plan.flatMap((p) => (p.adoption ? [{ target: p.target, sourceAddition, retainedLocal: p.adoption.retained }] : []));
+    setReview({ id: DEMO_REVIEW_ID, files });
+    toast(`Wrote ${files.length} private ${files.length === 1 ? "review" : "reviews"}`, {
+      description: `In ${reviewDirOf(DEMO_REVIEW_ID)}, readable only by you.\nDelete it when you're done.${DEMO ? "\nSimulated in this demo; no file is written." : ""}`,
+    });
+  };
+  return (
+    <DetailPanel
+      title={item.resource}
+      subtitle={<Mono>{item.target}</Mono>}
+      onClose={onClose}
+      footer={
+        review ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto"
+            onClick={() => {
+              setReview(null);
+              toast(`Deleted ${reviewDir}`);
+            }}
+          >
+            Delete the review
+          </Button>
+        ) : (
+          <Button variant="secondary" size="sm" className="ml-auto" disabled={!planned} onClick={write}>
+            Show the exact text
+          </Button>
+        )
+      }
+    >
+      <p className="px-4 py-3 text-base text-pretty text-muted-foreground">
+        {planned ? (
+          <>
+            Canonfig hasn't written this file before. It backs it up, adds its own section at the top between two markers, and keeps the entire file you have below it as
+            your text, even where it matches what {SOURCE} publishes: matching text doesn't show who wrote it. Later updates replace only Canonfig's section.
+          </>
+        ) : (
+          <>Applied. Canonfig's section sits at the top of the file and your text below it. Later updates replace only Canonfig's section.</>
+        )}
+      </p>
+      {file ? (
+        <div className="grid gap-4 px-4 pb-4">
+          <div className="grid gap-1.5">
+            <SectionLabel>What Canonfig adds</SectionLabel>
+            <ReviewText label="Text Canonfig adds and owns">{file.sourceAddition}</ReviewText>
+          </div>
+          <div className="grid gap-1.5">
+            <SectionLabel>What stays yours</SectionLabel>
+            <ReviewText label="Text this machine keeps">{file.retainedLocal}</ReviewText>
+          </div>
+          <Collapsible>
+            <CollapsibleTrigger className="group flex h-7 w-full items-center gap-1 rounded text-sm font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60">
+              <CaretRight className="size-3.5 transition-transform duration-150 ease-snap group-data-[state=open]:rotate-90" />
+              The whole file after this update
+            </CollapsibleTrigger>
+            <CollapsibleContent className="pt-2">
+              <ReviewText label={`${item.target} after this update`}>{proposedText(file.sourceAddition, file.retainedLocal)}</ReviewText>
+            </CollapsibleContent>
+          </Collapsible>
+          <p className="text-sm text-pretty text-faint">
+            Written to <Mono>{reviewDir}</Mono>, readable only by you. It can hold secrets from your instructions, so don't paste it anywhere, and delete it when you're done.
+          </p>
+        </div>
+      ) : (
+        <p className="px-4 pb-4 text-sm text-pretty text-faint">
+          {planned
+            ? "Showing the text writes a private review to ~/.canonfig/.reviews/ on this machine. Canonfig never puts this text in the plan, the journal or anything it sends."
+            : "Plan the next update to review a file again."}
+        </p>
+      )}
+    </DetailPanel>
+  );
+}
+
+/** Exact file text, scrollable and focusable so a long review can be read with the keyboard. */
+function ReviewText({ label, children }: { label: string; children: string }) {
+  return (
+    // Ligatures off: the review shows exact bytes, and `<!--` must not render as an arrow.
+    <pre
+      tabIndex={0}
+      aria-label={label}
+      className="max-h-72 overflow-auto rounded-md border border-border bg-canvas/70 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap text-muted-foreground [font-variant-ligatures:none]"
+    >
+      {children}
+    </pre>
   );
 }
 
@@ -723,19 +913,114 @@ export function ScheduleView() {
 }
 
 /** Singular names as Canonfig's collision message uses them (src/projection/folder.ts addLocal). */
-const LOCAL_ONE: Record<LocalCategory, string> = { rules: "rule", skills: "skill", agents: "agent", commands: "command", mcp: "MCP server", settings: "setting" };
+const LOCAL_ONE: Record<LocalCategory, string> = { instructions: "instructions", rules: "rule", skills: "skill", agents: "agent", commands: "command", mcp: "MCP server", settings: "setting" };
 
 /** Where a local item lives, relative to ~/.canonfig/local/. */
 function localPath(category: LocalCategory, name: string) {
+  if (category === "instructions") return "AGENTS.md";
   if (category === "mcp" || category === "settings") return `local.jsonc ${category}.${name}`;
   return category === "skills" ? `skills/${name}/` : `${category}/${name}.md`;
 }
 
-/** Items in this machine's mirror of the revision; a local item may not reuse their names. */
+/** Items in this machine's mirror of the revision; a local item that reuses their names needs an overlay. */
 const PUBLISHED = resources.filter((r) => r.change !== "added");
 
 /** Whether two settings key paths name the same key or one sits inside the other. */
 const overlaps = (a: string, b: string) => a === b || a.startsWith(`${b}.`) || b.startsWith(`${a}.`);
+
+/**
+ * A local item's name collision with a published item, as Canonfig's message words it (addLocal and
+ * mergeLocalSettings in src/projection/folder.ts), or null. Items outside local.allow aren't loaded, so they never
+ * collide, and local/AGENTS.md is appended rather than compared. The message leaves out the command it suggests:
+ * here that choice is a button.
+ */
+function collisionOf(l: LocalItem): string | null {
+  if (l.category === "instructions" || !profile.localAllow.includes(l.category)) return null;
+  const name = l.id.slice(l.category.length + 1);
+  if (l.category === "settings") {
+    const published = Object.keys(resources.find((r) => r.id === l.id)?.keys ?? {});
+    for (const key of Object.keys(l.keys ?? {})) {
+      const clash = published.find((p) => overlaps(key, p));
+      if (clash) return `local setting ${name} ${key} overlaps published setting ${clash}; remove one of them`;
+    }
+    return null;
+  }
+  return PUBLISHED.some((r) => r.id === l.id) ? `local ${LOCAL_ONE[l.category]} ${name} has the same name as a published one; rename or remove one of them` : null;
+}
+
+/** Local items whose collision no overlay settles. Any one stops the whole update before it changes anything. */
+function unsettledCollisions(local: LocalItem[], overlays: string[]) {
+  return local.filter((l) => !overlays.includes(l.id) && collisionOf(l) !== null);
+}
+
+/** A key claim, `settings/<harness>#<key>` in local.jsonc `overlays`, or null for an item overlay. */
+function claimOf(entry: string): { harness: HarnessId; key: string } | null {
+  const match = /^settings\/([^#]+)#(.+)$/.exec(entry);
+  return match ? { harness: match[1] as HarnessId, key: match[2]! } : null;
+}
+
+/** Whether `key` is the claimed key or sits inside it, which is what a claim covers. */
+const covers = (claimed: string, key: string) => key === claimed || key.startsWith(`${claimed}.`);
+
+/**
+ * The keys Canonfig writes in a harness's settings file here: the ones its adapter always owns and the ones
+ * SOURCE publishes in settings.<harness>.
+ */
+function writtenKeys(harness: HarnessId) {
+  return [...(SETTINGS_FILES[harness]?.owned ?? []), ...Object.keys(resources.find((r) => r.id === `settings/${harness}`)?.keys ?? {})];
+}
+
+/**
+ * Why Canonfig would refuse claiming `key` in `harness`'s settings file, in its own words where it has them
+ * (keyClaimIssue and buildProjection in src/projection/plan.ts, the loader in folder.ts), or null. The CLI refuses
+ * a claim inside a value only at the next update; here the claim is refused up front, as the local editor refuses
+ * a name collision.
+ */
+function claimError(harness: HarnessId | "", key: string, overlays: string[], local: LocalItem[]): string | null {
+  if (!harness) return "Choose a harness.";
+  if (!key) return "Enter a key, such as model.";
+  if (!/^(?:[^.\\]|\\[.\\])+(?:\.(?:[^.\\]|\\[.\\])+)*$/.test(key)) return "Use a settings path such as model or tui.theme; write \\. for a dot inside a key name.";
+  const item = `settings/${harness}#${key}`;
+  if (overlays.includes(item)) return `${key} is already yours in ${HARNESS_NAMES[harness]}'s settings.`;
+  const segments = key.split(".");
+  const reserved = SETTINGS_FILES[harness]?.reserved.find((pattern) => pattern.split(".").every((part, i) => i >= segments.length || part === "*" || part === segments[i]));
+  if (reserved) return `${HARNESS_NAMES[harness]} keeps ${reserved} for itself, so Canonfig never writes it and there is nothing to claim.`;
+  const whole = writtenKeys(harness).find((written) => key.startsWith(`${written}.`));
+  if (whole) return `Canonfig writes ${whole} as one value, so the update would stop: “overlay ${item} claims part of ${whole}, which Canonfig writes as one value; claim ${whole} instead”. Claim ${whole} instead.`;
+  const localKey = Object.keys(local.find((l) => l.id === `settings/${harness}`)?.keys ?? {}).find((k) => overlaps(k, key));
+  if (localKey) return `Your local settings also set ${localKey} for ${harness}, so the update would stop: “local setting ${harness} ${localKey} overlaps the key claim ${item}; remove one of them”. Remove that key first.`;
+  return null;
+}
+
+/** The Sync notice for unsettled collisions: Canonfig won't choose between the two items, so the run can't start. */
+function CollisionNotice({ collisions }: { collisions: LocalItem[] }) {
+  const ws = useWorkspace();
+  return (
+    <RowPresence>
+      {collisions.length > 0 && (
+        <AnimatedRow key="collision">
+          <Attention
+            tone="act"
+            title={
+              <>
+                <Term term="Human Action Required">Needs you</Term>:{" "}
+                {collisions.length === 1 ? `${collisions[0].id} clashes with what ${SOURCE} publishes` : `${collisions.length} local items clash with what ${SOURCE} publishes`}
+              </>
+            }
+            actions={
+              <Button variant="outline" size="xs" onClick={() => ws.go("local")}>
+                Open {PLAIN.localNav}
+              </Button>
+            }
+          >
+            The update stops before it changes anything: {collisions.map((l) => `“${collisionOf(l)}”`).join(" ")}. Rename or remove yours, or let it replace the published one
+            on this machine.
+          </Attention>
+        </AnimatedRow>
+      )}
+    </RowPresence>
+  );
+}
 
 export function LocalView() {
   const ws = useWorkspace();
@@ -752,6 +1037,30 @@ export function LocalView() {
       description: `Saved to ~/.canonfig/local/local.jsonc.\n${on ? "The next update writes the folder into it again." : "The next update leaves it alone."}${DEMO ? "\nSaved in this demo workspace." : ""}`,
     });
   };
+  const [removingOverlay, setRemovingOverlay] = useState<string | null>(null);
+  // local.jsonc keeps item overlays and key claims in one list; this section shows the items, KeyClaims the claims.
+  const itemOverlays = ws.overlays.filter((o) => claimOf(o) === null);
+  const collisions = unsettledCollisions(ws.local, ws.overlays);
+  // An item's state as `sync --plan` sees it: ignored outside local.allow, stopping on an unsettled name collision,
+  // or projected (replacing the published item when an overlay names it).
+  const statusOf = (l: LocalItem): [StatusKind, string, string | undefined] => {
+    if (!allowed.includes(l.category)) {
+      // The warning `canonfig sync --plan` prints for a category local.allow leaves out (src/projection/plan.ts).
+      const where = l.category === "instructions" ? "local/AGENTS.md" : l.category === "mcp" || l.category === "settings" ? `local/local.jsonc ${l.category}` : `local/${l.category}/`;
+      return ["warn", `Not used: ${SOURCE} doesn't allow local ${l.category}`, `${where} is not admitted by canonfig.jsonc local.allow and was not projected`];
+    }
+    const collision = collisionOf(l);
+    const settings = l.category === "settings";
+    if (collision && !ws.overlays.includes(l.id)) return ["act", `${settings ? "Overlaps published keys" : "Same name as a published one"}: the update stops`, collision];
+    if (collision) return ["ok", settings ? `Replaces the ${SOURCE} keys it overlaps` : `Replaces ${SOURCE}'s ${l.id} here`, undefined];
+    return ["ok", l.category === "instructions" ? "Added after the published instructions" : "Added to your harnesses", undefined];
+  };
+  // Harness files whose own content append-local keeps: what earlier updates kept, plus first adoptions the plan holds.
+  const lineCount = (text: string) => text.replace(/\n$/, "").split("\n").length;
+  const kept: (KeptSurface & { adopting?: string })[] = [
+    ...ws.kept.filter((k) => profile.appendLocal.includes(k.category)),
+    ...ws.plan.flatMap((p) => (p.adoption ? [{ category: "instructions" as const, target: p.target, text: p.adoption.retained, adopting: ws.phase !== "done" ? p.resource : undefined }] : [])),
+  ];
 
   return (
     <>
@@ -783,8 +1092,6 @@ export function LocalView() {
         {LOCAL_CATEGORIES.map((c) => {
           const items = ws.local.filter((l) => l.category === c);
           const ok = allowed.includes(c);
-          // The warning `canonfig sync --plan` prints for a category local.allow leaves out (src/projection/plan.ts).
-          const ignored = `${c === "mcp" || c === "settings" ? `local/local.jsonc ${c}` : `local/${c}/`} is not admitted by canonfig.jsonc local.allow and was not projected`;
           return (
             <div key={c} data-tour="local-list">
               <GroupRow
@@ -796,22 +1103,130 @@ export function LocalView() {
               />
               {items.length === 0 && <p className="mx-[8px] flex h-9 items-center px-[10px] text-sm text-faint">{ok ? "None yet." : `Not allowed by ${SOURCE}.`}</p>}
               <RowPresence>
-                {items.map((l) => (
-                  <AnimatedRow key={l.id}>
-                    <ListRow cols={cols} minWidth={colsMin} selected={selected === l.id} onClick={() => ws.go("local", l.id)}>
-                      <span className="truncate font-medium">{l.id.slice(c.length + 1)}</span>
-                      <Mono className="truncate">{l.path}</Mono>
-                      <span className="flex min-w-0 items-center gap-1.5 text-sm text-muted-foreground" title={ok ? undefined : ignored}>
-                        <StatusMark kind={ok ? "ok" : "warn"} />
-                        <span className="truncate">{ok ? "Added to your harnesses" : `Not used: ${SOURCE} doesn't allow local ${c}`}</span>
-                      </span>
-                    </ListRow>
-                  </AnimatedRow>
-                ))}
+                {items.map((l) => {
+                  const [kind, label, title] = statusOf(l);
+                  return (
+                    <AnimatedRow key={l.id}>
+                      <ListRow cols={cols} minWidth={colsMin} selected={selected === l.id} onClick={() => ws.go("local", l.id)}>
+                        <span className="truncate font-medium">{c === "instructions" ? "AGENTS.md" : l.id.slice(c.length + 1)}</span>
+                        <Mono className="truncate">{l.path}</Mono>
+                        <span className="flex min-w-0 items-center gap-1.5 text-sm text-muted-foreground" title={title}>
+                          <StatusMark kind={kind} />
+                          <span className="truncate">{label}</span>
+                        </span>
+                      </ListRow>
+                    </AnimatedRow>
+                  );
+                })}
               </RowPresence>
             </div>
           );
         })}
+
+        <div className="px-4 pt-8 sm:px-[18px]">
+          <SectionLabel>
+            <Term term="Local Overlay">Replacing published items</Term>
+          </SectionLabel>
+          <p className="pb-2 text-sm text-pretty text-muted-foreground">
+            A local item with the same name as one {SOURCE} publishes stops every update, because Canonfig won't pick one. Rename or remove yours, or let it replace{" "}
+            {SOURCE}'s on this machine. These choices live in local.jsonc and never go to {SOURCE}.
+          </p>
+          <div data-tour="local-overlays" className={cn("mt-1 max-w-[880px]", settingsGroup)}>
+            {itemOverlays.length === 0 && collisions.length === 0 && <p className="px-[16px] py-3 text-sm text-faint">No local item shares a published item's name.</p>}
+            {collisions.map((l) => (
+              <SettingRow
+                key={`collision:${l.id}`}
+                title={
+                  <span className="flex items-center gap-2" title={collisionOf(l) ?? undefined}>
+                    <StatusMark kind="act" />
+                    <span className="font-mono text-sm">{l.id}</span>
+                  </span>
+                }
+                description={`${l.category === "settings" ? `Sets keys ${SOURCE} also sets` : `Same name as ${SOURCE}'s`}, so the next update stops and needs you.`}
+              >
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={() => {
+                    ws.setOverlays((prev) => [...prev, l.id]);
+                    toast.success(`Yours replaces ${SOURCE}'s ${l.id}`, {
+                      description: `Saved as an overlay in ~/.canonfig/local/local.jsonc.\nThe next update uses your ${l.id} on this machine.${DEMO ? "\nSaved in this demo workspace." : ""}`,
+                    });
+                  }}
+                >
+                  Let mine replace it
+                </Button>
+              </SettingRow>
+            ))}
+            {itemOverlays.map((o) => {
+              const mine = ws.local.some((l) => l.id === o && allowed.includes(l.category));
+              const theirs = PUBLISHED.some((r) => r.id === o);
+              // The plan's OVERLAY_UNUSED warning (src/projection/plan.ts), without the command it suggests.
+              const unused = `overlay ${o} finds no admitted local/ item of that name, so ${theirs ? "the published item is projected" : "it changes nothing"}`;
+              return (
+                <SettingRow
+                  key={`overlay:${o}`}
+                  title={
+                    <span className="flex items-center gap-2" title={mine ? undefined : unused}>
+                      <StatusMark kind={mine ? (theirs ? "ok" : "off") : "warn"} />
+                      <span className="font-mono text-sm">{o}</span>
+                    </span>
+                  }
+                  description={
+                    mine
+                      ? theirs
+                        ? o.startsWith("settings/")
+                          ? `Your keys replace the ${SOURCE} keys they overlap in ${o} on this machine; the others stay.`
+                          : `Your ${o} replaces ${SOURCE}'s on this machine.`
+                        : `${SOURCE} doesn't publish ${o}, so yours is simply added.`
+                      : `No local ${o} here, so ${theirs ? `${SOURCE}'s is used` : "this changes nothing"}. Add the local item, or remove this.`
+                  }
+                >
+                  <Button variant="outline" size="xs" onClick={() => setRemovingOverlay(o)}>
+                    Remove…
+                  </Button>
+                </SettingRow>
+              );
+            })}
+          </div>
+        </div>
+
+        <KeyClaims />
+
+        <div className="px-4 pt-8 sm:px-[18px]">
+          <SectionLabel>
+            <Term term="Append-local">Your own content in shared files</Term>
+          </SectionLabel>
+          <p className="pb-2 text-sm text-pretty text-muted-foreground">
+            {profile.appendLocal.length > 0
+              ? `${SOURCE} shares ${profile.appendLocal.map((c) => APPEND_LOCAL_LABEL[c].toLowerCase()).join(" and ")} with this machine. Canonfig owns only its marked section of each instructions file and the skills it writes; what you put there stays, byte for byte, and never counts as an edit.`
+              : `${SOURCE} doesn't share instructions files or skills folders, so Canonfig owns them whole. Keep your own text and skills in ~/.canonfig/local.`}
+          </p>
+          {kept.length > 0 && (
+            <div data-tour="local-kept" className={cn("mt-1 max-w-[880px]", settingsGroup)}>
+              {kept.map((k) => (
+                <SettingRow
+                  key={k.target}
+                  title={<span className="font-mono text-sm">{k.target}</span>}
+                  description={
+                    k.adopting
+                      ? "Canonfig hasn't written it yet. The next update keeps the whole file as your text, below Canonfig's section."
+                      : k.category === "instructions"
+                        ? `Your ${lineCount(k.text)} ${lineCount(k.text) === 1 ? "line" : "lines"} below Canonfig's section stay as they are.`
+                        : `${k.entries.length} skills of yours sit beside Canonfig's: ${k.entries.join(", ")}.`
+                  }
+                >
+                  {k.adopting && ws.phase === "plan" && (
+                    <Button variant="outline" size="xs" onClick={() => ws.go("sync", k.adopting)}>
+                      Review in Sync
+                    </Button>
+                  )}
+                </SettingRow>
+              ))}
+            </div>
+          )}
+        </div>
+
         <div className="px-[18px] pt-8">
           <SectionLabel>Harnesses on this machine</SectionLabel>
           <p className="pb-2 text-sm text-pretty text-muted-foreground">
@@ -847,7 +1262,160 @@ export function LocalView() {
           </div>
         </div>
       </Body>
+      <ConfirmDialog
+        open={removingOverlay !== null}
+        onOpenChange={(o) => !o && setRemovingOverlay(null)}
+        title={`Stop replacing ${removingOverlay}?`}
+        body={
+          ws.local.some((l) => l.id === removingOverlay && collisionOf(l) !== null)
+            ? `Canonfig removes the overlay from ~/.canonfig/local/local.jsonc. Your ${removingOverlay} stays, so the next update stops with the name collision until you rename or remove it.`
+            : `Canonfig removes the overlay from ~/.canonfig/local/local.jsonc. No local item of that name clashes with what ${SOURCE} publishes, so nothing else changes.`
+        }
+        confirm="Remove"
+        onConfirm={() => {
+          const item = removingOverlay;
+          ws.setOverlays((prev) => prev.filter((o) => o !== item));
+          toast(`Removed the overlay for ${item}`, { description: `Saved to ~/.canonfig/local/local.jsonc.${DEMO ? "\nSaved in this demo workspace." : ""}` });
+        }}
+      />
     </>
+  );
+}
+
+/** Harnesses whose settings file Canonfig writes; a key claim can name only these. */
+const CLAIM_HARNESSES = (Object.keys(HARNESS_NAMES) as HarnessId[]).filter((h) => SETTINGS_FILES[h] !== undefined);
+
+/**
+ * Key claims (ADR 0003 section 11): `settings/<harness>#<key>` entries in local.jsonc `overlays`. A claimed key is
+ * this machine's own in that harness's settings file: Canonfig never writes, removes or checks it there, and the other
+ * keys it writes in the file keep following SOURCE. Removing a claim lets the next update write SOURCE's value again.
+ */
+function KeyClaims() {
+  const ws = useWorkspace();
+  const [harness, setHarness] = useState<HarnessId | "">("");
+  const [key, setKey] = useState("");
+  const [tried, setTried] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const claims = ws.overlays.flatMap((item) => {
+    const claim = claimOf(item);
+    return claim ? [{ item, ...claim }] : [];
+  });
+  const trimmed = key.trim();
+  const error = claimError(harness, trimmed, ws.overlays, ws.local);
+  const add = () => {
+    setTried(true);
+    if (error || !harness) {
+      document.getElementById(harness ? "claim-key" : "claim-harness")?.focus();
+      return;
+    }
+    ws.setOverlays((prev) => [...prev, `settings/${harness}#${trimmed}`]);
+    toast.success(`${trimmed} is yours in ${HARNESS_NAMES[harness]}'s settings`, {
+      description: `Saved as a key claim in ~/.canonfig/local/local.jsonc.\nThe next update stops writing it; set it in ${HARNESS_NAMES[harness]}'s own settings file.${DEMO ? "\nSaved in this demo workspace." : ""}`,
+    });
+    setKey("");
+    setTried(false);
+  };
+  const removed = removing === null ? null : claimOf(removing);
+  const removedValue = removed && resources.find((r) => r.id === `settings/${removed.harness}`)?.keys?.[removed.key];
+
+  return (
+    <div className="px-4 pt-8 sm:px-[18px]">
+      <SectionLabel>
+        <Term term="Key Claim">Settings keys you set yourself</Term>
+      </SectionLabel>
+      <p className="pb-2 text-sm text-pretty text-muted-foreground">
+        Claim one key of a harness's settings file to set it in that file yourself. Canonfig stops writing, removing or checking that key on this machine, and the
+        other keys it writes there keep following {SOURCE}. Claims live in local.jsonc and never go to {SOURCE}.
+      </p>
+      <div data-tour="local-claims" className={cn("mt-1 max-w-[880px]", settingsGroup)}>
+        {claims.length === 0 && <p className="px-[16px] py-3 text-sm text-faint">No key is claimed, so Canonfig writes every key it owns.</p>}
+        {claims.map((c) => {
+          const name = HARNESS_NAMES[c.harness];
+          const written = writtenKeys(c.harness);
+          const whole = written.find((k) => c.key.startsWith(`${k}.`));
+          const covered = written.filter((k) => covers(c.key, k));
+          // The refusal buildProjection gives, and the plan's CLAIM_UNUSED warning (src/projection/plan.ts).
+          const [kind, description, title]: [StatusKind, string, string | undefined] = whole
+            ? ["act", `Canonfig writes ${whole} as one value, so the next update stops. Claim ${whole} instead.`, `overlay ${c.item} claims part of ${whole}, which Canonfig writes as one value; claim ${whole} instead`]
+            : covered.length === 0
+              ? ["warn", `Canonfig writes no ${c.key} in ${name}'s settings file, so this changes nothing.`, `overlay ${c.item} covers no key Canonfig writes in ${c.harness}'s settings file, so it changes nothing`]
+              : ["ok", `${SOURCE} sets ${covered.join(", ")}. Here you set it in ${name}'s settings file, and Canonfig leaves it alone.`, undefined];
+          return (
+            <SettingRow
+              key={`claim:${c.item}`}
+              title={
+                <span className="flex items-center gap-2" title={title}>
+                  <StatusMark kind={kind} />
+                  <span className="font-mono text-sm">{c.item}</span>
+                </span>
+              }
+              description={description}
+            >
+              <Button variant="outline" size="xs" onClick={() => setRemoving(c.item)}>
+                Remove…
+              </Button>
+            </SettingRow>
+          );
+        })}
+        <form
+          className="flex flex-wrap items-center gap-2 px-[16px] py-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            add();
+          }}
+        >
+          <Select value={harness} onValueChange={(h: HarnessId) => setHarness(h)}>
+            <SelectTrigger id="claim-harness" aria-label="Harness" className="w-[200px]" aria-invalid={tried && !harness}>
+              <SelectValue placeholder="Choose a harness">{harness && HARNESS_NAMES[harness]}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {CLAIM_HARNESSES.map((h) => (
+                <SelectItem key={h} value={h}>
+                  {HARNESS_NAMES[h]}
+                  <span className="font-mono text-xs text-faint">{h}</span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Input
+            id="claim-key"
+            aria-label="Settings key"
+            className="min-w-[160px] flex-1 font-mono"
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            placeholder="model"
+            spellCheck={false}
+            aria-invalid={tried && !!error}
+            aria-describedby={tried && error ? "claim-key-note" : undefined}
+          />
+          <Button type="submit" variant="outline" size="sm">
+            <Plus /> Claim key
+          </Button>
+          {tried && error && (
+            <p id="claim-key-note" role="alert" className="flex w-full items-center gap-1.5 text-sm text-pretty text-bad">
+              <WarningCircle className="size-3.5 shrink-0" />
+              {error}
+            </p>
+          )}
+        </form>
+      </div>
+      <ConfirmDialog
+        open={removing !== null}
+        onOpenChange={(o) => !o && setRemoving(null)}
+        title={`Give ${removed?.key} back to ${SOURCE}?`}
+        body={
+          removed && writtenKeys(removed.harness).some((k) => covers(removed.key, k))
+            ? `Canonfig removes the claim from ~/.canonfig/local/local.jsonc. The next update writes ${SOURCE}'s ${removed.key}${removedValue ? ` (${removedValue})` : ""} over yours in ${HARNESS_NAMES[removed.harness]}'s settings file, and an edit after that counts as a local change.`
+            : `Canonfig removes the claim from ~/.canonfig/local/local.jsonc. It writes no ${removed?.key} there, so nothing else changes.`
+        }
+        confirm="Remove"
+        onConfirm={() => {
+          const item = removing;
+          ws.setOverlays((prev) => prev.filter((o) => o !== item));
+          toast(`Removed the claim on ${removed?.key}`, { description: `Saved to ~/.canonfig/local/local.jsonc.${DEMO ? "\nSaved in this demo workspace." : ""}` });
+        }}
+      />
+    </div>
   );
 }
 
@@ -858,40 +1426,52 @@ interface KeyRow {
 }
 
 /**
- * Add or edit one item in ~/.canonfig/local/. Rules, skills, agents and commands are files; MCP servers and
- * settings are keys of local.jsonc. Names that collide with a published item are refused here, since sync
- * would stop on them with Human Action Required.
+ * Add or edit one item in ~/.canonfig/local/. AGENTS.md, rules, skills, agents and commands are files; MCP servers and
+ * settings are keys of local.jsonc. A name that collides with a published item, or a settings key that overlaps a
+ * published one, would stop every update with Human Action Required, so saving one needs the overlay that settles it:
+ * "Let mine replace" records `<category>/<name>` in local.jsonc `overlays`.
  */
 function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () => void }) {
   const ws = useWorkspace();
   const isNew = item === null;
   const allowed = profile.localAllow;
-  const initial: LocalItem = item ?? { id: "", category: allowed[0], path: "", summary: "", detail: {} };
+  // local/AGENTS.md is one file, so a folder that has it offers no second one.
+  const kinds = allowed.filter((c) => c !== "instructions" || !ws.local.some((l) => l.id === "instructions" && l !== item));
+  const initial: LocalItem = item ?? { id: "", category: kinds[0], path: "", summary: "", detail: {} };
   const [category, setCategory] = useState<LocalCategory>(initial.category);
-  const [name, setName] = useState(item ? item.id.slice(item.category.length + 1) : "");
+  const [name, setName] = useState(item && item.category !== "instructions" ? item.id.slice(item.category.length + 1) : "");
   const [detail, setDetail] = useState<Record<string, string>>(initial.detail ?? {});
   const [rows, setRows] = useState<KeyRow[]>(() => Object.entries(initial.keys ?? {}).map(([key, value], id) => ({ id, key, value })));
+  const initialReplace = item !== null && ws.overlays.includes(item.id);
+  const [replace, setReplace] = useState(initialReplace);
   const [tried, setTried] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const set = (k: string, v: string) => setDetail((d) => ({ ...d, [k]: v }));
   const trimmed = name.trim();
-  const id = `${category}/${trimmed}`;
-  const isFile = category !== "mcp" && category !== "settings";
+  const isInstructions = category === "instructions";
+  const id = isInstructions ? "instructions" : `${category}/${trimmed}`;
+  const isFile = !isInstructions && category !== "mcp" && category !== "settings";
   const transport = detail.Transport ?? "stdio";
   const published = PUBLISHED.find((r) => r.id === id);
   const publishedKeys = category === "settings" ? Object.keys(resources.find((r) => r.id === id)?.keys ?? {}) : [];
+  const keyClash = (key: string) => publishedKeys.find((p) => overlaps(key, p));
+  // What projection would compare: only admitted categories load, and local/AGENTS.md is appended, never compared.
+  const collides =
+    allowed.includes(category) && !isInstructions && (category === "settings" ? rows.some((r) => r.key.trim() && keyClash(r.key.trim())) : published !== undefined);
 
-  const nameError = !trimmed
-    ? category === "settings"
-      ? "Choose a harness."
-      : "Enter a name."
-    : !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(trimmed)
-      ? "Use letters, digits, - and _, starting with a letter or digit."
-      : ws.local.some((l) => l.id === id && l !== item)
-        ? `${id} is already in your local folder.`
-        : published && category !== "settings"
-          ? `${SOURCE} publishes ${id} too, so the update would stop and need you: “local ${LOCAL_ONE[category]} ${trimmed} has the same name as a published one; rename or remove one of them”.`
-          : null;
+  const nameError = isInstructions
+    ? null
+    : !trimmed
+      ? category === "settings"
+        ? "Choose a harness."
+        : "Enter a name."
+      : !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(trimmed)
+        ? "Use letters, digits, - and _, starting with a letter or digit."
+        : ws.local.some((l) => l.id === id && l !== item)
+          ? `${id} is already in your local folder.`
+          : collides && category !== "settings" && !replace
+            ? `${SOURCE} publishes ${id} too, so the update would stop and need you: “local ${LOCAL_ONE[category]} ${trimmed} has the same name as a published one; rename or remove one of them”. Rename yours, or let it replace the published one.`
+            : null;
   const requiredError = isFile
     ? category !== "rules" && !detail.Description?.trim()
       ? "Enter a description."
@@ -901,41 +1481,66 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
         ? "Enter a command."
         : "Enter the URL."
       : null;
+  // With instructions shared append-local, Canonfig's section sits between reserved markers, and local/AGENTS.md is
+  // part of that section, so marker text in it stops projection for each harness (sourceTextIssue).
+  const markerHarness = ws.harnesses.find((h) => h.listed && h.installed && !h.excluded)?.id ?? "codex";
+  const markerError =
+    isInstructions && profile.appendLocal.includes("instructions") && [SOURCE_TEXT_START, SOURCE_TEXT_END].some((m) => (detail.Body ?? "").includes(m))
+      ? `Remove the Canonfig marker text. Every update would stop: “${markerHarness} instructions cannot keep this machine's text: append-local Source text contains a reserved Canonfig marker”.`
+      : null;
   const rowError = (r: KeyRow) => {
     const key = r.key.trim();
     if (!key) return "Name this key, or remove the row.";
-    const clash = publishedKeys.find((p) => overlaps(key, p));
-    return clash
-      ? `${SOURCE} sets ${clash} for ${trimmed}, so the update would stop and need you: “local setting ${trimmed} ${key} overlaps published setting ${clash}; remove one of them”.`
+    // The loader refuses a local setting for a key this machine claims (loadCanonicalFolder in src/projection/folder.ts).
+    const claimed = ws.overlays.map(claimOf).find((c) => c?.harness === trimmed && overlaps(c.key, key));
+    if (claimed) return `You claimed ${claimed.key} for ${trimmed}, so the update would stop: “local setting ${trimmed} ${key} overlaps the key claim settings/${trimmed}#${claimed.key}; remove one of them”. Remove the key, or remove the claim under Settings keys you set yourself.`;
+    const clash = keyClash(key);
+    return clash && !replace
+      ? `${SOURCE} sets ${clash} for ${trimmed}, so the update would stop and need you: “local setting ${trimmed} ${key} overlaps published setting ${clash}; remove one of them”. Remove the key, or let yours replace the published one.`
       : null;
   };
   const badRow = category === "settings" ? rows.find((r) => rowError(r) !== null) : undefined;
 
   const keys = Object.fromEntries(rows.filter((r) => r.key.trim()).map((r) => [r.key.trim(), r.value]));
+  const lines = (detail.Body ?? "").split("\n").length;
   const next: LocalItem = {
     id,
     category,
     path: localPath(category, trimmed),
-    summary: category === "settings" ? `${rows.length} ${rows.length === 1 ? "key" : "keys"}` : category === "mcp" ? (transport === "stdio" ? `stdio, ${detail.Command ?? ""}` : transport) : CATEGORY_LABEL[category].label,
+    summary: isInstructions
+      ? `${lines} ${lines === 1 ? "line" : "lines"}`
+      : category === "settings"
+        ? `${rows.length} ${rows.length === 1 ? "key" : "keys"}`
+        : category === "mcp"
+          ? transport === "stdio"
+            ? `stdio, ${detail.Command ?? ""}`
+            : transport
+          : CATEGORY_LABEL[category].label,
     detail,
     ...(category === "settings" ? { keys } : {}),
   };
   // Compared field by field with what the panel opened on; an unnamed key row is already an edit.
   const dirty =
-    trimmed !== (item ? item.id.slice(item.category.length + 1) : "") ||
+    trimmed !== (item && item.category !== "instructions" ? item.id.slice(item.category.length + 1) : "") ||
     JSON.stringify(detail) !== JSON.stringify(initial.detail ?? {}) ||
-    JSON.stringify(rows.map((r) => [r.key, r.value])) !== JSON.stringify(Object.entries(initial.keys ?? {}));
+    JSON.stringify(rows.map((r) => [r.key, r.value])) !== JSON.stringify(Object.entries(initial.keys ?? {})) ||
+    replace !== initialReplace;
   const { dialog: leaveDialog, leaveWithoutAsking } = useLeaveGuard(dirty, isNew ? "the new local item" : item.id);
 
   const save = () => {
     setTried(true);
-    if (nameError || requiredError || badRow) {
-      document.getElementById(nameError ? "local-name" : requiredError ? "local-required" : `local-key-${badRow!.id}`)?.focus();
+    if (nameError || requiredError || markerError || badRow) {
+      document.getElementById(nameError ? "local-name" : requiredError ? "local-required" : markerError ? "local-body" : `local-key-${badRow!.id}`)?.focus();
       return;
     }
     ws.setLocal((prev) => (isNew ? [...prev, next] : prev.map((l) => (l === item ? next : l))));
+    // The overlay settles a collision this item has; one it no longer needs stays, as `canonfig overlay` leaves it.
+    const overlaid = collides && replace && !ws.overlays.includes(id);
+    if (overlaid) ws.setOverlays((prev) => [...prev, id]);
     toast.success(`Saved ${id}`, {
-      description: `Written to ~/.canonfig/local/${next.path}.\nThe next update adds it to your harnesses.${DEMO ? "\nSaved in this demo workspace." : ""}`,
+      description: `Written to ~/.canonfig/local/${next.path}.\n${
+        isInstructions ? "The next update adds it after the published instructions in every harness." : "The next update adds it to your harnesses."
+      }${overlaid ? `\n${category === "settings" ? `Your keys replace the ${SOURCE} keys they overlap in ${id}` : `Yours replaces ${SOURCE}'s ${id} here`}: saved as an overlay in local.jsonc.` : ""}${DEMO ? "\nSaved in this demo workspace." : ""}`,
     });
     leaveWithoutAsking(() => ws.go("local", id, { replace: isNew }));
   };
@@ -959,7 +1564,12 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
               onClick={
                 isNew
                   ? () => leaveWithoutAsking(onClose)
-                  : () => (setDetail(initial.detail ?? {}), setRows(Object.entries(initial.keys ?? {}).map(([key, value], id) => ({ id, key, value }))), setTried(false))
+                  : () => (
+                      setDetail(initial.detail ?? {}),
+                      setRows(Object.entries(initial.keys ?? {}).map(([key, value], id) => ({ id, key, value }))),
+                      setReplace(initialReplace),
+                      setTried(false)
+                    )
               }
             >
               {isNew ? "Cancel" : "Discard"}
@@ -992,7 +1602,7 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
               <SelectValue>{CATEGORY_LABEL[category].label}</SelectValue>
             </SelectTrigger>
             <SelectContent>
-              {allowed.map((c) => (
+              {kinds.map((c) => (
                 <SelectItem key={c} value={c}>
                   {CATEGORY_LABEL[c].label}
                 </SelectItem>
@@ -1000,7 +1610,7 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
             </SelectContent>
           </Select>
         </Field>
-        {category === "settings" ? (
+        {isInstructions ? null : category === "settings" ? (
           <Field label="Harness" htmlFor="local-name" error={tried ? nameError : null}>
             <Select value={trimmed} onValueChange={setName} disabled={!isNew}>
               <SelectTrigger id="local-name" className="w-full" aria-invalid={tried && !!nameError}>
@@ -1042,6 +1652,26 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
               <Textarea id="local-body" value={detail.Body ?? ""} onChange={(e) => set("Body", e.target.value)} spellCheck={false} className="max-h-80 font-mono text-sm" />
             </Field>
           </>
+        )}
+        {isInstructions && (
+          <Field
+            label="Body"
+            htmlFor="local-body"
+            error={tried ? markerError : null}
+            description="Saved as ~/.canonfig/local/AGENTS.md. Canonfig adds it after the published instructions, inside its own section, in every harness on this machine."
+          >
+            <Textarea
+              id="local-body"
+              value={detail.Body ?? ""}
+              placeholder="## On this machine"
+              onChange={(e) => set("Body", e.target.value)}
+              aria-invalid={tried && !!markerError}
+              aria-describedby="local-body-note"
+              spellCheck={false}
+              autoFocus={isNew}
+              className="max-h-80 font-mono text-sm"
+            />
+          </Field>
         )}
         {category === "mcp" && (
           <>
@@ -1137,9 +1767,21 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
             })}
             {publishedKeys.length > 0 && (
               <p className="text-xs text-pretty text-faint">
-                {SOURCE} already sets {publishedKeys.join(", ")} for this harness. A local key can't overlap those.
+                {SOURCE} already sets {publishedKeys.join(", ")} for this harness. A local key that overlaps one of those stops the update unless yours replaces it.
               </p>
             )}
+          </div>
+        )}
+        {collides && (
+          <div className="grid grid-cols-[16px_minmax(0,1fr)] items-start gap-x-2 gap-y-0.5">
+            <Checkbox id="local-replace" checked={replace} onCheckedChange={(on) => setReplace(on === true)} className="mt-0.5" />
+            <Label htmlFor="local-replace" className="cursor-pointer text-base font-normal text-pretty">
+              Let mine replace {SOURCE}'s on this machine
+            </Label>
+            <p className="col-start-2 text-sm text-pretty text-faint">
+              {category === "settings" ? `Your keys replace the published keys they overlap in ${id}; ${SOURCE}'s other keys stay.` : `Your ${id} is used here instead of ${SOURCE}'s.`}{" "}
+              Kept in local.jsonc as a <Term term="Local Overlay">local replacement</Term> and never sent to {SOURCE}.
+            </p>
           </div>
         )}
       </div>
@@ -1154,7 +1796,9 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
             leaveWithoutAsking(() => {
               ws.setLocal((prev) => prev.filter((l) => l !== item));
               ws.go("local");
-              toast(`Removed ${item.id}`);
+              toast(`Removed ${item.id}`, {
+                description: ws.overlays.includes(item.id) ? `Its overlay stays in local.jsonc and now finds no local item.\nRemove it under Replacing published items.` : undefined,
+              });
             })
           }
         />

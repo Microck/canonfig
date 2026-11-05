@@ -3,6 +3,7 @@ import { Effect, Redacted, Schema } from "effect";
 import { ContentDigest, CredentialReference } from "../domain/brand.ts";
 import type { ProfileRevision, VerificationInput } from "../domain/profile.ts";
 import type { AppliedResourceRecord, ObservedResourceState } from "../domain/synchronization.ts";
+import { parseTextComposition } from "../domain/text-composition.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import type { MachineFilesystemError } from "../machine/machine-state.errors.ts";
 import { sha256BytesHex, sha256Hex } from "../profile/profile-codec.ts";
@@ -35,6 +36,8 @@ const isNotFoundFilesystemError = (
 const observeFile = (
   target: string,
   desired: Extract<DesiredResource, { readonly kind: "file" }>,
+  /** Read the marked composition: the policy is append-local now or was when last applied. */
+  composed: boolean,
 ): Effect.Effect<ObservedResourceState, never, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
@@ -68,6 +71,21 @@ const observeFile = (
         executable: false,
         objectKind: "regular",
       } as const;
+    }
+    if (composed) {
+      const bytes = yield* machine.readFile({ path, maximumBytes: defaultSynchronizationExecutionLimits.maximumFileBytes });
+      const composition = yield* Effect.try(() => parseTextComposition(bytes));
+      const permissions = yield* machine.permissions(path);
+      const observation = {
+        state: "present",
+        digest: sha256BytesHex(bytes),
+        executable: permissions.executableByOwner,
+        mode: permissions.mode,
+        objectKind: "regular",
+      } as const;
+      return composition.kind === "managed"
+        ? { ...observation, managedSourceDigest: sha256Hex(composition.source), managedLocalText: composition.local.length > 0 }
+        : observation;
     }
     return yield* machine.digestFile({ path }).pipe(
       Effect.flatMap((digest) =>
@@ -167,8 +185,10 @@ const observeConfig = (
 
 export const observeFollowerResource = (
   decoded: {
-    // `policy` is read so a `replace` directory can be listed in full; the
-    // other policies observe only owned and desired paths.
+    // `policy` decides how much of a directory is listed: all of it under
+    // `replace` and for a `replace-if-unmodified` directory, Canonfig's
+    // top-level entries under `append-local`, and otherwise only owned and
+    // desired paths.
     readonly resource: Pick<
       ProfileRevision["resources"][number],
       "kind" | "target" | "policy"
@@ -180,7 +200,11 @@ export const observeFollowerResource = (
 ): Effect.Effect<ObservedResourceState, never, MachineState> => {
   switch (desired.kind) {
     case "file":
-      return observeFile(decoded.resource.target, desired);
+      return observeFile(
+        decoded.resource.target,
+        desired,
+        decoded.resource.policy === "append-local" || applied?.policy === "append-local",
+      );
     case "config":
       return observeConfig(decoded, desired, applied);
     case "directory":
@@ -215,24 +239,40 @@ export const observeFollowerResource = (
         // an entry added to it is reported as drift instead of going unseen.
         const listsEverything = decoded.resource.policy === "replace"
           || decoded.resource.kind === "directory" && decoded.resource.policy === "replace-if-unmodified";
-        const foreign = listsEverything
-          ? yield* machine.listDirectory(root).pipe(
-            Effect.map((entries) =>
-              entries.map((entry) => {
-                const observed = {
-                  path: entry.path,
-                  digest: Schema.decodeUnknownSync(ContentDigest)(
-                    sha256Hex(`canonfig:observed-object:${entry.kind}`),
-                  ),
-                  executable: false,
-                };
-                return entry.kind === "directory"
-                  ? { ...observed, objectKind: "directory" as const }
-                  : observed;
-              })
-            ),
-          )
+        // Under `append-local` Canonfig owns only the top-level entries it
+        // writes or wrote (a skill directory, a file), so each of those is
+        // listed in full: a file the machine adds inside one is drift. The
+        // machine's own top-level entries are never read; the planner's
+        // append-local view drops them in any case.
+        const claimed = decoded.resource.policy === "append-local"
+          ? [...new Set([...desired.files, ...desired.directories, ...applied?.ownedFiles ?? []]
+            .map((entry) => entry.path.split("/", 1)[0]!))].sort()
           : [];
+        const listed = listsEverything
+          ? yield* machine.listDirectory(root)
+          : yield* Effect.forEach(claimed, (name) =>
+            Effect.gen(function*() {
+              const entry = yield* machine.normalizePath({ path: name, base: root });
+              const kind = yield* machine.inspectPath(entry).pipe(
+                Effect.catchTag("MachineFilesystemError", (error) =>
+                  isNotFoundFilesystemError(error) ? Effect.succeed(undefined) : Effect.fail(error)
+                ),
+              );
+              if (kind?.kind !== "directory") return [];
+              return (yield* machine.listDirectory(entry)).map((child) => ({ ...child, path: `${name}/${child.path}` }));
+            })).pipe(Effect.map((lists) => lists.flat()));
+        const foreign = listed.map((entry) => {
+          const observed = {
+            path: entry.path,
+            digest: Schema.decodeUnknownSync(ContentDigest)(
+              sha256Hex(`canonfig:observed-object:${entry.kind}`),
+            ),
+            executable: false,
+          };
+          return entry.kind === "directory"
+            ? { ...observed, objectKind: "directory" as const }
+            : observed;
+        });
         const ancestors = [...relativePathAncestors([
           ...desired.files.map((entry) => entry.path),
           ...desired.directories.map((entry) => entry.path),

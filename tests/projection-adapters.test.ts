@@ -18,7 +18,7 @@ import { type CanonicalModel, TARGET_IDS, type TargetId } from "../src/projectio
 import { emptyModel } from "../src/projection/detect.ts";
 import { supportedCategories } from "../src/projection/plan.ts";
 import { ampPluginSource } from "../src/projection/templates/runtime.ts";
-import { SURFACE_SUPPORT } from "../ui/src/shared/data.ts";
+import { HARNESS_NAMES, RESERVED_PATHS, SETTINGS_FILES, SURFACE_SUPPORT } from "../ui/src/shared/data.ts";
 
 // Goldens and invariants for every harness adapter. Adapters are pure, so
 // these tests run them against a fixed model and fixed machine directories.
@@ -100,6 +100,42 @@ it("keeps the UI's per-harness categories equal to the adapters'", () => {
     [adapter.descriptor.id, supportedCategories(adapter, adapter.layout(context, emptyModel(`${HOME}/.canonfig`)))]
   ));
   expect(SURFACE_SUPPORT).toEqual(derived);
+});
+
+// The GUI checks key claims against a copy of each settings file's owned and
+// reserved keys; it must match the adapters' settings surfaces.
+it("keeps the UI's settings-file keys equal to the adapters'", () => {
+  const context = posixContext({});
+  const derived = Object.fromEntries(BUILTIN_ADAPTERS.flatMap((adapter) => {
+    const surface = adapter.layout(context, emptyModel(`${HOME}/.canonfig`)).surfaces
+      .find((candidate) => candidate.kind === "config" && candidate.settings !== undefined);
+    return surface?.kind === "config" && surface.settings !== undefined
+      ? [[adapter.descriptor.id, { owned: [...surface.keys], reserved: [...surface.settings.reserved] }]]
+      : [];
+  }));
+  expect(SETTINGS_FILES).toEqual(derived);
+});
+
+// The GUI refuses authored-resource targets from a condensed copy of the
+// paths the engine reserves (projectResources in src/projection/plan.ts). On
+// Linux, every engine path must sit under a GUI path of the same owner, and
+// every GUI path must be one of that owner's engine paths (its root, a
+// surface, an alternative or a never-touch path). Equality, not overlap: a
+// GUI entry widened to an ancestor such as `~/.config` would refuse targets
+// the engine accepts.
+it("keeps the UI's reserved harness paths covering the adapters' paths", () => {
+  const context = posixContext({});
+  const within = (child: string, parent: string) => child === parent || child.startsWith(`${parent}/`);
+  const ui = RESERVED_PATHS.map(([path, owner]) => ({ path: path.replace(/^~\//u, `${HOME}/`), owner }));
+  const engine = BUILTIN_ADAPTERS.flatMap((adapter) => {
+    const layout = adapter.layout(context, emptyModel(`${HOME}/.canonfig`));
+    return [layout.root, ...layout.surfaces.flatMap((surface) => [surface.target, ...surface.kind === "config" ? surface.alternatives ?? [] : []]), ...layout.neverTouch]
+      .map((path) => ({ path, owner: adapter.descriptor.name }));
+  });
+  expect(engine.filter((entry) => !ui.some((covering) => covering.owner === entry.owner && within(entry.path, covering.path)))).toEqual([]);
+  const harnessNames = new Set<string>(Object.values(HARNESS_NAMES));
+  expect(ui.filter((entry) => harnessNames.has(entry.owner)
+    && !engine.some((reserved) => reserved.owner === entry.owner && reserved.path === entry.path))).toEqual([]);
 });
 
 it("loads distinct Amp agents whose IDs differ by hyphens and underscores", async () => {

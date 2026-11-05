@@ -77,6 +77,7 @@ resource in the Profile Revision:
 | `canonfig.jsonc` keys `mcp`, `hooks`, `settings` | one resource per server, hook, or harness, such as `mcp:docs` |
 | `canonfig.jsonc` keys `tools`, `credentials` | `tools:<id>`, `credentials:<id>` |
 | `canonfig.jsonc` keys `harnesses`, `local` | `harnesses`, `local-policy` |
+| `canonfig.jsonc` key `resources`, and every file under `files/` | `resources:<id>`, and `files:<path>` for each file |
 
 Nothing else in the folder is published: not `local/`, `.backups/`,
 `.runtime/`, the state database, logs, or installer bindings. Publishing also

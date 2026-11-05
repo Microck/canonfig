@@ -14,7 +14,13 @@ a laptop.
 - The Source Machine decides which kinds of local items any machine may add,
   with `local.allow` in its `~/.canonfig/canonfig.jsonc`. Local items of a kind
   it does not allow are reported and not projected.
-- A local item cannot have the same name as a published one.
+- A local rule, skill, subagent, command, or MCP server cannot have the name
+  of a published one, and a local setting cannot overlap a published key,
+  unless this machine records a Local Overlay for that item: then the local
+  item replaces the published one on this machine. See
+  [Replace a published item on one machine](/how-to/use-local-overlays). Local
+  instructions never collide: `local/AGENTS.md` is appended after the
+  published `AGENTS.md`.
 
 ## Allow local items (Source Machine)
 
@@ -30,7 +36,7 @@ On the Source Machine, list the kinds of local items to allow, then publish:
 canonfig source publish --reviewer "$USER"
 ```
 
-The kinds are `rules`, `skills`, `agents`, `commands`, `mcp`, and `settings`.
+The kinds are `instructions` (`local/AGENTS.md`, appended after the published `AGENTS.md`), `rules`, `skills`, `agents`, `commands`, `mcp`, and `settings`.
 Hooks and tools cannot be local. The same `local.allow` applies to the Source
 Machine's own local folder.
 
@@ -93,7 +99,7 @@ canonfig sync --apply
 ## Move a machine's own items before it becomes a Follower Machine
 
 On a Follower Machine, `~/.canonfig/canonfig.jsonc`, `AGENTS.md`, `rules/`,
-`skills/`, `agents/`, `commands/`, and `hooks/` hold the Source Machine's
+`skills/`, `agents/`, `commands/`, `hooks/`, and `files/` hold the Source Machine's
 mirror. `canonfig follower enroll` refuses a folder that already holds items
 there. Move what the machine should keep into `~/.canonfig/local/` (documents
 and skills as files, MCP servers and settings into `local.jsonc`), delete the
@@ -108,9 +114,9 @@ projections. Put the change in the local folder instead.
 | Message | Cause | Fix |
 | --- | --- | --- |
 | "local/skills/ is not admitted by canonfig.jsonc local.allow and was not projected" (warning) | The Source Machine does not allow local skills. The same message names `local/rules/`, `local/agents/`, `local/commands/`, `local/local.jsonc mcp`, or `local/local.jsonc settings`. | Ask for the kind to be added to `local.allow` on the Source Machine, or remove the local items. |
-| "/home/maria/.canonfig/local: local skill code-review has the same name as a published one; rename or remove one of them" (exit 3) | A local rule, skill, subagent, or command has the name of a published one. | Rename or remove the local item, then sync again. |
-| "/home/maria/.canonfig/local/local.jsonc: local MCP server docs has the same name as a published one; rename or remove one of them" (exit 3) | A local MCP server has the name of a published one. | Rename or remove the local server. |
-| "/home/maria/.canonfig/local/local.jsonc: local setting codex model_reasoning_effort overlaps published setting model_reasoning_effort; remove one of them" (exit 3) | A local setting overlaps a published one. | Remove the local setting, or ask for the published one to be removed. |
+| "/home/maria/.canonfig/local: local skill code-review has the same name as a published one; rename or remove one of them" (exit 3) | A local rule, skill, subagent, or command has the name of a published one. | Rename or remove the local item, or [record a Local Overlay](/how-to/use-local-overlays) so it replaces the published one, then sync again. |
+| "/home/maria/.canonfig/local/local.jsonc: local MCP server docs has the same name as a published one; rename or remove one of them" (exit 3) | A local MCP server has the name of a published one. | Rename or remove the local server, or record a Local Overlay for `mcp/<name>`. |
+| "/home/maria/.canonfig/local/local.jsonc: local setting codex model_reasoning_effort overlaps published setting model_reasoning_effort; remove one of them" (exit 3) | A local setting overlaps a published one. | Remove the local setting, record a Local Overlay for `settings/<harness>`, or ask for the published one to be removed. |
 | "/home/maria/.canonfig already holds authored items (canonfig.jsonc, skills), where a follower keeps its Source's mirror; ..." (`follower enroll`, exit 2) | The machine has its own items where the mirror goes. | See [Move a machine's own items before it becomes a Follower Machine](#move-a-machines-own-items-before-it-becomes-a-follower-machine). |
 
 A collision stops the whole run before anything changes. It can start after

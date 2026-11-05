@@ -29,6 +29,7 @@ import {
   type Harness,
   type HarnessId,
   type ItemCategory,
+  type KeptSurface,
   type LocalItem,
   type Resource,
   type Revision,
@@ -56,8 +57,11 @@ export type FollowerView = "overview" | "machines" | "sync" | "schedule" | "loca
 
 export type View = SourceView | FollowerView | "not-found";
 
-/** What a plan step does to a harness surface: replace a file or folder, set owned keys, install a tool, or hold a drifted item. */
-export type PlanAction = "write" | "merge" | "install" | "skip-drift";
+/**
+ * What a plan step does to a surface: replace a file or folder, write Canonfig's marked section and keep the machine's
+ * own text (append-local), set owned keys, install a tool, or hold a drifted item.
+ */
+export type PlanAction = "write" | "append" | "merge" | "install" | "skip-drift";
 
 export interface PlanItem {
   /** The folder item, like `skills/code-review`. */
@@ -74,14 +78,32 @@ export interface PlanItem {
    * and holds what it projects from the item; a machine that never applied anything has nothing that could have drifted.
    */
   drift?: boolean;
+  /**
+   * An append-local text file Canonfig has never written here (first adoption). The whole existing file stays as this
+   * machine's text, below Canonfig's section, even where it matches the Source: matching bytes don't prove who wrote
+   * it. `retained` is that text byte for byte, which `sync --plan --review-local` writes to a private review.
+   */
+  adoption?: { retained: string };
 }
 
-/** The demo follower's plan from revision 7 to 8: the three unpublished items on the Source, gh, and one drifted skill. */
+/**
+ * The demo follower's plan from revision 7 to 8: the four unpublished items on the Source, gh, Amp's first
+ * AGENTS.md (installed since the last update) and one drifted skill.
+ */
 export const FOLLOWER_PLAN: PlanItem[] = [
   { resource: "rules/typescript", category: "rules", target: "~/.claude/rules/typescript.md", action: "write", reason: "Changed in revision 8. Writes it for each harness with rule files and links it from the others' instructions." },
   { resource: "commands/ship", category: "commands", target: "~/.claude/commands/ship.md", action: "write", reason: "New in revision 8. Writes the command for Claude Code and OpenCode." },
   { resource: "settings/claude-code", category: "settings", target: "~/.claude/settings.json", action: "merge", reason: "Sets 2 keys. Every other key in the file stays as it is." },
+  { resource: "resources/ruff", category: "resources", target: "~/.config/ruff/ruff.toml", action: "merge", reason: "New in revision 8. Sets 2 keys in the file; every other key stays. Canonfig backs up their values first." },
   { resource: "tools/gh", category: "tools", target: "gh", action: "install", reason: "Not installed yet. Runs brew install gh, then checks it starts." },
+  {
+    resource: "instructions",
+    category: "instructions",
+    target: "~/.config/amp/AGENTS.md",
+    action: "append",
+    reason: "Amp is installed here now. Canonfig backs up the file, adds its section at the top and keeps the whole file you have as your text.",
+    adoption: { retained: "# Amp on this laptop\n\nAsk the oracle before changing more than 200 lines.\n" },
+  },
   {
     resource: "skills/code-review",
     category: "skills",
@@ -97,10 +119,18 @@ export const FOLLOWER_PLAN: PlanItem[] = [
  * Canonfig hasn't written to yet. Each harness surface it takes over is backed up first, unless backups are off.
  */
 export const JOINED_PLAN: PlanItem[] = [
-  { resource: "instructions", category: "instructions", target: "~/.codex/AGENTS.md", action: "write", reason: "Takes over each harness's instructions file. Canonfig backs up what's there first." },
+  {
+    resource: "instructions",
+    category: "instructions",
+    target: "~/.codex/AGENTS.md",
+    action: "append",
+    reason: "Takes over each harness's instructions file, backing it up first. Canonfig adds its section at the top and keeps the whole file you have as your text.",
+    adoption: { retained: "# My notes\n\nUse pnpm in every repository.\n" },
+  },
   { resource: "skills/code-review", category: "skills", target: "~/.agents/skills/code-review", action: "write", reason: "Not on this machine yet. Writes the skill's 3 files." },
   { resource: "mcp/context7", category: "mcp", target: "~/.claude.json", action: "merge", reason: "Adds the server to each harness's MCP settings. Only those keys change; Canonfig backs up their values first." },
   { resource: "settings/codex", category: "settings", target: "~/.codex/config.toml", action: "merge", reason: "Sets 2 keys and leaves the rest of the file as it is." },
+  { resource: "resources/gitconfig", category: "resources", target: "~/.gitconfig", action: "write", reason: "Replaces the file with files/gitconfig. Canonfig backs up what's there first." },
   { resource: "tools/gh", category: "tools", target: "gh", action: "install", reason: "Not installed yet. Runs brew install gh, then checks it starts." },
 ];
 
@@ -383,6 +413,11 @@ export interface Workspace {
   /** This machine's ~/.canonfig/local/ items. */
   local: LocalItem[];
   setLocal: SetState<LocalItem[]>;
+  /** local.jsonc `overlays`: `<category>/<name>` items whose local version replaces the published one here, and `settings/<harness>#<key>` key claims. */
+  overlays: string[];
+  setOverlays: SetState<string[]>;
+  /** What `local.appendLocal` keeps of this machine's own in harness files it already applied. */
+  kept: KeptSurface[];
   unenrollOpen: boolean;
   setUnenrollOpen: SetState<boolean>;
   unenrolled: boolean;
@@ -615,6 +650,8 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
   const [humanAction, setHumanAction] = useState(false);
   const [appliedRevision, setAppliedRevision] = useState(joined ? 0 : followerSelf.revision);
   const [local, setLocal] = useState<LocalItem[]>(() => (joined ? [] : followerSelf.local));
+  const [overlays, setOverlays] = useState<string[]>(() => (joined ? [] : followerSelf.overlays));
+  const kept = joined ? [] : followerSelf.kept;
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearInterval(timer.current), []);
 
@@ -804,6 +841,9 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     exportArchive,
     local,
     setLocal,
+    overlays,
+    setOverlays,
+    kept,
     unenrollOpen,
     setUnenrollOpen,
     unenrolled,

@@ -31,6 +31,7 @@ import {
   PlannerInvalidResourcePathError,
   PlannerMissingDependencyError,
   PlannerPolicyKindMismatchError,
+  PlannerTextCompositionError,
   PlannerResourceKindMismatchError,
   PlannerVerificationContentMismatchError,
   PlannerVerificationKindMismatchError,
@@ -264,6 +265,13 @@ const validateResourceInputs = (
         resource: resource.id,
         publishedKind: resource.kind,
         desiredKind: desired.kind,
+      });
+    }
+    if (resource.policy === "append-local" && desired.kind === "file"
+      && (desired.symlinkTo !== undefined || desired.executable || ((desired.mode ?? 0) & 0o111) !== 0)) {
+      return new PlannerTextCompositionError({
+        resource: resource.id,
+        reason: "append-local requires a non-executable regular text file",
       });
     }
     const verification = indexed.verification.get(resource.id);
@@ -551,7 +559,7 @@ const buildPlan = (
     const successors = retired && filesystem(resource) ? activeResources.filter((next) =>
       filesystem(next) && overlaps(target, normalize(indexed.resolvedTargets.get(next.id) ?? next.target))) : [];
     if (successors.length > 0) {
-      const retainsContent = resource.kind === "config" && resource.policy !== "replace";
+      const retainsContent = resource.policy === "append-local" || resource.kind === "config" && resource.policy !== "replace";
       const retainedDirectoryRoot = (resource.kind === "directory" || resource.kind === "skill")
         && successors.some((next) => next.kind !== "directory" && next.kind !== "skill" && normalize(indexed.resolvedTargets.get(next.id) ?? next.target) === target);
       if (observed.state !== "absent" && (drafts.length === 0 || retainsContent || retainedDirectoryRoot)) {
@@ -594,7 +602,7 @@ const buildPlan = (
       if (draft.detail.kind !== "remove-resource") continue;
       if (resource.kind === "directory" || resource.kind === "skill") {
         for (const path of draft.detail.paths) removedPaths.add(normalize(`${target}/${path}`));
-      } else if (!(resource.kind === "config" && resource.policy !== "replace")) {
+      } else if (resource.policy !== "append-local" && !(resource.kind === "config" && resource.policy !== "replace")) {
         removedPaths.add(target);
       }
     }

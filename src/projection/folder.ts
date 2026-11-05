@@ -1,5 +1,5 @@
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { basename, isAbsolute, join, relative, sep } from "node:path";
 
 import { parse as parseJsonc, type ParseError, printParseErrorCode } from "jsonc-parser";
 import { Schema } from "effect";
@@ -12,6 +12,7 @@ import { TaggedError } from "../domain/tagged-error.ts";
 import { canonicalJson, sha256BytesHex, sha256Hex } from "../profile/profile-codec.ts";
 import { parseMarkdownDocument } from "./frontmatter.ts";
 import {
+  APPEND_LOCAL_CATEGORIES,
   CAPABILITIES,
   HOOK_EVENTS,
   SURFACE_CATEGORIES,
@@ -19,6 +20,7 @@ import {
   type AgentDocument,
   type CanonicalModel,
   type CommandDocument,
+  type FolderResource,
   type HarnessSettings,
   type Hook,
   type McpServer,
@@ -33,7 +35,7 @@ import {
  * Loads the Canonical Folder (`~/.canonfig/`) into the Canonical Model.
  *
  * Only the authoring allowlist is read: `canonfig.jsonc`, `AGENTS.md`,
- * `rules/`, `skills/`, `agents/`, `commands/` and `hooks/`, plus `local/`.
+ * `rules/`, `skills/`, `agents/`, `commands/`, `hooks/` and `files/`, plus `local/`.
  * Everything else in the folder (state, backups, logs) is machine-local and
  * never read here. Every file read must resolve inside the folder, and the
  * authored trees hold regular files and directories only.
@@ -72,7 +74,7 @@ const positiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 
 /** Categories whose items `groups` can name, as `<category>/<name>`, plus `instructions`. */
 export const GROUPABLE_CATEGORIES = [
-  "rules", "skills", "agents", "commands", "hooks", "mcp", "settings", "tools", "credentials",
+  "rules", "skills", "agents", "commands", "hooks", "mcp", "settings", "tools", "credentials", "resources",
 ] as const;
 const itemReference = Schema.String.check(Schema.isPattern(
   new RegExp(`^(?:instructions|(?:${GROUPABLE_CATEGORIES.join("|")})/[A-Za-z0-9][A-Za-z0-9_-]*)$`, "u"),
@@ -145,10 +147,83 @@ const ScheduleInput = Schema.String.check(Schema.isPattern(
 ));
 
 /** Categories `local/` may add to, named by `local.allow`. */
-export const LOCAL_CATEGORIES = ["rules", "skills", "agents", "commands", "mcp", "settings"] as const;
+export const LOCAL_CATEGORIES = ["instructions", "rules", "skills", "agents", "commands", "mcp", "settings"] as const;
 type LocalCategory = (typeof LOCAL_CATEGORIES)[number];
 
-const LocalAllow = Schema.Struct({ allow: Schema.Array(Schema.Literals(LOCAL_CATEGORIES)) });
+const LocalAllow = Schema.Struct({
+  allow: Schema.optional(Schema.Array(Schema.Literals(LOCAL_CATEGORIES))),
+  /** Harness outputs whose machine-owned content survives every sync; see model `appendLocal`. */
+  appendLocal: Schema.optional(Schema.Array(Schema.Literals(APPEND_LOCAL_CATEGORIES))),
+});
+
+/** Categories a Local Overlay can name: an item `local/` holds under a published item's name. */
+export const OVERLAY_CATEGORIES = ["rules", "skills", "agents", "commands", "mcp", "settings"] as const;
+
+/**
+ * One `overlays` entry in `local/local.jsonc`:
+ *
+ * - an item, `<category>/<name>` (for `settings` the name is a harness id):
+ *   this machine's `local/` item of that name replaces the published one;
+ * - a key claim, `settings/<harness>#<key path>`: Canonfig never writes,
+ *   removes or checks that key in the harness's settings file on this
+ *   machine, and keeps every other key it owns there. The `#` form is the
+ *   one takeover already uses for a single key (`config#model`), and the
+ *   settings file is the one surface the folder authors keys into.
+ */
+export type OverlayEntry =
+  | { readonly kind: "item"; readonly item: string }
+  | { readonly kind: "claim"; readonly item: string; readonly harness: TargetId; readonly key: string };
+
+const overlayItemPattern = new RegExp(`^(?:${OVERLAY_CATEGORIES.join("|")})/([A-Za-z0-9][A-Za-z0-9_-]*)$`, "u");
+const keyClaimPattern = /^settings\/([A-Za-z0-9][A-Za-z0-9_-]*)#(.+)$/su;
+
+/** One `overlays` entry, or why it is invalid. */
+export type ParsedOverlay = OverlayEntry | { readonly kind: "invalid"; readonly reason: string };
+
+/** Parse one `overlays` entry; the CLI and the loader both read entries through it. */
+export const parseOverlay = (entry: string): ParsedOverlay => {
+  const invalid = (reason: string) => ({ kind: "invalid", reason }) as const;
+  const claim = keyClaimPattern.exec(entry);
+  if (claim !== null) {
+    const harness = TARGET_IDS.find((candidate) => candidate === claim[1]);
+    if (harness === undefined) return invalid(`overlay ${entry} names unknown harness ${claim[1]!}`);
+    const issue = configPathIssue(claim[2]!);
+    return issue === undefined ? { kind: "claim", item: entry, harness, key: claim[2]! } : invalid(`overlay ${entry}: ${issue}`);
+  }
+  const item = overlayItemPattern.exec(entry);
+  if (item === null) {
+    return invalid(`invalid overlay ${entry}: expected rules|skills|agents|commands|mcp/<name>, settings/<harness>, or settings/<harness>#<key>`);
+  }
+  if (entry.startsWith("settings/") && !TARGET_IDS.some((candidate) => candidate === item[1])) {
+    return invalid(`overlay ${entry} names unknown harness ${item[1]!}`);
+  }
+  return { kind: "item", item: entry };
+};
+
+/** A home-relative path segment list: no empty, `.` or `..` segment, no backslash or NUL. */
+const relativeSegments = /^(?:[^/\\\0]+\/)*[^/\\\0]+$/u;
+const ResourceTarget = Schema.String.check(Schema.isPattern(
+  new RegExp(`^~/${relativeSegments.source.slice(1)}`, "u"),
+  { expected: "a path under the home directory, written ~/..." },
+));
+const ResourceSource = Schema.String.check(Schema.isPattern(
+  new RegExp(`^files/${relativeSegments.source.slice(1)}`, "u"),
+  { expected: "a path under files/, for example files/gitconfig" },
+));
+const ResourcePolicy = Schema.Literals(["replace", "append-local"]);
+
+/** `resources.<id>`: a file, directory or config file outside every harness. */
+const ResourceInput = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("file"), target: ResourceTarget, source: ResourceSource, policy: Schema.optional(ResourcePolicy) }),
+  Schema.Struct({ kind: Schema.Literal("directory"), target: ResourceTarget, source: ResourceSource, policy: Schema.optional(ResourcePolicy) }),
+  Schema.Struct({
+    kind: Schema.Literal("config"),
+    target: ResourceTarget,
+    format: Schema.Literals(["json", "toml", "yaml"]),
+    keys: Schema.Record(Schema.String, ConfigValue),
+  }),
+]);
+export type FolderResourceInput = Schema.Schema.Type<typeof ResourceInput>;
 
 const CanonfigJsonc = Schema.Struct({
   version: Schema.Literal(1),
@@ -165,6 +240,7 @@ const CanonfigJsonc = Schema.Struct({
   groups: Schema.optional(Schema.Record(identifier, Schema.Array(itemReference))),
   scheduleDefault: Schema.optional(ScheduleInput),
   local: Schema.optional(LocalAllow),
+  resources: Schema.optional(Schema.Record(identifier, ResourceInput)),
 });
 
 /** `canonfig.jsonc` as authored, after schema decoding. */
@@ -177,6 +253,10 @@ const LocalJsonc = Schema.Struct({
   mcp: Schema.optional(McpMap),
   settings: Schema.optional(SettingsMap),
   excludeHarnesses: Schema.optional(Schema.Array(Schema.Literals(TARGET_IDS))),
+  /** Authored resources this machine never projects; `restore` adds the ones it gives back. */
+  excludeResources: Schema.optional(Schema.Array(identifier)),
+  /** Local Overlays and key claims; `parseOverlay` reads each entry. */
+  overlays: Schema.optional(Schema.Array(Schema.String)),
   backups: Schema.optional(Schema.Boolean),
 });
 
@@ -200,13 +280,39 @@ const SkillFrontmatter = Schema.Struct({
   description: Schema.NonEmptyString,
 });
 
+/** A key claim: this machine owns `key` in `harness`'s settings file. */
+export interface KeyClaim {
+  readonly harness: TargetId;
+  readonly key: string;
+}
+
 /** Machine-local policy from `local/local.jsonc`. */
 export interface LocalPolicy {
   /** Harnesses this machine never projects, even when listed. */
   readonly excludeHarnesses: ReadonlyArray<TargetId>;
+  /** Authored resources this machine never projects. */
+  readonly excludeResources: ReadonlyArray<string>;
+  /** Settings keys this machine owns; projection neither writes nor checks them. */
+  readonly claims: ReadonlyArray<KeyClaim>;
   /** False turns takeover snapshots off on this machine. */
   readonly backups: boolean;
 }
+
+/**
+ * One `overlays` entry as `canonfig overlay list` reports it: an item overlay
+ * with what it finds (a `local/` item, a published item, or both), or a key
+ * claim. Whether a claim covers a key Canonfig writes shows in the plan.
+ */
+export type OverlayStatus =
+  | {
+    readonly kind: "item";
+    readonly item: string;
+    /** `local/` holds an admitted item of that name. */
+    readonly local: boolean;
+    /** The folder (or the mirror) publishes an item of that name. */
+    readonly published: boolean;
+  }
+  | { readonly kind: "claim"; readonly item: string; readonly harness: TargetId; readonly key: string };
 
 export interface LoadedFolder {
   readonly model: CanonicalModel;
@@ -215,6 +321,7 @@ export interface LoadedFolder {
   readonly digest: ContentDigest;
   /** Local items `local.allow` does not admit; reported, never projected. */
   readonly ignoredLocal: ReadonlyArray<string>;
+  readonly overlays: ReadonlyArray<OverlayStatus>;
 }
 
 /** An authored file: its bytes and whether its owner may execute it. */
@@ -604,6 +711,26 @@ const loadHooks = async (
   return hooks;
 };
 
+/** Checked `<key path>: value` entries, sorted by path; `label` names their place in the file. */
+const checkedKeys = (
+  keys: Readonly<Record<string, ConfigValue>>,
+  label: string,
+  path: string,
+): ReadonlyArray<SettingsKey> => {
+  const entries = Object.entries(keys).map(([key, value]) => {
+    const issue = configPathIssue(key);
+    if (issue !== undefined) throw failure(path, `${label} key ${key}: ${issue}`);
+    return { path: key, value };
+  });
+  for (const [index, entry] of entries.entries()) {
+    const overlap = entries.slice(index + 1).find((other) => configPathsOverlap(entry.path, other.path));
+    if (overlap !== undefined) {
+      throw failure(path, `${label} keys ${entry.path} and ${overlap.path} overlap`);
+    }
+  }
+  return entries.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+};
+
 const settingsFor = (
   input: Readonly<Record<string, Readonly<Record<string, ConfigValue>>>> | undefined,
   path: string,
@@ -612,77 +739,89 @@ const settingsFor = (
   for (const [harness, keys] of Object.entries(input ?? {})) {
     const target = TARGET_IDS.find((candidate) => candidate === harness);
     if (target === undefined) throw failure(path, `settings names unknown harness ${harness}`);
-    const entries = Object.entries(keys).map(([key, value]) => {
-      const issue = configPathIssue(key);
-      if (issue !== undefined) throw failure(path, `settings.${harness} key ${key}: ${issue}`);
-      return { path: key, value };
-    });
-    for (const [index, entry] of entries.entries()) {
-      const overlap = entries.slice(index + 1).find((other) => configPathsOverlap(entry.path, other.path));
-      if (overlap !== undefined) {
-        throw failure(path, `settings.${harness} keys ${entry.path} and ${overlap.path} overlap`);
-      }
-    }
-    settings[target] = entries.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+    settings[target] = checkedKeys(keys, `settings.${harness}`, path);
   }
   return settings;
 };
 
-/** Adds local items by name; a name already published is Human Action Required. */
+type OverlayCategory = (typeof OVERLAY_CATEGORIES)[number];
+
+/**
+ * Adds local items by name. A name already published is Human Action
+ * Required unless a Local Overlay names it: then this machine's item
+ * replaces the published one.
+ */
 const addLocal = <Item>(
   published: ReadonlyArray<Item>,
   local: ReadonlyArray<Item>,
   name: (item: Item) => string,
+  category: OverlayCategory,
   label: string,
   path: string,
+  overlays: ReadonlySet<string>,
 ): ReadonlyArray<Item> => {
-  const names = new Set(published.map(name));
-  for (const item of local) {
-    if (names.has(name(item))) {
+  const localNames = new Set(local.map(name));
+  const replaced = new Set<string>();
+  for (const item of published) {
+    if (!localNames.has(name(item))) continue;
+    if (!overlays.has(`${category}/${name(item)}`)) {
       throw new LocalItemCollisionError({
         path,
-        message: `local ${label} ${name(item)} has the same name as a published one; rename or remove one of them`,
+        message: `local ${label} ${name(item)} has the same name as a published one; rename or remove one of them, or let yours replace it on this machine with 'canonfig overlay set ${category}/${name(item)}'`,
       });
     }
+    replaced.add(name(item));
   }
-  return [...published, ...local];
+  return [...published.filter((item) => !replaced.has(name(item))), ...local];
 };
 
+/**
+ * Adds local settings keys. A key that overlaps a published one is Human
+ * Action Required unless `settings/<harness>` is a Local Overlay: then the
+ * local key replaces every published key it overlaps, and the other
+ * published keys stay.
+ */
 const mergeLocalSettings = (
   published: HarnessSettings,
   local: HarnessSettings,
   path: string,
-): HarnessSettings => {
-  for (const harness of TARGET_IDS) {
-    for (const entry of local[harness] ?? []) {
-      const collision = (published[harness] ?? []).find((other) => configPathsOverlap(entry.path, other.path));
-      if (collision !== undefined) {
-        throw new LocalItemCollisionError({
-          path,
-          message: `local setting ${harness} ${entry.path} overlaps published setting ${collision.path}; remove one of them`,
-        });
-      }
-    }
-  }
-  return Object.fromEntries(TARGET_IDS.flatMap((harness) => {
-    const entries = [...published[harness] ?? [], ...local[harness] ?? []]
+  overlays: ReadonlySet<string>,
+): HarnessSettings =>
+  Object.fromEntries(TARGET_IDS.flatMap((harness) => {
+    const localKeys = local[harness] ?? [];
+    const overlaid = overlays.has(`settings/${harness}`);
+    const kept = (published[harness] ?? []).filter((entry) => {
+      const collision = localKeys.find((other) => configPathsOverlap(entry.path, other.path));
+      if (collision === undefined) return true;
+      if (overlaid) return false;
+      throw new LocalItemCollisionError({
+        path,
+        message: `local setting ${harness} ${collision.path} overlaps published setting ${entry.path}; remove one of them, or let yours replace it on this machine with 'canonfig overlay set settings/${harness}'`,
+      });
+    });
+    const entries = [...kept, ...localKeys]
       .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
     return entries.length === 0 ? [] : [[harness, entries] as const];
   }));
-};
+
+/** A file's place, mode and content digest: what the model digest records instead of bytes. */
+const fileIdentity = (file: SkillFile) => ({ path: file.path, executable: file.executable, digest: sha256BytesHex(file.content) });
 
 /** A stable digest of everything the model holds, file content included by digest. */
 const modelDigest = (model: CanonicalModel, local: LocalPolicy): ContentDigest => {
   const skills = model.skills.map((skill) => ({
     name: skill.name,
     description: skill.description,
-    files: skill.files.map((file) => ({
-      path: file.path,
-      executable: file.executable,
-      digest: sha256BytesHex(file.content),
-    })),
+    files: skill.files.map(fileIdentity),
   }));
-  const value = JSON.parse(JSON.stringify({ ...model, skills, local }));
+  const resources = model.resources.map((resource) =>
+    resource.kind === "file"
+      ? { ...resource, file: fileIdentity(resource.file) }
+      : resource.kind === "directory"
+      ? { ...resource, files: resource.files.map(fileIdentity) }
+      : resource
+  );
+  const value = JSON.parse(JSON.stringify({ ...model, skills, resources, local }));
   return sha256Hex(canonicalJson(value));
 };
 
@@ -723,7 +862,7 @@ export const listFolderFiles = (folder: string, directory: string): Promise<Read
   listFiles(diskSource(folder), join(folder, directory));
 
 /** The authoring allowlist: the only top-level entries of `~/.canonfig/` that are published or mirrored. */
-export const AUTHORING_ENTRIES = ["canonfig.jsonc", "AGENTS.md", "rules", "skills", "agents", "commands", "hooks"] as const;
+export const AUTHORING_ENTRIES = ["canonfig.jsonc", "AGENTS.md", "rules", "skills", "agents", "commands", "hooks", "files"] as const;
 
 /**
  * Whether a path holds something: any file, and any directory with something
@@ -758,7 +897,8 @@ export const itemResourceId = (reference: string): string => reference.replace("
 
 /**
  * The authored items of a folder, without `local/`. Projection loads skill
- * files with their bytes; publication lists them and streams the bytes itself.
+ * and resource files with their bytes; publication lists them and streams
+ * the bytes itself.
  */
 export interface AuthoredFolder<File = SkillFile> {
   readonly config: FolderConfig;
@@ -771,11 +911,87 @@ export interface AuthoredFolder<File = SkillFile> {
   readonly hooks: ReadonlyArray<Hook>;
   /** Declared `settings.<harness>` keys, checked. */
   readonly settings: HarnessSettings;
+  /** `resources.<id>`, sorted by id, with their files from `files/`. */
+  readonly resources: ReadonlyArray<FolderResource<File>>;
 }
 
-const loadAuthored = async <File>(
+/** How a loader reads authored files: listed only, or with their bytes. */
+interface FileReader<File> {
+  readonly tree: (source: FolderSource, directory: string) => Promise<ReadonlyArray<File>>;
+  readonly file: (source: FolderSource, path: string) => Promise<File | undefined>;
+}
+
+const listing: FileReader<ListedFile> = {
+  tree: listFiles,
+  file: async (source, path) => {
+    const executable = await source.executable(path);
+    return executable === undefined ? undefined : { path: basename(path), executable };
+  },
+};
+
+const loading: FileReader<SkillFile> = {
+  tree: loadFiles,
+  file: async (source, path) => {
+    const file = await source.file(path);
+    return file === undefined ? undefined : { path: basename(path), content: file.content, executable: file.executable };
+  },
+};
+
+const dotSegment = (segment: string) => segment === "." || segment === "..";
+
+/**
+ * `~/a/b` and `~/a` overlap; `~/a` and `~/ab` do not. Case is ignored: a
+ * folder is published to every follower, and macOS and Windows file systems
+ * treat `~/.Notes` and `~/.notes` as one path.
+ */
+const targetsOverlap = (left: string, right: string) => {
+  const [a, b] = [left.toLowerCase(), right.toLowerCase()];
+  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+};
+
+/**
+ * `resources.<id>`: each target is a home-relative path with no `.` or `..`
+ * segment, no two targets overlap, and every file source exists under
+ * `files/`. An append-local file is never executable.
+ */
+const loadResources = async <File extends { readonly executable: boolean }>(
   source: FolderSource,
-  skillFiles: (source: FolderSource, directory: string) => Promise<ReadonlyArray<File>>,
+  inputs: Readonly<Record<string, FolderResourceInput>> | undefined,
+  path: string,
+  reader: FileReader<File>,
+): Promise<ReadonlyArray<FolderResource<File>>> => {
+  const resources: Array<FolderResource<File>> = [];
+  for (const [id, input] of Object.entries(inputs ?? {}).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) {
+    const label = `resources.${id}`;
+    if (input.target.slice(2).split("/").some(dotSegment)) throw failure(path, `${label}.target ${input.target} has a . or .. segment`);
+    const overlap = resources.find((other) => targetsOverlap(other.target, input.target));
+    if (overlap !== undefined) throw failure(path, `${label}.target ${input.target} overlaps resources.${overlap.id}.target ${overlap.target}`);
+    if (input.kind === "config") {
+      resources.push({ id, kind: "config", target: input.target, format: input.format, keys: checkedKeys(input.keys, label, path) });
+      continue;
+    }
+    if (input.source.split("/").some(dotSegment)) throw failure(path, `${label}.source ${input.source} has a . or .. segment`);
+    const location = join(source.folder, ...input.source.split("/"));
+    const policy = input.policy ?? "replace";
+    if (input.kind === "file") {
+      const file = await reader.file(source, location);
+      if (file === undefined) throw failure(path, `${label}.source ${input.source} does not exist`);
+      if (policy === "append-local" && file.executable) {
+        throw failure(path, `${label} uses append-local, which needs a text file that is not executable`);
+      }
+      resources.push({ id, kind: "file", target: input.target, policy, source: input.source, file });
+      continue;
+    }
+    const files = await reader.tree(source, location);
+    if (files.length === 0) throw failure(path, `${label}.source ${input.source} is not a directory holding files`);
+    resources.push({ id, kind: "directory", target: input.target, policy, source: input.source, files });
+  }
+  return resources;
+};
+
+const loadAuthored = async <File extends { readonly executable: boolean }>(
+  source: FolderSource,
+  reader: FileReader<File>,
 ): Promise<AuthoredFolder<File>> => {
   const folder = source.folder;
   const configPath = join(folder, "canonfig.jsonc");
@@ -787,17 +1003,25 @@ const loadAuthored = async <File>(
     config,
     instructions: await readText(source, join(folder, "AGENTS.md")),
     rules: await loadRules(source, join(folder, "rules")),
-    skills: await loadSkills(source, join(folder, "skills"), skillFiles),
+    skills: await loadSkills(source, join(folder, "skills"), reader.tree),
     agents: await loadAgents(source, join(folder, "agents")),
     commands: await loadCommands(source, join(folder, "commands")),
     hooks: await loadHooks(source, config.hooks ?? [], configPath),
     settings: settingsFor(config.settings, configPath),
+    resources: await loadResources(source, config.resources, configPath, reader),
   };
 };
 
-/** Load and check the folder's authored items, ignoring `local/`, with skill files listed but unread. */
+/** Load and check the folder's authored items, ignoring `local/`, with skill and resource files listed but unread. */
 export const loadAuthoredFolder = (folder: string): Promise<AuthoredFolder<ListedFile>> =>
-  loadAuthored(diskSource(folder), listFiles);
+  loadAuthored(diskSource(folder), listing);
+
+/** Instructions followed by this machine's own: `local/AGENTS.md` after the published text. */
+const withLocalInstructions = (published: string | undefined, local: string | undefined): string | undefined => {
+  if (local === undefined) return published;
+  if (published === undefined) return local;
+  return `${published}${published.endsWith("\n") ? "\n" : "\n\n"}${local}`;
+};
 
 /**
  * Load `~/.canonfig/` and its `local/` items into the Canonical Model. With
@@ -808,7 +1032,7 @@ export const loadCanonicalFolder = async (
   mirror?: ReadonlyMap<string, FolderFile>,
 ): Promise<LoadedFolder> => {
   const source = mirror === undefined ? diskSource(folder) : mirrorSource(folder, mirror);
-  const authored = await loadAuthored(source, loadFiles);
+  const authored = await loadAuthored(source, loading);
   const config = authored.config;
   const localPath = join(folder, "local", "local.jsonc");
   const localConfig = (await readJsonc(source, localPath, LocalJsonc)) ?? {};
@@ -827,26 +1051,29 @@ export const loadCanonicalFolder = async (
     return [];
   };
 
-  const rules = addLocal(
-    authored.rules,
-    await localItems("rules", (directory) => loadRules(source, directory)),
-    (rule) => rule.id, "rule", localDirectory,
+  const overlayEntries = [...new Set(localConfig.overlays ?? [])].sort().map((entry): OverlayEntry => {
+    const parsed = parseOverlay(entry);
+    if (parsed.kind === "invalid") throw failure(localPath, parsed.reason);
+    return parsed;
+  });
+  const overlays = new Set(overlayEntries.flatMap((entry) => entry.kind === "item" ? [entry.item] : []));
+  const claims = overlayEntries.flatMap((entry): ReadonlyArray<KeyClaim> =>
+    entry.kind === "claim" ? [{ harness: entry.harness, key: entry.key }] : []
   );
-  const skills = addLocal(
-    authored.skills,
-    await localItems("skills", (directory) => loadSkills(source, directory, loadFiles)),
-    (skill) => skill.name, "skill", localDirectory,
-  );
-  const agents = addLocal(
-    authored.agents,
-    await localItems("agents", (directory) => loadAgents(source, directory)),
-    (agent) => agent.id, "agent", localDirectory,
-  );
-  const commands = addLocal(
-    authored.commands,
-    await localItems("commands", (directory) => loadCommands(source, directory)),
-    (command) => command.id, "command", localDirectory,
-  );
+
+  const localRules = await localItems("rules", (directory) => loadRules(source, directory));
+  const localSkills = await localItems("skills", (directory) => loadSkills(source, directory, loadFiles));
+  const localAgents = await localItems("agents", (directory) => loadAgents(source, directory));
+  const localCommands = await localItems("commands", (directory) => loadCommands(source, directory));
+  const rules = addLocal(authored.rules, localRules, (rule) => rule.id, "rules", "rule", localDirectory, overlays);
+  const skills = addLocal(authored.skills, localSkills, (skill) => skill.name, "skills", "skill", localDirectory, overlays);
+  const agents = addLocal(authored.agents, localAgents, (agent) => agent.id, "agents", "agent", localDirectory, overlays);
+  const commands = addLocal(authored.commands, localCommands, (command) => command.id, "commands", "command", localDirectory, overlays);
+
+  const localInstructionsPath = join(localDirectory, "AGENTS.md");
+  let localInstructions: string | undefined;
+  if (allow.includes("instructions")) localInstructions = await readText(source, localInstructionsPath);
+  else if (await holdsEntries(localInstructionsPath)) ignoredLocal.push("local/AGENTS.md");
 
   const publishedMcp = Object.entries(config.mcp ?? {});
   let localMcp = Object.entries(localConfig.mcp ?? {});
@@ -854,7 +1081,7 @@ export const loadCanonicalFolder = async (
     ignoredLocal.push("local/local.jsonc mcp");
     localMcp = [];
   }
-  const mcp = addLocal(publishedMcp, localMcp, ([name]) => name, "MCP server", localPath)
+  const mcp = addLocal(publishedMcp, localMcp, ([name]) => name, "mcp", "MCP server", localPath, overlays)
     .filter(([, server]) => server.enabled !== false)
     .map(([name, server]) => [name, mcpServer(server)] as const)
     .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
@@ -864,9 +1091,43 @@ export const loadCanonicalFolder = async (
     ignoredLocal.push("local/local.jsonc settings");
     localSettings = {};
   }
-  const settings = mergeLocalSettings(authored.settings, localSettings, localPath);
+  // A claimed key is the machine's to edit in the harness file itself; a
+  // local setting for it would ask Canonfig to write the key it gave up.
+  for (const claim of claims) {
+    const declared = (localSettings[claim.harness] ?? []).find((entry) => configPathsOverlap(entry.path, claim.key));
+    if (declared !== undefined) {
+      throw failure(localPath, `local setting ${claim.harness} ${declared.path} overlaps the key claim settings/${claim.harness}#${claim.key}; remove one of them`);
+    }
+  }
+  const settings = mergeLocalSettings(authored.settings, localSettings, localPath, overlays);
+
+  // What each overlay finds, for `canonfig overlay list` and the plan's warnings.
+  const itemsOf = (items: Readonly<Record<OverlayCategory, ReadonlyArray<string>>>) =>
+    new Set(OVERLAY_CATEGORIES.flatMap((category) => items[category].map((name) => `${category}/${name}`)));
+  const publishedItems = itemsOf({
+    rules: authored.rules.map((rule) => rule.id),
+    skills: authored.skills.map((skill) => skill.name),
+    agents: authored.agents.map((agent) => agent.id),
+    commands: authored.commands.map((command) => command.id),
+    mcp: publishedMcp.map(([name]) => name),
+    settings: Object.keys(authored.settings),
+  });
+  const localItemNames = itemsOf({
+    rules: localRules.map((rule) => rule.id),
+    skills: localSkills.map((skill) => skill.name),
+    agents: localAgents.map((agent) => agent.id),
+    commands: localCommands.map((command) => command.id),
+    mcp: localMcp.map(([name]) => name),
+    settings: Object.keys(localSettings),
+  });
+  const overlayStatus = overlayEntries.map((entry): OverlayStatus =>
+    entry.kind === "claim"
+      ? entry
+      : { kind: "item", item: entry.item, local: localItemNames.has(entry.item), published: publishedItems.has(entry.item) }
+  );
 
   const excluded = new Set(localConfig.excludeHarnesses ?? []);
+  const excludedResources = new Set(localConfig.excludeResources ?? []);
   const listed = [...new Set(config.harnesses)];
   // A selection for a harness the folder does not list would silently do
   // nothing, which is almost certainly a typo: refuse it.
@@ -878,7 +1139,7 @@ export const loadCanonicalFolder = async (
   const model: CanonicalModel = {
     folder,
     harnesses: listed.filter((harness) => !excluded.has(harness)),
-    instructions: authored.instructions,
+    instructions: withLocalInstructions(authored.instructions, localInstructions),
     rules,
     skills,
     agents,
@@ -889,10 +1150,14 @@ export const loadCanonicalFolder = async (
     surfaces: Object.fromEntries(
       Object.entries(config.surfaces ?? {}).map(([harness, categories]) => [harness, [...new Set(categories)].sort()]),
     ),
+    appendLocal: [...new Set(config.local?.appendLocal ?? [])].sort(),
+    resources: authored.resources.filter((resource) => !excludedResources.has(resource.id)),
   };
   const local: LocalPolicy = {
     excludeHarnesses: localConfig.excludeHarnesses ?? [],
+    excludeResources: [...excludedResources].sort(),
+    claims,
     backups: localConfig.backups ?? true,
   };
-  return { model, local, digest: modelDigest(model, local), ignoredLocal };
+  return { model, local, digest: modelDigest(model, local), ignoredLocal, overlays: overlayStatus };
 };

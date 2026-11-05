@@ -16,7 +16,9 @@ canonfig export --output ~/canonfig-setup.tar.gz
 ```
 
 The archive holds `canonfig.jsonc`, `AGENTS.md`, `rules/`, `skills/`,
-`agents/`, `commands/`, `hooks/` and `local/`. It never holds `state.sqlite`,
+`agents/`, `commands/`, `hooks/`, `files/` and `local/`, so authored
+`resources` with their files, and this machine's local items, Local Overlays
+and key claims, travel with it. It never holds `state.sqlite`,
 takeover snapshots, the hook runtime, logs, installer bindings or credentials,
 because export reads nothing else in `~/.canonfig/`. MCP secrets stay
 `{ "fromEnv": "NAME" }` references: export refuses a literal credential in
@@ -168,9 +170,11 @@ This adds the files Canonfig manages in each harness on this machine, under
 `harnesses/<harness>/<path below home>`. Each manifest entry names the harness
 and the original path, such as `~/.claude/CLAUDE.md`. For a file the harness
 shares with its own state, such as `~/.claude.json`, the archive holds only the
-keys Canonfig owns there, so logins and history never leave the machine. A
-surface you edited since Canonfig last wrote it is left out and listed under
-`skippedHarnessSurfaces`.
+keys Canonfig owns there, so logins and history never leave the machine.
+Authored resources appear under `harnesses/resources/`. A surface you edited
+since Canonfig last wrote it is left out and listed under
+`skippedHarnessSurfaces`, and so is an `append-local` surface, which holds this
+machine's own content beside Canonfig's.
 
 Import verifies harness files and counts them, but never writes them. The next
 `canonfig sync` projects the imported folder instead, which produces the same

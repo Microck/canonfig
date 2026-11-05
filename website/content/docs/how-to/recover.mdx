@@ -155,6 +155,7 @@ The sync exits 3 and the message names the step only you can take:
 | "`<harness>` was taken over at `<root>` but now resolves to `<root>`, ..." | The harness root changed after takeover, for example because `CODEX_HOME` changed. | See [Keep a harness in one place](/how-to/choose-harnesses#keep-a-harness-in-one-place). |
 | "local skill `<name>` has the same name as a published one; rename or remove one of them" | A local item collides with a published one. | Rename or remove the local item. |
 | "restore of snapshot `<id>` refused, nothing was changed: ..." | A surface changed since Canonfig last applied it. | See [Restore a harness from a backup](/how-to/restore-from-a-backup). |
+| "Canonfig state at `<path>` was created by an earlier Canonfig version, and this version cannot read it. ..." | `~/.canonfig/state.sqlite` comes from an earlier release. Canonfig refused it before writing anything. | Move `~/.canonfig/state.sqlite` aside, then set the machine up again: `canonfig setup plan` on a Source, or enroll the follower again with a new invitation. |
 | Any other step only a person can take | See [Resolve Human Action Required](#resolve-human-action-required). | Do what the message says, then sync again. |
 
 ### Exit 4: conflict or drift
@@ -163,7 +164,7 @@ The sync exits 3 and the message names the step only you can take:
 | --- | --- | --- |
 | "follower `<name>` has a run still open; run 'canonfig recover' first, or 'canonfig abandon' to close it without rollback when it cannot be recovered" | A run was interrupted. | [Finish an interrupted run](#finish-an-interrupted-run). |
 | "run `<run>` was created by canonfig `<version>` ...; finish the run with the creating build or set CANONFIG_ACCEPT_FOREIGN_BUILD=1 to accept the upgrade" | You upgraded Canonfig while a run was open. | Reinstall the version the message names, run `canonfig recover`, then upgrade. Set `CANONFIG_ACCEPT_FOREIGN_BUILD=1` only if you accept that the upgraded build recovers a run it did not create. |
-| "another canonfig process (PID 48211) has been running 'sync --apply' for this follower since `<time>`; wait for it to finish, then retry. If PID 48211 is not a canonfig process, delete `<lock path>` and retry" | `sync --apply`, `recover`, and `abandon` run one at a time. Canonfig takes over a lock whose process has exited. | Wait for the other run to finish, for example a scheduled run. See the warning below before you delete the lock. |
+| "another canonfig process (PID 48211) has been running 'sync --apply' for this follower since `<time>`; wait for it to finish, then retry. If PID 48211 is not a canonfig process, delete `<lock path>` and retry" | `sync --apply`, `recover`, `abandon`, `restore`, and the edits of `overlay set`, `overlay remove`, `harnesses include`, and `harnesses exclude` run one at a time. Canonfig takes over a lock whose process has exited. | Wait for the other run to finish, for example a scheduled run. See the warning below before you delete the lock. |
 | A resource shows `drift-conflict` | Follower Drift. | [Resolve Follower Drift](#resolve-follower-drift). |
 
 <Callout title="Check the PID before you delete the lock" type="warning">

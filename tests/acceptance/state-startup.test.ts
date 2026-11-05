@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -76,3 +76,41 @@ it.skipIf(process.platform === "win32" || process.getuid?.() === 0).each([0o500,
     } finally { chmodSync(root, 0o700); rmSync(home, { recursive: true, force: true }); }
   }, 50000,
 );
+
+// A release before state format 6 wrote another migration history. Canonfig
+// refuses that database before it migrates or writes anything, and names the
+// fix: move the database aside and set the machine up again.
+it("refuses state an earlier release wrote without changing it", () => {
+  const home = mkdtempSync(join(tmpdir(), "canonfig-earlier-state-"));
+  const root = join(home, ".canonfig");
+  mkdirSync(root);
+  const state = join(root, "state.sqlite");
+  const database = new DatabaseSync(state);
+  database.exec(`
+    PRAGMA journal_mode = WAL;
+    CREATE TABLE effect_sql_migrations (
+      migration_id integer PRIMARY KEY NOT NULL,
+      created_at datetime NOT NULL DEFAULT current_timestamp,
+      name VARCHAR(255) NOT NULL
+    );
+    INSERT INTO effect_sql_migrations (migration_id, name) VALUES (1, 'state_repository'), (21, 'resource_blob_chunks');
+  `);
+  database.close();
+  const before = { bytes: readFileSync(state), entries: readdirSync(root) };
+  try {
+    for (const json of [false, true]) {
+      const result = spawnSync(process.execPath,
+        ["--import", "tsx", resolve(import.meta.dirname, "../../src/runtime/main.ts"), "status", ...(json ? ["--json"] : [])],
+        { encoding: "utf8", timeout: 20000, env: { ...process.env, CANONFIG_LOG: "off", HOME: home, USERPROFILE: home,
+          XDG_CACHE_HOME: join(home, "cache"), XDG_STATE_HOME: join(home, "state") } });
+      expect(result.status, result.stdout + result.stderr).toBe(3);
+      expect(result.stdout).toBe("");
+      const message = json ? String(JSON.parse(result.stderr).message) : result.stderr;
+      expect(message).toContain("created by an earlier Canonfig version");
+      expect(message).toContain(`move ${state} aside`);
+      expect(message).toContain("canonfig setup plan");
+      expect(readFileSync(state).equals(before.bytes)).toBe(true);
+      expect(readdirSync(root)).toEqual(before.entries);
+    }
+  } finally { rmSync(home, { recursive: true, force: true }); }
+}, 50000);

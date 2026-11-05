@@ -39,6 +39,7 @@ import {
   fileResource,
   parseSurfaceResourceId,
   planBuilt,
+  resourcesOwner,
   sharedSkillsOwner,
   type BuiltResource,
   type LocalRevisionPlan,
@@ -52,13 +53,15 @@ import {
  * exported it, then regular files only:
  *
  * - `folder/...`: the authoring allowlist (`canonfig.jsonc`, `AGENTS.md`,
- *   `rules/`, `skills/`, `agents/`, `commands/`, `hooks/`) plus `local/`.
+ *   `rules/`, `skills/`, `agents/`, `commands/`, `hooks/`, `files/`) plus
+ *   `local/`.
  *   Nothing else in `~/.canonfig/` is read, so state, backups, the hook
  *   runtime, logs, installers and credentials never enter an archive.
  * - `harnesses/<harness>/<path below home>` with `--include-harnesses`: the
  *   harness files Canonfig manages here, taken from the Applied Resource
  *   Records, and only when they still hold exactly what Canonfig wrote. A
  *   shared file such as `~/.claude.json` contributes only its owned keys.
+ *   Authored resources project like a harness, under `harnesses/resources/`.
  *
  * The manifest lists every other entry with size, SHA-256 and mode, so an
  * auditor can check what left the machine with standard tools. On its own it
@@ -113,7 +116,7 @@ const HARNESS_PREFIX = "harnesses/";
 const FOLDER_ENTRIES: ReadonlyArray<string> = [...AUTHORING_ENTRIES, "local"];
 /** The two folder entries that are files; every other entry is a directory. */
 export const FOLDER_FILES: ReadonlySet<string> = new Set(["canonfig.jsonc", "AGENTS.md"]);
-const HARNESS_DIRECTORIES: ReadonlySet<string> = new Set([...TARGET_IDS, sharedSkillsOwner]);
+const HARNESS_DIRECTORIES: ReadonlySet<string> = new Set([...TARGET_IDS, sharedSkillsOwner, resourcesOwner]);
 
 const MAXIMUM_FILES = 20_000;
 const MAXIMUM_CONTENT_BYTES = 128 * 1024 * 1024;
@@ -715,10 +718,17 @@ const assertNoLiteralCredentials = (folder: string, files: ReadonlyArray<Collect
       try: () => [decodeFolderConfig(configPath, configText), localText === undefined ? {} : decodeLocalConfig(localPath, localText)] as const,
       catch: (error) => error instanceof CanonicalFolderError ? error : new ArchiveRequestError({ path: configPath, message: String(error) }),
     });
-    const items = (file: string, values: { readonly mcp?: object | undefined; readonly settings?: object | undefined }, hooks: ReadonlyArray<{ readonly id: string }> = []) => [
+    // The same items publication checks by field name, and `resources.<id>`
+    // too: a `config` resource's keys are written to a file on every follower.
+    const items = (
+      file: string,
+      values: { readonly mcp?: object | undefined; readonly settings?: object | undefined; readonly resources?: object | undefined },
+      hooks: ReadonlyArray<{ readonly id: string }> = [],
+    ) => [
       ...Object.entries(values.mcp ?? {}).map(([name, value]) => [file, `mcp.${name}`, value] as const),
       ...hooks.map((hook) => [file, `hooks.${hook.id}`, hook] as const),
       ...Object.entries(values.settings ?? {}).map(([harness, value]) => [file, `settings.${harness}`, value] as const),
+      ...Object.entries(values.resources ?? {}).map(([id, value]) => [file, `resources.${id}`, value] as const),
     ];
     for (const [file, itemPath, value] of [...items(configPath, config, config.hooks ?? []), ...items(localPath, local)]) {
       const location = literalCredentialLocation(itemPath, Schema.decodeUnknownSync(ConfigValue)(asJson(value)));
@@ -773,6 +783,9 @@ const surfaceFiles = (record: AppliedResourceRecord, target: MachinePath, home: 
     };
     const kind = yield* kindOf(target);
     const unexpected = (expected: string) => leftOut(kind === "absent" ? "is missing" : `is a ${kind}, not a ${expected}`);
+    // An append-local surface holds this machine's own text or entries beside
+    // Canonfig's, so it never holds only what Canonfig wrote.
+    if (record.policy === "append-local") return leftOut("is shared with this machine's own content (append-local), which an export does not hold");
     switch (record.kind) {
       case "file": {
         if (record.symlinkTo !== undefined) return leftOut("is a link Canonfig applied, which an export does not hold");

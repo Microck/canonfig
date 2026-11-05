@@ -1006,9 +1006,7 @@ const makeEnrollment = Effect.gen(function*() {
       });
     }
     const keys = yield* signingKeys();
-    // The validated profile, not the stored index, is what followers apply:
-    // for a revision an earlier release published it is the projection into
-    // this release's transport shape.
+    // The validated profile, not the stored index, is what followers apply.
     const profile = yield* cachedRevision(
       revision,
       keys.material.source.keyId,

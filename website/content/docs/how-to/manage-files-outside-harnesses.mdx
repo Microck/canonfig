@@ -1,0 +1,58 @@
+---
+title: Manage files outside the harnesses
+description: Publish a file, a directory, or keys in a config file to every Follower Machine with resources in canonfig.jsonc.
+---
+
+Harness configuration is written by Canonfig's harness adapters. For other
+files in your home directory, such as `~/.gitconfig` or a tool's settings,
+declare `resources` in `~/.canonfig/canonfig.jsonc` on the Source Machine and
+put their content under `~/.canonfig/files/`.
+
+```jsonc title="part of ~/.canonfig/canonfig.jsonc"
+{
+  "resources": {
+    "gitconfig": { "kind": "file", "target": "~/.gitconfig", "source": "files/gitconfig" },
+    "team-notes": { "kind": "file", "target": "~/notes/TEAM.md", "source": "files/TEAM.md", "policy": "append-local" },
+    "scripts": { "kind": "directory", "target": "~/.local/share/team-scripts", "source": "files/scripts" },
+    "tool": { "kind": "config", "target": "~/.config/tool/settings.json", "format": "json", "keys": { "editor": "vim", "ui.color": true } }
+  }
+}
+```
+
+```bash
+canonfig source publish --reviewer "$USER"
+```
+
+| Kind | Writes | `policy` |
+| --- | --- | --- |
+| `file` | The file at `source`, with its executable bit. | `replace` (default): Canonfig owns the whole file. `append-local`: Canonfig owns a marked section at the top and keeps the machine's text after it, as in [Keep a machine's own instructions and skills](/how-to/keep-local-content). |
+| `directory` | Every file under the `source` directory. | `replace` (default): Canonfig owns the whole directory. `append-local`: Canonfig owns only the entries it writes. |
+| `config` | Only the `keys`, merged into a `json`, `toml`, or `yaml` file. Every other key stays. | Always merged. Keys are written like [settings](/reference/canonfig-folder#settings). |
+
+Each resource is published and mirrored like any other item and is not
+affected by `surfaces`. A resource no group names reaches every Follower
+Machine; once a group names `resources/<id>`, it reaches only the Follower
+Machines of that group. A file under `files/` goes wherever a resource that
+reads it goes, and every file under `files/` must be read by a resource.
+
+On each machine the first write takes a takeover snapshot, as for a harness.
+Afterwards a change you make to a target is Follower Drift: kept, reported,
+exit 4. Removing a resource from `canonfig.jsonc` removes what Canonfig wrote
+and nothing else. `canonfig restore` gives a resource back and adds its id to
+`excludeResources` in `~/.canonfig/local/local.jsonc`.
+
+## Limits
+
+- `target` starts with `~/` and has no `.` or `..` segment. Two resources may
+  not overlap, and case does not tell them apart: `~/Notes` and `~/notes` are
+  the same place on macOS and Windows.
+- Every existing folder on the way to a target must be a real directory, not a
+  symbolic link or junction, and must stay inside your home directory. The
+  sync stops with exit 3 and writes nothing otherwise.
+- A target may not overlap `~/.canonfig/`, `~/.agents/`, or any place a harness
+  adapter owns or keeps its own state in, such as `~/.codex/` or
+  `~/.claude.json`, whether or not that harness is listed. The sync stops with
+  exit 2: "resources.`<id>`.target `<target>` overlaps `<path>`, which belongs to
+  `<harness>`".
+- To move a resource to a new target, give it a new id, so the old target is
+  removed through the normal path.

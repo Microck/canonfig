@@ -22,6 +22,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SourceSignature } from "../src/domain/brand.ts";
 import type { ProfileRevision } from "../src/domain/profile.ts";
 import type { ConfigValue } from "../src/domain/resource.ts";
+import { sourceTextEnd } from "../src/domain/text-composition.ts";
 import { InvalidPublicationInputError, PublicationSourceError } from "../src/profile/profile-catalog.errors.ts";
 import { profileCatalogLayer } from "../src/profile/profile-catalog.layer.ts";
 import { ProfileCatalog } from "../src/profile/profile-catalog.service.ts";
@@ -269,6 +270,23 @@ describe("publishing the Canonical Folder", () => {
     expect(persisted(fixture.database)).toEqual({ revisions: 0, blobs: 0, approvals: 0 });
   });
 
+  // A follower maps `files:a:b.txt` back to files/a/b.txt and refuses a
+  // segment of only dots, so either name would fail every follower's sync.
+  // Windows cannot create these names.
+  it.skipIf(process.platform === "win32").each([
+    ["a ':' in a file name", "a:b.txt"],
+    ["a segment of only dots", ".../b.txt"],
+  ])("refuses %s under files/ before signing", async (_name, path) => {
+    const fixture = workspace({ resources: { notes: { kind: "directory", target: "~/notes", source: "files/notes" } } });
+    write(join(fixture.folder, "files", "notes", ...path.split("/")), "x\n");
+    const signing = makeSigner();
+    const failure = await publishFailure(fixture, signing.signer);
+    expect(failure).toBeInstanceOf(InvalidPublicationInputError);
+    if (failure instanceof InvalidPublicationInputError) expect(failure.reason).toContain(`files/notes/${path} needs path segments`);
+    expect(signing.calls.signed).toBe(0);
+    expect(persisted(fixture.database)).toEqual({ revisions: 0, blobs: 0, approvals: 0 });
+  });
+
   it.each([
     ["a separate password argument", { mcp: { tool: { transport: "stdio", command: "tool", args: ["--password", "publication-disposable-value"] } } }],
     ["an equals token argument", { mcp: { tool: { transport: "stdio", command: "tool", args: ["--api-token=publication-disposable-value"] } } }],
@@ -351,6 +369,33 @@ describe("publishing the Canonical Folder", () => {
     expect(published.resources.map((resource) => resource.id)).toContain("surfaces");
   });
 
+  // A file read stream yields 64 KiB chunks; each case puts its point across the first boundary.
+  const readChunk = 64 * 1024;
+  const appendLocalNotes = {
+    resources: { notes: { kind: "file", target: "~/notes/TEAM.md", source: "files/notes.md", policy: "append-local" } },
+  };
+
+  it.each([
+    ["a reserved marker cut between read chunks", Buffer.from(`${"a".repeat(readChunk - 10)}${sourceTextEnd}\n`), "append-local Source text contains a reserved Canonfig marker"],
+    ["a UTF-8 sequence cut short at the end", Buffer.concat([Buffer.from("a".repeat(readChunk - 1)), Buffer.from([0xe2, 0x82])]), "append-local requires UTF-8 text"],
+  ])("refuses an append-local file with %s", async (_name, content, message) => {
+    const fixture = workspace(appendLocalNotes);
+    write(join(fixture.folder, "files", "notes.md"), content);
+    const signing = makeSigner();
+    const failure = await publishFailure(fixture, signing.signer);
+    expect(failure).toBeInstanceOf(InvalidPublicationInputError);
+    if (failure instanceof InvalidPublicationInputError) expect(failure.reason).toContain(`resources.notes cannot use append-local: ${message}`);
+    expect(signing.calls.signed).toBe(0);
+  });
+
+  it("publishes an append-local file with a character cut between read chunks", async () => {
+    const fixture = workspace(appendLocalNotes);
+    // "€" is three bytes, the first one the last of the first chunk.
+    write(join(fixture.folder, "files", "notes.md"), `${"a".repeat(readChunk - 1)}€\n`);
+    const revision = await publishAt(fixture, makeSigner().signer);
+    expect(resourceOf(revision, "resources:notes")).toBeDefined();
+  });
+
   it("refuses a folder whose revision metadata exceeds the transport budget", async () => {
     const fixture = workspace();
     const notes = join(fixture.folder, "skills", "deploy", "notes");
@@ -364,27 +409,39 @@ describe("publishing the Canonical Folder", () => {
     expect(persisted(fixture.database)).toEqual({ revisions: 0, blobs: 0, approvals: 0 });
   }, 60_000);
 
-  it("hashes and stores folder files without memory that grows with their size", () => {
+  it("hashes, validates and stores folder files without memory that grows with their size", () => {
     const directory = mkdtempSync(join(tmpdir(), "canonfig-publication-large-"));
     temporaryDirectories.push(directory);
     const mebibyte = 1024 * 1024;
     // A cheap deterministic pattern, distinct per mebibyte so every chunk differs.
     const block = Buffer.alloc(mebibyte);
     for (let index = 0; index < block.length; index += 1) block[index] = (index * 31) & 0xff;
-    // Each size gets its own folder whose one skill holds the large file.
+    // Each size gets its own folder whose one skill holds the large file, and
+    // whose append-local file resource holds as much text, which publication
+    // checks for UTF-8 and reserved markers before it hashes and stores it.
+    const text = Buffer.alloc(mebibyte, "Team notes.\n");
     const writePattern = (name: string, mebibytes: number) => {
       const folder = join(directory, name);
-      write(join(folder, "canonfig.jsonc"), JSON.stringify({ version: 1, profile: { id: "large-profile", name: "Large" }, harnesses: [] }));
+      write(join(folder, "canonfig.jsonc"), JSON.stringify({
+        version: 1,
+        profile: { id: "large-profile", name: "Large" },
+        harnesses: [],
+        resources: { notes: { kind: "file", target: "~/notes.md", source: "files/notes.md", policy: "append-local" } },
+      }));
       write(join(folder, "skills", name, "SKILL.md"), `---\nname: ${name}\ndescription: Large file\n---\n`);
       const hash = createHash("sha256");
       const descriptor = openSync(join(folder, "skills", name, "data.bin"), "w");
+      mkdirSync(join(folder, "files"));
+      const notes = openSync(join(folder, "files", "notes.md"), "w");
       for (let index = 0; index < mebibytes; index += 1) {
         block.writeUInt32BE(index, 0);
         block.write(name, 4);
         hash.update(block);
         writeSync(descriptor, block);
+        writeSync(notes, text);
       }
       closeSync(descriptor);
+      closeSync(notes);
       return hash.digest("hex");
     };
     writePattern("warm", 32);
