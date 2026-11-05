@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -132,7 +132,8 @@ describe("canonfig export and import", () => {
     const exported = invoke(source, ["export", "--output", "setup.tar.gz"], { DOCS_TOKEN: SECRET });
     expect(exported.status, exported.stdout + exported.stderr).toBe(0);
     const archivePath = join(source, "setup.tar.gz");
-    expect(exported.envelope.data).toMatchObject({ output: archivePath, role: "standalone", folderFiles: 11, harnessFiles: 0 });
+    // Export reports the resolved path (macOS /var -> /private/var, Windows 8.3 names expanded).
+    expect(exported.envelope.data).toMatchObject({ output: realpathSync.native(archivePath), role: "standalone", folderFiles: 11, harnessFiles: 0 });
     if (posix) expect(statSync(archivePath).mode & 0o777).toBe(0o600);
 
     const archive = readFileSync(archivePath);
