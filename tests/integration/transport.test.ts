@@ -890,13 +890,11 @@ describe("Source/follower version handshake", () => {
     expect(peerVersionCompatible("3.2.2")).toBe(false);
   });
 
-  it("refuses a follower from before the handshake with a version message it renders", async () => {
+  it.each([undefined, "5.0.1"])("refuses a follower announcing %s with a version message it renders", async (version) => {
     const setup = fixture();
     await publishFixtureRevision(setup);
     const server = await start(setup);
     const endpoint = new URL(server.endpoint);
-    // A follower before 3.2.1 sends no version header and renders only the
-    // message of the failures it knows.
     const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
       const request = httpsRequest({
         hostname: endpoint.hostname,
@@ -904,7 +902,7 @@ describe("Source/follower version handshake", () => {
         path: "/v1/transport/revisions",
         method: "GET",
         rejectUnauthorized: false,
-        headers: { authorization: `Bearer ${"a".repeat(43)}` },
+        headers: { authorization: `Bearer ${"a".repeat(43)}`, ...(version ? { "x-canonfig-version": version } : {}) },
       }, (incoming) => {
         const chunks: Array<Buffer> = [];
         incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -921,12 +919,12 @@ describe("Source/follower version handshake", () => {
     expect(JSON.parse(response.body)).toMatchObject({
       error: "MalformedEnrollmentRequestError",
       message: expect.stringContaining(
-        `source/follower version mismatch: source ${buildIdentity.packageVersion} vs follower before 3.2.1`,
+        `source/follower version mismatch: source ${buildIdentity.packageVersion} vs follower ${version ?? "before 3.2.1"}`,
       ),
     });
   });
 
-  it("reports a Source that announces no version as a version mismatch, not tampering", async () => {
+  it.each([undefined, "5.0.1"])("reports a Source announcing %s as a version mismatch, not tampering", async (version) => {
     const setup = fixture();
     const certificate = await generate([{ name: "commonName", value: "old-source" }], {
       keyType: "ec",
@@ -937,7 +935,7 @@ describe("Source/follower version handshake", () => {
       { key: certificate.private, cert: certificate.cert },
       (request, response) => {
         request.resume();
-        response.writeHead(200, { "content-type": "application/json" });
+        response.writeHead(200, { "content-type": "application/json", ...(version ? { "x-canonfig-version": version } : {}) });
         response.end(JSON.stringify({ revisions: [] }));
       },
     );
@@ -967,7 +965,7 @@ describe("Source/follower version handshake", () => {
       const described = describeRuntimeError(refused);
       expect(described.category).toBe("usage-or-configuration");
       expect(described.message).toContain(
-        `source/follower version mismatch: source before 3.2.1 vs follower ${buildIdentity.packageVersion}`,
+        `source/follower version mismatch: source ${version ?? "before 3.2.1"} vs follower ${buildIdentity.packageVersion}`,
       );
     } finally {
       await new Promise<void>((resolve) => oldSource.close(() => resolve()));
