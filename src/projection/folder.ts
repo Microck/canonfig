@@ -340,6 +340,8 @@ export interface ListedFile {
 /** Where the loader reads authored entries from. */
 interface FolderSource {
   readonly folder: string;
+  /** Presence only: excluded local categories must not be decoded. */
+  readonly holdsEntries: (path: string) => Promise<boolean>;
   /** A regular file, or undefined when absent. */
   readonly file: (path: string) => Promise<FolderFile | undefined>;
   /**
@@ -406,6 +408,7 @@ const diskSource = (folder: string): FolderSource => {
   };
   return {
     folder,
+    holdsEntries,
     file: async (path) => {
       const found = await regularFile(path);
       return found === undefined ? undefined : { content: await readFile(path), executable: (found.mode & 0o100) !== 0 };
@@ -434,12 +437,17 @@ const diskSource = (folder: string): FolderSource => {
  * A follower's mirror: authoring entries come from `files` (keyed by path
  * relative to the folder, `/`-separated), `local/` from disk.
  */
-const mirrorSource = (folder: string, files: ReadonlyMap<string, FolderFile>): FolderSource => {
+const mirrorSource = (folder: string, files: ReadonlyMap<string, FolderFile>, includeLocal = false): FolderSource => {
   const disk = diskSource(folder);
   const key = (path: string) => relative(folder, path).split(sep).join("/");
-  const local = (relativePath: string) => relativePath === "local" || relativePath.startsWith("local/");
+  const local = (relativePath: string) => !includeLocal && (relativePath === "local" || relativePath.startsWith("local/"));
   return {
     folder,
+    holdsEntries: (path) => {
+      const relativePath = key(path);
+      return local(relativePath) ? disk.holdsEntries(path)
+        : Promise.resolve(files.has(relativePath) || [...files.keys()].some((name) => name.startsWith(`${relativePath}/`)));
+    },
     file: (path) => local(key(path)) ? disk.file(path) : Promise.resolve(files.get(key(path))),
     executable: (path) => local(key(path)) ? disk.executable(path) : Promise.resolve(files.get(key(path))?.executable),
     entries: (directory) => {
@@ -1030,8 +1038,14 @@ const withLocalInstructions = (published: string | undefined, local: string | un
 export const loadCanonicalFolder = async (
   folder: string,
   mirror?: ReadonlyMap<string, FolderFile>,
-): Promise<LoadedFolder> => {
-  const source = mirror === undefined ? diskSource(folder) : mirrorSource(folder, mirror);
+): Promise<LoadedFolder> => loadFolderSource(mirror === undefined ? diskSource(folder) : mirrorSource(folder, mirror));
+
+/** Validate a complete candidate in memory, including local edits, before publishing any file. */
+export const loadCanonicalFiles = (folder: string, files: ReadonlyMap<string, FolderFile>): Promise<LoadedFolder> =>
+  loadFolderSource(mirrorSource(folder, files, true));
+
+const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => {
+  const folder = source.folder;
   const authored = await loadAuthored(source, loading);
   const config = authored.config;
   const localPath = join(folder, "local", "local.jsonc");
@@ -1042,12 +1056,12 @@ export const loadCanonicalFolder = async (
 
   // A category not in `local.allow` is never decoded: it only earns the
   // ignored-local warning, so content that would not load (a skill without
-  // SKILL.md, a link) cannot stop the sync. `local/` always comes from disk,
-  // mirror or not, so the presence check reads the disk too.
+  // SKILL.md, a link) cannot stop the sync. Presence follows the same source
+  // as content, including in-memory authoring candidates.
   const localItems = async <Item>(category: LocalCategory, load: (directory: string) => Promise<ReadonlyArray<Item>>) => {
     const directory = join(localDirectory, category);
     if (allow.includes(category)) return load(directory);
-    if (await holdsEntries(directory)) ignoredLocal.push(`local/${category}/`);
+    if (await source.holdsEntries(directory)) ignoredLocal.push(`local/${category}/`);
     return [];
   };
 
@@ -1073,7 +1087,7 @@ export const loadCanonicalFolder = async (
   const localInstructionsPath = join(localDirectory, "AGENTS.md");
   let localInstructions: string | undefined;
   if (allow.includes("instructions")) localInstructions = await readText(source, localInstructionsPath);
-  else if (await holdsEntries(localInstructionsPath)) ignoredLocal.push("local/AGENTS.md");
+  else if (await source.holdsEntries(localInstructionsPath)) ignoredLocal.push("local/AGENTS.md");
 
   const publishedMcp = Object.entries(config.mcp ?? {});
   let localMcp = Object.entries(localConfig.mcp ?? {});

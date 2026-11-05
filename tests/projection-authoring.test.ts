@@ -1,0 +1,143 @@
+import { mkdirSync, mkdtempSync, openSync, closeSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Effect } from "effect";
+import { afterEach, describe, expect, it } from "vitest";
+import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
+import { readAuthoringItem, readAuthoringItems, writeAuthoringItems, editAuthoringConfig, type AuthoringTarget } from "../src/projection/authoring.ts";
+import { loadCanonicalFiles } from "../src/projection/folder.ts";
+
+const homes: string[] = [];
+afterEach(() => { for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true }); });
+const fixture = (config = '{\n  // Keep this explanation.\n  "version": 1,\n  "harnesses": ["codex"],\n  "local": { "allow": ["instructions", "skills", "mcp"] }\n}\n') => {
+  const home = mkdtempSync(join(tmpdir(), "canonfig-authoring-"));
+  homes.push(home);
+  const folder = join(home, ".canonfig");
+  mkdirSync(folder);
+  writeFileSync(join(folder, "canonfig.jsonc"), config);
+  const target: AuthoringTarget = { folder, scope: "canonical", statePath: join(folder, "state.sqlite") };
+  const layer = linuxMachineStateLayer({ environment: [{ name: "HOME", value: home }] });
+  return { home, target, layer };
+};
+const file = (path: string, text: string) => ({ path, content: new TextEncoder().encode(text), executable: false });
+
+describe("shared folder authoring", () => {
+  it("validates candidate-local presence without consulting the disk", async () => {
+    const { target } = fixture();
+    const candidate = new Map([
+      ["canonfig.jsonc", file("canonfig.jsonc", '{"version":1,"harnesses":[]}')],
+      ["local/skills/ignored/SKILL.md", file("local/skills/ignored/SKILL.md", "not decoded")],
+    ]);
+    const loaded = await loadCanonicalFiles(target.folder, candidate);
+    expect(loaded.ignoredLocal).toEqual(["local/skills/"]);
+  });
+
+  it("preserves JSONC comments and atomically replaces the file", async () => {
+    const { target, layer } = fixture();
+    const path = join(target.folder, "canonfig.jsonc");
+    const before = readFileSync(path, "utf8");
+    const descriptor = openSync(path, "r");
+    const inode = statSync(path).ino;
+    try {
+      await Effect.runPromise(Effect.gen(function*() {
+        const item = yield* readAuthoringItem(target, "canonfig.jsonc");
+        yield* editAuthoringConfig(target, item.digest, [{ path: ["profile"], value: { id: "work", name: "Work" } }]);
+      }).pipe(Effect.provide(layer)));
+      expect(readFileSync(path, "utf8")).toContain("// Keep this explanation.");
+      expect(readFileSync(path, "utf8")).toContain('"name": "Work"');
+      expect(statSync(path).ino).not.toBe(inode);
+      expect(readFileSync(descriptor, "utf8")).toBe(before);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(readdirSync(target.folder).sort()).toEqual(["canonfig.jsonc"]);
+    } finally { closeSync(descriptor); }
+  });
+
+  it("refuses stale edits and create collisions without changing the hand edit", async () => {
+    const { target, layer } = fixture();
+    await Effect.runPromise(Effect.gen(function*() {
+      const original = yield* readAuthoringItem(target, "canonfig.jsonc");
+      writeFileSync(join(target.folder, "canonfig.jsonc"), '// Hand edit\n{"version":1,"harnesses":[]}\n');
+      const error = yield* editAuthoringConfig(target, original.digest, [{ path: ["harnesses"], value: ["codex"] }]).pipe(Effect.flip);
+      expect(error._tag).toBe("AuthoringConflict");
+      expect(readFileSync(join(target.folder, "canonfig.jsonc"), "utf8")).toContain("Hand edit");
+      writeFileSync(join(target.folder, "AGENTS.md"), "Mine\n");
+      const create = yield* writeAuthoringItems(target, [{ path: "AGENTS.md", expectedDigest: null, files: [file("AGENTS.md", "Yours\n")] }]).pipe(Effect.flip);
+      expect(create._tag).toBe("AuthoringConflict");
+      expect(readFileSync(join(target.folder, "AGENTS.md"), "utf8")).toBe("Mine\n");
+    }).pipe(Effect.provide(layer)));
+  });
+
+  it("rejects an invalid complete candidate before writing any item", async () => {
+    const { target, layer } = fixture();
+    const before = readFileSync(join(target.folder, "canonfig.jsonc"), "utf8");
+    await Effect.runPromise(Effect.gen(function*() {
+      const item = yield* readAuthoringItem(target, "canonfig.jsonc");
+      const error = yield* editAuthoringConfig(target, item.digest, [{ path: ["surfaces"], value: { claude: ["rules"] } }], [
+        { path: "AGENTS.md", expectedDigest: null, files: [file("AGENTS.md", "Never written")] },
+      ]).pipe(Effect.flip);
+      expect(error._tag).toBe("AuthoringInvalid");
+    }).pipe(Effect.provide(layer)));
+    expect(readFileSync(join(target.folder, "canonfig.jsonc"), "utf8")).toBe(before);
+    expect(readdirSync(target.folder)).toEqual(["canonfig.jsonc"]);
+  });
+
+  it("creates, updates and deletes whole skills with digest preconditions", async () => {
+    const { target, layer } = fixture();
+    await Effect.runPromise(Effect.gen(function*() {
+      const skill = file("skills/deploy/SKILL.md", "---\nname: deploy\ndescription: Deploy the app\n---\nRun checks.\n");
+      yield* writeAuthoringItems(target, [{ path: "skills/deploy", expectedDigest: null, files: [skill, file("skills/deploy/scripts/run.sh", "exit 0\n")] }]);
+      const items = yield* readAuthoringItems(target);
+      expect(items.map((item) => item.path)).toEqual(["canonfig.jsonc", "skills/deploy"]);
+      const read = yield* readAuthoringItem(target, "skills/deploy");
+      expect(read.files).toHaveLength(2);
+      expect(read.files.every((file) => /^[a-f0-9]{64}$/u.test(file.digest))).toBe(true);
+      yield* writeAuthoringItems(target, [{ path: "skills/deploy", expectedDigest: read.digest, files: [skill] }]);
+      expect(readdirSync(join(target.folder, "skills/deploy"))).toEqual(["SKILL.md"]);
+      const updated = yield* readAuthoringItem(target, "skills/deploy");
+      yield* writeAuthoringItems(target, [{ path: "skills/deploy", expectedDigest: updated.digest, files: [] }]);
+      expect((yield* readAuthoringItem(target, "skills/deploy")).digest).toBeNull();
+    }).pipe(Effect.provide(layer)));
+    expect(readdirSync(target.folder)).toEqual(["canonfig.jsonc"]);
+  });
+
+  it("validates resource declarations together with their file content", async () => {
+    const { target, layer } = fixture();
+    await Effect.runPromise(Effect.gen(function*() {
+      const config = yield* readAuthoringItem(target, "canonfig.jsonc");
+      yield* editAuthoringConfig(target, config.digest, [{ path: ["resources", "notes"], value: { kind: "file", target: "~/.notes", source: "files/notes.txt" } }], [
+        { path: "files/notes.txt", expectedDigest: null, files: [file("files/notes.txt", "Notes\n")] },
+      ]);
+      const notes = yield* readAuthoringItem(target, "files/notes.txt");
+      const refused = yield* writeAuthoringItems(target, [{ path: notes.path, expectedDigest: notes.digest, files: [] }]).pipe(Effect.flip);
+      expect(refused._tag).toBe("AuthoringInvalid");
+      expect(readFileSync(join(target.folder, "files/notes.txt"), "utf8")).toBe("Notes\n");
+    }).pipe(Effect.provide(layer)));
+  });
+
+  it("uses the same writer for local items and refuses categories outside local.allow", async () => {
+    const fixtureValue = fixture();
+    const target = { ...fixtureValue.target, scope: "local" as const };
+    await Effect.runPromise(Effect.gen(function*() {
+      yield* writeAuthoringItems(target, [{ path: "AGENTS.md", expectedDigest: null, files: [file("AGENTS.md", "My instructions\n")] }]);
+      const denied = yield* writeAuthoringItems(target, [{ path: "rules/private.md", expectedDigest: null, files: [file("rules/private.md", "My rule\n")] }]).pipe(Effect.flip);
+      expect(denied._tag).toBe("AuthoringInvalid");
+      yield* editAuthoringConfig(target, null, [{ path: ["mcp", "docs"], value: { transport: "stdio", command: "docs" } }]);
+      const localConfig = yield* readAuthoringItem(target, "local.jsonc");
+      const settings = yield* editAuthoringConfig(target, localConfig.digest, [{ path: ["settings"], value: { codex: { model: "mine" } } }]).pipe(Effect.flip);
+      expect(settings._tag).toBe("AuthoringInvalid");
+      expect(readFileSync(join(target.folder, "local/AGENTS.md"), "utf8")).toBe("My instructions\n");
+    }).pipe(Effect.provide(fixtureValue.layer)));
+  });
+
+  it("refuses traversal and symlinks without reading or changing the target", async () => {
+    const { target, layer, home } = fixture();
+    const outside = join(home, "private");
+    writeFileSync(outside, "untouched");
+    symlinkSync(outside, join(target.folder, "AGENTS.md"));
+    await Effect.runPromise(Effect.gen(function*() {
+      expect((yield* readAuthoringItem(target, "../private").pipe(Effect.flip))._tag).toBe("AuthoringInvalid");
+      expect((yield* readAuthoringItem(target, "AGENTS.md").pipe(Effect.flip))._tag).toBe("AuthoringInvalid");
+    }).pipe(Effect.provide(layer)));
+    expect(readFileSync(outside, "utf8")).toBe("untouched");
+  });
+});
