@@ -191,11 +191,11 @@ const validatePackageContents = (
   if (artifact.name !== "@microck/canonfig" || artifact.version !== "6.0.0") {
     fail(`unexpected packed identity: ${artifact.name}@${artifact.version}`);
   }
-  // The complete CLI and production GUI with Latin/UI-symbol font subsets
-  // measured 817,087 packed / 2,876,459 unpacked bytes. The fonts fell from
-  // 518,156 to 156,000 bytes; no CLI safety modules or validation were removed.
+  // The shipped live GUI adds authoring, enrollment, synchronization, administration,
+  // the machine map and toast/skeleton providers. The complete package measured
+  // 1,106,655 packed / 3,829,326 unpacked bytes, including the subset fonts.
   // Keep about 4% packed and 3% unpacked headroom for build identity and small changes.
-  if (artifact.size > 850_000 || artifact.unpackedSize > 2_960_000) {
+  if (artifact.size > 1_150_000 || artifact.unpackedSize > 3_950_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );
