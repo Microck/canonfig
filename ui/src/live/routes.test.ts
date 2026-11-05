@@ -1,8 +1,13 @@
 /// <reference types="node" />
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { screensForRole } from "../live-app";
-import { overviewPath, sessionScreens } from "./session";
+import { after, describe, it } from "node:test";
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
+
+// Screen modules install browser listeners, so load the real registry in a DOM environment.
+GlobalRegistrator.register();
+after(() => GlobalRegistrator.unregister());
+const { screensForRole } = await import("../live-app");
+const { overviewPath, sessionScreens } = await import("./session");
 
 const paths = {
   source: [
