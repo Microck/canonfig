@@ -2,6 +2,8 @@ import { constants as filesystemConstants } from "node:fs";
 import { lstat, open, type FileHandle } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 
+import type { FileIdentity } from "./machine-state.types.ts";
+
 /**
  * A directory reached from an anchor through real directories only, never a
  * link, for reads and writes that must not leave the anchor
@@ -10,11 +12,16 @@ import { isAbsolute, join, relative, sep } from "node:path";
  * On Linux every component is opened relative to the previous one's
  * descriptor (`/proc/self/fd/<n>/<name>` with O_NOFOLLOW), and `base` names
  * the last opened directory itself: an ancestor swapped for a link after the
- * walk cannot redirect anything done through `base`. Node has no
- * descriptor-relative open elsewhere, so on macOS and Windows every component
- * is checked with lstat and its identity recorded, and `verify` walks again
- * and refuses any change. That narrows a swap to a race between two walks
- * rather than closing it; callers verify after the operation they guard.
+ * walk cannot redirect anything done through `base`.
+ *
+ * macOS and Windows get a weaker guarantee. Node has no descriptor-relative
+ * open there, so `base` is a pathname: every component is checked with lstat
+ * and its identity recorded, the read or write goes through the path, and
+ * `verify` walks again afterwards and refuses any change it sees. A parent
+ * swapped for a link and put back between the two walks passes unnoticed, so
+ * on those platforms the operation can still reach outside the anchor during
+ * that window. Callers verify after the operation they guard; that detects a
+ * swap still in place, it does not prevent one.
  */
 export interface AnchoredDirectory {
   /** Join an entry name to this to reach the entry inside the directory. */
@@ -24,10 +31,8 @@ export interface AnchoredDirectory {
   readonly close: () => Promise<void>;
 }
 
-type Identity = { readonly dev: bigint; readonly ino: bigint };
-
 /** Two lstat or fstat results name the same filesystem object. */
-export const sameIdentity = (left: Identity, right: Identity): boolean =>
+export const sameIdentity = (left: FileIdentity, right: FileIdentity): boolean =>
   left.dev === right.dev && left.ino === right.ino;
 
 const componentsBelow = (anchor: string, directory: string): ReadonlyArray<string> => {
@@ -38,7 +43,7 @@ const componentsBelow = (anchor: string, directory: string): ReadonlyArray<strin
   return remainder === "" ? [] : remainder.split(sep);
 };
 
-const realDirectory = async (path: string): Promise<Identity> => {
+const realDirectory = async (path: string): Promise<FileIdentity> => {
   const status = await lstat(path, { bigint: true });
   if (status.isSymbolicLink() || !status.isDirectory()) {
     throw new Error(`${path} is not a directory; links are refused below the anchor`);
@@ -66,7 +71,7 @@ const descriptorDirectory = async (anchor: string, components: ReadonlyArray<str
 
 const walkedDirectory = async (anchor: string, components: ReadonlyArray<string>): Promise<AnchoredDirectory> => {
   const paths = components.reduce<Array<string>>((walked, component) => [...walked, join(walked.at(-1)!, component)], [anchor]);
-  const identities: Array<Identity> = [];
+  const identities: Array<FileIdentity> = [];
   for (const path of paths) identities.push(await realDirectory(path));
   return {
     base: paths.at(-1)!,

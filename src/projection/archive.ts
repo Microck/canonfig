@@ -16,12 +16,16 @@ import { containsLiteralCredential } from "../secrets/credential-policy.ts";
 import { packageVersion } from "../runtime/build-identity.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { configKeysDigest, getConfigPath, parseConfigDocument, renderConfigDocument } from "../synchronization/config-codec.ts";
+import { relativePathAncestors } from "../synchronization/resource-plans.ts";
 import {
   AUTHORING_ENTRIES,
   CanonicalFolderError,
   decodeFolderConfig,
   decodeLocalConfig,
+  type FolderConfig,
   holdsEntries,
+  hookScript,
+  intendedExecutable,
   listFolderFiles,
 } from "./folder.ts";
 import { TARGET_IDS } from "./model.ts";
@@ -72,6 +76,16 @@ export class ArchiveRequestError extends TaggedError<ArchiveRequestError>()(
 /** Something already on this machine blocks the export or import; nothing was written. */
 export class ArchiveConflictError extends TaggedError<ArchiveConflictError>()(
   "ArchiveConflictError",
+  { path: Schema.String, message: Schema.String },
+) {}
+
+/**
+ * Export published the archive, then a check after publication failed. The
+ * message says what the output path holds now; something was written there,
+ * so it never says otherwise.
+ */
+export class ArchivePublicationError extends TaggedError<ArchivePublicationError>()(
+  "ArchivePublicationError",
   { path: Schema.String, message: Schema.String },
 ) {}
 
@@ -311,6 +325,9 @@ const decodeArchive = (path: string, compressed: Uint8Array): ReadonlyArray<TarE
     if (entries.length > MAXIMUM_FILES + 1) throw fail(`holds more than ${MAXIMUM_FILES} files`);
   }
   if (paxPath !== undefined) throw fail("ends after an extended header with no entry");
+  // Only zero padding may follow the end-of-archive marker; entries there
+  // would ride along without the manifest describing them.
+  if (tar.subarray(offset).some((byte) => byte !== 0)) throw fail("holds data after its end-of-archive marker");
   return entries;
 };
 
@@ -522,18 +539,24 @@ const readBudgeted = (anchor: string, path: string, budget: ContentBudget, limit
     return content;
   });
 
+/** A folder file as read, and whether its owner may execute it on this machine. */
+interface CollectedFile {
+  readonly path: string;
+  readonly content: Uint8Array;
+  readonly executable: boolean;
+}
+
 /**
  * The folder's authored entries and `local/`, as `folder/...` entries, each
  * file read exactly once: these bytes are the ones checked for credentials
  * and the ones archived. The directory listings refuse links and anything
  * resolving outside the folder, as publication does; the reads are anchored
  * at the folder, so an ancestor swapped for a link after listing is refused.
- * A folder file's mode is 0755 when its owner may execute it, else 0644.
  */
 const collectFolder = (folder: string, budget: ContentBudget) =>
   Effect.gen(function*() {
     const realFolder = yield* archiveWork(folder, () => realpath(folder));
-    const files: Array<ArchiveFile> = [];
+    const files: Array<CollectedFile> = [];
     for (const entry of FOLDER_ENTRIES) {
       const listed = FOLDER_FILES.has(entry)
         ? [{ path: entry, executable: false }]
@@ -549,11 +572,31 @@ const collectFolder = (folder: string, budget: ContentBudget) =>
           if (FOLDER_FILES.has(entry)) continue;
           return yield* new ArchiveRequestError({ path: absolute, message: "disappeared while the export read the folder; run the export again" });
         }
-        files.push({ path: `${FOLDER_PREFIX}${file.path}`, content, mode: file.executable ? 0o755 : 0o644 });
+        files.push({ path: `${FOLDER_PREFIX}${file.path}`, content, executable: file.executable });
       }
     }
     return files;
   });
+
+/**
+ * The scripts under `hooks/` an enabled hook runs directly, for
+ * `intendedExecutable`. A hook whose command is not a valid script reference
+ * names no script, so it expresses no intent here; sync and publication
+ * refuse it with their own message, and export still archives the folder.
+ */
+const enabledHookScripts = (config: FolderConfig, configPath: string): ReadonlySet<string> => {
+  const scripts = new Set<string>();
+  for (const hook of config.hooks ?? []) {
+    if (hook.enabled === false) continue;
+    try {
+      const script = hookScript(hook, configPath);
+      if (script !== undefined) scripts.add(script);
+    } catch (error) {
+      if (!(error instanceof CanonicalFolderError)) throw error;
+    }
+  }
+  return scripts;
+};
 
 /**
  * Refuse any secret value in the bytes about to be archived. Every folder
@@ -562,7 +605,7 @@ const collectFolder = (folder: string, budget: ContentBudget) =>
  * decoded from those same bytes, also get publication's field-name rule, so
  * MCP secrets must be environment references.
  */
-const assertNoLiteralCredentials = (folder: string, files: ReadonlyArray<ArchiveFile>) =>
+const assertNoLiteralCredentials = (folder: string, files: ReadonlyArray<CollectedFile>) =>
   Effect.gen(function*() {
     const refuse = (path: string, location: string) =>
       new ArchiveRequestError({
@@ -598,6 +641,7 @@ const assertNoLiteralCredentials = (folder: string, files: ReadonlyArray<Archive
       const location = literalCredentialLocation(itemPath, Schema.decodeUnknownSync(ConfigValue)(asJson(value)));
       if (location !== undefined) return yield* refuse(file, ` at ${location}`);
     }
+    return config;
   });
 
 /** A harness surface export left out, and why. */
@@ -656,6 +700,13 @@ const surfaceFiles = (record: AppliedResourceRecord, target: MachinePath, home: 
       }
       case "directory": {
         if (kind !== "directory") return unexpected("directory");
+        // Everything below the directory must be something Canonfig wrote:
+        // an owned entry, or a directory on the way to one. A file someone
+        // added there leaves the whole surface out.
+        const ownedPaths = (record.ownedFiles ?? []).map((owned) => owned.path);
+        const recorded = new Set([...ownedPaths, ...relativePathAncestors(ownedPaths)]);
+        const unrecorded = (yield* machine.listDirectory(target)).find((entry) => !recorded.has(entry.path));
+        if (unrecorded !== undefined) return leftOut(`holds ${unrecorded.path}, which Canonfig did not write, so it no longer holds only what Canonfig wrote`);
         const files: Array<CapturedFile> = [];
         for (const owned of record.ownedFiles ?? []) {
           if (owned.objectKind === "directory") continue;
@@ -804,12 +855,23 @@ export const exportFolder = Effect.fn("Archive.export")(function*(input: ExportI
   const home = (yield* machine.userDirectories()).home.absolute;
   const { destination, realHome } = yield* archiveWork(input.output ?? input.cwd, () => destinationOf(input, home));
   const budget: ContentBudget = { remaining: MAXIMUM_CONTENT_BYTES };
-  const folderFiles = yield* collectFolder(input.folder, budget);
+  const collected = yield* collectFolder(input.folder, budget);
   // Harness files are not pattern-scanned: each is a projection of these
   // checked items, and a harness config spells an environment reference in
   // its own syntax (Codex `env_http_headers` maps a header to a bare
   // variable name), which the pattern would misread as a literal.
-  yield* assertNoLiteralCredentials(input.folder, folderFiles);
+  const config = yield* assertNoLiteralCredentials(input.folder, collected);
+  // A folder file's mode is 0755 when it is meant to run, else 0644; on a
+  // Windows Source an enabled hook naming a script is that intent.
+  const enabledScripts = enabledHookScripts(config, join(input.folder, "canonfig.jsonc"));
+  const folderFiles: ReadonlyArray<ArchiveFile> = collected.map((file) => {
+    const folderPath = file.path.slice(FOLDER_PREFIX.length);
+    return {
+      path: file.path,
+      content: file.content,
+      mode: intendedExecutable(folderPath, file.executable, enabledScripts) ? 0o755 : 0o644,
+    };
+  });
   const harnesses = input.includeHarnesses
     ? yield* collectHarnesses(yield* repository.loadAppliedResources(identity.follower), budget)
     : { files: [], skipped: [] };
@@ -845,11 +907,13 @@ export const exportFolder = Effect.fn("Archive.export")(function*(input: ExportI
   };
   const manifestBytes = new TextEncoder().encode(`${JSON.stringify(manifest, undefined, 2)}\n`);
   const archive = encodeArchive([{ path: MANIFEST_PATH, content: manifestBytes, mode: 0o644 }, ...files]);
+  const archiveSha256 = sha256BytesHex(archive);
   // The checked parent is real and below the real home, and the write is
   // anchored there: it publishes only into that directory, reached without
-  // links, so a parent swapped since the checks cannot move the archive out
-  // of home or into the folder. Without --force it publishes by hard link,
-  // which refuses a file even when one appeared after the checks.
+  // links (see `anchored-directory.ts` for the weaker macOS and Windows
+  // guarantee), so a parent swapped since the checks cannot move the archive
+  // out of home or into the folder. Without --force it publishes by hard
+  // link, which refuses a file even when one appeared after the checks.
   yield* machine.atomicWrite({
     path: yield* machine.normalizePath({ path: destination }),
     anchor: yield* machine.normalizePath({ path: realHome }),
@@ -867,11 +931,23 @@ export const exportFolder = Effect.fn("Archive.export")(function*(input: ExportI
       }
       return Effect.fail(new ArchiveRequestError({ path: destination, message: `could not be written: ${error.message}` }));
     }),
+    // The archive was already visible at the output path, so the error says
+    // what the path holds. The destination is never removed here: a check
+    // then a removal is not atomic, and could delete another writer's file.
+    Effect.catchTag("UnconfirmedPublicationError", (error) => {
+      const replacedEarlier = input.force ? " The earlier archive at this path was already replaced." : "";
+      return Effect.fail(new ArchivePublicationError({
+        path: destination,
+        message: error.state === "in-place"
+          ? `holds the complete archive (SHA-256 ${archiveSha256}), but Canonfig could not confirm it: ${error.message}. Check the file against that SHA-256 before relying on it.${replacedEarlier}`
+          : `does not hold this archive: the output path or a directory above it changed while export published it (${error.message}).${replacedEarlier} Check what the path holds, then export again`,
+      }));
+    }),
   );
   return {
     output: destination,
     bytes: archive.length,
-    sha256: sha256BytesHex(archive),
+    sha256: archiveSha256,
     manifestSha256: sha256BytesHex(manifestBytes),
     role: identity.role,
     createdAt,
@@ -925,13 +1001,27 @@ export const planImport = (input: {
     );
     const verified = yield* archiveWork(input.archive, async () => verifyArchive(input.archive, bytes));
     const configuration = verified.folderFiles.find((file) => file.path === "canonfig.jsonc")!;
-    yield* Effect.try({
-      try: () => decodeFolderConfig(join(input.folder, "canonfig.jsonc"), new TextDecoder().decode(configuration.content)),
-      catch: (error) => new ArchiveIntegrityError({
-        path: input.archive,
-        message: `holds a canonfig.jsonc this Canonfig cannot read: ${error instanceof CanonicalFolderError ? error.message : String(error)}`,
-      }),
+    const local = verified.folderFiles.find((file) => file.path === "local/local.jsonc");
+    // Both are decoded as export validates them, so an archive with a file
+    // this Canonfig cannot read is refused before anything is written,
+    // rather than imported and failing every later sync.
+    const decodeOrRefuse = (name: string, decode: () => void) =>
+      Effect.try({
+        try: decode,
+        catch: (error) =>
+          new ArchiveIntegrityError({
+            path: input.archive,
+            message: `holds a ${name} this Canonfig cannot read: ${error instanceof CanonicalFolderError ? error.message : String(error)}`,
+          }),
+      });
+    yield* decodeOrRefuse("canonfig.jsonc", () => {
+      decodeFolderConfig(join(input.folder, "canonfig.jsonc"), new TextDecoder().decode(configuration.content));
     });
+    if (local !== undefined) {
+      yield* decodeOrRefuse("local/local.jsonc", () => {
+        decodeLocalConfig(join(input.folder, "local", "local.jsonc"), new TextDecoder().decode(local.content));
+      });
+    }
 
     const byEntry = new Map<string, Array<ArchivedFolderFile>>();
     for (const file of verified.folderFiles) {
@@ -977,6 +1067,9 @@ export const planImport = (input: {
       retired: [],
       appliedResources: input.appliedResources,
       endsOwnership: built.map((item) => item.resource.id),
+      // Without --replace every target was empty when checked above; a file
+      // created there since makes its write fail instead of being replaced.
+      noReplace: !input.replace,
     });
     return {
       ...planned,

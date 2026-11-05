@@ -441,6 +441,8 @@ export interface PlanBuiltInput {
   readonly appliedResources: ReadonlyArray<AppliedResourceRecord>;
   /** Resources whose ownership the run ends although it writes them (restore). */
   readonly endsOwnership?: ReadonlyArray<ResourceIdType> | undefined;
+  /** See `SynchronizationPlannerInput.noReplace`; only import sets it. */
+  readonly noReplace?: boolean | undefined;
 }
 
 /**
@@ -520,6 +522,7 @@ export const planBuilt = (input: PlanBuiltInput) =>
         availableBlobs: [],
       },
       appliedResources: input.appliedResources,
+      noReplace: input.noReplace,
     });
     const artifacts = [...new Map(input.built.flatMap((item) => item.artifacts).map((artifact) => [artifact.digest, artifact])).values()];
     return { revision, plan, artifacts, appliedResources: input.appliedResources } satisfies LocalRevisionPlan;

@@ -1,14 +1,15 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 
 import { Effect, Layer, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { SourceIdentity } from "../../src/domain/identity.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
+import { MachineState } from "../../src/machine/machine-state.service.ts";
 import { importLocal } from "../../src/projection/sync.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
@@ -22,6 +23,8 @@ import { SynchronizationLive } from "../../src/synchronization/synchronization.l
  * Hand-built archives that a Canonfig export never produces, imported with
  * the real machine layer, SQLite and synchronization engine. Each one must be
  * refused before anything is written, and nothing may land outside the home.
+ * The one substitution wraps the real `atomicWrite` to create a target first,
+ * the way a concurrent process would after import checked the folder.
  */
 
 const roots: Array<string> = [];
@@ -97,17 +100,17 @@ const archiveOf = (entries: ReadonlyArray<Entry>, options: { readonly listed?: R
 
 const config: Entry = { path: "folder/canonfig.jsonc", content: "{ \"version\": 1, \"harnesses\": [] }\n" };
 
-const machine = () => {
+const machine = (wrap: (base: Layer.Layer<MachineState>) => Layer.Layer<MachineState> = (base) => base) => {
   const root = mkdtempSync(join(tmpdir(), "canonfig-archive-import-"));
   roots.push(root);
   const home = join(root, "home");
   const folder = join(home, ".canonfig");
   mkdirSync(folder, { recursive: true });
   const statePath = join(folder, "state.sqlite");
-  const machineLayer = linuxMachineStateLayer({
+  const machineLayer = wrap(linuxMachineStateLayer({
     environment: [{ name: "HOME", value: home }, { name: "XDG_CACHE_HOME", value: join(home, ".cache") }],
     credentialPolicy: { kind: "local-file", path: join(home, "credentials") },
-  });
+  }));
   const layer = SynchronizationLive.pipe(
     Layer.provideMerge(stateRepositoryLayer(statePath)),
     Layer.provideMerge(machineLayer),
@@ -137,6 +140,7 @@ describe("import refuses archives a Canonfig export never produces", () => {
     ["paths that differ only in case", [config, { path: "folder/rules/A.md", content: "a" }, { path: "folder/rules/a.md", content: "b" }], "differ only in case"],
     ["a special mode", [config, { path: "folder/hooks/run.sh", content: "x", mode: 0o4755 }], "special or unreadable mode"],
     ["no canonfig.jsonc", [{ path: "folder/AGENTS.md", content: "x" }], "holds no folder/canonfig.jsonc"],
+    ["a malformed local/local.jsonc", [config, { path: "folder/local/local.jsonc", content: "{ \"backups\": " }], "holds a local/local.jsonc this Canonfig cannot read"],
   ])("refuses %s", async (_name, entries, message) => {
     const target = machine();
     const error = await target.withArchive(archiveOf(entries));
@@ -153,6 +157,16 @@ describe("import refuses archives a Canonfig export never produces", () => {
     expect((await target.withArchive(archiveOf([config, extra], { listed: [config] }))).message).toContain("does not list");
     expect((await target.withArchive(archiveOf([config], { listed: [config, extra] }))).message).toContain("which the archive does not hold");
     expect((await target.withArchive(archiveOf([config], { manifestFirst: false }))).message).toContain("does not start with manifest.json");
+  });
+
+  it("refuses tar data after the end-of-archive marker", async () => {
+    const target = machine();
+    const tar = gunzipSync(archiveOf([config]));
+    const smuggled = gzipSync(Buffer.concat([tar, header("file-x", 1, 0o644, "0"), pad(Buffer.from("x"))]));
+    const error = await target.withArchive(smuggled);
+    expect(error._tag).toBe("ArchiveIntegrityError");
+    expect(error.message).toContain("holds data after its end-of-archive marker");
+    expect(readdirSync(target.folder).filter((name) => !name.startsWith("state.sqlite"))).toEqual([]);
   });
 
   it("refuses an archive larger than any export from its size, before reading it", async () => {
@@ -197,5 +211,39 @@ describe("import refuses archives a Canonfig export never produces", () => {
     const error = await target.importing(join(target.root, "never-read.tar.gz"));
     expect(error._tag).toBe("ArchiveRequestError");
     expect(error.message).toContain("enrolled Follower");
+  });
+});
+
+describe("import never overwrites a file that appears while it runs", () => {
+  it("keeps a canonfig.jsonc created after the check, rolls back and reports a conflict", async () => {
+    let racedPath: string | undefined;
+    const target = machine((base) =>
+      Layer.effect(MachineState, Effect.gen(function*() {
+        const real = yield* MachineState;
+        return MachineState.of({
+          ...real,
+          // Another process creates the file between the occupancy check
+          // and the import's write of it.
+          atomicWrite: (input) =>
+            input.noReplace === true && input.path.absolute.endsWith(join(".canonfig", "canonfig.jsonc"))
+              ? Effect.sync(() => {
+                racedPath = input.path.absolute;
+                writeFileSync(input.path.absolute, "raced");
+              }).pipe(Effect.andThen(real.atomicWrite(input)))
+              : real.atomicWrite(input),
+        });
+      })).pipe(Layer.provide(base))
+    );
+    const error = await target.withArchive(archiveOf([
+      config,
+      { path: "folder/AGENTS.md", content: "# imported\n" },
+      { path: "folder/rules/style.md", content: "imported rule\n" },
+    ]));
+    expect(error._tag).toBe("ArchiveConflictError");
+    expect(error).toMatchObject({ path: racedPath });
+    expect(readFileSync(join(target.folder, "canonfig.jsonc"), "utf8")).toBe("raced");
+    // Everything else the run wrote was rolled back.
+    expect(existsSync(join(target.folder, "AGENTS.md"))).toBe(false);
+    expect(existsSync(join(target.folder, "rules", "style.md"))).toBe(false);
   });
 });

@@ -619,10 +619,18 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
   );
 
   // Export changes nothing Canonfig manages, so unlike restore it adds no run.
+  // Only the demo simulates it. Outside the demo this page has no way to
+  // write the archive, so it points to the CLI instead of claiming a download.
   const exportArchive = useCallback(() => {
+    if (!DEMO) {
+      toast("Export runs from the CLI", {
+        description: "Run canonfig export on this machine. It writes ~/.canonfig/ to a .tar.gz with a manifest.json of every file's size and SHA-256.",
+      });
+      return;
+    }
     const name = `canonfig-export-${new Date().toISOString().replaceAll(":", "-").replace(/\.\d+Z$/u, "Z")}.tar.gz`;
     toast.success("Exported the Canonfig folder", {
-      description: `Downloaded ${name}, with a manifest.json of every file's size and SHA-256.\nState, backups and credentials stay on this machine.${DEMO ? "\nSimulated in this demo; no file was written." : ""}`,
+      description: `Downloaded ${name}, with a manifest.json of every file's size and SHA-256.\nState, backups and credentials stay on this machine.\nSimulated in this demo; no file was written.`,
     });
   }, []);
 

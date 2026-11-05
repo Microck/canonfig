@@ -545,6 +545,7 @@ const buildPlan = (
       observed: projected,
       applied: indexed.applied.get(resource.id),
       platform: input.observedState.platform,
+      noReplace: input.noReplace,
     };
     let drafts = retired ? planRemoved(context) : planResource(context);
     const successors = retired && filesystem(resource) ? activeResources.filter((next) =>

@@ -33,7 +33,7 @@ import {
   takeoverSummary,
   type FolderPlan,
 } from "./plan.ts";
-import { ArchiveRequestError, machineIdentity, planImport } from "./archive.ts";
+import { ArchiveConflictError, ArchiveRequestError, machineIdentity, planImport } from "./archive.ts";
 import {
   deleteSnapshot,
   dropSnapshotEntries,
@@ -487,6 +487,15 @@ export const importLocal = Effect.fn("LocalProjection.import")(function*(
     });
   }).pipe(Effect.tapError(() => discardRunArtifacts(run).pipe(Effect.ignore)));
   yield* finishProjectionRun(statePath, localProjectionFollower, run, outcome, planned.revision);
+  // A file appeared at a target after the folder was checked, and the run
+  // rolled back rather than overwrite it: the same conflict the check
+  // reports, found later. With rollback incomplete the outcome says more.
+  if (outcome.outcome === "Failed" && outcome.occupiedTarget !== undefined && outcome.rollbackIncomplete !== true) {
+    return yield* new ArchiveConflictError({
+      path: outcome.occupiedTarget,
+      message: `appeared while the import ran, and an import never overwrites a file unasked, so run ${run} rolled back. Move the file out of the way, or pass --replace to replace it, then import again`,
+    });
+  }
   return { ...base, outcome };
 }, (effect, statePath, _archive, mode) => mode === "plan" ? effect : withRunLock(statePath, "import", effect));
 

@@ -85,19 +85,33 @@ hook scripts included, a credential in `canonfig.jsonc` or
 `local/local.jsonc` under publication's rule, or a file named `.env`,
 `.env.*`, `auth.json` or `credentials.json` stops the export. With
 `--include-harnesses` it adds a harness surface only while the surface holds
-exactly what Canonfig last wrote, and from a shared file only the keys
-Canonfig owns. The archive is written with mode `0600`, or an ACL that grants
-only your user on Windows, into a directory inside your home directory that it
-reaches without links at the moment it publishes, and without `--force` it
-never replaces an existing file.
+exactly what Canonfig last wrote, with no file added to a harness directory,
+and from a shared file only the keys Canonfig owns. The archive is written
+with mode `0600`, or an ACL that grants only your user on Windows, into a
+directory inside your home directory that it reaches without links at the
+moment it publishes, and without `--force` it never replaces an existing file.
+
+On Linux, export opens each directory on the way to a file it reads or writes
+relative to the one above it, so a directory swapped for a link cannot
+redirect it. macOS and Windows have no such call: there export checks the
+directories before and after it reads or writes through the path. That
+catches a directory that is still swapped afterwards, but not one swapped for
+a link and put back between the two checks, so on those platforms the read or
+write can reach outside the folder or home directory during that window.
+
+If a check fails after the archive is already at the output path, export does
+not say nothing was written. It says whether the path holds the complete
+archive or no longer holds it, and, with `--force`, that the earlier archive
+there was already replaced. It never deletes the output path in that case.
 
 `manifest.json` in the archive records every file's path, size, SHA-256 and
 mode, so you can check what left the machine. It is an integrity record, not a
 signature: whoever can change the archive can rewrite it. Compare the archive's
 SHA-256, which export prints, when the file travels over a channel you do not
-trust. `canonfig import` verifies every entry against the manifest, accepts
-regular files inside the allowlist only, writes them as a journaled run, and
-never writes harness files. See
+trust. `canonfig import` verifies every entry against the manifest and accepts
+regular files inside the allowlist and the `harnesses/<harness>/...` files the
+manifest names. It writes only the allowlist files, as a journaled run; harness
+files are verified and counted, never written. See
 [Export the folder and move it to a new machine](/how-to/export-and-import).
 
 ## Hooks and MCP servers run code

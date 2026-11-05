@@ -1,22 +1,25 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { Effect, Layer } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { describeRuntimeError } from "../../src/cli/failure-taxonomy.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
+import { UnconfirmedPublicationError } from "../../src/machine/machine-state.errors.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import { exportFolder } from "../../src/projection/archive.ts";
+import { intendedExecutable } from "../../src/projection/folder.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 
 /**
  * `exportFolder` and the guarded machine reads and writes it publishes
  * through, with the real Linux machine layer and SQLite in a temporary HOME.
- * The one substitution wraps the real `atomicWrite` to create the output
- * first, the way a concurrent process would between the checks and
- * publication.
+ * The substitutions wrap the real `atomicWrite`: one creates the output first,
+ * the way a concurrent process would between the checks and publication; one
+ * lets the real write publish and then reports a failed check after it.
  */
 
 const roots: Array<string> = [];
@@ -122,6 +125,47 @@ describe("export publishes without replacing", () => {
   });
 });
 
+describe("export after the archive is published", () => {
+  it.each([
+    ["in-place", "holds the complete archive"],
+    ["replaced", "does not hold this archive"],
+  ] as const)("reports %s without claiming nothing was written, and keeps the path", async (state, expected) => {
+    const target = home();
+    write(target.output, "earlier archive");
+    // The real write publishes; then a check after publication fails, as a
+    // failed directory flush or a changed name would.
+    const failing = Layer.effect(MachineState, Effect.gen(function*() {
+      const machine = yield* MachineState;
+      return MachineState.of({
+        ...machine,
+        atomicWrite: (input) =>
+          machine.atomicWrite(input).pipe(Effect.flatMap((published) =>
+            Effect.fail(new UnconfirmedPublicationError({ path: input.path.absolute, state, published, message: "the check failed" }))
+          )),
+      });
+    })).pipe(Layer.provide(target.machine));
+    const error = await target.exporting({ force: true, layer: failing });
+    expect(error._tag).toBe("ArchivePublicationError");
+    const { message } = describeRuntimeError(error);
+    expect(message).toContain(expected);
+    expect(message).toContain("The earlier archive at this path was already replaced.");
+    expect(message).not.toContain("nothing was written");
+    expect(existsSync(target.output)).toBe(true);
+  });
+});
+
+describe("export keeps a Windows Source's hook intent", () => {
+  it("marks a script an enabled hook runs executable on Windows only", () => {
+    const enabled = new Set(["hooks/format.sh"]);
+    expect(intendedExecutable("hooks/format.sh", false, enabled, "win32")).toBe(true);
+    // Named only by disabled hooks, so not in the enabled set.
+    expect(intendedExecutable("hooks/off.sh", false, enabled, "win32")).toBe(false);
+    // A Unix Source reports the real bit, which wins either way.
+    expect(intendedExecutable("hooks/format.sh", false, enabled, "linux")).toBe(false);
+    expect(intendedExecutable("hooks/off.sh", true, enabled, "linux")).toBe(true);
+  });
+});
+
 describe.skipIf(!posix)("anchored machine reads and writes", () => {
   it("refuses to read or write through an ancestor link below the anchor", async () => {
     const target = home();
@@ -165,5 +209,25 @@ describe.skipIf(!posix)("anchored machine reads and writes", () => {
     }));
     expect(error.message).toContain("EEXIST");
     expect(readFileSync(target.output, "utf8")).toBe("keep me");
+  });
+
+  it("removes a file only while the name still refers to the one a write published", async () => {
+    const target = home();
+    const removed = await target.run(Effect.gen(function*() {
+      const machine = yield* MachineState;
+      const path = yield* machine.normalizePath({ path: target.output });
+      const published = yield* machine.atomicWrite({ path, content: new TextEncoder().encode("ours"), mode: 0o600 });
+      // Another process puts its own file at the name.
+      yield* Effect.sync(() => {
+        writeFileSync(`${target.output}.theirs`, "theirs");
+        renameSync(`${target.output}.theirs`, target.output);
+      });
+      yield* machine.removeFile({ path, identity: published });
+      const kept = readFileSync(target.output, "utf8");
+      const ours = yield* machine.atomicWrite({ path, content: new TextEncoder().encode("ours again"), mode: 0o600 });
+      yield* machine.removeFile({ path, identity: ours });
+      return { kept, gone: !existsSync(target.output) };
+    }));
+    expect(removed).toEqual({ kept: "theirs", gone: true });
   });
 });

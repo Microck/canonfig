@@ -273,6 +273,19 @@ describe("canonfig export and import", () => {
     expect(drifted.envelope.data.skippedHarnessSurfaces).toEqual([expect.objectContaining({ harness: "codex", surface: "instructions" })]);
     expect(readTar(readFileSync(join(source, "drifted.tar.gz"))).some((entry) => entry.path === instructions.path)).toBe(false);
 
+    // A file added to a skill directory Canonfig applied leaves that surface
+    // out too, although every file Canonfig recorded there is unchanged.
+    const skill = manifest.files.find((file: { path: string; harness?: string }) =>
+      file.harness !== undefined && file.path.endsWith("/deploy/SKILL.md"));
+    const skillDirectory = join(source, ...dirname(skill.target.slice("~/".length)).split("/"));
+    write(join(skillDirectory, "notes.md"), "added by hand\n");
+    const added = invoke(source, ["export", "--include-harnesses", "--output", "added.tar.gz"]);
+    expect(added.status, added.stdout + added.stderr).toBe(0);
+    expect(added.envelope.data.skippedHarnessSurfaces).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reason: expect.stringContaining("notes.md, which Canonfig did not write") }),
+    ]));
+    expect(readTar(readFileSync(join(source, "added.tar.gz"))).some((entry) => entry.path === skill.path)).toBe(false);
+
     const target = newHome();
     const imported = invoke(target, ["import", join(source, "setup.tar.gz")]);
     expect(imported.status, imported.stdout + imported.stderr).toBe(0);

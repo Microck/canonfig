@@ -69,6 +69,17 @@ export type AtomicWriteInput = {
 } & FilePermissionPolicy;
 
 /**
+ * Which filesystem object a path names (lstat `dev` and `ino`; the volume
+ * serial and file index on Windows). `atomicWrite` returns the file it
+ * published, so a caller can later tell its own file from one another
+ * process put at the same name.
+ */
+export interface FileIdentity {
+  readonly dev: bigint;
+  readonly ino: bigint;
+}
+
+/**
  * The longest path, terminator included, that Win32 file calls and native
  * tools accept on this machine, and whether Windows long paths are enabled.
  */
@@ -88,6 +99,12 @@ export interface ReadFileInput {
 
 export interface RemoveFileInput {
   readonly path: MachinePath;
+  /**
+   * Remove only while `path` still names this file; leave whatever else is
+   * there, or nothing, alone. Rollback uses it so it never deletes a file
+   * another process created or swapped in at the name.
+   */
+  readonly identity?: FileIdentity | undefined;
 }
 
 export interface RemoveEmptyDirectoryInput {

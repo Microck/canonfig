@@ -33,6 +33,7 @@ import {
   InvalidMachinePathError,
   InvalidSchedulerJobError,
   MachineFilesystemError,
+  UnconfirmedPublicationError,
   type MachineStateError,
 } from "./machine-state.errors.ts";
 import { MachineState } from "./machine-state.service.ts";
@@ -51,6 +52,7 @@ import type {
   CredentialStorageCapability,
   FilePermissions,
   FilePermissionPolicy,
+  FileIdentity,
   FilePermissionSnapshot,
   FileContent,
   MachinePath,
@@ -850,7 +852,7 @@ export const windowsMachineStateLayer = (
         content: FileContent,
         permissionPolicy: FilePermissionPolicy,
         placement: { readonly anchor?: string | undefined; readonly noReplace?: boolean | undefined } = {},
-      ): Effect.Effect<void, MachineStateError> => {
+      ): Effect.Effect<FileIdentity, MachineStateError> => {
         const parent = win32.dirname(path);
         return Effect.gen(function*() {
           // An anchored write publishes into the existing directory reached
@@ -873,7 +875,7 @@ export const windowsMachineStateLayer = (
             catch: (cause) => filesystemFailure("stage Windows file", path, cause),
           });
           const temporary = win32.join(staging, "content");
-          yield* Effect.gen(function*() {
+          return yield* Effect.gen(function*() {
             yield* setPrivateAcl(staging, true);
             yield* Effect.tryPromise({
               try: async () => {
@@ -903,7 +905,7 @@ export const windowsMachineStateLayer = (
                   filesystemFailure("prepare Windows file replacement", path, cause),
               });
             }
-            yield* Effect.tryPromise({
+            const published = yield* Effect.tryPromise({
               try: async () => {
                 const written = await lstat(temporary, { bigint: true });
                 await anchored?.verify();
@@ -911,24 +913,54 @@ export const windowsMachineStateLayer = (
                 // when another process created it after an earlier check.
                 if (placement.noReplace === true) await link(temporary, path);
                 else await rename(temporary, path);
+                // From here the file is visible at `path`, so a failure must
+                // say what the name holds now instead of reading as nothing
+                // written.
+                const identity: FileIdentity = { dev: written.dev, ino: written.ino };
                 if (anchored !== undefined) {
-                  await anchored.verify();
-                  if (!sameIdentity(await lstat(path, { bigint: true }), written)) {
-                    throw new Error(`${path} changed while it was published`);
+                  try {
+                    await anchored.verify();
+                    if (!sameIdentity(await lstat(path, { bigint: true }), written)) {
+                      throw new Error(`${path} no longer names the file Canonfig published`);
+                    }
+                  } catch (cause) {
+                    throw new UnconfirmedPublicationError({
+                      path,
+                      state: "replaced",
+                      published: identity,
+                      message: cause instanceof Error ? cause.message : String(cause),
+                    });
                   }
                 }
+                return identity;
               },
               catch: (cause) =>
-                filesystemFailure("replace Windows file", path, cause),
+                cause instanceof UnconfirmedPublicationError
+                  ? cause
+                  : filesystemFailure("replace Windows file", path, cause),
             });
-            yield* writeSemanticMode(path, permissionPolicy.permissions?.mode ?? permissionPolicy.mode ?? 0o600);
-            if (permissionPolicy.permissions !== undefined) {
-              // Restore native permissions before releasing the guarded mutation.
-              // Keep the complete content private until this final step succeeds.
-              yield* restoreNativePermissions(path, permissionPolicy.permissions, false);
-            } else {
-              yield* setPrivateAcl(path, false);
-            }
+            // The staged file already carries the private ACL, so a failure
+            // here leaves the complete file in place with that ACL.
+            yield* Effect.gen(function*() {
+              yield* writeSemanticMode(path, permissionPolicy.permissions?.mode ?? permissionPolicy.mode ?? 0o600);
+              if (permissionPolicy.permissions !== undefined) {
+                // Restore native permissions before releasing the guarded mutation.
+                // Keep the complete content private until this final step succeeds.
+                yield* restoreNativePermissions(path, permissionPolicy.permissions, false);
+              } else {
+                yield* setPrivateAcl(path, false);
+              }
+            }).pipe(
+              Effect.mapError((error) =>
+                new UnconfirmedPublicationError({
+                  path,
+                  state: "in-place",
+                  published,
+                  message: `its permissions could not be finalized: ${error.message}`,
+                })
+              ),
+            );
+            return published;
           }).pipe(
             Effect.ensuring(Effect.promise(() =>
               rm(temporary, { force: true }).catch(() => undefined).then(() =>

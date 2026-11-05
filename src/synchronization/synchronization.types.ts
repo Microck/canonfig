@@ -175,6 +175,13 @@ export interface SynchronizationPlannerInput {
   readonly follower: FollowerId;
   readonly observedState: ObservedState;
   readonly appliedResources: ReadonlyArray<AppliedResourceRecord>;
+  /**
+   * Plan every `write-file` to publish without replacing: a file that
+   * appears at the target after planning fails the write instead of being
+   * overwritten. `canonfig import` sets it when it may not overwrite; sync,
+   * restore and follower runs never do.
+   */
+  readonly noReplace?: boolean | undefined;
 }
 
 export type SkillDriftState =
@@ -231,6 +238,8 @@ export interface ResourcePlanningContext {
   readonly observed: ObservedResourceState;
   readonly applied?: AppliedResourceRecord | undefined;
   readonly platform: Platform;
+  /** See `SynchronizationPlannerInput.noReplace`. */
+  readonly noReplace?: boolean | undefined;
 }
 
 /** Immutable content made available to the apply engine by the transport boundary. */

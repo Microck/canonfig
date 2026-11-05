@@ -57,6 +57,7 @@ interface WriteFileActionDetail {
   readonly digest: ContentDigest;
   executable?: boolean;
   mode?: number;
+  noReplace?: boolean;
 }
 
 interface WriteFileDraft extends ResourceActionDraft {
@@ -341,6 +342,7 @@ const writeFile = (
   };
   if (executable !== undefined) detail.executable = executable;
   if (mode !== undefined) detail.mode = mode;
+  if (context.noReplace === true) detail.noReplace = true;
   return { kind: "write-file", detail };
 };
 

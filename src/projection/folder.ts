@@ -552,6 +552,22 @@ export const hookScript = (hook: FolderHook, path: string): string | undefined =
 };
 
 /**
+ * Whether a folder file should carry execute permission when it leaves this
+ * machine. Windows cannot report POSIX execute bits, so an enabled hook that
+ * names a script directly expresses the author's intent to run it, and that
+ * intent is kept for Unix machines. A script only disabled hooks name keeps
+ * its observed mode, as does every file on a Unix machine. Publication and
+ * export both apply this, so a script leaves a Windows Source the same way
+ * whichever path it takes.
+ */
+export const intendedExecutable = (
+  script: string,
+  observedExecutable: boolean,
+  enabledScripts: ReadonlySet<string>,
+  platform: NodeJS.Platform = process.platform,
+): boolean => observedExecutable || (platform === "win32" && enabledScripts.has(script));
+
+/**
  * A relative `run[0]` names a script in the folder's `hooks/` directory and
  * becomes absolute, so harnesses can run it from any working directory. A bare
  * command name is looked up on PATH when the hook runs.

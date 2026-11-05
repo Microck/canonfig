@@ -118,9 +118,34 @@ export class PathTooLongError extends TaggedError<PathTooLongError>()(
   },
 ) {}
 
+/**
+ * `atomicWrite` made its file visible at `path`, then a later step failed,
+ * so "nothing was written" would be false. `state` says what `path` holds:
+ *
+ * - `in-place`: the file this write published, complete, but a step after
+ *   publication failed (flushing the directory entry on Linux and macOS,
+ *   finalizing permissions on Windows), so its durability or permissions
+ *   are unconfirmed.
+ * - `replaced`: the name no longer refers to the file this write published,
+ *   or a directory on the way to it changed; the written file is not there.
+ *
+ * `published` is the file this write put at `path`, so rollback can remove
+ * it only while the name still refers to it.
+ */
+export class UnconfirmedPublicationError extends TaggedError<UnconfirmedPublicationError>()(
+  "UnconfirmedPublicationError",
+  {
+    path: Schema.String,
+    state: Schema.Literals(["in-place", "replaced"]),
+    published: Schema.Struct({ dev: Schema.BigInt, ino: Schema.BigInt }),
+    message: Schema.String,
+  },
+) {}
+
 export type MachineStateError =
   | InvalidMachinePathError
   | MachineFilesystemError
+  | UnconfirmedPublicationError
   | FileSizeLimitError
   | ExecutableNotFoundError
   | ProcessStartError

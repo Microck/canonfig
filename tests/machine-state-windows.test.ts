@@ -269,6 +269,25 @@ describe.skipIf(process.platform !== "win32")("Windows file permission ownership
     }
   }, 30_000);
 
+  it("fails a no-replace write over an existing file and keeps its bytes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-no-replace-"));
+    const target = join(root, "out.tar.gz");
+    try {
+      await writeFile(target, "keep me");
+      const error = await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const path = yield* machine.normalizePath({ path: target });
+        return yield* machine.atomicWrite({ path, noReplace: true, content: Buffer.from("replaced"), mode: 0o600 }).pipe(Effect.flip);
+      }).pipe(Effect.provide(windowsMachineStateLayer())));
+      expect(error.message).toContain("EEXIST");
+      expect(await readFile(target, "utf8")).toBe("keep me");
+      // The staging directory and its temporary copy are gone too.
+      expect(await readdir(root)).toEqual(["out.tar.gz"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("protects a new local credential directory without changing its parent", async () => {
     const root = await mkdtemp(join(tmpdir(), "canonfig-credential-permissions-"));
     const credentials = join(root, "credentials");
