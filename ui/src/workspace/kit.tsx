@@ -11,9 +11,8 @@ import { Label } from "@/components/ui/label";
 import { Kbd } from "@/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AnimatedNumber, DitherBlock, Hint, StateBand, StatusMark, type StatusKind } from "@/shared/shared";
-import { PLAIN, profile, type ItemCategory } from "@/shared/data";
-import { useSharedState, useWorkspace } from "./store";
-import { PAGE_TIPS } from "./page-tips";
+import { PLAIN, type ItemCategory } from "@/shared/metadata";
+import { useScreenContext, type ScreenGroup } from "./screen-context";
 import { followLink, holdNavigation } from "./routes";
 
 export const CATEGORY_ICON: Record<ItemCategory, IconComponent> = {
@@ -67,13 +66,12 @@ export function groupLabel(name: string) {
 }
 
 /** Follower Groups. Profile → Groups owns the list; every picker and count reads it here, so a new group shows up everywhere. */
-export interface Group {
-  name: string;
-  description?: string;
-}
+export type Group = ScreenGroup;
 
 export function useGroups() {
-  return useSharedState<Group[]>("groups", profile.groups);
+  const { groups } = useScreenContext();
+  if (groups === undefined) throw new Error("This screen requires loaded groups from its backend.");
+  return groups;
 }
 
 /** Copies `text` and resolves true only once the browser confirms the write; a denied or missing clipboard says so. */
@@ -145,8 +143,7 @@ export function WithCode({ text }: { text: string }) {
  * as a quiet "in Settings" label on desktop only.
  */
 export function PageHeader({ crumbs, actions }: { crumbs: ReactNode[]; actions?: ReactNode }) {
-  const ws = useWorkspace();
-  const hasTip = PAGE_TIPS[ws.role][ws.view] !== undefined;
+  const ws = useScreenContext();
   const title = crumbs[crumbs.length - 1];
   const parents = crumbs.slice(0, -1);
   return (
@@ -170,10 +167,10 @@ export function PageHeader({ crumbs, actions }: { crumbs: ReactNode[]; actions?:
         )}
       </div>
       {/* The "?" stays on the title row at every width; only real actions take the mobile second row. */}
-      {hasTip && (
+      {ws.openHelp !== undefined && (
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon-sm" data-tour="page-help" className="text-faint" aria-label="How this page works" onClick={() => ws.openTip(ws.view)}>
+            <Button variant="ghost" size="icon-sm" data-tour="page-help" className="text-faint" aria-label="How this page works" onClick={ws.openHelp}>
               <Question />
             </Button>
           </TooltipTrigger>
@@ -189,11 +186,11 @@ export function PageHeader({ crumbs, actions }: { crumbs: ReactNode[]; actions?:
 
 /** The gold publish action, shown only while the profile has unpublished changes. */
 export function PublishButton() {
-  const ws = useWorkspace();
-  if (ws.pending.length === 0) return null;
+  const { publication } = useScreenContext();
+  if (publication === undefined) return null;
   return (
-    <Button size="sm" data-tour="publish" variant="primary" onClick={() => ws.setPublishOpen(true)}>
-      Publish revision <AnimatedNumber value={ws.nextSequence} />
+    <Button size="sm" data-tour="publish" variant="primary" onClick={publication.open}>
+      Publish revision <AnimatedNumber value={publication.sequence} />
     </Button>
   );
 }
@@ -213,7 +210,7 @@ export function Toolbar({ children, right }: { children?: ReactNode; right?: Rea
 
 /** A view pill: 28px, fully round. Inactive pills keep a hairline so they still read as buttons. */
 export function ToolbarTab({ active, href, children, count }: { active: boolean; href: string; children: ReactNode; count?: number }) {
-  const ws = useWorkspace();
+  const ws = useScreenContext();
   return (
     <a
       href={href}
@@ -966,7 +963,7 @@ function Unwalked({ content }: { content: ReactNode }) {
  * `children` starts over; the pages that pass `reloading` (Sync, Follower secrets) keep none worth keeping.
  */
 export function Body({ children, detail, reloading = false }: { children: ReactNode; detail?: ReactNode; reloading?: boolean }) {
-  const ws = useWorkspace();
+  const ws = useScreenContext();
   const loading = ws.pageLoading || reloading;
   return (
     <PageLoading.Provider value={loading}>

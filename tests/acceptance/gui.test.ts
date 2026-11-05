@@ -120,7 +120,17 @@ describe("canonfig ui command", () => {
     expect(index.headers.get("content-type")).toContain("text/html");
     expect(await index.text()).toContain('<div id="root">');
     expect((await fetch(`${server.origin}/api/no-such-endpoint`, { headers })).status).toBe(404);
-    expect((await fetch(`${server.origin}/api/status`, { method: "POST", headers })).status).toBe(405);
+    for (const method of ["POST", "PUT", "DELETE"]) {
+      const withoutHeader = await fetch(`${server.origin}/api/status`, { method, headers, body: "{}" });
+      expect(withoutHeader.status).toBe(403);
+      expect(await withoutHeader.json()).toMatchObject({ category: "authentication-or-revocation", exitCode: 5 });
+      expect((await fetch(`${server.origin}/api/status`, {
+        method, headers: { ...headers, "x-canonfig-request": "browser", "Content-Type": "text/plain" }, body: "{}",
+      })).status).toBe(415);
+      expect((await fetch(`${server.origin}/api/status`, {
+        method, headers: { ...headers, Origin: "https://example.invalid", "x-canonfig-request": "browser", "Content-Type": "application/json" }, body: "{}",
+      })).status).toBe(403);
+    }
     await stop(server.child);
     const listener = createServer();
     listener.listen(Number(new URL(server.origin).port), "127.0.0.1");

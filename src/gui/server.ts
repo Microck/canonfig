@@ -8,13 +8,15 @@ import { fileURLToPath } from "node:url";
 import { Effect, Schema } from "effect";
 
 import type { CliIo } from "../cli/cli.ts";
-import { exitCodeForFailure, type CliFailureCategory } from "../cli/exit-codes.ts";
-import { FollowerCommands } from "../cli/follower-commands.ts";
-import { sanitizeCliData } from "../cli/render.ts";
-import { redactText } from "../cli/redaction.ts";
 import { CliCommandFailure } from "../cli/source-commands.ts";
-import { GuiStatus, guiEndpoints, type GuiError, type GuiSession } from "./contract.ts";
-import { GuiQueries } from "./queries.ts";
+import { guiMutationHeader, guiMutationValue } from "./contract.ts";
+import { failureBody } from "./routing.ts";
+import { GuiOperations, makeGuiOperations } from "./operations.ts";
+import { sessionRoutes } from "./routes/session.ts";
+import { profileRoutes } from "./routes/profile.ts";
+import { enrollmentRoutes } from "./routes/enrollment.ts";
+import { synchronizationRoutes } from "./routes/synchronization.ts";
+import { administrationRoutes } from "./routes/administration.ts";
 
 export interface GuiOptions {
   readonly port: number;
@@ -37,11 +39,8 @@ const contentTypes: AssetContentTypes = {
   ".woff": "font/woff",
 };
 
-const failureBody = (category: CliFailureCategory, message: string): GuiError => ({
-  category, message: redactText(message), exitCode: exitCodeForFailure(category),
-});
 
-const json = (response: ServerResponse, status: number, body: GuiError | GuiSession | GuiStatus): void => {
+const json = (response: ServerResponse, status: number, body: Schema.Json): void => {
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
 };
@@ -105,8 +104,16 @@ const serveAsset = async (root: string, pathname: string, response: ServerRespon
 
 /** The HTTP scope owns sockets and requests; interruption finishes them before the command lease exits. */
 export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: CliIo) {
-  const commands = yield* FollowerCommands;
-  const queries = yield* GuiQueries;
+  const operations = yield* makeGuiOperations;
+  // Area registration is complete here. Area owners only fill their own modules.
+  const routes = (yield* Effect.all([
+    sessionRoutes,
+    profileRoutes,
+    enrollmentRoutes,
+    synchronizationRoutes,
+    administrationRoutes,
+  ]).pipe(Effect.provideService(GuiOperations, operations))).flat();
+  routes.push(operations.route);
   const root = yield* Effect.tryPromise({
     try: async () => {
       const path = await realpath(fileURLToPath(new URL("../../dist/ui/", import.meta.url)));
@@ -118,13 +125,6 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
       message: "The bundled browser application is missing. Reinstall Canonfig, or build the CLI and UI before running canonfig ui.",
     }),
   });
-  const status = () => commands.status(undefined).pipe(
-    Effect.map((payload) => sanitizeCliData(payload)),
-    Effect.flatMap(Schema.decodeUnknownEffect(GuiStatus)),
-    Effect.mapError((error) => error instanceof CliCommandFailure ? error : new CliCommandFailure({
-      category: "internal", message: "The status service returned an invalid browser response.",
-    })),
-  );
   const pending = new Set<AbortController>();
   const token = randomBytes(32).toString("hex");
   const session = randomBytes(32).toString("hex");
@@ -161,20 +161,33 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
       return;
     }
     if (request.method !== "GET") {
-      json(response, 405, failureBody("usage-or-configuration", "This endpoint accepts GET requests only."));
-      return;
+      if (!["POST", "PUT", "DELETE"].includes(request.method ?? "")) {
+        json(response, 405, failureBody("usage-or-configuration", "Use GET, POST, PUT or DELETE for browser API requests."));
+        return;
+      }
+      if (request.headers[guiMutationHeader] !== guiMutationValue) {
+        json(response, 403, failureBody("authentication-or-revocation", "Mutations require the Canonfig browser request header."));
+        return;
+      }
+      if (request.headers["content-type"]?.split(";")[0]?.trim().toLowerCase() !== "application/json") {
+        json(response, 415, failureBody("usage-or-configuration", "Mutations require application/json."));
+        return;
+      }
     }
-    if (url.pathname === guiEndpoints.status || url.pathname === guiEndpoints.session) {
-      const query: Effect.Effect<GuiSession | GuiStatus, CliCommandFailure> =
-        url.pathname === guiEndpoints.status ? status() : queries.session();
-      await Effect.runPromise(query.pipe(Effect.match({
-        onFailure: (failure) => json(response, failure.category === "internal" ? 500 : 400, failureBody(failure.category, failure.message)),
-        onSuccess: (body) => json(response, 200, body),
+    const route = routes.find((candidate) => candidate.method === request.method && candidate.matches(url.pathname));
+    if (route !== undefined) {
+      await Effect.runPromise(route.handle(request, url).pipe(Effect.match({
+        onFailure: (failure) => json(response, failure.category === "internal" ? 500 : failure.category === "conflict-or-drift" ? 409 : 400, failureBody(failure.category, failure.message)),
+        onSuccess: (body) => json(response, route.status ?? 200, body),
       })), { signal });
       return;
     }
     if (url.pathname.startsWith("/api/")) {
       json(response, 404, failureBody("usage-or-configuration", "Unknown browser API endpoint."));
+      return;
+    }
+    if (request.method !== "GET") {
+      json(response, 405, failureBody("usage-or-configuration", "Browser assets accept GET requests only."));
       return;
     }
     await serveAsset(root, decodeURIComponent(url.pathname), response);

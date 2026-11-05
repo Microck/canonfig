@@ -5,7 +5,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { cn, SNAP } from "@/lib/utils";
 import { DitherShader, ditherMask, fillStyle } from "@/lib/dither";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { STATE_META, type FollowerState } from "./data";
+import { STATE_META, type FollowerState } from "./metadata";
 
 /**
  * Glossary terms from the Language section of GLOSSARY.md. `plain` is the everyday word the UI shows;

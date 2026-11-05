@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
-import { GuiError, GuiSession, GuiStatus, guiEndpoints } from "../../src/gui/contract";
+import { GuiError, GuiSession, GuiStatus, GuiOperation, guiEndpoints, guiMutationHeader, guiMutationValue, operationPath } from "../../src/gui/contract";
 
-export type { GuiSession, GuiStatus } from "../../src/gui/contract";
+export type { GuiSession, GuiStatus, GuiOperation } from "../../src/gui/contract";
 
 
 export class GuiRequestError extends Error {
@@ -17,14 +17,19 @@ export class GuiRequestError extends Error {
 }
 
 /** Decode only at the HTTP boundary. The browser never imports command services or demo state. */
-async function get<T>(url: string, schema: Schema.Codec<T>, signal: AbortSignal): Promise<T> {
+export async function request<T>(url: string, schema: Schema.Codec<T>, signal: AbortSignal, mutation?: {
+  method: "POST" | "PUT" | "DELETE"; body: unknown;
+}): Promise<T> {
   let response: Response;
   try {
     response = await fetch(url, {
-      method: "GET",
+      method: mutation?.method ?? "GET",
       credentials: "same-origin",
       cache: "no-store",
-      headers: { Accept: "application/json" },
+      headers: mutation === undefined ? { Accept: "application/json" } : {
+        Accept: "application/json", "Content-Type": "application/json", [guiMutationHeader]: guiMutationValue,
+      },
+      ...(mutation === undefined ? {} : { body: JSON.stringify(mutation.body) }),
       signal,
     });
   } catch (cause) {
@@ -69,7 +74,17 @@ async function get<T>(url: string, schema: Schema.Codec<T>, signal: AbortSignal)
   return decoded.success;
 }
 
-export const httpBackend = {
-  session: (signal: AbortSignal) => get(guiEndpoints.session, GuiSession, signal),
-  status: (signal: AbortSignal) => get(guiEndpoints.status, GuiStatus, signal),
+/** Screens receive this interface as a prop; production never imports the demo store. */
+export interface WorkspaceBackend {
+  readonly session: (signal: AbortSignal) => Promise<GuiSession>;
+  readonly status: (signal: AbortSignal) => Promise<GuiStatus>;
+  readonly request: typeof request;
+  readonly operation: (id: string, signal: AbortSignal) => Promise<GuiOperation>;
+}
+
+export const httpBackend: WorkspaceBackend = {
+  session: (signal) => request(guiEndpoints.session, GuiSession, signal),
+  status: (signal) => request(guiEndpoints.status, GuiStatus, signal),
+  request,
+  operation: (id, signal) => request(operationPath(id), GuiOperation, signal),
 };

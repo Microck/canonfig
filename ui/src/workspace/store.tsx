@@ -38,6 +38,8 @@ import {
 } from "@/shared/data";
 import type { Setup } from "@/onboarding/onboarding";
 import { workspaceHref, type MachinesMode, type Navigate, type NavigateOptions, type ProfileTab, type WorkspaceRole, type WorkspaceRoute } from "./routes";
+import { ScreenContext, type ScreenGroup } from "./screen-context";
+import { PAGE_TIPS } from "./page-tips";
 
 export type SourceView =
   | "overview"
@@ -914,9 +916,21 @@ export function WorkspaceProvider({ route, navigate, setup = null, children }: {
   const shared = useMemo(() => ({ values, update, read }), [values, update, read]);
   return (
     <WorkspaceContext.Provider value={value}>
-      <SharedContext.Provider value={shared}>{children}</SharedContext.Provider>
+      <SharedContext.Provider value={shared}><DemoScreenContext>{children}</DemoScreenContext></SharedContext.Provider>
     </WorkspaceContext.Provider>
   );
+}
+
+function DemoScreenContext({ children }: { children: ReactNode }) {
+  const workspace = useWorkspace();
+  const groups = useSharedState<ScreenGroup[]>("groups", profile.groups);
+  return <ScreenContext value={{
+    pageLoading: workspace.pageLoading,
+    navigate: workspace.navigate,
+    openHelp: PAGE_TIPS[workspace.role][workspace.view] === undefined ? undefined : () => workspace.openTip(workspace.view),
+    publication: workspace.pending.length === 0 ? undefined : { sequence: workspace.nextSequence, open: () => workspace.setPublishOpen(true) },
+    groups,
+  }}>{children}</ScreenContext>;
 }
 
 export function useWorkspace() {
