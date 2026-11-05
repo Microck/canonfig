@@ -1,37 +1,42 @@
-# Canonfig v5.0.1
+# Canonfig v6.0.0
 
-This patch fixes how Follower Machines check Configuration Agent install paths.
-Node.js 24 or newer is required. The Source/follower protocol and state schema
-are unchanged on the 5.0.x line, so 5.0.0 and 5.0.1 machines sync with each
-other and can be updated one at a time.
+Canonfig now uses one global `~/.canonfig/` folder as the source for the
+configuration it projects into supported AI harnesses. Node.js 24 or newer is
+required.
 
-## Agent install paths
+## Breaking upgrade
 
-A profile's `agentInstall.paths` entries that start with `~`, such as
-`~/.local/bin`, are now expanded on the follower before the harness bounds
-check. Before 5.0.1 these entries never matched the shell-expanded
-`--allow-path` values, so the follower refused the agent (#242).
+Version 6 changes the configuration and state model. State from earlier
+versions is not migrated and requires reinitialization. Pause synchronization,
+back up your existing configuration and state, then set up the Source and
+followers again before resuming. Source and followers must run the same
+major.minor release line: 6.0.x does not sync with 5.0.x.
 
-`canonfig agent harness` now stores each `--allow-path` value as an absolute
-path, so a quoted `~` or a relative path works. The bounds check compares whole
-path segments and ignores case on Windows, so `/opt/bin` no longer covers
-`/opt/binaries`.
+Repository-level harness projects, hand-written profiles and arbitrary
+file/config targets, overlays, append-local, profile selection and the
+previous profile-file and proposal flows have been removed. Review the
+[upgrade documentation](https://canonfig.micr.dev/docs/) and your existing
+automation before replacing the package.
 
-Harness settings saved with a literal `~` before 5.0.1 are not converted. Rerun
-`canonfig agent harness codex`, `claude` or `custom` with the same options to
-store absolute paths.
+## One canonical folder
 
-## Upgrade boundaries
+`canonfig.jsonc`, `AGENTS.md`, and the `rules/`, `skills/`, `agents/`,
+`commands/` and `hooks/` folders define the canonical setup. Setup can detect
+installed harnesses and offer a reviewed import. Publishing compiles the
+folder into a signed revision; followers synchronize it and project the
+configuration into selected harnesses. Machine-local additions remain in
+`~/.canonfig/local/`.
 
-Update from 5.0.0 machine by machine; finish any interrupted run with
-`canonfig recover` first and restart the Source after replacing its package.
-From 4.x, follow the 5.0.0 boundaries: pause synchronization, upgrade the Source
-and all followers to 5.0.1 together, replace any stored `gemini` harness, and
-verify before resuming. In-place migration from 3.2.x remains unsupported.
+## Takeover and recovery
+
+Before first taking over a harness, Canonfig snapshots the surfaces it owns.
+The first snapshot and four most recent are retained, and `canonfig restore`
+can restore a snapshot. Backups can be disabled per machine. Credentials,
+sessions and history are outside the managed configuration.
 
 ## Verification
 
-Publication is gated on repository validation, packed CLI checks and native
-Linux/macOS/Windows x64 and Windows ARM64 acceptance. Verify the published npm
-artifact, provenance and matching GitHub tag after publication. Release
-preparation alone does not assert that publication succeeded.
+The release workflow validates the candidate on Linux, macOS, Windows x64 and
+Windows ARM64, publishes to npm with provenance, creates the matching tag and
+GitHub release, and verifies the published package. Publication and
+installation on individual machines are separate steps.
