@@ -141,6 +141,21 @@ canonfig restore
 
 see [restore from a backup](https://canonfig.micr.dev/docs/how-to/restore-from-a-backup/).
 
+### export and import
+
+export writes the folder (plus `local/`) to one private `.tar.gz` with a
+`manifest.json` of every file's size, sha-256 and mode. state, backups and
+credentials never go in. import checks every checksum and writes the folder
+back as a journaled run on a machine that isn't an enrolled follower.
+
+```sh
+canonfig export --output ~/canonfig-setup.tar.gz
+canonfig import ~/canonfig-setup.tar.gz --dry-run
+canonfig import ~/canonfig-setup.tar.gz
+```
+
+see [export and import](https://canonfig.micr.dev/docs/how-to/export-and-import/).
+
 ### machine-local items
 
 put rules, skills, agents and commands for one machine in `~/.canonfig/local/`,

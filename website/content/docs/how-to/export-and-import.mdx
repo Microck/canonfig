@@ -1,0 +1,148 @@
+---
+title: Export the folder and move it to a new machine
+description: Write ~/.canonfig/ to one archive, check exactly what it holds, and import it on another machine or back onto this one.
+---
+
+`canonfig export` writes your Canonical Folder to one `.tar.gz` file.
+`canonfig import` checks that file and writes the folder back into
+`~/.canonfig/` on any machine that is not an enrolled Follower Machine. Use
+them to move a Source Machine's setup to a new computer, to keep a copy before
+a large edit, or to give an auditor the exact files that left a machine.
+
+## Export the folder
+
+```bash
+canonfig export --output ~/canonfig-setup.tar.gz
+```
+
+The archive holds `canonfig.jsonc`, `AGENTS.md`, `rules/`, `skills/`,
+`agents/`, `commands/`, `hooks/` and `local/`. It never holds `state.sqlite`,
+takeover snapshots, the hook runtime, logs, installer bindings or credentials,
+because export reads nothing else in `~/.canonfig/`. MCP secrets stay
+`{ "fromEnv": "NAME" }` references: export refuses a literal credential in
+`canonfig.jsonc` or `local/local.jsonc` with the same check publication uses,
+so a token never enters the file.
+
+The output says where the archive went and gives two SHA-256 digests: `sha256`
+for the whole archive and `manifestSha256` for its manifest. Keep the first one
+if the file crosses a channel you do not trust: anyone who can change the
+archive can also rewrite its manifest.
+
+Export refuses an output that already exists. To replace it:
+
+```bash
+canonfig export --output ~/canonfig-setup.tar.gz --force
+```
+
+The output must be inside your home directory and outside `~/.canonfig/`.
+Without `--output`, the archive is `canonfig-export-<UTC time>.tar.gz` in the
+current directory. The file is private to your user.
+
+## Check what the archive holds
+
+The archive is a standard tar file. Its first entry, `manifest.json`, lists
+every other file with its path, size, SHA-256 and mode, plus the Canonfig
+version, the time of the export and the machine's role:
+
+```bash
+mkdir check && tar -xzf ~/canonfig-setup.tar.gz -C check
+cat check/manifest.json
+```
+
+To check every file against the manifest on Linux (on macOS, use
+`shasum -a 256 -c` instead of `sha256sum -c`):
+
+```bash
+cd check && jq -r '.files[] | "\(.sha256)  \(.path)"' manifest.json | sha256sum -c
+```
+
+`canonfig import --dry-run` runs the same check without writing anything.
+
+## Move the folder to a new machine
+
+1. Install Canonfig on the new machine and copy the archive there.
+
+2. Check the archive and see what the import would write:
+
+   ```bash
+   canonfig import ~/canonfig-setup.tar.gz --dry-run
+   ```
+
+3. Import it:
+
+   ```bash
+   canonfig import ~/canonfig-setup.tar.gz
+   ```
+
+   Import runs as one journaled Synchronization Run. If an action fails it
+   rolls back, and if the process stops part way, `canonfig recover` finishes
+   or rolls back the run. The result ends with `outcome: Converged`.
+
+4. Project the folder into this machine's harnesses:
+
+   ```bash
+   canonfig sync --plan
+   canonfig sync --apply
+   ```
+
+   The first apply takes each harness over and writes a takeover snapshot,
+   exactly as on any machine. See
+   [Restore a harness from a backup](/how-to/restore-from-a-backup).
+
+5. To make the new machine the Source Machine, run `canonfig source init` and
+   publish:
+
+   ```bash
+   canonfig source init
+   canonfig source publish --reviewer maria
+   ```
+
+A Follower Machine cannot import: its `~/.canonfig/` mirrors the Source Machine
+and the next sync would overwrite it. To change what every machine gets, import
+on the Source Machine and publish.
+
+## Replace a folder that already has content
+
+Import never writes over what is there unasked. It refuses a folder that holds
+any authored entry, and `local/` when the archive has one. To replace them,
+export the current folder first if you want a copy, then:
+
+```bash
+canonfig export --output ~/canonfig-before-import.tar.gz
+canonfig import ~/canonfig-setup.tar.gz --replace
+```
+
+`--replace` replaces each entry the archive holds. A replaced directory, such
+as `skills/`, then holds exactly the archive's files. An entry the archive does
+not hold stays as it is and is listed under `kept`.
+
+## Include the harness files
+
+```bash
+canonfig export --include-harnesses --output ~/canonfig-audit.tar.gz
+```
+
+This adds the files Canonfig manages in each harness on this machine, under
+`harnesses/<harness>/<path below home>`. Each manifest entry names the harness
+and the original path, such as `~/.claude/CLAUDE.md`. For a file the harness
+shares with its own state, such as `~/.claude.json`, the archive holds only the
+keys Canonfig owns there, so logins and history never leave the machine. A
+surface you edited since Canonfig last wrote it is left out and listed under
+`skippedHarnessSurfaces`.
+
+Import verifies harness files and counts them, but never writes them. The next
+`canonfig sync` projects the imported folder instead, which produces the same
+files for the harnesses installed on that machine.
+
+## If something fails
+
+| Message | Cause | Fix |
+| --- | --- | --- |
+| "... already exists; pass --force to replace it, or choose another --output" (exit 4) | A file is already at the output path. | Choose another name, or pass `--force`. |
+| "... is outside the home directory ..." (exit 2) | The output directory is not inside your home directory. | Write the archive under your home directory and copy it from there. |
+| "... has a literal credential at ... [REDACTED]; an export never holds secret values" (exit 2) | A value in `canonfig.jsonc` or `local/local.jsonc` looks like a token. | Replace it with `{ "fromEnv": "NAME" }` and export again. |
+| "... is a credential file; an export never holds one" (exit 2) | A file such as `.env` sits in an authored entry. | Move it out of `~/.canonfig/`. |
+| "... does not match its checksum in manifest.json; the archive was changed or damaged after export" (exit 7) | The file changed after export, for example in transfer. | Copy the archive again and compare its SHA-256 with the one export printed. |
+| "... holds ..., a symbolic link; an export holds regular files only" or "... which is outside what an export may hold" (exit 7) | The archive was not written by `canonfig export`, or was edited by hand. | Use an archive straight from `canonfig export`. |
+| "... is an enrolled Follower Machine's mirror of the Source, so an import cannot write it" (exit 2) | This machine is enrolled. | Import on the Source Machine and publish, or run `canonfig follower unenroll` first. |
+| "... already holds ..., and an import never overwrites them unasked" (exit 4) | The folder has content. | Export it first if you want a copy, then pass `--replace`. |

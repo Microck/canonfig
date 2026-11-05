@@ -345,6 +345,78 @@ ids are the directory names under `~/.canonfig/.backups/`. See
 | `snapshot <id> does not exist; snapshots: <ids>` | 2 | The id is not a directory under `.backups/`. |
 | `restore of snapshot <id> refused, nothing was changed:` followed by one line per surface and `Keep or move the local changes, sync until it converges, then restore again` | 3 | A surface changed since Canonfig last applied it, or was never applied completely. |
 
+## Export and import
+
+```bash
+canonfig export
+canonfig export --output ~/canonfig-setup.tar.gz
+canonfig export --include-harnesses --output ~/canonfig-setup.tar.gz --force
+canonfig import ~/canonfig-setup.tar.gz --dry-run
+canonfig import ~/canonfig-setup.tar.gz
+canonfig import ~/canonfig-setup.tar.gz --replace
+```
+
+`export` writes the Canonical Folder to one `.tar.gz`: `canonfig.jsonc`,
+`AGENTS.md`, `rules/`, `skills/`, `agents/`, `commands/`, `hooks/` and
+`local/`, stored under `folder/`. Nothing else in `~/.canonfig/` is read, so
+`state.sqlite` and its `-wal` and `-shm` files, `.backups/`, `.runtime/`,
+`canonfig.log`, `installers/`, the tunnel state and any credential files stay
+on the machine. Without `--output` the archive is
+`canonfig-export-<UTC time>.tar.gz` in the working directory. The output must
+end in `.tar.gz`, sit in an existing directory inside your home directory and
+outside `~/.canonfig/`, and must not exist yet unless you pass `--force`. The
+archive gets mode `0600`, or an ACL that grants only your user on Windows.
+
+The archive starts with `manifest.json`: the Canonfig version, the time of the
+export, the machine's role (`source`, `follower` or `standalone`), and for
+every file its path, size, SHA-256 and mode. Entries are sorted by path, and
+every entry has owner, group and time 0. The command prints the archive's own
+SHA-256 and the manifest's. A literal credential in an MCP server, hook or
+settings entry of `canonfig.jsonc` or `local/local.jsonc` stops the export,
+with the same rule as publication, and a file named `.env`, `.env.*`,
+`auth.json` or `credentials.json` in the folder stops it too.
+
+`--include-harnesses` adds the harness files Canonfig manages on this machine,
+from its Applied Resource Records, under `harnesses/<harness>/<path below
+home>`. Each manifest entry names the harness and the original path, such as
+`~/.codex/AGENTS.md`. A surface is added only while it holds exactly what
+Canonfig last wrote; one you edited since is left out and listed under
+`skippedHarnessSurfaces`. For a file the harness shares with its own state,
+such as `~/.claude.json` or `~/.codex/config.toml`, the entry holds only the
+keys Canonfig owns there, listed in the entry's `keys`.
+
+`import` verifies the archive before it plans anything: `manifest.json` comes
+first and lists every other entry exactly once, and every size, SHA-256 and
+mode matches. Entries must be regular files under `folder/` in the allowlist
+above or under `harnesses/<harness>/`; an absolute path, a `..` segment, a
+link, a device, a directory entry, or anything else refuses the whole archive.
+Import then writes the folder entries into `~/.canonfig/` as one journaled
+Synchronization Run, which rolls back on failure and resumes with
+`canonfig recover` after an interruption. Files get mode `0600`, or `0700`
+when the archive marks them executable. Harness files are verified and
+counted, never written: the next `canonfig sync` projects the imported folder
+and takes each harness over with a takeover snapshot.
+
+Import refuses an enrolled Follower Machine, whose folder mirrors the Source
+Machine. It also refuses a folder that already holds any authored entry, or a
+`local/` when the archive has one. `--replace` replaces each entry the archive
+holds; a replaced directory then holds exactly the archive's files, and an
+entry the archive does not hold is kept and listed under `kept`. `--dry-run`
+verifies and prints the plan without writing. See
+[Export the folder and move it to a new machine](/how-to/export-and-import).
+
+| Message | Exit | Cause |
+| --- | ---: | --- |
+| `<path> must end in .tar.gz; nothing was written` | 2 | The output name has another extension. |
+| `<path> is outside the home directory <home>; Canonfig writes only inside it, so choose an --output below it; nothing was written` | 2 | The output directory resolves outside your home directory. |
+| `<path> already exists; pass --force to replace it, or choose another --output; nothing was written` | 4 | A file is already at the output path. |
+| `<file> has a literal credential at <path> [REDACTED]; an export never holds secret values. ...` | 2 | A value in `canonfig.jsonc` or `local/local.jsonc` looks like a credential. |
+| `<folder> is an enrolled Follower Machine's mirror of the Source, so an import cannot write it. ...` | 2 | Import on a Follower Machine. |
+| `<folder> already holds <entries>, and an import never overwrites them unasked. ...` | 4 | The folder holds entries and `--replace` was not given. |
+| `<archive> <path> does not match its checksum in manifest.json; the archive was changed or damaged after export; nothing was imported` | 7 | A file changed after export. |
+| `<archive> holds <path>, a symbolic link; an export holds regular files only; nothing was imported` | 7 | The archive holds a link, device, directory or other special entry. |
+| `<archive> holds <path>, which is outside what an export may hold ...; nothing was imported` | 7 | An entry is outside the allowlist. |
+
 ## Harnesses
 
 ```bash

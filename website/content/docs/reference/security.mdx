@@ -14,6 +14,7 @@ description: Look up what Canonfig publishes and sends between machines, what it
 | Takeover snapshots and run journals | Stay on the machine | Not sent |
 | Values behind `credentials` and `fromEnv` references | Never sent; the folder holds only the name | Not sent |
 | Command log | Stays on the machine | Not sent |
+| `canonfig export` archives: the authoring allowlist plus `local/`, and with `--include-harnesses` Canonfig's harness files | A file you choose inside your home directory | Not sent; you copy the file yourself |
 
 Publication reads only the authoring allowlist: `canonfig.jsonc`,
 `AGENTS.md`, `rules/`, `skills/`, `agents/`, `commands/`, and `hooks/`. Every
@@ -73,6 +74,26 @@ Before Canonfig first writes a harness surface, it copies what was there into
 snapshots off on one machine. The setting is machine-local, so a Source
 Machine cannot turn off a Follower Machine's backups. See
 [Restore a harness from a backup](/how-to/restore-from-a-backup).
+
+## Export archives
+
+`canonfig export` reads only the authoring allowlist and `local/`, with the
+same link and containment checks as publication. A literal credential in
+`canonfig.jsonc` or `local/local.jsonc`, or a file named `.env`, `.env.*`,
+`auth.json` or `credentials.json` in those entries, stops the export. With
+`--include-harnesses` it adds a harness surface only while the surface holds
+exactly what Canonfig last wrote, and from a shared file only the keys
+Canonfig owns. The archive is written with mode `0600`, or an ACL that grants
+only your user on Windows, inside your home directory.
+
+`manifest.json` in the archive records every file's path, size, SHA-256 and
+mode, so you can check what left the machine. It is an integrity record, not a
+signature: whoever can change the archive can rewrite it. Compare the archive's
+SHA-256, which export prints, when the file travels over a channel you do not
+trust. `canonfig import` verifies every entry against the manifest, accepts
+regular files inside the allowlist only, writes them as a journaled run, and
+never writes harness files. See
+[Export the folder and move it to a new machine](/how-to/export-and-import).
 
 ## Hooks and MCP servers run code
 
