@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -75,7 +75,8 @@ describe("export refuses what must not leave the machine", () => {
     const target = home();
     write(join(target.folder, "hooks", "format.sh"), `#!/bin/sh\nexport API_TOKEN=${SECRET}\n`);
     const error = await target.exporting();
-    expect(error).toMatchObject({ _tag: "ArchiveRequestError", path: join(target.folder, "hooks", "format.sh") });
+    // Paths are reported from the resolved folder (macOS /var -> /private/var).
+    expect(error).toMatchObject({ _tag: "ArchiveRequestError", path: join(realpathSync.native(target.folder), "hooks", "format.sh") });
     expect(error.message).toContain("literal credential");
     expect(error.message).not.toContain(SECRET);
     expect(existsSync(target.output)).toBe(false);
