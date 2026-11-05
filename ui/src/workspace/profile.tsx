@@ -33,6 +33,7 @@ import {
 import { SCANNED_TOOLS, toolFromScan, useSharedState, useWorkspace } from "./store";
 import { ScheduleFields, WEEK, scheduleError, scheduleSummary, type Schedule } from "./schedule";
 import { HarnessTable } from "./harnesses";
+import { SkillSummary, SkillUpstream } from "./skills";
 import {
   AnimatedRow,
   Body,
@@ -481,9 +482,13 @@ export function ProfileView() {
                           </span>
                           <Mono className="truncate">{r.path}</Mono>
                           <GroupChips groups={r.groups} />
-                          <span className="truncate text-sm text-faint" title={r.summary}>
-                            {r.summary}
-                          </span>
+                          {r.category === "skills" ? (
+                            <SkillSummary resource={r} />
+                          ) : (
+                            <span className="truncate text-sm text-faint" title={r.summary}>
+                              {r.summary}
+                            </span>
+                          )}
                         </ListRow>
                       </AnimatedRow>
                     ))}
@@ -751,6 +756,16 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
           <Prop label="Files">
             <Mono className="text-foreground">{draft.detail.Files}</Mono>
           </Prop>
+        )}
+        {category === "skills" && !isNew && resource.change !== "removed" && (
+          <SkillUpstream
+            resource={resource}
+            editing={dirty}
+            onUpdated={(next) => {
+              setDraft(next);
+              setTried(false);
+            }}
+          />
         )}
         {draft.detail.Evidence && (
           <Prop label="Found in">

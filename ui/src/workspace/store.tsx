@@ -49,9 +49,10 @@ export type SourceView =
   | "agent"
   | "installers"
   | "setup"
-  | "doctor";
+  | "doctor"
+  | "version";
 
-export type FollowerView = "overview" | "machines" | "sync" | "schedule" | "local" | "backups" | "secrets" | "tunnel" | "agent" | "doctor" | "machine";
+export type FollowerView = "overview" | "machines" | "sync" | "schedule" | "local" | "backups" | "secrets" | "tunnel" | "agent" | "doctor" | "machine" | "version";
 
 export type View = SourceView | FollowerView | "not-found";
 
@@ -799,12 +800,16 @@ function sharedSeed(setup: Setup | null): Record<string, unknown> {
       "service-installed": setup.service === "service",
       // Setup just installed the service, so it started now, not at the demo's seeded time.
       "service-since": `today ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`,
+      // A new Source tracks no skill upstreams and hasn't turned on Canonfig updates.
+      "skill-sources": [],
+      "self-update": { npmCli: null, latest: null, installed: null },
     };
   if (setup?.role === "follower")
     return {
       "tunnel-up": setup.tunnel,
       // null: no schedule was ever set. With one, the readers' initial (`schedule set --default`) is what onboarding ran.
       ...(setup.schedule ? {} : { "follower-schedule": null }),
+      "self-update": { npmCli: null, latest: null, installed: null },
     };
   return {};
 }

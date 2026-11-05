@@ -68,6 +68,7 @@ The URL selects the role, screen and view tab. Links can be opened directly or r
 | Health check | `/source/settings/health` | `/follower/settings/health` |
 | SSH tunnel | | `/follower/settings/tunnel` |
 | Enrollment | | `/follower/settings/enrollment` |
+| Canonfig version (self-update) | `/source/settings/version` | `/follower/settings/version` |
 
 First-run setup is `/setup`. Retired role and variant query parameters are not routing aliases.
 
@@ -96,6 +97,10 @@ Use `variant="primary"` for at most one gold commit/create action per view. Defa
 Below 768px, a navigation sheet replaces the sidebar. It traps focus and closes on Escape or any navigation link, including the current page. The desktop sidebar scrolls independently in short windows. Its Demo panel stays in the sidebar flow. Below 768px, workspace screens show a compact 44px Demo disclosure button at the right of the top bar, and setup and not-found pages show it in the header; from 768px setup and not-found pages keep the full panel at the bottom-left.
 
 Profile settings edits include unfinished key rows: adding a blank key enables Save and Discard. Save reports empty or duplicate key names without changing the saved item, focuses the first invalid field, and associates each key error with its input. Discard restores the saved fields and key rows.
+
+A skill's detail panel on the Source has an Upstream section for `canonfig skills` (`src/workspace/skills.tsx`). A tracked skill shows its repository, the branch, tag or commit it follows and the commit its copy came from. Check for updates lists the new, changed and removed files before anything changes; Update replaces the skill in the folder with that commit, marks it modified for the next revision and is held back while the panel has unsaved edits. A copy edited since Canonfig installed it shows why it can't update, and Update checks again before it replaces anything, so an edit saved after the last check still blocks it. An untracked skill offers Track upstream…, which records the source only when every file matches. The list's Summary shows the ref a tracked skill follows, or the last check's state when it found something. The demo fetches only `https://github.com/example/agent-skills.git`, from `upstreamSkills` in `src/shared/data.ts`.
+
+Settings, Canonfig version shows the running version and `canonfig self-update` for both roles. Updates stay off until the person names npm's `npm-cli.js` and confirms nothing else of Canonfig's runs; an interrupted sync refuses that, as the CLI does. Check asks for the newest patch in the current major.minor line; Update confirms, then runs its three steps with progress and a toast. A running source service or sync, or an interrupted sync, disables Update and says how to clear it. The machine menu names an available patch. Why the GUI can apply an update at all while it runs is in [ADR 0001](../docs/adr/0001-local-browser-gui.md#self-update-from-the-gui).
 
 Leaving any form with an unsaved draft asks before discarding it: the item editor, Profile defaults, new group, Agent policy, Source secret, Follower schedule and the local item editor. This covers closing a panel, choosing another row, in-app navigation and Demo panel role changes, but not browser Back/Forward or reload. Each form's own Save, Cancel, Discard or remove never asks.
 

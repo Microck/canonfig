@@ -21,6 +21,10 @@ The Machine Profile JSONC file on disk stays the only source of truth. The GUI e
 
 The frontend is a static React 19 single-page app (Vite, Tailwind CSS v4, shadcn/ui on Radix Primitives, dithercn for dithered surfaces) built into `dist/ui` and shipped in the npm package. The package size budget in `tools/release/validate-release.ts` is raised to the measured size.
 
+### Self-update from the GUI
+
+Once a person opts in to self-updates, every ordinary command holds an update lease while it runs (`commandLease` in `src/runtime/self-update/coordination.ts`), and an update installs only while no lease is held. `canonfig ui` is such a command, so a GUI that applied an update in-process through the normal path would always find its own lease and defer. The Canonfig version page (`/source/settings/version`, `/follower/settings/version`) therefore assumes the server releases its own lease for the duration of an apply it started, runs the same staged update as `self-update apply --apply`, and exits once the new package is active, as the CLI updater does; the person starts `canonfig ui` again to run the new version. Leases held by other processes, such as the Source's background service or a running sync, still defer the update, and the page says which one and how to stop it. The GUI never stops or restarts a service itself. Until the server exists, the page runs on simulated data like every other screen.
+
 ## Considered options
 
 - **Bare `canonfig` opens the GUI**: rejected; it breaks every caller that runs `canonfig` for help and fails on machines without a browser.

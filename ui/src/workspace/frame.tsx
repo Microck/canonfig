@@ -43,6 +43,7 @@ import { APP_VERSION, DEMO, PLAIN, machine } from "@/shared/data";
 import { DemoSwitcher } from "@/shared/demo-switcher";
 import { useSharedState, useWorkspace, type View } from "./store";
 import { copy } from "./kit";
+import { useSelfUpdate } from "./settings";
 import { focusPageHeading, followLink, workspaceHref } from "./routes";
 import { NAV, type NavItem } from "./nav";
 
@@ -136,6 +137,8 @@ export function Sidebar({ className, onNavigate, onOpenTours }: { className?: st
   // Same keys and initials as the Source service and SSH tunnel pages that own them.
   const [serviceInstalled] = useSharedState("service-installed", true);
   const [tunnelUp] = useSharedState("tunnel-up", true);
+  const [selfUpdate] = useSelfUpdate();
+  const newer = selfUpdate.latest !== null && selfUpdate.latest !== (selfUpdate.installed ?? APP_VERSION) ? selfUpdate.latest : null;
   const badges: Partial<Record<View, React.ReactNode>> =
     role === "source"
       ? {
@@ -203,6 +206,7 @@ export function Sidebar({ className, onNavigate, onOpenTours }: { className?: st
               </DropdownMenuItem>
             </>
           )}
+          <DropdownMenuItem onSelect={() => navigateFromMenu("version")}>{newer ? `Canonfig ${newer} is available` : "Canonfig version"}</DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => toast("Open Canonfig on that machine to manage it")}>Manage another machine…</DropdownMenuItem>
         </DropdownMenuContent>

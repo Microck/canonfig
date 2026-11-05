@@ -1,18 +1,20 @@
 // Settings shared by both machine roles where the feature exists on both.
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Check, Circle, HourglassMedium, Warning, X } from "@/components/icons";
+import { Check, Circle, HourglassMedium, Warning, WarningCircle, X } from "@/components/icons";
 import { cn, removeKeepingFocus } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DitherProgress, Hint, Mono, StatusMark, Term } from "@/shared/shared";
-import { DEMO, agentPolicy, doctor, installers } from "@/shared/data";
+import { APP_VERSION, DEMO, LATEST_PATCH, agentPolicy, doctor, installers, selfUpdateSeed } from "@/shared/data";
 import { useSharedState, useWorkspace } from "./store";
 import { Body, CommandBox, Field, ListHead, ListRow, PageHeader, SectionLabel, SettingRow, settingsGroup, useLeaveGuard } from "./kit";
+import { focusPageHeading } from "./routes";
 
 const LINGER_FIX = "sudo loginctl enable-linger ubuntu";
 /** Ends the toasts below, which report simulated work; only the demo says where it happened. */
@@ -907,5 +909,383 @@ export function DoctorView() {
         </Column>
       </Body>
     </>
+  );
+}
+
+/** This machine's self-update opt-in and what this session's checks and updates found (`canonfig self-update`, docs/self-update.md). */
+interface SelfUpdate {
+  /** The official npm-cli.js recorded when updates were turned on, or null while they're off. */
+  npmCli: string | null;
+  /** The newest patch in this release line that the last check found, or null before a check. */
+  latest: string | null;
+  /** A patch installed since this Canonfig started. It runs once Canonfig starts again. */
+  installed: string | null;
+}
+
+/** Shared so the machine menu shows what this page last found. A machine fresh out of onboarding hasn't opted in (store.tsx sharedSeed). */
+export function useSelfUpdate() {
+  const ws = useWorkspace();
+  return useSharedState<SelfUpdate>("self-update", { npmCli: selfUpdateSeed[ws.role].npmCli, latest: null, installed: null });
+}
+
+/** The major.minor line self-update stays in: 5.0.x never moves to 5.1 or 6.0 on its own. */
+const RELEASE_LINE = APP_VERSION.split(".").slice(0, 2).join(".");
+
+/** `self-update apply --apply` in order (update in src/runtime/self-update/core.ts). */
+const UPDATE_STEPS = [
+  `Download ${LATEST_PATCH} from npm into a separate folder, with install scripts off`,
+  `Check that it reports ${LATEST_PATCH} and its help runs`,
+  `Swap it in and keep ${APP_VERSION} as a backup`,
+];
+
+/** The systemd unit the Service page names; stopping it releases the service's hold on updates. */
+const SERVICE_UNIT = "canonfig-source.service";
+
+/**
+ * Canonfig's own version and its opt-in patch updates. Updates stay off until a person names the npm to use and
+ * confirms nothing else of Canonfig's runs. Check asks npm for the newest patch in this release line; Update installs it
+ * only while no other Canonfig command runs and no sync is unfinished, so those show as a notice that disables Update.
+ * Nothing restarts on its own: the new version runs once Canonfig starts again.
+ */
+export function VersionView() {
+  const ws = useWorkspace();
+  const [state, setState] = useSelfUpdate();
+  // Shared like Setup's journal: an update carries on while you visit other pages of this role. null: none running.
+  const [step, setStep] = useSharedState<number | null>("self-update-step", null);
+  const [checking, setChecking] = useSharedState("self-update-checking", false);
+  const [serviceInstalled] = useSharedState("service-installed", true);
+  const [enabling, setEnabling] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [disabling, setDisabling] = useState(false);
+  // Turning updates on or starting an update replaces the header button that opened the dialog, so focus goes to
+  // the page heading instead of falling to the document.
+  const committed = useRef(false);
+  const returnFocus = (event: Event) => {
+    if (!committed.current) return;
+    committed.current = false;
+    event.preventDefault();
+    focusPageHeading();
+  };
+  const on = state.npmCli !== null;
+  // What the installed package reports, which a check compares against: the running version until an update lands.
+  const current = state.installed ?? APP_VERSION;
+  const available = on && state.latest !== null && state.latest !== current;
+  const running = step !== null;
+  // Every other Canonfig command holds an update lease while it runs (commandLease in coordination.ts): on the Source the
+  // background service, on a follower a sync in progress. Updating and turning updates off wait for them.
+  const busyWith = ws.role === "source" ? (serviceInstalled ? "service" : null) : ws.phase === "running" ? "sync" : null;
+  // An interrupted sync must be finished with this version first (assertNoUnfinishedRun); it blocks opting in too.
+  const unfinished = ws.role === "follower" && ws.interrupted;
+  const blocked = available && (busyWith !== null || unfinished);
+
+  const check = () => {
+    setChecking(true);
+    ws.later(() => {
+      setChecking(false);
+      setState((prev) => ({ ...prev, latest: LATEST_PATCH }));
+      if (LATEST_PATCH === current) toast("Canonfig is up to date", { description: `${current} is the newest ${RELEASE_LINE} release.` });
+      else toast(`Canonfig ${LATEST_PATCH} is available`, { description: `This machine has ${current}.\nOnly patches in the ${RELEASE_LINE} line are offered.` });
+    }, 900);
+  };
+
+  const update = () => {
+    committed.current = true;
+    setConfirming(false);
+    setStep(0);
+    // Chained like Setup's apply: each step lands in shared state, and switching roles cancels the rest.
+    const advance = (i: number): void =>
+      ws.later(() => {
+        if (i < UPDATE_STEPS.length) {
+          setStep(i);
+          advance(i + 1);
+          return;
+        }
+        setStep(null);
+        setState((prev) => ({ ...prev, installed: LATEST_PATCH }));
+        toast.success(`Canonfig ${LATEST_PATCH} installed`, {
+          description: `${APP_VERSION} is kept as a backup, and no service was restarted.\nStart Canonfig again to use ${LATEST_PATCH}.${ws.role === "follower" ? "\nThen apply once from Sync, so the schedule runs the new version." : ""}${DEMO ? "\nSimulated in this demo; nothing was installed." : ""}`,
+        });
+      }, 900);
+    advance(1);
+  };
+
+  const newest = checking ? (
+    "Checking…"
+  ) : state.latest === null ? (
+    <>
+      <StatusMark kind="off" /> Not checked yet
+    </>
+  ) : available ? (
+    <>
+      <StatusMark kind="warn" /> {state.latest} available
+    </>
+  ) : (
+    <>
+      <StatusMark kind="ok" /> Up to date
+    </>
+  );
+
+  return (
+    <>
+      <PageHeader
+        crumbs={["Settings", "Canonfig version"]}
+        actions={
+          !on ? (
+            <Button size="sm" variant="primary" onClick={() => setEnabling(true)}>
+              Turn on updates…
+            </Button>
+          ) : (
+            <>
+              <Button size="sm" variant={available ? "outline" : "primary"} disabled={checking || running} onClick={check}>
+                {checking ? "Checking…" : "Check for updates"}
+              </Button>
+              {available && (
+                <Button size="sm" variant="primary" disabled={running || blocked} aria-describedby={blocked ? "version-blocked" : undefined} onClick={() => setConfirming(true)}>
+                  {running ? "Updating…" : `Update to ${state.latest}…`}
+                </Button>
+              )}
+            </>
+          )
+        }
+      />
+      <Body>
+        <Column>
+          <Lede>
+            Canonfig can update itself to new patch releases from npm. It stays in the {RELEASE_LINE} line: moving to a newer minor or major version is a step you take on every
+            machine together, by hand.
+          </Lede>
+          <SectionLabel>This machine</SectionLabel>
+          <div className={cn("mt-1", settingsGroup)}>
+            <SettingRow title="Version" description={state.installed ? `${state.installed} is installed. Start Canonfig again to use it.` : undefined}>
+              <Mono className="text-foreground">{APP_VERSION}</Mono>
+            </SettingRow>
+            <SettingRow
+              title="Updates"
+              description={on ? `Patches in the ${RELEASE_LINE} line, installed when you choose to.` : "Off. Turn them on to check npm for patches."}
+            >
+              <span className="inline-flex items-center gap-1.5 text-base">
+                <StatusMark kind={on ? "ok" : "off"} />
+                {on ? "On" : "Off"}
+              </span>
+            </SettingRow>
+            {on && (
+              <SettingRow
+                title="npm"
+                description={
+                  <>
+                    <Mono className="break-all">{state.npmCli}</Mono>
+                    <br />
+                    Canonfig fetches only its own package from registry.npmjs.org, with install scripts off.
+                  </>
+                }
+              />
+            )}
+            {on && (
+              <SettingRow title="Newest patch">
+                <span className="inline-flex items-center gap-1.5 text-base" aria-live="polite">
+                  {newest}
+                </span>
+              </SettingRow>
+            )}
+          </div>
+
+          {(blocked || (!on && unfinished)) && (
+            <div id="version-blocked" className="mt-5 grid max-w-[68ch] grid-cols-[minmax(0,1fr)] gap-2">
+              <p className="flex items-start gap-2 text-base text-pretty">
+                <StatusMark kind="act" className="mt-[3px]" />
+                <span>
+                  {unfinished
+                    ? `Update #41 was interrupted. Recover or abandon it on Sync first: Canonfig doesn't ${on ? "update itself" : "turn updates on"} while a sync is unfinished.`
+                    : busyWith === "service"
+                      ? "The source service is running, and Canonfig installs an update only while no other Canonfig command runs. It never stops a service itself, so stop it in a terminal, update, then start it again."
+                      : "An update of this machine's setup is running. Update Canonfig once it finishes."}
+                </span>
+              </p>
+              {unfinished && (
+                <div>
+                  <Button size="sm" variant="outline" onClick={() => ws.setView("sync")}>
+                    Open Sync
+                  </Button>
+                </div>
+              )}
+              {!unfinished && busyWith === "service" && (
+                <>
+                  <CommandBox>{`systemctl --user stop ${SERVICE_UNIT}`}</CommandBox>
+                  <p className="text-sm text-muted-foreground">Once Canonfig is updated:</p>
+                  <CommandBox>{`systemctl --user start ${SERVICE_UNIT}`}</CommandBox>
+                  {DEMO && <p className="text-sm text-muted-foreground">This demo can't see your terminal. To try the update here, remove the service in Settings, Source service.</p>}
+                </>
+              )}
+            </div>
+          )}
+
+          {running && (
+            <div className="mt-5 grid grid-cols-[minmax(0,1fr)] gap-3">
+              <DitherProgress label={`Updating Canonfig to ${LATEST_PATCH}`} value={(step / UPDATE_STEPS.length) * 100} running />
+              <ol className={settingsGroup} aria-live="polite">
+                {UPDATE_STEPS.map((label, i) => (
+                  <li key={label} className="flex min-h-10 items-center gap-3 px-4 py-2 text-base">
+                    <span className="flex size-4 shrink-0 items-center justify-center">
+                      {i < step ? (
+                        <Check className="size-3.5 text-ok" aria-label="Done" />
+                      ) : i === step ? (
+                        <HourglassMedium className="size-3.5 text-muted-foreground" aria-label="Running" />
+                      ) : (
+                        <Circle className="size-3 text-faint" aria-label="Pending" />
+                      )}
+                    </span>
+                    {label}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
+          {on && (
+            <Button variant="destructive" size="sm" className="mt-6" disabled={running} onClick={() => setDisabling(true)}>
+              Turn off updates…
+            </Button>
+          )}
+        </Column>
+      </Body>
+
+      <Dialog open={enabling} onOpenChange={setEnabling}>
+        <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md" onCloseAutoFocus={returnFocus}>
+          <EnableUpdatesForm
+            unfinished={unfinished}
+            onCancel={() => setEnabling(false)}
+            onEnable={(npmCli) => {
+              setState((prev) => ({ ...prev, npmCli }));
+              committed.current = true;
+              setEnabling(false);
+              toast.success("Updates turned on", {
+                description: `Canonfig can now install ${RELEASE_LINE} patches with this npm.\nStart the services and schedules you stopped again.${DEMO ? "\nSaved in this demo workspace." : ""}`,
+              });
+            }}
+          />
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={confirming} onOpenChange={setConfirming}>
+        <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md" onCloseAutoFocus={returnFocus}>
+          <DialogHeader>
+            <DialogTitle>Update Canonfig to {LATEST_PATCH}?</DialogTitle>
+            <DialogDescription className="text-base text-pretty">
+              Canonfig downloads {LATEST_PATCH} from npm into a separate folder with install scripts off, checks that it runs, then swaps it in and keeps {APP_VERSION} as a
+              backup. Nothing restarts on its own: Canonfig stops this window's server when it's done, and {LATEST_PATCH} runs once you start Canonfig again.
+              {DEMO && " In this demo nothing is downloaded and the page keeps running."}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setConfirming(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" onClick={update}>
+              Update Canonfig
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={disabling}
+        onOpenChange={setDisabling}
+        title="Turn off Canonfig updates?"
+        body="Canonfig stops checking for and installing patches on this machine. The backups of earlier versions and the update records stay."
+        confirm="Turn off updates"
+        onConfirm={() => {
+          // `self-update disable` refuses while other commands run, like an update does.
+          if (busyWith) {
+            toast.error("Updates are still on", {
+              description: busyWith === "service" ? "The source service is running.\nStop it first, then turn updates off." : "A sync is running.\nTurn updates off once it finishes.",
+            });
+            return;
+          }
+          setState((prev) => ({ ...prev, npmCli: null, latest: null }));
+          toast("Updates turned off", { description: "Backups of earlier versions and the update records stay on this machine." });
+        }}
+      />
+    </>
+  );
+}
+
+/** An npm-cli.js path, as `self-update enable --npm-cli` takes it: absolute, ending in npm's bin/npm-cli.js. */
+const NPM_CLI_SHAPE = /^\/.*\/npm-cli\.js$/;
+
+/**
+ * The opt-in form (`self-update enable --apply --confirm-idle --npm-cli <path>`). It lives inside the dialog's content,
+ * so closing the dialog resets it. Canonfig can't see processes started before opting in, so the person confirms
+ * they're stopped; an interrupted sync refuses the opt-in, as the CLI does.
+ */
+function EnableUpdatesForm({ unfinished, onCancel, onEnable }: { unfinished: boolean; onCancel: () => void; onEnable: (npmCli: string) => void }) {
+  const ws = useWorkspace();
+  const [path, setPath] = useState("");
+  const [idle, setIdle] = useState(false);
+  const [tried, setTried] = useState(false);
+  const example = `${ws.role === "source" ? "/home/you" : "/Users/you"}/.npm-global/lib/node_modules/npm/bin/npm-cli.js`;
+  const pathError = tried && !NPM_CLI_SHAPE.test(path.trim()) ? "Enter the full path to npm's bin/npm-cli.js, starting with /." : null;
+  const idleError = tried && !idle ? "Tick this once every other Canonfig process is stopped and its schedules are paused." : null;
+  const refusal = tried && !pathError && !idleError && unfinished ? "Update #41 was interrupted. Recover or abandon it on Sync first, then turn updates on." : null;
+  return (
+    <form
+      className="contents"
+      noValidate
+      onSubmit={(e) => {
+        e.preventDefault();
+        setTried(true);
+        if (!NPM_CLI_SHAPE.test(path.trim())) return e.currentTarget.querySelector<HTMLElement>("#npm-cli")?.focus();
+        if (!idle) return e.currentTarget.querySelector<HTMLElement>("#npm-idle")?.focus();
+        if (!unfinished) onEnable(path.trim());
+      }}
+    >
+      <DialogHeader>
+        <DialogTitle>Turn on Canonfig updates</DialogTitle>
+        <DialogDescription className="text-base text-pretty">
+          Canonfig updates itself with the npm you name here, in a global npm folder inside your home. Stop every other Canonfig process and pause its schedules first:
+          ones started earlier can't tell an update they're running.
+        </DialogDescription>
+      </DialogHeader>
+      <div className="grid gap-4">
+        <Field label="npm's npm-cli.js" htmlFor="npm-cli" error={pathError} description={`The file itself, not an npm shortcut, like ${example}.`}>
+          <Input
+            id="npm-cli"
+            value={path}
+            onChange={(e) => setPath(e.target.value)}
+            placeholder={example}
+            aria-invalid={!!pathError}
+            aria-describedby="npm-cli-note"
+            autoComplete="off"
+            spellCheck={false}
+            className="font-mono text-sm"
+          />
+        </Field>
+        <div className="grid gap-1.5">
+          <Label htmlFor="npm-idle" className="flex cursor-pointer items-start gap-2.5 text-base font-normal">
+            <Checkbox id="npm-idle" checked={idle} onCheckedChange={(c) => setIdle(c === true)} aria-invalid={!!idleError} aria-describedby={idleError ? "npm-idle-note" : undefined} className="mt-0.5" />
+            I stopped every other Canonfig process and paused its schedules.
+          </Label>
+          {idleError && (
+            <p id="npm-idle-note" role="alert" className="flex items-start gap-1.5 text-sm text-bad">
+              <WarningCircle className="mt-0.5 size-3.5 shrink-0" />
+              {idleError}
+            </p>
+          )}
+        </div>
+        {refusal && (
+          <p role="alert" className="flex items-start gap-1.5 text-sm text-pretty text-bad">
+            <StatusMark kind="bad" className="mt-0.5" />
+            {refusal}
+          </p>
+        )}
+      </div>
+      <DialogFooter>
+        <Button type="button" variant="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button type="submit" variant="primary">
+          Turn on updates
+        </Button>
+      </DialogFooter>
+    </form>
   );
 }
