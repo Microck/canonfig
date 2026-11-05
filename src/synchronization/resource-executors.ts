@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect";
-import { dirname, isAbsolute, join, relative, resolve, win32 } from "node:path";
+import { dirname, isAbsolute, join, posix, relative, resolve, win32 } from "node:path";
 
 import { ContentDigest, CredentialReference, type RunId } from "../domain/brand.ts";
 import {
@@ -2185,8 +2185,60 @@ const confirmInstalledVersion = (
   });
 });
 
+/**
+ * The id prefix of authored `resources.<id>` targets: projection writes them
+ * as surfaces of its `resources` pseudo-harness (src/projection/plan.ts
+ * `resourcesOwner`), so the two must stay in sync.
+ */
+export const authoredResourcePrefix = "harness:resources:";
+
+/**
+ * An authored resource target must lie under the home directory along real
+ * directories only: every existing ancestor below home is checked without
+ * following links, and the existing ancestry must resolve inside home. A
+ * symlinked or junctioned parent could otherwise carry a home-relative
+ * target outside home or into a harness's own files. Projection runs this
+ * before it reads or snapshots the target; the executor runs it again right
+ * before each preparation and mutation.
+ */
+export const assertAuthoredTargetPath = (target: string) =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const home = (yield* machine.userDirectories()).home;
+    const path = yield* machine.normalizePath({ path: target });
+    yield* machine.validatePathWithinRoot({ root: home, path });
+    const paths = path.platform === "windows" ? win32 : posix;
+    let current = home.absolute;
+    for (const segment of paths.relative(home.absolute, path.absolute).split(paths.sep).slice(0, -1)) {
+      current = paths.join(current, segment);
+      const kind = yield* machine.inspectPath(yield* machine.normalizePath({ path: current })).pipe(
+        Effect.map((object) => object.kind),
+        Effect.catchTag("MachineFilesystemError", (error) =>
+          /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message) ? Effect.succeed(undefined) : Effect.fail(error)
+        ),
+      );
+      if (kind === undefined) return;
+      if (kind !== "directory") {
+        return yield* new InvalidExecutionPlanError({
+          message: `${target} lies under ${current}, which is a ${kind}, not a directory; Canonfig writes authored resources only along real directories inside the home directory. Replace the link with a directory, or choose another target`,
+        });
+      }
+    }
+  });
+
 /** Prepare deterministic work. Preparation stores rollback material before owned-file mutation. */
 export const prepareResourceAction = (
+  context: ResourceExecutionContext,
+): Effect.Effect<PreparedResourceAction, SynchronizationExecutionInputError | MachineStateError, MachineState> => {
+  if (!context.resource.id.startsWith(authoredResourcePrefix)) return prepareAction(context);
+  const guard = assertAuthoredTargetPath(context.resource.target);
+  return guard.pipe(
+    Effect.andThen(prepareAction(context)),
+    Effect.map((prepared) => ({ ...prepared, execute: guard.pipe(Effect.andThen(prepared.execute)) })),
+  );
+};
+
+const prepareAction = (
   context: ResourceExecutionContext,
 ): Effect.Effect<PreparedResourceAction, SynchronizationExecutionInputError | MachineStateError, MachineState> => {
   const detail = context.action.detail;

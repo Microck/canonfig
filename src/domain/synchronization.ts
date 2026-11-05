@@ -223,6 +223,8 @@ export type ObservedResourceState =
     readonly digest: string;
     /** Digest of the marked Source payload, independent of local additions. */
     readonly managedSourceDigest?: string | undefined;
+    /** With `managedSourceDigest`: whether text follows the closing marker. */
+    readonly managedLocalText?: boolean | undefined;
     readonly executable: boolean;
     readonly mode?: number | undefined;
     /**
@@ -491,6 +493,7 @@ export const ObservedResourceStateSchema = Schema.Union([
     state: Schema.Literal("present"),
     digest: ContentDigest,
     managedSourceDigest: Schema.optional(ContentDigest),
+    managedLocalText: Schema.optional(Schema.Boolean),
     executable: Schema.Boolean,
     mode: Schema.optional(Schema.Int),
     objectKind: Schema.optional(ObservedObjectKind),

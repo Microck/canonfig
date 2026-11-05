@@ -635,9 +635,12 @@ const appendLocalView = (
 
 /**
  * `append-local` on a directory such as the shared `~/.agents/skills/`: the
- * three-way rule runs on Canonfig's entries only. On first adoption an entry
- * the machine already holds under a name Canonfig would write is Follower
- * Drift: Canonfig does not replace what it never wrote.
+ * three-way rule runs on Canonfig's entries only. On first adoption (no
+ * Applied Resource Record) any entry the machine already holds under a name
+ * Canonfig would write is Follower Drift, even when its bytes equal the
+ * published ones: matching content does not prove Canonfig wrote it, and
+ * recording it as Canonfig's would let a later retirement or restore delete
+ * the machine's own copy.
  */
 const planAppendLocalDirectory = (
   context: ResourcePlanningContext,
@@ -645,14 +648,9 @@ const planAppendLocalDirectory = (
 ): ReadonlyArray<ResourceActionDraft> => {
   const view = appendLocalView(context, desired);
   if (context.applied !== undefined) return planReplaceIfUnmodified(view);
-  if (view.observed.state === "directory") {
-    const entries = desiredDirectoryEntries(desired);
-    const present = presentObservedFiles(view.observed.files);
-    const sameEntries = present.length === view.observed.files.length
-      && observedDirectoryDigest(view.observed, entries) === directoryEntriesDigest(entries);
-    if (present.length > 0 && !sameEntries) {
-      return [driftConflict(view, directoryEntriesDigest(entries), directoryEntriesDigest(present))];
-    }
+  const present = view.observed.state === "directory" ? presentObservedFiles(view.observed.files) : [];
+  if (present.length > 0) {
+    return [driftConflict(view, directoryEntriesDigest(desiredDirectoryEntries(desired)), directoryEntriesDigest(present))];
   }
   return planReplace(view);
 };
@@ -1325,6 +1323,38 @@ const directoryMemberConflict = (context: ResourcePlanningContext): ResourceActi
   } };
 };
 
+/**
+ * A text file Canonfig last wrote under `append-local` that it now owns
+ * whole (append-local was turned off). The Source section must still be what
+ * Canonfig applied, and nothing may follow the closing marker: that text is
+ * the machine's, and Canonfig neither deletes it nor takes it over. When both
+ * hold, the file is rewritten as the plain payload, which drops the markers.
+ */
+const planLeaveAppendLocal = (
+  context: ResourcePlanningContext,
+  desired: Extract<DesiredResource, { readonly kind: "file" }>,
+): ReadonlyArray<ResourceActionDraft> => {
+  const observed = context.observed;
+  if (observed.state === "absent") return planReplace(context);
+  if (observed.state !== "present" || observed.managedSourceDigest === undefined) {
+    return [driftConflict(context, desired.digest, observedDigest(context) ?? sha256Hex("canonfig:invalid-text-target"))];
+  }
+  if (observed.managedSourceDigest !== context.applied?.digest) {
+    return [driftConflict(context, desired.digest, Schema.decodeUnknownSync(ContentDigestSchema)(observed.managedSourceDigest))];
+  }
+  if (observed.managedLocalText === true) {
+    return [{
+      kind: "human-action",
+      detail: {
+        kind: "human-action",
+        reason: `${context.resource.target} holds this machine's own text after the Canonfig section, and Canonfig no longer shares it (append-local is off)`,
+        instructions: `Move the text below the closing marker of ${context.resource.target} elsewhere (for instructions, into ~/.canonfig/local/AGENTS.md) or delete it, then run synchronization again. Canonfig has not changed the file.`,
+      },
+    }];
+  }
+  return [writeFile(context, desired.digest, desired.executable, desired.mode)];
+};
+
 /** Exhaustive Apply Policy dispatch. Transfer planning is intentionally absent. */
 export const planResource = (
   context: ResourcePlanningContext,
@@ -1333,6 +1363,10 @@ export const planResource = (
   if (rootConflict !== undefined) return [rootConflict];
   const memberConflict = directoryMemberConflict(context);
   if (memberConflict !== undefined) return [memberConflict];
+  if (context.desired.kind === "file" && context.applied?.policy === "append-local"
+    && context.resource.policy !== "append-local") {
+    return planLeaveAppendLocal(context, context.desired);
+  }
   switch (context.resource.policy) {
     case "replace":
       return planReplace(context);

@@ -118,7 +118,7 @@ the whole file lets Canonfig write it again.
 In a shared skills directory, skills Canonfig did not write stay where they
 are and are never reported as drift. A file you add inside one of Canonfig's
 skill directories is drift, as before. If a machine already has a skill with
-the same name as a published one, the first sync stops with Follower Drift
+the same name as a published one, even with the same content, the first sync stops with Follower Drift
 instead of replacing it: rename your skill, or remove it, then sync again.
 
 ## Keep text and skills in the local folder
@@ -139,9 +139,11 @@ instructions. See [Add items to one machine only](/how-to/add-machine-local-item
 ## Stop sharing
 
 Removing an entry from `appendLocal` makes Canonfig own the whole file or
-directory again. Where a machine's own text or skills remain, the next sync
-reports Follower Drift (exit 4) instead of deleting them. Move that content
-into `~/.canonfig/local/` (or delete it), then sync.
+directory again. An instructions file with nothing after the closing marker is
+rewritten without the markers. If your own text follows the marker, the next
+sync stops with Human Action Required (exit 3) and leaves the file as it is;
+in a skills directory, your own skills are reported as Follower Drift (exit 4).
+Move that content into `~/.canonfig/local/` (or delete it), then sync.
 
 `canonfig restore` on a shared surface removes only Canonfig's section or
 skill directories. What the machine had before Canonfig took over, and what it

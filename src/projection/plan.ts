@@ -37,6 +37,7 @@ import {
 } from "../synchronization/observation.ts";
 import { planSynchronization } from "../synchronization/planner.ts";
 import { planResource, relativePathAncestors } from "../synchronization/resource-plans.ts";
+import { assertAuthoredTargetPath } from "../synchronization/resource-executors.ts";
 import type {
   DesiredResource,
   DesiredResourceEntry,
@@ -226,7 +227,7 @@ export interface HarnessPlan {
  * paths), whether or not that harness is listed. Harness configuration is
  * the adapters' alone; a resource cannot reach `~/.codex/auth.json`.
  */
-const projectResources = (model: CanonicalModel, context: RootContext, configPath: string) =>
+export const projectResources = (model: CanonicalModel, context: RootContext, configPath: string) =>
   Effect.gen(function*() {
     if (model.resources.length === 0) return [];
     const paths = pathsFor(context.platform);
@@ -244,14 +245,26 @@ const projectResources = (model: CanonicalModel, context: RootContext, configPat
         ...layout.neverTouch.map((path) => ({ owner, path })),
       );
     }
+    // macOS and Windows file systems ignore case by default, so `~/.Codex`
+    // is `~/.codex` there; compare folded paths on those platforms.
+    const fold = (path: string) => context.platform === "linux" ? path : path.toLowerCase();
+    const overlaps = (left: string, right: string) =>
+      within(paths, fold(left), fold(right)) || within(paths, fold(right), fold(left));
     const surfaces: Array<ProjectedSurface> = [];
     for (const resource of model.resources) {
       const target = paths.join(context.home, ...resource.target.slice("~/".length).split("/"));
-      const clash = reserved.find((entry) => within(paths, entry.path, target) || within(paths, target, entry.path));
+      const clash = reserved.find((entry) => overlaps(entry.path, target));
       if (clash !== undefined) {
         return yield* new CanonicalFolderError({
           path: configPath,
           message: `resources.${resource.id}.target ${resource.target} overlaps ${clash.path}, which belongs to ${clash.owner}; author harness configuration through the folder instead`,
+        });
+      }
+      const sibling = surfaces.find((other) => overlaps(other.surface.target, target));
+      if (sibling !== undefined) {
+        return yield* new CanonicalFolderError({
+          path: configPath,
+          message: `resources.${resource.id}.target ${resource.target} overlaps resources.${sibling.surface.id} at ${sibling.surface.target} on this machine's file system`,
         });
       }
       const base = { harness: resourcesOwner, root: context.home };
@@ -423,7 +436,18 @@ export const projectSurfaces = (
         appendLocal: sharedCategory("skills"),
       });
     }
-    surfaces.push(...yield* projectResources(model, context, configPath));
+    for (const resource of yield* projectResources(model, context, configPath)) {
+      // Lexical containment is not enough: a linked parent could carry the
+      // target outside home or into a harness's files. Refuse before anything
+      // reads, snapshots or takes over the target.
+      yield* assertAuthoredTargetPath(resource.surface.target).pipe(
+        Effect.mapError((error) => new ProjectionHumanActionError({
+          harness: resourcesOwner,
+          message: `resources.${resource.surface.id}: ${error.message}`,
+        })),
+      );
+      surfaces.push(resource);
+    }
     return { surfaces, harnesses, diagnostics, runtime, runtimeVersion };
   });
 

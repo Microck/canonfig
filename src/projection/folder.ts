@@ -869,9 +869,15 @@ const loading: FileReader<SkillFile> = {
 
 const dotSegment = (segment: string) => segment === "." || segment === "..";
 
-/** `~/a/b` and `~/a` overlap; `~/a` and `~/ab` do not. */
-const targetsOverlap = (left: string, right: string) =>
-  left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+/**
+ * `~/a/b` and `~/a` overlap; `~/a` and `~/ab` do not. Case is ignored: a
+ * folder is published to every follower, and macOS and Windows file systems
+ * treat `~/.Notes` and `~/.notes` as one path.
+ */
+const targetsOverlap = (left: string, right: string) => {
+  const [a, b] = [left.toLowerCase(), right.toLowerCase()];
+  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+};
 
 /**
  * `resources.<id>`: each target is a home-relative path with no `.` or `..`

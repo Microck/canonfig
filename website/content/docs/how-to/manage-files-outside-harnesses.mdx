@@ -42,7 +42,11 @@ and nothing else. `canonfig restore` gives a resource back and adds its id to
 ## Limits
 
 - `target` starts with `~/` and has no `.` or `..` segment. Two resources may
-  not overlap.
+  not overlap, and case does not tell them apart: `~/Notes` and `~/notes` are
+  the same place on macOS and Windows.
+- Every existing folder on the way to a target must be a real directory, not a
+  symbolic link or junction, and must stay inside your home directory. The
+  sync stops with exit 3 and writes nothing otherwise.
 - A target may not overlap `~/.canonfig/`, `~/.agents/`, or any place a harness
   adapter owns or keeps its own state in, such as `~/.codex/` or
   `~/.claude.json`, whether or not that harness is listed. The sync stops with

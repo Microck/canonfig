@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -356,5 +356,79 @@ describe("what a follower keeps of its own", () => {
     const refused = source.run(["sync", "--plan"]);
     expect(refused.status, refused.output).toBe(2);
     expect(refused.output).toContain("which belongs to OpenAI Codex");
+  }, 120_000);
+
+  /** An unenrolled machine projecting its own folder: `config` plus `files`. */
+  const ownFolder = (name: string, harnesses: ReadonlyArray<TargetId>, config: Readonly<Record<string, ConfigValue>>, files: Readonly<Record<string, string>> = {}) => {
+    const own = machine(name, harnesses);
+    write(join(own.folder, "canonfig.jsonc"), JSON.stringify({ version: 1, harnesses, ...config }));
+    for (const [path, content] of Object.entries(files)) write(join(own.folder, path), content);
+    return own;
+  };
+
+  it.skipIf(process.platform === "win32")("refuses a resource whose parent is a link, before reading or writing through it", () => {
+    const own = ownFolder("linked", [], {
+      resources: { notes: { kind: "file", target: "~/notes/TEAM.md", source: "files/TEAM.md" } },
+    }, { "files/TEAM.md": "Team notes.\n" });
+    // ~/notes points outside the home directory.
+    const outside = mkdtempSync(join(tmpdir(), "canonfig-local-modes-outside-"));
+    roots.push(outside);
+    symlinkSync(outside, join(own.home, "notes"));
+
+    const refused = own.run(["sync", "--apply"]);
+    expect(refused.status, refused.output).toBe(3);
+    expect(refused.output).toContain("resolves outside managed root");
+    expect(existsSync(join(outside, "TEAM.md"))).toBe(false);
+
+    // A link that stays inside home but leads into a harness's own files.
+    unlinkSync(join(own.home, "notes"));
+    mkdirSync(join(own.home, ".codex"));
+    symlinkSync(join(own.home, ".codex"), join(own.home, "notes"));
+    const intoHarness = own.run(["sync", "--apply"]);
+    expect(intoHarness.status, intoHarness.output).toBe(3);
+    expect(intoHarness.output).toContain("which is a symlink, not a directory");
+    expect(existsSync(join(own.home, ".codex", "TEAM.md"))).toBe(false);
+  }, 120_000);
+
+  it("does not adopt a machine's skill that equals a published one, and keeps it through restore", () => {
+    const published = skill("deploy", "Deploy carefully.");
+    const own = ownFolder("same-skill", ["codex"], {
+      local: { appendLocal: ["skills"] },
+    }, { "AGENTS.md": "# Rules\n", "skills/deploy/SKILL.md": published });
+    const mine = join(own.home, ".agents", "skills", "deploy", "SKILL.md");
+    write(mine, published);
+
+    const stopped = own.run(["sync", "--apply"]);
+    expect(stopped.status, stopped.output).toBe(4);
+    expect(stopped.output).toContain("FollowerDrift");
+    expect(read(mine)).toBe(published);
+    // Nothing claims the machine's copy, so a second run stops the same way.
+    expect(own.run(["sync", "--apply"]).status).toBe(4);
+    own.run(["restore"]);
+    expect(read(mine)).toBe(published);
+  }, 120_000);
+
+  it("turns append-local off: converges when no text of the machine's follows, and keeps text that does", () => {
+    const config = (appendLocal: ReadonlyArray<string>) => ({ local: { appendLocal } });
+    const own = ownFolder("off", ["codex"], config(["instructions"]), { "AGENTS.md": "# Rules\n" });
+    const agents = join(own.home, ".codex", "AGENTS.md");
+    succeed(own.run(["sync", "--apply"]), "shared");
+    expect(read(agents)).toContain("<!-- canonfig:source:start -->");
+
+    write(join(own.folder, "canonfig.jsonc"), JSON.stringify({ version: 1, harnesses: ["codex"], ...config([]) }));
+    expect(succeed(own.run(["sync", "--apply"]), "whole").data).toMatchObject({ outcome: { outcome: "Converged" } });
+    expect(read(agents)).toBe("# Rules\n");
+    expect(succeed(own.run(["sync", "--apply"]), "again").data).toMatchObject({ outcome: { outcome: "Converged" } });
+
+    const kept = ownFolder("off-kept", ["codex"], config(["instructions"]), { "AGENTS.md": "# Rules\n" });
+    const keptAgents = join(kept.home, ".codex", "AGENTS.md");
+    succeed(kept.run(["sync", "--apply"]), "shared");
+    write(keptAgents, `${read(keptAgents)}My own line.\n`);
+    const before = read(keptAgents);
+    write(join(kept.folder, "canonfig.jsonc"), JSON.stringify({ version: 1, harnesses: ["codex"], ...config([]) }));
+    const refused = kept.run(["sync", "--apply"]);
+    expect(refused.status, refused.output).toBe(3);
+    expect(refused.output).toContain("holds this machine's own text after the Canonfig section");
+    expect(read(keptAgents)).toBe(before);
   }, 120_000);
 });

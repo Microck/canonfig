@@ -36,7 +36,8 @@ const isNotFoundFilesystemError = (
 const observeFile = (
   target: string,
   desired: Extract<DesiredResource, { readonly kind: "file" }>,
-  policy: ProfileRevision["resources"][number]["policy"],
+  /** Read the marked composition: the policy is append-local now or was when last applied. */
+  composed: boolean,
 ): Effect.Effect<ObservedResourceState, never, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
@@ -71,7 +72,7 @@ const observeFile = (
         objectKind: "regular",
       } as const;
     }
-    if (policy === "append-local") {
+    if (composed) {
       const bytes = yield* machine.readFile({ path, maximumBytes: defaultSynchronizationExecutionLimits.maximumFileBytes });
       const composition = yield* Effect.try(() => parseTextComposition(bytes));
       const permissions = yield* machine.permissions(path);
@@ -83,7 +84,7 @@ const observeFile = (
         objectKind: "regular",
       } as const;
       return composition.kind === "managed"
-        ? { ...observation, managedSourceDigest: sha256Hex(composition.source) }
+        ? { ...observation, managedSourceDigest: sha256Hex(composition.source), managedLocalText: composition.local.length > 0 }
         : observation;
     }
     return yield* machine.digestFile({ path }).pipe(
@@ -197,7 +198,11 @@ export const observeFollowerResource = (
 ): Effect.Effect<ObservedResourceState, never, MachineState> => {
   switch (desired.kind) {
     case "file":
-      return observeFile(decoded.resource.target, desired, decoded.resource.policy);
+      return observeFile(
+        decoded.resource.target,
+        desired,
+        decoded.resource.policy === "append-local" || applied?.policy === "append-local",
+      );
     case "config":
       return observeConfig(decoded, desired, applied);
     case "directory":
