@@ -95,6 +95,10 @@ it("stores a quoted ~ allow-path as an absolute path", () => {
     expect(initialized.status, initialized.stderr).toBe(0);
     // Saving a harness checks the stored Source against this database's identity.
     const source = JSON.parse(initialized.stdout).data;
+    // A follower keeps its Source's key in source_identity but holds no
+    // enrollment_source row; drop that row so this machine is only a Follower.
+    const database = new DatabaseSync(state);
+    try { database.prepare("DELETE FROM enrollment_source").run(); } finally { database.close(); }
     storeFollowerConfiguration(home, state, {
       source: { endpoint: "https://127.0.0.1:1", tlsFingerprint: source.tlsFingerprint,
         signingFingerprint: source.source.publicKeyFingerprint },
