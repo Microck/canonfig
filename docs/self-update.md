@@ -1,7 +1,7 @@
 # Opt-in self-updates
 
 Canonfig can check for and activate **stable patch releases in its current
-major.minor line**. A 5.0.x installation never moves to 5.1 or 6.x on its
+major.minor line**. A 6.0.x installation never moves to 6.1 or 7.x on its
 own. Source/follower major.minor compatibility still requires a coordinated fleet
 rollout for those releases. This is independent of skill and configuration sync.
 
