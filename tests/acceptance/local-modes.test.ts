@@ -89,7 +89,9 @@ const machine = (name: string, harnesses: ReadonlyArray<TargetId> = []): Machine
       env: environment,
       encoding: "utf8",
       input,
-      timeout: 60_000,
+      // A full follower apply under tsx can exceed a minute on hosted Windows
+      // runners; past the budget spawnSync kills it and reports status null.
+      timeout: 180_000,
     });
     const text = result.stdout.trim().length > 0 ? result.stdout : result.stderr;
     let data: CliResult["data"] = {};
@@ -99,7 +101,9 @@ const machine = (name: string, harnesses: ReadonlyArray<TargetId> = []): Machine
     } catch {
       // The assertion on `status` reports the output.
     }
-    return { status: result.status, output: `${result.stdout}${result.stderr}`, data };
+    // Name a kill or spawn failure (e.g. ETIMEDOUT), so a null status explains itself.
+    const failure = result.error === undefined ? "" : `\n${result.error.message}`;
+    return { status: result.status, output: `${result.stdout}${result.stderr}${failure}`, data };
   };
   return { home, folder: join(home, ".canonfig"), environment, run };
 };
@@ -235,7 +239,7 @@ describe("what a follower keeps of its own", () => {
     expect(read(codexAgents)).toBe(`${ownText}Added on the laptop later.\n`);
     expect(existsSync(join(skills, "mine", "SKILL.md"))).toBe(true);
     expect(existsSync(join(skills, "deploy"))).toBe(false);
-  }, 300_000);
+  }, 600_000);
 
   it("lets a Local Overlay replace a published item on one machine, across revisions", async () => {
     const { source, endpoint } = await startSource({
@@ -288,7 +292,7 @@ describe("what a follower keeps of its own", () => {
 
     expect(succeed(laptop.run(["overlay", "remove", "mcp/docs"]), "overlay remove").data).toMatchObject({ overlays: [] });
     expect(laptop.run(["sync", "--apply"]).status).toBe(3);
-  }, 300_000);
+  }, 600_000);
 
   it("lets a key claim keep one settings key on one machine while the other keys follow the Source", async () => {
     const team = {
@@ -356,7 +360,7 @@ describe("what a follower keeps of its own", () => {
     expect(succeed(laptop.run(["overlay", "remove", "settings/codex#model"]), "unclaim").data).toMatchObject({ overlays: [] });
     expect(succeed(laptop.run(["sync", "--apply"]), "unclaimed sync").data).toMatchObject({ outcome: { outcome: "Converged" } });
     expect(codexSettings()).toMatchObject({ model: "gpt-6", model_reasoning_effort: "high" });
-  }, 300_000);
+  }, 600_000);
 
   it("publishes authored file, directory and config resources, keeps follower drift, and retires them", async () => {
     const { source, endpoint } = await startSource({
@@ -412,7 +416,7 @@ describe("what a follower keeps of its own", () => {
     for (const path of ["gitconfig", "TEAM.md", "scripts/build.sh", "scripts/lib/common.sh"]) {
       expect(existsSync(join(laptop.folder, "files", ...path.split("/"))), path).toBe(false);
     }
-  }, 300_000);
+  }, 600_000);
 
   it("refuses a resource that reaches into a harness's own files", async () => {
     const source = machine("source");
