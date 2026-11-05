@@ -61,15 +61,24 @@ run the browser interface on this machine:
 canonfig ui
 ```
 
-it opens a read-only Overview with this machine's real role and status.
+it opens this machine's workspace, or setup when the machine is not configured.
 the server runs in your terminal on `127.0.0.1` with a free port. use
 `canonfig ui --port 5317 --no-open` to choose a port and open the printed
-URL yourself. stop it with Ctrl-C.
+single-use URL yourself. stop it with Ctrl-C.
 
-only the session and Overview are connected to real data in phase 1.
-publishing, setup, sync and the other screens shown below are
-[interactive demo](https://canonfig.micr.dev) features using made-up machines.
-use the CLI commands below for those operations on real machines.
+on a Source, author the profile, choose harnesses and groups, validate and publish
+revisions, manage secrets, and invite followers. on a Follower, inspect and apply
+sync plans, edit allowed local items and overlays, manage harness exclusions,
+restore backups, and set the schedule. both roles show real status and settings.
+errors keep the CLI's diagnostics. map names and appearance stay in this browser.
+
+self-update status and checks are available, but stop the GUI before enabling,
+disabling or applying updates in a terminal. unenrollment leaves applied files,
+the native schedule and tunnel configuration in place, as the CLI does.
+
+the [interactive demo](https://canonfig.micr.dev) and images below use made-up
+machines. its fleet health, revision and progress displays are not remote
+telemetry from the live GUI.
 
 <table>
   <tr>

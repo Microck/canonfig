@@ -1,12 +1,12 @@
 # Canonfig browser UI integration
 
-## Scope and phase 1
+## Integrated live GUI
 
 `canonfig ui [--port n] [--no-open]` serves the packaged React application in the foreground on `127.0.0.1`. Omitting `--port` asks the operating system for a free port. The launch URL carries a single-use token that establishes a session cookie. The server checks Host and Origin, holds the normal command lease, and releases its resources on Ctrl-C or SIGTERM. Bare `canonfig` still prints help. This server is separate from `source serve` and never becomes a network administration service.
 
-Phase 1 connects only the session and read-only Overview. Other workspace screens, onboarding mutations, and machine-map operations remain demo-only. Production must not report a simulated mutation as successful or populate missing status fields with demo values. An unconfigured machine gets its real role and setup guidance, not a completed setup wizard.
+The four feature areas are integrated with the shared server and authoring API. Source and Follower workspaces call real services; an unconfigured machine opens the setup wizard. Production never reports a simulated mutation as successful or fills missing status fields with demo values.
 
-The production entry is `ui/src/live-app.tsx`, selected through Vite's build-selected `@app` entrypoint; `ui/src/gui-client.ts` imports the shared contract directly. Development and demo builds select `App.tsx`. Production supports the current role's Overview path, or `/overview` when unconfigured. Other paths show an unavailable page rather than mounting demo screens. `src/gui/server.ts` uses Node HTTP under a scoped Effect lifetime. Bootstrap exchanges `GET /?token=...` for an HttpOnly, SameSite=Strict, Path=/ cookie, redirects with 303, and requires the cookie for assets and API calls. Host and any supplied Origin must match the actual loopback address and port.
+The production entry is `ui/src/live-app.tsx`, selected through Vite's build-selected `@app` entrypoint; `ui/src/gui-client.ts` imports the shared contract directly. Development and demo builds select `App.tsx`. Production supports the actual role's registered screens and `/setup` when unconfigured. Unsupported paths show an unavailable page rather than mounting demo screens. `src/gui/server.ts` uses Node HTTP under a scoped Effect lifetime. Bootstrap exchanges `GET /?token=...` for an HttpOnly, SameSite=Strict, Path=/ cookie, redirects with 303, and requires the cookie for assets and API calls. Host and any supplied Origin must match the actual loopback address and port.
 
 `src/gui/contract.ts` re-exports the area contracts under `src/gui/contract/`, imported directly by both packages. There are no generated copies. Session contracts live in `contract/session.ts`; operation tickets live in `contract/operations.ts`.
 
@@ -16,11 +16,11 @@ The production entry is `ui/src/live-app.tsx`, selected through Vite's build-sel
 | `GuiStatus` | `GET /api/status` | Existing `FollowerCommands.status()` payload. Validate `machineRole`, lifecycle entries with `reached` and `detail`, and tunnel JSON while retaining additional status properties. |
 | `GuiError` | Error responses | Existing CLI failure taxonomy, represented by `category`, `exitCode`, and `message`. Do not invent GUI failure categories. |
 
-`src/runtime/layers.ts` implements status. A Source without follower configuration reports unreached follower lifecycle stages. That is not proof the Source service is unhealthy. A follower's response can include synchronization state, active recovery, a completion receipt, and convergence evidence. Phase 1 must not infer a fleet inventory, pending folder changes, or remote machine health from these fields.
+`src/runtime/layers.ts` implements status. A Source without follower configuration reports unreached follower lifecycle stages. That is not proof the Source service is unhealthy. A follower's response can include synchronization state, active recovery, a completion receipt, and convergence evidence. The GUI does not infer fleet health, pending folder changes or remote schedules from these fields.
 
 ## Phase 2 ownership
 
-The shared foundation is implemented. The four feature areas below are registered but intentionally empty until their owners connect real operations. Each owner can complete its area without changing shared registration files. Changes to CLI/domain behavior outside the authoring API still require an assigned shared patch before dependent GUI work.
+The shared foundation and all four feature areas are implemented and registered once. The ownership table records the integrated modules. Missing CLI/domain operations remain hidden, not implemented as GUI-only mutations.
 
 | Owner | Contracts and routes | Live entry and existing screens | Tests |
 | --- | --- | --- | --- |
@@ -30,7 +30,7 @@ The shared foundation is implemented. The four feature areas below are registere
 | D: synchronization, recovery, schedule, local items, overlays, harness toggles, backups, secrets, tunnel, unenroll, export | `src/gui/contract/synchronization.ts`, `src/gui/routes/synchronization.ts` | `ui/src/live/synchronization.tsx`; `ui/src/workspace/follower.tsx`, `ui/src/workspace/harnesses.tsx`, `ui/src/workspace/schedule.tsx` | `tests/gui/synchronization.test.ts` |
 | E: source service, agent policy/harness, installers, doctor, update status/check | `src/gui/contract/administration.ts`, `src/gui/routes/administration.ts` | `ui/src/live/administration.tsx`; `ui/src/workspace/settings.tsx`, `ui/src/workspace/update-gate.ts` | `tests/gui/administration.test.ts` |
 
-Each area may add sibling implementation modules within a directory named for that area. Existing screen tests follow their screen owner. Shared visual primitives are not copied into area modules. B consumes D's secret/export contracts; E consumes C's setup contracts. Cross-area controls wait for their owning API, rather than implementing a second handler.
+Area implementation modules use the shared contracts and visual controls. B consumes D's secret/export handlers; E consumes C's setup handlers. Machine and state layers are exposed once for all area routes.
 
 The registration lines already landed are:
 
@@ -41,7 +41,7 @@ The registration lines already landed are:
 | D | `export * from "./contract/synchronization.ts";` | `synchronizationRoutes,` | `...synchronizationScreens,` |
 | E | `export * from "./contract/administration.ts";` | `administrationRoutes,` | `...administrationScreens,` |
 
-Owners fill these exports in their own modules. They add **zero** shared registration lines. `tests/gui/**/*.test.ts` is included in Vitest.
+Each area fills its registered exports without duplicate registration lines. `tests/gui/**/*.test.ts` is included in Vitest.
 
 ### Backend seam and worked Overview example
 
@@ -51,13 +51,11 @@ Owners fill these exports in their own modules. They add **zero** shared registr
 
 Overview is the worked example: `sessionScreens` registers `overviewPath` and renders the existing `Overview` component with the decoded session/status. `LiveApp({ backend })` defaults to `httpBackend`, so another implementation can provide the same contract without changing the screen. The renderer does not import demo records or simulate a completed operation.
 
-For another area, extract the existing screen's reads and actions into a typed backend prop, pass the area HTTP adapter from its `live/<area>.tsx`, and pass a demo adapter from its demo entry. Keep one screen implementation. Use the area's contract schemas for responses and requests; do not recreate them in the UI. Remove runtime imports of `workspace/store.tsx` and `shared/data.ts` from the live screen's dependency graph. `shared/metadata.ts` holds reusable labels and types without fixtures. Shared components in `workspace/kit.tsx` now read `ScreenContext`, not the simulated store. The live shell provides navigation/loading; an area provider supplies actual groups or publication actions when its screen needs them. Missing operational data is not replaced with seeded groups. The demo provider supplies its own context from its demo store.
-
-Keep the existing exports in an area's `ui/src/workspace/<area>.tsx` as demo wrappers, so `workspace.tsx` does not need edits. Move the one shared screen implementation into an owned sibling module and have both the demo wrapper and live entry inject their adapters there. The live entry must import that shared implementation, not the wrapper that imports the simulated store.
+Live screens import the area's shared schemas and never import the simulated store or demo records. `shared/metadata.ts` holds reusable labels and types without fixtures. Shared controls in `workspace/kit.tsx` use `ScreenContext`. Live and demo forms remain separate where the area implementation was approved that way; consolidating their presentation is follow-up work. The machine-map renderer is already shared through explicit data props.
 
 ### Typed operations and real journals
 
-An area route export is an Effect that captures its command services once and returns `GuiRoute[]`. Use `queryRoute` for reads and `mutationRoute(method, path, inputSchema, operation, status?)` for explicit operations. The helper rejects invalid JSON, unknown request keys and bodies over 1 MiB before invoking the service. The server requires the session cookie, exact Host/Origin checks, the custom request header and `application/json` for every mutation. Errors use the CLI taxonomy. There is no shell or arbitrary command endpoint.
+An area route export is an Effect that captures its command services once and returns `GuiRoute[]`. Use `queryRoute` for reads and `mutationRoute(method, path, inputSchema, operation, status?, options?)` for explicit operations. The helper rejects invalid JSON, unknown request keys and bodies over the route's bounded byte limit before invoking the service. The default is 1 MiB. Profile item/config and local-item authoring routes derive their allowance from the shared 128 MiB authoring aggregate budget, base64 expansion and a 1 MiB JSON envelope allowance. The authoring writer enforces that same aggregate budget on the complete candidate before writing. Other routes retain the default. Empty mutations share the strict `EmptyBody` schema. The server requires the session cookie, exact Host/Origin checks, the custom request header and `application/json` for every mutation. Errors use the CLI taxonomy. There is no shell or arbitrary command endpoint.
 
 Long operations use `GuiOperations`, provided to every area route factory. Capture it with `yield* GuiOperations`; return `operations.start(commandEffect, readJournal)` from a mutation with status 202 and the `GuiOperationTicket` response schema. Poll `GET /api/operations/<id>` through `backend.operation`. The command runs in the server scope, not the request scope, so disconnecting the request does not cancel an apply. Closing the GUI interrupts its scope; existing command journals remain the recovery authority.
 
@@ -80,20 +78,20 @@ Atomicity is per file, not a whole-directory transaction. A filesystem failure m
 
 `ui/scripts/subset-fonts.py` reproduces subsets from the phase-1 Git revision `2039144`, using `fonttools[woff]` 4.62.1. It keeps Latin plus the punctuation/symbols found in UI source, OpenType layout features and license metadata. The unused italic face and its CSS declaration are removed; the four referenced upright weights and both OFL texts remain. Keep the release size measurement and budget in `tools/release/validate-release.ts` aligned with the packaged production UI.
 
-The shipped font bytes fell from 518,156 to 156,000. Manrope is 22,876 bytes; Ioskeley Mono Regular/Medium/SemiBold/Bold are 33,076/33,496/33,356/33,196 bytes. The removed italic was 107,428 bytes. The complete package measured 817,087 bytes packed and 2,876,459 unpacked; the new ceilings are 850,000 and 2,960,000 bytes.
+The shipped font bytes fell from 518,156 to 156,000. Manrope is 22,876 bytes; Ioskeley Mono Regular/Medium/SemiBold/Bold are 33,076/33,496/33,356/33,196 bytes. The removed italic was 107,428 bytes. With the live GUI areas, map and providers, the package measured 1,106,655 bytes packed and 3,829,326 unpacked across 437 files. The release ceilings are 1,150,000 and 3,950,000 bytes.
 
 ## Screen and action inventory
 
-All endpoints below except `/api/session` and `/api/status` are proposals. `GET` reads, while `POST`, `PUT`, and `DELETE` name explicit operations. “Gap” means the visible operation must be removed from production or added to the shared CLI/domain contract first. Search, filter, tab selection, expanding details, draft edits, Save/Discard confirmation, copy buttons, and navigation stay in the browser unless a row says otherwise.
+The rows below record the integrated state: live, browser-local, demo-only, hidden or terminal-only. `GET` reads, while `POST`, `PUT` and `DELETE` name explicit operations. Search, filter, tab selection, expanding details, draft edits, Save/Discard confirmation, copy buttons and navigation stay in the browser unless a row says otherwise.
 
 ### Overview, navigation, and presentation
 
 | Screen/action and evidence | CLI/service mapping | Proposed endpoint | Owner |
 | --- | --- | --- | --- |
-| Source/Follower Overview, retry/refresh; `source.tsx`, `follower.tsx` | `status`, `FollowerCommands.status`; phase 1 only renders actual status. | `GET /api/session`, `GET /api/status` | A |
-| Demo Overview unpublished queue, latest revision, follower lag, item-by-machine matrix, recent runs, service/agent/harness/backup summaries | Profile catalog, state repository, service status, harness report. Gap: status is not a fleet telemetry API or folder diff API. | `GET /api/profile/changes`, `/api/revisions`, `/api/machines`, `/api/runs` after shared read contracts exist | B/C/D/E by data; A integrates |
-| Sidebar, mobile navigation, role-invalid/not-found routes, command palette and keyboard shortcuts; `frame.tsx`, `workspace.tsx`, `routes.ts`, `nav.ts` | Browser routing only. Palette Publish/Add machine/Health check links dispatch the same operation as their screen, not another implementation. | None for navigation | A |
-| Tours, chapter picker, next/back/skip/replay, first-visit tips, Get started dismissal, GitHub star prompt; `guide.tsx`, `tour-steps.tsx`, `page-tips.ts`, `kit.tsx` | Browser preferences only. Completion ticks cannot assert a machine operation succeeded. Demo role switch is not a real role change. | None | A |
+| Source/Follower Overview and Reload | **Live:** `FollowerCommands.status` supplies actual machine evidence. | `GET /api/session`, `GET /api/status` | A |
+| Overview unpublished queue, follower lag, item-by-machine matrix and fleet summaries | **Demo-only:** no fleet telemetry or folder-diff contract exists. Live revisions and enrollment inventory have their own screens. | No synthetic Overview endpoints | A |
+| Sidebar and role-invalid/not-found routes | **Live:** the actual role's screen registrations generate navigation. Command palette and demo shortcuts remain **demo-only**. | Browser navigation | A |
+| Tours, chapter picker, first-visit tips, Get started dismissal and GitHub star prompt | **Demo-only:** no completion tick certifies a real machine operation. | Browser preferences only | A |
 
 ### Profile and publication
 
@@ -105,7 +103,7 @@ All endpoints below except `/api/session` and `/api/status` are proposals. `GET`
 | **Live:** Defaults save/discard profile name, default schedule, local allowlist and append-local policy | Digest-checked edits to `profile`, `scheduleDefault` and `local`, preserving unspecified keys. A missing profile requires an explicit ID; existing IDs are read-only in this form. | `PUT /api/profile/config` | B |
 | **Live:** Discover tools and inspect findings. **Hidden:** Add selected | `SourceCommands.scan({write:false})`. Selective writes have no exact CLI counterpart. | `POST /api/profile/scan` | B |
 | **Live:** Publication reviewer, real folder/resource validation, confirmation and operation polling; revision list/detail/copy fingerprint. **Hidden:** synthetic progress, unpublished sequence prediction and machines-on-revision counts | `folderProfile`, `validateMachineProfile`, publication credential checks, then `SourceCommands.publish`. Publication revalidates before signing. Operation evidence is null until this operation's exact revision commits. | `POST /api/profile/validate`, `/api/publications`; `GET /api/revisions`; `POST /api/revisions/inspect` | B |
-| **Live frontend:** Profile Export. Backend and end-to-end verification owned by D | Real verified archive transported as base64 JSON and downloaded as a Blob, with archive digest, manifest digest and signer shown. No browser persistence. | `POST /api/exports` | D; B owns Profile button |
+| **Live:** Profile Export, including the shared backend and verified browser download | Real verified archive transported as base64 JSON and downloaded as a Blob, with archive digest, manifest digest and signer shown. No browser persistence. | `POST /api/exports` | D; B owns Profile button |
 | **Live:** Skill upstream list, track source/ref/subdir, check changes and update | `listSkills`, `trackSkill`, `checkSkills`, `updateSkills` in `src/skills/manager.ts`. Local edits refuse with the CLI conflict category and exit code. Updates recheck before writing and never publish. | `GET /api/skills`; `POST /api/skills/track`, `/check`, `/update` | B |
 
 Area B keeps the existing demo screens unchanged in this phase, as approved during integration. Live screens reuse the list, detail panel and field presentation. Forms cover supported frontmatter, instructions, simple MCP entries, settings keys, groups, defaults and harness surfaces. Unknown fields and full trees use exact editors rather than lossy conversion. Consolidating demo/live screen implementations remains follow-up work.
@@ -168,7 +166,7 @@ work, not a second implementation of any CLI service.
 | Backups list, restore confirmation and outcome | `listSnapshots` lists real takeover snapshots; `FollowerCommands.restore` supplies actual restore/exclusion evidence as a polled operation. | `GET /api/backups`; `POST /api/backups/restore` | Live |
 | Follower Secrets list and update | `listSecrets` and `synchronizeSharedSecrets`; only names and origins are returned. | `GET /api/secrets`; `POST /api/secrets/sync` | Live |
 | Tunnel status, start and stop | `FollowerCommands.tunnelStatus/restartTunnel/stopTunnel`; start uses recorded configuration, stop keeps it. First-time configuration belongs to enrollment. | `GET /api/tunnel`; `POST /api/tunnel/start`, `/api/tunnel/stop` | Live |
-| Enrollment details, copy fingerprints and unenroll | C supplies the safe `GuiEnrollment` read contract and handler. D calls `FollowerCommands.unenroll` exactly: applied files, native schedule and tunnel configuration remain. | `GET`/`DELETE /api/enrollment` | Live; read/copy verification pending C integration |
+| Enrollment details, copy fingerprints and unenroll | C supplies the safe `GuiEnrollment` read contract and handler. D calls `FollowerCommands.unenroll` exactly: applied files, native schedule and tunnel configuration remain. | `GET`/`DELETE /api/enrollment` | Live; integrated with C |
 | Local settings Export | `FollowerCommands.exportArchive`; the server checks the returned archive hash, downloads actual bytes and removes its unique temporary file. No arbitrary output path is accepted. | `POST /api/exports` | Live |
 
 D also owns the Source secrets handlers used by B: `GET /api/secrets` returns
@@ -192,12 +190,12 @@ uses simulated state or browser-local persistence.
 | Source service status, Install, Remove | **Live.** `source service status/install/remove` through SourceCommands, with Source-role enforcement and native status evidence. Restart is **hidden** because no CLI counterpart exists. | `GET`/`POST`/`DELETE /api/source-service` | E |
 | Agent policy mode, built-in/custom harness, model, executable/args, writable paths, evidence limit, Save | **Live.** FollowerCommands get/setAgentPolicy and get/setAgentHarness. Save reports policy success separately if harness save fails. The Source shows the CLI's harness refusal, not a fabricated harness configuration. | `GET`/`PUT /api/agent/policy`, `/api/agent/harness` | E |
 | Installers list and Check | **Live.** The same installer binding list, Windows suggestions and bounded check as `installer list/check`. Bind/remove remain terminal operations, not extra GUI buttons. | `GET /api/installers`; `POST /api/installers/:method/check` | E |
-| Machine setup journal, Approve plan, Apply | **Live frontend, requires C handlers at integration.** Explicit human approval and the displayed plan digest precede approve/apply. Apply polls its real operation journal. Mark linger done is **hidden** because a checkbox cannot verify readiness. | `GET /api/setup`; `POST /api/setup/approve`, `/apply` | E frontend, C backend |
+| Machine setup journal, Approve plan, Apply | **Live:** E uses C's integrated handlers. Explicit human approval and the displayed plan digest precede approve/apply. Apply polls its real operation journal. Mark linger done is **hidden** because a checkbox cannot verify readiness. | `GET /api/setup`; `POST /api/setup/approve`, `/apply` | E frontend, C backend |
 | Health check Run checks, result detail, fix command copy | **Live.** `doctor --no-input` through FollowerCommands. Failed checks retain the report and CLI category/exit code; copying evidence or a recovery command does not execute it. | `POST /api/doctor` | E |
 | Canonfig version status and Check; enable/disable/apply instructions | Status and Check are **live**. Enable, disable and apply are **terminal-only**, with copyable commands and instructions to stop the GUI first. No write endpoint or command-lease exemption. | `GET /api/self-update`; `POST /api/self-update/check` | E |
-| Source Secrets list, Set, Replace value, Remove, sharing membership | `secrets list/set/remove`, `listSecrets/storeSecret/removeSecret`, existing failure mapping in `src/secrets/cli.ts`; membership via replacement enrollment. Values remain write-only and absent from logs, URLs, status, and browser persistence. | `GET /api/secrets`; `PUT`/`DELETE /api/secrets/:name` | B frontend, D backend |
+| Source Secrets list, Set, Replace value, Remove, sharing membership | **Live:** `listSecrets/storeSecret/removeSecret` use the CLI failure mapping. Membership changes require replacement enrollment. Values remain write-only and absent from logs, URLs, status and browser persistence. | `GET`/`PUT`/`DELETE /api/secrets` | B frontend, D backend |
 
-Area E uses separate live components for this phase, as approved during implementation. The demo settings and their simulated controls remain unchanged. Live settings reuse `Field`, `SettingRow`, `CommandBox` and `StatusMark`; consolidating the remaining demo/live presentation is follow-up work. The setup page imports C's `GuiSetupStatus` and `GuiSetupJournal` schemas. C's digest-checked approve/apply handlers must be integrated before its successful setup workflow can be verified.
+Area E uses separate live components, as approved during implementation. The demo settings remain unchanged. Live settings reuse `Field`, `SettingRow`, `CommandBox` and `StatusMark`; consolidating the remaining presentation is follow-up work. The setup page imports C's `GuiSetupStatus` and `GuiSetupJournal` and uses its digest-checked handlers.
 
 ## Decisions for phase 2
 
@@ -207,6 +205,25 @@ Area E uses separate live components for this phase, as approved during implemen
 4. **Decided:** unenrollment matches the CLI's actual cleanup boundaries. Setup uses plan, explicit human approval and apply through its existing journal. A checkbox cannot certify credentials, host keys, linger or convergence.
 5. **Decided:** self-update status/check may become live now. Enable, disable and apply from the GUI remain phase 3, tracked by issue #260, with no command-lease exemption.
 
+## Remaining follow-ups
+
+- Consolidate separate demo/live form presentation without introducing a second production data source. The machine-map renderer is already shared.
+- Setup mutations serialize within the GUI, and journal writes use their IO lock. The plan-digest check and subsequent domain command are not one cross-process transaction. Another CLI process can replace the journal between those steps; a future domain-level operation must own that complete boundary.
+- Native schedule installation requires a running systemd user manager on Linux. Disposable browser verification uses a private session bus and reports the CLI's human-action-required failure rather than touching the operator's real user manager.
+- The live sidebar remains a vertical list above content at narrow widths. All role-appropriate actions are reachable, but a compact mobile navigation treatment remains a presentation follow-up.
+- Vite reports a vendor chunk above its 500 kB advisory threshold. Production and demo builds succeed; this is a bundle-splitting follow-up, not a missing route.
+
+
 ## Delivery evidence
 
-`tests/acceptance/gui.test.ts` covers real CLI launch with isolated homes, token exchange and replay refusal, Host/Origin and cookie checks, unconfigured and Source sessions, packaged static HTML, CLI/status parity, and SIGTERM port release. The production Vite build rejects imports of the simulated store or data module. Phase 2 must extend this coverage for its operations and exercise the affected screens in a real browser, including failure/retry and role-invalid routes, without weakening session or lease boundaries.
+The integrated branch passed root TypeScript checking, UI typechecking, production and demo UI builds, the full CLI/website build, lint, command-documentation validation and skill validation in a disposable Paris Raft workspace. The clean `origin/main` website build passed too. The integration-only Next type failure came from importing the secrets CLI into a GUI route; reusing the shared failure mapping removed that native-runtime import path.
+
+The full Vitest run completed with 1,859 passed, 71 skipped and one failed test across 79 files (77 passed, one skipped, one failed). The only failure was the known root-user permission case in `tests/integration/synchronization-run.test.ts`: root can write the nominally unwritable target, so the operation converges. All 11 tunnel acceptance tests passed. Authoring tests exercised writes above 1 MiB and a candidate immediately below/above the 128 MiB aggregate boundary.
+
+After the overlay correction, both synchronization route tests passed again. Four role-navigation tests passed with a real DOM test environment. Final UI typechecking, full build, root/website lint, documentation, skills and release validation passed. Root/website lint had no warnings; the additional UI lint run reported 90 warnings and no errors, including existing demo React-hook warnings and live module-export/dependency warnings. Release validation checked metadata, naming, secret patterns, a clean install and the binary.
+
+Packaged browser verification used isolated Source and Follower homes, private native credential stores, and 1920×1080 plus 390×844 viewports. It exercised real setup import offers; Source authoring, harness Gets, groups, defaults, validation/publication, revisions, export, secrets, invitations, machine list/detail/map customization and administration screens; and direct-loopback Follower enrollment, sync plan/apply, local items, key claims, harness exclusion, backup restore, secret synchronization and fingerprint-copy feedback. Invalid schedule-default input was corrected and saved. An invalid overlay exposed a missing GUI-boundary `parseOverlay` check; both mutation routes now use the CLI parser and tests require refusal without changing local configuration.
+
+Linux schedule installation reported the expected human-action-required diagnostic because the isolated session has no systemd user manager. Source agent policy saved, while Source harness configuration correctly refused without follower enrollment; the enrolled Follower saved both. The installer screen had no configured bindings to check. Version status worked; its check correctly refused the unpacked runtime because it was not a user-local global npm installation. Native service installation, SSH tunnel setup and self-update apply were not attempted. Screenshots and downloaded export evidence are under `/tmp/canonfig-ui/e2e/`.
+
+The final packaged overlay retry refused the invalid identifier without corrupting local configuration, and the existing key claim remained readable. Unenrollment ran last: the Source revoked the follower, its local credential was removed, and `GUI_SHARED` was removed from the native credential store. All browser sessions, GUI/transport servers, private keyrings and session buses were stopped; both temporary homes were removed.

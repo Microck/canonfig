@@ -1,8 +1,8 @@
 # Canonfig UI
 
-The browser frontend lives in `ui/`. Workspace screens are in `src/workspace/`, shared components and demo data in `src/shared/`, and first-run setup in `src/onboarding/`. See [the architecture decision](../docs/adr/0001-local-browser-gui.md).
+The browser frontend lives in `ui/`. Live screens enter through `src/live-app.tsx` and the area modules in `src/live/`; shared controls live in `src/components/` and `src/workspace/kit.tsx`. The demo keeps its workspace and onboarding screens. See [the architecture decision](../docs/adr/0001-local-browser-gui.md).
 
-The packaged `canonfig ui` connects to the real session and read-only Overview only. Every other screen and operation described below belongs to the interactive demo. Production does not mount the demo store or simulate successful setup, publishing, or synchronization.
+The packaged `canonfig ui` operates on the real machine through the same services as the CLI. Source screens cover profile authoring, harness selection, groups, defaults, validation, publication, revisions, skills, secrets, invitations and machine inventory. Follower screens cover enrollment, synchronization, recovery, local items, overlays, harness exclusions, backups, scheduling and secrets. Both roles have administration settings where the CLI supports them. Production never mounts the demo store or simulates success.
 
 Run `canonfig ui` to open the packaged interface, or `canonfig ui --port 5317 --no-open` to choose a loopback port and open the printed single-use URL yourself. Keep the terminal running; Ctrl-C or SIGTERM stops the server. Bare `canonfig` still prints help.
 
@@ -23,9 +23,9 @@ Open `http://localhost:5317/source/overview` for the development demo. The indep
 | `npm --prefix ui run build` | `ui/dist/` | Production frontend; CLI packaging places the assets in root `dist/ui/` |
 | `npm --prefix ui run build:demo` | `ui/dist-demo/` | The public demo at https://canonfig.micr.dev/, published to GitHub Pages with the docs under `/docs/` |
 
-Vite's build-selected `@app` entrypoint loads `src/live-app.tsx` for production and the existing `src/App.tsx` for development or mode `demo`. `src/gui-client.ts` requests `GET /api/session` and `GET /api/status` with the same-origin session cookie and decodes responses using direct imports from the repository's `src/gui/contract.ts`. `GuiSession`, `GuiStatus`, and `GuiError` have no generated frontend copies. The live Overview has an explicit Reload action and shows request failures instead of demo data.
+Vite's build-selected `@app` entrypoint loads `src/live-app.tsx` for production and `src/App.tsx` for development or mode `demo`. `src/gui-client.ts` sends same-origin requests with the session cookie and decodes responses using direct imports from `src/gui/contract.ts`. Area contracts are shared, not generated copies. Mutations use explicit typed endpoints, and long operations poll real results and journals. Errors preserve the CLI category, exit code and message. Reload reads fresh machine state.
 
-The production build also checks its module graph and fails if it imports `src/shared/data.ts` or `src/workspace/store.tsx`. This keeps simulated state out of the shipped application as more screens become live.
+The production build checks its module graph and fails if it imports `src/shared/data.ts` or `src/workspace/store.tsx`. Live and demo forms still have separate presentation implementations in some areas; their consolidation is tracked in the integration plan.
 
 `DEMO` in `src/shared/data.ts` is true for the demo build and dev server. Within the demo application it gates:
 
@@ -51,7 +51,7 @@ Keep the wordmark and tagline inside the central 1200x600: X and Slack crop the 
 
 ## Browser routes
 
-Production opens the actual machine's `/source/overview` or `/follower/overview`. An unconfigured machine uses `/overview` with read-only setup guidance. Unsupported and wrong-role paths show an unavailable page linking to the actual Overview.
+Production opens the actual machine's `/source/overview` or `/follower/overview`. An unconfigured machine opens `/setup`, where Source setup plans and reviews real import offers or Follower enrollment accepts an invitation. The sidebar comes from the role's live screen registrations. Unsupported and wrong-role paths show an unavailable page rather than a demo screen.
 
 The table below lists demo routes. In the demo, the URL selects the role, screen and view tab; links support direct loads, refresh, and browser Back/Forward. `/` opens `/source/overview`; unknown or role-invalid paths show a not-found page.
 
@@ -80,6 +80,10 @@ The table below lists demo routes. In the demo, the URL selects the role, screen
 | Canonfig version (self-update) | `/source/settings/version` | `/follower/settings/version` |
 
 First-run setup is `/setup`. Retired role and variant query parameters are not routing aliases.
+
+Live routes are registered in `src/live/`. Unlike the demo table, Source backups are not offered, while installers and machine setup are available for both configured roles. Skill upstream controls are part of the live Profile page. Map customization is browser-local and does not rename an enrollment identity. Machine inventory reports enrollment records, not remote health, schedules or synchronization progress.
+
+Self-update status and checks are live. Enable, disable and apply remain terminal operations after stopping the GUI; the GUI does not bypass its command lease. Invitation cancellation, selective scan writes, Source service restart and protected adoption-review reads/deletion are hidden because the CLI has no matching operation. Unenrollment leaves applied files, schedule and tunnel configuration intact.
 
 ## Demo guidance and presentation
 
