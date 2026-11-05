@@ -105,7 +105,10 @@ it("keeps the UI's per-harness categories equal to the adapters'", () => {
 // The GUI refuses authored-resource targets from a condensed copy of the
 // paths the engine reserves (projectResources in src/projection/plan.ts). On
 // Linux, every engine path must sit under a GUI path of the same owner, and
-// every GUI path must overlap an engine path of that owner.
+// every GUI path must be one of that owner's engine paths (its root, a
+// surface, an alternative or a never-touch path). Equality, not overlap: a
+// GUI entry widened to an ancestor such as `~/.config` would refuse targets
+// the engine accepts.
 it("keeps the UI's reserved harness paths covering the adapters' paths", () => {
   const context = posixContext({});
   const within = (child: string, parent: string) => child === parent || child.startsWith(`${parent}/`);
@@ -118,7 +121,7 @@ it("keeps the UI's reserved harness paths covering the adapters' paths", () => {
   expect(engine.filter((entry) => !ui.some((covering) => covering.owner === entry.owner && within(entry.path, covering.path)))).toEqual([]);
   const harnessNames = new Set<string>(Object.values(HARNESS_NAMES));
   expect(ui.filter((entry) => harnessNames.has(entry.owner)
-    && !engine.some((reserved) => reserved.owner === entry.owner && (within(reserved.path, entry.path) || within(entry.path, reserved.path))))).toEqual([]);
+    && !engine.some((reserved) => reserved.owner === entry.owner && reserved.path === entry.path))).toEqual([]);
 });
 
 it("loads distinct Amp agents whose IDs differ by hyphens and underscores", async () => {

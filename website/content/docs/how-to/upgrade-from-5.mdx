@@ -31,9 +31,11 @@ Later runs find the upgraded state and do nothing more.
 - **Tools and credentials.** A follower's record of each tool it installed
   and each credential it checked stays as it was.
 - **Published revisions.** A Source keeps every revision it published, with
-  its profile and sequence. This release cannot apply their resources, so
-  publish from `~/.canonfig/` once on the Source after upgrading; the new
-  revision continues the sequence under the same profile id.
+  its profile and sequence. This release cannot apply their resources, so it
+  never serves them: until the Source publishes again, a follower finds no
+  revision to sync and a new follower cannot enroll. Publish from
+  `~/.canonfig/` once on the Source right after upgrading; the new revision
+  continues the sequence under the same profile id.
 
 Canonfig stops managing the `file`, `directory`, `config` and `skill`
 resources 5.0.1 applied, and lists each one in `state_upgrades`. Their files
@@ -57,5 +59,17 @@ changed and no copy is written.
 State from a release before 4.0.0 needs one run of 5.0.1 first, for example
 `npx @microck/canonfig@5.0.1 status`.
 
-To go back to 5.0.1 after an upgrade, install 5.0.1 and move the
-`state-before-format-6-*.sqlite` copy to `~/.canonfig/state.sqlite`.
+To go back to 5.0.1 after an upgrade:
+
+1. Stop every `canonfig` process on the machine. On a Source, stop the
+   service with `canonfig source service remove`, or stop the
+   `canonfig source serve` you started. On a follower, run
+   `canonfig schedule remove` so no scheduled sync starts, and let a running
+   one finish.
+2. Move `~/.canonfig/state.sqlite` aside, together with
+   `~/.canonfig/state.sqlite-wal` and `~/.canonfig/state.sqlite-shm` if they
+   exist. SQLite would otherwise apply those files, which belong to the
+   upgraded database, to the copy you restore.
+3. Install 5.0.1, move the `state-before-format-6-*.sqlite` copy to
+   `~/.canonfig/state.sqlite`, and set up the service or schedule again from
+   5.0.1.

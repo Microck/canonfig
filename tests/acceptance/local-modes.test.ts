@@ -408,6 +408,40 @@ describe("what a follower keeps of its own", () => {
     expect(read(mine)).toBe(published);
   }, 120_000);
 
+  it("reports a file the machine adds inside a Canonfig-owned append-local skill as drift, and keeps it", () => {
+    const own = ownFolder("added", ["codex"], {
+      local: { appendLocal: ["skills"] },
+    }, { "AGENTS.md": "# Rules\n", "skills/deploy/SKILL.md": skill("deploy", "Deploy carefully.") });
+    const skills = join(own.home, ".agents", "skills");
+    write(join(skills, "mine", "SKILL.md"), skill("mine", "Only on this machine."));
+    expect(succeed(own.run(["sync", "--apply"]), "first").data).toMatchObject({ outcome: { outcome: "Converged" } });
+
+    // `deploy/` is Canonfig's entry, so a file added inside it is drift.
+    // `mine/` stays the machine's and is never compared.
+    const added = join(skills, "deploy", "notes.md");
+    write(added, "Added on this machine.\n");
+    write(join(skills, "mine", "extra.md"), "Also the machine's.\n");
+    const drifted = own.run(["sync", "--apply"]);
+    expect(drifted.status, drifted.output).toBe(4);
+    expect(drifted.output).toContain("FollowerDrift");
+    expect(drifted.output).not.toContain("mine");
+    expect(read(added)).toBe("Added on this machine.\n");
+    expect(read(join(skills, "deploy", "SKILL.md"))).toBe(skill("deploy", "Deploy carefully."));
+  }, 120_000);
+
+  it("removes on restore an append-local instructions file that did not exist before takeover", () => {
+    const own = ownFolder("created", ["codex"], {
+      local: { appendLocal: ["instructions"] },
+    }, { "AGENTS.md": "# Rules\n" });
+    const agents = join(own.home, ".codex", "AGENTS.md");
+    expect(existsSync(agents)).toBe(false);
+    expect(succeed(own.run(["sync", "--apply"]), "shared").data).toMatchObject({ outcome: { outcome: "Converged" } });
+    expect(read(agents)).toContain("<!-- canonfig:source:start -->");
+
+    succeed(own.run(["restore"]), "restore");
+    expect(existsSync(agents)).toBe(false);
+  }, 120_000);
+
   it("turns append-local off: converges when no text of the machine's follows, and keeps text that does", () => {
     const config = (appendLocal: ReadonlyArray<string>) => ({ local: { appendLocal } });
     const own = ownFolder("off", ["codex"], config(["instructions"]), { "AGENTS.md": "# Rules\n" });

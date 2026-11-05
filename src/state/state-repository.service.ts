@@ -122,6 +122,14 @@ export class StateRepository extends Context.Service<StateRepository, {
   ) => Effect.Effect<ProfileRevision | undefined, StateRepositoryError>;
   readonly listRevisions: (
   ) => Effect.Effect<ReadonlyArray<ProfileRevision>, StateRepositoryError>;
+  /**
+   * The revisions a Source serves to followers: every revision this release
+   * published. A revision carried over from 5.0.1 state stays in
+   * `listRevisions` (publication continues its sequence) but is never served:
+   * its signed resources are ones this release does not store or apply.
+   */
+  readonly listServedRevisions: (
+  ) => Effect.Effect<ReadonlyArray<ProfileRevision>, StateRepositoryError>;
   readonly listRevisionBlobCandidates: (
     blob: ContentDigest,
   ) => Effect.Effect<ReadonlyArray<RevisionBlobCandidate>, StateRepositoryError>;

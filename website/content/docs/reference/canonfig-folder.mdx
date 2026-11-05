@@ -253,11 +253,12 @@ fields, verification, and logins are explained in
 
 An item reference is `instructions` (the `AGENTS.md` file) or
 `<category>/<name>`, where the category is `rules`, `skills`, `agents`,
-`commands`, `hooks`, `mcp`, `settings` (the name is a harness id), `tools`, or
-`credentials`. A grouped item reaches only Follower Machines enrolled in one of
-its groups. An item no group names reaches every Follower Machine. A hook script
-reaches the machines that one of its hooks reaches. The harness list and
-`local` always reach every Follower Machine.
+`commands`, `hooks`, `mcp`, `settings` (the name is a harness id), `tools`,
+`credentials`, or `resources`. A grouped item reaches only Follower Machines
+enrolled in one of its groups. An item no group names reaches every Follower
+Machine. A hook script reaches the machines that one of its hooks reaches, and
+a file under `files/` the machines that one of the resources reading it
+reaches. The harness list and `local` always reach every Follower Machine.
 
 Grant a Follower Group with `canonfig source invite --group <name>`.
 
@@ -396,7 +397,7 @@ failure exits 2 and nothing is signed. Most messages start with
 | `this Source publishes profile <id>; set "profile.id" in canonfig.jsonc back to <id>` | One Source Machine publishes one Machine Profile. Restore the original id. |
 | `<path> hook <id> runs <script>, which does not exist` | Add the script under `hooks/`, or fix `run`. |
 | `<path> is not run by any hook in canonfig.jsonc, so it would never reach a follower; reference it from a hook or remove it` | A file under `hooks/` is unused. |
-| `<path> hook script <script> needs a name of letters, digits, '.', '_' or '-'` | Rename the script. |
+| `<path> <file> needs path segments of letters, digits, '.', '_' or '-', none of them only dots` | Rename the file under `hooks/` or `files/`. A `:` or a name of only dots cannot reach a follower. |
 | `<path> mcp.<name> requires <tools/id>, which "tools" does not declare` | Declare the tool, or drop it from `requires`. |
 | `<path> groups.<group> names <reference>, which the folder does not declare` | Fix the reference, or add the item. |
 | `config resource <id> at <path> contains a literal credential [REDACTED]; ...` | Replace the value with a `{ "fromEnv": ... }` reference, or store it with `canonfig secrets set`. |

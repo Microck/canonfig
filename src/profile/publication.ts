@@ -125,17 +125,19 @@ const fileItem = (id: string, path: string, executable: boolean): ProfileResourc
 /**
  * The resource id of a file item under `directory`, one segment per path
  * segment: `hooks/lib/run.sh` is `hook-scripts:lib:run.sh`, `files/a/b` is
- * `files:a:b`. Followers map the id back to exactly that path.
+ * `files:a:b`. Followers map the id back to exactly that path, so a segment
+ * may not hold `:` (it would split into two segments there) and may not be
+ * only dots (`mirrorItem` refuses those, and with them the whole revision).
  */
 const pathItemId = (category: string, directory: string, file: string, path: string): string => {
-  const id = `${category}:${file.slice(`${directory}/`.length).split("/").join(":")}`;
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(id)) {
+  const segments = file.slice(`${directory}/`.length).split("/");
+  if (segments.some((segment) => !/^[A-Za-z0-9._-]+$/u.test(segment) || /^\.+$/u.test(segment))) {
     throw new CanonicalFolderError({
       path,
-      message: `${file} needs a name of letters, digits, '.', '_' or '-'`,
+      message: `${file} needs path segments of letters, digits, '.', '_' or '-', none of them only dots`,
     });
   }
-  return id;
+  return `${category}:${segments.join(":")}`;
 };
 
 const hookScriptId = (script: string, path: string): string => pathItemId("hook-scripts", "hooks", script, path);

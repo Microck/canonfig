@@ -1,20 +1,31 @@
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { once } from "node:events";
-import { chmodSync, cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { Effect, Schema } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ContentDigest, FollowerId, ProfileId } from "../src/domain/brand.ts";
+import { ContentDigest, FollowerId, ProfileId, SourceSignature } from "../src/domain/brand.ts";
+import { TransportResourceNotFoundError } from "../src/enrollment/enrollment.errors.ts";
+import { EnrollmentLive } from "../src/enrollment/enrollment.layer.ts";
+import { Enrollment } from "../src/enrollment/enrollment.service.ts";
+import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
+import { profileCatalogLayer } from "../src/profile/profile-catalog.layer.ts";
+import { ProfileCatalog } from "../src/profile/profile-catalog.service.ts";
+import type { ProfileRevisionSigner } from "../src/profile/publication.ts";
+import { adapterFor } from "../src/projection/adapters/index.ts";
+import { synchronizeLocal } from "../src/projection/sync.ts";
+import { readSnapshot, snapshotCopy } from "../src/projection/takeover.ts";
 import { runtimeStateLayer } from "../src/runtime/state-layer.ts";
 import { StateInitializationError } from "../src/runtime/state-initialization.errors.ts";
 import { EarlierStateFormatError, EarlierStateUpgradeError } from "../src/state/state-repository.errors.ts";
 import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
 import { StateRepository } from "../src/state/state-repository.service.ts";
+import { SynchronizationLive } from "../src/synchronization/synchronization.layer.ts";
 
 // Real state that Canonfig 5.0.1 wrote: generate.mjs drove the 5.0.1 CLI to
 // publish twice, enroll a follower, apply, set an overlay and a schedule, and
@@ -69,8 +80,36 @@ const backups = (state: string): ReadonlyArray<string> =>
 
 const digest = (path: string): string => createHash("sha256").update(readFileSync(path)).digest("hex");
 
-const withRepository = <A, E>(state: string, home: string, effect: Effect.Effect<A, E, StateRepository>) =>
-  Effect.runPromise(effect.pipe(Effect.provide(stateRepositoryLayer(state, { home }))));
+const withRepository = <A, E>(state: string, effect: Effect.Effect<A, E, StateRepository>) =>
+  Effect.runPromise(effect.pipe(Effect.provide(stateRepositoryLayer(state))));
+
+const write = (path: string, content: string, mode?: number) => {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, content);
+  if (mode !== undefined) chmodSync(path, mode);
+};
+
+/** A real machine layer for a fixture home: its HOME and PATH, credentials in a local file. */
+const machineOf = (home: string, environment: Readonly<Record<string, string>>) =>
+  linuxMachineStateLayer({
+    environment: Object.entries(environment).map(([name, value]) => ({ name, value })),
+    credentialPolicy: { kind: "local-file", path: join(home, "credentials") },
+  });
+
+/** Publish `folder` into `state` with a real Ed25519 key, as `canonfig source publish` does. */
+const publishFolder = (state: string, folder: string) => {
+  const keys = generateKeyPairSync("ed25519");
+  const signer: ProfileRevisionSigner = {
+    keyId: "upgraded-source-key",
+    sign: (payload) => Effect.sync(() => Schema.decodeUnknownSync(SourceSignature)(
+      `ed25519:${sign(null, Buffer.from(payload), keys.privateKey).toString("base64url")}`,
+    )),
+    verify: () => Effect.succeed(true),
+  };
+  return Effect.runPromise(Effect.flatMap(ProfileCatalog, (catalog) =>
+    catalog.publish({ folder, reviewer: "reviewer@example.test", publishedAt: "2026-11-05T12:00:00Z" })
+  ).pipe(Effect.provide(profileCatalogLayer(signer)), Effect.provide(stateRepositoryLayer(state))));
+};
 
 const canonfig = (home: string, args: ReadonlyArray<string>) =>
   spawnSync(process.execPath, ["--import", "tsx", resolve(import.meta.dirname, "../src/runtime/main.ts"), ...args, "--json"], {
@@ -101,6 +140,33 @@ const contentOf = (state: string) =>
 describe("state from Canonfig 5.0.1", () => {
   it("carries a follower forward: enrollment, records, journal and schedule survive, once", async () => {
     const { home, state } = install("follower");
+    // The fixture applied no tool or credential. Records of both, as 5.0.1
+    // stores them, must come through unchanged, installer recipe and mode
+    // included.
+    const provenance = {
+      schema: "canonfig.recipe-provenance/v1",
+      upstream: "https://registry.npmjs.org/@biomejs/biome",
+      version: "1.9.4",
+      platform: "linux",
+      architecture: "x64",
+      artifactDigest: `sha512-${"c".repeat(86)}`,
+      entrypoint: "biome",
+      dependencyPolicy: "lockfile",
+      executionContext: "user",
+      method: "npm",
+      package: "@biomejs/biome",
+      compatibility: "linux-x64",
+      target: "~/.local/bin/biome",
+      fingerprint: "d".repeat(64),
+    };
+    const seeding = new DatabaseSync(state);
+    const seed = seeding.prepare(`
+      INSERT INTO applied_resources (follower_id, resource_id, revision_id, digest, applied_at, kind, policy, target, mode, installer_recipe_json)
+      SELECT follower_id, ?, revision_id, ?, applied_at, ?, ?, ?, ?, ? FROM applied_resources ORDER BY resource_id LIMIT 1
+    `);
+    seed.run("biome", "a".repeat(64), "tool", "ensure", "biome", 0o755, JSON.stringify(provenance));
+    seed.run("docs-token", "b".repeat(64), "credential", "require-local", "DOCS_MCP_TOKEN", null, null);
+    seeding.close();
     const journal = rows(state, "SELECT * FROM action_journal ORDER BY id");
     const runs = rows(state, "SELECT id, status, plan_json, outcome_json FROM synchronization_runs ORDER BY started_at");
     const earlierRecords = rows(state, "SELECT resource_id, digest, kind FROM applied_resources ORDER BY resource_id");
@@ -125,7 +191,7 @@ describe("state from Canonfig 5.0.1", () => {
 
     const [follower] = rows(state, "SELECT id FROM followers");
     const followerId = Schema.decodeUnknownSync(FollowerId)(follower?.["id"]);
-    const upgraded = await withRepository(state, home, Effect.gen(function*() {
+    const upgraded = await withRepository(state, Effect.gen(function*() {
       const repository = yield* StateRepository;
       return {
         configuration: yield* repository.getFollowerSynchronizationConfiguration(),
@@ -150,6 +216,11 @@ describe("state from Canonfig 5.0.1", () => {
     ]);
     expect(upgraded.records.map((record) => record.resource))
       .toEqual(earlierRecords.map((record) => String(record["resource_id"])).filter((id) => !authored.some((record) => record["resource_id"] === id)));
+    const revision = upgraded.records[0]?.revision;
+    expect([...upgraded.records].sort((left, right) => left.resource.localeCompare(right.resource))).toEqual([
+      { resource: "biome", revision, digest: "a".repeat(64), appliedAt: expect.any(String), kind: "tool", policy: "ensure", target: "biome", mode: 0o755, installerRecipe: provenance },
+      { resource: "docs-token", revision, digest: "b".repeat(64), appliedAt: expect.any(String), kind: "credential", policy: "require-local", target: "DOCS_MCP_TOKEN" },
+    ]);
     expect(upgraded.takeovers).toEqual([]);
     // The revisions this follower applied keep their identity and list no
     // resources this release could apply.
@@ -157,8 +228,9 @@ describe("state from Canonfig 5.0.1", () => {
 
     const [upgrade] = rows(state, "SELECT * FROM state_upgrades");
     const backup = String(upgrade?.["backup"]);
-    expect(backups(state)).toEqual([backup.slice(backup.lastIndexOf("/") + 1)]);
-    expect(statSync(backup).mode & 0o777).toBe(0o600);
+    expect(backups(state)).toEqual([basename(backup)]);
+    // Windows does not keep POSIX permission bits.
+    if (process.platform !== "win32") expect(statSync(backup).mode & 0o777).toBe(0o600);
     expect(rows(backup, "SELECT count(*) AS count FROM effect_sql_migrations")).toEqual([{ count: 21 }]);
     expect(JSON.parse(String(upgrade?.["changes_json"]))).toEqual({
       releasedResources: expect.arrayContaining([
@@ -181,6 +253,66 @@ describe("state from Canonfig 5.0.1", () => {
     expect(rows(state, "SELECT count(*) AS count FROM state_upgrades")).toEqual([{ count: 1 }]);
     expect(backups(state)).toEqual(before.backups);
     expect(digest(state)).toBe(before.database);
+
+    // A 5.0.1 process still running after the upgrade cannot write its own
+    // configuration shape, which this release could no longer read.
+    const earlierWriter = new DatabaseSync(state);
+    try {
+      expect(() => earlierWriter.prepare(`
+        UPDATE follower_sync_configuration
+        SET configuration_json = json_set(json_remove(configuration_json, '$.profile'), '$.selectedProfile', 'workstation')
+      `).run()).toThrow(/configuration_names_profile/u);
+    } finally {
+      earlierWriter.close();
+    }
+    expect(digest(state)).toBe(before.database);
+  }, 120_000);
+
+  it("takes over the paths it released on the first current sync, snapshot first", async () => {
+    const { home, state } = install("follower");
+    await withRepository(state, Effect.flatMap(StateRepository, () => Effect.void));
+    const released = {
+      codex: readFileSync(join(home, ".codex", "AGENTS.md"), "utf8"),
+      claude: readFileSync(join(home, ".claude", "CLAUDE.md"), "utf8"),
+    };
+    // The folder the current release projects, holding what this follower
+    // would mirror from a Source that now publishes from `~/.canonfig/`.
+    const folder = join(home, ".canonfig");
+    write(join(folder, "canonfig.jsonc"), JSON.stringify({ version: 1, harnesses: ["claude-code", "codex"] }));
+    write(join(folder, "AGENTS.md"), "Current instructions.\n");
+    const bin = join(home, "bin");
+    for (const harness of ["claude-code", "codex"] as const) {
+      write(join(bin, adapterFor(harness).descriptor.executables[0]!), "#!/bin/sh\nexit 0\n", 0o755);
+    }
+    const environment = { HOME: home, PATH: bin, XDG_CACHE_HOME: join(home, ".cache") };
+    const variables = new Map(Object.entries(environment));
+
+    const applied = await Effect.runPromise(
+      synchronizeLocal(state, "apply", { noBackup: false, environment: (name) => variables.get(name) }).pipe(
+        Effect.provide(SynchronizationLive.pipe(
+          Layer.provideMerge(stateRepositoryLayer(state)),
+          Layer.provideMerge(machineOf(home, environment)),
+        )),
+      ),
+    );
+    expect(applied.outcome).toMatchObject({ outcome: "Converged" });
+    expect(applied.takeovers.map((entry) => `${entry.harness} ${entry.backup}`).sort()).toMatchInlineSnapshot(`
+      [
+        "claude-code takeover snapshot",
+        "codex takeover snapshot",
+      ]
+    `);
+    expect(readFileSync(join(home, ".codex", "AGENTS.md"), "utf8")).toContain("Current instructions.");
+    expect(readFileSync(join(home, ".claude", "CLAUDE.md"), "utf8")).toContain("Current instructions.");
+
+    // The takeover snapshot holds the bytes 5.0.1 wrote there.
+    const snapshot = await Effect.runPromise(readSnapshot(join(folder, ".backups"), undefined));
+    const copied = (target: string) => {
+      const entry = snapshot.manifest.entries.find((candidate) => candidate.target === target);
+      return entry !== undefined && "copy" in entry ? readFileSync(snapshotCopy(snapshot, entry.copy), "utf8") : undefined;
+    };
+    expect(copied(join(home, ".codex", "AGENTS.md"))).toBe(released.codex);
+    expect(copied(join(home, ".claude", "CLAUDE.md"))).toBe(released.claude);
   }, 120_000);
 
   it("carries a Source forward: identity, followers, approvals, blobs and the published sequence", async () => {
@@ -193,7 +325,7 @@ describe("state from Canonfig 5.0.1", () => {
     const fresh = join(mkdtempSync(join(tmpdir(), "canonfig-fresh-state-")), "state.sqlite");
     homes.push(join(fresh, ".."));
 
-    const upgraded = await withRepository(state, home, Effect.gen(function*() {
+    const upgraded = await withRepository(state, Effect.gen(function*() {
       const repository = yield* StateRepository;
       const revisions = yield* repository.listRevisions();
       const latest = yield* repository.getLatestRevision(Schema.decodeUnknownSync(ProfileId)("workstation"));
@@ -212,8 +344,6 @@ describe("state from Canonfig 5.0.1", () => {
       ["workstation", 1],
       ["workstation", 2],
     ]);
-    // The next publication from ~/.canonfig/ continues at sequence 3 under the
-    // same profile, so followers take it as newer.
     expect(upgraded.latest?.sequence).toBe(2);
     expect(upgraded.approval).toMatchObject({ reviewer: "fixture" });
     expect(upgraded.candidates).toEqual(upgraded.revisions.map((revision) => revision.id));
@@ -222,8 +352,50 @@ describe("state from Canonfig 5.0.1", () => {
     expect(readFileSync(join(home, ".canonfig", "secrets.json"), "utf8")).toContain("docs-token");
 
     // The upgraded schema is exactly the one a new database gets.
-    await withRepository(fresh, home, Effect.flatMap(StateRepository, () => Effect.void));
+    await withRepository(fresh, Effect.flatMap(StateRepository, () => Effect.void));
     expect(schemaOf(state)).toEqual(schemaOf(fresh));
+
+    // The next publication from ~/.canonfig/ continues the sequence under the
+    // same profile, so followers take it as newer.
+    const folder = join(home, ".canonfig");
+    write(join(folder, "canonfig.jsonc"), JSON.stringify({ version: 1, profile: { id: "workstation", name: "Workstation" }, harnesses: ["codex"] }));
+    write(join(folder, "AGENTS.md"), "Current instructions.\n");
+    const published = await publishFolder(state, folder);
+    expect([published.profileId, published.sequence]).toEqual(["workstation", 3]);
+  });
+
+  it("never serves a carried-over revision and serves the first publication after the upgrade", async () => {
+    const { home, state } = install("source");
+    const carried = rows(state, "SELECT id FROM profile_revisions ORDER BY sequence").map((row) => String(row["id"]));
+    expect(carried).toHaveLength(2);
+    // 5.0.1 kept the follower's credential in a secret store the fixture
+    // does not copy; give the enrolled follower one this test knows.
+    const credential = "earlier-state-follower-credential-0123456789";
+    const enrolled = new DatabaseSync(state);
+    enrolled.prepare("UPDATE follower_credentials SET credential_digest = ?")
+      .run(createHash("sha256").update(credential).digest("hex"));
+    enrolled.close();
+    const source = EnrollmentLive.pipe(
+      Layer.provideMerge(stateRepositoryLayer(state)),
+      Layer.provideMerge(machineOf(home, { HOME: home, PATH: join(home, "bin") })),
+    );
+    const serve = <A, E>(effect: Effect.Effect<A, E, Enrollment>) => Effect.runPromise(effect.pipe(Effect.provide(source)));
+
+    // Their signed bytes name 5.0.1 resources this release does not apply,
+    // so a follower is offered nothing until the Source publishes.
+    expect(await serve(Effect.flatMap(Enrollment, (enrollment) => enrollment.listAuthorizedRevisions(credential))))
+      .toEqual({ revisions: [] });
+    for (const id of carried) {
+      const refused = await serve(Effect.flip(Effect.flatMap(Enrollment, (enrollment) => enrollment.getAuthorizedRevision(credential, id))));
+      expect(refused, id).toBeInstanceOf(TransportResourceNotFoundError);
+    }
+
+    const folder = join(home, ".canonfig");
+    write(join(folder, "canonfig.jsonc"), JSON.stringify({ version: 1, profile: { id: "workstation", name: "Workstation" }, harnesses: ["codex"] }));
+    write(join(folder, "AGENTS.md"), "Current instructions.\n");
+    const published = await publishFolder(state, folder);
+    const listed = await serve(Effect.flatMap(Enrollment, (enrollment) => enrollment.listAuthorizedRevisions(credential)));
+    expect(listed.revisions.map((revision) => [revision.id, revision.sequence])).toEqual([[published.id, 3]]);
   });
 
   it("refuses a Source that published two profiles, names them, and changes nothing", async () => {
@@ -243,7 +415,7 @@ describe("state from Canonfig 5.0.1", () => {
   });
 
   it("refuses an unfinished run on every open and upgrades once it is finished", async () => {
-    const { home, state } = install("follower");
+    const { state } = install("follower");
     const database = new DatabaseSync(state);
     database.prepare(`
       INSERT INTO synchronization_runs (id, follower_id, revision_id, status, plan_json, started_at)
@@ -253,7 +425,7 @@ describe("state from Canonfig 5.0.1", () => {
     database.close();
     const before = contentOf(state);
     const open = () => Effect.runPromise(Effect.flip(
-      Effect.flatMap(StateRepository, () => Effect.void).pipe(Effect.provide(stateRepositoryLayer(state, { home }))),
+      Effect.flatMap(StateRepository, () => Effect.void).pipe(Effect.provide(stateRepositoryLayer(state))),
     ));
 
     for (const attempt of [1, 2]) {
@@ -267,13 +439,13 @@ describe("state from Canonfig 5.0.1", () => {
     const finishing = new DatabaseSync(state);
     finishing.prepare("UPDATE synchronization_runs SET status = 'Failed', completed_at = started_at WHERE id = 'run-unfinished'").run();
     finishing.close();
-    await withRepository(state, home, Effect.flatMap(StateRepository, () => Effect.void));
+    await withRepository(state, Effect.flatMap(StateRepository, () => Effect.void));
     expect(rows(state, "SELECT count(*) AS count FROM effect_sql_migrations")).toEqual([{ count: 2 }]);
     expect(backups(state)).toHaveLength(1);
   });
 
   it("checks what another writer committed while the upgrade waited for the write lock", async () => {
-    const { home, state } = install("follower");
+    const { state } = install("follower");
     // WAL, as a running 5.0.1 leaves it: readers never wait for that writer.
     const wal = new DatabaseSync(state);
     wal.exec("PRAGMA journal_mode = WAL");
@@ -298,7 +470,7 @@ describe("state from Canonfig 5.0.1", () => {
     await once(writer.stdout, "data");
 
     const refused = await Effect.runPromise(Effect.flip(
-      Effect.flatMap(StateRepository, () => Effect.void).pipe(Effect.provide(stateRepositoryLayer(state, { home }))),
+      Effect.flatMap(StateRepository, () => Effect.void).pipe(Effect.provide(stateRepositoryLayer(state))),
     ));
     await exited;
     // Planned before the lock, the upgrade would have missed the run and
@@ -330,7 +502,7 @@ describe("state from Canonfig 5.0.1", () => {
       database.close();
 
       const refused = await Effect.runPromise(Effect.flip(
-        Effect.flatMap(StateRepository, () => Effect.void).pipe(Effect.provide(stateRepositoryLayer(state, { home }))),
+        Effect.flatMap(StateRepository, () => Effect.void).pipe(Effect.provide(stateRepositoryLayer(state))),
       ));
       expect(refused).toBeInstanceOf(EarlierStateFormatError);
       expect(refused).toMatchObject({ origin: history.origin });

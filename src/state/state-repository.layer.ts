@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { open, realpath } from "node:fs/promises";
-import { homedir } from "node:os";
 
 import { SqliteClient, SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { Effect, Layer, Schema } from "effect";
@@ -50,7 +49,6 @@ import {
   FollowerNotFoundError,
   InvalidRunTransitionError,
   RepositoryDecodeError,
-  EarlierStateFormatError,
   RepositorySqlError,
   RevisionImmutableError,
   RevisionNotFoundError,
@@ -88,7 +86,7 @@ import type {
   VerificationEvidence,
 } from "./state-repository.types.ts";
 import { stateFormatVersion, stateMigrations } from "./state-schema.ts";
-import { classifyStateHistory, readStateHistory, upgradeStateFormat4 } from "./earlier-state.ts";
+import { classifyStateHistory, readStateHistory, unsupportedStateHistory, upgradeStateFormat4 } from "./earlier-state.ts";
 import { buildIdentity } from "../runtime/build-identity.ts";
 import type {
   PlanningLocalRevision,
@@ -331,17 +329,7 @@ const statusCount = Effect.fn("StateRepository.statusCount")(function*(
   return decoded[0]?.count ?? 0;
 });
 
-/** Options of the state repository. */
-export interface StateRepositoryOptions {
-  /**
-   * The home directory `~` meant to the release that wrote earlier state;
-   * upgrading that state resolves applied targets against it. Defaults to
-   * this user's home directory.
-   */
-  readonly home?: string | undefined;
-}
-
-const makeRepository = (options: StateRepositoryOptions) => Effect.gen(function*() {
+const makeRepository = Effect.gen(function*() {
   const sql = yield* SqlClient.SqlClient;
 
   // A database from an earlier release has a different migration history.
@@ -352,12 +340,9 @@ const makeRepository = (options: StateRepositoryOptions) => Effect.gen(function*
   const history = yield* readStateHistory();
   const origin = classifyStateHistory(history);
   if (origin === "state-format-4") {
-    yield* upgradeStateFormat4(history, options.home ?? homedir());
+    yield* upgradeStateFormat4();
   } else if (origin !== "current") {
-    return yield* new EarlierStateFormatError({
-      migrations: history.map((row) => `${String(row.migration_id).padStart(4, "0")}_${row.name}`),
-      origin,
-    });
+    return yield* unsupportedStateHistory(history, origin);
   }
 
   yield* SqliteMigrator.run({ loader: stateMigrations }).pipe(
@@ -1520,29 +1505,40 @@ const makeRepository = (options: StateRepositoryOptions) => Effect.gen(function*
     },
   );
 
+  const readRevisions = (operation: string, servedOnly: boolean) => Effect.gen(function*() {
+    const rows = yield* sql`
+      SELECT revision_json
+      FROM profile_revisions
+      ${sql.literal(servedOnly ? "WHERE from_earlier_release = 0" : "")}
+      ORDER BY profile_id, sequence
+    `.pipe(Effect.mapError(sqlError(operation)));
+    const decoded = yield* decodeRows(
+      RevisionJsonRow,
+      rows,
+      "profile revision row",
+      "all",
+    );
+    const revisions: Array<ProfileRevision> = [];
+    for (const row of decoded) {
+      revisions.push(yield* parseJson(
+        ProfileRevisionSchema,
+        row.revision_json,
+        "profile revision",
+        "all",
+      ));
+    }
+    return revisions;
+  });
+
   const listRevisions = Effect.fn("StateRepository.listRevisions")(
     function*(): Effect.fn.Return<ReadonlyArray<ProfileRevision>, StateRepositoryError> {
-      const rows = yield* sql`
-        SELECT revision_json
-        FROM profile_revisions
-        ORDER BY profile_id, sequence
-      `.pipe(Effect.mapError(sqlError("list profile revisions")));
-      const decoded = yield* decodeRows(
-        RevisionJsonRow,
-        rows,
-        "profile revision row",
-        "all",
-      );
-      const revisions: Array<ProfileRevision> = [];
-      for (const row of decoded) {
-        revisions.push(yield* parseJson(
-          ProfileRevisionSchema,
-          row.revision_json,
-          "profile revision",
-          "all",
-        ));
-      }
-      return revisions;
+      return yield* readRevisions("list profile revisions", false);
+    },
+  );
+
+  const listServedRevisions = Effect.fn("StateRepository.listServedRevisions")(
+    function*(): Effect.fn.Return<ReadonlyArray<ProfileRevision>, StateRepositoryError> {
+      return yield* readRevisions("list served profile revisions", true);
     },
   );
 
@@ -2814,6 +2810,7 @@ const makeRepository = (options: StateRepositoryOptions) => Effect.gen(function*
     findRevision,
     getLatestRevision,
     listRevisions,
+    listServedRevisions,
     listRevisionBlobCandidates,
     readResourceBlobRange,
     loadAppliedResources,
@@ -2839,7 +2836,7 @@ const makeRepository = (options: StateRepositoryOptions) => Effect.gen(function*
   });
 });
 
-export const stateRepositoryLayer = (filename: string, options: StateRepositoryOptions = {}) =>
-  Layer.effect(StateRepository, makeRepository(options)).pipe(
+export const stateRepositoryLayer = (filename: string) =>
+  Layer.effect(StateRepository, makeRepository).pipe(
     Layer.provide(SqliteClient.layer({ filename })),
   );

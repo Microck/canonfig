@@ -1150,7 +1150,11 @@ const appendLocalOutput = (
       if (current.kind !== "managed" || sha256Hex(current.source) !== desired.digest) {
         return yield* new InvalidExecutionPlanError({ message: `Source text changed before removal: ${before.path}. Replan synchronization.` });
       }
-      return { content: encoder.encode(current.local), mode };
+      // Taking out Canonfig's section leaves exactly the machine's text. When
+      // there is none (Canonfig created the file, and nothing was added after
+      // its section), no file remains either: an empty leftover would be
+      // Canonfig's, not the machine's.
+      return { content: current.local.length === 0 ? undefined : encoder.encode(current.local), mode };
     }
     const detail = context.action.detail;
     if (detail.kind !== "write-file") {
@@ -1246,8 +1250,11 @@ const prepareAppendLocal = (context: ResourceExecutionContext, target: string) =
       if (!sameTextSnapshot(current, before)) {
         return yield* new InvalidExecutionPlanError({ message: `append-local target changed while preparing: ${target}. Replan synchronization.` });
       }
-      if (content === undefined) return;
       const machine = yield* MachineState;
+      if (content === undefined) {
+        if (current.state !== "absent") yield* machine.removeFile({ path });
+        return;
+      }
       yield* machine.atomicWrite({ path, content, mode });
     });
     return { rollbackReference: rollback.reference, execute, rollback: rollback.restore };

@@ -810,8 +810,9 @@ const makeEnrollment = Effect.gen(function*() {
     );
     // Everything after this point is a read: a failure below leaves the
     // pending enrollment for the follower to finalize or cancel, and cancel
-    // removes the credential stored above.
-    const authorizedProfiles = yield* repository.listRevisions().pipe(
+    // removes the credential stored above. Only served revisions count: a
+    // Source upgraded from 5.0.1 that has not published yet offers nothing.
+    const authorizedProfiles = yield* repository.listServedRevisions().pipe(
       Effect.mapError(repositoryError("list authorized profiles")),
       Effect.map((revisions) => revisions.map((revision) => ({
         id: revision.id,
@@ -956,10 +957,13 @@ const makeEnrollment = Effect.gen(function*() {
     return value;
   });
 
+  // A revision carried over from 5.0.1 state is never listed, fetched or
+  // read from: its signed bytes name resources this release does not apply,
+  // so a follower waits for the Source's first publication instead.
   const authorizedRevisions = Effect.fn("Enrollment.authorizedRevisions")(
     function*(credential: string) {
       const authenticated = yield* authenticate(credential);
-      const revisions = yield* repository.listRevisions().pipe(
+      const revisions = yield* repository.listServedRevisions().pipe(
         Effect.mapError(repositoryError("list authorized revisions")),
       );
       return {
@@ -995,9 +999,7 @@ const makeEnrollment = Effect.gen(function*() {
       });
     }
     const keys = yield* signingKeys();
-    // The validated profile, not the stored index, is what followers apply:
-    // for a revision an earlier release published it is the projection into
-    // this release's transport shape.
+    // The validated profile, not the stored index, is what followers apply.
     const profile = yield* cachedRevision(
       revision,
       keys.material.source.keyId,
@@ -1045,7 +1047,7 @@ const makeEnrollment = Effect.gen(function*() {
       const authenticated = yield* authenticate(credential);
       const groups = new Set<string>(authenticated.follower.groups);
       const revisionId = decode(ProfileRevisionId)(input.revisionId);
-      const revisions = yield* repository.listRevisions().pipe(
+      const revisions = yield* repository.listServedRevisions().pipe(
         Effect.mapError(repositoryError("list authorized blob revisions")),
       );
       const revision = revisions.find((candidate) => candidate.id === revisionId);

@@ -269,6 +269,23 @@ describe("publishing the Canonical Folder", () => {
     expect(persisted(fixture.database)).toEqual({ revisions: 0, blobs: 0, approvals: 0 });
   });
 
+  // A follower maps `files:a:b.txt` back to files/a/b.txt and refuses a
+  // segment of only dots, so either name would fail every follower's sync.
+  // Windows cannot create these names.
+  it.skipIf(process.platform === "win32").each([
+    ["a ':' in a file name", "a:b.txt"],
+    ["a segment of only dots", ".../b.txt"],
+  ])("refuses %s under files/ before signing", async (_name, path) => {
+    const fixture = workspace({ resources: { notes: { kind: "directory", target: "~/notes", source: "files/notes" } } });
+    write(join(fixture.folder, "files", "notes", ...path.split("/")), "x\n");
+    const signing = makeSigner();
+    const failure = await publishFailure(fixture, signing.signer);
+    expect(failure).toBeInstanceOf(InvalidPublicationInputError);
+    if (failure instanceof InvalidPublicationInputError) expect(failure.reason).toContain(`files/notes/${path} needs path segments`);
+    expect(signing.calls.signed).toBe(0);
+    expect(persisted(fixture.database)).toEqual({ revisions: 0, blobs: 0, approvals: 0 });
+  });
+
   it.each([
     ["a separate password argument", { mcp: { tool: { transport: "stdio", command: "tool", args: ["--password", "publication-disposable-value"] } } }],
     ["an equals token argument", { mcp: { tool: { transport: "stdio", command: "tool", args: ["--api-token=publication-disposable-value"] } } }],

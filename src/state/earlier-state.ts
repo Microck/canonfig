@@ -12,7 +12,7 @@ import { ProfileRevisionSchema } from "../domain/profile.ts";
 import { AppliedResourceRecordSchema, type AppliedResourceRecord } from "../domain/synchronization.ts";
 import { buildIdentity } from "../runtime/build-identity.ts";
 import { FollowerSynchronizationConfiguration } from "../synchronization/follower-sync-config.ts";
-import { EarlierStateUpgradeError, RepositorySqlError } from "./state-repository.errors.ts";
+import { EarlierStateFormatError, EarlierStateUpgradeError, RepositorySqlError } from "./state-repository.errors.ts";
 import { currentStateHistory, stateMigrations } from "./state-schema.ts";
 
 /**
@@ -33,8 +33,10 @@ import { currentStateHistory, stateMigrations } from "./state-schema.ts";
  *   already belong to the follower: the config record they overlaid is
  *   released, and this release leaves every key Canonfig does not own alone.
  * - A published revision keeps its id, profile, sequence, digest, signature
- *   and signed bytes, and lists no resources: this release cannot apply its
- *   resources, and the Source publishes from `~/.canonfig/` from now on.
+ *   and signed bytes, lists no resources, and is marked
+ *   `from_earlier_release`: this release cannot apply its resources, so the
+ *   Source never serves it, and publication from `~/.canonfig/` continues
+ *   its sequence.
  * - Unchunked blobs move into chunks; runs from before 3.2.0 get the same
  *   unrecorded build identity their 3.2.0 receipt names.
  *
@@ -109,6 +111,16 @@ export const classifyStateHistory = (history: ReadonlyArray<MigrationRecord>): S
   if (history.length < stateFormat4History.length && matches(history, stateFormat4History)) return "before-state-format-4";
   return "unrecognized";
 };
+
+/** The refusal of a history this release does not upgrade: older than state format 4, or unknown. */
+export const unsupportedStateHistory = (
+  history: ReadonlyArray<MigrationRecord>,
+  origin: Exclude<StateHistory, "current" | "state-format-4">,
+) =>
+  new EarlierStateFormatError({
+    migrations: history.map((row) => `${String(row.migration_id).padStart(4, "0")}_${row.name}`),
+    origin,
+  });
 
 /**
  * The tables state format 4 holds, parents before the tables that reference
@@ -371,17 +383,25 @@ const backupDatabase = Effect.fn("StateRepository.backupEarlierState")(function*
   const backup = join(directory, `state-before-format-6-${stamp}.sqlite`);
   yield* Effect.tryPromise({
     try: async () => {
+      // O_EXCL: if this open fails, the name belonged to someone else and is
+      // left alone. Once it succeeds the file is this upgrade's, and a failed
+      // copy removes it rather than leaving a partial backup behind.
       const handle = await open(
         backup,
         constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0),
         0o600,
       );
-      await handle.close();
-      const source = new DatabaseSync(file, { readOnly: true });
       try {
-        await backupSqlite(source, backup);
-      } finally {
-        source.close();
+        await handle.close();
+        const source = new DatabaseSync(file, { readOnly: true });
+        try {
+          await backupSqlite(source, backup);
+        } finally {
+          source.close();
+        }
+      } catch (error) {
+        await rm(backup, { force: true });
+        throw error;
       }
     },
     catch: (error) => new RepositorySqlError({ operation: "back up earlier state", message: `could not write ${backup}: ${String(error)}` }),
@@ -391,7 +411,6 @@ const backupDatabase = Effect.fn("StateRepository.backupEarlierState")(function*
 
 const applyUpgrade = Effect.fn("StateRepository.applyEarlierStateUpgrade")(function*(
   plan: UpgradePlan,
-  home: string,
   history: ReadonlyArray<MigrationRecord>,
   backup: string,
 ) {
@@ -459,8 +478,12 @@ const applyUpgrade = Effect.fn("StateRepository.applyEarlierStateUpgrade")(funct
   `);
   for (const { row, json } of plan.revisions) {
     yield* run(sql`
-      INSERT INTO profile_revisions (id, profile_id, sequence, canonical_bytes, digest, signature, published_at, revision_json)
-      VALUES (${row.id}, ${row.profile_id}, ${row.sequence}, ${row.canonical_bytes}, ${row.digest}, ${row.signature}, ${row.published_at}, ${json})
+      INSERT INTO profile_revisions (
+        id, profile_id, sequence, canonical_bytes, digest, signature, published_at, revision_json, from_earlier_release
+      ) VALUES (
+        ${row.id}, ${row.profile_id}, ${row.sequence}, ${row.canonical_bytes}, ${row.digest}, ${row.signature},
+        ${row.published_at}, ${json}, 1
+      )
     `);
   }
   if (plan.configuration !== undefined) {
@@ -520,25 +543,29 @@ const applyUpgrade = Effect.fn("StateRepository.applyEarlierStateUpgrade")(funct
  * refusal ends the transaction before anything is written and leaves no
  * backup.
  */
-export const upgradeStateFormat4 = Effect.fn("StateRepository.upgradeStateFormat4")(function*(
-  history: ReadonlyArray<MigrationRecord>,
-  home: string,
-) {
+export const upgradeStateFormat4 = Effect.fn("StateRepository.upgradeStateFormat4")(function*() {
   const sql = yield* SqlClient.SqlClient;
   const upgrade = Effect.gen(function*() {
-    // Another process may have upgraded the state since the caller read it.
-    if (classifyStateHistory(yield* readStateHistory()) !== "state-format-4") return;
+    // The caller read the history without the lock. Since then another
+    // process may have upgraded the state (now current, nothing to do) or a
+    // newer release may have rewritten it into a history this one does not
+    // know, which is refused like any other.
+    const history = yield* readStateHistory();
+    const origin = classifyStateHistory(history);
+    if (origin === "current") return;
+    if (origin !== "state-format-4") return yield* unsupportedStateHistory(history, origin);
     const plan = yield* readEarlierState();
     const backup = yield* backupDatabase();
     // The transaction rolls back on failure; the copy of state that stayed
     // as it was goes with it, so a failed upgrade leaves nothing behind.
-    yield* applyUpgrade(plan, home, history, backup).pipe(
+    yield* applyUpgrade(plan, history, backup).pipe(
       Effect.tapError(() => Effect.promise(() => rm(backup, { force: true }))),
     );
   });
   yield* sql.withTransaction(upgrade).pipe(
-    Effect.mapError((error) => error instanceof EarlierStateUpgradeError || error instanceof RepositorySqlError
-      ? error
-      : new RepositorySqlError({ operation: "upgrade earlier state", message: String(error) })),
+    Effect.mapError((error) =>
+      error instanceof EarlierStateUpgradeError || error instanceof EarlierStateFormatError || error instanceof RepositorySqlError
+        ? error
+        : new RepositorySqlError({ operation: "upgrade earlier state", message: String(error) })),
   );
 });

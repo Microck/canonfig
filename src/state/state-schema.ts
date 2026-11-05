@@ -45,6 +45,11 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       )
     `;
 
+    // `from_earlier_release` marks a revision the in-place upgrade carried
+    // over from a 5.0.1 Source: its signed bytes list resources this release
+    // cannot apply, and its stored resource list is empty. The Source keeps it
+    // so publication continues the sequence, and never serves it to a
+    // follower.
     yield* sql`
       CREATE TABLE profile_revisions (
         id TEXT PRIMARY KEY,
@@ -55,6 +60,7 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         signature TEXT NOT NULL,
         published_at TEXT NOT NULL,
         revision_json TEXT NOT NULL,
+        from_earlier_release INTEGER NOT NULL DEFAULT 0 CHECK (from_earlier_release IN (0, 1)),
         UNIQUE (profile_id, sequence)
       )
     `;
@@ -148,11 +154,16 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       )
     `;
 
+    // `profile` is checked here, not only by the decoder: a 5.0.1 process
+    // still running after the in-place upgrade would write its own
+    // `selectedProfile` shape, which this release cannot read. The
+    // constraint makes that old process's write fail instead.
     yield* sql`
       CREATE TABLE follower_sync_configuration (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
         follower_id TEXT NOT NULL REFERENCES followers(id) ON DELETE RESTRICT,
-        configuration_json TEXT NOT NULL,
+        configuration_json TEXT NOT NULL CONSTRAINT configuration_names_profile
+          CHECK (json_valid(configuration_json) AND json_type(configuration_json, '$.profile') IS 'text'),
         updated_at TEXT NOT NULL
       )
     `;

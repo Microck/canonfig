@@ -29,9 +29,11 @@ canonfig source publish --reviewer "$USER"
 | `directory` | Every file under the `source` directory. | `replace` (default): Canonfig owns the whole directory. `append-local`: Canonfig owns only the entries it writes. |
 | `config` | Only the `keys`, merged into a `json`, `toml`, or `yaml` file. Every other key stays. | Always merged. Keys are written like [settings](/reference/canonfig-folder#settings). |
 
-Each resource is published and mirrored like any other item, reaches only the
-Follower Machines of a group that names `resources/<id>`, and is not affected
-by `surfaces`. Every file under `files/` must be read by a resource.
+Each resource is published and mirrored like any other item and is not
+affected by `surfaces`. A resource no group names reaches every Follower
+Machine; once a group names `resources/<id>`, it reaches only the Follower
+Machines of that group. A file under `files/` goes wherever a resource that
+reads it goes, and every file under `files/` must be read by a resource.
 
 On each machine the first write takes a takeover snapshot, as for a harness.
 Afterwards a change you make to a target is Follower Drift: kept, reported,
