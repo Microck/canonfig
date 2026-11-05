@@ -26,6 +26,14 @@ const SKELETON_THEME: SkulletTheme = {
   radius: "var(--radius-sm)",
 };
 
+/** The sidebar and route lookup share the role-filtered live screen registry. */
+export function screensForRole(role: GuiSession["role"]) {
+  return screens.flatMap((screen) => {
+    const href = screen.path(role);
+    return href === undefined ? [] : [{ ...screen, href }];
+  });
+}
+
 type OverviewState =
   | { kind: "loading"; session?: GuiSession }
   | { kind: "ready"; session: GuiSession; status: GuiStatus }
@@ -68,11 +76,8 @@ export default function LiveApp({ backend = httpBackend }: { backend?: Workspace
   }, [reload, backend]);
 
   const session = state.session;
-  const href = session ? session.role === "unconfigured" ? "/setup" : overviewPath(session.role) : "/";
-  const available = session === undefined ? [] : screens.flatMap((screen) => {
-    const path = session.role === "unconfigured" && screen.title === "Overview" ? undefined : screen.path(session.role);
-    return path === undefined ? [] : [{ ...screen, href: path }];
-  });
+  const href = session ? overviewPath(session.role) : "/";
+  const available = session === undefined ? [] : screensForRole(session.role);
   const screen = available.find((screen) => screen.href === window.location.pathname);
   const unavailable = session !== undefined && screen === undefined;
   const busy = state.kind === "loading";

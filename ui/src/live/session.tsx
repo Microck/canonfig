@@ -12,7 +12,7 @@ const ROLE_LABEL: Record<GuiSession["role"], string> = {
 };
 
 export function overviewPath(role: GuiSession["role"]) {
-  return role === "unconfigured" ? "/overview" : `/${role}/overview`;
+  return role === "unconfigured" ? "/setup" : `/${role}/overview`;
 }
 
 function fieldLabel(key: string) {
@@ -139,6 +139,6 @@ export function ErrorNotice({ error, title = "Operation failed" }: { error: GuiR
 
 export const sessionScreens: ReadonlyArray<LiveScreen> = [{
   title: "Overview",
-  path: overviewPath,
+  path: (role) => role === "unconfigured" ? undefined : overviewPath(role),
   render: ({ session, status }) => <Overview session={session} status={status} />,
 }];
