@@ -19,6 +19,7 @@ import {
   type ObservedResourceState,
 } from "../domain/synchronization.ts";
 import { TaggedError } from "../domain/tagged-error.ts";
+import { sourceBytesIssue } from "../domain/text-composition.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import {
   canonicalJson,
@@ -55,7 +56,7 @@ import type {
   RootContext,
   SurfaceContent,
 } from "./harness.ts";
-import { modelFor, SURFACE_CATEGORIES, type SurfaceCategory, TARGET_IDS, type TargetId } from "./model.ts";
+import { type CanonicalModel, modelFor, SURFACE_CATEGORIES, type SurfaceCategory, TARGET_IDS, type TargetId } from "./model.ts";
 import { hookRegistryJson, hookRunnerSource } from "./templates/runtime.ts";
 import type { Snapshot, SnapshotEntry, TakeoverUnit } from "./takeover.ts";
 import { snapshotCopy } from "./takeover.ts";
@@ -88,12 +89,24 @@ export class ProjectionHumanActionError extends TaggedError<ProjectionHumanActio
 /** The pseudo-harness that owns the shared `~/.agents/skills/` surface. */
 export const sharedSkillsOwner = "agents";
 
+/**
+ * The pseudo-harness that owns authored `resources.<id>`: each resource is
+ * one of its surfaces, rooted at the home directory, so takeover, snapshots,
+ * restore and retirement treat it as they treat a harness surface.
+ */
+export const resourcesOwner = "resources";
+
 /** One surface with the content this run projects into it. */
 export interface ProjectedSurface {
   readonly harness: string;
   readonly root: string;
   readonly surface: OwnedSurface;
   readonly content: SurfaceContent;
+  /**
+   * Canonfig shares the surface with the machine (`append-local`): a marked
+   * Source section in a text file, only its own entries in a directory.
+   */
+  readonly appendLocal: boolean;
 }
 
 /** A harness surface's resource id: `harness:<harness>:<surface>`. */
@@ -206,6 +219,74 @@ export interface HarnessPlan {
 }
 
 /**
+ * Authored `resources.<id>` as surfaces of the `resources` pseudo-harness.
+ * A target resolves under this machine's home directory and must stay clear
+ * of the Canonical Folder, the shared `~/.agents/`, and every place any
+ * harness adapter owns or keeps state in (its root, surfaces and never-touch
+ * paths), whether or not that harness is listed. Harness configuration is
+ * the adapters' alone; a resource cannot reach `~/.codex/auth.json`.
+ */
+const projectResources = (model: CanonicalModel, context: RootContext, configPath: string) =>
+  Effect.gen(function*() {
+    if (model.resources.length === 0) return [];
+    const paths = pathsFor(context.platform);
+    const reserved: Array<{ readonly owner: string; readonly path: string }> = [
+      { owner: "the Canonical Folder", path: model.folder },
+      { owner: "the shared agent directory", path: paths.join(context.home, ".agents") },
+    ];
+    for (const harness of TARGET_IDS) {
+      const layout = adapterFor(harness).layout(context, model);
+      const owner = adapterFor(harness).descriptor.name;
+      reserved.push(
+        { owner, path: layout.root },
+        ...layout.surfaces.flatMap((surface) => [surface.target, ...surface.kind === "config" ? surface.alternatives ?? [] : []])
+          .map((path) => ({ owner, path })),
+        ...layout.neverTouch.map((path) => ({ owner, path })),
+      );
+    }
+    const surfaces: Array<ProjectedSurface> = [];
+    for (const resource of model.resources) {
+      const target = paths.join(context.home, ...resource.target.slice("~/".length).split("/"));
+      const clash = reserved.find((entry) => within(paths, entry.path, target) || within(paths, target, entry.path));
+      if (clash !== undefined) {
+        return yield* new CanonicalFolderError({
+          path: configPath,
+          message: `resources.${resource.id}.target ${resource.target} overlaps ${clash.path}, which belongs to ${clash.owner}; author harness configuration through the folder instead`,
+        });
+      }
+      const base = { harness: resourcesOwner, root: context.home };
+      if (resource.kind === "config") {
+        surfaces.push({
+          ...base,
+          surface: { id: resource.id, kind: "config", target, format: resource.format, keys: resource.keys.map((key) => key.path) },
+          content: { kind: "config", surface: resource.id, keys: resource.keys },
+          appendLocal: false,
+        });
+      } else if (resource.kind === "file") {
+        const appendLocal = resource.policy === "append-local";
+        const issue = appendLocal ? sourceBytesIssue(resource.file.content) : undefined;
+        if (issue !== undefined) {
+          return yield* new CanonicalFolderError({ path: configPath, message: `resources.${resource.id} cannot use append-local: ${issue}` });
+        }
+        surfaces.push({
+          ...base,
+          surface: { id: resource.id, kind: "file", target },
+          content: { kind: "file", surface: resource.id, content: resource.file.content, executable: resource.file.executable },
+          appendLocal,
+        });
+      } else {
+        surfaces.push({
+          ...base,
+          surface: { id: resource.id, kind: "directory", target },
+          content: { kind: "directory", surface: resource.id, files: resource.files },
+          appendLocal: resource.policy === "append-local",
+        });
+      }
+    }
+    return surfaces;
+  });
+
+/**
  * Every surface this run projects, with harness roots checked: inside the
  * home directory, and equal to the root pinned at takeover.
  */
@@ -243,11 +324,29 @@ export const projectSurfaces = (
       return Effect.void;
     };
     const surfaces: Array<ProjectedSurface> = [];
-    const diagnostics: Array<Diagnostic> = loaded.ignoredLocal.map((path) => ({
-      level: "warning" as const,
-      code: "LOCAL_NOT_ALLOWED",
-      message: `${path} is not admitted by canonfig.jsonc local.allow and was not projected`,
-    }));
+    const diagnostics: Array<Diagnostic> = [
+      ...loaded.ignoredLocal.map((path) => ({
+        level: "warning" as const,
+        code: "LOCAL_NOT_ALLOWED",
+        message: `${path} is not admitted by canonfig.jsonc local.allow and was not projected`,
+      })),
+      ...loaded.overlays.filter((overlay) => !overlay.local).map((overlay) => ({
+        level: "warning" as const,
+        code: "OVERLAY_UNUSED",
+        message: `overlay ${overlay.item} finds no admitted local/ item of that name, so ${overlay.published ? "the published item is projected" : "it changes nothing"}; add the local item or run 'canonfig overlay remove ${overlay.item}'`,
+      })),
+    ];
+    // Append-local text keeps Canonfig's section between reserved markers, so
+    // the projected text must not hold them; refuse it before any write.
+    const shared = (harness: string, surface: string, content: SurfaceContent, appendLocal: boolean) => {
+      if (!appendLocal || content.kind !== "file") return Effect.succeed(appendLocal);
+      const issue = sourceBytesIssue(bytesOf(content.content));
+      return issue === undefined
+        ? Effect.succeed(true)
+        : Effect.fail(new CanonicalFolderError({ path: configPath, message: `${harness} ${surface} cannot keep this machine's text: ${issue}` }));
+    };
+    const sharedCategory = (surface: string): boolean =>
+      (surface === "instructions" || surface === "skills") && model.appendLocal.includes(surface);
     // A category a harness cannot take would silently do nothing; refuse it for
     // every listed harness, including ones not installed or excluded here, so
     // the mistake shows on the Source before any follower runs it.
@@ -296,7 +395,13 @@ export const projectSurfaces = (
             message: `${harness} surface ${resolved.id} resolves to ${resolved.target}, outside the home directory ${context.home}; Canonfig projects only inside the home directory`,
           });
         }
-        surfaces.push({ harness, root: layout.root, surface: resolved, content });
+        surfaces.push({
+          harness,
+          root: layout.root,
+          surface: resolved,
+          content,
+          appendLocal: yield* shared(harness, resolved.id, content, sharedCategory(resolved.id) && resolved.kind !== "config"),
+        });
       }
     }
     if (sharesSkills) {
@@ -315,8 +420,10 @@ export const projectSurfaces = (
             executable: file.executable,
           }))),
         },
+        appendLocal: sharedCategory("skills"),
       });
     }
+    surfaces.push(...yield* projectResources(model, context, configPath));
     return { surfaces, harnesses, diagnostics, runtime, runtimeVersion };
   });
 
@@ -579,6 +686,9 @@ export const buildProjection = (
     const projected = yield* projectSurfaces({ ...loaded, model }, context, takeovers);
     const owned = new Set(takeovers.map((takeover) => `${takeover.harness}\0${takeover.surface}`));
     const isHeldHarness = heldResource([...held, ...loaded.local.excludeHarnesses], context, loaded.model);
+    // A resource this machine excludes (as `restore` does) keeps its outputs and ownership too.
+    const excludedResources = new Set(loaded.local.excludeResources.map((id) => surfaceResourceId(resourcesOwner, id)));
+    const isHeldSurface = (record: AppliedResourceRecord) => isHeldHarness(record) || excludedResources.has(record.resource);
     const holdsOutputs = appliedResources.some(isHeldHarness);
     const applied = new Map(appliedResources.map((record) => [record.resource, record]));
     const units: Array<TakeoverUnit> = [];
@@ -591,17 +701,22 @@ export const buildProjection = (
       if (previousTarget !== undefined && previousTarget !== entry.surface.target) {
         return yield* new ProjectionHumanActionError({
           harness: entry.harness,
-          message: `${entry.harness} surface ${entry.surface.id} was applied at ${previousTarget} but now resolves to ${entry.surface.target}; restore the original location before syncing`,
+          message: entry.harness === resourcesOwner
+            ? `resources.${entry.surface.id} was applied at ${previousTarget} but now targets ${entry.surface.target}; to move a resource, give it a new id so its old target retires`
+            : `${entry.harness} surface ${entry.surface.id} was applied at ${previousTarget} but now resolves to ${entry.surface.target}; restore the original location before syncing`,
         });
       }
+      // A surface shared with the machine keeps its policy from the first
+      // write on: append-local never replaces what Canonfig did not write.
+      const policy = entry.appendLocal ? "append-local" : pending.length > 0 ? "replace" : "replace-if-unmodified";
       const content = entry.content;
       if (content.kind === "file") {
-        built.push(fileResource(id, entry.surface.target, pending.length > 0 ? "replace" : "replace-if-unmodified", bytesOf(content.content), content.executable ?? false));
+        built.push(fileResource(id, entry.surface.target, policy, bytesOf(content.content), content.executable ?? false));
       } else if (content.kind === "directory") {
         built.push(directoryResource(
           id,
           entry.surface.target,
-          pending.length > 0 ? "replace" : "replace-if-unmodified",
+          policy,
           content.files.map((file) => ({ path: file.path, content: bytesOf(file.content), executable: file.executable ?? false })),
         ));
       } else if (entry.surface.kind === "config") {
@@ -631,7 +746,7 @@ export const buildProjection = (
       takeovers: units,
       diagnostics: projected.diagnostics,
       harnesses: projected.harnesses,
-      isHeld: (record) => isHeldHarness(record)
+      isHeld: (record) => isHeldSurface(record)
         || (holdsOutputs && record.resource.startsWith("runtime:")),
     } satisfies Projection;
   });
@@ -673,6 +788,8 @@ export const takeoverSummary = (units: ReadonlyArray<TakeoverUnit>, backup: bool
 export interface RestorePlan extends LocalRevisionPlan {
   /** Real harnesses the snapshot holds, which a converged restore excludes. */
   readonly harnesses: ReadonlyArray<string>;
+  /** Authored resources the snapshot holds, which a converged restore excludes. */
+  readonly resources: ReadonlyArray<string>;
 }
 
 /**
@@ -726,7 +843,9 @@ export const planRestore = (
         problems.push(`${target}: its applied state cannot be checked`);
         continue;
       }
-      const resource = { ...state.resource, policy: "replace-if-unmodified" as const };
+      // An append-local surface is compared on Canonfig's part only: the
+      // machine's own text or entries beside it are never drift.
+      const resource = { ...state.resource, policy: applied.policy === "append-local" ? "append-local" as const : "replace-if-unmodified" as const };
       const verification = removedResourceVerification(applied, state.desired);
       const observed = yield* observeFollowerResource({ resource }, state.desired, verification, applied);
       const drafts = planResource({ resource, desired: state.desired, observed, applied, platform });
@@ -779,6 +898,14 @@ export const planRestore = (
         continue;
       }
       restored.push(id);
+      // An append-local surface already holds the machine's content beside
+      // Canonfig's (first adoption kept everything that was there), so giving
+      // it back means removing only Canonfig's part, not writing the snapshot
+      // over the machine's later edits.
+      if (applied.policy === "append-local") {
+        retired.push(applied);
+        continue;
+      }
       if (first.state === "absent") {
         retired.push(applied);
         continue;
@@ -847,7 +974,8 @@ export const planRestore = (
       appliedResources,
       endsOwnership: restored,
     });
-    const harnesses = [...new Set(snapshot.manifest.entries.map((entry) => entry.harness))]
-      .filter((harness) => harness !== sharedSkillsOwner);
-    return { ...planned, harnesses } satisfies RestorePlan;
+    const owners = [...new Set(snapshot.manifest.entries.map((entry) => entry.harness))];
+    const harnesses = owners.filter((harness) => harness !== sharedSkillsOwner && harness !== resourcesOwner);
+    const resources = [...new Set(snapshot.manifest.entries.filter((entry) => entry.harness === resourcesOwner).map(surfaceOf))].sort();
+    return { ...planned, harnesses, resources } satisfies RestorePlan;
   });

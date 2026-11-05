@@ -39,6 +39,8 @@ export const emptyModel = (folder: string): CanonicalModel => ({
   folder,
   harnesses: [],
   surfaces: {},
+  appendLocal: [],
+  resources: [],
   rules: [],
   skills: [],
   agents: [],

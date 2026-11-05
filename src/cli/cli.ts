@@ -12,6 +12,7 @@ import { AgentPolicy } from "../domain/identity.ts";
 import type { EnrollmentInvitationGrant } from "../enrollment/enrollment.types.ts";
 import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
 import { ExecutableAuthorizationSchema } from "../domain/synchronization.ts";
+import { OverlayReference } from "../projection/folder.ts";
 import { TARGET_IDS, type TargetId } from "../projection/model.ts";
 import {
   scheduleWeekdays,
@@ -89,11 +90,17 @@ export type CliCommand =
     readonly scheduled: boolean;
     /** Take over harness surfaces without a takeover snapshot. */
     readonly noBackup: boolean;
+    /** With `--plan`: write private append-local adoption reviews. */
+    readonly reviewLocal: boolean;
   }
   | { readonly _tag: "Restore"; readonly snapshot?: string | undefined }
   | {
     readonly _tag: "Harnesses";
     readonly change?: { readonly action: "include" | "exclude"; readonly harness: TargetId } | undefined;
+  }
+  | {
+    readonly _tag: "Overlays";
+    readonly change?: { readonly action: "set" | "remove"; readonly item: string } | undefined;
   }
   | { readonly _tag: "Recover"; readonly noInput: boolean }
   | { readonly _tag: "Abandon" }
@@ -791,7 +798,7 @@ const evaluateCommand = (
 ): CliOutcome => {
   const [area, action, ...rest] = arguments_;
   try {
-    const groups = new Set(["source", "follower", "profile", "tunnel", "setup", "agent", "schedule"]);
+    const groups = new Set(["source", "follower", "profile", "overlay", "tunnel", "setup", "agent", "schedule"]);
     if (area !== undefined && groups.has(area) && action === undefined) {
       return invalid(`Missing ${area} command`);
     }
@@ -833,11 +840,16 @@ const evaluateCommand = (
         new Set(),
         // --scheduled is set by the rendered native job; typing it by hand
         // is harmless but pointless without the scheduler's provenance.
-        new Set(["--plan", "--apply", "--no-input", "--scheduled", "--no-backup"]),
+        new Set(["--plan", "--apply", "--no-input", "--scheduled", "--no-backup", "--review-local"]),
       );
       if (options.positionals.length > 0) return invalid("sync accepts no positional arguments");
       if (options.switches.has("--plan") && options.switches.has("--apply")) {
         return invalid("--plan and --apply are mutually exclusive");
+      }
+      // Reviews hold exact local text for a person to read before applying.
+      if (options.switches.has("--review-local")
+        && (options.switches.has("--apply") || options.switches.has("--scheduled") || options.switches.has("--no-input"))) {
+        return invalid("--review-local requires an interactive --plan, not --apply, --scheduled, or --no-input");
       }
       return command({
         _tag: "Synchronize",
@@ -845,7 +857,22 @@ const evaluateCommand = (
         noInput: options.switches.has("--no-input"),
         scheduled: options.switches.has("--scheduled"),
         noBackup: options.switches.has("--no-backup"),
+        reviewLocal: options.switches.has("--review-local"),
       }, format);
+    }
+    if (area === "overlay") {
+      const options = parseOptions(rest, new Set(), new Set());
+      const [item, ...extra] = options.positionals;
+      if (action === "list" && item === undefined) return command({ _tag: "Overlays" }, format);
+      if ((action !== "set" && action !== "remove") || item === undefined || extra.length > 0) {
+        return invalid("Usage: canonfig overlay list | canonfig overlay set|remove <category>/<name>");
+      }
+      const decoded = Schema.decodeUnknownOption(OverlayReference)(item);
+      const harness = item.startsWith("settings/") ? item.slice("settings/".length) : undefined;
+      if (decoded._tag === "None" || (harness !== undefined && !TARGET_IDS.some((id) => id === harness))) {
+        return invalid(`Invalid overlay ${item}: expected rules|skills|agents|commands|mcp/<name>, or settings/<harness>`);
+      }
+      return command({ _tag: "Overlays", change: { action, item } }, format);
     }
     if (area === "restore") {
       const options = parseOptions(arguments_.slice(1), new Set(), new Set());
@@ -964,6 +991,7 @@ export const commandName = (value: CliCommand): string => {
     case "FollowerEnroll": return "follower.enroll";
     case "FollowerUnenroll": return "follower.unenroll";
     case "Synchronize": return `sync.${value.mode}`;
+    case "Overlays": return value.change === undefined ? "overlay.list" : `overlay.${value.change.action}`;
     case "Restore": return "restore";
     case "Harnesses": return value.change === undefined ? "harnesses" : `harnesses.${value.change.action}`;
     case "Recover": return "recover";
@@ -1034,7 +1062,9 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
         noInput: value.noInput,
         scheduled: value.scheduled,
         noBackup: value.noBackup,
+        reviewLocal: value.reviewLocal,
       });
+    case "Overlays": return yield* follower.overlays({ change: value.change });
     case "Restore": return yield* follower.restore({ snapshot: value.snapshot });
     case "Harnesses": return yield* follower.harnesses({ change: value.change });
     case "Recover": return yield* follower.recover({ noInput: value.noInput });

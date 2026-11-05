@@ -94,7 +94,7 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     title: "Synchronization",
     areas: ["sync"],
     usage: [
-      "sync [--plan | --apply] [--no-input] [--no-backup]",
+      "sync [--plan | --apply] [--no-input] [--review-local] [--no-backup]",
     ],
     notes: [
       "On an enrolled follower, sync fetches the latest authorized revision, mirrors its",
@@ -112,6 +112,10 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
       "snapshot in ~/.canonfig/.backups/ (the first snapshot and the 4 most recent are kept).",
       "--no-backup takes over without a snapshot, as does \"backups\": false in",
       "~/.canonfig/local/local.jsonc.",
+      "Outputs that canonfig.jsonc local.appendLocal shares with this machine keep its own",
+      "text below the Source section, or its own entries beside Canonfig's. --review-local",
+      "with --plan writes each first adoption's exact text to private JSON files under",
+      "~/.canonfig/.reviews/. They may hold secrets: read them locally, never share them.",
       "--no-input never prompts. Native schedules run: sync --apply --no-input --scheduled",
     ],
   },
@@ -127,8 +131,10 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
       "recover resumes or rolls back the interrupted run from its journal.",
       "abandon closes a run recover cannot resolve; it does not roll anything back.",
       "restore writes a takeover snapshot back (the latest by default) as a journaled run,",
-      "releases those surfaces and excludes their harnesses in ~/.canonfig/local/local.jsonc.",
-      "It refuses a surface that changed since Canonfig last applied it.",
+      "releases those surfaces and excludes their harnesses (and resources) in",
+      "~/.canonfig/local/local.jsonc. An append-local surface keeps this machine's content",
+      "and loses only Canonfig's part. It refuses a surface that changed since Canonfig",
+      "last applied it.",
     ],
   },
   {
@@ -145,6 +151,22 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
       "~/.local/bin, then PATH, without running it; Cursor's generic agent counts only",
       "with ~/.cursor present.",
       "exclude and include edit only this machine's exclusions in ~/.canonfig/local/local.jsonc.",
+    ],
+  },
+  {
+    title: "Local overlays",
+    areas: ["overlay"],
+    usage: [
+      "overlay list",
+      "overlay set <category>/<name>",
+      "overlay remove <category>/<name>",
+    ],
+    notes: [
+      "A Local Overlay lets this machine's ~/.canonfig/local/ item replace the published",
+      "item of the same name instead of stopping with a name collision. Categories:",
+      "rules, skills, agents, commands, mcp, and settings/<harness> (local keys replace",
+      "the published keys they overlap). The Source's local.allow must admit the category.",
+      "Overlays live in ~/.canonfig/local/local.jsonc and are never published.",
     ],
   },
   {

@@ -85,6 +85,7 @@ const recordingLayers = (
     abandon: () => invoke("abandon", {}),
     restore: (input) => invoke("restore", input),
     harnesses: (input) => invoke("harnesses", input),
+    overlays: (input) => invoke("overlays", input),
     status: (input) => invoke("status", input),
     setAgentPolicy: (input) => invoke("agent.policy.set", input),
     getAgentPolicy: () => invoke("agent.policy.get"),

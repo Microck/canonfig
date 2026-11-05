@@ -95,6 +95,7 @@ import {
   abandonLocal,
   harnessesLocal,
   hasOpenLocalRun,
+  overlaysLocal,
   recoverLocal,
   restoreLocal,
   synchronizeLocal,
@@ -1166,7 +1167,11 @@ const followerCommandsLayer = (
           Effect.map((status) => status.generation),
           Effect.catch(() => Effect.succeed(undefined)),
         ) : Effect.succeed(undefined);
-        const projection = { noBackup: input.noBackup === true, environment: (name: string) => process.env[name] };
+        const projection = {
+          noBackup: input.noBackup === true,
+          reviewLocal: input.reviewLocal === true,
+          environment: (name: string) => process.env[name],
+        };
         const follower: Effect.Effect<CliPayload, CliCommandFailure> = mapFailure(synchronizeFollower(
             statePath,
             input.mode,
@@ -1258,6 +1263,10 @@ const followerCommandsLayer = (
       harnesses: (input) =>
         mapFailure(harnessesLocal(statePath, (name) => process.env[name], input.change).pipe(
           Effect.provideService(StateRepository, repository),
+          Effect.provideService(MachineState, machine),
+        )).pipe(Effect.map(payload)),
+      overlays: (input) =>
+        mapFailure(overlaysLocal(statePath, input.change).pipe(
           Effect.provideService(MachineState, machine),
         )).pipe(Effect.map(payload)),
       status: (follower) =>

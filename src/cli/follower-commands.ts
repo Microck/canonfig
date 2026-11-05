@@ -27,6 +27,8 @@ export interface SynchronizeInput {
   readonly scheduled?: boolean | undefined;
   /** Take over harness surfaces without a takeover snapshot. */
   readonly noBackup?: boolean | undefined;
+  /** With `--plan`: write private append-local adoption reviews, never output. */
+  readonly reviewLocal?: boolean | undefined;
 }
 
 export interface RestoreInput {
@@ -36,6 +38,11 @@ export interface RestoreInput {
 
 export interface HarnessesInput {
   readonly change?: { readonly action: "include" | "exclude"; readonly harness: TargetId } | undefined;
+}
+
+export interface OverlaysInput {
+  /** `set` or `remove` one `<category>/<name>`; absent lists the overlays. */
+  readonly change?: { readonly action: "set" | "remove"; readonly item: string } | undefined;
 }
 
 export interface RecoverInput {
@@ -93,6 +100,10 @@ export interface FollowerCommandsService {
   /** Report harness detection and selection; optionally change a local exclusion. */
   readonly harnesses: (
     input: HarnessesInput,
+  ) => Effect.Effect<CliPayload, CliCommandFailure>;
+  /** List this machine's Local Overlays, or set or remove one in `local/local.jsonc`. */
+  readonly overlays: (
+    input: OverlaysInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly status: (
     follower?: FollowerId,

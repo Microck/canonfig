@@ -61,7 +61,7 @@ describe("Canonical Folder loader", () => {
     expect(loaded.model.mcp.map(([name]) => name)).toEqual(["git"]);
     expect(loaded.model.hooks[0]?.run).toEqual([join(root, "hooks", "format.sh"), "--fix"]);
     expect(loaded.model.settings).toEqual({ codex: [{ path: "model_reasoning_effort", value: "high" }] });
-    expect(loaded.local).toEqual({ excludeHarnesses: [], backups: true });
+    expect(loaded.local).toEqual({ excludeHarnesses: [], excludeResources: [], backups: true });
     expect((await loadCanonicalFolder(root)).digest).toBe(loaded.digest);
   });
 
@@ -127,7 +127,7 @@ describe("Canonical Folder loader", () => {
     expect(loaded.model.commands).toEqual([]);
     expect(loaded.ignoredLocal).toEqual(["local/commands/"]);
     expect(loaded.model.harnesses).toEqual(["codex"]);
-    expect(loaded.local).toEqual({ excludeHarnesses: ["qwen"], backups: false });
+    expect(loaded.local).toEqual({ excludeHarnesses: ["qwen"], excludeResources: [], backups: false });
 
     mkdirSync(join(root, "skills", "mine"), { recursive: true });
     writeFileSync(join(root, "skills", "mine", "SKILL.md"), "---\nname: mine\ndescription: Published\n---\nP.\n");
