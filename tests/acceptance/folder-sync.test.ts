@@ -379,19 +379,41 @@ describe("folder sync across a Source and its followers", () => {
     const mirror = folderFiles(follower.folder);
 
     // The Follower's folder is the Source's mirror: it cannot also become a
-    // Source, publish it, or plan a Source setup over it.
-    for (const command of [
-      ["source", "init"],
-      ["source", "publish", "--reviewer", "reviewer@example.test"],
-      ["setup", "plan", "--role", "source"],
-    ]) {
+    // Source, plan a Source setup, or run any Source command that scans,
+    // publishes, serves or grants access.
+    const inviteOutput = join(follower.home, "follower.invite");
+    for (const [command, action] of [
+      [["source", "init"], "become a Source"],
+      [["source", "scan"], "scan its folder for tools"],
+      [["source", "publish", "--reviewer", "reviewer@example.test"], "publish a revision"],
+      [["source", "serve", "--port", "1"], "serve as a Source"],
+      [["source", "service", "install", "--port", "1"], "install the Source service"],
+      [["source", "invite", "--endpoint", endpoint, "--output", inviteOutput], "invite followers"],
+      [["source", "revoke", "desk"], "revoke followers"],
+      [["setup", "plan", "--role", "source"], "be set up as a Source"],
+    ] as const) {
       const refused = follower.run(command);
       expect(refused.status, `${command.join(" ")}: ${refused.stdout}${refused.stderr}`).toBe(2);
       expect(refused.envelope.message).toContain(`follows the Source at ${endpoint}`);
-      expect(refused.envelope.message).toContain("as laptop");
+      expect(refused.envelope.message).toContain(`as laptop`);
+      expect(refused.envelope.message).toContain(`so it cannot ${action}`);
       expect(refused.envelope.message).toContain("canonfig follower unenroll");
     }
     expect(folderFiles(follower.folder)).toEqual(mirror);
+    expect(existsSync(inviteOutput)).toBe(false);
+    expect(rowCount(follower.state, "enrollment_source")).toBe(0);
+
+    // An enrollment the Source accepted but this machine has not finished
+    // already holds the Follower role.
+    const state = new DatabaseSync(follower.state);
+    try {
+      state.prepare("UPDATE follower_sync_configuration SET configuration_json = json_set(configuration_json, '$.enrollmentPending', json('true'))").run();
+    } finally {
+      state.close();
+    }
+    const pending = follower.run(["source", "init"]);
+    expect(pending.status, pending.stdout + pending.stderr).toBe(2);
+    expect(pending.envelope.message).toContain(`is enrolling with the Source at ${endpoint}`);
     expect(rowCount(follower.state, "enrollment_source")).toBe(0);
 
     // The Source cannot enroll as a Follower or plan a Follower setup. The

@@ -32,7 +32,7 @@ import {
   deliverInvitationEnvelope,
   readInvitationEnvelope,
 } from "../enrollment/invitation-envelope.ts";
-import { refuseOnFollower, refuseOnSource } from "../enrollment/machine-role.ts";
+import { refuseOnFollower, refuseOnSource } from "../state/machine-role.ts";
 import { TunnelLive } from "../enrollment/tunnel.layer.ts";
 import { Tunnel } from "../enrollment/tunnel.service.ts";
 import {
@@ -70,6 +70,7 @@ import {
 import { scheduleManagerLayer, validateSchedule } from "../schedule/schedule-manager.layer.ts";
 import { describeUnattendedRuns, currentScheduleFires } from "./readiness.ts";
 import { setupCommandsLayer } from "../setup/setup.layer.ts";
+import { MachineRoleConflictError } from "../state/state-repository.errors.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { SynchronizationLive } from "../synchronization/synchronization.layer.ts";
 import { Synchronization } from "../synchronization/synchronization.service.ts";
@@ -1019,27 +1020,36 @@ const followerCommandsLayer = (
               ...kept,
             };
             const stateIdentity = source;
-            const saved = yield* mapFailure(
-              repository.saveFollowerSynchronizationConfiguration({
-                sourceIdentity: stateIdentity,
-                configuration,
-              }),
-            ).pipe(
+            const saved = yield* repository.saveFollowerSynchronizationConfiguration({
+              sourceIdentity: stateIdentity,
+              configuration,
+            }).pipe(
               Effect.match({
                 onSuccess: () => ({ ok: true as const }),
                 onFailure: (error) => ({ ok: false as const, error }),
               }),
             );
             if (!saved.ok) {
-              yield* cancelFollowerEnrollment({
+              const cancelled = yield* cancelFollowerEnrollment({
                 endpoint: input.invitation.endpoint,
                 tlsFingerprint: prepared.tlsFingerprint,
                 credentialReference: prepared.credentialReference,
               }).pipe(
                 Effect.provideService(MachineState, machine),
-                Effect.ignore,
+                Effect.match({ onSuccess: () => true, onFailure: () => false }),
               );
-              return yield* saved.error;
+              // This machine became a Source after the early check passed
+              // (a concurrent `source init`): the save refused under the
+              // write lock, and the invitation is spent on the Source.
+              if (saved.error instanceof MachineRoleConflictError) {
+                return yield* new CliCommandFailure({
+                  category: "usage-or-configuration",
+                  message: cancelled
+                    ? `${saved.error.message}. The Source had already accepted the invitation; the enrollment was cancelled there, so ask it for a new invitation`
+                    : `${saved.error.message}. The Source had already accepted the invitation and the enrollment could not be cancelled there; run \`canonfig source revoke ${prepared.follower.id}\` on the Source`,
+                });
+              }
+              return yield* mapFailure(Effect.fail(saved.error));
             }
             const finalized = yield* finalizeFollowerEnrollment({
               endpoint: input.invitation.endpoint,

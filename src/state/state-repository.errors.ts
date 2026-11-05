@@ -116,6 +116,17 @@ export class EnrollmentStateConflictError extends TaggedError<EnrollmentStateCon
   },
 ) {}
 
+/**
+ * The machine already holds the other role. A machine is either a Source or a
+ * Follower, never both: a Follower's `~/.canonfig/` is its Source's mirror,
+ * and a Source's is the folder it authors and publishes. Built by
+ * `src/state/machine-role.ts`, which also explains the two role records.
+ */
+export class MachineRoleConflictError extends TaggedError<MachineRoleConflictError>()(
+  "MachineRoleConflictError",
+  { message: Schema.String },
+) {}
+
 export type StateRepositoryError =
   | RepositorySqlError
   | RepositoryDecodeError
@@ -127,4 +138,6 @@ export type StateRepositoryError =
   | RunNotFoundError
   | ActionNotInPlanError
   | InvalidRunTransitionError
-  | EnrollmentStateConflictError;
+  | EnrollmentStateConflictError
+  // Saving one role's record while the other's exists.
+  | MachineRoleConflictError;

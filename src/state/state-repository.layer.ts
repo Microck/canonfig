@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { open, realpath } from "node:fs/promises";
+import { dirname } from "node:path";
 
 import { SqliteClient, SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { Effect, Layer, Schema } from "effect";
@@ -56,6 +57,7 @@ import {
   RunNotFoundError,
   type StateRepositoryError,
 } from "./state-repository.errors.ts";
+import { followerRoleConflict, sourceRoleConflict } from "./machine-role.ts";
 import { StateRepository } from "./state-repository.service.ts";
 import type {
   ActionJournalRecord,
@@ -442,6 +444,17 @@ const makeRepository = Effect.gen(function*() {
       });
     }
     const transaction = Effect.gen(function*() {
+      // One role per machine, checked under the write lock (the client
+      // begins transactions IMMEDIATE), so a concurrent `source init` cannot
+      // save a Source identity between this check and the writes below.
+      const source = yield* getEnrollmentSource();
+      if (source !== undefined) {
+        return yield* sourceRoleConflict(
+          source.identity.publicKeyFingerprint,
+          "be a Follower",
+          dirname(configuration.stateLocation),
+        );
+      }
       yield* sql`
         INSERT INTO followers (
           id,
@@ -495,7 +508,7 @@ const makeRepository = Effect.gen(function*() {
       `;
     });
     yield* sql.withTransaction(transaction).pipe(
-      Effect.mapError(sqlError("save follower synchronization configuration")),
+      Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("save follower synchronization configuration")(error))),
     );
   });
 
@@ -544,6 +557,11 @@ const makeRepository = Effect.gen(function*() {
   const saveEnrollmentSource = Effect.fn("StateRepository.saveEnrollmentSource")(
     function*(source: EnrollmentSourceRecord): Effect.fn.Return<void, StateRepositoryError> {
       const transaction = Effect.gen(function*() {
+        // One role per machine, checked under the write lock: the Source
+        // identity is refused while a follower configuration, pending or
+        // complete, exists.
+        const follower = yield* getFollowerSynchronizationConfiguration();
+        if (follower !== undefined) return yield* followerRoleConflict(follower, "be a Source");
         yield* sql`
           INSERT INTO source_identity (singleton, key_id, public_key_fingerprint)
           VALUES (
@@ -580,7 +598,7 @@ const makeRepository = Effect.gen(function*() {
         `;
       });
       yield* sql.withTransaction(transaction).pipe(
-        Effect.mapError(sqlError("save enrollment source")),
+        Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("save enrollment source")(error))),
       );
     },
   );

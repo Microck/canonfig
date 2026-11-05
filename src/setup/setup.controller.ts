@@ -5,9 +5,10 @@ import { basename, dirname, join, posix, win32 } from "node:path";
 
 import { Effect, Redacted, Schema } from "effect";
 
-import { MachineRoleConflictError, SourceNotInitializedError } from "../enrollment/enrollment.errors.ts";
+import { SourceNotInitializedError } from "../enrollment/enrollment.errors.ts";
 import { Enrollment } from "../enrollment/enrollment.service.ts";
-import { refuseOnFollower, refuseOnSource } from "../enrollment/machine-role.ts";
+import { refuseOnFollower, refuseOnSource } from "../state/machine-role.ts";
+import { MachineRoleConflictError } from "../state/state-repository.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { credentialFailureDetail, type MachineStateError } from "../machine/machine-state.errors.ts";
 import type { MachinePath, ProcessResult } from "../machine/machine-state.types.ts";

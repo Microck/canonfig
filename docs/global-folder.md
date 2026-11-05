@@ -66,9 +66,13 @@ the `canonfig.jsonc` the follower renders from the items it may see, or a tool
 or credential applied directly. A resource that is not a Canonical Folder item
 is refused, so a revision cannot make a follower write outside the allowlist.
 
-A machine is a Source or a follower, never both (`src/enrollment/machine-role.ts`).
+A machine is a Source or a follower, never both (`src/state/machine-role.ts`).
 Enrollment refuses a Source, Source commands refuse an enrolled follower, and
-each names the other role's record and the way out. Enrollment also refuses a
+each names the other role's record and the way out. Those checks run before
+any side effect; the repository's save of each role record checks again inside
+its `BEGIN IMMEDIATE` transaction, so concurrent commands cannot both win. An
+enrollment refused only at that save is cancelled on the Source, since the
+invitation was already spent. Enrollment also refuses a
 folder that already holds authored items (`src/runtime/layers.ts`):
 
 ```text
