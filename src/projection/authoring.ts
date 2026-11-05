@@ -7,6 +7,7 @@ import { TaggedError } from "../domain/tagged-error.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { withRunLock } from "../synchronization/run-lock.ts";
 import { AUTHORING_ENTRIES, LOCAL_CATEGORIES, decodeFolderConfig, decodeLocalConfig, listFolderFiles, loadCanonicalFiles, type FolderFile } from "./folder.ts";
+import { projectResources, rootContext } from "./plan.ts";
 
 export class AuthoringConflict extends TaggedError<AuthoringConflict>()("AuthoringConflict", {
   path: Schema.String, message: Schema.String,
@@ -180,7 +181,12 @@ export const writeAuthoringItems = Effect.fn("Authoring.writeItems")(function*(t
     try: () => prepareChanges(target, files, changes),
     catch: (error) => error instanceof AuthoringConflict || error instanceof AuthoringInvalid ? error : invalid(target.folder, String(error)),
   });
-  yield* Effect.tryPromise({ try: () => loadCanonicalFiles(root, candidate), catch: (error) => invalid(target.folder, String(error)) });
+  const loaded = yield* Effect.tryPromise({ try: () => loadCanonicalFiles(root, candidate), catch: (error) => invalid(target.folder, String(error)) });
+  if (target.scope === "canonical" && loaded.model.resources.length > 0) {
+    // Reuse projection's adapter-derived exclusions before publishing any candidate bytes.
+    const context = yield* rootContext((name) => process.env[name]);
+    yield* projectResources(loaded.model, context, join(root, "canonfig.jsonc"));
+  }
   // Re-read after validation: hand edits and changed policy during validation must not be overwritten.
   const current = yield* readFiles(root);
   if (files.size !== current.files.size || [...files].some(([path, file]) => {
