@@ -39,7 +39,6 @@ import {
 } from "../src/domain/mcp-qualification.ts";
 import {
   ActiveRunExistsError,
-  EarlierStateFormatError,
   RepositoryDecodeError,
   RepositorySqlError,
   RevisionImmutableError,
@@ -50,8 +49,6 @@ import {
 } from "../src/state/state-repository.layer.ts";
 import { sha256BytesHex } from "../src/profile/profile-codec.ts";
 import { StateRepository } from "../src/state/state-repository.service.ts";
-import { runtimeStateLayer } from "../src/runtime/state-layer.ts";
-import { StateInitializationError } from "../src/runtime/state-initialization.errors.ts";
 import {
   defaultScheduledInvocation,
 } from "../src/synchronization/follower-sync-config.ts";
@@ -247,34 +244,6 @@ describe("StateRepository SQLite adapter", () => {
     expect(row.configuration_json).toContain(credentialReference);
     expect(row.configuration_json).not.toContain("credentialValue");
     expect(row.configuration_json).not.toContain("secret");
-  });
-
-  it("refuses state an earlier release created and asks to reinitialize", async () => {
-    // A release before state format 6 recorded a different migration history.
-    const path = databasePath();
-    const database = new DatabaseSync(path);
-    database.exec(`
-      CREATE TABLE effect_sql_migrations (
-        migration_id integer PRIMARY KEY NOT NULL,
-        created_at datetime NOT NULL DEFAULT current_timestamp,
-        name VARCHAR(255) NOT NULL
-      );
-      INSERT INTO effect_sql_migrations (migration_id, name) VALUES (1, 'state_repository'), (22, 'local_projection');
-    `);
-    database.close();
-
-    const refused = await Effect.runPromise(Effect.flip(
-      Effect.flatMap(StateRepository, () => Effect.void).pipe(Effect.provide(stateRepositoryLayer(path))),
-    ));
-    expect(refused).toBeInstanceOf(EarlierStateFormatError);
-    expect(refused).toMatchObject({ migrations: ["0001_state_repository", "0022_local_projection"] });
-
-    const runtime = await Effect.runPromise(Effect.flip(
-      Effect.flatMap(StateRepository, () => Effect.void).pipe(Effect.provide(runtimeStateLayer(path))),
-    ));
-    expect(runtime).toBeInstanceOf(StateInitializationError);
-    expect(runtime.message).toContain("created by an earlier Canonfig version");
-    expect(runtime.message).toContain(`move ${path} aside`);
   });
 
   it("publishes immutable revisions idempotently and rejects changed content", async () => {

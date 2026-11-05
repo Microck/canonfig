@@ -219,7 +219,11 @@ export const failureTaxonomy = {
   ),
   EarlierStateFormatError: declared(
     "human-action-required",
-    () => "the local state was created by an earlier Canonfig version and cannot be read; move the state database aside and set this machine up again",
+    () => "the local state has a schema history this version cannot upgrade; state from before 4.0.0 needs one run of Canonfig 5.0.1 first, and state from a newer release needs that release",
+  ),
+  EarlierStateUpgradeError: declared(
+    "human-action-required",
+    () => "the local state from Canonfig 5.0.1 holds an item this version has no equivalent for; the state is unchanged, and the command that opened it names the item and its recovery",
   ),
   RepositorySqlError: declared(
     "internal",

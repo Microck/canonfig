@@ -3,18 +3,22 @@ import { SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { SqlClient } from "effect/unstable/sql";
 
 /**
- * The name of the one migration that creates the state database.
+ * The migration history this release writes, in order.
  *
- * State format 6 started a new schema history: this release cannot read a
- * database an earlier release created, so it carries no upgrade path for one.
- * The repository refuses any database whose migration history is not exactly
- * this migration, and the operator reinitializes the machine instead.
+ * State format 6 started a new schema history. A database Canonfig 4.2.0
+ * through 5.0.1 wrote (state format 4) is upgraded in place by
+ * `earlier-state.ts`, which ends with exactly this history. The repository
+ * refuses any other history: an older release's database is upgraded by
+ * running 5.0.1 once first, and a newer release's database is not read.
  */
-export const stateSchemaMigration = { id: 1, name: "state_format_6" } as const;
+export const currentStateHistory = [
+  { id: 1, name: "state_format_6" },
+  { id: 2, name: "state_upgrades" },
+] as const;
 
 /**
  * Explicit, append-only migration set, tracked by Effect SQL. A later change
- * to the schema adds a migration after this one.
+ * to the schema adds a migration after these, and to `currentStateHistory`.
  */
 export const stateMigrations = SqliteMigrator.fromRecord({
   "0001_state_format_6": Effect.gen(function*() {
@@ -327,6 +331,40 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         taken_over_at TEXT NOT NULL,
         PRIMARY KEY (harness, surface)
       )
+    `;
+  }),
+  // The audit record of each in-place upgrade of an earlier release's state:
+  // the history it replaced, where the pre-upgrade copy is, and every record
+  // the upgrade renamed, rewrote or dropped. Rows are only ever inserted.
+  "0002_state_upgrades": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+
+    yield* sql`
+      CREATE TABLE state_upgrades (
+        id INTEGER PRIMARY KEY,
+        earlier_history_json TEXT NOT NULL,
+        backup TEXT NOT NULL,
+        changes_json TEXT NOT NULL,
+        package_version TEXT NOT NULL,
+        build_identity TEXT NOT NULL,
+        upgraded_at TEXT NOT NULL
+      )
+    `;
+
+    yield* sql`
+      CREATE TRIGGER state_upgrades_append_only_update
+      BEFORE UPDATE ON state_upgrades
+      BEGIN
+        SELECT RAISE(ABORT, 'state upgrade records are append-only');
+      END
+    `;
+
+    yield* sql`
+      CREATE TRIGGER state_upgrades_append_only_delete
+      BEFORE DELETE ON state_upgrades
+      BEGIN
+        SELECT RAISE(ABORT, 'state upgrade records are append-only');
+      END
     `;
   }),
 });

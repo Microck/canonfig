@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { open, realpath } from "node:fs/promises";
+import { homedir } from "node:os";
 
 import { SqliteClient, SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { Effect, Layer, Schema } from "effect";
@@ -86,7 +87,8 @@ import type {
   StoredResourceBlob,
   VerificationEvidence,
 } from "./state-repository.types.ts";
-import { stateFormatVersion, stateMigrations, stateSchemaMigration } from "./state-schema.ts";
+import { stateFormatVersion, stateMigrations } from "./state-schema.ts";
+import { classifyStateHistory, readStateHistory, upgradeStateFormat4 } from "./earlier-state.ts";
 import { buildIdentity } from "../runtime/build-identity.ts";
 import type {
   PlanningLocalRevision,
@@ -111,7 +113,6 @@ const ResourceBlobManifestRow = Schema.Struct({
   total_bytes: Schema.Number,
   chunk_bytes: Schema.Number,
 });
-const MigrationRow = Schema.Struct({ migration_id: Schema.Number, name: Schema.String });
 const ResourceBlobChunkRow = Schema.Struct({
   chunk_index: Schema.Number,
   content: Schema.Uint8Array,
@@ -330,24 +331,32 @@ const statusCount = Effect.fn("StateRepository.statusCount")(function*(
   return decoded[0]?.count ?? 0;
 });
 
-const makeRepository = Effect.gen(function*() {
+/** Options of the state repository. */
+export interface StateRepositoryOptions {
+  /**
+   * The home directory `~` meant to the release that wrote earlier state;
+   * upgrading that state resolves applied targets against it. Defaults to
+   * this user's home directory.
+   */
+  readonly home?: string | undefined;
+}
+
+const makeRepository = (options: StateRepositoryOptions) => Effect.gen(function*() {
   const sql = yield* SqlClient.SqlClient;
 
-  // A database from before state format 6 has a different migration history.
-  // Running the current migration over it would fail halfway or, worse,
-  // succeed against tables whose rows this release cannot decode.
-  const history = yield* sql`
-    SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
-  `.pipe(
-    Effect.flatMap((tables) => tables.length === 0
-      ? Effect.succeed([])
-      : sql`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`),
-    Effect.flatMap((rows) => Schema.decodeUnknownEffect(Schema.Array(MigrationRow))(rows)),
-    Effect.mapError((error) => new RepositorySqlError({ operation: "read state schema history", message: String(error) })),
-  );
-  if (history.some((row) => row.migration_id !== stateSchemaMigration.id || row.name !== stateSchemaMigration.name)) {
+  // A database from an earlier release has a different migration history.
+  // Running the current migrations over it would fail halfway or, worse,
+  // succeed against tables whose rows this release cannot decode, so state
+  // format 4 (4.0.0 through 5.0.1) is upgraded first and any other history
+  // is refused.
+  const history = yield* readStateHistory();
+  const origin = classifyStateHistory(history);
+  if (origin === "state-format-4") {
+    yield* upgradeStateFormat4(history, options.home ?? homedir());
+  } else if (origin !== "current") {
     return yield* new EarlierStateFormatError({
       migrations: history.map((row) => `${String(row.migration_id).padStart(4, "0")}_${row.name}`),
+      origin,
     });
   }
 
@@ -2830,9 +2839,7 @@ const makeRepository = Effect.gen(function*() {
   });
 });
 
-export const StateRepositoryLive = Layer.effect(StateRepository, makeRepository);
-
-export const stateRepositoryLayer = (filename: string) =>
-  StateRepositoryLive.pipe(
+export const stateRepositoryLayer = (filename: string, options: StateRepositoryOptions = {}) =>
+  Layer.effect(StateRepository, makeRepository(options)).pipe(
     Layer.provide(SqliteClient.layer({ filename })),
   );
