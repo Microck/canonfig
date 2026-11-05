@@ -139,10 +139,10 @@ const write = (path, content) => {
   writeFileSync(path, content);
 };
 
-// A profile with every authored kind this release carries forward: files
-// from a source path and inline, append-local, a directory, JSON and TOML
-// config keys, and a grouped resource. A `skill` resource with its own
-// target has no equivalent (the upgrade refuses it), so it is left out.
+// A profile with every authored kind 5.0.1 synchronized without a package
+// install: files from a source path and inline, append-local, a directory,
+// JSON and TOML config keys, a grouped resource, and a `skill` with its own
+// target, which the upgrade releases rather than carries forward.
 const profile = (instructions) => `{
   "version": 2,
   "id": "workstation",
@@ -205,6 +205,17 @@ const profile = (instructions) => `{
         ]
       },
       "verify": { "method": "digest" }
+    },
+    {
+      "id": "review-skill",
+      "kind": "skill",
+      "target": "~/.agents/skills/code-review",
+      "spec": {
+        "kind": "skill",
+        "name": "code-review",
+        "files": [{ "path": "SKILL.md", "source": "authored/code-review/SKILL.md" }]
+      },
+      "verify": { "method": "digest" }
     }
   ]
 }
@@ -213,6 +224,7 @@ const profile = (instructions) => `{
 const source = await (async () => {
   run(sourceHome, ["source", "init"]);
   write(join(sourceHome, "authored", "AGENTS.md"), "Follow the repository conventions.\n");
+  write(join(sourceHome, "authored", "code-review", "SKILL.md"), "---\nname: code-review\ndescription: Review a diff.\n---\n\nReview the diff.\n");
   write(join(sourceHome, "profile.jsonc"), profile("Shared instructions.\n"));
   run(sourceHome, ["source", "publish", "--profile-file", join(sourceHome, "profile.jsonc"), "--reviewer", "fixture"]);
   return serve(sourceHome);

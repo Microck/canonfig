@@ -45,11 +45,15 @@ import { currentStateHistory, stateMigrations } from "./state-schema.ts";
  * - Unchunked blobs move into chunks; runs from before 3.2.0 get the same
  *   unrecorded build identity their 3.2.0 receipt names.
  *
+ * - An applied `skill` resource with its own target is released: its record
+ *   is dropped and listed in the audit record, and its files stay where they
+ *   are. Skills now come from `~/.canonfig/skills/`; the next projection's
+ *   takeover snapshots that directory before it writes there.
+ *
  * Items with no equivalent stop the upgrade before anything is written,
  * naming the item and its recovery: an unfinished run, a Source that
- * published more than one profile, a `skill` resource with its own target, a
- * symlink, a target outside home, an overlay over a managed key, or a row
- * this release cannot decode.
+ * published more than one profile, a symlink, a target outside home, an
+ * overlay over a managed key, or a row this release cannot decode.
  *
  * The upgrade is one transaction, preceded by a full copy of the database
  * next to it, and recorded in `state_upgrades`. A database already at
@@ -212,6 +216,7 @@ const DatabaseRow = Schema.Struct({ name: Schema.String, file: Schema.String });
 interface UpgradeChanges {
   readonly renamedRecords: Array<{ readonly from: string; readonly to: string }>;
   readonly droppedOverlays: Array<{ readonly resource: string; readonly keys: ReadonlyArray<string> }>;
+  readonly droppedSkills: Array<{ readonly resource: string; readonly target: string | null }>;
   readonly revisionsWithoutResources: Array<string>;
 }
 
@@ -267,12 +272,6 @@ type EarlierRecord =
  * their meaning did not change. Throws on stored JSON 5.0.1 never wrote.
  */
 const earlierRecord = (row: AppliedRow, home: string): EarlierRecord => {
-  if (row.kind === "skill") {
-    return {
-      reason: "a skill resource with its own target has no equivalent: skills now come from ~/.canonfig/skills/ and go to each harness's own skills directory",
-      recovery: removeWith501(row.resource_id),
-    };
-  }
   if (row.kind !== "file" && row.kind !== "directory" && row.kind !== "config") {
     return {
       renamed: false,
@@ -415,11 +414,22 @@ const readEarlierState = Effect.fn("StateRepository.readEarlierState")(function*
     SELECT follower_id, id FROM synchronization_runs AS run
     WHERE started_at = (SELECT MAX(started_at) FROM synchronization_runs WHERE follower_id = run.follower_id)
   `)).map((row) => [row.follower_id, row.id]));
-  const changes: UpgradeChanges = { renamedRecords: [], droppedOverlays: [], revisionsWithoutResources: revisions.map(({ row }) => row.id) };
+  const changes: UpgradeChanges = {
+    renamedRecords: [],
+    droppedOverlays: [],
+    droppedSkills: [],
+    revisionsWithoutResources: revisions.map(({ row }) => row.id),
+  };
   const applied: Array<{ readonly followerId: string; readonly record: AppliedResourceRecord }> = [];
   const ownedKeysByEarlierId = new Map<string, ReadonlyArray<string>>();
   const takeovers: Array<{ readonly surface: string; readonly runId: string; readonly takenOverAt: string }> = [];
   for (const row of appliedRows) {
+    // Released, not refused: nothing is written there, so the files stay and
+    // the projection's takeover backs up the skills directory before it writes.
+    if (row.kind === "skill") {
+      changes.droppedSkills.push({ resource: row.resource_id, target: row.target });
+      continue;
+    }
     const item = `applied resource ${row.resource_id} (${row.kind ?? "unknown kind"} at ${row.target ?? "no target"})`;
     const notStored = (cause: string) => refuse(item, `the record does not fit this release: ${firstLine(cause)}`, finishWith501);
     const earlier = yield* Effect.try({ try: () => earlierRecord(row, home), catch: (error) => notStored(String(error)) });

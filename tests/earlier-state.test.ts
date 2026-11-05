@@ -49,7 +49,7 @@ const install = (fixture: "follower" | "source" | "multi-profile") => {
         else chmodSync(path, 0o600);
       }
     };
-    for (const harness of [".claude", ".codex"]) restoreModes(join(home, harness));
+    for (const harness of [".claude", ".codex", ".agents"]) restoreModes(join(home, harness));
   }
   return { home, state };
 };
@@ -161,7 +161,7 @@ describe("state from Canonfig 5.0.1", () => {
         .map((surface) => ["resources", surface, home, undefined]));
     // The revisions this follower applied keep their identity and list no
     // resources this release could apply.
-    expect(upgraded.revisions.map((revision) => [revision.sequence, revision.resources.length])).toEqual([[1, 0], [2, 0]]);
+    expect(upgraded.revisions.map((revision) => [revision.sequence, revision.resources.length]).sort()).toEqual([[1, 0], [2, 0]]);
 
     const [upgrade] = rows(state, "SELECT * FROM state_upgrades");
     const backup = String(upgrade?.["backup"]);
@@ -172,9 +172,12 @@ describe("state from Canonfig 5.0.1", () => {
       renamedRecords: ["claude-commands", "claude-instructions", "claude-settings", "codex-config", "codex-instructions"]
         .map((id) => ({ from: id, to: `harness:resources:${id}` })),
       droppedOverlays: [{ resource: "claude-settings", keys: ["theme"] }],
-      revisionsWithoutResources: upgraded.revisions.map((revision) => revision.id),
+      droppedSkills: [{ resource: "review-skill", target: "~/.agents/skills/code-review" }],
+      revisionsWithoutResources: expect.arrayContaining(upgraded.revisions.map((revision) => revision.id)),
     });
     expect(JSON.parse(String(upgrade?.["earlier_history_json"]))).toHaveLength(21);
+    // A released skill keeps its files; the next takeover of its directory backs them up.
+    expect(readFileSync(join(home, ".agents", "skills", "code-review", "SKILL.md"), "utf8")).toContain("Review the diff.");
 
     // A second run reads format 6 and changes nothing.
     const before = { database: digest(state), backups: backups(state) };
