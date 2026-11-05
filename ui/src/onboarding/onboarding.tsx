@@ -1033,9 +1033,9 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
             </Collapsible>
           )}
           <p className="text-sm text-muted-foreground">
-            What you don't import is replaced when a sync first writes the file or folder that holds it. Canonfig copies what was there into a{" "}
-            <Term term="Takeover Snapshot" /> in <Mono>~/.canonfig/.backups/</Mono> first, so you can put it back from Backups. Files and folders Canonfig has nothing to write
-            into stay as they are.
+            What you don't import is replaced when a sync first writes the file or folder that holds it. With Backups on, Canonfig copies what was there into a{" "}
+            <Term term="Takeover Snapshot" /> in <Mono>~/.canonfig/.backups/</Mono> first, so you can put it back from Backups. With Backups off, nothing is copied. Files and
+            folders Canonfig has nothing to write into stay as they are.
           </p>
           <label className={CHECK_ROW}>
             <Checkbox checked={scan} onCheckedChange={(c) => setScan(c === true)} className="mt-px" />

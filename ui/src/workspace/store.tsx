@@ -319,6 +319,8 @@ export interface Workspace {
   setResources: SetState<Resource[]>;
   /** Reads the folder's items when called, for a delayed callback that must see an edit saved while it waited. */
   readResources: () => Resource[];
+  /** Reads the unpublished changes and the next revision number when called, like readResources. */
+  readQueue: () => { pending: PendingChange[]; nextSequence: number };
   revisions: Revision[];
   /** Newest published revision, 0 before the first publish. */
   latest: number;
@@ -535,10 +537,13 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
   // Delayed callbacks close over the render that started them; readResources goes through this instead. Synced after
   // each commit, which lands long before any ws.later callback runs.
   const latestResources = useRef(resources);
+  const latestQueue = useRef({ pending, nextSequence });
   useEffect(() => {
     latestResources.current = resources;
-  }, [resources]);
+    latestQueue.current = { pending, nextSequence };
+  }, [resources, pending, nextSequence]);
   const readResources = useCallback(() => latestResources.current, []);
+  const readQueue = useCallback(() => latestQueue.current, []);
 
   const publish = useCallback(
     (reviewer: string, onDone: () => void) => {
@@ -782,6 +787,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     unenroll,
     later,
     readResources,
+    readQueue,
     isStopped,
     focus,
     navigate,

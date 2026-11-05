@@ -33,7 +33,7 @@ import {
 import { SCANNED_TOOLS, toolFromScan, useSharedState, useWorkspace } from "./store";
 import { ScheduleFields, WEEK, scheduleError, scheduleSummary, type Schedule } from "./schedule";
 import { HarnessTable } from "./harnesses";
-import { SkillSummary, SkillUpstream, useMoveSkillTracking, useSkillUpdating } from "./skills";
+import { SkillSummary, SkillUpstream, useMoveSkillTracking, useSkillLocked } from "./skills";
 import {
   AnimatedRow,
   Body,
@@ -557,8 +557,8 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
       setRows(keyRowsOf(resource));
     }
   }
-  // A running skill update locks the editor, so no edit can land under it.
-  const updating = useSkillUpdating(resource.id);
+  // A running skill check or update locks the editor, so no edit or rename can land under it.
+  const updating = useSkillLocked(resource.id);
   const moveTracking = useMoveSkillTracking();
   const updateRows = (next: KeyRow[]) => {
     setRows(next);

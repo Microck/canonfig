@@ -15,6 +15,7 @@ import { APP_VERSION, DEMO, LATEST_PATCH, agentPolicy, doctor, installers, selfU
 import { useSharedReader, useSharedState, useWorkspace } from "./store";
 import { Body, CommandBox, Field, ListHead, ListRow, PageHeader, SectionLabel, SettingRow, settingsGroup, useDialogReturnFocus, useLeaveGuard } from "./kit";
 import { focusPageHeading } from "./routes";
+import { updateGate } from "./update-gate";
 
 const LINGER_FIX = "sudo loginctl enable-linger ubuntu";
 /** Ends the toasts below, which report simulated work; only the demo says where it happened. */
@@ -904,14 +905,15 @@ export function DoctorView() {
       return true;
     }, 120);
   };
-  // Opened from ⌘K "Run doctor": start immediately, even if this page is already open.
+  // Opened from ⌘K "Run doctor" or the guide: start immediately, even if this page is already open. During a Canonfig
+  // update the request stays pending in the URL and runs once the update ends, instead of being dropped by run's guard.
   const { focus, go } = ws;
   useEffect(() => {
-    if (focus !== "run") return;
+    if (focus !== "run" || updating) return;
     go("doctor", undefined, { replace: true });
     run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focus]);
+  }, [focus, updating]);
   return (
     <>
       <PageHeader
@@ -1005,6 +1007,11 @@ export function VersionView() {
   const readChecking = useSharedReader<object | null>("self-update-checking", null);
   const [serviceInstalled] = useSharedState("service-installed", true);
   const readServiceInstalled = useSharedReader("service-installed", true);
+  // Set while the Service page installs or removes the service: that command holds the lease before `installed` flips.
+  const [serviceBusy] = useSharedState<string | null>("service-busy", null);
+  const readServiceBusy = useSharedReader<string | null>("service-busy", null);
+  const [skillBusy] = useSharedState<string | null>("skill-busy", null);
+  const readSkillBusy = useSharedReader<string | null>("skill-busy", null);
   const [journal] = useSharedState("setup-journal", JOURNAL_SEED);
   const readJournal = useSharedReader("setup-journal", JOURNAL_SEED);
   const [enabling, setEnabling] = useState(false);
@@ -1019,12 +1026,20 @@ export function VersionView() {
   const current = state.installed ?? APP_VERSION;
   const available = on && state.latest !== null && state.latest !== current;
   const running = step !== null;
-  // Every other Canonfig command holds an update lease while it runs (commandLease in coordination.ts): on the Source the
-  // background service, a setup being applied or a publish; on a follower a sync in progress. Updating waits for them.
-  const sourceBusy = (service: boolean, setup: Journal) => (service ? "service" : setup.phase === "applying" ? "setup" : ws.publishing ? "publish" : null);
-  const busyWith = ws.role === "source" ? sourceBusy(serviceInstalled, journal) : ws.phase === "running" ? "sync" : null;
-  // An interrupted sync must be finished with this version first (assertNoUnfinishedRun); it blocks opting in too.
-  const unfinished = ws.role === "follower" && ws.interrupted;
+  // Every other Canonfig command holds an update lease while it runs (commandLease in coordination.ts); updateGate
+  // lists them. An interrupted sync must be finished with this version first; it blocks opting in too.
+  const gateNow = (service: boolean, serviceBusyNow: string | null, setup: Journal, skill: string | null) =>
+    updateGate({
+      role: ws.role,
+      serviceInstalled: service,
+      serviceBusy: serviceBusyNow !== null,
+      setupApplying: setup.phase === "applying",
+      publishing: ws.publishing,
+      syncRunning: ws.phase === "running",
+      syncInterrupted: ws.interrupted,
+      skillBusy: skill !== null,
+    });
+  const { busyWith, unfinished } = gateNow(serviceInstalled, serviceBusy, journal, skillBusy);
   const blocked = available && (busyWith !== null || unfinished);
 
   const check = () => {
@@ -1047,12 +1062,12 @@ export function VersionView() {
     const advance = (i: number): void =>
       ws.later(() => {
         // Before swapping packages, check again that nothing else of Canonfig's started, as update in core.ts does:
-        // a setup that was applying may have installed the service since. A follower's sync can't start meanwhile.
-        const busyNow = ws.role === "source" ? sourceBusy(readServiceInstalled(), readJournal()) : null;
+        // a setup that was applying may have installed the service since, or a skill check may have started.
+        const busyNow = gateNow(readServiceInstalled(), readServiceBusy(), readJournal(), readSkillBusy()).busyWith;
         if (i === UPDATE_STEPS.length - 1 && busyNow) {
           setStep(null);
           toast.error("Canonfig didn't update", {
-            description: `${busyNow === "publish" ? "A publish" : busyNow === "setup" ? "Setup" : "The source service"} started while it got ready, so ${APP_VERSION} stays in place.\nUpdate again once it's stopped or finished.`,
+            description: `${busyNow === "publish" ? "A publish" : busyNow === "setup" ? "Setup" : busyNow === "skill" ? "A skill check or update" : busyNow === "sync" ? "A sync" : "The source service"} started while it got ready, so ${APP_VERSION} stays in place.\nUpdate again once it's stopped or finished.`,
           });
           return;
         }
@@ -1163,7 +1178,9 @@ export function VersionView() {
                         ? "Setup is applying its steps. Update Canonfig once it finishes."
                         : busyWith === "publish"
                           ? "A revision is being published. Update Canonfig once it's published."
-                          : "An update of this machine's setup is running. Update Canonfig once it finishes."}
+                          : busyWith === "skill"
+                            ? "A skill check or update is running. Update Canonfig once it finishes."
+                            : "An update of this machine's setup is running. Update Canonfig once it finishes."}
                 </span>
               </p>
               {unfinished && (
