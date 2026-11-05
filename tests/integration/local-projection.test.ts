@@ -229,10 +229,14 @@ describe("local projection", () => {
     const claude = join(value.home, ".claude");
     const instructions = join(claude, "CLAUDE.md");
     const userConfig = join(value.home, ".claude.json");
+    // Hand-written files in surfaces Claude Code does not get must survive.
+    write(instructions, "my own notes\n");
+    write(join(claude, "skills", "mine", "SKILL.md"), "---\nname: mine\ndescription: Mine\n---\nMine.\n");
     expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
     expect(Object.keys(JSON.parse(readFileSync(userConfig, "utf8")).mcpServers)).toEqual(["docs", "git"]);
-    expect(existsSync(instructions)).toBe(false);
-    expect(existsSync(join(claude, "skills"))).toBe(false);
+    expect(readFileSync(instructions, "utf8")).toBe("my own notes\n");
+    expect(readdirSync(join(claude, "skills"))).toEqual(["mine"]);
+    expect(appliedRecord(value, "harness:claude-code:instructions")).toBeUndefined();
     // Codex has no selection, so it still gets every category.
     expect(readFileSync(join(value.home, ".codex", "AGENTS.md"), "utf8")).toContain("Prefer small diffs.");
 
@@ -241,6 +245,14 @@ describe("local projection", () => {
     expect(readFileSync(instructions, "utf8")).toContain("Prefer small diffs.");
     expect(JSON.parse(readFileSync(userConfig, "utf8")).mcpServers).toBeUndefined();
     expect(appliedRecord(value, "harness:claude-code:mcp")).toBeUndefined();
+  });
+
+  it("writes no shared skills when no harness that reads them gets skills", async () => {
+    const value = fixture(["codex"], { surfaces: { codex: ["instructions", "mcp"] } });
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(join(value.home, ".codex", "AGENTS.md"), "utf8")).toContain("Prefer small diffs.");
+    expect(existsSync(join(value.home, ".agents", "skills", "deploy"))).toBe(false);
+    expect(appliedRecord(value, "harness:agents:skills")).toBeUndefined();
   });
 
   it("refuses a surface selection for a harness that is not listed", async () => {
