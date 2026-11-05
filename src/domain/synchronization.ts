@@ -71,6 +71,18 @@ export type ActionDetail =
     /** Normalized regular-file executable intent; absent for non-file writes. */
     readonly executable?: boolean | undefined;
     readonly mode?: number | undefined;
+    /** Source baseline retained by a persisted append-local action. */
+    readonly previousSourceDigest?: string | undefined;
+    /**
+     * First-adoption ambiguity report. Present when an append-local target is
+     * adopted with pre-existing content that differs from the Source payload:
+     * the existing bytes are preserved as follower-local text because the
+     * planner cannot distinguish an old shared rule from a deliberate local
+     * addition, so the operator is told explicitly.
+     */
+    readonly adoptionNotice?: string | undefined;
+    /** Exact unmanaged bytes retained locally; no text enters the public plan. */
+    readonly retainedLocalDigest?: string | undefined;
   }
   | {
     readonly kind: "write-config";
@@ -209,6 +221,8 @@ export type ObservedResourceState =
   | {
     readonly state: "present";
     readonly digest: string;
+    /** Digest of the marked Source payload, independent of local additions. */
+    readonly managedSourceDigest?: string | undefined;
     readonly executable: boolean;
     readonly mode?: number | undefined;
     /**
@@ -245,7 +259,7 @@ export interface AppliedResourceRecord {
   readonly digest: string;
   readonly appliedAt: string;
   readonly kind?: "file" | "directory" | "config" | "skill" | "tool" | "credential" | undefined;
-  readonly policy?: "replace" | "mirror-owned" | "merge" | "replace-if-unmodified" | "ensure" | "require-local" | undefined;
+  readonly policy?: "replace" | "mirror-owned" | "merge" | "replace-if-unmodified" | "append-local" | "ensure" | "require-local" | undefined;
   readonly target?: string | undefined;
   readonly executable?: boolean | undefined;
   readonly mode?: number | undefined;
@@ -323,6 +337,9 @@ export const ActionDetailSchema = Schema.Union([
     digest: ContentDigest,
     executable: Schema.optional(Schema.Boolean),
     mode: Schema.optional(Schema.Int),
+    previousSourceDigest: Schema.optional(ContentDigest),
+    adoptionNotice: Schema.optional(Schema.NonEmptyString),
+    retainedLocalDigest: Schema.optional(ContentDigest),
   }),
   Schema.Struct({
     kind: Schema.Literal("write-config"),
@@ -473,6 +490,7 @@ export const ObservedResourceStateSchema = Schema.Union([
   Schema.Struct({
     state: Schema.Literal("present"),
     digest: ContentDigest,
+    managedSourceDigest: Schema.optional(ContentDigest),
     executable: Schema.Boolean,
     mode: Schema.optional(Schema.Int),
     objectKind: Schema.optional(ObservedObjectKind),
@@ -523,6 +541,7 @@ export const AppliedResourceRecordSchema = Schema.Struct({
     "mirror-owned",
     "merge",
     "replace-if-unmodified",
+    "append-local",
     "ensure",
     "require-local",
   ])),
