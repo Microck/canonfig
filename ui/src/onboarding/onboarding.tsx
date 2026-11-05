@@ -182,6 +182,8 @@ interface ImportOffer {
   target: string;
   /** Credential-looking values, each replaced by a `fromEnv` reference before anything is copied. */
   secrets: { field: string; fromEnv: string }[];
+  /** What the import drops or converts because Canonfig's format has no place for it; never a value. */
+  notes: string[];
 }
 
 const CATEGORY_LABEL: Record<ImportCategory, string> = {
@@ -199,11 +201,11 @@ function offer(
   category: ImportCategory,
   name: string,
   path: string,
-  { harnesses = [source as HarnessId], secrets = [] }: { harnesses?: HarnessId[]; secrets?: ImportOffer["secrets"] } = {},
+  { harnesses = [source as HarnessId], secrets = [], notes = [] }: { harnesses?: HarnessId[]; secrets?: ImportOffer["secrets"]; notes?: string[] } = {},
 ): ImportOffer {
   const target =
     category === "instructions" ? "AGENTS.md" : category === "skills" ? `skills/${name}` : category === "mcp" ? `canonfig.jsonc#mcp.${name}` : `${category}/${name}.md`;
-  return { id: `${source}/${category}/${name}`, source, harnesses, category, name, path, target, secrets };
+  return { id: `${source}/${category}/${name}`, source, harnesses, category, name, path, target, secrets, notes };
 }
 
 // Example harness content on atlas, each item with its own content: when two are offered for
@@ -215,13 +217,27 @@ const IMPORT_OFFERS: ImportOffer[] = [
   offer("claude-code", "instructions", "AGENTS.md", "~/.claude/CLAUDE.md"),
   offer("claude-code", "rules", "typescript", "~/.claude/rules/typescript.md"),
   offer("claude-code", "skills", "review", "~/.claude/skills/review"),
-  offer("claude-code", "agents", "researcher", "~/.claude/agents/researcher.md"),
+  offer("claude-code", "agents", "researcher", "~/.claude/agents/researcher.md", {
+    notes: ["Its tools list isn't copied: Claude Code's tool names don't match Canonfig's capabilities, so it starts read-only."],
+  }),
   offer("claude-code", "commands", "ship", "~/.claude/commands/ship.md"),
   offer("claude-code", "mcp", "github", "~/.claude.json", { secrets: [{ field: "env.GITHUB_TOKEN", fromEnv: "GITHUB_TOKEN" }] }),
   offer("codex", "instructions", "AGENTS.md", "~/.codex/AGENTS.md"),
-  offer("codex", "mcp", "linear", "~/.codex/config.toml", { secrets: [{ field: "headers.Authorization", fromEnv: "LINEAR_AUTHORIZATION" }] }),
+  offer("codex", "mcp", "linear", "~/.codex/config.toml", {
+    secrets: [{ field: "headers.Authorization", fromEnv: "LINEAR_AUTHORIZATION" }],
+    notes: ["Its X-Timeout header isn't copied, because its value isn't text."],
+  }),
   offer("opencode", "commands", "review-pr", "~/.config/opencode/commands/review-pr.md"),
   offer("agents", "skills", "release-notes", "~/.agents/skills/release-notes", { harnesses: ["codex", "cursor"] }),
+];
+
+/**
+ * What the scan found but can't import, with the reason it gives (ImportSkip in src/projection/import.ts). Setup lists
+ * these for review; they stay in the harness until Canonfig takes it over, and in its backup after that.
+ */
+const IMPORT_SKIPPED: { source: HarnessId; path: string; reason: string }[] = [
+  { source: "claude-code", path: "~/.claude/skills/scratch", reason: "It has no SKILL.md." },
+  { source: "opencode", path: "~/.config/opencode/agents/helper.yaml", reason: "Only .md agents are imported." },
 ];
 
 /** Where an offer comes from, in words: a harness, or the shared skills folder. */
@@ -816,6 +832,7 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
   ];
   const importAll = single.length > 0 && single.every((o) => checked.includes(o.id));
   const nothingFrom = selected.filter((id) => !offered.some((o) => o.harnesses.includes(id)));
+  const skipped = IMPORT_SKIPPED.filter((s) => listed.includes(s.source));
 
   // Validated as typed, never rewritten: stripping characters would turn "1.5" into a different port.
   const portNumber = Number(port);
@@ -998,9 +1015,26 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
           {nothingFrom.length > 0 && (
             <p className="text-sm text-muted-foreground">Nothing to import from {nothingFrom.map((id) => HARNESS_NAMES[id]).join(", ")}.</p>
           )}
+          {skipped.length > 0 && (
+            <Collapsible>
+              <DisclosureTrigger>Can't be imported ({skipped.length})</DisclosureTrigger>
+              <CollapsibleContent className="mt-3">
+                <ul className="divide-y divide-border rounded-lg border border-border">
+                  {skipped.map((s) => (
+                    <li key={s.path} className="px-3.5 py-3">
+                      <Mono className="text-foreground">{s.path}</Mono>
+                      <span className="mt-1 block text-sm text-muted-foreground">
+                        {HARNESS_NAMES[s.source]}. {s.reason}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </CollapsibleContent>
+            </Collapsible>
+          )}
           <p className="text-sm text-muted-foreground">
-            What you don't import stays where it is. Before Canonfig first writes into a harness, it copies the harness's files into a <Term term="Takeover Snapshot" /> in{" "}
-            <Mono>~/.canonfig/.backups/</Mono>, so you can put them back later.
+            What you don't import leaves the harness at its first sync, when Canonfig takes over its files. Canonfig copies them into a <Term term="Takeover Snapshot" /> in{" "}
+            <Mono>~/.canonfig/.backups/</Mono> first, so you can put them back from Backups.
           </p>
           <label className={CHECK_ROW}>
             <Checkbox checked={scan} onCheckedChange={(c) => setScan(c === true)} className="mt-px" />
@@ -1101,6 +1135,11 @@ function OfferText({ offer }: { offer: ImportOffer }) {
       {offer.secrets.map((s) => (
         <span key={s.field} className="mt-1 block text-sm text-muted-foreground">
           <Mono>{s.field}</Mono> looks like a credential, so it becomes <Mono className="text-foreground">{`{ "fromEnv": "${s.fromEnv}" }`}</Mono> and its value isn't copied.
+        </span>
+      ))}
+      {offer.notes.map((note) => (
+        <span key={note} className="mt-1 block text-sm text-muted-foreground">
+          {note}
         </span>
       ))}
     </span>
