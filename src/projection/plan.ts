@@ -55,7 +55,7 @@ import type {
   RootContext,
   SurfaceContent,
 } from "./harness.ts";
-import { modelFor, SURFACE_CATEGORIES, type SurfaceCategory, TARGET_IDS, type TargetId } from "./model.ts";
+import { type CanonicalModel, modelFor, SURFACE_CATEGORIES, type SurfaceCategory, TARGET_IDS, type TargetId } from "./model.ts";
 import { hookRegistryJson, hookRunnerSource } from "./templates/runtime.ts";
 import type { Snapshot, SnapshotEntry, TakeoverUnit } from "./takeover.ts";
 import { snapshotCopy } from "./takeover.ts";
@@ -71,6 +71,25 @@ export const supportedCategories = (adapter: HarnessAdapter, layout: HarnessLayo
       ? layout.surfaces.some((surface) => surface.kind === "config" && surface.settings !== undefined)
       : adapter.descriptor.capabilities[category] !== "unsupported"
   );
+
+/**
+ * Why `selected` is not a valid `surfaces.<harness>` entry, or undefined.
+ * Projection checks it on every machine and publication before signing, so a
+ * Source can never publish a selection its followers would refuse.
+ */
+export const surfaceSelectionIssue = (
+  harness: TargetId,
+  selected: ReadonlyArray<SurfaceCategory>,
+  context: RootContext,
+  model: CanonicalModel,
+): string | undefined => {
+  const adapter = adapterFor(harness);
+  const supported = supportedCategories(adapter, adapter.layout(context, model));
+  const unsupported = selected.filter((category) => !supported.includes(category));
+  return unsupported.length === 0
+    ? undefined
+    : `surfaces.${harness}: ${adapter.descriptor.name} does not support ${unsupported.join(", ")}; it supports ${supported.join(", ")}`;
+};
 
 /**
  * Projection planning: the Canonical Model becomes internal `file`,
@@ -254,15 +273,8 @@ export const projectSurfaces = (
     for (const harness of TARGET_IDS) {
       const selected = model.surfaces[harness];
       if (selected === undefined) continue;
-      const adapter = adapterFor(harness);
-      const supported = supportedCategories(adapter, adapter.layout(context, model));
-      const unsupported = selected.filter((category) => !supported.includes(category));
-      if (unsupported.length > 0) {
-        return yield* new CanonicalFolderError({
-          path: configPath,
-          message: `surfaces.${harness}: ${adapter.descriptor.name} does not support ${unsupported.join(", ")}; it supports ${supported.join(", ")}`,
-        });
-      }
+      const issue = surfaceSelectionIssue(harness, selected, context, model);
+      if (issue !== undefined) return yield* new CanonicalFolderError({ path: configPath, message: issue });
     }
     const harnesses: Array<HarnessPlan> = [];
     // Set when a harness that reads the shared skills directory is given skills.
