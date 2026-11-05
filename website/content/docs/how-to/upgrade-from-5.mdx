@@ -28,27 +28,21 @@ Later runs find the upgraded state and do nothing more.
   and publication approval stays.
 - **Schedules and secrets.** A follower's schedule choice and the names of
   shared secrets stay. Secret values never left the credential store.
-- **Applied files.** A follower's record of each `file`, `directory` and
-  `config` resource it applied becomes the record of the `resources` entry of
-  the same name. When the Source declares that resource again in
-  `canonfig.jsonc` (see
-  [Manage files outside harnesses](/how-to/manage-files-outside-harnesses)),
-  the follower updates the file it already owns instead of taking it over.
+- **Tools and credentials.** A follower's record of each tool it installed
+  and each credential it checked stays as it was.
 - **Published revisions.** A Source keeps every revision it published, with
   its profile and sequence. This release cannot apply their resources, so
   publish from `~/.canonfig/` once on the Source after upgrading; the new
   revision continues the sequence under the same profile id.
 
-Local Overlay keys are dropped and listed in `state_upgrades`. They only ever
-claimed keys Canonfig did not manage, and this release leaves every such key
-to the follower, so nothing changes on disk.
-
-A `skill` resource with its own target, such as `~/.agents/skills/code-review`,
-has no equivalent: skills now come from `~/.canonfig/skills/` and go to each
-harness's own skills directory. Canonfig stops managing it and lists it in
-`state_upgrades`, and its files stay where they are. The next sync that takes
-over that skills directory backs them up first. To keep managing a skill,
-put it under `skills/` in the Source's `~/.canonfig/`.
+Canonfig stops managing the `file`, `directory`, `config` and `skill`
+resources 5.0.1 applied, and lists each one in `state_upgrades`. Their files
+and keys stay exactly where they are. When the Source authors those paths
+again, through the folder or as a `resources` entry (see
+[Manage files outside harnesses](/how-to/manage-files-outside-harnesses)),
+the next sync takes them over like any other harness file and backs them up
+first. Local Overlay keys are dropped and listed too; they stay in the file as
+the follower's own keys.
 
 ## When the upgrade refuses
 
@@ -59,8 +53,6 @@ changed and no copy is written.
 | --- | --- |
 | A run 5.0.1 left unfinished | Install 5.0.1 again, run `canonfig recover` or `canonfig abandon`, then install this release. |
 | A Source that published more than one profile | Keep that Source on 5.0.1, or move the database aside and set the machine up again as the Source of one profile. Publishing several profiles from one Source is tracked in [issue #254](https://github.com/Microck/canonfig/issues/254). |
-| A symlink, or a target outside your home directory | On the Source, with 5.0.1, remove the resource and publish; sync the follower with 5.0.1; then install this release. |
-| A Local Overlay over a key Canonfig manages | With 5.0.1, run `canonfig overlay remove <resource>` and sync, then install this release. |
 
 State from a release before 4.0.0 needs one run of 5.0.1 first, for example
 `npx @microck/canonfig@5.0.1 status`.

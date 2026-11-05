@@ -1,23 +1,16 @@
 import { constants } from "node:fs";
 import { open, realpath } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, join } from "node:path";
 
 import { SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 
-import { ContentDigest } from "../domain/brand.ts";
-import { configPathsOverlap } from "../domain/config-path.ts";
 import { ProfileRevisionSchema } from "../domain/profile.ts";
 import { AppliedResourceRecordSchema, type AppliedResourceRecord } from "../domain/synchronization.ts";
 import { buildIdentity } from "../runtime/build-identity.ts";
 import { FollowerSynchronizationConfiguration } from "../synchronization/follower-sync-config.ts";
-import {
-  desiredDirectoryEntries,
-  desiredResourceDigest,
-  relativePathAncestors,
-} from "../synchronization/resource-plans.ts";
 import { EarlierStateUpgradeError, RepositorySqlError } from "./state-repository.errors.ts";
 import { currentStateHistory, stateMigrations } from "./state-schema.ts";
 
@@ -28,32 +21,25 @@ import { currentStateHistory, stateMigrations } from "./state-schema.ts";
  * Enrollment, run journals, receipts, approvals, blobs and schedules carry
  * over unchanged. What changed meaning is mapped to its current equivalent:
  *
- * - An Applied Resource Record of an authored `file`, `directory` or
- *   `config` resource becomes the record of the authored resource
- *   `resources.<id>` in `canonfig.jsonc` (`harness:resources:<id>`), with an
- *   absolute target and a harness takeover row, so the first projection of
- *   that resource is an ordinary update of a surface Canonfig already owns,
- *   not a fresh takeover.
+ * - An Applied Resource Record of an authored `file`, `directory`, `config`
+ *   or `skill` resource is released: the record is dropped and listed in the
+ *   audit record, and the files and keys stay where they are. Most 5.0.1
+ *   targets sit inside harness folders, which `resources.<id>` may not
+ *   author, so no current item can own them. Whatever the Source authors
+ *   for those paths next is an ordinary takeover, snapshot first.
  * - The follower configuration's `selectedProfile` becomes `profile`.
- * - A Local Overlay entry is dropped and listed in the audit record. In
- *   state 5.0.1 accepted, an overlay key never overlaps a key Canonfig owns
- *   (that is Human Action Required), and this release leaves every key
- *   Canonfig does not own to the follower, so nothing changes on disk.
+ * - A Local Overlay entry is dropped and listed in the audit record. Its keys
+ *   already belong to the follower: the config record they overlaid is
+ *   released, and this release leaves every key Canonfig does not own alone.
  * - A published revision keeps its id, profile, sequence, digest, signature
  *   and signed bytes, and lists no resources: this release cannot apply its
  *   resources, and the Source publishes from `~/.canonfig/` from now on.
  * - Unchunked blobs move into chunks; runs from before 3.2.0 get the same
  *   unrecorded build identity their 3.2.0 receipt names.
  *
- * - An applied `skill` resource with its own target is released: its record
- *   is dropped and listed in the audit record, and its files stay where they
- *   are. Skills now come from `~/.canonfig/skills/`; the next projection's
- *   takeover snapshots that directory before it writes there.
- *
  * Items with no equivalent stop the upgrade before anything is written,
  * naming the item and its recovery: an unfinished run, a Source that
- * published more than one profile, a symlink, a target outside home, an
- * overlay over a managed key, or a row this release cannot decode.
+ * published more than one profile, or a row this release cannot decode.
  *
  * The upgrade is one transaction, preceded by a full copy of the database
  * next to it, and recorded in `state_upgrades`. A database already at
@@ -188,7 +174,6 @@ const AppliedRow = Schema.Struct({
   installer_recipe_json: Schema.NullOr(Schema.String),
 });
 type AppliedRow = typeof AppliedRow.Type;
-const LatestRunRow = Schema.Struct({ follower_id: Schema.String, id: Schema.String });
 /** The two 5.0.1 follower configuration fields that changed. */
 const EarlierConfiguration = Schema.Struct({
   selectedProfile: Schema.String,
@@ -198,15 +183,8 @@ const EarlierConfiguration = Schema.Struct({
     keys: Schema.Array(Schema.String),
   }))),
 });
-const OwnedFiles = Schema.Array(Schema.Struct({
-  path: Schema.String,
-  digest: ContentDigest,
-  executable: Schema.optional(Schema.Boolean),
-  mode: Schema.optional(Schema.Number),
-  objectKind: Schema.optional(Schema.String),
-  symlinkTo: Schema.optional(Schema.String),
-}));
-const OwnedKeys = Schema.Array(Schema.String);
+/** Authored resource kinds whose 5.0.1 records the upgrade releases. */
+const RELEASED_KINDS: ReadonlyArray<string> = ["file", "directory", "config", "skill"];
 const ForeignKeyViolation = Schema.Struct({ table: Schema.String, rowid: Schema.NullOr(Schema.Number), parent: Schema.String });
 const NamedRow = Schema.Struct({ type: Schema.String, name: Schema.String });
 const ColumnRow = Schema.Struct({ name: Schema.String });
@@ -214,9 +192,8 @@ const DatabaseRow = Schema.Struct({ name: Schema.String, file: Schema.String });
 
 /** What the upgrade changed beyond copying rows, kept in its audit record. */
 interface UpgradeChanges {
-  readonly renamedRecords: Array<{ readonly from: string; readonly to: string }>;
+  readonly releasedResources: Array<{ readonly resource: string; readonly kind: string; readonly target: string | null }>;
   readonly droppedOverlays: Array<{ readonly resource: string; readonly keys: ReadonlyArray<string> }>;
-  readonly droppedSkills: Array<{ readonly resource: string; readonly target: string | null }>;
   readonly revisionsWithoutResources: Array<string>;
 }
 
@@ -224,7 +201,6 @@ interface UpgradePlan {
   readonly configuration: { readonly followerId: string; readonly json: string; readonly updatedAt: string } | undefined;
   readonly revisions: ReadonlyArray<{ readonly row: typeof RevisionRow.Type; readonly json: string }>;
   readonly applied: ReadonlyArray<{ readonly followerId: string; readonly record: AppliedResourceRecord }>;
-  readonly takeovers: ReadonlyArray<{ readonly surface: string; readonly runId: string; readonly takenOverAt: string }>;
   readonly changes: UpgradeChanges;
 }
 
@@ -236,20 +212,6 @@ const firstLine = (cause: string): string => cause.split("\n")[0] ?? cause;
 const finishWith501 =
   "Install Canonfig 5.0.1 again, finish or remove it there, then install this version and run it again. The state has not been changed.";
 
-/**
- * `~/...` and absolute targets inside `home`, as the absolute path the
- * projection records. Anything else has no equivalent: this release never
- * writes outside the home directory.
- */
-const homeTarget = (home: string, target: string): string | undefined => {
-  const absolute = target === "~" || target.startsWith("~/") || target.startsWith("~\\")
-    ? join(home, target.slice(1))
-    : isAbsolute(target) ? resolve(target) : undefined;
-  if (absolute === undefined) return undefined;
-  const inside = relative(home, absolute);
-  return inside === "" || inside.startsWith("..") || isAbsolute(inside) ? undefined : absolute;
-};
-
 const decodeRows = <S extends Schema.Constraint>(schema: S, rows: ReadonlyArray<unknown>, entity: string) =>
   Schema.decodeUnknownEffect(Schema.Array(schema))(rows).pipe(
     Effect.mapError((error) => refuse(entity, `a stored row does not have the 5.0.1 shape: ${firstLine(String(error))}`, finishWith501)),
@@ -258,105 +220,24 @@ const decodeRows = <S extends Schema.Constraint>(schema: S, rows: ReadonlyArray<
 const sqlFailure = (operation: string) => (error: SqlError) =>
   new RepositorySqlError({ operation, message: String(error) });
 
-const removeWith501 = (resource: string) =>
-  `On the Source, with Canonfig 5.0.1, remove resource ${resource} from the profile and publish, then run \`canonfig sync --apply\` here with 5.0.1 so it releases it. Then install this version and run it again. The state has not been changed.`;
-
-type EarlierRecord =
-  | { readonly record: unknown; readonly renamed: boolean }
-  | { readonly reason: string; readonly recovery: string };
-
 /**
- * One 5.0.1 Applied Resource Record as this release records it. An authored
- * `file`, `directory` or `config` resource becomes the record the projection
- * keeps for `resources.<id>`; tools and credentials keep their record, since
- * their meaning did not change. Throws on stored JSON 5.0.1 never wrote.
+ * The record of a resource whose meaning did not change (tools and
+ * credentials), as this release stores it. Throws on stored JSON 5.0.1
+ * never wrote.
  */
-const earlierRecord = (row: AppliedRow, home: string): EarlierRecord => {
-  if (row.kind !== "file" && row.kind !== "directory" && row.kind !== "config") {
-    return {
-      renamed: false,
-      record: {
-        resource: row.resource_id,
-        revision: row.revision_id,
-        digest: row.digest,
-        appliedAt: row.applied_at,
-        kind: row.kind ?? undefined,
-        policy: row.policy ?? undefined,
-        target: row.target ?? undefined,
-        mode: row.mode ?? undefined,
-        installerRecipe: row.installer_recipe_json === null ? undefined : JSON.parse(row.installer_recipe_json),
-      },
-    };
-  }
-  const target = row.target === null ? undefined : homeTarget(home, row.target);
-  if (target === undefined) {
-    return {
-      reason: `its target ${row.target ?? "(none)"} is outside the home directory, which this release never writes`,
-      recovery: removeWith501(row.resource_id),
-    };
-  }
-  const owned = Schema.decodeUnknownSync(OwnedFiles)(JSON.parse(row.owned_files_json ?? "[]"));
-  if (row.symlink_target !== null || owned.some((file) => file.objectKind === "symlink" || file.symlinkTo !== undefined)) {
-    return { reason: "it is or holds a symlink, which authored resources no longer create", recovery: removeWith501(row.resource_id) };
-  }
-  const base = {
-    resource: `harness:resources:${row.resource_id}`,
-    revision: row.revision_id,
-    appliedAt: row.applied_at,
-    kind: row.kind,
-    target,
-    // The Source's section of an append-local file keeps its policy; every
-    // other surface is compared three ways, as the projection records it.
-    policy: row.policy === "append-local" ? "append-local" : "replace-if-unmodified",
-  };
-  if (row.kind === "file") {
-    return {
-      renamed: true,
-      record: { ...base, digest: row.digest, executable: row.executable === 1, mode: row.mode ?? undefined },
-    };
-  }
-  if (row.kind === "config") {
-    return {
-      renamed: true,
-      record: {
-        ...base,
-        digest: row.digest,
-        ownedKeys: Schema.decodeUnknownSync(OwnedKeys)(JSON.parse(row.owned_keys_json ?? "[]")),
-        configFormat: row.config_format ?? undefined,
-      },
-    };
-  }
-  // The projection owns a directory's files, every ancestor directory of one
-  // (0700) and the root, and records the digest of exactly those entries, so
-  // the record is rebuilt that way from the tree 5.0.1 wrote.
-  const files = owned.filter((file) => file.objectKind !== "directory").map((file) => ({
-    path: file.path,
-    digest: file.digest,
-    executable: file.executable === true,
-    mode: file.mode ?? (file.executable === true ? 0o700 : 0o600),
-  }));
-  const directories = new Map(owned.filter((file) => file.objectKind === "directory").map((file) => [file.path, file.mode ?? 0o700]));
-  for (const ancestor of relativePathAncestors(files.map((file) => file.path))) {
-    if (!directories.has(ancestor)) directories.set(ancestor, 0o700);
-  }
-  const desired = {
-    kind: "directory" as const,
-    mode: row.mode ?? 0o700,
-    directories: [...directories.keys()].sort().map((path) => ({ path, mode: directories.get(path) ?? 0o700 })),
-    files,
-  };
-  return {
-    renamed: true,
-    record: {
-      ...base,
-      digest: desiredResourceDigest(desired),
-      mode: desired.mode,
-      ownedFiles: desiredDirectoryEntries(desired).map((entry) => ({ objectKind: "regular", ...entry })),
-    },
-  };
-};
+const keptRecord = (row: AppliedRow) => ({
+  resource: row.resource_id,
+  revision: row.revision_id,
+  digest: row.digest,
+  appliedAt: row.applied_at,
+  kind: row.kind ?? undefined,
+  policy: row.policy ?? undefined,
+  target: row.target ?? undefined,
+  mode: row.mode ?? undefined,
+  installerRecipe: row.installer_recipe_json === null ? undefined : JSON.parse(row.installer_recipe_json),
+});
 
-const readEarlierState = Effect.fn("StateRepository.readEarlierState")(function*(home: string) {
+const readEarlierState = Effect.fn("StateRepository.readEarlierState")(function*() {
   const sql = yield* SqlClient.SqlClient;
   const read = <S extends Schema.Constraint>(schema: S, entity: string, query: Effect.Effect<ReadonlyArray<unknown>, SqlError>) =>
     query.pipe(Effect.mapError(sqlFailure(`read ${entity} from earlier state`)), Effect.flatMap((rows) => decodeRows(schema, rows, entity)));
@@ -410,38 +291,25 @@ const readEarlierState = Effect.fn("StateRepository.readEarlierState")(function*
   }
 
   const appliedRows = yield* read(AppliedRow, "applied resources", sql`SELECT * FROM applied_resources ORDER BY follower_id, resource_id`);
-  const latestRuns = new Map((yield* read(LatestRunRow, "synchronization runs", sql`
-    SELECT follower_id, id FROM synchronization_runs AS run
-    WHERE started_at = (SELECT MAX(started_at) FROM synchronization_runs WHERE follower_id = run.follower_id)
-  `)).map((row) => [row.follower_id, row.id]));
   const changes: UpgradeChanges = {
-    renamedRecords: [],
+    releasedResources: [],
     droppedOverlays: [],
-    droppedSkills: [],
     revisionsWithoutResources: revisions.map(({ row }) => row.id),
   };
   const applied: Array<{ readonly followerId: string; readonly record: AppliedResourceRecord }> = [];
-  const ownedKeysByEarlierId = new Map<string, ReadonlyArray<string>>();
-  const takeovers: Array<{ readonly surface: string; readonly runId: string; readonly takenOverAt: string }> = [];
   for (const row of appliedRows) {
-    // Released, not refused: nothing is written there, so the files stay and
-    // the projection's takeover backs up the skills directory before it writes.
-    if (row.kind === "skill") {
-      changes.droppedSkills.push({ resource: row.resource_id, target: row.target });
+    // Released, not mapped: nothing is written there, so files and keys stay
+    // as they are, and the next projection that reaches those paths takes them
+    // over with a snapshot first.
+    if (row.kind !== null && RELEASED_KINDS.includes(row.kind)) {
+      changes.releasedResources.push({ resource: row.resource_id, kind: row.kind, target: row.target });
       continue;
     }
     const item = `applied resource ${row.resource_id} (${row.kind ?? "unknown kind"} at ${row.target ?? "no target"})`;
     const notStored = (cause: string) => refuse(item, `the record does not fit this release: ${firstLine(cause)}`, finishWith501);
-    const earlier = yield* Effect.try({ try: () => earlierRecord(row, home), catch: (error) => notStored(String(error)) });
-    if ("reason" in earlier) return yield* refuse(item, earlier.reason, earlier.recovery);
-    const record = yield* Schema.decodeUnknownEffect(AppliedResourceRecordSchema)(earlier.record).pipe(Effect.mapError((error) => notStored(String(error))));
+    const earlier = yield* Effect.try({ try: () => keptRecord(row), catch: (error) => notStored(String(error)) });
+    const record = yield* Schema.decodeUnknownEffect(AppliedResourceRecordSchema)(earlier).pipe(Effect.mapError((error) => notStored(String(error))));
     applied.push({ followerId: row.follower_id, record });
-    ownedKeysByEarlierId.set(row.resource_id, record.ownedKeys ?? []);
-    if (!earlier.renamed) continue;
-    const runId = latestRuns.get(row.follower_id);
-    if (runId === undefined) return yield* refuse(item, "no synchronization run of this follower applied it", finishWith501);
-    changes.renamedRecords.push({ from: row.resource_id, to: record.resource });
-    takeovers.push({ surface: row.resource_id, runId, takenOverAt: row.applied_at });
   }
 
   const configurationRows = yield* read(ConfigurationRow, "follower synchronization configuration", sql`
@@ -459,15 +327,6 @@ const readEarlierState = Effect.fn("StateRepository.readEarlierState")(function*
       Effect.mapError((error) => notEarlier(String(error))),
     );
     for (const overlay of earlier.localOverlay ?? []) {
-      const owned = ownedKeysByEarlierId.get(overlay.resource) ?? [];
-      const managed = overlay.keys.filter((key) => owned.some((ownedKey) => configPathsOverlap(key, ownedKey)));
-      if (managed.length > 0) {
-        return yield* refuse(
-          `local overlay on ${overlay.resource} (${managed.join(", ")})`,
-          "it claims keys Canonfig manages, which this release has no way to hand to the follower",
-          `Install Canonfig 5.0.1 again, run \`canonfig overlay remove ${overlay.resource}\` there and resolve the keys, then install this version and run it again. The state has not been changed.`,
-        );
-      }
       changes.droppedOverlays.push({ resource: overlay.resource, keys: overlay.keys });
     }
     const upgraded = yield* Schema.decodeUnknownEffect(FollowerSynchronizationConfiguration)({
@@ -481,7 +340,6 @@ const readEarlierState = Effect.fn("StateRepository.readEarlierState")(function*
     configuration,
     revisions: revisions.map(({ row, revision }) => ({ row, json: JSON.stringify(revision) })),
     applied,
-    takeovers,
     changes,
   } satisfies UpgradePlan;
 });
@@ -623,12 +481,6 @@ const applyUpgrade = Effect.fn("StateRepository.applyEarlierStateUpgrade")(funct
       )
     `);
   }
-  for (const takeover of plan.takeovers) {
-    yield* run(sql`
-      INSERT INTO harness_takeovers (harness, surface, root, snapshot, run_id, taken_over_at)
-      VALUES ('resources', ${takeover.surface}, ${home}, NULL, ${takeover.runId}, ${takeover.takenOverAt})
-    `);
-  }
   for (const [table] of [...earlierTables].reverse()) {
     yield* run(sql`DROP TABLE ${sql(`earlier_${table}`)}`);
   }
@@ -664,7 +516,7 @@ export const upgradeStateFormat4 = Effect.fn("StateRepository.upgradeStateFormat
   home: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const plan = yield* readEarlierState(home);
+  const plan = yield* readEarlierState();
   const backup = yield* backupDatabase();
   yield* sql.withTransaction(applyUpgrade(plan, home, history, backup)).pipe(
     Effect.mapError((error) => error instanceof EarlierStateUpgradeError || error instanceof RepositorySqlError

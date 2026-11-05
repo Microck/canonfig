@@ -141,24 +141,15 @@ describe("state from Canonfig 5.0.1", () => {
     });
     expect(JSON.stringify(upgraded.configuration)).not.toContain("localOverlay");
 
-    // Each authored resource is now the record of `resources.<id>`, at its
-    // absolute target, owned through a takeover with no snapshot.
-    expect(upgraded.records.map((record) => [record.resource, record.kind, record.policy, record.target])).toEqual([
-      ["harness:resources:claude-commands", "directory", "replace-if-unmodified", join(home, ".claude", "commands")],
-      ["harness:resources:claude-instructions", "file", "append-local", join(home, ".claude", "CLAUDE.md")],
-      ["harness:resources:claude-settings", "config", "replace-if-unmodified", join(home, ".claude", "settings.json")],
-      ["harness:resources:codex-config", "config", "replace-if-unmodified", join(home, ".codex", "config.toml")],
-      ["harness:resources:codex-instructions", "file", "replace-if-unmodified", join(home, ".codex", "AGENTS.md")],
+    // Every authored resource record is released: no record, no takeover, and
+    // its files stay where 5.0.1 wrote them.
+    const authored = earlierRecords.filter((record) => ["file", "directory", "config", "skill"].includes(String(record["kind"])));
+    expect(authored.map((record) => record["resource_id"])).toEqual([
+      "claude-commands", "claude-instructions", "claude-settings", "codex-config", "codex-instructions", "review-skill",
     ]);
-    const kept = new Map(earlierRecords.map((record) => [record["resource_id"], record["digest"]]));
-    for (const record of upgraded.records.filter((candidate) => candidate.kind !== "directory")) {
-      expect(record.digest).toBe(kept.get(record.resource.slice("harness:resources:".length)));
-    }
-    expect(upgraded.records.find((record) => record.kind === "directory")?.ownedFiles?.map((file) => [file.path, file.objectKind]))
-      .toEqual([["nested/ship.md", "regular"], ["review.md", "regular"], ["nested", "directory"]]);
-    expect(upgraded.takeovers.map((takeover) => [takeover.harness, takeover.surface, takeover.root, takeover.snapshot]).sort())
-      .toEqual(["claude-commands", "claude-instructions", "claude-settings", "codex-config", "codex-instructions"]
-        .map((surface) => ["resources", surface, home, undefined]));
+    expect(upgraded.records.map((record) => record.resource))
+      .toEqual(earlierRecords.map((record) => String(record["resource_id"])).filter((id) => !authored.some((record) => record["resource_id"] === id)));
+    expect(upgraded.takeovers).toEqual([]);
     // The revisions this follower applied keep their identity and list no
     // resources this release could apply.
     expect(upgraded.revisions.map((revision) => [revision.sequence, revision.resources.length]).sort()).toEqual([[1, 0], [2, 0]]);
@@ -169,15 +160,18 @@ describe("state from Canonfig 5.0.1", () => {
     expect(statSync(backup).mode & 0o777).toBe(0o600);
     expect(rows(backup, "SELECT count(*) AS count FROM effect_sql_migrations")).toEqual([{ count: 21 }]);
     expect(JSON.parse(String(upgrade?.["changes_json"]))).toEqual({
-      renamedRecords: ["claude-commands", "claude-instructions", "claude-settings", "codex-config", "codex-instructions"]
-        .map((id) => ({ from: id, to: `harness:resources:${id}` })),
+      releasedResources: expect.arrayContaining([
+        { resource: "claude-commands", kind: "directory", target: "~/.claude/commands" },
+        { resource: "review-skill", kind: "skill", target: "~/.agents/skills/code-review" },
+      ]),
       droppedOverlays: [{ resource: "claude-settings", keys: ["theme"] }],
-      droppedSkills: [{ resource: "review-skill", target: "~/.agents/skills/code-review" }],
       revisionsWithoutResources: expect.arrayContaining(upgraded.revisions.map((revision) => revision.id)),
     });
+    expect(JSON.parse(String(upgrade?.["changes_json"])).releasedResources).toHaveLength(authored.length);
     expect(JSON.parse(String(upgrade?.["earlier_history_json"]))).toHaveLength(21);
-    // A released skill keeps its files; the next takeover of its directory backs them up.
+    // Released resources keep their files; the next takeover of those paths backs them up.
     expect(readFileSync(join(home, ".agents", "skills", "code-review", "SKILL.md"), "utf8")).toContain("Review the diff.");
+    expect(readdirSync(join(home, ".claude", "commands"))).toContain("review.md");
 
     // A second run reads format 6 and changes nothing.
     const before = { database: digest(state), backups: backups(state) };
