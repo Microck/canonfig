@@ -118,8 +118,8 @@ canonfig source publish --reviewer dana
 | `--reviewer <name>` | Required. Recorded with the revision. |
 
 Compiles the authoring allowlist of `~/.canonfig/` (`canonfig.jsonc`,
-`AGENTS.md`, `rules/`, `skills/`, `agents/`, `commands/`, `hooks/`) into the
-next signed Profile Revision. Nothing else in the folder is published, and
+`AGENTS.md`, `rules/`, `skills/`, `agents/`, `commands/`, `hooks/`, `files/`)
+into the next signed Profile Revision. Nothing else in the folder is published, and
 `canonfig.jsonc` needs `profile` with an `id` and `name`. Content equal to the
 latest Profile Revision returns that revision. Any other content, including
 an older revision's, becomes the next sequence number; publishing old content

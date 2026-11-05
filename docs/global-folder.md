@@ -13,13 +13,14 @@ https://canonfig.micr.dev/docs/reference/harnesses/.
 
 | Path | Content |
 | --- | --- |
-| `canonfig.jsonc` | `version: 1`, `profile`, `harnesses`, `surfaces`, `mcp`, `hooks`, `settings`, `tools`, `credentials`, `groups`, `scheduleDefault`, `local` |
+| `canonfig.jsonc` | `version: 1`, `profile`, `harnesses`, `surfaces`, `mcp`, `hooks`, `settings`, `tools`, `credentials`, `resources`, `groups`, `scheduleDefault`, `local` |
 | `AGENTS.md` | shared instructions |
 | `rules/<id>.md` | rules |
 | `skills/<name>/` | skill trees with `SKILL.md` |
 | `agents/<id>.md` | subagent definitions |
 | `commands/<id>.md` | slash commands |
 | `hooks/` | scripts that a hook in `canonfig.jsonc` runs |
+| `files/` | content of the authored resources in `canonfig.jsonc` `resources` |
 | `local/` | machine-local items, never published |
 
 Everything else (`state.sqlite`, `setup.json`, `policy.json`, `.runtime/`,

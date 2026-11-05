@@ -130,13 +130,14 @@ The Source Machine authors its Machine Profile as the Canonical Folder:
 
 ```text
 ~/.canonfig/
-  canonfig.jsonc      profile, harnesses, mcp, hooks, settings, tools, credentials, groups, scheduleDefault, local
+  canonfig.jsonc      profile, harnesses, mcp, hooks, settings, tools, credentials, resources, groups, scheduleDefault, local
   AGENTS.md
   rules/<id>.md
   skills/<name>/SKILL.md
   agents/<id>.md
   commands/<id>.md
   hooks/<script>
+  files/...           content of authored resources
   local/              machine-local, never published
 ```
 

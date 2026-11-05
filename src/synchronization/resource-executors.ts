@@ -872,7 +872,7 @@ const loadRollbackMaterial = (
     return { stored, createdParents, root };
   });
 
-/** Restore a persisted, owned-file rollback snapshot. */
+/** Restore a persisted, owned-file rollback snapshot. Recovery restores through here, so an authored target's ancestry is checked first. */
 export const restoreRollbackReference = (
   context: ResourceExecutionContext,
   reference: string,
@@ -881,7 +881,7 @@ export const restoreRollbackReference = (
   SynchronizationExecutionInputError | MachineStateError,
   MachineState
 > =>
-  Effect.gen(function*() {
+  guardAuthoredTarget(context, Effect.gen(function*() {
     const { stored, createdParents, root } = yield* loadRollbackMaterial(context, reference);
     if (composesText(context)) {
       yield* restoreAppendLocal(context, stored, reference);
@@ -889,7 +889,7 @@ export const restoreRollbackReference = (
       yield* restoreStoredFiles(stored, reference, root);
     }
     yield* removeCreatedParents(createdParents, true);
-  });
+  }));
 
 /** What one action leaves at one path. `undefined` means it leaves it as it was. */
 type IntendedState =
@@ -2206,7 +2206,14 @@ export const authoredResourcePrefix = "harness:resources:";
  * symlinked or junctioned parent could otherwise carry a home-relative
  * target outside home or into a harness's own files. Projection runs this
  * before it reads or snapshots the target; the executor runs it again right
- * before each preparation and mutation.
+ * before each preparation, mutation and rollback, and recovery before it
+ * restores a rollback snapshot.
+ *
+ * This is a check, not an anchored write. The mutation that follows is a
+ * separate path-based call, so a parent replaced by a link between the two
+ * is still followed. `mutateWithinRoot` would close that window, but it
+ * anchors on its root and its macOS strategy renames the root aside while it
+ * works, which cannot be done to the home directory.
  */
 export const assertAuthoredTargetPath = (target: string) =>
   Effect.gen(function*() {
@@ -2233,15 +2240,23 @@ export const assertAuthoredTargetPath = (target: string) =>
     }
   });
 
+/** The ancestry check before `effect`, for authored resources only; projection's own targets pass straight through. */
+const guardAuthoredTarget = <A, E, R>(context: ResourceExecutionContext, effect: Effect.Effect<A, E, R>) =>
+  context.resource.id.startsWith(authoredResourcePrefix)
+    ? assertAuthoredTargetPath(context.resource.target).pipe(Effect.andThen(effect))
+    : effect;
+
 /** Prepare deterministic work. Preparation stores rollback material before owned-file mutation. */
 export const prepareResourceAction = (
   context: ResourceExecutionContext,
 ): Effect.Effect<PreparedResourceAction, SynchronizationExecutionInputError | MachineStateError, MachineState> => {
   if (!context.resource.id.startsWith(authoredResourcePrefix)) return prepareAction(context);
-  const guard = assertAuthoredTargetPath(context.resource.target);
-  return guard.pipe(
-    Effect.andThen(prepareAction(context)),
-    Effect.map((prepared) => ({ ...prepared, execute: guard.pipe(Effect.andThen(prepared.execute)) })),
+  return guardAuthoredTarget(context, prepareAction(context)).pipe(
+    Effect.map((prepared) => ({
+      ...prepared,
+      execute: guardAuthoredTarget(context, prepared.execute),
+      rollback: prepared.rollback === undefined ? undefined : guardAuthoredTarget(context, prepared.rollback),
+    })),
   );
 };
 

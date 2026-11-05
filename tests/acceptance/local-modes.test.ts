@@ -442,6 +442,22 @@ describe("what a follower keeps of its own", () => {
     expect(existsSync(agents)).toBe(false);
   }, 120_000);
 
+  it("removes on retirement an append-local file Canonfig created", () => {
+    const own = ownFolder("retired", [], {
+      resources: { team: { kind: "file", target: "~/notes/TEAM.md", source: "files/TEAM.md", policy: "append-local" } },
+    }, { "files/TEAM.md": "Team notes.\n" });
+    const notes = join(own.home, "notes", "TEAM.md");
+    expect(succeed(own.run(["sync", "--apply"]), "shared").data).toMatchObject({ outcome: { outcome: "Converged" } });
+    expect(read(notes)).toContain("<!-- canonfig:source:start -->");
+
+    // Dropping the resource retires it: with no text of the machine's after
+    // Canonfig's section, no file is left, not an empty one.
+    write(join(own.folder, "canonfig.jsonc"), JSON.stringify({ version: 1, harnesses: [] }));
+    rmSync(join(own.folder, "files"), { recursive: true });
+    expect(succeed(own.run(["sync", "--apply"]), "retiring").data).toMatchObject({ outcome: { outcome: "Converged" } });
+    expect(existsSync(notes)).toBe(false);
+  }, 120_000);
+
   it("turns append-local off: converges when no text of the machine's follows, and keeps text that does", () => {
     const config = (appendLocal: ReadonlyArray<string>) => ({ local: { appendLocal } });
     const own = ownFolder("off", ["codex"], config(["instructions"]), { "AGENTS.md": "# Rules\n" });

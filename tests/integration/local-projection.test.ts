@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { Effect, Fiber, Layer, Schema } from "effect";
+import { Deferred, Effect, Fiber, Layer, Schema } from "effect";
 import { parse as parseToml } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -14,14 +14,23 @@ import { MachineState } from "../../src/machine/machine-state.service.ts";
 import { adapterFor } from "../../src/projection/adapters/index.ts";
 import { loadCanonicalFolder } from "../../src/projection/folder.ts";
 import { TARGET_IDS, type TargetId } from "../../src/projection/model.ts";
-import { rootContext } from "../../src/projection/plan.ts";
-import { abandonLocal, recoverLocal, restoreLocal, synchronizeLocal } from "../../src/projection/sync.ts";
+import { planFolder, rootContext } from "../../src/projection/plan.ts";
+import {
+  abandonLocal,
+  harnessesLocal,
+  overlaysLocal,
+  recoverLocal,
+  restoreLocal,
+  synchronizeLocal,
+  writeAdoptionReviews,
+} from "../../src/projection/sync.ts";
 import { listSnapshots, pruneSnapshots, readSnapshot, writeTakeoverSnapshot, type TakeoverUnit } from "../../src/projection/takeover.ts";
 import { RunId } from "../../src/domain/brand.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
 import type { ConfigValue } from "../../src/domain/resource.ts";
 import { localProjectionFollower } from "../../src/domain/synchronization.ts";
+import { withRunLock } from "../../src/synchronization/run-lock.ts";
 import { SynchronizationLive } from "../../src/synchronization/synchronization.layer.ts";
 
 /**
@@ -741,6 +750,63 @@ describe("local projection", () => {
     expect(keptTree.get("claude-code/.claude/CLAUDE.md")).toBe("old instructions\n");
     expect(readFileSync(join(kept, "claude-code", ".claude", "CLAUDE.md"), "utf8")).toBe("old instructions\n");
   }, 120_000);
+
+  it("refuses overlay and harness exclusion edits while the run lock is held", async () => {
+    const value = fixture(["codex"]);
+    const localPath = join(value.folder, "local", "local.jsonc");
+    write(localPath, "// this machine's own\n{ \"overlays\": [\"skills/deploy\"] }\n");
+    const before = readFileSync(localPath, "utf8");
+    // A restore (or another edit) holds the lock for as long as `release` is open.
+    const acquired = Effect.runSync(Deferred.make<void>());
+    const release = Effect.runSync(Deferred.make<void>());
+    const holder = Effect.runFork(withRunLock(value.statePath, "restore", Deferred.succeed(acquired, undefined).pipe(
+      Effect.andThen(Deferred.await(release)),
+    )));
+    await Effect.runPromise(Deferred.await(acquired));
+
+    const overlay = await Effect.runPromise(overlaysLocal(value.statePath, { action: "set", item: "mcp/docs" }).pipe(
+      Effect.flip,
+      Effect.provide(layer(value)),
+    ));
+    const exclusion = await Effect.runPromise(harnessesLocal(value.statePath, environmentOf(value), { action: "exclude", harness: "codex" }).pipe(
+      Effect.flip,
+      Effect.provide(layer(value)),
+    ));
+    expect([overlay._tag, exclusion._tag]).toEqual(["RunLockHeldError", "RunLockHeldError"]);
+    expect(readFileSync(localPath, "utf8")).toBe(before);
+
+    await Effect.runPromise(Deferred.succeed(release, undefined));
+    await Effect.runPromise(Fiber.join(holder));
+    const edited = await Effect.runPromise(overlaysLocal(value.statePath, { action: "set", item: "mcp/docs" }).pipe(
+      Effect.provide(layer(value)),
+    ));
+    expect(edited).toMatchObject({ overlays: ["mcp/docs", "skills/deploy"] });
+    expect(readFileSync(localPath, "utf8")).toContain("// this machine's own");
+  });
+
+  it("leaves no review directory when a later first adoption changed after planning", async () => {
+    const value = fixture(["claude-code", "qwen"], { local: { appendLocal: ["instructions"] } });
+    write(join(value.home, ".claude", "CLAUDE.md"), "Claude notes.\n");
+    write(join(value.home, ".qwen", "QWEN.md"), "Qwen notes.\n");
+    const loaded = await loadCanonicalFolder(value.folder);
+    const planned = await Effect.runPromise(Effect.gen(function*() {
+      return yield* planFolder(loaded, yield* rootContext(environmentOf(value)), [], []);
+    }).pipe(Effect.provide(layer(value))));
+    const targets = planned.plan.actions.flatMap((action) =>
+      action.detail.kind === "write-file" && action.detail.retainedLocalDigest !== undefined ? [action.detail.target] : []
+    );
+    expect(targets).toHaveLength(2);
+    // The first adoption still matches; the second changes before the review reads it.
+    write(targets[1]!, "Edited after planning.\n");
+
+    const failure = await Effect.runPromise(writeAdoptionReviews(value.statePath, planned.plan, planned.artifacts).pipe(
+      Effect.flip,
+      Effect.provide(layer(value)),
+    ));
+    expect(failure.message).toContain("changed after planning");
+    const reviews = join(value.folder, ".reviews");
+    expect(existsSync(reviews) ? readdirSync(reviews) : []).toEqual([]);
+  });
 });
 
 describe("takeover snapshots", () => {

@@ -40,3 +40,8 @@ canonfig overlay remove mcp/docs
 and `published` (the Source Machine publishes an item of that name). A plan
 warns about an overlay that finds no local item. After `remove`, the next sync
 stops with the name collision again until you rename or remove your item.
+
+`overlay set` and `overlay remove` do not wait: while a sync, restore,
+recover, or another edit of `local/local.jsonc` runs on this machine, they stop
+with "another canonfig process ... has been running ..." (exit 4) and change
+nothing. Retry when it finishes.

@@ -253,6 +253,12 @@ const finishRestore = (statePath: string, revision: PlanningLocalRevision) =>
  * `canonfig harnesses include|exclude`), `excludeResources` (restore) and
  * `overlays` (`canonfig overlay set|remove`). The loader checks the result
  * on the next read, as it checks a hand edit.
+ *
+ * The read-modify-write is not atomic on its own, so every caller holds the
+ * run lock: `restore` already does, and the `harnesses` and `overlay`
+ * commands take it around their edit. Two edits, or an edit and a restore,
+ * then cannot both read the old list and lose one change; the second one
+ * fails with `RunLockHeldError` and the person retries.
  */
 export const editLocalList = (
   folder: string,
@@ -373,7 +379,9 @@ export const runProjection = (input: ProjectionRunInput) =>
  * `~/.canonfig/.reviews/adoption-review-<id>/` (directory 0700, files 0600).
  * The text never enters the plan, the journal or the command output: it can
  * hold local secrets. Each target is read again and must still be the
- * unmarked file the plan saw, or the review stops.
+ * unmarked file the plan saw, or the review stops. Every adoption is checked
+ * before the directory is created, and a failed write removes the directory:
+ * a stopped review leaves no partial copy of local text behind.
  */
 export const writeAdoptionReviews = (
   statePath: string,
@@ -382,17 +390,15 @@ export const writeAdoptionReviews = (
 ) =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
-    const reviews: Array<{ resource: string; target: string; path: string }> = [];
     const adoptions = plan.actions.filter((action) =>
       action.detail.kind === "write-file" && action.detail.retainedLocalDigest !== undefined
     );
-    if (adoptions.length === 0) return reviews;
+    if (adoptions.length === 0) return [];
     const stale = (message: string) =>
       new ProjectionHumanActionError({ message: `${message}; run 'canonfig sync --plan --review-local' again` });
     const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
     const encoder = new TextEncoder();
-    const root = yield* machine.normalizePath({ path: join(folderOf(statePath), ".reviews", `adoption-review-${randomUUID()}`) });
-    yield* machine.ensureDirectory({ path: root, mode: 0o700 });
+    const prepared: Array<{ resource: string; target: string; review: object }> = [];
     for (const action of adoptions) {
       const detail = action.detail;
       if (detail.kind !== "write-file") continue;
@@ -408,23 +414,35 @@ export const writeAdoptionReviews = (
       const sourceBytes = artifacts.find((artifact) => artifact.digest === detail.digest)?.content;
       if (sourceBytes === undefined) return yield* stale(`the Source text for ${detail.target} is unavailable`);
       const source = decoder.decode(sourceBytes);
-      const path = yield* machine.normalizePath({ path: `${reviews.length + 1}.json`, base: root });
-      const review = {
-        schema: "canonfig.adoption-review/v1",
-        revision: plan.revision,
-        planDigest: plan.digest,
+      prepared.push({
         resource: action.resource,
         target: detail.target,
-        sourceDigest: detail.digest,
-        retainedLocalDigest: detail.retainedLocalDigest,
-        sourceAddition: source,
-        retainedLocal: current.local,
-        proposedText: decoder.decode(composeTextFile(source, current)),
-      };
-      yield* machine.atomicWrite({ path, mode: 0o600, content: encoder.encode(`${JSON.stringify(review, undefined, 2)}\n`) });
-      reviews.push({ resource: action.resource, target: detail.target, path: path.absolute });
+        review: {
+          schema: "canonfig.adoption-review/v1",
+          revision: plan.revision,
+          planDigest: plan.digest,
+          resource: action.resource,
+          target: detail.target,
+          sourceDigest: detail.digest,
+          retainedLocalDigest: detail.retainedLocalDigest,
+          sourceAddition: source,
+          retainedLocal: current.local,
+          proposedText: decoder.decode(composeTextFile(source, current)),
+        },
+      });
     }
-    return reviews;
+    const root = yield* machine.normalizePath({ path: join(folderOf(statePath), ".reviews", `adoption-review-${randomUUID()}`) });
+    yield* machine.ensureDirectory({ path: root, mode: 0o700 });
+    return yield* Effect.forEach(prepared, (entry, index) =>
+      Effect.gen(function*() {
+        const path = yield* machine.normalizePath({ path: `${index + 1}.json`, base: root });
+        yield* machine.atomicWrite({ path, mode: 0o600, content: encoder.encode(`${JSON.stringify(entry.review, undefined, 2)}\n`) });
+        return { resource: entry.resource, target: entry.target, path: path.absolute };
+      })).pipe(
+        // The directory is this call's own (a fresh UUID), so removing it whole
+        // takes only the reviews written so far.
+        Effect.onError(() => Effect.promise(() => rm(root.absolute, { recursive: true, force: true }))),
+      );
   });
 
 /**
@@ -532,8 +550,8 @@ export const harnessesLocal = Effect.fn("LocalProjection.harnesses")(function*(
   const repository = yield* StateRepository;
   const folder = folderOf(statePath);
   if (change !== undefined) {
-    yield* editLocalList(folder, "excludeHarnesses", (current) =>
-      change.action === "exclude" ? [...current, change.harness] : current.filter((harness) => harness !== change.harness));
+    yield* withRunLock(statePath, `harnesses ${change.action}`, editLocalList(folder, "excludeHarnesses", (current) =>
+      change.action === "exclude" ? [...current, change.harness] : current.filter((harness) => harness !== change.harness)));
   }
   const report = yield* harnessReport({
     folder,
@@ -569,8 +587,8 @@ export const overlaysLocal = Effect.fn("LocalProjection.overlays")(function*(
 ) {
   const folder = folderOf(statePath);
   if (change !== undefined) {
-    const overlays = yield* editLocalList(folder, "overlays", (current) =>
-      change.action === "set" ? [...current, change.item] : current.filter((item) => item !== change.item));
+    const overlays = yield* withRunLock(statePath, `overlay ${change.action}`, editLocalList(folder, "overlays", (current) =>
+      change.action === "set" ? [...current, change.item] : current.filter((item) => item !== change.item)));
     return { change, overlays };
   }
   const loaded = yield* loadFolder(statePath);
