@@ -1,5 +1,0 @@
-model_reasoning_effort = "high"
-
-[mcp_servers.memory]
-args = [ "-y", "@modelcontextprotocol/server-memory" ]
-command = "npx"

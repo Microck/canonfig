@@ -1,9 +1,0 @@
-{
-  "theme": "dark",
-  "model": "opus",
-  "permissions": {
-    "allow": [
-      "Bash(npm test:*)"
-    ]
-  }
-}

@@ -3,22 +3,18 @@ import { SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { SqlClient } from "effect/unstable/sql";
 
 /**
- * The migration history this release writes, in order.
+ * The name of the one migration that creates the state database.
  *
- * State format 6 started a new schema history. A database Canonfig 4.2.0
- * through 5.0.1 wrote (state format 4) is upgraded in place by
- * `earlier-state.ts`, which ends with exactly this history. The repository
- * refuses any other history: an older release's database is upgraded by
- * running 5.0.1 once first, and a newer release's database is not read.
+ * State format 6 started a new schema history: this release cannot read a
+ * database an earlier release created, so it carries no upgrade path for one.
+ * The repository refuses any database whose migration history is not exactly
+ * this migration, and the operator reinitializes the machine instead.
  */
-export const currentStateHistory = [
-  { id: 1, name: "state_format_6" },
-  { id: 2, name: "state_upgrades" },
-] as const;
+export const stateSchemaMigration = { id: 1, name: "state_format_6" } as const;
 
 /**
  * Explicit, append-only migration set, tracked by Effect SQL. A later change
- * to the schema adds a migration after these, and to `currentStateHistory`.
+ * to the schema adds a migration after this one.
  */
 export const stateMigrations = SqliteMigrator.fromRecord({
   "0001_state_format_6": Effect.gen(function*() {
@@ -45,11 +41,6 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       )
     `;
 
-    // `from_earlier_release` marks a revision the in-place upgrade carried
-    // over from a 5.0.1 Source: its signed bytes list resources this release
-    // cannot apply, and its stored resource list is empty. The Source keeps it
-    // so publication continues the sequence, and never serves it to a
-    // follower.
     yield* sql`
       CREATE TABLE profile_revisions (
         id TEXT PRIMARY KEY,
@@ -60,7 +51,6 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         signature TEXT NOT NULL,
         published_at TEXT NOT NULL,
         revision_json TEXT NOT NULL,
-        from_earlier_release INTEGER NOT NULL DEFAULT 0 CHECK (from_earlier_release IN (0, 1)),
         UNIQUE (profile_id, sequence)
       )
     `;
@@ -154,16 +144,11 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       )
     `;
 
-    // `profile` is checked here, not only by the decoder: a 5.0.1 process
-    // still running after the in-place upgrade would write its own
-    // `selectedProfile` shape, which this release cannot read. The
-    // constraint makes that old process's write fail instead.
     yield* sql`
       CREATE TABLE follower_sync_configuration (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
         follower_id TEXT NOT NULL REFERENCES followers(id) ON DELETE RESTRICT,
-        configuration_json TEXT NOT NULL CONSTRAINT configuration_names_profile
-          CHECK (json_valid(configuration_json) AND json_type(configuration_json, '$.profile') IS 'text'),
+        configuration_json TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
     `;
@@ -342,40 +327,6 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         taken_over_at TEXT NOT NULL,
         PRIMARY KEY (harness, surface)
       )
-    `;
-  }),
-  // The audit record of each in-place upgrade of an earlier release's state:
-  // the history it replaced, where the pre-upgrade copy is, and every record
-  // the upgrade renamed, rewrote or dropped. Rows are only ever inserted.
-  "0002_state_upgrades": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
-
-    yield* sql`
-      CREATE TABLE state_upgrades (
-        id INTEGER PRIMARY KEY,
-        earlier_history_json TEXT NOT NULL,
-        backup TEXT NOT NULL,
-        changes_json TEXT NOT NULL,
-        package_version TEXT NOT NULL,
-        build_identity TEXT NOT NULL,
-        upgraded_at TEXT NOT NULL
-      )
-    `;
-
-    yield* sql`
-      CREATE TRIGGER state_upgrades_append_only_update
-      BEFORE UPDATE ON state_upgrades
-      BEGIN
-        SELECT RAISE(ABORT, 'state upgrade records are append-only');
-      END
-    `;
-
-    yield* sql`
-      CREATE TRIGGER state_upgrades_append_only_delete
-      BEFORE DELETE ON state_upgrades
-      BEGIN
-        SELECT RAISE(ABORT, 'state upgrade records are append-only');
-      END
     `;
   }),
 });

@@ -53,30 +53,14 @@ export class UpgradeGateError extends TaggedError<UpgradeGateError>()(
 ) {}
 
 /**
- * The state database has a migration history this release cannot upgrade:
- * a release before 4.0.0 (`before-state-format-4`, a prefix of the 5.0.1
- * history, which running 5.0.1 once completes) or one this release does not
- * know at all, such as a newer release's (`unrecognized`).
+ * The state database was created by a release before state format 6, whose
+ * schema history this release does not carry. The machine is reinitialized
+ * rather than migrated.
  */
 export class EarlierStateFormatError extends TaggedError<EarlierStateFormatError>()(
   "EarlierStateFormatError",
   {
     migrations: Schema.Array(Schema.String),
-    origin: Schema.Literals(["before-state-format-4", "unrecognized"]),
-  },
-) {}
-
-/**
- * State that Canonfig 4.0.0 through 5.0.1 wrote holds an item this release
- * has no equivalent for. The upgrade changed nothing; `recovery` names the
- * step that makes the state upgradable.
- */
-export class EarlierStateUpgradeError extends TaggedError<EarlierStateUpgradeError>()(
-  "EarlierStateUpgradeError",
-  {
-    item: Schema.String,
-    reason: Schema.String,
-    recovery: Schema.String,
   },
 ) {}
 

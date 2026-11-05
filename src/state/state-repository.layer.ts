@@ -49,6 +49,7 @@ import {
   FollowerNotFoundError,
   InvalidRunTransitionError,
   RepositoryDecodeError,
+  EarlierStateFormatError,
   RepositorySqlError,
   RevisionImmutableError,
   RevisionNotFoundError,
@@ -85,8 +86,7 @@ import type {
   StoredResourceBlob,
   VerificationEvidence,
 } from "./state-repository.types.ts";
-import { stateFormatVersion, stateMigrations } from "./state-schema.ts";
-import { classifyStateHistory, readStateHistory, unsupportedStateHistory, upgradeStateFormat4 } from "./earlier-state.ts";
+import { stateFormatVersion, stateMigrations, stateSchemaMigration } from "./state-schema.ts";
 import { buildIdentity } from "../runtime/build-identity.ts";
 import type {
   PlanningLocalRevision,
@@ -111,6 +111,7 @@ const ResourceBlobManifestRow = Schema.Struct({
   total_bytes: Schema.Number,
   chunk_bytes: Schema.Number,
 });
+const MigrationRow = Schema.Struct({ migration_id: Schema.Number, name: Schema.String });
 const ResourceBlobChunkRow = Schema.Struct({
   chunk_index: Schema.Number,
   content: Schema.Uint8Array,
@@ -332,17 +333,22 @@ const statusCount = Effect.fn("StateRepository.statusCount")(function*(
 const makeRepository = Effect.gen(function*() {
   const sql = yield* SqlClient.SqlClient;
 
-  // A database from an earlier release has a different migration history.
-  // Running the current migrations over it would fail halfway or, worse,
-  // succeed against tables whose rows this release cannot decode, so state
-  // format 4 (4.0.0 through 5.0.1) is upgraded first and any other history
-  // is refused.
-  const history = yield* readStateHistory();
-  const origin = classifyStateHistory(history);
-  if (origin === "state-format-4") {
-    yield* upgradeStateFormat4();
-  } else if (origin !== "current") {
-    return yield* unsupportedStateHistory(history, origin);
+  // A database from before state format 6 has a different migration history.
+  // Running the current migration over it would fail halfway or, worse,
+  // succeed against tables whose rows this release cannot decode.
+  const history = yield* sql`
+    SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
+  `.pipe(
+    Effect.flatMap((tables) => tables.length === 0
+      ? Effect.succeed([])
+      : sql`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`),
+    Effect.flatMap((rows) => Schema.decodeUnknownEffect(Schema.Array(MigrationRow))(rows)),
+    Effect.mapError((error) => new RepositorySqlError({ operation: "read state schema history", message: String(error) })),
+  );
+  if (history.some((row) => row.migration_id !== stateSchemaMigration.id || row.name !== stateSchemaMigration.name)) {
+    return yield* new EarlierStateFormatError({
+      migrations: history.map((row) => `${String(row.migration_id).padStart(4, "0")}_${row.name}`),
+    });
   }
 
   yield* SqliteMigrator.run({ loader: stateMigrations }).pipe(
@@ -1505,40 +1511,29 @@ const makeRepository = Effect.gen(function*() {
     },
   );
 
-  const readRevisions = (operation: string, servedOnly: boolean) => Effect.gen(function*() {
-    const rows = yield* sql`
-      SELECT revision_json
-      FROM profile_revisions
-      ${sql.literal(servedOnly ? "WHERE from_earlier_release = 0" : "")}
-      ORDER BY profile_id, sequence
-    `.pipe(Effect.mapError(sqlError(operation)));
-    const decoded = yield* decodeRows(
-      RevisionJsonRow,
-      rows,
-      "profile revision row",
-      "all",
-    );
-    const revisions: Array<ProfileRevision> = [];
-    for (const row of decoded) {
-      revisions.push(yield* parseJson(
-        ProfileRevisionSchema,
-        row.revision_json,
-        "profile revision",
-        "all",
-      ));
-    }
-    return revisions;
-  });
-
   const listRevisions = Effect.fn("StateRepository.listRevisions")(
     function*(): Effect.fn.Return<ReadonlyArray<ProfileRevision>, StateRepositoryError> {
-      return yield* readRevisions("list profile revisions", false);
-    },
-  );
-
-  const listServedRevisions = Effect.fn("StateRepository.listServedRevisions")(
-    function*(): Effect.fn.Return<ReadonlyArray<ProfileRevision>, StateRepositoryError> {
-      return yield* readRevisions("list served profile revisions", true);
+      const rows = yield* sql`
+        SELECT revision_json
+        FROM profile_revisions
+        ORDER BY profile_id, sequence
+      `.pipe(Effect.mapError(sqlError("list profile revisions")));
+      const decoded = yield* decodeRows(
+        RevisionJsonRow,
+        rows,
+        "profile revision row",
+        "all",
+      );
+      const revisions: Array<ProfileRevision> = [];
+      for (const row of decoded) {
+        revisions.push(yield* parseJson(
+          ProfileRevisionSchema,
+          row.revision_json,
+          "profile revision",
+          "all",
+        ));
+      }
+      return revisions;
     },
   );
 
@@ -2810,7 +2805,6 @@ const makeRepository = Effect.gen(function*() {
     findRevision,
     getLatestRevision,
     listRevisions,
-    listServedRevisions,
     listRevisionBlobCandidates,
     readResourceBlobRange,
     loadAppliedResources,
@@ -2836,7 +2830,9 @@ const makeRepository = Effect.gen(function*() {
   });
 });
 
+export const StateRepositoryLive = Layer.effect(StateRepository, makeRepository);
+
 export const stateRepositoryLayer = (filename: string) =>
-  Layer.effect(StateRepository, makeRepository).pipe(
+  StateRepositoryLive.pipe(
     Layer.provide(SqliteClient.layer({ filename })),
   );

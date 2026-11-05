@@ -155,6 +155,7 @@ The sync exits 3 and the message names the step only you can take:
 | "`<harness>` was taken over at `<root>` but now resolves to `<root>`, ..." | The harness root changed after takeover, for example because `CODEX_HOME` changed. | See [Keep a harness in one place](/how-to/choose-harnesses#keep-a-harness-in-one-place). |
 | "local skill `<name>` has the same name as a published one; rename or remove one of them" | A local item collides with a published one. | Rename or remove the local item. |
 | "restore of snapshot `<id>` refused, nothing was changed: ..." | A surface changed since Canonfig last applied it. | See [Restore a harness from a backup](/how-to/restore-from-a-backup). |
+| "Canonfig state at `<path>` was created by an earlier Canonfig version, and this version cannot read it. ..." | `~/.canonfig/state.sqlite` comes from an earlier release. Canonfig refused it before writing anything. | Move `~/.canonfig/state.sqlite` aside, then set the machine up again: `canonfig setup plan` on a Source, or enroll the follower again with a new invitation. |
 | Any other step only a person can take | See [Resolve Human Action Required](#resolve-human-action-required). | Do what the message says, then sync again. |
 
 ### Exit 4: conflict or drift
