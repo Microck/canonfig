@@ -921,7 +921,7 @@ describe("Source/follower version handshake", () => {
     });
     expect(response.status).toBe(409);
     expect(JSON.parse(response.body)).toMatchObject({
-      error: "MalformedEnrollmentRequestError",
+      error: version === undefined ? "MalformedEnrollmentRequestError" : "SourceVersionMismatchError",
       message: expect.stringContaining(
         `source/follower version mismatch: source ${buildIdentity.packageVersion} vs follower ${version ?? "before 3.2.1"}`,
       ),
