@@ -895,8 +895,10 @@ describe("Source/follower version handshake", () => {
     await publishFixtureRevision(setup);
     const server = await start(setup);
     const endpoint = new URL(server.endpoint);
-    const headers: { authorization: string; "x-canonfig-version"?: string } = { authorization: `Bearer ${"a".repeat(43)}` };
-    if (version !== undefined) headers["x-canonfig-version"] = version;
+    const authorization = `Bearer ${"a".repeat(43)}`;
+    const headers = version === undefined
+      ? { authorization }
+      : { authorization, "x-canonfig-version": version };
     const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
       const request = httpsRequest({
         hostname: endpoint.hostname,
@@ -937,8 +939,9 @@ describe("Source/follower version handshake", () => {
       { key: certificate.private, cert: certificate.cert },
       (request, response) => {
         request.resume();
-        const headers: { "content-type": string; "x-canonfig-version"?: string } = { "content-type": "application/json" };
-        if (version !== undefined) headers["x-canonfig-version"] = version;
+        const headers = version === undefined
+          ? { "content-type": "application/json" }
+          : { "content-type": "application/json", "x-canonfig-version": version };
         response.writeHead(200, headers);
         response.end(JSON.stringify({ revisions: [] }));
       },
