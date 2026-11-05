@@ -53,6 +53,7 @@ import {
   InvitationNotFoundError,
   InvitationReplayError,
   InvalidFollowerCredentialError,
+  MachineRoleConflictError,
   RevokedFollowerCredentialError,
   SourceCredentialMismatchError,
   SourceNotInitializedError,
@@ -62,6 +63,7 @@ import {
 } from "./enrollment.errors.ts";
 import { Enrollment } from "./enrollment.service.ts";
 import { TransportPublishedResourceSchema } from "./enrollment.types.ts";
+import { refuseOnFollower } from "./machine-role.ts";
 import type {
   CreateInvitationInput,
   EnrollFollowerRequest,
@@ -551,6 +553,13 @@ const makeEnrollment = Effect.gen(function*() {
   });
 
   const initializeSource = Effect.fn("Enrollment.initializeSource")(function*() {
+    // Both `source init` and a Source setup's apply land here, so this is
+    // where an enrolled Follower is kept from also becoming a Source.
+    yield* refuseOnFollower(repository, "become a Source").pipe(
+      Effect.mapError((error) =>
+        error instanceof MachineRoleConflictError ? error : repositoryError("load follower configuration")(error)
+      ),
+    );
     const existing = yield* repository.getEnrollmentSource().pipe(
       Effect.mapError(repositoryError("load source identity")),
     );

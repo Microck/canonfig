@@ -8,6 +8,16 @@ export class SourceNotInitializedError extends TaggedError<SourceNotInitializedE
   { operation: Schema.String },
 ) {}
 
+/**
+ * The machine already holds the other role. A machine is either a Source or a
+ * Follower, never both: a Follower's `~/.canonfig/` is its Source's mirror,
+ * and a Source's is the folder it authors and publishes.
+ */
+export class MachineRoleConflictError extends TaggedError<MachineRoleConflictError>()(
+  "MachineRoleConflictError",
+  { message: Schema.String },
+) {}
+
 export class EnrollmentConfigurationError extends TaggedError<EnrollmentConfigurationError>()(
   "EnrollmentConfigurationError",
   {
@@ -123,6 +133,8 @@ export class SourceCredentialMismatchError extends TaggedError<SourceCredentialM
 
 export type EnrollmentError =
   | SourceNotInitializedError
+  // Source initialization on an enrolled Follower.
+  | MachineRoleConflictError
   // Naming a follower the Source Machine never enrolled is an ordinary
   // enrollment outcome, distinct from a credential that fails to authenticate.
   | FollowerNotFoundError

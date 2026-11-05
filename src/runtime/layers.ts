@@ -32,6 +32,7 @@ import {
   deliverInvitationEnvelope,
   readInvitationEnvelope,
 } from "../enrollment/invitation-envelope.ts";
+import { refuseOnFollower, refuseOnSource } from "../enrollment/machine-role.ts";
 import { TunnelLive } from "../enrollment/tunnel.layer.ts";
 import { Tunnel } from "../enrollment/tunnel.service.ts";
 import {
@@ -373,21 +374,32 @@ const sourceCommandsLayer = (folder: string): Layer.Layer<
         sourceFingerprint: material.source.publicKeyFingerprint,
       })),
     );
+    // A Follower's folder is its Source's mirror, so every Source command
+    // that would scan, publish, serve or hand out access stops here before it
+    // touches anything. `source init` is refused in Enrollment.initializeSource,
+    // which a Source setup's apply reaches too. `service status` and
+    // `service remove` stay available: they only report or clean up.
+    const asSource = (
+      action: string,
+      effect: Effect.Effect<CliPayload, CliCommandFailure>,
+    ): Effect.Effect<CliPayload, CliCommandFailure> =>
+      mapFailure(refuseOnFollower(repository, action)).pipe(Effect.andThen(effect));
 
     const service: SourceCommandsService = {
       initialize: () => mapFailure(enrollment.initializeSource()).pipe(Effect.map(payload)),
-      scan: (input) => mapFailure(profiles.scan({ folder, write: input.write })).pipe(Effect.map(payload)),
+      scan: (input) =>
+        asSource("scan its folder for tools", mapFailure(profiles.scan({ folder, write: input.write })).pipe(Effect.map(payload))),
       publish: (input) =>
-        profiles.publish({ folder, reviewer: input.reviewer, publishedAt: new Date().toISOString() }).pipe(
+        asSource("publish a revision", profiles.publish({ folder, reviewer: input.reviewer, publishedAt: new Date().toISOString() }).pipe(
           Effect.mapError((error) =>
             error instanceof InvalidPublicationResourcesError
               ? invalidResourcesFailure(error.errors)
               : commandFailure(error)
           ),
           Effect.map(payload),
-        ),
+        )),
       serve: (input) =>
-        mapFailure(startSourceServer(input).pipe(
+        asSource("serve as a Source", mapFailure(startSourceServer(input).pipe(
           Effect.provideService(Enrollment, enrollment),
           Effect.provideService(MachineState, machine),
           // A Source whose keys sit in a store this session cannot reach
@@ -408,9 +420,9 @@ const sourceCommandsLayer = (folder: string): Layer.Layer<
             endpoint: handle.endpoint,
             fingerprint: handle.fingerprint,
           })),
-        ),
+        )),
       installService: (input) =>
-        Effect.gen(function*() {
+        asSource("install the Source service", Effect.gen(function*() {
           const identity = yield* sourceIdentity.pipe(
             Effect.mapError((error) => {
               const failure = commandFailure(error);
@@ -422,7 +434,7 @@ const sourceCommandsLayer = (folder: string): Layer.Layer<
             }),
           );
           return payload(yield* mapFailure(sourceService.install(input, identity)));
-        }),
+        })),
       serviceStatus: () =>
         Effect.gen(function*() {
           const identity = yield* sourceIdentity.pipe(
@@ -440,7 +452,7 @@ const sourceCommandsLayer = (folder: string): Layer.Layer<
         }),
       removeService: () => mapFailure(sourceService.remove()).pipe(Effect.map(payload)),
       invite: (input) =>
-        Effect.gen(function*() {
+        asSource("invite followers", Effect.gen(function*() {
           const grant = yield* mapFailure(enrollment.createInvitation(input));
           const outputPath = yield* mapFailure(deliverInvitationEnvelope({
             grant,
@@ -459,11 +471,11 @@ const sourceCommandsLayer = (folder: string): Layer.Layer<
             expiresAt: grant.expiresAt,
             groups: grant.groups,
           });
-        }),
+        })),
       revoke: (follower) =>
-        mapFailure(enrollment.revokeFollower(follower)).pipe(
+        asSource("revoke followers", mapFailure(enrollment.revokeFollower(follower)).pipe(
           Effect.as(payload({ follower, revoked: true })),
-        ),
+        )),
       listProfiles: () =>
         mapFailure(repository.listRevisions()).pipe(
           Effect.map((revisions) => payload({
@@ -789,6 +801,10 @@ const followerCommandsLayer = (
     const service: FollowerCommandsService = {
       enroll: (input) =>
         Effect.gen(function*() {
+            // A Source's folder is what it authors and publishes; enrolling
+            // would turn it into another Source's mirror. Checked before the
+            // invitation is used, so it stays valid for another machine.
+            yield* mapFailure(refuseOnSource(repository, "enroll as a Follower", dirname(statePath)));
             // This machine's own projection becomes the follower's at
             // enrollment (adoptLocalProjection below), so an unfinished
             // local run has to be resolved first.

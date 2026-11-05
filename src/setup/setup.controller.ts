@@ -5,8 +5,9 @@ import { basename, dirname, join, posix, win32 } from "node:path";
 
 import { Effect, Redacted, Schema } from "effect";
 
-import { SourceNotInitializedError } from "../enrollment/enrollment.errors.ts";
+import { MachineRoleConflictError, SourceNotInitializedError } from "../enrollment/enrollment.errors.ts";
 import { Enrollment } from "../enrollment/enrollment.service.ts";
+import { refuseOnFollower, refuseOnSource } from "../enrollment/machine-role.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { credentialFailureDetail, type MachineStateError } from "../machine/machine-state.errors.ts";
 import type { MachinePath, ProcessResult } from "../machine/machine-state.types.ts";
@@ -18,7 +19,7 @@ import {
   nodeRuntimeIsSupported,
 } from "../runtime/build-identity.ts";
 import type { SetupImportRequest } from "../cli/setup-commands.ts";
-import type { StateRepository } from "../state/state-repository.service.ts";
+import { StateRepository } from "../state/state-repository.service.ts";
 import { SetupError } from "./setup.errors.ts";
 import {
   executeFolderScaffold,
@@ -829,6 +830,17 @@ export const planSetup = (
     const machine = yield* MachineState;
     // The role is established before any role-specific inspection runs.
     const role = yield* establishSetupRole(input.roleText);
+    // A machine is a Source or a Follower, never both, so a plan for the
+    // role the machine does not hold stops before any inspection.
+    const repository = yield* StateRepository;
+    yield* (role === "source"
+      ? refuseOnFollower(repository, "be set up as a Source")
+      : refuseOnSource(repository, "be set up as a Follower", dirname(journalPath))).pipe(
+        Effect.mapError((cause) =>
+          cause instanceof MachineRoleConflictError
+            ? fail("setup plan", cause.message, "usage")
+            : fail("setup plan", `the machine's role could not be read: ${cause.message}`, "state")),
+      );
     const requestScope = yield* establishSetupScope(input.scopeText ?? "full");
     const chosenMode = input.modeText === undefined ? undefined : yield* establishSetupMode(input.modeText);
     const preflight = yield* runSetupPreflight(role, requestScope);
@@ -999,8 +1011,14 @@ const executeSetupItem = (
       case "source-init": {
         const enrollment = yield* Enrollment;
         const material = yield* enrollment.initializeSource().pipe(
+          // A machine enrolled as a Follower after the plan was made is an
+          // operator choice to undo, not a missing prerequisite.
           Effect.mapError((cause) =>
-            fail("setup apply", `source initialization failed: ${cause.message}`, "prerequisite")),
+            fail(
+              "setup apply",
+              `source initialization failed: ${cause.message}`,
+              cause instanceof MachineRoleConflictError ? "usage" : "prerequisite",
+            )),
         );
         return { evidence: `source initialized as ${material.source.keyId}` };
       }

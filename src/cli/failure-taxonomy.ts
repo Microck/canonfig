@@ -382,6 +382,12 @@ export const failureTaxonomy = {
     (error) =>
       `${text(error.operation)} needs an initialized Source Machine; run 'canonfig source init' first`,
   ),
+  // The machine holds the other role; the message names it and the way out.
+  // Exit 2, like the other refusals to enroll or act as a Source.
+  MachineRoleConflictError: declared(
+    "usage-or-configuration",
+    () => "a machine is either a Source or a Follower, never both",
+  ),
 
   // Local state lookups where the operator named something that does not exist.
   FollowerNotFoundError: describe(
