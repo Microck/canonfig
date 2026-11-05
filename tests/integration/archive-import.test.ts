@@ -72,7 +72,7 @@ const archiveOf = (entries: ReadonlyArray<Entry>, options: { readonly listed?: R
   const manifest = JSON.stringify({
     format: "canonfig-export",
     version: 1,
-    canonfigVersion: "5.0.1",
+    canonfigVersion: "6.0.0",
     createdAt: "2026-11-05T00:00:00.000Z",
     role: "source",
     files: listed.map((entry) => ({
