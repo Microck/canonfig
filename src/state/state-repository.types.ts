@@ -179,6 +179,24 @@ export interface StoredEnrollmentInvitation {
   readonly usedAt?: string | undefined;
 }
 
+/** Enrollment inventory without credentials or invitation bearer material. */
+export interface EnrollmentFollowerSummary {
+  readonly id: FollowerId;
+  readonly name: string;
+  readonly groups: ReadonlyArray<GroupName>;
+  readonly enrolledAt: string;
+  readonly revoked: boolean;
+  readonly pending: boolean;
+  readonly credentialPresent: boolean;
+}
+
+export interface EnrollmentInvitationSummary {
+  readonly endpoint: string;
+  readonly groups: ReadonlyArray<GroupName>;
+  readonly expiresAt: string;
+  readonly consumed: boolean;
+}
+
 export interface FollowerCredentialRecord {
   readonly follower: FollowerIdentity;
   readonly credentialDigest: ContentDigest;

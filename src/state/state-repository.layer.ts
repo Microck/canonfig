@@ -70,6 +70,8 @@ import type {
   ArchiveEvent,
   HarnessTakeover,
   EnrollmentSourceRecord,
+  EnrollmentFollowerSummary,
+  EnrollmentInvitationSummary,
   FinalizeEnrollmentInput,
   FollowerCredentialRecord,
   JournalActionInput,
@@ -726,6 +728,56 @@ const makeRepository = Effect.gen(function*() {
     }
     return storedInvitation;
   });
+
+  const listEnrollmentInvitations = Effect.fn("StateRepository.listEnrollmentInvitations")(
+    function*(): Effect.fn.Return<ReadonlyArray<EnrollmentInvitationSummary>, StateRepositoryError> {
+      const rows = yield* sql`
+        SELECT endpoint, groups_json, expires_at, used_at
+        FROM enrollment_invitations ORDER BY expires_at, endpoint
+      `.pipe(Effect.mapError(sqlError("list enrollment invitations")));
+      const decoded = yield* decodeRows(Schema.Struct({
+        endpoint: Schema.String, groups_json: Schema.String,
+        expires_at: Schema.String, used_at: Schema.NullOr(Schema.String),
+      }), rows, "enrollment invitations", "all");
+      return yield* Effect.forEach(decoded, (row) => parseJson(
+        Schema.Array(GroupName), row.groups_json, "invitation groups", "inventory",
+      ).pipe(Effect.map((groups) => ({
+        endpoint: row.endpoint, groups, expiresAt: row.expires_at, consumed: row.used_at !== null,
+      }))));
+    },
+  );
+
+  const listEnrollmentFollowers = Effect.fn("StateRepository.listEnrollmentFollowers")(
+    function*(): Effect.fn.Return<ReadonlyArray<EnrollmentFollowerSummary>, StateRepositoryError> {
+      const rows = yield* sql`
+        SELECT f.id, f.name, f.groups_json, f.enrolled_at, f.revoked,
+          EXISTS(SELECT 1 FROM follower_credentials c WHERE c.follower_id = f.id) AS credential_present
+        FROM followers f WHERE f.id != ${localProjectionFollower}
+        ORDER BY f.enrolled_at, f.id
+      `.pipe(Effect.mapError(sqlError("list enrollment followers")));
+      const decoded = yield* decodeRows(Schema.Struct({
+        id: FollowerId, name: Schema.String, groups_json: Schema.String,
+        enrolled_at: Schema.String, revoked: Schema.Number, credential_present: Schema.Number,
+      }), rows, "enrollment followers", "all");
+      const followers = yield* Effect.forEach(decoded, (row) => parseJson(
+        Schema.Array(GroupName), row.groups_json, "follower groups", row.id,
+      ).pipe(Effect.map((groups) => ({
+        id: row.id, name: row.name, groups, enrolledAt: row.enrolled_at,
+        revoked: row.revoked !== 0, credentialPresent: row.credential_present !== 0, pending: false,
+      }))));
+      const pendingRows = yield* sql`
+        SELECT follower_json FROM pending_enrollments ORDER BY created_at, follower_id
+      `.pipe(Effect.mapError(sqlError("list pending follower summaries")));
+      const pending = yield* decodeRows(Schema.Struct({ follower_json: Schema.String }),
+        pendingRows, "pending follower summaries", "all");
+      const summaries = yield* Effect.forEach(pending, (row) => parseJson(
+        FollowerIdentity, row.follower_json, "pending follower", "inventory",
+      ).pipe(Effect.map(({ id, name, groups, enrolledAt, revoked }) => ({
+        id, name, groups, enrolledAt, revoked, credentialPresent: true, pending: true,
+      }))));
+      return [...followers, ...summaries];
+    },
+  );
 
   const consumeEnrollmentInvitation = Effect.fn(
     "StateRepository.consumeEnrollmentInvitation",
@@ -2820,6 +2872,8 @@ const makeRepository = Effect.gen(function*() {
     removeFollowerSynchronizationConfiguration,
     saveEnrollmentSource,
     getEnrollmentSource,
+    listEnrollmentFollowers,
+    listEnrollmentInvitations,
     createEnrollmentInvitation,
     removeEnrollmentInvitation,
     findEnrollmentInvitation,

@@ -1787,6 +1787,7 @@ export const runtimeLayer = (
     sourceService,
   );
   return Layer.mergeAll(
+    state,
     guiQueriesLayer(dirname(statePath)).pipe(Layer.provide(state)),
     sourceCommandsLayer(dirname(statePath)).pipe(Layer.provide(dependencies)),
     followerCommandsLayer(
