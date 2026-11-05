@@ -29,6 +29,11 @@ export const ApplyPolicy = Schema.Literals([
   "mirror-owned",
   "merge",
   "replace-if-unmodified",
+  /**
+   * Canonfig owns only what it writes: a marked Source section of a text
+   * file, or the entries of a directory. The rest belongs to the machine.
+   */
+  "append-local",
   "ensure",
   "require-local",
 ]);
@@ -46,8 +51,8 @@ export const defaultPolicyForKind = {
 
 /** Which policies are compatible with which kinds. `ensure` and `require-local` are kind-specific. */
 const compatiblePolicies = {
-  file: ["replace", "replace-if-unmodified"],
-  directory: ["mirror-owned", "replace", "replace-if-unmodified"],
+  file: ["replace", "replace-if-unmodified", "append-local"],
+  directory: ["mirror-owned", "replace", "replace-if-unmodified", "append-local"],
   config: ["merge", "replace", "replace-if-unmodified"],
   skill: ["replace-if-unmodified", "replace"],
   tool: ["ensure"],
