@@ -215,6 +215,12 @@ it("plans and applies an enrolled follower and performs digest-checked local ope
   const preference = { expectedDigest: config?.digest ?? null, edits: [{ path: ["backups"], value: false }] };
   expect((await api.call("/api/local/preferences", "PUT", preference)).status).toBe(200);
   expect((await api.call("/api/local/preferences", "PUT", preference)).payload).toMatchObject({ category: "conflict-or-drift", exitCode: 4 });
+  const beforeInvalidOverlay = readFileSync(join(follower.folder, "local/local.jsonc"), "utf8");
+  for (const method of ["PUT", "DELETE"]) {
+    const refused = await api.call("/api/local/overlays", method, { item: "instructions" });
+    expect(refused.payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+    expect(readFileSync(join(follower.folder, "local/local.jsonc"), "utf8")).toBe(beforeInvalidOverlay);
+  }
   expect((await api.call("/api/local/overlays", "PUT", { item: "settings/codex#model" })).status).toBe(200);
   expect((await api.call("/api/local/overlays")).status).toBe(200);
   expect((await api.call("/api/local/overlays", "DELETE", { item: "settings/codex#model" })).status).toBe(200);

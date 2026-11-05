@@ -9,6 +9,7 @@ import { RunId } from "../../domain/brand.ts";
 import { MachineState } from "../../machine/machine-state.service.ts";
 import { sha256BytesHex } from "../../profile/profile-codec.ts";
 import { readAuthoringItems, writeAuthoringItems, editAuthoringConfig, type AuthoringItem } from "../../projection/authoring.ts";
+import { parseOverlay } from "../../projection/folder.ts";
 import { listSnapshots } from "../../projection/takeover.ts";
 import { synchronizeSharedSecrets } from "../../secrets/secret-client.ts";
 import { listSecrets, storeSecret, removeSecret, type SecretTransferError } from "../../secrets/secret-store.ts";
@@ -69,6 +70,13 @@ export const synchronizationRoutes = Effect.gen(function*() {
     Effect.mapError(commandFailure),
     Effect.map((items) => ({ items: items.map(itemResponse) })),
   );
+  const changeOverlay = (action: "set" | "remove", item: string) => {
+    // The command service expects the same boundary validation as the CLI parser.
+    const parsed = parseOverlay(item);
+    return follower(parsed.kind === "invalid"
+      ? Effect.fail(invalid(parsed.reason))
+      : commands.overlays({ change: { action, item } }));
+  };
 
   // Capture identity from this command's result or typed failure details, never a mutable "latest run".
   // Planning has no run journal. Before an apply returns its identity the journal is explicitly unknown.
@@ -108,8 +116,8 @@ export const synchronizationRoutes = Effect.gen(function*() {
     queryRoute("/api/harnesses", () => both(commands.harnesses({}))),
     mutationRoute("PUT", "/api/harnesses", GuiHarnessRequest, (change) => follower(commands.harnesses({ change }))),
     queryRoute("/api/local/overlays", () => follower(commands.overlays({}))),
-    mutationRoute("PUT", "/api/local/overlays", GuiOverlayRequest, ({ item }) => follower(commands.overlays({ change: { action: "set", item } }))),
-    mutationRoute("DELETE", "/api/local/overlays", GuiOverlayRequest, ({ item }) => follower(commands.overlays({ change: { action: "remove", item } }))),
+    mutationRoute("PUT", "/api/local/overlays", GuiOverlayRequest, ({ item }) => changeOverlay("set", item)),
+    mutationRoute("DELETE", "/api/local/overlays", GuiOverlayRequest, ({ item }) => changeOverlay("remove", item)),
     queryRoute("/api/local/items", localItems),
     mutationRoute("PUT", "/api/local/items", GuiLocalWrite, ({ changes }) => localTarget.pipe(
       Effect.flatMap((target) => writeAuthoringItems(target, changes.map((change) => ({
