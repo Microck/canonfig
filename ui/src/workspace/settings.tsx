@@ -934,7 +934,7 @@ export function useSelfUpdate() {
   return useSharedState<SelfUpdate>("self-update", { npmCli: selfUpdateSeed[ws.role].npmCli, latest: null });
 }
 
-/** The major.minor line self-update stays in: 5.0.x never moves to 5.1 or 6.0 on its own. */
+/** The major.minor line self-update stays in: 6.0.x never moves to 6.1 or 7.0 on its own. */
 const RELEASE_LINE = APP_VERSION.split(".").slice(0, 2).join(".");
 
 /** What installs an available patch. The GUI shows it rather than running it: in-GUI apply waits on issue #260. */

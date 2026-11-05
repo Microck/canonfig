@@ -245,7 +245,7 @@ Check installed help when it differs; do not downgrade silently. On a new
 installation, use:
 
 ```bash
-npm install --global @microck/canonfig@5.0.1
+npm install --global @microck/canonfig@6.0.0
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```
