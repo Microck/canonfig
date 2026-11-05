@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { EdgeLabelRenderer, getBezierPath, type Edge, type EdgeProps } from "@xyflow/react";
 import { LinkBreak } from "@/components/icons";
 import { usePrefersReducedMotion } from "@/lib/dither";
-import { STATE_META } from "@/shared/data";
+import { STATE_META } from "@/shared/metadata";
 import { PACKET_FILL, PACKET_PATH, TONE_STROKE, type Link } from "./model";
 
 export type SyncEdgeData = {

@@ -6,7 +6,7 @@ import { createContext, useSyncExternalStore } from "react";
 import type { IconComponent } from "@/components/icons";
 import { Briefcase, Circuitry, Cloud, Cpu, Desktop, DeviceMobile, GameController, HardDrives, House, Laptop, Package } from "@/components/icons";
 import { ditherPath } from "@/lib/dither";
-import type { Follower, FollowerState } from "@/shared/data";
+import type { Follower, FollowerState } from "@/shared/metadata";
 
 export type MapRole = "source" | "follower";
 
@@ -86,9 +86,9 @@ const PLATFORM_ICON: Record<Follower["platform"], DeviceIcon> = { macos: "laptop
 const CUSTOM_ICON_SRC = /^data:image\/(svg\+xml|png)[;,]/;
 const HEX = /^#[0-9a-f]{6}$/i;
 
-export function resolveLook(id: string, hostname: string, platform: Follower["platform"], look: Look | undefined): ResolvedLook {
-  const preset = DEFAULT_LOOKS[id];
-  const baseIcon = preset?.icon ?? PLATFORM_ICON[platform];
+export function resolveLook(id: string, hostname: string, platform: Follower["platform"] | undefined, look: Look | undefined): ResolvedLook {
+  const preset = platform === undefined ? undefined : DEFAULT_LOOKS[id];
+  const baseIcon = preset?.icon ?? (platform === undefined ? "desktop" : PLATFORM_ICON[platform]);
   const baseAccent = preset?.accent ?? "slate";
   // Stored looks come from localStorage (and other tabs), so unknown keys and malformed custom values fall back.
   const iconSrc = look?.customIcon && CUSTOM_ICON_SRC.test(look.customIcon) ? look.customIcon : "";

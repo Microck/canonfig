@@ -112,16 +112,38 @@ All endpoints below except `/api/session` and `/api/status` are proposals. `GET`
 
 | Screen/action | CLI/service mapping | Proposed endpoint | Owner |
 | --- | --- | --- | --- |
-| Source machine map/list, follower detail, state/revision/schedule/group information, What to do and copy recovery command | Enrollment and state repository data; `status` is local and does not prove remote tunnel/health/schedule state. Gap: authoritative machine summary contract. | `GET /api/machines`, `/api/machines/:id` | C |
-| Follower map/list, Source detail, this-machine detail | Local enrollment/status only; do not expose sibling followers. | `GET /api/enrollment` | C |
-| Add machine: endpoint, optional label, expiry, groups, invitation download, transfer/tunnel/enroll instructions | `source invite --endpoint --output --expires --group`; `SourceCommands.invite`. Optional demo label is not an enrollment name reservation. | `POST /api/invitations` | C |
-| Pending invitations and Cancel | No list/cancel method in `SourceCommandsService`; gap, not follower revoke. | No endpoint until CLI/domain support exists | C |
-| Disconnect/revoke follower confirmation | `source revoke`, `SourceCommands.revoke`. | `POST /api/machines/:id/revoke` | C |
-| Change groups, share secrets with more machines, download replacement invite | New `source invite`, then `follower enroll --replace` on that follower. Never silently rewrite remote membership. | `POST /api/invitations`; local `POST /api/enrollment` with explicit replacement | C |
-| Map select/open/add, pan/zoom/fit, drag nodes, reset layout; Customize name/purpose/icon, upload icon, preset/custom colour, reset appearance | `machine-map.tsx`, `machine-node.tsx`, `model.ts`, `customize-sheet.tsx`: browser-local presentation in localStorage, as decided below. | None; never rename OS hostname or follower identity | C |
-| Standalone map demo role/publishing/syncing/customize controls; `demo.tsx`, `demo-entry.tsx`, `sync-edge.tsx` | Demo fixtures and rendering only. No real transfer inference from animated edges. | None | C |
-| Setup role choice, Back/Continue/change answer; Source profile name, installed harness picks, import offers/collisions/skips/secret opt-in, service/manual port, scan choice, Create/Open | `setup plan/approve/apply/status`, `SetupCommands`; `src/setup/setup.folder.ts` and `src/projection/import.ts`; source service and scan commands are separate. Gap: arbitrary name/service/scan controls must match actual setup inputs or explicit subsequent commands. | `POST /api/setup/plan`, `/approve`, `/apply`; `GET /api/setup`; service and scan endpoints separately | C |
-| Follower invitation file/paste/read/use another, SSH host/user/key and trust confirmation, name, exclusions, default schedule, Join/Open | `src/runtime/enrollment-input.ts` real decoder; `tunnel start`, `follower enroll`, `harnesses exclude`, `schedule set --default`. No prefix-only invitation validation or fake certificate/download success. | `POST /api/enrollment/inspect`, `/api/tunnel/start`, `/api/enrollment`; harness/schedule endpoints | C |
+| Source machine map/list and follower detail | **Live:** safe enrollment inventory includes identity, name, groups, enrollment date, revocation, pending and credential-presence flags. Remote health, revision, platform, schedule and recovery claims are **hidden**, because the Source has no telemetry for them. | `GET /api/machines`; detail selection is browser-local | C |
+| Follower map/list, Source detail, this-machine detail | **Live:** local enrollment only, including public Source fingerprints. Sibling followers are never returned. | `GET /api/enrollment` | C |
+| Add machine: endpoint, expiry, groups, invitation download, transfer/tunnel/enroll instructions | **Live:** `SourceCommands.invite` delivers the real envelope through a private temporary file, which is removed after reading. Download returns that envelope, not a simulated certificate. Optional label is **hidden**, because invitations do not reserve names. | `POST /api/invitations` | C |
+| Pending invitations and Cancel | Stored invitation metadata is **live** through StateRepository. Cancellation is **hidden**, because no CLI cancel operation exists. Neither listing nor errors expose bearer codes, nonce digests or credential references. | `GET /api/machines` includes `invitations` | C |
+| Disconnect/revoke follower confirmation | **Live:** explicit confirmation calls `SourceCommands.revoke`. | `POST /api/machines/revoke` | C |
+| Change groups and replacement invitation | **Live:** creates a new invitation; the follower explicitly chooses replacement enrollment. Existing remote membership is never silently rewritten. | `POST /api/invitations`; `POST /api/enrollment` with `replace: true` | C |
+| Map select/open/add, pan/zoom/fit, drag nodes, reset layout; customize name/purpose/icon, upload icon, preset/custom colour, reset appearance | **Browser-local:** the shared map view uses localStorage. Names and appearance never change hostnames or enrollment identities. Enrollment-only links show no fabricated transfer animation. | None | C |
+| Standalone map demo controls | **Demo-only:** the demo adapter supplies simulated records to the same map renderer. Its existing controls remain available. | None | C |
+| Setup role, harness picks, import offers/collisions/skips/secret opt-in, review, approve, apply and status | **Live:** calls SetupCommands in-process, preserves the exact import offers and plan digest, and requires explicit approval. Draft changes require re-planning. Unconfigured sessions route to `/setup`. Arbitrary profile-name, service-port and scan controls are **hidden** here because they are not setup inputs; profile naming follows the CLI hostname rule, while service/scan remain separate operations. | `POST /api/setup/plan`, `/approve`, `/apply`; `GET /api/setup` | C |
+| Follower invitation file/paste/inspect, SSH host/user/host-key trust, name, exclusions, default schedule, Join/Open | **Live:** validates the actual invitation envelope, starts the real tunnel with a verified host-key file, and calls follower enroll. Post-enrollment exclusions and schedule call D's handlers; schedule errors preserve the CLI requirement to apply a profile first. | `POST /api/enrollment/inspect`, `/api/enrollment/tunnel`, `/api/enrollment`; `PUT /api/harnesses`, `/api/schedule` | C, D preference handlers |
+
+#### Area C setup contract for settings
+
+`GuiSetupStatus` is the response to `GET /api/setup`. It preserves the CLI's stage,
+approval state, current plan digest, item verdicts, evidence, provenance and recorded
+choices. `POST /api/setup/plan` accepts `GuiSetupPlanInput` and returns
+`GuiSetupJournal`, the existing domain SetupJournal schema. `POST /api/setup/approve`
+accepts `{ approver, planDigest }` and returns that same journal. `POST /api/setup/apply`
+accepts `{ planDigest }` and returns `GuiOperationTicket` with HTTP 202. Area E uses
+these same endpoints and schemas, not a second setup controller.
+
+Approve/apply reject stale digests with `conflict-or-drift` and exit code 4.
+GUI setup mutations are serialized. Apply polling reads real setup status only
+while it matches the captured plan digest; a later unrelated plan is not presented
+as the operation's journal. Enrollment and tunnel tickets have no setup journal.
+No browser completion checkbox certifies readiness.
+
+Live enrollment forms remain separate from the demo forms in this phase, as
+authorized during implementation. They reuse the existing controls and list rows.
+The map renderer is shared through `map-view.tsx`; `machine-map.tsx` injects demo
+fixtures. Consolidating the remaining demo/live form presentation is follow-up
+work, not a second implementation of any CLI service.
 
 ### Synchronization and local state
 
