@@ -537,6 +537,8 @@ canonfig setup status
 machine holds the other role: `--role source` on an enrolled Follower Machine,
 or `--role follower` on a Source Machine, with the same messages as
 [`source init`](#source-machine) and [`follower enroll`](#follower-enroll).
+`setup apply` checks again, because the machine can change role after the plan:
+it exits 2 before any item runs and leaves `setup.json` unchanged.
 A `full` plan for the Source Machine fails early
 when the credential store cannot hold the Source Machine's keys. `setup approve` approves the
 current plan, including the exact content of every `--file`. `setup apply`

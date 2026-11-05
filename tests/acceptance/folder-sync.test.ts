@@ -409,5 +409,31 @@ describe("folder sync across a Source and its followers", () => {
 
     const desk = machine("desk");
     succeed(desk.run(["follower", "enroll", "--stdin", "--name", "desk"], envelope), "enroll with the unused invitation");
+
+    // A plan made before the machine took the other role is refused at apply,
+    // before any item runs and without touching setup.json.
+    const planAndApprove = (target: Machine, role: string) => {
+      succeed(target.run(["setup", "plan", "--role", role]), `setup plan --role ${role}`);
+      succeed(target.run(["setup", "approve", "--approver", "reviewer@example.test"]), "setup approve");
+      return readFileSync(join(target.folder, "setup.json"));
+    };
+    // A Follower plan, then source init.
+    const bench = machine("bench");
+    const followerPlan = planAndApprove(bench, "follower");
+    succeed(bench.run(["source", "init"]), "bench source init");
+    const benchApply = bench.run(["setup", "apply"]);
+    expect(benchApply.status, benchApply.stdout + benchApply.stderr).toBe(2);
+    expect(benchApply.envelope.message).toContain("this machine is a Source");
+    expect(readFileSync(join(bench.folder, "setup.json"))).toEqual(followerPlan);
+    // A Source plan, then follower enroll.
+    const studio = machine("studio");
+    const sourcePlan = planAndApprove(studio, "source");
+    enroll(source, endpoint, studio, "studio");
+    const studioApply = studio.run(["setup", "apply"]);
+    expect(studioApply.status, studioApply.stdout + studioApply.stderr).toBe(2);
+    expect(studioApply.envelope.message).toContain(`follows the Source at ${endpoint}`);
+    expect(readFileSync(join(studio.folder, "setup.json"))).toEqual(sourcePlan);
+    expect(rowCount(studio.state, "enrollment_source")).toBe(0);
+    expect(existsSync(join(studio.folder, "canonfig.jsonc"))).toBe(false);
   }, 240_000);
 });
