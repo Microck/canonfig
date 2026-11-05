@@ -60,7 +60,7 @@ The URL selects the role, screen and view tab. Links can be opened directly or r
 | Secrets | `/source/secrets` | `/follower/secrets` |
 | Sync | | `/follower/sync` |
 | Schedule | | `/follower/schedule` |
-| Local settings (`~/.canonfig/local/`, harness exclusions, backups) | | `/follower/local-settings` |
+| Local settings (`~/.canonfig/local/`, overlays, append-local content, harness exclusions, backups) | | `/follower/local-settings` |
 | Service | `/source/settings/service` | |
 | Agent policy | `/source/settings/agent` | `/follower/settings/agent` |
 | Installers | `/source/settings/installers` | |
@@ -96,6 +96,8 @@ Use `variant="primary"` for at most one gold commit/create action per view. Defa
 Below 768px, a navigation sheet replaces the sidebar. It traps focus and closes on Escape or any navigation link, including the current page. The desktop sidebar scrolls independently in short windows. Its Demo panel stays in the sidebar flow. Below 768px, workspace screens show a compact 44px Demo disclosure button at the right of the top bar, and setup and not-found pages show it in the header; from 768px setup and not-found pages keep the full panel at the bottom-left.
 
 Profile settings edits include unfinished key rows: adding a blank key enables Save and Discard. Save reports empty or duplicate key names without changing the saved item, focuses the first invalid field, and associates each key error with its input. Discard restores the saved fields and key rows.
+
+Machine-owned content follows ADR 0003 section 11. Profile → Defaults edits `local.allow` (now including `instructions`, which is `local/AGENTS.md`) and `local.appendLocal` (instructions files, skills folders). Profile items include authored `resources.<id>` under "Files outside harnesses": a file or directory with `replace` or `append-local`, or a config merge of keys; the editor refuses a target outside `~/`, with a `.` or `..` segment, overlapping another resource, or overlapping `~/.canonfig`, `~/.agents` or any adapter's paths (`RESERVED_PATHS` in `src/shared/data.ts`, taken from the adapters' default Linux and macOS layouts), quoting Canonfig's own messages. On a Follower, Local settings lists Local Overlays and unsettled name collisions, with set ("Let mine replace it") and remove; an unsettled collision disables Apply on Sync, as the engine stops the run. The local item editor offers the same overlay when a name or settings key collides. Local settings also lists what append-local keeps of the machine's own text and skills. Sync's first adoptions of an append-local file get a review step, the GUI's `sync --plan --review-local`: on request it shows the exact text Canonfig adds, the text it keeps and the whole file, and can delete the private review.
 
 Leaving any form with an unsaved draft asks before discarding it: the item editor, Profile defaults, new group, Agent policy, Source secret, Follower schedule and the local item editor. This covers closing a panel, choosing another row, in-app navigation and Demo panel role changes, but not browser Back/Forward or reload. Each form's own Save, Cancel, Discard or remove never asks.
 

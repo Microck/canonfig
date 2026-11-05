@@ -3,7 +3,7 @@ import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useRef
 import { toast } from "sonner";
 import { AnimatePresence, motion, usePresence, useReducedMotion, type Transition } from "motion/react";
 import { Skeleton } from "skullet/react";
-import { Check, Circuitry, Copy, FileCode, FileText, Key, ListBullets, Plug, Question, Robot, SlidersHorizontal, Sparkle, WarningCircle, Wrench, X, type IconComponent } from "@/components/icons";
+import { Check, Circuitry, Copy, FileCode, FileText, Folder, Key, ListBullets, Plug, Question, Robot, SlidersHorizontal, Sparkle, WarningCircle, Wrench, X, type IconComponent } from "@/components/icons";
 import { cn, SNAP, SNAP_EASING } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -27,6 +27,7 @@ export const CATEGORY_ICON: Record<ItemCategory, IconComponent> = {
   settings: SlidersHorizontal,
   tools: Wrench,
   credentials: Key,
+  resources: Folder,
 };
 
 /** 150ms state change, or nothing at all under reduced motion. */
