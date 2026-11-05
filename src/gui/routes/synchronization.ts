@@ -10,7 +10,6 @@ import { MachineState } from "../../machine/machine-state.service.ts";
 import { sha256BytesHex } from "../../profile/profile-codec.ts";
 import { readAuthoringItems, writeAuthoringItems, editAuthoringConfig, type AuthoringItem } from "../../projection/authoring.ts";
 import { listSnapshots } from "../../projection/takeover.ts";
-import { secretFailureCategory } from "../../secrets/cli.ts";
 import { synchronizeSharedSecrets } from "../../secrets/secret-client.ts";
 import { listSecrets, storeSecret, removeSecret, type SecretTransferError } from "../../secrets/secret-store.ts";
 import { StateRepository } from "../../state/state-repository.service.ts";
@@ -23,9 +22,6 @@ import { GuiOperations } from "../operations.ts";
 import { GuiQueries } from "../queries.ts";
 import { EmptyBody, commandFailure, maximumAuthoringBodyBytes, mutationRoute, queryRoute, type GuiRoute } from "../routing.ts";
 
-const secretFailure = (error: SecretTransferError) => new CliCommandFailure({
-  category: secretFailureCategory(error), message: error.message,
-});
 const invalid = (message: string) => new CliCommandFailure({ category: "usage-or-configuration", message });
 const printable = <Value>(value: Value): Schema.Json => Schema.decodeUnknownSync(Schema.Json)(JSON.parse(redactText(JSON.stringify(value))));
 const itemResponse = (item: AuthoringItem): GuiLocalItem => ({
@@ -99,7 +95,7 @@ export const synchronizationRoutes = Effect.gen(function*() {
   const secrets = <A>(operation: Effect.Effect<A, SecretTransferError, MachineState | StateRepository>) => operation.pipe(
     Effect.provideService(MachineState, machine),
     Effect.provideService(StateRepository, repository),
-    Effect.mapError(secretFailure),
+    Effect.mapError(commandFailure),
   );
   return [
     mutationRoute("POST", "/api/sync/plan", EmptyBody, () => start(commands.synchronize({ mode: "plan", noInput: false })), 202),
