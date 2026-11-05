@@ -55,7 +55,7 @@ const ACTION: Record<PlanAction, { label: string; cls: string; hint: string }> =
   write: { label: "Write", cls: "bg-ok/12 text-ok", hint: "Replace the harness file or folder with the revision's copy." },
   merge: { label: "Set keys", cls: "bg-ok/12 text-ok", hint: "Set only the keys Canonfig owns; every other key in the file stays as it is." },
   install: { label: "Install", cls: "bg-[oklch(0.72_0.12_240)]/14 text-[oklch(0.78_0.1_240)]", hint: "Run the tool's install recipe for this system, then check it runs." },
-  "skip-drift": { label: "Held", cls: "bg-warn/12 text-warn", hint: "You edited this item's file here. Canonfig keeps your edit and holds what it writes from it." },
+  "skip-drift": { label: "Held", cls: "bg-warn/12 text-warn", hint: "You edited this item's file here.\nCanonfig keeps your edit and holds what it writes from it." },
 };
 
 const DEFAULT_TIME = "09:00";
@@ -691,7 +691,7 @@ export function ScheduleView() {
             onClick={() =>
               (setSaved(draft),
               ws.reach("schedule"),
-              toast.success("Schedule saved", { description: `${scheduleSummary(draft, `Same as the Source: ${defaultLabel}`)}.${DEMO ? " Saved in this demo workspace." : ""}` }))
+              toast.success("Schedule saved", { description: `${scheduleSummary(draft, `Same as the Source: ${defaultLabel}`)}.${DEMO ? "\nSaved in this demo workspace." : ""}` }))
             }
           >
             Save schedule
@@ -749,7 +749,7 @@ export function LocalView() {
   const toggleHarness = (id: HarnessId, on: boolean) => {
     ws.setExcluded((prev) => (on ? prev.filter((h) => h !== id) : [...prev, id]));
     toast(on ? `Managing ${HARNESS_NAMES[id]} here again` : `Excluded ${HARNESS_NAMES[id]} on this machine`, {
-      description: `Saved to ~/.canonfig/local/local.jsonc. ${on ? "The next update writes the folder into it again." : "The next update leaves it alone."}${DEMO ? " Saved in this demo workspace." : ""}`,
+      description: `Saved to ~/.canonfig/local/local.jsonc.\n${on ? "The next update writes the folder into it again." : "The next update leaves it alone."}${DEMO ? "\nSaved in this demo workspace." : ""}`,
     });
   };
 
@@ -833,7 +833,7 @@ export function LocalView() {
                 onCheckedChange={(on) => {
                   ws.setBackups(on);
                   toast(on ? "Backups on" : "Backups off on this machine", {
-                    description: `${on ? "Canonfig backs up each harness before it first writes there." : `Saved as "backups": false in ~/.canonfig/local/local.jsonc. Canonfig takes over new harnesses without a snapshot; existing snapshots stay.`}${DEMO ? " Saved in this demo workspace." : ""}`,
+                    description: `${on ? "Canonfig backs up each harness before it first writes there." : `Saved as "backups": false in ~/.canonfig/local/local.jsonc.\nCanonfig takes over new harnesses without a snapshot; existing snapshots stay.`}${DEMO ? "\nSaved in this demo workspace." : ""}`,
                   });
                 }}
               />
@@ -929,7 +929,7 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
     }
     ws.setLocal((prev) => (isNew ? [...prev, next] : prev.map((l) => (l === item ? next : l))));
     toast.success(`Saved ${id}`, {
-      description: `Written to ~/.canonfig/local/${next.path}. The next update adds it to your harnesses.${DEMO ? " Saved in this demo workspace." : ""}`,
+      description: `Written to ~/.canonfig/local/${next.path}.\nThe next update adds it to your harnesses.${DEMO ? "\nSaved in this demo workspace." : ""}`,
     });
     leaveWithoutAsking(() => ws.go("local", id, { replace: isNew }));
   };

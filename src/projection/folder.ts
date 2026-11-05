@@ -14,6 +14,7 @@ import { parseMarkdownDocument } from "./frontmatter.ts";
 import {
   CAPABILITIES,
   HOOK_EVENTS,
+  SURFACE_CATEGORIES,
   TARGET_IDS,
   type AgentDocument,
   type CanonicalModel,
@@ -157,6 +158,8 @@ const CanonfigJsonc = Schema.Struct({
   mcp: Schema.optional(McpMap),
   hooks: Schema.optional(Schema.Array(HookInput)),
   settings: Schema.optional(SettingsMap),
+  /** Per-harness category allowlists; checked against `harnesses` when the model is built. */
+  surfaces: Schema.optional(Schema.Record(Schema.String, Schema.Array(Schema.Literals(SURFACE_CATEGORIES)))),
   tools: Schema.optional(Schema.Record(identifier, ToolInput)),
   credentials: Schema.optional(Schema.Record(identifier, Schema.Struct({ reference: Schema.NonEmptyString }))),
   groups: Schema.optional(Schema.Record(identifier, Schema.Array(itemReference))),
@@ -846,6 +849,13 @@ export const loadCanonicalFolder = async (
 
   const excluded = new Set(localConfig.excludeHarnesses ?? []);
   const listed = [...new Set(config.harnesses)];
+  // A selection for a harness the folder does not list would silently do
+  // nothing, which is almost certainly a typo: refuse it.
+  for (const harness of Object.keys(config.surfaces ?? {})) {
+    if (!listed.some((candidate) => candidate === harness)) {
+      throw failure(join(folder, "canonfig.jsonc"), `surfaces names ${harness}, which harnesses does not list`);
+    }
+  }
   const model: CanonicalModel = {
     folder,
     harnesses: listed.filter((harness) => !excluded.has(harness)),
@@ -857,6 +867,9 @@ export const loadCanonicalFolder = async (
     hooks: authored.hooks,
     mcp,
     settings,
+    surfaces: Object.fromEntries(
+      Object.entries(config.surfaces ?? {}).map(([harness, categories]) => [harness, [...new Set(categories)].sort()]),
+    ),
   };
   const local: LocalPolicy = {
     excludeHarnesses: localConfig.excludeHarnesses ?? [],

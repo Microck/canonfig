@@ -171,13 +171,13 @@ export function ServiceView() {
                 {lingerMarked ? (
                   <span className="inline-flex items-center gap-1.5 text-base">
                     <Check className="size-3.5 text-ok" /> Also after you log out
-                    <Hint label="Keeps running">You marked linger as turned on when you resumed setup. Canonfig didn't check it.</Hint>
+                    <Hint label="Keeps running">{"You marked linger as turned on when you resumed setup.\nCanonfig didn't check it."}</Hint>
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1.5 text-base text-warn">
                     <Warning className="size-3.5" /> Only while you're logged in
                     <Hint label="Keeps running">
-                      Linger is off, so systemd stops the service when you log out. Canonfig never turns linger on. To keep the service running, run {LINGER_FIX} yourself.
+                      Linger is off, so systemd stops the service when you log out. Canonfig never turns linger on.{"\n"}To keep the service running, run {LINGER_FIX} yourself.
                     </Hint>
                   </span>
                 )}
@@ -456,7 +456,7 @@ export function AgentPolicyView() {
                       <>
                         Passed exactly as written, with no shell. Quote an argument that contains spaces. Include your agent's own plan or read-only flag.
                         <Hint label="How a custom agent talks to Canonfig">
-                          Canonfig writes the task as JSON to the command's standard input and reads a proposal as JSON from its standard output. Anything else is refused, and every proposed action is still checked against the bounds on this page.
+                          Canonfig writes the task as JSON to the command's standard input and reads a proposal as JSON from its standard output.{"\n"}Anything else is refused, and every proposed action is still checked against the bounds on this page.
                         </Hint>
                       </>
                     }
@@ -580,7 +580,7 @@ export function InstallersView() {
       <Body>
         <div className="flex items-center gap-1.5 border-b border-border px-[18px] py-3 text-sm text-muted-foreground">
           Installer bindings point tool recipes at a package manager on this machine.
-          <Hint label="installer bindings">Tools in canonfig.jsonc carry an installation recipe per platform, like brew on macOS or apt on Linux. A binding points that recipe at a real executable.</Hint>
+          <Hint label="installer bindings">{"Tools in canonfig.jsonc carry an installation recipe per platform, like brew on macOS or apt on Linux.\nA binding points that recipe at a real executable."}</Hint>
         </div>
         <ListHead cols={cols} data-tour="installers-list">
           <span>Installer</span>
@@ -744,7 +744,7 @@ export function SetupView() {
                   onClick={() => {
                     setJournal({ phase: "complete", at: last });
                     setLingerMarked(true);
-                    toast.success(`Setup complete${IN_DEMO}`, { description: "You marked the linger step done. Canonfig didn't check it." });
+                    toast.success(`Setup complete${IN_DEMO}`, { description: "You marked the linger step done.\nCanonfig didn't check it." });
                   }}
                 >
                   I ran it, resume setup
@@ -852,7 +852,7 @@ export function DoctorView() {
       ws.reach("health-check");
       const final = latest.current;
       const warned = final.filter((c) => c.result === "warn");
-      toast("Health check finished", { description: `${final.length - warned.length} passed${warned.length ? `. Warning: ${warned.map(warningName).join(", ")}` : ""}` });
+      toast("Health check finished", { description: `${final.length - warned.length} passed${warned.length ? `\nWarning: ${warned.map(warningName).join(", ")}` : ""}` });
       return true;
     }, 120);
   };

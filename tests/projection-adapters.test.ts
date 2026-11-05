@@ -15,7 +15,10 @@ import type {
   RootContext,
 } from "../src/projection/harness.ts";
 import { type CanonicalModel, TARGET_IDS, type TargetId } from "../src/projection/model.ts";
+import { emptyModel } from "../src/projection/detect.ts";
+import { supportedCategories } from "../src/projection/plan.ts";
 import { ampPluginSource } from "../src/projection/templates/runtime.ts";
+import { SURFACE_SUPPORT } from "../ui/src/shared/data.ts";
 
 // Goldens and invariants for every harness adapter. Adapters are pure, so
 // these tests run them against a fixed model and fixed machine directories.
@@ -88,6 +91,16 @@ function posixContext(environment: Readonly<Record<string, string>>): RootContex
     join: (...segments) => path.posix.join(...segments),
   };
 }
+
+// The harness list offers only categories a harness can take, from a copy in
+// the UI package; it must match what the adapters actually support.
+it("keeps the UI's per-harness categories equal to the adapters'", () => {
+  const context = posixContext({});
+  const derived = Object.fromEntries(BUILTIN_ADAPTERS.map((adapter) =>
+    [adapter.descriptor.id, supportedCategories(adapter, adapter.layout(context, emptyModel(`${HOME}/.canonfig`)))]
+  ));
+  expect(SURFACE_SUPPORT).toEqual(derived);
+});
 
 it("loads distinct Amp agents whose IDs differ by hyphens and underscores", async () => {
   const ids = ["review-fast", "review_fast", "review_hfast"];

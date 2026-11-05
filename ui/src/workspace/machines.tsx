@@ -448,7 +448,7 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
         <Prop
           label={
             <span className="inline-flex items-center gap-1">
-              Identity <Hint label="Identity">This machine's own revocable identity, given when it joined. Revoking it cuts off this machine only.</Hint>
+              Identity <Hint label="Identity">{"This machine's own revocable identity, given when it joined.\nRevoking it cuts off this machine only."}</Hint>
             </span>
           }
         >

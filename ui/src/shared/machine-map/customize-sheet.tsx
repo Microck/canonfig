@@ -184,7 +184,7 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
           <p className="mt-0.5 flex items-center gap-1.5 text-sm text-muted-foreground">
             Only changes how it looks here
             <Hint label="where these changes apply">
-              These settings only change how this machine looks in canonfig ui on this computer. Nothing is sent to the Source or to
+              These settings only change how this machine looks in canonfig ui on this computer.{"\n"}Nothing is sent to the Source or to
               other machines, and its hostname stays <span className="font-mono">{hostname}</span>.
             </Hint>
           </p>

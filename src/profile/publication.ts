@@ -2,7 +2,7 @@ import { assertProfileMetadataBudget } from "./metadata-budget.ts";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep, win32 } from "node:path";
+import { isAbsolute, posix, relative, resolve, sep, win32 } from "node:path";
 
 import { Effect, Schema } from "effect";
 
@@ -31,6 +31,9 @@ import {
   listFolderFiles,
   loadAuthoredFolder,
 } from "../projection/folder.ts";
+import { emptyModel } from "../projection/detect.ts";
+import { TARGET_IDS } from "../projection/model.ts";
+import { surfaceSelectionIssue } from "../projection/plan.ts";
 import { RevisionImmutableError } from "../state/state-repository.errors.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import {
@@ -223,6 +226,18 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
   }
   resources.push(jsonItem("harnesses", "harnesses", [...new Set(config.harnesses)]));
   if (config.local !== undefined) resources.push(jsonItem("local-policy", "local", asJson(config.local)));
+  // Followers project with the same per-harness category limits the Source does,
+  // so refuse here what every follower would refuse: an unlisted harness, or a
+  // category the harness cannot take. Support does not depend on the machine,
+  // so a fixed POSIX context stands in for one.
+  for (const [harness, selected] of Object.entries(config.surfaces ?? {})) {
+    const target = TARGET_IDS.find((id) => id === harness);
+    if (target === undefined || !config.harnesses.includes(target)) throw refuse(`surfaces names ${harness}, which harnesses does not list`);
+    const context = { platform: "linux" as const, home: "/home/canonfig", appData: "/home/canonfig/.config", environment: () => undefined, join: posix.join };
+    const issue = surfaceSelectionIssue(target, selected, context, emptyModel(folder));
+    if (issue !== undefined) throw refuse(issue);
+  }
+  if (config.surfaces !== undefined) resources.push(jsonItem("surfaces", "surfaces", asJson(config.surfaces)));
   for (const [id, tool] of Object.entries(tools)) {
     resources.push({
       id: `tools:${id}`,

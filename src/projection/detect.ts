@@ -38,6 +38,7 @@ const DETECTION_METHODS = {
 export const emptyModel = (folder: string): CanonicalModel => ({
   folder,
   harnesses: [],
+  surfaces: {},
   rules: [],
   skills: [],
   agents: [],
