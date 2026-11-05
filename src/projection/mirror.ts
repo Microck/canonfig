@@ -65,9 +65,12 @@ export const mirrorItem = (
     if (category === "surfaces") return entryOf(resource.spec, "surfaces");
     return undefined;
   }
-  if (category === "hook-scripts") {
+  // A path item names a file by its segments: `hook-scripts:lib:run.sh` is
+  // `hooks/lib/run.sh`, `files:a:b` is `files/a/b`. No segment is `.` or `..`.
+  const directory = category === "hook-scripts" ? "hooks" : category === "files" ? "files" : undefined;
+  if (directory !== undefined) {
     return scriptPath.test(rest) && !rest.split(":").some((segment) => /^\.+$/u.test(segment))
-      ? file(`hooks/${rest.split(":").join("/")}`, "file")
+      ? file(`${directory}/${rest.split(":").join("/")}`, "file")
       : undefined;
   }
   if (!name.test(rest)) return undefined;
@@ -88,6 +91,7 @@ export const mirrorItem = (
     }
     case "mcp":
     case "settings":
+    case "resources":
       return entryOf(resource.spec, `${category}.${rest}`);
     case "tools":
       return resource.kind === "tool" && resource.spec.kind === "tool" ? { kind: "apply" } : undefined;

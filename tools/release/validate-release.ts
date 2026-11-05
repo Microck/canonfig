@@ -195,9 +195,11 @@ const validatePackageContents = (
   // These bounded budgets include those shipped safety checks; no files or
   // validation are removed to make the package appear smaller.
   // Harness detection, the Source setup import and its setup stage add about
-  // 60 KB unpacked; the candidate measured 474,809 packed / 2,206,433 unpacked
-  // bytes. Keep a small build-identity margin while rejecting unintended assets.
-  if (artifact.size > 480_000 || artifact.unpackedSize > 2_230_000) {
+  // 60 KB unpacked. Signed export/import (#257) and the restored machine-local
+  // modes with key claims (#258) add about 19 KB packed; that candidate
+  // measured 493,853 packed / 2,187,729 unpacked bytes. Keep a small
+  // build-identity margin while rejecting unintended assets.
+  if (artifact.size > 505_000 || artifact.unpackedSize > 2_230_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );

@@ -7,27 +7,36 @@ import { Effect, Schema } from "effect";
 import { RunId } from "../domain/brand.ts";
 import type { FollowerId, RunId as RunIdType } from "../domain/brand.ts";
 import { localProjectionFollower, type SynchronizationOutcome } from "../domain/synchronization.ts";
+import { composeTextFile, parseTextComposition } from "../domain/text-composition.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
+import { sha256BytesHex } from "../profile/profile-codec.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { editConfigText, getConfigPath, parseConfigDocument } from "../synchronization/config-codec.ts";
-import { cleanupRollbackSnapshots, removeRunTemporaryEntries } from "../synchronization/executor.ts";
+import {
+  cleanupRollbackSnapshots,
+  defaultSynchronizationExecutionLimits,
+  removeRunTemporaryEntries,
+} from "../synchronization/executor.ts";
 import { withRunLock } from "../synchronization/run-lock.ts";
 import { assertUpgradeGate } from "../synchronization/upgrade-gate.ts";
 import { Synchronization } from "../synchronization/synchronization.service.ts";
 import type {
+  PlannedSynchronization,
   PlanningLocalRevision,
   SynchronizationArtifact,
   SynchronizationRunInput,
 } from "../synchronization/synchronization.types.ts";
-import { detectHarnesses, harnessReport } from "./detect.ts";
+import { detectHarnesses, emptyModel, harnessReport } from "./detect.ts";
 import { adapterFor } from "./adapters/index.ts";
-import { CanonicalFolderError, holdsEntries, LocalItemCollisionError, loadCanonicalFolder } from "./folder.ts";
+import { CanonicalFolderError, holdsEntries, LocalItemCollisionError, loadCanonicalFolder, parseOverlay } from "./folder.ts";
 import type { TargetId } from "./model.ts";
 import {
+  keyClaimIssue,
   parseSurfaceResourceId,
-  ProjectionHumanActionError,
   planFolder,
   planRestore,
+  ProjectionHumanActionError,
+  resourcesOwner,
   rootContext,
   sharedSkillsOwner,
   surfaceResourceId,
@@ -56,6 +65,8 @@ import {
 export interface LocalSyncOptions {
   /** Take over harness surfaces without a takeover snapshot. */
   readonly noBackup: boolean;
+  /** With `--plan`: write private adoption reviews for append-local first adoptions. */
+  readonly reviewLocal?: boolean | undefined;
   /** Environment variables harness roots are resolved from. */
   readonly environment: (name: string) => string | undefined;
 }
@@ -191,8 +202,9 @@ export const releaseUnappliedTakeovers = (statePath: string, follower: FollowerI
 /**
  * After a converged restore: release the restored surfaces, and the single
  * config keys a partly restored file gave back, then exclude their harnesses
- * in `local/local.jsonc` so the next sync does not take them over again. The
- * run itself already deleted or narrowed their Applied Resource Records.
+ * (and authored resources) in `local/local.jsonc` so the next sync does not
+ * take them over again. The run itself already deleted or narrowed their
+ * Applied Resource Records.
  */
 const finishRestore = (statePath: string, revision: PlanningLocalRevision) =>
   Effect.gen(function*() {
@@ -200,17 +212,22 @@ const finishRestore = (statePath: string, revision: PlanningLocalRevision) =>
     const surfaces = new Set<string>();
     const keys = new Set<string>();
     const harnesses = new Set<string>();
+    const resources = new Set<string>();
+    const owner = (parsed: { readonly harness: string; readonly surface: string }) => {
+      if (parsed.harness === resourcesOwner) resources.add(parsed.surface);
+      else harnesses.add(parsed.harness);
+    };
     for (const id of revision.removedResources ?? []) {
       const parsed = parseSurfaceResourceId(id);
       if (parsed === undefined) continue;
       surfaces.add(`${parsed.harness}\0${parsed.surface}`);
-      harnesses.add(parsed.harness);
+      owner(parsed);
     }
     for (const entry of revision.desired) {
       const parsed = parseSurfaceResourceId(entry.resource);
       if (parsed === undefined || entry.desired.kind !== "config" || entry.desired.releases === undefined) continue;
       for (const key of entry.desired.releases) keys.add(`${parsed.harness}\0${parsed.surface}#${key}`);
-      harnesses.add(parsed.harness);
+      owner(parsed);
     }
     const takeovers = yield* repository.loadHarnessTakeovers();
     yield* repository.releaseTakeovers(takeovers
@@ -226,19 +243,29 @@ const finishRestore = (statePath: string, revision: PlanningLocalRevision) =>
         if (adapterFor(harness).layout(context, loaded.model).sharedSkills) harnesses.add(harness);
       }
     }
+    if (resources.size > 0) yield* editLocalList(folderOf(statePath), "excludeResources", (previous) => [...previous, ...resources]);
     const excluded = [...harnesses].filter((harness) => harness !== sharedSkillsOwner).sort();
     if (excluded.length === 0) return [];
-    yield* editExcludedHarnesses(folderOf(statePath), (previous) => [...previous, ...excluded]);
+    yield* editLocalList(folderOf(statePath), "excludeHarnesses", (previous) => [...previous, ...excluded]);
     return excluded;
   });
 
 /**
- * Rewrite `excludeHarnesses` in `local/local.jsonc` (sorted, unique),
- * keeping the file's comments and other keys. `restore` and
- * `canonfig harnesses include|exclude` both edit the list through here.
+ * Rewrite one list in `local/local.jsonc` (sorted, unique), keeping the
+ * file's comments and other keys: `excludeHarnesses` (restore and
+ * `canonfig harnesses include|exclude`), `excludeResources` (restore) and
+ * `overlays` (`canonfig overlay set|remove`). The loader checks the result
+ * on the next read, as it checks a hand edit.
+ *
+ * The read-modify-write is not atomic on its own, so every caller holds the
+ * run lock: `restore` already does, and the `harnesses` and `overlay`
+ * commands take it around their edit. Two edits, or an edit and a restore,
+ * then cannot both read the old list and lose one change; the second one
+ * fails with `RunLockHeldError` and the person retries.
  */
-export const editExcludedHarnesses = (
+export const editLocalList = (
   folder: string,
+  key: "excludeHarnesses" | "excludeResources" | "overlays",
   update: (current: ReadonlyArray<string>) => ReadonlyArray<string>,
 ) =>
   Effect.gen(function*() {
@@ -253,18 +280,18 @@ export const editExcludedHarnesses = (
     );
     const previous = current === undefined ? [] : yield* Effect.try({
       try: () => Schema.decodeUnknownSync(Schema.Array(Schema.String))(
-        getConfigPath(parseConfigDocument("json", current), "excludeHarnesses") ?? [],
+        getConfigPath(parseConfigDocument("json", current), key) ?? [],
       ),
-      catch: (error) => new CanonicalFolderError({ path: path.absolute, message: `cannot read the harness exclusions: ${String(error)}` }),
+      catch: (error) => new CanonicalFolderError({ path: path.absolute, message: `cannot read ${key}: ${String(error)}` }),
     });
-    const excluded = [...new Set(update(previous))].sort();
+    const listed = [...new Set(update(previous))].sort();
     const updated = yield* Effect.try({
-      try: () => editConfigText("json", current, { sets: [{ path: "excludeHarnesses", value: excluded }] }),
-      catch: (error) => new CanonicalFolderError({ path: path.absolute, message: `cannot update the harness exclusions: ${String(error)}` }),
+      try: () => editConfigText("json", current, { sets: [{ path: key, value: listed }] }),
+      catch: (error) => new CanonicalFolderError({ path: path.absolute, message: `cannot update ${key}: ${String(error)}` }),
     });
     yield* machine.ensureDirectory({ path: directory, mode: 0o700 });
     yield* machine.atomicWrite({ path, content: new TextEncoder().encode(updated), mode: 0o600 });
-    return excluded;
+    return listed;
   });
 
 const loadFolder = (statePath: string) =>
@@ -388,6 +415,79 @@ export const runProjection = (input: ProjectionRunInput) =>
   });
 
 /**
+ * `sync --plan --review-local`: for every append-local first adoption the
+ * plan holds, write the exact Source text, the existing text kept as this
+ * machine's own, and the file apply would write to a private JSON file under
+ * `~/.canonfig/.reviews/adoption-review-<id>/` (directory 0700, files 0600).
+ * The text never enters the plan, the journal or the command output: it can
+ * hold local secrets. Each target is read again and must still be the
+ * unmarked file the plan saw, or the review stops. Every adoption is checked
+ * before the directory is created, and a failed write removes the directory:
+ * a stopped review leaves no partial copy of local text behind.
+ */
+export const writeAdoptionReviews = (
+  statePath: string,
+  plan: PlannedSynchronization,
+  artifacts: ReadonlyArray<SynchronizationArtifact>,
+) =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const adoptions = plan.actions.filter((action) =>
+      action.detail.kind === "write-file" && action.detail.retainedLocalDigest !== undefined
+    );
+    if (adoptions.length === 0) return [];
+    const stale = (message: string) =>
+      new ProjectionHumanActionError({ message: `${message}; run 'canonfig sync --plan --review-local' again` });
+    const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+    const encoder = new TextEncoder();
+    const prepared: Array<{ resource: string; target: string; review: object }> = [];
+    for (const action of adoptions) {
+      const detail = action.detail;
+      if (detail.kind !== "write-file") continue;
+      const target = yield* machine.normalizePath({ path: detail.target });
+      if ((yield* machine.inspectPath(target)).kind !== "regular") return yield* stale(`${detail.target} is no longer a regular file`);
+      const bytes = yield* machine.readFile({ path: target, maximumBytes: defaultSynchronizationExecutionLimits.maximumFileBytes });
+      if (sha256BytesHex(bytes) !== detail.retainedLocalDigest) return yield* stale(`${detail.target} changed after planning`);
+      const current = yield* Effect.try({
+        try: () => parseTextComposition(bytes),
+        catch: () => stale(`${detail.target} is no longer valid text without Canonfig markers`),
+      });
+      if (current.kind !== "unmanaged") return yield* stale(`${detail.target} already holds a Canonfig section`);
+      const sourceBytes = artifacts.find((artifact) => artifact.digest === detail.digest)?.content;
+      if (sourceBytes === undefined) return yield* stale(`the Source text for ${detail.target} is unavailable`);
+      const source = decoder.decode(sourceBytes);
+      prepared.push({
+        resource: action.resource,
+        target: detail.target,
+        review: {
+          schema: "canonfig.adoption-review/v1",
+          revision: plan.revision,
+          planDigest: plan.digest,
+          resource: action.resource,
+          target: detail.target,
+          sourceDigest: detail.digest,
+          retainedLocalDigest: detail.retainedLocalDigest,
+          sourceAddition: source,
+          retainedLocal: current.local,
+          proposedText: decoder.decode(composeTextFile(source, current)),
+        },
+      });
+    }
+    const root = yield* machine.normalizePath({ path: join(folderOf(statePath), ".reviews", `adoption-review-${randomUUID()}`) });
+    yield* machine.ensureDirectory({ path: root, mode: 0o700 });
+    return yield* Effect.forEach(prepared, (entry, index) =>
+      Effect.gen(function*() {
+        const path = yield* machine.normalizePath({ path: `${index + 1}.json`, base: root });
+        yield* machine.atomicWrite({ path, mode: 0o600, content: encoder.encode(`${JSON.stringify(entry.review, undefined, 2)}\n`) });
+        return { resource: entry.resource, target: entry.target, path: path.absolute };
+      })).pipe(
+        // The directory is this call's own (a fresh UUID), so removing it whole
+        // takes only the reviews written so far.
+        Effect.onError(() => Effect.promise(() => rm(root.absolute, { recursive: true, force: true }))),
+      );
+  });
+
+/**
  * `canonfig sync --plan|--apply` for the local folder. A listed harness
  * projects only once installed; until then it is reported and its earlier
  * outputs are held, and the run can still converge.
@@ -417,7 +517,12 @@ export const synchronizeLocal = Effect.fn("LocalProjection.synchronize")(functio
     takeovers: takeoverSummary(planned.takeovers, backup),
     diagnostics: planned.diagnostics.length === 0 ? undefined : planned.diagnostics,
   };
-  if (mode === "plan") return { ...base, plan: planned.plan, outcome: undefined };
+  if (mode === "plan") {
+    const adoptionReviews = options.reviewLocal === true
+      ? yield* writeAdoptionReviews(statePath, planned.plan, planned.artifacts)
+      : undefined;
+    return { ...base, plan: planned.plan, adoptionReviews, outcome: undefined };
+  }
   const result = yield* runProjection({
     statePath,
     follower: localProjectionFollower,
@@ -430,13 +535,13 @@ export const synchronizeLocal = Effect.fn("LocalProjection.synchronize")(functio
 
 /**
  * `canonfig restore [<snapshot>]`: write a takeover snapshot back as a
- * journaled run, refusing drifted surfaces, then exclude its harnesses. The
- * run belongs to whoever projected the surfaces: this machine's local
- * projection, or its follower identity once enrolled. A snapshot of
- * Canonical Folder entries (an `import --replace` backup) replaces those
- * entries, after a snapshot of what they hold now, so a restore is undone by
- * restoring that one; an enrolled follower's folder is the Source's mirror,
- * so it refuses one.
+ * journaled run, refusing drifted surfaces, then exclude its harnesses and
+ * authored resources. The run belongs to whoever projected the surfaces:
+ * this machine's local projection, or its follower identity once enrolled.
+ * A snapshot of Canonical Folder entries (an `import --replace` backup)
+ * replaces those entries, after a snapshot of what they hold now, so a
+ * restore is undone by restoring that one; an enrolled follower's folder is
+ * the Source's mirror, so it refuses one.
  */
 export const restoreLocal = Effect.fn("LocalProjection.restore")(function*(
   statePath: string,
@@ -474,9 +579,11 @@ export const restoreLocal = Effect.fn("LocalProjection.restore")(function*(
     });
   }).pipe(Effect.tapError(() => discardFailedRun(statePath, follower, run, backup)));
   const finished = yield* finishProjectionRun(statePath, follower, run, outcome, planned.revision);
+  const converged = outcome.outcome === "Converged";
   return {
     restored: snapshot.id,
-    excludedHarnesses: outcome.outcome === "Converged" ? planned.harnesses : [],
+    excludedHarnesses: converged ? planned.harnesses : [],
+    excludedResources: converged ? planned.resources : [],
     backup: finished.snapshotDeleted ? undefined : backup,
     plan: planned.plan,
     outcome,
@@ -594,8 +701,8 @@ export const harnessesLocal = Effect.fn("LocalProjection.harnesses")(function*(
   const repository = yield* StateRepository;
   const folder = folderOf(statePath);
   if (change !== undefined) {
-    yield* editExcludedHarnesses(folder, (current) =>
-      change.action === "exclude" ? [...current, change.harness] : current.filter((harness) => harness !== change.harness));
+    yield* withRunLock(statePath, `harnesses ${change.action}`, editLocalList(folder, "excludeHarnesses", (current) =>
+      change.action === "exclude" ? [...current, change.harness] : current.filter((harness) => harness !== change.harness)));
   }
   const report = yield* harnessReport({
     folder,
@@ -610,6 +717,43 @@ export const harnessesLocal = Effect.fn("LocalProjection.harnesses")(function*(
       ? [`${change.harness} is not listed in ${join(folder, "canonfig.jsonc")}; add it to "harnesses" there to project it`]
       : undefined,
   };
+});
+
+export interface OverlayChange {
+  readonly action: "set" | "remove";
+  /** `<category>/<name>` or `settings/<harness>#<key>`, already checked by `parseOverlay`. */
+  readonly item: string;
+}
+
+/**
+ * `canonfig overlay set|remove <item>` edits this machine's Local Overlays and
+ * key claims in `local/local.jsonc` and reports the list; it works before the
+ * first sync. Setting a key claim first checks that the harness has a
+ * settings file Canonfig writes and that the key is not one the harness keeps
+ * for itself, so a claim that could never apply is refused with the file
+ * unchanged. `canonfig overlay list` loads the folder (the mirror on a
+ * follower) and reports what each item overlay finds: an admitted `local/`
+ * item, a published item, or both. Overlays are machine-local: never
+ * published, never mirrored.
+ */
+export const overlaysLocal = Effect.fn("LocalProjection.overlays")(function*(
+  statePath: string,
+  environment: (name: string) => string | undefined,
+  change: OverlayChange | undefined,
+) {
+  const folder = folderOf(statePath);
+  if (change !== undefined) {
+    const parsed = parseOverlay(change.item);
+    if (change.action === "set" && parsed.kind === "claim") {
+      const issue = keyClaimIssue(parsed, yield* rootContext(environment), emptyModel(folder));
+      if (issue !== undefined) return yield* new CanonicalFolderError({ path: join(folder, "local", "local.jsonc"), message: issue });
+    }
+    const overlays = yield* withRunLock(statePath, `overlay ${change.action}`, editLocalList(folder, "overlays", (current) =>
+      change.action === "set" ? [...current, change.item] : current.filter((item) => item !== change.item)));
+    return { change, overlays };
+  }
+  const loaded = yield* loadFolder(statePath);
+  return { overlays: loaded.overlays };
 });
 
 /** Whether this machine has an unfinished local run. */

@@ -21,9 +21,10 @@ export type Role = "source" | "follower" | "unconfigured";
 /**
  * The authored categories of ~/.canonfig/, in the order the folder view lists them. Each item compiles to one
  * Profile Resource (src/projection/folder.ts): `instructions` is AGENTS.md, rules, skills, agents and commands
- * are files under their folders, and the rest are keys of canonfig.jsonc.
+ * are files under their folders, and the rest are keys of canonfig.jsonc. `resources` are files, folders and
+ * config files outside every harness (`resources.<id>`, with their content under files/).
  */
-export type ItemCategory = "instructions" | "rules" | "skills" | "agents" | "commands" | "mcp" | "hooks" | "settings" | "tools" | "credentials";
+export type ItemCategory = "instructions" | "rules" | "skills" | "agents" | "commands" | "mcp" | "hooks" | "settings" | "tools" | "credentials" | "resources";
 
 export type FollowerState =
   | "converged"
@@ -89,6 +90,7 @@ export const CATEGORY_LABEL: Record<ItemCategory, { label: string; hint: string;
   settings: { label: "Settings", where: "canonfig.jsonc settings", hint: "Keys set in one harness's own settings file. Every other key in that file stays as it is." },
   tools: { label: "Tools", where: "canonfig.jsonc tools", hint: "Programs Canonfig installs with a recipe per system, then checks that they run." },
   credentials: { label: "Required secrets", where: "canonfig.jsonc credentials", hint: "A token or key a machine must already have. Canonfig checks that it's there and never sends it." },
+  resources: { label: "Files outside harnesses", where: "canonfig.jsonc resources", hint: "A file, folder or config file in your home folder, outside every harness. File content lives in ~/.canonfig/files/." },
 };
 
 /** Where an item lives in ~/.canonfig/: its file or folder, or its key in canonfig.jsonc. */
@@ -101,8 +103,21 @@ export function itemPath(category: ItemCategory, name: string): string {
 }
 
 /** Categories a follower's ~/.canonfig/local/ may add to, as canonfig.jsonc `local.allow` names them (LOCAL_CATEGORIES). */
-export type LocalCategory = "rules" | "skills" | "agents" | "commands" | "mcp" | "settings";
-export const LOCAL_CATEGORIES: LocalCategory[] = ["rules", "skills", "agents", "commands", "mcp", "settings"];
+export type LocalCategory = "instructions" | "rules" | "skills" | "agents" | "commands" | "mcp" | "settings";
+export const LOCAL_CATEGORIES: LocalCategory[] = ["instructions", "rules", "skills", "agents", "commands", "mcp", "settings"];
+
+/**
+ * Harness outputs canonfig.jsonc `local.appendLocal` can share with every machine (APPEND_LOCAL_CATEGORIES in
+ * src/projection/model.ts): Canonfig owns a marked section of each instructions file, or only the skill folders it
+ * writes, and the rest stays the machine's.
+ */
+export type AppendLocalCategory = "instructions" | "skills";
+export const APPEND_LOCAL_CATEGORIES: AppendLocalCategory[] = ["instructions", "skills"];
+export const APPEND_LOCAL_LABEL: Record<AppendLocalCategory, string> = { instructions: "Instructions files", skills: "Skills folders" };
+
+/** Markers around Canonfig's section of an append-local text file (src/domain/text-composition.ts). */
+export const SOURCE_TEXT_START = "<!-- canonfig:source:start -->";
+export const SOURCE_TEXT_END = "<!-- canonfig:source:end -->";
 
 /**
  * Everyday labels for Canonfig concepts that appear as section titles, nav
@@ -167,6 +182,37 @@ export const HARNESS_NAMES: Record<HarnessId, string> = {
   qwen: "Qwen Code",
 };
 
+/**
+ * Places a `resources.<id>` target may not overlap, with the owner Canonfig names when it refuses one
+ * (projectResources in src/projection/plan.ts): the Canonfig folder, the shared ~/.agents, and every adapter's
+ * root, surfaces and never-touch paths, whether or not that harness is listed. Reduced to the outermost paths of
+ * each adapter's layout with the default environment on Linux and macOS; Windows keeps some under AppData, and
+ * each machine checks again with its own paths.
+ */
+const HARNESS_PATHS: Record<HarnessId, string[]> = {
+  codex: ["~/.codex"],
+  "claude-code": ["~/.claude", "~/.claude.json"],
+  amp: ["~/.config/amp", "~/.local/share/amp/secrets.json", "~/.local/share/amp/threads", "~/.cache/amp"],
+  "oh-my-pi": ["~/.omp/agent", "~/.omp/logs", "~/.omp/install-id"],
+  pi: ["~/.pi/agent"],
+  "factory-droid": ["~/.factory"],
+  cursor: ["~/.cursor"],
+  devin: ["~/.config/devin", "~/.devin/rules", "~/.local/share/devin"],
+  opencode: ["~/.config/opencode", "~/.local/share/opencode", "~/.cache/opencode"],
+  "grok-build": ["~/.grok"],
+  antigravity: ["~/.gemini"],
+  "copilot-cli": ["~/.copilot"],
+  kimi: ["~/.kimi-code"],
+  kilo: ["~/.config/kilo", "~/.local/share/kilo", "~/.local/state/kilo/daemon.json", "~/.cache/kilo"],
+  hermes: ["~/.hermes"],
+  qwen: ["~/.qwen"],
+};
+export const RESERVED_PATHS: ReadonlyArray<readonly [path: string, owner: string]> = [
+  ["~/.canonfig", "the Canonical Folder"],
+  ["~/.agents", "the shared agent directory"],
+  ...(Object.keys(HARNESS_PATHS) as HarnessId[]).flatMap((h) => HARNESS_PATHS[h].map((path) => [path, HARNESS_NAMES[h]] as const)),
+];
+
 /** canonfig.jsonc `surfaces` categories, in the order of SURFACE_CATEGORIES in src/projection/model.ts. */
 export const SURFACE_CATEGORIES = ["instructions", "rules", "skills", "agents", "commands", "hooks", "mcp", "settings"] as const;
 export type SurfaceCategory = (typeof SURFACE_CATEGORIES)[number];
@@ -205,6 +251,30 @@ export const SURFACE_SUPPORT: Record<HarnessId, SurfaceCategory[]> = {
   kilo: allBut(),
   hermes: allBut("instructions", "rules", "agents", "commands", "settings"),
   qwen: allBut(),
+};
+
+/**
+ * Each harness's settings file as the adapters declare it (the config surface with `settings` in
+ * src/projection/adapters): the keys Canonfig always owns there, each written as one value, and the keys the
+ * harness keeps for itself (`*` matches one segment). A key claim, `settings/<harness>#<key>`, may name only a
+ * harness listed here and never a reserved key. tests/projection-adapters.test.ts fails when the two disagree.
+ */
+export const SETTINGS_FILES: Partial<Record<HarnessId, { readonly owned: string[]; readonly reserved: string[] }>> = {
+  codex: { owned: ["mcp_servers"], reserved: [] },
+  "claude-code": { owned: ["hooks"], reserved: [] },
+  amp: { owned: ["amp\\.mcpServers"], reserved: [] },
+  "oh-my-pi": { owned: [], reserved: [] },
+  pi: { owned: [], reserved: [] },
+  "factory-droid": { owned: [], reserved: [] },
+  cursor: { owned: [], reserved: [] },
+  devin: { owned: ["hooks"], reserved: [] },
+  opencode: { owned: ["mcp"], reserved: ["provider"] },
+  "grok-build": { owned: ["mcp_servers"], reserved: ["model.*.api_key"] },
+  antigravity: { owned: [], reserved: ["trustedWorkspaces", "gcp"] },
+  "copilot-cli": { owned: [], reserved: [] },
+  kimi: { owned: ["hooks"], reserved: ["providers", "services.*.api_key"] },
+  kilo: { owned: ["mcp"], reserved: ["provider"] },
+  qwen: { owned: ["mcpServers", "hooks"], reserved: [] },
 };
 
 /**
@@ -255,8 +325,9 @@ const harnessState: Partial<Record<HarnessId, HarnessState>> = {
   "copilot-cli": { installed: true, listed: true, excluded: false, root: "~/.copilot", snapshot: snapshots[2].id },
   // Restored from its snapshot, which excluded it on this machine.
   "oh-my-pi": { installed: true, listed: true, excluded: true, root: "~/.omp/agent", snapshot: snapshots[3].id },
-  // Listed, not installed: reported as not installed, nothing projected.
-  amp: { installed: false, listed: true, excluded: false, root: null, snapshot: null },
+  // Listed, installed since the last update and not taken over yet: the next update backs up its AGENTS.md and,
+  // with instructions in local.appendLocal, keeps that whole file as this machine's text (Sync's review step).
+  amp: { installed: true, listed: true, excluded: false, root: null, snapshot: null },
   // Installed, not listed: ignored.
   cursor: { installed: true, listed: false, excluded: false, root: null, snapshot: null },
 };
@@ -284,7 +355,9 @@ export const profile = {
     { name: "canonfig:secrets", description: "May receive shared secrets" },
   ],
   /** canonfig.jsonc `local.allow`: what a follower's ~/.canonfig/local/ may add. */
-  localAllow: ["rules", "skills", "mcp", "settings"] as LocalCategory[],
+  localAllow: ["instructions", "rules", "skills", "mcp", "settings"] as LocalCategory[],
+  /** canonfig.jsonc `local.appendLocal`: harness outputs every machine keeps its own content in. */
+  appendLocal: ["instructions", "skills"] as AppendLocalCategory[],
 };
 
 export const resources: Resource[] = [
@@ -428,6 +501,24 @@ export const resources: Resource[] = [
     groups: ["canonfig:secrets"],
     summary: "local reference",
     detail: { Reference: "github-token" },
+  },
+  {
+    id: "resources/gitconfig",
+    category: "resources",
+    path: "canonfig.jsonc resources.gitconfig",
+    groups: [],
+    summary: "~/.gitconfig, replace",
+    detail: { Type: "file", Target: "~/.gitconfig", Source: "files/gitconfig", Policy: "replace" },
+  },
+  {
+    id: "resources/ruff",
+    category: "resources",
+    path: "canonfig.jsonc resources.ruff",
+    groups: [],
+    summary: "~/.config/ruff/ruff.toml, merges 2 keys",
+    change: "added",
+    detail: { Type: "config", Target: "~/.config/ruff/ruff.toml", Format: "toml" },
+    keys: { "line-length": "100", "lint.select": '["E", "F", "I"]' },
   },
 ];
 
@@ -631,9 +722,9 @@ export const selfUpdateSeed = {
   follower: { npmCli: null as string | null },
 };
 
-/** An item in a follower's ~/.canonfig/local/: a file for rules, skills, agents and commands, a key of local.jsonc otherwise. */
+/** An item in a follower's ~/.canonfig/local/: AGENTS.md, a file for rules, skills, agents and commands, a key of local.jsonc otherwise. */
 export interface LocalItem {
-  /** `<category>/<name>`, unique within local/. */
+  /** `<category>/<name>`, unique within local/; `instructions` for local/AGENTS.md. */
   id: string;
   category: LocalCategory;
   /** Relative to ~/.canonfig/local/. */
@@ -645,18 +736,45 @@ export interface LocalItem {
   detail?: Record<string, string>;
 }
 
+/**
+ * A harness output `local.appendLocal` shares with this machine that holds content of its own: text after
+ * Canonfig's closing marker in an instructions file, or top-level entries Canonfig didn't write in a skills folder.
+ */
+export type KeptSurface =
+  /** The machine's text below the closing marker, byte for byte. */
+  | { category: "instructions"; target: string; text: string }
+  /** The machine's own skill folders beside Canonfig's. */
+  | { category: "skills"; target: string; entries: string[] };
+
 export const followerSelf = {
   name: "laptop",
+  /** Its home folder, which rule links in instructions files name (rules are linked by absolute path). */
+  home: "/Users/maria",
   source: "atlas (via SSH tunnel)",
   revision: 7,
   state: "converged" as FollowerState,
-  /** Its ~/.canonfig/local/. commands/standup sits outside the Source's local.allow, so projection ignores it. */
+  /**
+   * Its ~/.canonfig/local/. commands/standup sits outside the Source's local.allow, so projection ignores it.
+   * mcp/docs shares a published server's name; the overlay below lets it replace that server here.
+   */
   local: [
+    { id: "instructions", category: "instructions", path: "AGENTS.md", summary: "3 lines", detail: { Body: "## On this laptop\n\nRepositories live in ~/src." } },
     { id: "skills/pdf-tools", category: "skills", path: "skills/pdf-tools/", summary: "2 files", detail: { Description: "Fill and split PDF forms.", Body: "Use the scripts in this folder." } },
     { id: "mcp/notes", category: "mcp", path: "local.jsonc mcp.notes", summary: "stdio, uvx", detail: { Transport: "stdio", Command: "uvx mcp-notes" } },
+    { id: "mcp/docs", category: "mcp", path: "local.jsonc mcp.docs", summary: "streamable-http", detail: { Transport: "streamable-http", URL: "http://127.0.0.1:8411/mcp" } },
     { id: "settings/codex", category: "settings", path: "local.jsonc settings.codex", summary: "1 key", keys: { model: '"gpt-5.5"' } },
     { id: "commands/standup", category: "commands", path: "commands/standup.md", summary: "/standup", detail: { Description: "Summarize yesterday's commits." } },
   ] as LocalItem[],
+  /**
+   * local.jsonc `overlays`: published items this machine's local item of the same name replaces, and key claims
+   * (`settings/<harness>#<key>`) that keep one key of a harness's settings file this machine's own.
+   */
+  overlays: ["mcp/docs", "settings/claude-code#includeCoAuthoredBy"],
+  /** What appendLocal keeps of this machine's own, as of the revision it applied. */
+  kept: [
+    { category: "instructions", target: "~/.codex/AGENTS.md", text: "# Laptop notes\n\nUse fish, not bash.\n" },
+    { category: "skills", target: "~/.agents/skills/", entries: ["homebrew-audit", "keynote-export"] },
+  ] as KeptSurface[],
 };
 
 export interface StateMeta {

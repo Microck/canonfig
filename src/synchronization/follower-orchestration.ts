@@ -55,6 +55,7 @@ import {
   loadRunArtifacts,
   releaseUnappliedTakeovers,
   runProjection,
+  writeAdoptionReviews,
   type LocalSyncOptions,
 } from "../projection/sync.ts";
 import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
@@ -1022,12 +1023,16 @@ export const synchronizeFollower = Effect.fn(
     const warnings = yield* installerRefusals(planned.plan.actions.flatMap((action) =>
       action.detail.kind === "install-tool" ? [action.detail.method] : []
     ));
+    const adoptionReviews = projection.reviewLocal === true
+      ? yield* writeAdoptionReviews(stateLocation, planned.plan, followerPlan.artifacts)
+      : undefined;
     return {
       ...base,
       plan: planned.plan,
       agentResolutions: planned.agentResolutions,
       schedule,
       warnings: warnings.length === 0 ? undefined : warnings,
+      adoptionReviews,
       outcome: undefined,
     };
   }

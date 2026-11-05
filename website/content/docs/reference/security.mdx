@@ -88,7 +88,8 @@ hook scripts included, a credential in `canonfig.jsonc` or
 `.env.*`, `auth.json` or `credentials.json` stops the export. With
 `--include-harnesses` it adds a harness surface only while the surface holds
 exactly what Canonfig last wrote, with no file added to a harness directory,
-and from a shared file only the keys Canonfig owns. The archive is written
+and from a shared file only the keys Canonfig owns. An `append-local` surface,
+which also holds the machine's own content, is always left out. The archive is written
 with mode `0600`, or an ACL that grants only your user on Windows, into a
 directory inside your home directory that it reaches without links at the
 moment it publishes, and without `--force` it never replaces an existing file.

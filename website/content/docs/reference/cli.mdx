@@ -132,8 +132,8 @@ canonfig source publish --reviewer dana
 | `--reviewer <name>` | Required. Recorded with the revision. |
 
 Compiles the authoring allowlist of `~/.canonfig/` (`canonfig.jsonc`,
-`AGENTS.md`, `rules/`, `skills/`, `agents/`, `commands/`, `hooks/`) into the
-next signed Profile Revision. Nothing else in the folder is published, and
+`AGENTS.md`, `rules/`, `skills/`, `agents/`, `commands/`, `hooks/`, `files/`)
+into the next signed Profile Revision. Nothing else in the folder is published, and
 `canonfig.jsonc` needs `profile` with an `id` and `name`. Content equal to the
 latest Profile Revision returns that revision. Any other content, including
 an older revision's, becomes the next sequence number; publishing old content
@@ -271,6 +271,7 @@ canonfig sync --plan
 canonfig sync --apply
 canonfig sync --apply --no-input
 canonfig sync --apply --no-backup
+canonfig sync --plan --review-local
 ```
 
 On an enrolled Follower Machine, `sync` fetches the latest authorized Profile
@@ -294,7 +295,15 @@ it, reports it, exits 4, and leaves its projections as they were last applied.
 | `--apply` | Applies the plan and verifies every resource. Cannot be combined with `--plan`. |
 | `--no-input` | Never prompts. |
 | `--no-backup` | Takes over harness surfaces without a takeover snapshot. |
+| `--review-local` | With `--plan` only: writes each append-local first adoption's exact texts to a private JSON file under `~/.canonfig/.reviews/` and lists the files. Refused with `--apply`, `--scheduled`, or `--no-input` (exit 2). See [Keep a machine's own instructions and skills](/how-to/keep-local-content). |
 | `--scheduled` | Set only by the native schedule, which runs `sync --apply --no-input --scheduled`. |
+
+When `local.appendLocal` in `canonfig.jsonc` shares instructions or skills with
+each machine, or an authored resource uses `"policy": "append-local"`, the plan
+marks the first write to an existing text file with "First adoption preserves
+the entire existing file as local text" and names `canonfig sync --plan
+--review-local`. The plan, the journal and the command output never contain
+that text.
 
 ### Takeover snapshots
 
@@ -355,9 +364,12 @@ process holds the run, and print its process ID. See [Recover from a failed or b
 no id is given. It runs as a journaled run: it rewrites the files, directories
 and owned keys the snapshot holds, removes what Canonfig added where the
 snapshot recorded nothing, deletes Canonfig's ownership records for those
-surfaces, and adds their harnesses to `excludeHarnesses` in
-`~/.canonfig/local/local.jsonc` so the next sync leaves them alone. Snapshot
-ids are the directory names under `~/.canonfig/.backups/`. See
+surfaces, and adds their harnesses to `excludeHarnesses` (and authored
+resources to `excludeResources`) in `~/.canonfig/local/local.jsonc` so the next
+sync leaves them alone. A surface Canonfig shares with the machine
+(append-local) is not overwritten from the snapshot: restore removes only
+Canonfig's section or entries, which leaves what the machine had and added.
+Snapshot ids are the directory names under `~/.canonfig/.backups/`. See
 [Restore a harness from a backup](/how-to/restore-from-a-backup).
 
 | Message | Exit | Cause |
@@ -379,8 +391,8 @@ canonfig import ~/canonfig-setup.tar.gz --expect-key 3f1c0a9e6b2d4f8a7c5e1b3d9f0
 ```
 
 `export` writes the Canonical Folder to one `.tar.gz`: `canonfig.jsonc`,
-`AGENTS.md`, `rules/`, `skills/`, `agents/`, `commands/`, `hooks/` and
-`local/`, stored under `folder/`. Nothing else in `~/.canonfig/` is read, so
+`AGENTS.md`, `rules/`, `skills/`, `agents/`, `commands/`, `hooks/`, `files/`
+and `local/`, stored under `folder/`. Nothing else in `~/.canonfig/` is read, so
 `state.sqlite` and its `-wal` and `-shm` files, `.backups/`, `.runtime/`,
 `canonfig.log`, `installers/`, the tunnel state and any credential files stay
 on the machine. Without `--output` the archive is
@@ -506,6 +518,49 @@ there to project it". An unknown id fails with exit 2: "Unknown harness:
 `<id>`; expected one of codex, claude-code, ...". `doctor` reports the same
 detection and selection in its `harnesses` probe. See
 [Choose which harnesses Canonfig manages](/how-to/choose-harnesses).
+
+## Local overlays
+
+```bash
+canonfig overlay list
+canonfig overlay set mcp/docs
+canonfig overlay remove mcp/docs
+canonfig overlay set 'settings/codex#model'
+canonfig overlay remove 'settings/codex#model'
+```
+
+A Local Overlay lets this machine's item in `~/.canonfig/local/` replace the
+published item with the same name. Without one, the same name stops the run
+with Human Action Required (exit 3). An item is `rules/<id>`, `skills/<name>`,
+`agents/<id>`, `commands/<id>`, `mcp/<name>`, or `settings/<harness>`; for
+settings, each local key replaces the published keys it overlaps and the other
+published keys stay. The Source Machine's `local.allow` must still admit the
+category.
+
+A key claim, `settings/<harness>#<key>`, makes one key of that harness's
+settings file this machine's: Canonfig never writes, removes, or reports drift
+on the key or anything under it there, and the other keys it owns in the file
+still follow the Source. Removing the claim lets the next sync write the
+published value again. `set` refuses a claim, with exit 2 and the file
+unchanged, when the harness has no settings file Canonfig writes or the key is
+one the harness keeps for itself. A sync refuses, with exit 2 before writing
+anything, a claim inside a value Canonfig writes as one key ("overlay
+settings/codex#mcp_servers.docs claims part of mcp_servers, which Canonfig
+writes as one value; claim mcp_servers instead") and a claimed key that
+`local/local.jsonc` also sets. A plan warns (`CLAIM_UNUSED`) about a claim that
+covers no key Canonfig writes.
+
+`set` and `remove` edit `overlays` in `~/.canonfig/local/local.jsonc`, keeping
+the file's comments, and print the list; they work before the first sync.
+`list` loads the folder (the mirror on a Follower Machine) and reports each
+entry with its `kind`: an item overlay with `local` (an admitted local item of
+that name exists) and `published` (a published item of that name exists), a
+key claim with its `harness` and `key`. A plan warns about an item overlay with
+no local item. Overlays and claims are never published or mirrored, and a new
+revision does not change them. An entry in another form fails with exit 2:
+"invalid overlay `<item>`: expected rules|skills|agents|commands|mcp/`<name>`,
+settings/`<harness>`, or settings/`<harness>`#`<key>`". See
+[Replace a published item on one machine](/how-to/use-local-overlays).
 
 ## Status
 

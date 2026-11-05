@@ -49,6 +49,18 @@ export const GLOSSARY = {
     plain: "local folder",
     meaning: "~/.canonfig/local on one machine: items it adds for itself, within what the Source allows. Canonfig never replaces them and never sends them to the Source.",
   },
+  "Local Overlay": {
+    plain: "local replacement",
+    meaning: "This machine's choice that its own item replaces the published one with the same name, here only. It lives in ~/.canonfig/local/local.jsonc and never goes to the Source.",
+  },
+  "Key Claim": {
+    plain: "key you set yourself",
+    meaning: "This machine's choice that one key of a harness's settings file is its own. Canonfig never writes, removes or checks that key there, and the other keys it writes in the file keep following the Source. It lives in ~/.canonfig/local/local.jsonc and never goes to the Source.",
+  },
+  "Append-local": {
+    plain: "kept alongside",
+    meaning: "Canonfig owns only its marked part of an instructions file, or only the skills it writes in a skills folder. Everything else the machine put there stays and is never reported as an edit.",
+  },
   "Follower Drift": {
     plain: "local edit",
     meaning: "Someone changed a file Canonfig manages, on that machine. Canonfig keeps the change, reports it and stops updating what came from that file.",

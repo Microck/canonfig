@@ -104,7 +104,7 @@ const filesBelow = (root: string): Array<string> => {
     .sort();
 };
 
-const AUTHORED = ["canonfig.jsonc", "AGENTS.md", "rules", "skills", "agents", "commands", "hooks", "local"];
+const AUTHORED = ["canonfig.jsonc", "AGENTS.md", "rules", "skills", "agents", "commands", "hooks", "files", "local"];
 const authoredFiles = (folder: string) =>
   filesBelow(folder).filter((path) => AUTHORED.includes(path.split("/")[0]!));
 
@@ -216,6 +216,20 @@ describe("canonfig export and import", () => {
     expect(exported.status).toBe(2);
     expect(exported.envelope.message).toContain("literal credential");
     expect(exported.envelope.message).not.toContain(SECRET);
+    expect(existsSync(join(source, "setup.tar.gz"))).toBe(false);
+
+    // An authored config resource's keys get publication's field-name rule,
+    // which catches a value the text pattern alone does not.
+    rmSync(join(source, ".canonfig", "local", "local.jsonc"));
+    write(join(source, ".canonfig", "canonfig.jsonc"), `${JSON.stringify({
+      version: 1,
+      harnesses: [],
+      resources: { tool: { kind: "config", target: "~/.config/tool/settings.json", format: "json", keys: { env: [{ name: "API_TOKEN", value: SECRET }] } } },
+    })}\n`);
+    const resource = invoke(source, ["export", "--output", "setup.tar.gz"]);
+    expect(resource.status, resource.stdout + resource.stderr).toBe(2);
+    expect(resource.envelope.message).toContain("literal credential at keys.resources.tool");
+    expect(resource.envelope.message).not.toContain(SECRET);
     expect(existsSync(join(source, "setup.tar.gz"))).toBe(false);
   }, 60_000);
 
@@ -406,4 +420,71 @@ describe("canonfig export and import", () => {
     expect(existsSync(join(target, ".codex"))).toBe(false);
     expect(existsSync(join(target, ".agents"))).toBe(false);
   }, 180_000);
+
+  it("carries authored resources, files/, Local Overlays and key claims, and resource projections an import accepts", () => {
+    const source = newHome();
+    const folder = join(source, ".canonfig");
+    write(join(folder, "canonfig.jsonc"), `${JSON.stringify({
+      version: 1,
+      harnesses: [],
+      local: { allow: ["rules"] },
+      resources: {
+        gitconfig: { kind: "file", target: "~/.gitconfig", source: "files/gitconfig" },
+        team: { kind: "file", target: "~/notes/TEAM.md", source: "files/TEAM.md", policy: "append-local" },
+        scripts: { kind: "directory", target: "~/.local/share/team-scripts", source: "files/scripts" },
+        tool: { kind: "config", target: "~/.config/tool/settings.json", format: "json", keys: { editor: "vim" } },
+      },
+    }, undefined, 2)}\n`);
+    write(join(folder, "files", "gitconfig"), "[user]\n\tname = Team\n");
+    write(join(folder, "files", "TEAM.md"), "Team notes.\n");
+    write(join(folder, "files", "scripts", "build.sh"), "#!/bin/sh\nexit 0\n", 0o755);
+    write(join(folder, "rules", "style.md"), "---\ndescription: Style\n---\nUse two spaces.\n");
+    write(join(folder, "local", "rules", "style.md"), "---\ndescription: Style\n---\nUse tabs here.\n");
+    write(join(folder, "local", "local.jsonc"), `${JSON.stringify({ overlays: ["rules/style", "settings/codex#model"] })}\n`);
+    write(join(source, "notes", "TEAM.md"), "My own notes.\n");
+    write(join(source, ".config", "tool", "settings.json"), JSON.stringify({ theme: "dark" }));
+    const applied = invoke(source, ["sync", "--apply"]);
+    expect(applied.status, applied.stdout + applied.stderr).toBe(0);
+
+    const exported = invoke(source, ["export", "--include-harnesses", "--output", "setup.tar.gz"]);
+    expect(exported.status, exported.stdout + exported.stderr).toBe(0);
+    const archivePath = join(source, "setup.tar.gz");
+    const archive = readFileSync(archivePath);
+    const entries = readTar(archive);
+    const manifest = JSON.parse(entries[0]!.content.toString("utf8"));
+    const listed = manifest.files.map((file: { path: string }) => file.path);
+    expect(listed.filter((path: string) => path.startsWith("folder/"))).toEqual(authoredFiles(folder).map((path) => `folder/${path}`));
+    expect(listed).toEqual(expect.arrayContaining(["folder/files/gitconfig", "folder/files/scripts/build.sh", "folder/local/local.jsonc", "folder/local/rules/style.md"]));
+    // Authored resources project like a harness; the append-local one also
+    // holds this machine's own text, so it stays out.
+    const projected = manifest.files.filter((file: { harness?: string }) => file.harness === "resources");
+    expect(projected.map((file: { target: string }) => file.target).sort()).toEqual(["~/.config/tool/settings.json", "~/.gitconfig", "~/.local/share/team-scripts/build.sh"]);
+    expect(exported.envelope.data.skippedHarnessSurfaces).toEqual([
+      expect.objectContaining({ harness: "resources", surface: "team", reason: expect.stringContaining("append-local") }),
+    ]);
+    expect(gunzipSync(archive).includes("My own notes.")).toBe(false);
+    const tool = projected.find((file: { target: string }) => file.target === "~/.config/tool/settings.json");
+    expect(JSON.parse(entries.find((entry) => entry.path === tool.path)!.content.toString("utf8"))).toEqual({ editor: "vim" });
+
+    const target = newHome();
+    const imported = invoke(target, ["import", archivePath]);
+    expect(imported.status, imported.stdout + imported.stderr).toBe(0);
+    expect(imported.envelope.data).toMatchObject({ outcome: { outcome: "Converged" }, harnessFiles: { verified: 3 } });
+    for (const path of authoredFiles(folder)) {
+      expect(readFileSync(join(target, ".canonfig", ...path.split("/"))).equals(readFileSync(join(folder, ...path.split("/")))), path).toBe(true);
+    }
+    expect(existsSync(join(target, ".gitconfig"))).toBe(false);
+    // The overlay and the key claim arrive as this machine's own decisions.
+    const overlays = invoke(target, ["overlay", "list"]);
+    expect(overlays.status, overlays.stdout + overlays.stderr).toBe(0);
+    expect(overlays.envelope.data.overlays).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "item", item: "rules/style", local: true, published: true }),
+      expect.objectContaining({ kind: "claim", item: "settings/codex#model" }),
+    ]));
+    // The next sync projects the imported resources.
+    const synced = invoke(target, ["sync", "--apply"]);
+    expect(synced.status, synced.stdout + synced.stderr).toBe(0);
+    expect(readFileSync(join(target, ".gitconfig"), "utf8")).toBe("[user]\n\tname = Team\n");
+    expect(readFileSync(join(target, "notes", "TEAM.md"), "utf8")).toContain("Team notes.");
+  }, 240_000);
 });

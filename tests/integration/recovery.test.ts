@@ -7,6 +7,7 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -1157,6 +1158,33 @@ describe("synchronization crash recovery", () => {
 
     await recover(value, machine);
     expect(writes).toEqual(["previous", "canonical content"]);
+  });
+
+  it.skipIf(process.platform === "win32")("refuses to restore an authored resource's rollback through a linked parent", async () => {
+    const root = temporaryDirectory();
+    const base = fixture(root);
+    const target = join(root, "home", "notes", "TEAM.md");
+    const resource = { ...base.revision.resources[0]!, id: decode(ResourceId)("harness:resources:notes"), target };
+    const revision: PlanningProfileRevision = {
+      ...base.revision,
+      resources: [resource],
+      desired: [{ ...base.revision.desired[0]!, resource: resource.id }],
+    };
+    const value: Fixture = { ...base, target, revision, recovery: { ...base.recovery, revision } };
+    const plan = persistedPlan(value);
+    await seed(value, plan);
+    // Killed after the write landed; ~/notes is then replaced by a link to a
+    // directory outside home that holds the same name.
+    const outside = temporaryDirectory();
+    writeFileSync(join(outside, "TEAM.md"), value.artifact.content);
+    mkdirSync(join(root, "home"), { recursive: true });
+    symlinkSync(outside, join(root, "home", "notes"));
+    const reference = rollbackReference(value, plan.actions[0]!.id, "previous");
+    await journal(value, plan.actions[0]!.id, "running", reference);
+    await interruptRun(value);
+
+    await expect(recover(value)).rejects.toThrow("ancestor resolves outside managed root");
+    expect(readFileSync(join(outside, "TEAM.md"), "utf8")).toBe("canonical content");
   });
 
   it("does not resurrect a removed resource after restart recovery", async () => {

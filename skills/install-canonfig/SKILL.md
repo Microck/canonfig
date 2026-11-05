@@ -47,7 +47,7 @@ canonfig doctor --no-input --timeout-ms 5000
 replace an existing Source identity. It publishes nothing.
 
 The Source authors `~/.canonfig/`: `canonfig.jsonc`, `AGENTS.md`, and
-`rules/`, `skills/`, `agents/`, `commands/`, `hooks/`. Nothing else in the
+`rules/`, `skills/`, `agents/`, `commands/`, `hooks/`, `files/`. Nothing else in the
 folder is published. Publication needs `version`, `harnesses`, and `profile` in
 `canonfig.jsonc`; Source setup writes all three, for example:
 

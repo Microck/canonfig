@@ -223,6 +223,7 @@ harness's earlier configuration.
 | Message | Cause | Fix |
 | --- | --- | --- |
 | "Unknown harness: claude; expected one of codex, claude-code, ..." (exit 2) | `harnesses include` or `exclude` takes a harness id. | Use an id from the table above. |
+| "another canonfig process (PID ...) has been running '...' for this follower ..." (`harnesses include` or `exclude`, exit 4) | A sync, restore, recover, or another edit of `local/local.jsonc` is running on this machine. Nothing was changed. | Wait for it to finish, then retry. |
 | "unknown harness: claude" (`setup plan --harness`, exit 2) | `--harness` takes a harness id. | Use an id from the table above. |
 | "... was taken over at ... but now resolves to ..." (exit 3) | The harness root changed after takeover. | See [Keep a harness in one place](#keep-a-harness-in-one-place). |
 | "... resolves to ..., outside the home directory ...; Canonfig projects only into roots inside the home directory" (exit 3) | An environment override points the harness outside your home directory. | Point the override inside your home directory, or unset it. |

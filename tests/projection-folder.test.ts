@@ -1,17 +1,21 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, posix, win32 } from "node:path";
 
+import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
   CanonicalFolderError,
   decodeFolderConfig,
+  type FolderResourceInput,
   loadCanonicalFolder,
   LocalItemCollisionError,
 } from "../src/projection/folder.ts";
 import { nativeTools } from "../src/projection/adapters/tools.ts";
+import type { RootContext } from "../src/projection/harness.ts";
+import { projectResources } from "../src/projection/plan.ts";
 import { ampPluginSource } from "../src/projection/templates/runtime.ts";
 
 const roots: Array<string> = [];
@@ -61,7 +65,7 @@ describe("Canonical Folder loader", () => {
     expect(loaded.model.mcp.map(([name]) => name)).toEqual(["git"]);
     expect(loaded.model.hooks[0]?.run).toEqual([join(root, "hooks", "format.sh"), "--fix"]);
     expect(loaded.model.settings).toEqual({ codex: [{ path: "model_reasoning_effort", value: "high" }] });
-    expect(loaded.local).toEqual({ excludeHarnesses: [], backups: true });
+    expect(loaded.local).toEqual({ excludeHarnesses: [], excludeResources: [], claims: [], backups: true });
     expect((await loadCanonicalFolder(root)).digest).toBe(loaded.digest);
   });
 
@@ -127,11 +131,30 @@ describe("Canonical Folder loader", () => {
     expect(loaded.model.commands).toEqual([]);
     expect(loaded.ignoredLocal).toEqual(["local/commands/"]);
     expect(loaded.model.harnesses).toEqual(["codex"]);
-    expect(loaded.local).toEqual({ excludeHarnesses: ["qwen"], backups: false });
+    expect(loaded.local).toEqual({ excludeHarnesses: ["qwen"], excludeResources: [], claims: [], backups: false });
 
     mkdirSync(join(root, "skills", "mine"), { recursive: true });
     writeFileSync(join(root, "skills", "mine", "SKILL.md"), "---\nname: mine\ndescription: Published\n---\nP.\n");
     await expect(loadCanonicalFolder(root)).rejects.toBeInstanceOf(LocalItemCollisionError);
+  });
+
+  it("reads key claims from the overlays list and refuses ones that cannot apply", async () => {
+    const claimed = (overlays: ReadonlyArray<string>, settings?: Readonly<Record<string, Readonly<Record<string, string>>>>) => folder({
+      "canonfig.jsonc": "{ \"version\": 1, \"harnesses\": [\"codex\"], \"local\": { \"allow\": [\"settings\"] } }",
+      "local/local.jsonc": JSON.stringify({ overlays, settings }),
+    });
+    const loaded = await loadCanonicalFolder(claimed(["settings/codex#model", "settings/codex#tui.theme"]));
+    expect(loaded.local.claims).toEqual([{ harness: "codex", key: "model" }, { harness: "codex", key: "tui.theme" }]);
+    expect(loaded.overlays).toEqual([
+      { kind: "claim", item: "settings/codex#model", harness: "codex", key: "model" },
+      { kind: "claim", item: "settings/codex#tui.theme", harness: "codex", key: "tui.theme" },
+    ]);
+    for (const overlays of [["settings/nope#model"], ["settings/codex#a..b"], ["settings/codex#"]]) {
+      await expect(loadCanonicalFolder(claimed(overlays)), overlays[0]).rejects.toBeInstanceOf(CanonicalFolderError);
+    }
+    // A local setting for a claimed key would ask Canonfig to write it after all.
+    await expect(loadCanonicalFolder(claimed(["settings/codex#tui"], { codex: { "tui.theme": "dark" } })))
+      .rejects.toThrow("overlaps the key claim settings/codex#tui");
   });
 
   it("only warns about a local category that is not allowed, whatever it holds", async () => {
@@ -258,5 +281,42 @@ describe("canonfig.jsonc validation detail", () => {
     expect(message).toContain(`["tools"]["tool"]["recipes"][0]${field}`);
     expect(message).toContain(reason);
     expect(message).not.toContain("profile-disposable-value");
+  });
+});
+
+describe("authored resource targets", () => {
+  const config = (resources: Readonly<Record<string, FolderResourceInput>>) =>
+    JSON.stringify({ version: 1, harnesses: [], resources });
+
+  it("refuses two targets that differ only in case, since the folder reaches case-insensitive file systems", async () => {
+    const root = folder({
+      "canonfig.jsonc": config({
+        upper: { kind: "file", target: "~/Notes/a.md", source: "files/a.md" },
+        lower: { kind: "file", target: "~/notes/a.md", source: "files/a.md" },
+      }),
+      "files/a.md": "a\n",
+    });
+    await expect(loadCanonicalFolder(root)).rejects.toThrow(/overlaps resources\.\w+\.target/u);
+  });
+
+  it("refuses a case-only spelling of a harness directory on a Windows machine, and not on Linux", async () => {
+    const root = folder({
+      "canonfig.jsonc": config({ notes: { kind: "file", target: "~/.CODEX/notes.md", source: "files/notes.md" } }),
+      "files/notes.md": "notes\n",
+    });
+    const { model } = await loadCanonicalFolder(root);
+    const windows: RootContext = {
+      platform: "windows",
+      home: "C:\\Users\\dana",
+      appData: "C:\\Users\\dana\\AppData\\Roaming",
+      environment: () => undefined,
+      join: (...segments) => win32.join(...segments),
+    };
+    const refused = await Effect.runPromise(Effect.flip(projectResources(model, windows, "canonfig.jsonc")));
+    expect(refused.message).toContain("which belongs to OpenAI Codex");
+
+    const linux: RootContext = { ...windows, platform: "linux", home: "/home/dana", appData: "/home/dana/.config", join: (...segments) => posix.join(...segments) };
+    const projected = await Effect.runPromise(projectResources(model, linux, "canonfig.jsonc"));
+    expect(projected.map((surface) => surface.surface.target)).toEqual(["/home/dana/.CODEX/notes.md"]);
   });
 });

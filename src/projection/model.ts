@@ -132,6 +132,42 @@ export interface SettingsKey {
 /** Declared `settings.<harness>` keys, sorted by path, per harness. */
 export type HarnessSettings = Readonly<Partial<Record<TargetId, ReadonlyArray<SettingsKey>>>>;
 
+/** Categories whose harness outputs `local.appendLocal` can share with the machine. */
+export const APPEND_LOCAL_CATEGORIES = ["instructions", "skills"] as const;
+export type AppendLocalCategory = (typeof APPEND_LOCAL_CATEGORIES)[number];
+
+/**
+ * A file, directory or config file the folder authors outside every harness
+ * (`resources.<id>` in canonfig.jsonc). `target` is home-relative as
+ * authored (`~/.gitconfig`); projection resolves it on each machine.
+ */
+export type FolderResource<File = SkillFile> =
+  | {
+    readonly id: string;
+    readonly kind: "file";
+    readonly target: string;
+    readonly policy: "replace" | "append-local";
+    /** The authored file, relative to the folder (`files/gitconfig`). */
+    readonly source: string;
+    readonly file: File;
+  }
+  | {
+    readonly id: string;
+    readonly kind: "directory";
+    readonly target: string;
+    readonly policy: "replace" | "append-local";
+    readonly source: string;
+    /** Relative to `source`, forward slashes. */
+    readonly files: ReadonlyArray<File>;
+  }
+  | {
+    readonly id: string;
+    readonly kind: "config";
+    readonly target: string;
+    readonly format: "json" | "toml" | "yaml";
+    readonly keys: ReadonlyArray<SettingsKey>;
+  };
+
 export interface CanonicalModel {
   /** Absolute path of the Canonical Folder. */
   readonly folder: string;
@@ -149,6 +185,14 @@ export interface CanonicalModel {
   readonly settings: HarnessSettings;
   /** Per-harness category allowlists; a harness not named here gets every category. */
   readonly surfaces: Readonly<Partial<Record<TargetId, ReadonlyArray<SurfaceCategory>>>>;
+  /**
+   * Categories whose harness outputs Canonfig shares with the machine
+   * (`local.appendLocal`): a marked Source section in instructions files,
+   * only Canonfig's own entries in skills directories.
+   */
+  readonly appendLocal: ReadonlyArray<AppendLocalCategory>;
+  /** Authored resources, minus the ones this machine excludes. Harness adapters never read them. */
+  readonly resources: ReadonlyArray<FolderResource>;
 }
 
 /**

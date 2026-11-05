@@ -57,6 +57,9 @@ interface WriteFileActionDetail {
   readonly digest: ContentDigest;
   executable?: boolean;
   mode?: number;
+  previousSourceDigest?: string;
+  adoptionNotice?: string;
+  retainedLocalDigest?: string;
   noReplace?: boolean;
 }
 
@@ -342,6 +345,10 @@ const writeFile = (
   };
   if (executable !== undefined) detail.executable = executable;
   if (mode !== undefined) detail.mode = mode;
+  if (context.resource.policy === "append-local" && context.observed.state === "present"
+    && context.observed.managedSourceDigest !== undefined) {
+    detail.previousSourceDigest = context.observed.managedSourceDigest;
+  }
   if (context.noReplace === true) detail.noReplace = true;
   return { kind: "write-file", detail };
 };
@@ -560,6 +567,97 @@ const planReplace = (context: ResourcePlanningContext): ReadonlyArray<ResourceAc
   ];
 };
 
+/** Local additions are outside the owned digest; Source edits remain drift. */
+const planAppendLocal = (context: ResourcePlanningContext): ReadonlyArray<ResourceActionDraft> => {
+  const desired = context.desired;
+  if (desired.kind === "directory" || desired.kind === "skill") return planAppendLocalDirectory(context, desired);
+  if (desired.kind !== "file") {
+    throw new InvalidObservedStateError({ resource: context.resource.id, kind: context.resource.kind, observedState: context.observed.state });
+  }
+  const observed = context.observed;
+  if (observed.state === "unverifiable") {
+    return [{ kind: "human-action", detail: {
+      kind: "human-action",
+      reason: `Cannot read append-local target: ${observed.reason}`,
+      instructions: `Inspect ${context.resource.target}. Restore valid UTF-8 text and the Canonfig Source markers before retrying.`,
+    } }];
+  }
+  if (observed.state === "absent") return [writeFile(context, desired.digest, false, desired.mode)];
+  if (observed.state !== "present" || observed.objectKind !== "regular"
+    || (observed.managedSourceDigest === undefined && context.applied?.policy === "append-local")) {
+    return [driftConflict(context, desired.digest, observedDigest(context) ?? sha256Hex("canonfig:invalid-text-target"))];
+  }
+  if (observed.managedSourceDigest === undefined && context.applied !== undefined) {
+    // The file was Canonfig's whole output under another policy. Unchanged,
+    // it holds no local text to keep; edited, it is ordinary Follower Drift.
+    return observedMatchesApplied(context)
+      ? [{ kind: "write-file", detail: { ...writeFile(context, desired.digest, false, desired.mode).detail, previousSourceDigest: context.applied.digest } }]
+      : [driftConflict(context, desired.digest, observedDigest(context) ?? sha256Hex("canonfig:invalid-text-target"))];
+  }
+  if (observed.managedSourceDigest === undefined) {
+    const draft = writeFile(context, desired.digest, false, desired.mode);
+    const current = observedDigest(context);
+    if (current !== undefined) {
+      return [{
+        kind: "write-file",
+        detail: {
+          ...draft.detail,
+          adoptionNotice: "First adoption preserves the entire existing file as local text. Matching Source bytes do not establish ownership. Inspect exact Source and retained local text before applying: canonfig sync --plan --review-local",
+          retainedLocalDigest: current,
+        },
+      }];
+    }
+    return [draft];
+  }
+  const sourceObserved = { ...observed, digest: observed.managedSourceDigest };
+  // Reuse the file permission and three-way drift rules with the owned payload.
+  return planReplaceIfUnmodified({ ...context, observed: sourceObserved });
+};
+
+/** The first segment of a tree-relative path: the top-level entry it belongs to. */
+const topLevelEntry = (path: string): string => path.split("/", 1)[0]!;
+
+/**
+ * The part of an observed directory that `append-local` gives Canonfig: the
+ * top-level entries it writes now or wrote before (a skill directory, a
+ * file), with everything beneath them. Every other top-level entry belongs
+ * to the machine, so it is neither compared, drift, nor removed.
+ */
+const appendLocalView = (
+  context: ResourcePlanningContext,
+  desired: Extract<DesiredResource, { readonly kind: "directory" | "skill" }>,
+): ResourcePlanningContext => {
+  const observed = context.observed;
+  if (observed.state !== "directory") return context;
+  const claimed = new Set(
+    [...desiredDirectoryEntries(desired), ...context.applied?.ownedFiles ?? []].map((entry) => topLevelEntry(entry.path)),
+  );
+  return { ...context, observed: { ...observed, files: observed.files.filter((file) => claimed.has(topLevelEntry(file.path))) } };
+};
+
+/**
+ * `append-local` on a directory such as the shared `~/.agents/skills/`: the
+ * three-way rule runs on Canonfig's entries only. An entry the machine holds
+ * under a name Canonfig would write but that the Applied Resource Record does
+ * not own (every name on first adoption, a newly published name later) is
+ * Follower Drift, even when its bytes equal the published ones: matching
+ * content does not prove Canonfig wrote it, and recording it as Canonfig's
+ * would let a later retirement or restore delete the machine's own copy.
+ */
+const planAppendLocalDirectory = (
+  context: ResourcePlanningContext,
+  desired: Extract<DesiredResource, { readonly kind: "directory" | "skill" }>,
+): ReadonlyArray<ResourceActionDraft> => {
+  const view = appendLocalView(context, desired);
+  const owned = new Set((context.applied?.ownedFiles ?? []).map((entry) => topLevelEntry(entry.path)));
+  const present = view.observed.state === "directory" ? presentObservedFiles(view.observed.files) : [];
+  const unowned = present.filter((file) => !owned.has(topLevelEntry(file.path)));
+  if (unowned.length > 0) {
+    return [driftConflict(view, directoryEntriesDigest(desiredDirectoryEntries(desired)), directoryEntriesDigest(unowned))];
+  }
+  return context.applied === undefined ? planReplace(view) : planReplaceIfUnmodified(view);
+};
+
 const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActionDraft> => {
   if (context.desired.kind !== "config") {
     const desiredDigest = desiredResourceDigest(context.desired);
@@ -599,11 +697,13 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
   // Keys Canonfig owned that this revision no longer declares. Merge is a
   // three-way operation: leaving them behind meant a key dropped from the
   // profile kept its old value forever and the plan read `no-op`, so only
-  // removing the whole resource ever removed a key.
+  // removing the whole resource ever removed a key. A released key that is
+  // not declared (a key claim) is given back as it is, never removed.
   const declaredKeys = context.desired.keys;
   const declared = new Set(declaredKeys);
+  const released = new Set(context.desired.releases ?? []);
   const dropped = sortedUnique(
-    (context.applied?.ownedKeys ?? []).filter((key) => !declared.has(key)),
+    (context.applied?.ownedKeys ?? []).filter((key) => !declared.has(key) && !released.has(key)),
   );
   // Changing ownership between an object and its children is not removal.
   // Pruning the old ancestor would also erase newly unowned sibling fields.
@@ -711,24 +811,40 @@ const planMirror = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
  * Applied Resource Record owns, so declaring a new key is not mistaken for a
  * local edit. Without a record, or with none of its keys left in the file,
  * there is nothing to protect and the keys are merged.
+ *
+ * A run that gives keys back untouched (`releases` outside `keys`, a key
+ * claim) cannot check the kept keys on their own: the record holds one
+ * digest over every key it owns, the given-back ones included, and those may
+ * already hold the machine's edit. Kept keys that already hold the desired
+ * values need no check (observed equals desired), as long as nothing owned is
+ * removed; anything else still needs the whole record unchanged.
  */
 const planConfigIfUnmodified = (
   context: ResourcePlanningContext,
   desired: Extract<DesiredResource, { readonly kind: "config" }>,
 ): ReadonlyArray<ResourceActionDraft> => {
   const observed = context.observed;
+  const applied = context.applied;
   if (
-    context.applied !== undefined
+    applied !== undefined
     && observed.state === "present"
     && (observed.objectKind === undefined || observed.objectKind === "regular")
     && observed.appliedKeysDigest !== undefined
-    && observed.appliedKeysDigest !== context.applied.digest
+    && observed.appliedKeysDigest !== applied.digest
   ) {
-    return [driftConflict(
-      context,
-      desired.digest,
-      Schema.decodeUnknownSync(ContentDigestSchema)(observed.digest),
-    )];
+    const declared = new Set(desired.keys);
+    const released = new Set(desired.releases ?? []);
+    const owned = applied.ownedKeys ?? [];
+    const onlyGivesBack = owned.some((key) => released.has(key) && !declared.has(key))
+      && owned.every((key) => declared.has(key) || released.has(key))
+      && observed.digest === desired.digest;
+    if (!onlyGivesBack) {
+      return [driftConflict(
+        context,
+        desired.digest,
+        Schema.decodeUnknownSync(ContentDigestSchema)(observed.digest),
+      )];
+    }
   }
   return planMerge(context);
 };
@@ -1111,6 +1227,18 @@ const planRemovedResource = (
   ) {
     return [];
   }
+  if (context.resource.policy === "append-local" && context.resource.kind === "file") {
+    const observed = context.observed;
+    const ownedContext = observed.state === "present" && observed.managedSourceDigest !== undefined
+      ? { ...context, observed: { ...observed, digest: observed.managedSourceDigest } }
+      : context;
+    if (observed.state !== "absent" && (observed.state !== "present"
+      || observed.managedSourceDigest === undefined || !observedMatchesApplied(ownedContext))) {
+      return [driftConflict(context, Schema.decodeUnknownSync(ContentDigestSchema)(applied.digest),
+        observedDigest(context) ?? sha256Hex("canonfig:invalid-text-target"))];
+    }
+    return [{ kind: "remove-resource", detail: { kind: "remove-resource", target: applied.target, paths: [], keys: [] } }];
+  }
   if (!observedMatchesApplied(context)) return [];
   switch (context.resource.kind) {
     case "file":
@@ -1160,10 +1288,20 @@ const planRemovedResource = (
       if (
         (context.resource.policy !== "mirror-owned"
           && context.resource.policy !== "replace"
-          && context.resource.policy !== "replace-if-unmodified")
+          && context.resource.policy !== "replace-if-unmodified"
+          && context.resource.policy !== "append-local")
         || applied.ownedFiles === undefined
       ) {
         return [];
+      }
+      // An entry the machine added inside one of Canonfig's top-level entries
+      // keeps that entry, as an edit of an owned file keeps the whole tree.
+      if (context.resource.policy === "append-local" && context.observed.state === "directory") {
+        const owned = new Set(applied.ownedFiles.map((file) => file.path));
+        const tops = new Set([...owned].map(topLevelEntry));
+        if (presentObservedFiles(context.observed.files).some((file) => tops.has(topLevelEntry(file.path)) && !owned.has(file.path))) {
+          return [];
+        }
       }
       return [{
         kind: "remove-resource",
@@ -1206,6 +1344,38 @@ const directoryMemberConflict = (context: ResourcePlanningContext): ResourceActi
   } };
 };
 
+/**
+ * A text file Canonfig last wrote under `append-local` that it now owns
+ * whole (append-local was turned off). The Source section must still be what
+ * Canonfig applied, and nothing may follow the closing marker: that text is
+ * the machine's, and Canonfig neither deletes it nor takes it over. When both
+ * hold, the file is rewritten as the plain payload, which drops the markers.
+ */
+const planLeaveAppendLocal = (
+  context: ResourcePlanningContext,
+  desired: Extract<DesiredResource, { readonly kind: "file" }>,
+): ReadonlyArray<ResourceActionDraft> => {
+  const observed = context.observed;
+  if (observed.state === "absent") return planReplace(context);
+  if (observed.state !== "present" || observed.managedSourceDigest === undefined) {
+    return [driftConflict(context, desired.digest, observedDigest(context) ?? sha256Hex("canonfig:invalid-text-target"))];
+  }
+  if (observed.managedSourceDigest !== context.applied?.digest) {
+    return [driftConflict(context, desired.digest, Schema.decodeUnknownSync(ContentDigestSchema)(observed.managedSourceDigest))];
+  }
+  if (observed.managedLocalText === true) {
+    return [{
+      kind: "human-action",
+      detail: {
+        kind: "human-action",
+        reason: `${context.resource.target} holds this machine's own text after the Canonfig section, and Canonfig no longer shares it (append-local is off)`,
+        instructions: `Move the text below the closing marker of ${context.resource.target} elsewhere (for instructions, into ~/.canonfig/local/AGENTS.md) or delete it, then run synchronization again. Canonfig has not changed the file.`,
+      },
+    }];
+  }
+  return [writeFile(context, desired.digest, desired.executable, desired.mode)];
+};
+
 /** Exhaustive Apply Policy dispatch. Transfer planning is intentionally absent. */
 export const planResource = (
   context: ResourcePlanningContext,
@@ -1214,6 +1384,10 @@ export const planResource = (
   if (rootConflict !== undefined) return [rootConflict];
   const memberConflict = directoryMemberConflict(context);
   if (memberConflict !== undefined) return [memberConflict];
+  if (context.desired.kind === "file" && context.applied?.policy === "append-local"
+    && context.resource.policy !== "append-local") {
+    return planLeaveAppendLocal(context, context.desired);
+  }
   switch (context.resource.policy) {
     case "replace":
       return planReplace(context);
@@ -1223,6 +1397,8 @@ export const planResource = (
       return planMerge(context);
     case "replace-if-unmodified":
       return planReplaceIfUnmodified(context);
+    case "append-local":
+      return planAppendLocal(context);
     case "ensure":
       return planEnsure(context);
     case "require-local":

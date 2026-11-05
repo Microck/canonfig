@@ -24,6 +24,7 @@ import {
   validateMachineProfile,
 } from "../domain/profile.ts";
 import { ConfigValue } from "../domain/resource.ts";
+import { sourceChunksIssue, sourceTextIssue } from "../domain/text-composition.ts";
 import {
   CanonicalFolderError,
   hookScript,
@@ -122,17 +123,25 @@ const fileItem = (id: string, path: string, executable: boolean): ProfileResourc
   verify: { method: "digest" },
 });
 
-/** The resource id of a hook script: `hooks/lib/run.sh` is `hook-scripts:lib:run.sh`. */
-const hookScriptId = (script: string, path: string): string => {
-  const id = `hook-scripts:${script.slice("hooks/".length).split("/").join(":")}`;
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(id)) {
+/**
+ * The resource id of a file item under `directory`, one segment per path
+ * segment: `hooks/lib/run.sh` is `hook-scripts:lib:run.sh`, `files/a/b` is
+ * `files:a:b`. Followers map the id back to exactly that path, so a segment
+ * may not hold `:` (it would split into two segments there) and may not be
+ * only dots (`mirrorItem` refuses those, and with them the whole revision).
+ */
+const pathItemId = (category: string, directory: string, file: string, path: string): string => {
+  const segments = file.slice(`${directory}/`.length).split("/");
+  if (segments.some((segment) => !/^[A-Za-z0-9._-]+$/u.test(segment) || /^\.+$/u.test(segment))) {
     throw new CanonicalFolderError({
       path,
-      message: `hook script ${script} needs a name of letters, digits, '.', '_' or '-'`,
+      message: `${file} needs path segments of letters, digits, '.', '_' or '-', none of them only dots`,
     });
   }
-  return id;
+  return `${category}:${segments.join(":")}`;
 };
+
+const hookScriptId = (script: string, path: string): string => pathItemId("hook-scripts", "hooks", script, path);
 
 /** `daily@HH:mm` or `weekly:Mon,Thu@HH:mm` as the schedule a revision suggests. */
 const scheduleDefaultOf = (calendar: string): ScheduleDefault => {
@@ -213,6 +222,43 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
     resources.push(fileItem(hookScriptId(script, configPath), script, executableIntent));
   }
 
+  // Authored resources: the definition is a JSON item, each file it reads a
+  // file item under files/. Like a hook script, a file goes wherever one of
+  // its resources goes, and a file no resource reads is refused.
+  const files = new Map((await listFolderFiles(folder, "files")).map((file) => [`files/${file.path}`, file.executable]));
+  const fileUsers = new Map<string, Array<string>>();
+  for (const resource of authored.resources) {
+    const used = resource.kind === "file"
+      ? [resource.source]
+      : resource.kind === "directory"
+      ? resource.files.map((file) => `${resource.source}/${file.path}`)
+      : [];
+    for (const path of used) fileUsers.set(path, [...fileUsers.get(path) ?? [], `resources:${resource.id}`]);
+    if (resource.kind === "file" && resource.policy === "append-local") {
+      const issue = await sourceChunksIssue(sourceChunks(resolve(folder, resource.source)));
+      if (issue !== undefined) throw refuse(`resources.${resource.id} cannot use append-local: ${issue}`);
+    }
+    resources.push(jsonItem(
+      `resources:${resource.id}`,
+      `resources.${resource.id}`,
+      asJson(config.resources![resource.id]),
+      [...new Set(used.map((path) => pathItemId("files", "files", path, configPath)))].sort(compareText),
+    ));
+  }
+  for (const [path, executable] of [...files].sort(([left], [right]) => compareText(left, right))) {
+    if (!fileUsers.has(path)) {
+      throw new CanonicalFolderError({
+        path: resolve(folder, path),
+        message: "is not read by any resource in canonfig.jsonc, so it would never reach a follower; reference it from a resource or remove it",
+      });
+    }
+    resources.push(fileItem(pathItemId("files", "files", path, configPath), path, executable));
+  }
+  if (authored.instructions !== undefined && config.local?.appendLocal?.includes("instructions") === true) {
+    const issue = sourceTextIssue(authored.instructions);
+    if (issue !== undefined) throw refuse(`AGENTS.md cannot be shared with followers' own text (local.appendLocal): ${issue}`);
+  }
+
   const tools = config.tools ?? {};
   for (const [name, server] of Object.entries(config.mcp ?? {})) {
     const requires = server.requires ?? [];
@@ -265,7 +311,8 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
   }
 
   // A grouped item reaches only followers in one of its groups. A script
-  // goes wherever one of the hooks running it goes.
+  // goes wherever one of the hooks running it goes, a file under files/
+  // wherever one of the resources reading it goes.
   const byId = new Map(resources.map((resource) => [resource.id, resource]));
   const groupsOf = new Map<string, Array<string>>();
   for (const [group, references] of Object.entries(config.groups ?? {})) {
@@ -275,9 +322,12 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
       groupsOf.set(id, [...new Set([...groupsOf.get(id) ?? [], group])].sort(compareText));
     }
   }
-  for (const [script, users] of scriptUsers) {
+  for (const [id, users] of [
+    ...[...scriptUsers].map(([script, users]) => [hookScriptId(script, configPath), users] as const),
+    ...[...fileUsers].map(([path, users]) => [pathItemId("files", "files", path, configPath), users] as const),
+  ]) {
     if (users.some((user) => !groupsOf.has(user))) continue;
-    groupsOf.set(hookScriptId(script, configPath), [...new Set(users.flatMap((user) => groupsOf.get(user)!))].sort(compareText));
+    groupsOf.set(id, [...new Set(users.flatMap((user) => groupsOf.get(user)!))].sort(compareText));
   }
   return normalizeMachineProfile({
     id: config.profile.id,
@@ -326,13 +376,20 @@ const resolveSourcePath = async (
   return path;
 };
 
-/** Hash a regular file by streaming it, so memory stays bounded by the stream buffer. */
-const digestSourceFile = async (path: string): Promise<{ readonly blob: string; readonly bytes: number }> => {
-  const hash = createHash("sha256");
-  let bytes = 0;
+/** A file's bytes as a stream, so memory stays bounded by the stream buffer. */
+async function* sourceChunks(path: string): AsyncGenerator<Buffer> {
   for await (const chunk of createReadStream(path)) {
     // Without an encoding, a file read stream yields Buffers.
     if (!Buffer.isBuffer(chunk)) throw new TypeError(`${path} read stream yielded text`);
+    yield chunk;
+  }
+}
+
+/** Hash a regular file by streaming it. */
+const digestSourceFile = async (path: string): Promise<{ readonly blob: string; readonly bytes: number }> => {
+  const hash = createHash("sha256");
+  let bytes = 0;
+  for await (const chunk of sourceChunks(path)) {
     hash.update(chunk);
     bytes += chunk.byteLength;
   }
