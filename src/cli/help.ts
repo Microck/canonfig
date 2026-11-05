@@ -132,6 +132,27 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     ],
   },
   {
+    title: "Export and import",
+    areas: ["export", "import"],
+    usage: [
+      "export [--output <file.tar.gz>] [--include-harnesses] [--force]",
+      "import <file.tar.gz> [--dry-run] [--replace]",
+    ],
+    notes: [
+      "export writes ~/.canonfig/canonfig.jsonc, AGENTS.md, rules/, skills/, agents/,",
+      "commands/, hooks/ and local/ to a private .tar.gz with a manifest.json of every file's",
+      "size, SHA-256 and mode. State, backups, the hook runtime, logs and credentials stay out,",
+      "and a literal credential in canonfig.jsonc or local.jsonc refuses the export.",
+      "--include-harnesses adds the harness files Canonfig manages here, under harnesses/, only",
+      "where they still hold what Canonfig wrote; shared files contribute their owned keys.",
+      "The output must be inside your home directory; --force replaces an existing file.",
+      "import verifies every checksum, then writes the folder entries as a journaled run. It",
+      "refuses an enrolled follower, and a folder that holds entries unless --replace.",
+      "Harness files are verified, never written: sync projects the imported folder.",
+      "--dry-run verifies and prints the plan without writing.",
+    ],
+  },
+  {
     title: "Harnesses",
     areas: ["harnesses"],
     usage: [

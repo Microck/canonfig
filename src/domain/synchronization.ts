@@ -669,11 +669,12 @@ const DesiredFileSchema = Schema.Struct({
 
 /**
  * The stored form of a revision this machine built: a local projection
- * (`folder`, `snapshot`) or a follower run built from a Source revision
- * (`revision`), which also mirrors items and installs tools.
+ * (`folder`, `snapshot`), an import of an export archive (`archive`), or a
+ * follower run built from a Source revision (`revision`), which also mirrors
+ * items and installs tools.
  */
 export const PlanningLocalRevisionSchema = Schema.Struct({
-  origin: Schema.Literals(["folder", "snapshot", "revision"]),
+  origin: Schema.Literals(["folder", "snapshot", "archive", "revision"]),
   id: ProfileRevisionId,
   originDigest: ContentDigest,
   resources: Schema.Array(PublishedResourceSchema),

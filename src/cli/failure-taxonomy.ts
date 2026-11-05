@@ -453,6 +453,19 @@ export const failureTaxonomy = {
     "usage-or-configuration",
     (error) => `takeover snapshot ${text(error.snapshot)} does not exist`,
   ),
+  // `canonfig export` and `canonfig import`; each message ends with the fix.
+  ArchiveRequestError: describe(
+    "usage-or-configuration",
+    (error) => `${text(error.path)} ${error.message}; nothing was written`,
+  ),
+  ArchiveConflictError: describe(
+    "conflict-or-drift",
+    (error) => `${text(error.path)} ${error.message}; nothing was written`,
+  ),
+  ArchiveIntegrityError: describe(
+    "verification-or-apply-failure",
+    (error) => `${text(error.path)} ${error.message}; nothing was imported`,
+  ),
   FollowerSynchronizationConfigurationError: declared(
     "usage-or-configuration",
     (error) =>

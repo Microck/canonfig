@@ -9,7 +9,7 @@ import {
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { Effect, Layer, Option, Redacted, Schema } from "effect";
 
@@ -95,10 +95,12 @@ import {
   abandonLocal,
   harnessesLocal,
   hasOpenLocalRun,
+  importLocal,
   recoverLocal,
   restoreLocal,
   synchronizeLocal,
 } from "../projection/sync.ts";
+import { exportFolder } from "../projection/archive.ts";
 import { authoredEntries } from "../projection/folder.ts";
 import {
   FollowerCommands,
@@ -1255,6 +1257,24 @@ const followerCommandsLayer = (
           ),
           Effect.flatMap(outcomePayload),
         ),
+      exportArchive: (input) =>
+        mapFailure(exportFolder({
+          folder: dirname(statePath),
+          output: input.output,
+          cwd: process.cwd(),
+          includeHarnesses: input.includeHarnesses,
+          force: input.force,
+          now: new Date(),
+        }).pipe(
+          Effect.provideService(StateRepository, repository),
+          Effect.provideService(MachineState, machine),
+        )).pipe(Effect.map(payload)),
+      importArchive: (input) =>
+        mapFailure(importLocal(statePath, resolve(input.archive), input.dryRun ? "plan" : "apply", input.replace).pipe(
+          Effect.provideService(StateRepository, repository),
+          Effect.provideService(MachineState, machine),
+          Effect.provideService(Synchronization, synchronization),
+        )).pipe(Effect.flatMap(outcomePayload)),
       harnesses: (input) =>
         mapFailure(harnessesLocal(statePath, (name) => process.env[name], input.change).pipe(
           Effect.provideService(StateRepository, repository),

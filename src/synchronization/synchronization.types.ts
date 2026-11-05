@@ -143,14 +143,15 @@ export interface PlanningProfileRevision extends ProfileRevision {
 /**
  * A revision Canonfig built on this machine. No Source signed it. `origin`
  * says what it was built from: the Canonical Folder (`sync` on the Source or
- * an unenrolled machine), a takeover snapshot (`restore`), or a Source
+ * an unenrolled machine), a takeover snapshot (`restore`), an export archive
+ * (`import`, whose `originDigest` is the archive manifest's), or a Source
  * revision a follower mirrors and projects (`revision`); `originDigest`
  * identifies that content. It is stored in `local_revisions`, never served,
  * and holds no file content: a run's content is kept beside the run until it
  * completes.
  */
 export interface PlanningLocalRevision {
-  readonly origin: "folder" | "snapshot" | "revision";
+  readonly origin: "folder" | "snapshot" | "archive" | "revision";
   readonly id: ProfileRevisionId;
   readonly originDigest: ContentDigest;
   readonly resources: ReadonlyArray<PublishedResource>;

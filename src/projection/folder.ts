@@ -699,18 +699,22 @@ export const readFolderConfig = (folder: string): Promise<FolderConfig | undefin
 /** Decode `canonfig.jsonc` text, for a caller that edits the file and checks the result. */
 export const decodeFolderConfig = (path: string, text: string): FolderConfig => decodeJsonc(path, text, CanonfigJsonc);
 
+/** `local/local.jsonc` as authored, or undefined when it does not exist. */
+export const readLocalConfig = (folder: string): Promise<typeof LocalJsonc.Type | undefined> =>
+  readJsonc(diskSource(folder), join(folder, "local", "local.jsonc"), LocalJsonc);
+
 /** Every regular file under one of the folder's directories, relative to it, `/`-separated, unread. */
 export const listFolderFiles = (folder: string, directory: string): Promise<ReadonlyArray<ListedFile>> =>
   listFiles(diskSource(folder), join(folder, directory));
 
 /** The authoring allowlist: the only top-level entries of `~/.canonfig/` that are published or mirrored. */
-const AUTHORING_ENTRIES = ["canonfig.jsonc", "AGENTS.md", "rules", "skills", "agents", "commands", "hooks"] as const;
+export const AUTHORING_ENTRIES = ["canonfig.jsonc", "AGENTS.md", "rules", "skills", "agents", "commands", "hooks"] as const;
 
 /**
  * Whether a path holds something: any file, and any directory with something
  * in it. Nothing beneath it is read or checked.
  */
-const holdsEntries = async (path: string): Promise<boolean> => {
+export const holdsEntries = async (path: string): Promise<boolean> => {
   try {
     const stat = await lstat(path);
     return !stat.isDirectory() || (await readdir(path)).length > 0;

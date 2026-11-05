@@ -33,6 +33,7 @@ import {
   takeoverSummary,
   type FolderPlan,
 } from "./plan.ts";
+import { ArchiveRequestError, machineIdentity, planImport } from "./archive.ts";
 import {
   deleteSnapshot,
   dropSnapshotEntries,
@@ -43,10 +44,10 @@ import {
 } from "./takeover.ts";
 
 /**
- * Projection runs: `canonfig sync`, `recover`, `abandon` and `restore`. On
- * the Source or an unenrolled machine they project the local folder and
- * belong to the local projection follower; a follower's sync runs the same
- * way under its own identity. Every run goes through the shared
+ * Projection runs: `canonfig sync`, `recover`, `abandon`, `restore` and
+ * `import`. On the Source or an unenrolled machine they project the local
+ * folder and belong to the local projection follower; a follower's sync runs
+ * the same way under its own identity. Every run goes through the shared
  * Synchronization run, journal, rollback and recovery.
  */
 
@@ -423,6 +424,71 @@ export const restoreLocal = Effect.fn("LocalProjection.restore")(function*(
     outcome,
   };
 }, (effect, statePath) => withRunLock(statePath, "restore", effect));
+
+/**
+ * `canonfig import <archive> [--dry-run] [--replace]`: verify an export and
+ * write its folder entries into `~/.canonfig/` as one journaled run, so a
+ * failure rolls back and an interruption is recoverable like a sync. An
+ * enrolled follower is refused before the archive is read: its folder is the
+ * Source's mirror, and a sync would overwrite whatever an import wrote.
+ * Harness files in the archive are verified and reported, never written.
+ */
+export const importLocal = Effect.fn("LocalProjection.import")(function*(
+  statePath: string,
+  archive: string,
+  mode: "plan" | "apply",
+  replace: boolean,
+) {
+  const repository = yield* StateRepository;
+  const synchronization = yield* Synchronization;
+  const identity = yield* machineIdentity;
+  if (identity.role === "follower") {
+    return yield* new ArchiveRequestError({
+      path: folderOf(statePath),
+      message: "is an enrolled Follower Machine's mirror of the Source, so an import cannot write it. Import on the Source or on a machine that is not enrolled, or run 'canonfig follower unenroll' first",
+    });
+  }
+  if (mode === "apply") yield* assertUpgradeGate(localProjectionFollower);
+  const planned = yield* planImport({
+    folder: folderOf(statePath),
+    archive,
+    replace,
+    appliedResources: yield* repository.loadAppliedResources(localProjectionFollower),
+  });
+  const harnesses = [...new Set(planned.archive.harnessFiles.map((file) => file.harness!))].sort();
+  const base = {
+    archive,
+    sha256: planned.archive.archiveSha256,
+    manifestSha256: planned.archive.manifestSha256,
+    exported: planned.archive.manifest,
+    folderFiles: planned.archive.folderFiles.length,
+    replaced: planned.replaced,
+    kept: planned.kept.length === 0 ? undefined : planned.kept,
+    harnessFiles: harnesses.length === 0 ? undefined : {
+      verified: planned.archive.harnessFiles.length,
+      harnesses,
+      note: "harness files are not written by import; run 'canonfig sync --plan' to project the imported folder, which takes each harness over with a snapshot",
+    },
+    plan: planned.plan,
+  };
+  if (mode === "plan") {
+    return { ...base, next: "nothing was written; run the same command without --dry-run to import", outcome: undefined };
+  }
+  const run = newRunId();
+  const outcome = yield* Effect.gen(function*() {
+    yield* repository.recordLocalRevision(planned.revision, new Date().toISOString());
+    yield* storeArtifacts(run, planned.artifacts);
+    return yield* synchronization.run({
+      id: run,
+      plan: planned.plan,
+      revision: planned.revision,
+      appliedResources: planned.appliedResources,
+      artifacts: planned.artifacts,
+    });
+  }).pipe(Effect.tapError(() => discardRunArtifacts(run).pipe(Effect.ignore)));
+  yield* finishProjectionRun(statePath, localProjectionFollower, run, outcome, planned.revision);
+  return { ...base, outcome };
+}, (effect, statePath, _archive, mode) => mode === "plan" ? effect : withRunLock(statePath, "import", effect));
 
 export interface HarnessExclusionChange {
   readonly action: "include" | "exclude";

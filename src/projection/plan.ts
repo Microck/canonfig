@@ -362,7 +362,7 @@ export const fileResource = (
   };
 };
 
-const directoryResource = (
+export const directoryResource = (
   id: ResourceIdType,
   target: string,
   policy: ApplyPolicy,
