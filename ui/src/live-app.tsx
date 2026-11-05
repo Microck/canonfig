@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowsClockwise, Desktop } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { GuiRequestError, httpBackend, type WorkspaceBackend, type GuiSession, type GuiStatus } from "./gui-client";
 import { ErrorNotice, overviewPath, sessionScreens } from "./live/session";
 import { profileScreens } from "./live/profile";
@@ -69,6 +70,7 @@ export default function LiveApp({ backend = httpBackend }: { backend?: Workspace
   const busy = state.kind === "loading";
 
   return (
+    <TooltipProvider delayDuration={250}>
     <div className="dark min-h-svh bg-canvas text-foreground md:grid md:grid-cols-[244px_minmax(0,1fr)]">
       <aside className="border-b border-border px-4 py-3 md:border-0 md:py-5">
         <div className="flex items-center gap-2 font-semibold"><Desktop className="size-4" /><span>canonfig</span></div>
@@ -104,5 +106,6 @@ export default function LiveApp({ backend = httpBackend }: { backend?: Workspace
         </div>
       </main>
     </div>
+    </TooltipProvider>
   );
 }
