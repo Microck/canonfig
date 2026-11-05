@@ -331,6 +331,10 @@ export const failureTaxonomy = {
     (error) =>
       `resource ${text(error.resource)} was published as ${text(error.publishedKind)} but is now declared ${text(error.desiredKind)}`,
   ),
+  PlannerTextCompositionError: describe(
+    "usage-or-configuration",
+    (error) => `resource ${text(error.resource)} cannot use append-local: ${text(error.reason)}. Correct canonfig.jsonc on the Source and publish again.`,
+  ),
   PlannerVerificationContentMismatchError: describe(
     "usage-or-configuration",
     (error) =>
