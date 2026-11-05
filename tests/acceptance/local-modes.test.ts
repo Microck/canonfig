@@ -473,8 +473,40 @@ describe("what a follower keeps of its own", () => {
     expect(read(mine)).toBe(published);
     // Nothing claims the machine's copy, so a second run stops the same way.
     expect(own.run(["sync", "--apply"]).status).toBe(4);
-    own.run(["restore"]);
+    // Every run stopped before takeover, so there is no snapshot to restore.
+    const restored = own.run(["restore"]);
+    expect(restored.status, restored.output).toBe(2);
+    expect(restored.output).toContain("there are no takeover snapshots");
     expect(read(mine)).toBe(published);
+  }, 120_000);
+
+  it("does not adopt a machine's skill that equals one published after the first sync, and keeps it through retirement", () => {
+    const review = skill("review", "Review first.");
+    const own = ownFolder("later-skill", ["codex"], {
+      local: { appendLocal: ["skills"] },
+    }, { "AGENTS.md": "# Rules\n", "skills/deploy/SKILL.md": skill("deploy", "Deploy carefully.") });
+    const skills = join(own.home, ".agents", "skills");
+    expect(succeed(own.run(["sync", "--apply"]), "first").data).toMatchObject({ outcome: { outcome: "Converged" } });
+
+    // The machine writes its own `review` skill, with the modes Canonfig gives
+    // its skills; the folder then adds one with the same name and bytes.
+    // Canonfig owns `deploy/` only.
+    const mine = join(skills, "review", "SKILL.md");
+    write(mine, review);
+    chmodSync(dirname(mine), statSync(join(skills, "deploy")).mode & 0o7777);
+    chmodSync(mine, statSync(join(skills, "deploy", "SKILL.md")).mode & 0o7777);
+    write(join(own.folder, "skills", "review", "SKILL.md"), review);
+    const stopped = own.run(["sync", "--apply"]);
+    expect(stopped.status, stopped.output).toBe(4);
+    expect(stopped.output).toContain("FollowerDrift");
+    // Nothing recorded the machine's copy as Canonfig's, so a second run stops the same way.
+    expect(own.run(["sync", "--apply"]).status).toBe(4);
+
+    // Dropping every skill retires Canonfig's `deploy/` and leaves the machine's `review/`.
+    rmSync(join(own.folder, "skills"), { recursive: true });
+    succeed(own.run(["sync", "--apply"]), "retiring");
+    expect(existsSync(join(skills, "deploy"))).toBe(false);
+    expect(read(mine)).toBe(review);
   }, 120_000);
 
   it("reports a file the machine adds inside a Canonfig-owned append-local skill as drift, and keeps it", () => {

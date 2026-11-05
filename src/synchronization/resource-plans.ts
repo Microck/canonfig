@@ -637,24 +637,25 @@ const appendLocalView = (
 
 /**
  * `append-local` on a directory such as the shared `~/.agents/skills/`: the
- * three-way rule runs on Canonfig's entries only. On first adoption (no
- * Applied Resource Record) any entry the machine already holds under a name
- * Canonfig would write is Follower Drift, even when its bytes equal the
- * published ones: matching content does not prove Canonfig wrote it, and
- * recording it as Canonfig's would let a later retirement or restore delete
- * the machine's own copy.
+ * three-way rule runs on Canonfig's entries only. An entry the machine holds
+ * under a name Canonfig would write but that the Applied Resource Record does
+ * not own (every name on first adoption, a newly published name later) is
+ * Follower Drift, even when its bytes equal the published ones: matching
+ * content does not prove Canonfig wrote it, and recording it as Canonfig's
+ * would let a later retirement or restore delete the machine's own copy.
  */
 const planAppendLocalDirectory = (
   context: ResourcePlanningContext,
   desired: Extract<DesiredResource, { readonly kind: "directory" | "skill" }>,
 ): ReadonlyArray<ResourceActionDraft> => {
   const view = appendLocalView(context, desired);
-  if (context.applied !== undefined) return planReplaceIfUnmodified(view);
+  const owned = new Set((context.applied?.ownedFiles ?? []).map((entry) => topLevelEntry(entry.path)));
   const present = view.observed.state === "directory" ? presentObservedFiles(view.observed.files) : [];
-  if (present.length > 0) {
-    return [driftConflict(view, directoryEntriesDigest(desiredDirectoryEntries(desired)), directoryEntriesDigest(present))];
+  const unowned = present.filter((file) => !owned.has(topLevelEntry(file.path)));
+  if (unowned.length > 0) {
+    return [driftConflict(view, directoryEntriesDigest(desiredDirectoryEntries(desired)), directoryEntriesDigest(unowned))];
   }
-  return planReplace(view);
+  return context.applied === undefined ? planReplace(view) : planReplaceIfUnmodified(view);
 };
 
 const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActionDraft> => {

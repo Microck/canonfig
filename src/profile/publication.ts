@@ -1,7 +1,7 @@
 import { assertProfileMetadataBudget } from "./metadata-budget.ts";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, posix, relative, resolve, sep, win32 } from "node:path";
 
 import { Effect, Schema } from "effect";
@@ -24,7 +24,7 @@ import {
   validateMachineProfile,
 } from "../domain/profile.ts";
 import { ConfigValue } from "../domain/resource.ts";
-import { sourceBytesIssue, sourceTextIssue } from "../domain/text-composition.ts";
+import { sourceChunksIssue, sourceTextIssue } from "../domain/text-composition.ts";
 import {
   CanonicalFolderError,
   hookScript,
@@ -235,7 +235,7 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
       : [];
     for (const path of used) fileUsers.set(path, [...fileUsers.get(path) ?? [], `resources:${resource.id}`]);
     if (resource.kind === "file" && resource.policy === "append-local") {
-      const issue = sourceBytesIssue(await readFile(resolve(folder, resource.source)));
+      const issue = await sourceChunksIssue(sourceChunks(resolve(folder, resource.source)));
       if (issue !== undefined) throw refuse(`resources.${resource.id} cannot use append-local: ${issue}`);
     }
     resources.push(jsonItem(
@@ -376,13 +376,20 @@ const resolveSourcePath = async (
   return path;
 };
 
-/** Hash a regular file by streaming it, so memory stays bounded by the stream buffer. */
-const digestSourceFile = async (path: string): Promise<{ readonly blob: string; readonly bytes: number }> => {
-  const hash = createHash("sha256");
-  let bytes = 0;
+/** A file's bytes as a stream, so memory stays bounded by the stream buffer. */
+async function* sourceChunks(path: string): AsyncGenerator<Buffer> {
   for await (const chunk of createReadStream(path)) {
     // Without an encoding, a file read stream yields Buffers.
     if (!Buffer.isBuffer(chunk)) throw new TypeError(`${path} read stream yielded text`);
+    yield chunk;
+  }
+}
+
+/** Hash a regular file by streaming it. */
+const digestSourceFile = async (path: string): Promise<{ readonly blob: string; readonly bytes: number }> => {
+  const hash = createHash("sha256");
+  let bytes = 0;
+  for await (const chunk of sourceChunks(path)) {
     hash.update(chunk);
     bytes += chunk.byteLength;
   }

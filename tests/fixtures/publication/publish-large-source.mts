@@ -2,7 +2,8 @@
 // real catalog and repository in one process, and reports the peak RSS each
 // run adds over the RSS before it. Run by tests/publication.test.ts with the
 // root holding the folders warm/, medium/ and large/, each with one skill of
-// the same name whose data.bin is the large file.
+// the same name whose data.bin is the large file, and an append-local file
+// resource whose files/notes.md is as large.
 import { generateKeyPairSync, sign } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
