@@ -2,7 +2,11 @@ import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { Cause, Effect, Layer } from "effect";
 import { StateRepository } from "../state/state-repository.service.ts";
-import { EarlierStateFormatError, type RepositorySqlError } from "../state/state-repository.errors.ts";
+import {
+  EarlierStateFormatError,
+  EarlierStateUpgradeError,
+  type RepositorySqlError,
+} from "../state/state-repository.errors.ts";
 import { stateRepositoryLayer } from "../state/state-repository.layer.ts";
 import { StateInitializationError } from "./state-initialization.errors.ts";
 
@@ -22,12 +26,20 @@ export const runtimeStateLayer = (filename: string) => Layer.unwrap(
       if (error instanceof EarlierStateFormatError) {
         return Layer.effect(StateRepository, Effect.fail(new StateInitializationError({
           path: filename,
-          message: `Canonfig state at ${filename} was created by an earlier Canonfig version, and this version cannot read it. Reinitialize this machine: move ${filename} aside, then run 'canonfig setup plan' (or enroll the follower again with a new invitation).`,
+          message: error.origin === "before-state-format-4"
+            ? `Canonfig state at ${filename} was created by a release before 4.0.0, which this version cannot upgrade directly. Run any command once with Canonfig 5.0.1 (for example \`npx @microck/canonfig@5.0.1 status\`) so it brings the state up to date, then run this version again.`
+            : `Canonfig state at ${filename} has a schema history this version does not know (${error.migrations.join(", ")}), most likely from a newer release. Run the release that wrote it, or move ${filename} aside and set this machine up again.`,
+        })));
+      }
+      if (error instanceof EarlierStateUpgradeError) {
+        return Layer.effect(StateRepository, Effect.fail(new StateInitializationError({
+          path: filename,
+          message: `Canonfig cannot carry the state at ${filename} forward from 5.0.1: ${error.item}: ${error.reason}. ${error.recovery}`,
         })));
       }
       const message = error instanceof Error ? error.message : "";
       const busy = /database (?:is |table is )?locked|SQLITE_(?:BUSY|LOCKED)/iu.test(message);
-      const failure: Effect.Effect<never, StateInitializationError | RepositorySqlError | EarlierStateFormatError> =
+      const failure: Effect.Effect<never, StateInitializationError | RepositorySqlError | EarlierStateFormatError | EarlierStateUpgradeError> =
         busy || /file is not a database|unable to open database|database disk image is malformed|database or disk is full|readonly database|SQLITE_(?:CANTOPEN|NOTADB|CORRUPT|READONLY|FULL)/iu.test(message)
           ? Effect.fail(unavailable(filename, busy))
           : Effect.failCause(cause);

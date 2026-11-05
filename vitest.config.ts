@@ -23,6 +23,7 @@ export default defineProject({
       "tests/publication.test.ts",
       "tests/setup-controller.test.ts",
       "tests/state-repository.test.ts",
+      "tests/earlier-state.test.ts",
       "tests/machine-state-linux.test.ts",
       "tests/machine-state-macos.test.ts",
       "tests/machine-state-windows.test.ts",
