@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
+import { SkulletProvider } from "skullet/react";
+import type { SkulletTheme } from "skullet";
 import { ArrowsClockwise, Desktop } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { GuiRequestError, httpBackend, type WorkspaceBackend, type GuiSession, type GuiStatus } from "./gui-client";
 import { ErrorNotice, overviewPath, sessionScreens } from "./live/session";
@@ -17,6 +20,11 @@ const screens = [
   ...synchronizationScreens,
   ...administrationScreens,
 ];
+
+const SKELETON_THEME: SkulletTheme = {
+  dark: { base: "var(--muted)", highlight: "color-mix(in oklab, var(--foreground) 7%, transparent)" },
+  radius: "var(--radius-sm)",
+};
 
 type OverviewState =
   | { kind: "loading"; session?: GuiSession }
@@ -70,6 +78,7 @@ export default function LiveApp({ backend = httpBackend }: { backend?: Workspace
   const busy = state.kind === "loading";
 
   return (
+    <SkulletProvider mode="dark" theme={SKELETON_THEME}>
     <TooltipProvider delayDuration={250}>
     <div className="dark min-h-svh bg-canvas text-foreground md:grid md:grid-cols-[244px_minmax(0,1fr)]">
       <aside className="border-b border-border px-4 py-3 md:border-0 md:py-5">
@@ -106,6 +115,13 @@ export default function LiveApp({ backend = httpBackend }: { backend?: Workspace
         </div>
       </main>
     </div>
+    <Toaster
+      theme="dark"
+      position="bottom-right"
+      offset={{ right: 8, bottom: "calc(8px + var(--toast-lift, 0px))" }}
+      mobileOffset={{ bottom: "calc(8px + var(--toast-lift, 0px))" }}
+    />
     </TooltipProvider>
+    </SkulletProvider>
   );
 }
