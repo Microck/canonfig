@@ -5,7 +5,7 @@ import { CaretDown } from "@/components/icons";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { HARNESS_NAMES, DEMO, SURFACE_CATEGORIES, SURFACE_NAMES, SURFACE_SUPPORT, type Harness, type HarnessId, type Snapshot, type SurfaceCategory } from "@/shared/data";
+import { HARNESS_NAMES, DEMO, SURFACE_CATEGORIES, SURFACE_NAMES, SURFACE_SUPPORT, type Harness, type HarnessId, type Snapshot, type SurfaceCategory } from "@/shared/metadata";
 import { Mono, StatusMark, Term, type StatusKind } from "@/shared/shared";
 import { useWorkspace } from "./store";
 import { AnimatedRow, Body, EmptyState, ListHead, ListRow, PageHeader, RowPresence } from "./kit";
@@ -143,6 +143,7 @@ export function HarnessTable({ edit, onToggle }: { edit?: "listed" | "managed"; 
                 <Checkbox
                   id={id}
                   checked={checked}
+                  disabled={edit === "listed" ? !ws.capabilities.profileWrite : !ws.capabilities.followerWrite}
                   aria-label={edit === "listed" ? `List ${h.name}` : `Manage ${h.name} on this machine`}
                   onCheckedChange={(c) => onToggle?.(h.id, !!c)}
                 />
@@ -152,7 +153,7 @@ export function HarnessTable({ edit, onToggle }: { edit?: "listed" | "managed"; 
               <Mono className="truncate text-faint">{h.id}</Mono>
             </span>
             {/* Only a listed harness gets anything, so an unlisted row has no choice to make. */}
-            {edit === "listed" && (h.listed ? <SurfacesMenu harness={h} /> : <span className="text-sm text-faint">Not listed</span>)}
+            {edit === "listed" && (h.listed ? ws.capabilities.profileWrite ? <SurfacesMenu harness={h} /> : <span className="text-sm text-faint">Read only</span> : <span className="text-sm text-faint">Not listed</span>)}
             <span className="flex min-w-0 items-center gap-1.5 text-sm text-muted-foreground" title={status.hint}>
               <StatusMark kind={status.kind} />
               <span className="truncate">{status.label}</span>
@@ -180,7 +181,7 @@ export function BackupsView() {
   const [restoring, setRestoring] = useState<Snapshot | null>(null);
   const cols = "minmax(220px,280px) minmax(160px,1fr) 64px 120px";
   const colsMin = 220 + 160 + 64 + 120 + 3 * 12 + 20;
-  const recent = ws.snapshots.filter((s) => !s.first).length;
+  const recent = ws.snapshots.filter((s) => s.first === false).length;
   // Newest first, the way people look for the one to restore.
   const shown = [...ws.snapshots].reverse();
   return (
@@ -192,7 +193,7 @@ export function BackupsView() {
           snapshot, from before it ever wrote, and the {RECENT_KEPT} most recent; a new one replaces the oldest of those {RECENT_KEPT}. Canonfig calls each one a{" "}
           <Term term="Takeover Snapshot">takeover snapshot</Term>. Snapshots never leave this machine.
         </p>
-        {!ws.backups && (
+        {ws.backups === false && (
           <p className="flex items-center gap-2 border-b border-border px-[18px] py-3 text-sm text-pretty text-warn">
             <StatusMark kind="warn" />
             Backups are off on this machine: local/local.jsonc sets "backups": false, so Canonfig takes over a new harness without a snapshot.
@@ -210,7 +211,7 @@ export function BackupsView() {
             </ListHead>
             <RowPresence>
               {shown.map((s) => {
-                const done = s.harnesses.every((h) => ws.excluded.includes(h));
+                const done = ws.capabilities.simulatedTelemetry && s.harnesses.length > 0 && s.harnesses.every((h) => ws.excluded.includes(h));
                 return (
                   <AnimatedRow key={s.id}>
                     <ListRow cols={cols} minWidth={colsMin} data-tour="backups-list">
@@ -223,9 +224,9 @@ export function BackupsView() {
                         )}
                       </span>
                       <span className="truncate text-sm text-muted-foreground" title={s.harnesses.join(", ")}>
-                        {namesOf(s.harnesses)}
+                        {s.harnesses.length > 0 ? namesOf(s.harnesses) : "Not reported"}
                       </span>
-                      <span className="text-sm text-muted-foreground tabular-nums">{s.files}</span>
+                      <span className="text-sm text-muted-foreground tabular-nums">{s.files ?? "Not reported"}</span>
                       <span className="flex justify-end">
                         <Button variant="outline" size="xs" disabled={done} title={done ? "Its harnesses are already excluded on this machine." : undefined} onClick={() => setRestoring(s)}>
                           {done ? "Restored" : "Restore…"}
@@ -237,7 +238,7 @@ export function BackupsView() {
               })}
             </RowPresence>
             <p className="px-[18px] py-3 text-sm text-pretty text-faint">
-              {recent} of {RECENT_KEPT} recent {recent === 1 ? "snapshot" : "snapshots"} kept. For files a harness shares with its own state, like{" "}
+              {ws.snapshots.every((snapshot) => snapshot.first !== undefined) && <>{recent} of {RECENT_KEPT} recent {recent === 1 ? "snapshot" : "snapshots"} kept. </>}For files a harness shares with its own state, like{" "}
               <Mono>~/.claude.json</Mono>, a snapshot holds only the keys Canonfig owns, so sign-in data never enters a backup.
             </p>
           </>
@@ -246,13 +247,11 @@ export function BackupsView() {
       <ConfirmDialog
         open={restoring !== null}
         onOpenChange={(open) => !open && setRestoring(null)}
-        title={restoring ? `Restore ${namesOf(restoring.harnesses)}?` : ""}
+        title={restoring ? `Restore ${restoring.harnesses.length > 0 ? namesOf(restoring.harnesses) : restoring.id}?` : ""}
         body={
           restoring && (
             <>
-              Canonfig writes snapshot <Mono className="text-foreground">{restoring.id}</Mono> back as a recorded update, removing files it added where the harness had none, and excludes{" "}
-              {namesOf(restoring.harnesses)} on this machine in <Mono className="text-foreground">~/.canonfig/local/local.jsonc</Mono>, so the next sync leaves{" "}
-              {restoring.harnesses.length === 1 ? "it" : "them"} alone. It refuses a file that changed since Canonfig last wrote it and changes nothing.
+              Canonfig restores snapshot <Mono className="text-foreground">{restoring.id}</Mono> and excludes its restored harnesses from future synchronization. It refuses files that changed since Canonfig last wrote them.
               {DEMO && " This demo changes no files."}
             </>
           )

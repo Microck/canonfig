@@ -2,11 +2,12 @@ import { useLayoutEffect, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import "@/index.css";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { MachineMap } from "@/shared/machine-map/machine-map";
-import type { Follower, FollowerState } from "@/shared/data";
+import { MachineMap } from "@/shared/machine-map/map-view";
+import { machine, type Follower, type FollowerState } from "@/shared/data";
 import { SourceOverview } from "@/workspace/source";
 import { MachinesView } from "@/workspace/machines";
-import { WorkspaceProvider, useWorkspace } from "@/workspace/store";
+import { useWorkspace } from "@/workspace/store";
+import { SimulatedWorkspaceProvider } from "@/workspace/simulated-store";
 import { parseRoute, type Navigate } from "@/workspace/routes";
 
 const states: FollowerState[] = ["converged", "drift", "human-action", "failed", "offline", "never-synced"];
@@ -101,7 +102,7 @@ function FixtureWorkspace({ rows }: { rows: Follower[] }) {
   const route = parseRoute(href);
   const navigate: Navigate = (next) => setHref(next);
   if (route.kind !== "workspace") throw new Error(`Invalid fixture route: ${href}`);
-  return <WorkspaceProvider route={route} navigate={navigate}><FixtureViews rows={rows} /></WorkspaceProvider>;
+  return <SimulatedWorkspaceProvider route={route} navigate={navigate}><FixtureViews rows={rows} /></SimulatedWorkspaceProvider>;
 }
 
 // Populate each real provider before mounting its views. No app module or saved state is patched.
@@ -132,8 +133,8 @@ function App() {
       <p>Repeated instances provide a second visible reproduction without reloading. Browser zoom, focus, hover and motion changes remain manual checks.</p>
     </header>
     <h1>Run 1: MachineMap</h1>
-    {maps.map(s => <Frame key={s.id} scenario={s}><div style={{ height: 460 }}><MachineMap role={s.role ?? "source"} followers={s.followers} latestRevision={8} selfId={s.followers[0]?.id} publishing={s.active} syncing={s.active ? s.followers.slice(0, 2).map(f => f.id) : []} /></div></Frame>)}
-    {maps.filter(s => ["MT", "M40", "M320", "MS", "MF"].includes(s.id)).map(s => <Frame key={`${s.id}-repeat`} scenario={s} suffix="-repeat"><div style={{ height: 460 }}><MachineMap role={s.role ?? "source"} followers={s.followers} latestRevision={8} selfId={s.followers[0]?.id} /></div></Frame>)}
+    {maps.map(s => <Frame key={s.id} scenario={s}><div style={{ height: 460 }}><MachineMap source={machine} role={s.role ?? "source"} followers={s.followers} latestRevision={8} selfId={s.followers[0]?.id} publishing={s.active} syncing={s.active ? s.followers.slice(0, 2).map(f => f.id) : []} /></div></Frame>)}
+    {maps.filter(s => ["MT", "M40", "M320", "MS", "MF"].includes(s.id)).map(s => <Frame key={`${s.id}-repeat`} scenario={s} suffix="-repeat"><div style={{ height: 460 }}><MachineMap source={machine} role={s.role ?? "source"} followers={s.followers} latestRevision={8} selfId={s.followers[0]?.id} /></div></Frame>)}
     <h1>Run 2: Overview and Machines list rows</h1>
     {listScenarios.map(s => <Frame key={s.id} scenario={s}><FixtureWorkspace rows={s.followers} /></Frame>)}
     {listScenarios.filter(s => ["LT", "L320", "LS"].includes(s.id)).map(s => <Frame key={`${s.id}-repeat`} scenario={s} suffix="-repeat"><FixtureWorkspace rows={s.followers} /></Frame>)}

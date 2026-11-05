@@ -13,7 +13,7 @@ import { ADD_W, DEVICE_ICONS, ICON_TILE_TINT, MapActionsContext, NODE_H, NODE_W,
 
 // Platform reads as a word ahead of the purpose: Solar has no brand logos, and a name is clearer than a 14px glyph
 // behind a tooltip. It sits on the purpose line so the footer keeps its width for the revision and state.
-const PLATFORM: Record<Follower["platform"], string> = { macos: "macOS", linux: "Linux", windows: "Windows" };
+const PLATFORM: Record<NonNullable<Follower["platform"]>, string> = { macos: "macOS", linux: "Linux", windows: "Windows" };
 
 export type MachineNodeData = {
   kind: "source" | "follower";

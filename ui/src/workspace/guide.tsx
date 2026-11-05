@@ -19,7 +19,7 @@ import { cn, SNAP } from "@/lib/utils";
 import { fillStyle } from "@/lib/dither";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { DEMO } from "@/shared/data";
+import { DEMO } from "@/shared/metadata";
 import { DitherBlock, DitherProgress, StatusMark } from "@/shared/shared";
 import { Tour, type TourStep } from "@/tour/tour";
 import { PAGE_TIPS } from "./page-tips";
@@ -44,14 +44,14 @@ export function getStartedItems(ws: Workspace): GetStartedItem[] {
         id: "profile",
         label: "Choose what to sync",
         why: "Add the instructions, skills, MCP servers, settings and tools your machines should share.",
-        done: ws.latest > 0 || ws.resources.some((r) => !ws.proposed.includes(r.id)),
+        done: (ws.latest !== undefined && ws.latest > 0) || ws.resources.some((r) => !ws.proposed.includes(r.id)),
         run: () => ws.setView("profile"),
       },
       {
         id: "publish",
         label: "Publish your first revision",
         why: "Nothing reaches another machine until you publish.",
-        done: ws.latest > 0,
+        done: ws.latest !== undefined && ws.latest > 0,
         run: () => (ws.pending.length > 0 ? ws.setPublishOpen(true) : ws.setView("profile")),
       },
       {

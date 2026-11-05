@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AnimatedNumber, Hint, Mono, StateLabel, Term } from "@/shared/shared";
-import { DEMO, PLAIN, SECRETS_GROUP, followers as seedFollowers, followerSelf, machine, type Follower } from "@/shared/data";
+import { DEMO, PLAIN, SECRETS_GROUP, type Follower } from "@/shared/metadata";
 import { SOURCE_ID } from "@/shared/machine-map/model";
 import { shq } from "@/shared/shell";
 import { useSharedState, useWorkspace, type Invitation } from "./store";
@@ -102,7 +102,8 @@ export function nextStep(f: Follower): { title: string; body: ReactNode; command
 }
 
 /** One plain sentence for why a machine isn't up to date on the latest revision, or null when it is. */
-export function whyBehind(f: Follower, latest: number, syncing: boolean): string | null {
+export function whyBehind(f: Follower, latest: number | undefined, syncing: boolean): string | null {
+  if (latest === undefined || f.revision === undefined || f.state === undefined) return null;
   const behind = f.revision === null || f.revision < latest;
   if (f.state === "offline") return `Can't reach the Source${f.note ? ` (${f.note.charAt(0).toLowerCase()}${f.note.slice(1)})` : ""}. On revision ${f.revision ?? "none"} of ${latest}.`;
   if (f.state === "drift") return `${f.note ?? "Someone edited a managed file"} on ${f.name}. Canonfig keeps that edit there and holds the item until it's settled on ${f.name}.`;
@@ -110,7 +111,7 @@ export function whyBehind(f: Follower, latest: number, syncing: boolean): string
   if (f.state === "failed") return `Its last update failed and was put back. On revision ${f.revision ?? "none"}.`;
   if (!behind) return null;
   if (syncing) return `Getting revision ${latest} now.`;
-  return `On revision ${f.revision ?? "none"}. Gets revision ${latest} at its next check (${f.schedule}).`;
+  return `On revision ${f.revision ?? "none"}. Gets revision ${latest} at its next check${f.schedule ? ` (${f.schedule})` : ""}.`;
 }
 
 export function MachinesView() {
@@ -157,7 +158,7 @@ function SourceMachinesView() {
         right={
           ws.followers.length > 0 && (
             <span className="text-sm text-muted-foreground tabular-nums">
-              <AnimatedNumber value={upToDate} /> of <AnimatedNumber value={ws.followers.length} /> up to date on revision <AnimatedNumber value={ws.latest} />
+              {ws.capabilities.simulatedTelemetry && ws.latest !== undefined && <><AnimatedNumber value={upToDate} /> of <AnimatedNumber value={ws.followers.length} /> up to date on revision <AnimatedNumber value={ws.latest} /></>}
             </span>
           )
         }
@@ -216,7 +217,7 @@ function SourceMachinesView() {
                 </ListHead>
                 <RowPresence>
                   {ws.followers.map((f) => {
-                    const behind = f.revision !== null && f.revision < ws.latest;
+                    const behind = f.revision != null && ws.latest !== undefined && f.revision < ws.latest;
                     return (
                       <AnimatedRow key={f.id}>
                         <ListRow cols={cols} minWidth={colsMin} selected={selected === f.id} onClick={() => setSelected(f.id)} className="group">
@@ -232,12 +233,12 @@ function SourceMachinesView() {
                           >
                             <span className="truncate">{f.name}</span>
                           </span>
-                          <span className="text-sm text-muted-foreground">{PLATFORM[f.platform]}</span>
+                          <span className="text-sm text-muted-foreground">{f.platform ? PLATFORM[f.platform] : "Not reported"}</span>
                           <GroupChips groups={f.groups} empty="None" />
                           <span className={behind ? "text-sm text-warn tabular-nums" : "text-sm text-muted-foreground tabular-nums"}>
-                            {f.revision === null ? "None" : <AnimatedNumber value={f.revision} />}
+                            {f.revision === undefined ? "Not reported" : f.revision === null ? "None" : <AnimatedNumber value={f.revision} />}
                           </span>
-                          <StateLabel state={f.state} />
+                          {f.state ? <StateLabel state={f.state} /> : <span className="text-sm text-faint">Not reported</span>}
                           <span className="text-sm text-muted-foreground tabular-nums">{f.lastRun}</span>
                           {!current && <span className="truncate text-sm text-faint tabular-nums">{f.schedule}</span>}
                         </ListRow>
@@ -277,7 +278,7 @@ function Invitations() {
                     <span className="min-w-0 truncate font-medium" title={name(inv)}>{name(inv)}</span>
                     <Mono className="col-start-1 row-start-2 min-w-0 break-all text-sm sm:col-start-auto sm:row-start-auto">{inv.file}</Mono>
                     <span className="col-start-1 text-sm text-muted-foreground sm:col-start-auto">Expires {inv.expires}</span>
-                    <Button
+                    {ws.capabilities.invitationCancel && <Button
                       variant="destructive"
                       size="xs"
                       className="col-start-2 row-span-3 row-start-1 min-h-11 justify-self-end sm:col-start-auto sm:row-span-1 sm:row-start-auto sm:min-h-0"
@@ -288,7 +289,7 @@ function Invitations() {
                       }}
                     >
                       Cancel
-                    </Button>
+                    </Button>}
                   </div>
                 </AnimatedRow>
               ))}
@@ -304,14 +305,7 @@ function Invitations() {
 function FollowerMachinesView() {
   const ws = useWorkspace();
   const map = ws.machinesMode === "map";
-  const laptop = seedFollowers.find((f) => f.name === followerSelf.name)!;
-  const self: Follower = {
-    ...laptop,
-    name: ws.machineName,
-    revision: ws.appliedRevision === 0 ? null : ws.appliedRevision,
-    // A machine that has applied nothing yet (just joined) cannot be up to date.
-    state: ws.humanAction ? "human-action" : ws.driftOpen ? "drift" : ws.appliedRevision === 0 ? "never-synced" : "converged",
-  };
+  const self = ws.selfFollower;
   return (
     <>
       <PageHeader crumbs={["Machines"]} />
@@ -324,7 +318,7 @@ function FollowerMachinesView() {
         </ToolbarTab>
       </Toolbar>
       <Body>
-        {map ? <div data-tour="machine-map" className="flex h-full flex-col">
+        {!self ? <EmptyState title="Enrollment unavailable" body="Reload to read this machine's enrollment." /> : map ? <div data-tour="machine-map" className="flex h-full flex-col">
           <MachineMap
             role="follower"
             followers={[self]}
@@ -340,14 +334,14 @@ function FollowerMachinesView() {
               <span>Machine</span><span>Role</span><span>Details</span>
             </ListHead>
             <ListRow cols="minmax(112px,240px) 140px minmax(200px,1fr)" minWidth={508} onClick={() => ws.setView("tunnel")}>
-              <span className="truncate font-medium">{machine.hostname}</span>
+              <span className="truncate font-medium">{ws.sourceMachine.hostname}</span>
               <span className="text-muted-foreground">Source</span>
               <Mono className="truncate">{ws.endpoint}</Mono>
             </ListRow>
             <ListRow cols="minmax(112px,240px) 140px minmax(200px,1fr)" minWidth={508} onClick={() => ws.setView("machine")}>
               <span className="truncate font-medium">{self.name}</span>
               <span className="text-muted-foreground">This follower</span>
-              <StateLabel state={self.state} />
+              {self.state && <StateLabel state={self.state} />}
             </ListRow>
           </div>
         )}
@@ -359,7 +353,7 @@ function FollowerMachinesView() {
 function SourceDetail({ onClose, onCustomize }: { onClose: () => void; onCustomize: () => void }) {
   const ws = useWorkspace();
   // Same key and initial as the Source service page that owns it, so a removal shows here too.
-  const [serviceInstalled] = useSharedState("service-installed", true);
+  const [serviceInstalled] = useSharedState("service-installed", ws.serviceInstalled);
   return (
     <DetailPanel
       title={ws.machineName}
@@ -383,14 +377,14 @@ function SourceDetail({ onClose, onCustomize }: { onClose: () => void; onCustomi
         You edit the profile here and publish revisions. Every other machine copies from it.
       </p>
       <div className="px-4 py-3">
-        <Prop label="Latest revision">{ws.latest === 0 ? "None published yet" : <>Revision <AnimatedNumber value={ws.latest} /></>}</Prop>
-        <Prop label="Unpublished">
+        {ws.latest !== undefined && <Prop label="Latest revision">{ws.latest === 0 ? "None published yet" : <>Revision <AnimatedNumber value={ws.latest} /></>}</Prop>}
+        {ws.capabilities.simulatedTelemetry && <Prop label="Unpublished">
           <AnimatedNumber value={ws.pending.length} /> {ws.pending.length === 1 ? "change" : "changes"}
-        </Prop>
+        </Prop>}
         <Prop label="Address">
           <Mono className="break-all text-foreground">{ws.endpoint}</Mono>
         </Prop>
-        <Prop label="Service">{serviceInstalled ? "Running" : "Not installed"}</Prop>
+        {ws.capabilities.simulatedTelemetry && <Prop label="Service">{serviceInstalled ? "Running" : "Not installed"}</Prop>}
       </div>
     </DetailPanel>
   );
@@ -405,7 +399,7 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
   return (
     <DetailPanel
       title={f.name}
-      subtitle={<StateLabel state={f.state} />}
+      subtitle={f.state && <StateLabel state={f.state} />}
       onClose={onClose}
       footer={
         <>
@@ -430,11 +424,11 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
         </section>
       )}
       <div className="px-4 py-3">
-        <Prop label="System">{PLATFORM[f.platform]}</Prop>
-        <Prop label={<Term term="Profile Revision">Revision</Term>}>
+        {f.platform && <Prop label="System">{PLATFORM[f.platform]}</Prop>}
+        {f.revision !== undefined && <Prop label={<Term term="Profile Revision">Revision</Term>}>
           {f.revision === null ? "None yet" : <AnimatedNumber value={f.revision} />}
-          {f.revision !== null && f.revision < ws.latest && <span className="text-muted-foreground"> of {ws.latest}</span>}
-        </Prop>
+          {f.revision !== null && ws.latest !== undefined && f.revision < ws.latest && <span className="text-muted-foreground"> of {ws.latest}</span>}
+        </Prop>}
         <Prop label={<Term term="Follower Group">{PLAIN.groups}</Term>}>
           <span className="flex flex-wrap items-center gap-2">
             <GroupChips groups={f.groups} empty="None, base profile only" />
@@ -443,8 +437,8 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
             </Button>
           </span>
         </Prop>
-        <Prop label="Checks">{f.schedule}</Prop>
-        <Prop label="Last update">{f.lastRun}</Prop>
+        {f.schedule && <Prop label="Checks">{f.schedule}</Prop>}
+        {f.lastRun && <Prop label="Last update">{f.lastRun}</Prop>}
         <Prop
           label={
             <span className="inline-flex items-center gap-1">
@@ -455,14 +449,15 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
           <Mono className="break-all text-foreground">{f.id}</Mono>
         </Prop>
       </div>
-      <div className="border-t border-border px-4 pt-3">
+      {f.resources && <div className="border-t border-border px-4 pt-3">
         <SectionLabel>What it has</SectionLabel>
-      </div>
+      </div>}
       <div className="pb-3">
         {ws.resources
           .filter((r) => r.change !== "added")
           .map((r) => {
-            const state = f.resources[r.id] ?? "never-synced";
+            const state = f.resources?.[r.id];
+            if (!state) return null;
             const Icon = CATEGORY_ICON[r.category];
             const problem = state === "drift" || state === "human-action";
             return (
@@ -620,6 +615,26 @@ function Step({ title, note, command }: { title: ReactNode; note?: ReactNode; co
 
 export function InviteDialog() {
   const ws = useWorkspace();
+  return ws.capabilities.enrollmentWrite ? <InviteForm /> : (
+    <EnrollmentUnavailable open={ws.inviteOpen} onOpenChange={ws.setInviteOpen} title="Add machine" />
+  );
+}
+
+function EnrollmentUnavailable({ open, onOpenChange, title }: { open: boolean; onOpenChange: (open: boolean) => void; title: string }) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>Not implemented: invitations.create, invitations.download. Create the invitation through the Canonfig CLI.</DialogDescription>
+        </DialogHeader>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function InviteForm() {
+  const ws = useWorkspace();
   const [name, setName] = useState("");
   const [endpoint, setEndpoint] = useState(ws.endpoint);
   const [expiry, setExpiry] = useState<keyof typeof EXPIRY>("1h");
@@ -667,6 +682,7 @@ export function InviteDialog() {
   const sshHost = `${ws.machineName}.local`;
 
   const create = () => {
+    if (!ws.capabilities.enrollmentWrite) return ws.notImplemented("invitations.create");
     setTried(true);
     if (!url) {
       document.getElementById("inv-ep")?.focus();
@@ -845,6 +861,13 @@ export function InviteDialog() {
  * `follower enroll --replace` on that machine. This dialog builds exactly that.
  */
 export function ChangeGroupsDialog() {
+  const ws = useWorkspace();
+  return ws.capabilities.enrollmentWrite ? <ChangeGroupsForm /> : (
+    <EnrollmentUnavailable open={ws.changeGroups !== null} onOpenChange={(open) => !open && ws.setChangeGroups(null)} title="Change groups" />
+  );
+}
+
+function ChangeGroupsForm() {
   const ws = useWorkspace();
   const req = ws.changeGroups;
   const open = req !== null;

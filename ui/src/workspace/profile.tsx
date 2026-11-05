@@ -26,15 +26,13 @@ import {
   RESERVED_PATHS,
   SECRETS_GROUP,
   itemPath,
-  machine,
-  profile,
   type AppendLocalCategory,
   type HarnessId,
   type ItemCategory,
   type LocalCategory,
   type Resource,
-} from "@/shared/data";
-import { SCANNED_TOOLS, toolFromScan, useSharedState, useWorkspace } from "./store";
+} from "@/shared/metadata";
+import { useSharedState, useWorkspace } from "./store";
 import { ScheduleFields, WEEK, scheduleError, scheduleSummary, type Schedule } from "./schedule";
 import { HarnessTable } from "./harnesses";
 import { SkillSummary, SkillUpstream, useMoveSkillTracking, useSkillLocked } from "./skills";
@@ -339,7 +337,7 @@ function GroupPicker({ idPrefix, value, onChange }: { idPrefix: string; value: s
  */
 interface ProfileDefaults {
   name: string;
-  schedule: Schedule;
+  schedule: Schedule | null;
   localAllow: LocalCategory[];
   appendLocal: AppendLocalCategory[];
 }
@@ -353,9 +351,9 @@ function useProfileDefaults(which: "saved" | "published" = "saved") {
   const ws = useWorkspace();
   return useSharedState<ProfileDefaults>(which === "saved" ? "profile-defaults" : "profile-defaults-published", {
     name: ws.profileName,
-    schedule: { cadence: "daily", days: [], time: "09:00" },
-    localAllow: profile.localAllow,
-    appendLocal: profile.appendLocal,
+    schedule: ws.profileSchedule,
+    localAllow: ws.profile.localAllow,
+    appendLocal: ws.profile.appendLocal,
   });
 }
 
@@ -373,7 +371,8 @@ function sameDefaults(a: ProfileDefaults, b: ProfileDefaults) {
  * canonfig.jsonc `scheduleDefault`: `daily@HH:mm` or `weekly:Mon,Thu@HH:mm` (src/projection/folder.ts), always in
  * each follower's local time, since every scheduler backend can render only that.
  */
-function scheduleDefaultOf(s: Schedule) {
+function scheduleDefaultOf(s: Schedule | null) {
+  if (!s) return null;
   if (s.cadence === "daily") return `daily@${s.time}`;
   const days = s.cadence === "weekdays" ? WEEK.slice(0, 5) : WEEK.filter((d) => s.days.includes(d));
   return `weekly:${days.join(",")}@${s.time}`;
@@ -416,14 +415,14 @@ export function ProfileView() {
             <Button variant="outline" size="sm" onClick={ws.exportArchive} title="Download ~/.canonfig/ as a .tar.gz with a checksum manifest signed by this Source">
               Export
             </Button>
-            <Button variant="outline" size="sm" onClick={() => setDiscoverOpen(true)} data-tour="profile-add">
+            <Button variant="outline" size="sm" disabled={!ws.capabilities.profileWrite} onClick={() => setDiscoverOpen(true)} data-tour="profile-add">
               Discover tools
             </Button>
-            <Button variant={ws.pending.length === 0 && !detail && tab === "items" ? "primary" : "outline"} size="sm" onClick={startCreating} data-tour="profile-add">
+            <Button variant={ws.pending.length === 0 && !detail && tab === "items" ? "primary" : "outline"} size="sm" disabled={!ws.capabilities.profileWrite} onClick={startCreating} data-tour="profile-add">
               <Plus />
               Add item
             </Button>
-            {ws.pending.length > 0 && (
+            {ws.capabilities.profileWrite && ws.pending.length > 0 && ws.nextSequence !== undefined && (
               <Button size="sm" data-tour="publish" variant={detail || tab === "defaults" ? "outline" : "primary"} onClick={() => ws.setPublishOpen(true)}>
                 Publish revision <AnimatedNumber value={ws.nextSequence} />
               </Button>
@@ -437,12 +436,12 @@ export function ProfileView() {
             <span className="hidden sm:inline">Folder</span>
             <button
               type="button"
-              title={`Copy path ${machine.folder}`}
-              aria-label={`Copy folder path ${machine.folder}`}
+              title={`Copy path ${ws.sourceMachine.folder}`}
+              aria-label={`Copy folder path ${ws.sourceMachine.folder}`}
               className="truncate rounded font-mono text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
-              onClick={() => copy(machine.folder, "Folder path copied")}
+              onClick={() => copy(ws.sourceMachine.folder, "Folder path copied")}
             >
-              {machine.folder}
+              {ws.sourceMachine.folder}
             </button>
             <Hint label="the Canonfig folder">
               The <Term term="Canonical Folder">Canonfig folder</Term> is the source of truth.{"\n"}Edits here are written into its files, and canonfig.jsonc keeps your comments.
@@ -488,7 +487,7 @@ export function ProfileView() {
               title="The folder is empty"
               body="Add the instructions, rules, skills, MCP servers, settings and tools every machine should have, or discover tools your folder runs."
               action={
-                <Button variant="outline" size="sm" onClick={startCreating}>
+                <Button variant="outline" size="sm" disabled={!ws.capabilities.profileWrite} onClick={startCreating}>
                   Add item
                 </Button>
               }
@@ -550,7 +549,7 @@ export function ProfileView() {
       )}
       {tab === "harnesses" && <HarnessesTab />}
       {tab === "groups" && <GroupsTab />}
-      {tab === "defaults" && <DefaultsTab />}
+      {tab === "defaults" && (ws.capabilities.profileWrite ? <DefaultsTab /> : <Body><EmptyState title="Defaults form is not available yet" body="Not implemented: profile.defaults.read, profile.defaults.save. Use the Canonfig CLI to edit defaults." /></Body>)}
       <DiscoverDialog open={discoverOpen} onOpenChange={setDiscoverOpen} />
     </>
   );
@@ -681,6 +680,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
   const asWritten: Resource = { ...draft, id, path: itemPath(category, trimmed) };
 
   const save = (form: HTMLFormElement) => {
+    if (!ws.capabilities.profileWrite) return ws.notImplemented("profile.items.save");
     setTried(true);
     const badField = fields.find(fieldError);
     const badRow = hasKeys ? rows.find((r) => !r.name.trim() || rows.some((x) => x.id !== r.id && x.name.trim() === r.name.trim())) : undefined;
@@ -716,7 +716,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
       footer={
         <>
           {!isNew && (
-            <Button variant="destructive" size="sm" disabled={updating} onClick={() => setConfirmRemove(true)}>
+            <Button variant="destructive" size="sm" disabled={!ws.capabilities.profileWrite || updating} onClick={() => setConfirmRemove(true)}>
               Remove…
             </Button>
           )}
@@ -729,7 +729,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
             >
               {isNew ? "Cancel" : "Discard"}
             </Button>
-            <Button type="submit" form="item-form" variant="primary" size="sm" disabled={updating || (!isNew && !dirty)}>
+            <Button type="submit" form="item-form" variant="primary" size="sm" disabled={!ws.capabilities.profileWrite || updating || (!isNew && !dirty)}>
               {isNew ? "Add to the folder" : "Save to the folder"}
             </Button>
           </div>
@@ -744,7 +744,8 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
           save(e.currentTarget);
         }}
       >
-        <fieldset disabled={updating} className="grid min-w-0 gap-4">
+        {!ws.capabilities.profileWrite && <p className="mb-4 text-sm text-muted-foreground">Read only. Not implemented: profile.items.save, profile.items.remove. Edit the Canonical Folder through the CLI.</p>}
+        <fieldset disabled={!ws.capabilities.profileWrite || updating} className="grid min-w-0 gap-4">
         <Field label="Kind" htmlFor="item-category" hint={isNew ? <>Where the <Term term="Profile Resource">item</Term> lives in ~/.canonfig decides which harness files it reaches.</> : undefined}>
           <Select
             value={category}
@@ -1084,6 +1085,7 @@ function GroupsTab() {
           variant="outline"
           size="sm"
           className="ml-auto shrink-0"
+          disabled={!ws.capabilities.profileWrite}
           onClick={() => {
             setName("");
             setDesc("");
@@ -1250,7 +1252,7 @@ function DefaultsTab() {
   const [saved, setSaved] = useProfileDefaults();
   const [published, setPublished] = useProfileDefaults("published");
   const [name, setName] = useState(saved.name);
-  const [schedule, setSchedule] = useState<Schedule>(saved.schedule);
+  const [schedule, setSchedule] = useState<Schedule>(saved.schedule ?? { cadence: "daily", days: [], time: "" });
   const [localAllow, setLocalAllow] = useState<LocalCategory[]>(saved.localAllow);
   const [appendLocal, setAppendLocal] = useState<AppendLocalCategory[]>(saved.appendLocal);
   const [tried, setTried] = useState(false);
@@ -1298,7 +1300,7 @@ function DefaultsTab() {
             <Input id="p-name" value={name} onChange={(e) => setName(e.target.value)} aria-invalid={!!nameError} aria-describedby={nameError ? "p-name-note" : undefined} autoComplete="off" />
           </Field>
           <Field label="Profile id" description="Every revision carries this id, and Canonfig needs it to publish.">
-            <Mono className="text-sm text-foreground">{profile.id}</Mono>
+            <Mono className="text-sm text-foreground">{ws.profile.id}</Mono>
           </Field>
         </div>
         <SectionLabel className="mt-6">
@@ -1350,7 +1352,7 @@ function DefaultsTab() {
           >
             <span className="text-faint">// ~/.canonfig/canonfig.jsonc{"\n"}</span>
             {[
-              `"profile": ${JSON.stringify({ id: profile.id, name: trimmed || saved.name })},`,
+              `"profile": ${JSON.stringify({ id: ws.profile.id, name: trimmed || saved.name })},`,
               ...(scheduleProblem ? [] : [`"scheduleDefault": ${JSON.stringify(scheduleDefaultOf(schedule))},`]),
               `"local": { "allow": [${allowed.map((c) => JSON.stringify(c)).join(", ")}]${shared.length ? `, "appendLocal": [${shared.map((c) => JSON.stringify(c)).join(", ")}]` : ""} }`,
             ].join("\n")}
@@ -1372,7 +1374,7 @@ function DefaultsTab() {
             disabled={!dirty}
             onClick={() => {
               setName(saved.name);
-              setSchedule(saved.schedule);
+              setSchedule(saved.schedule ?? { cadence: "daily", days: [], time: "" });
               setLocalAllow(saved.localAllow);
               setAppendLocal(saved.appendLocal);
               setTried(false);
@@ -1390,20 +1392,20 @@ function DefaultsTab() {
 function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const ws = useWorkspace();
   const [progress, setProgress] = useState(0);
-  const [picked, setPicked] = useState<string[]>(["node", "prettier"]);
+  const [picked, setPicked] = useState<string[]>(ws.scannedTools.filter((tool) => tool.id === "node" || tool.id === "prettier").map((tool) => tool.id));
   const returnFocus = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !ws.capabilities.simulatedTelemetry) return;
     setProgress(0);
     const t = window.setInterval(() => setProgress((p) => (p >= 100 ? 100 : p + 10)), 110);
     return () => window.clearInterval(t);
-  }, [open]);
+  }, [open, ws.capabilities.simulatedTelemetry]);
 
   const done = progress >= 100;
   const inFolder = (id: string) => ws.resources.some((r) => r.id === `tools/${id}`);
   // Picked tools the folder already has stay as they are, so the button counts and adds only the new ones.
-  const pickedTools = SCANNED_TOOLS.filter((f) => picked.includes(f.id));
+  const pickedTools = ws.scannedTools.filter((f) => picked.includes(f.id));
   const fresh = pickedTools.filter((f) => !inFolder(f.id));
   const present = pickedTools.filter((f) => inFolder(f.id)).map((f) => f.id);
   const presentNote = present.length ? `${present.join(", ")} ${present.length === 1 ? "is" : "are"} already in the folder.` : "";
@@ -1424,7 +1426,7 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
         <DialogHeader>
           <DialogTitle>Discover tools</DialogTitle>
           <DialogDescription className="text-base text-pretty">
-            Canonfig reads the instructions, skills, hook scripts and MCP commands in <span className="font-mono text-sm text-foreground">{machine.folder}</span> and proposes a
+            Canonfig reads the instructions, skills, hook scripts and MCP commands in <span className="font-mono text-sm text-foreground">{ws.sourceMachine.folder}</span> and proposes a
             tool for each program they run. It runs nothing. Tools you add go into canonfig.jsonc, which keeps its comments.
             {DEMO && " This demo reads no files and shows example results."}
           </DialogDescription>
@@ -1437,7 +1439,7 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
         ) : (
           <>
             <div className="-mx-4 border-y border-border">
-              {SCANNED_TOOLS.map((f) => (
+              {ws.scannedTools.map((f) => (
                 <label key={f.id} className="flex h-11 cursor-pointer items-center gap-3 border-b border-border/70 px-4 last:border-b-0 hover:bg-raised/50">
                   <Checkbox checked={picked.includes(f.id)} onCheckedChange={(c) => setPicked((p) => (c ? [...p, f.id] : p.filter((x) => x !== f.id)))} />
                   <span className="grid min-w-0">
@@ -1462,12 +1464,12 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
             <Button variant="ghost" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button
+            {ws.capabilities.selectiveScanWrite && <Button
               variant="primary"
               disabled={!done || fresh.length === 0}
               aria-describedby={done && fresh.length === 0 ? "discover-none" : undefined}
               onClick={() => {
-                ws.setResources((prev) => [...prev, ...fresh.map(toolFromScan)]);
+                ws.setResources((prev) => [...prev, ...fresh.map(ws.toolFromScan)]);
                 onOpenChange(false);
                 toast.success(`Added ${fresh.length} ${fresh.length === 1 ? "tool" : "tools"}`, {
                   description: `${presentNote ? `${presentNote}\n` : ""}Publish to send ${fresh.length === 1 ? "it" : "them"} to your machines.`,
@@ -1475,7 +1477,7 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
               }}
             >
               {fresh.length === 0 ? "Add tools" : `Add ${fresh.length} ${fresh.length === 1 ? "tool" : "tools"}`}
-            </Button>
+            </Button>}
           </div>
         </DialogFooter>
       </DialogContent>

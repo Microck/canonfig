@@ -13,7 +13,6 @@
 // engine. Copy follows the glossary as the UI words it: Source, follower,
 // profile, revision, Local settings.
 import { Kbd } from "@/components/ui/kbd";
-import { machine } from "@/shared/data";
 import type { TourStep } from "@/tour/tour";
 import { getStartedItems } from "./guide";
 import { workspaceHref } from "./routes";
@@ -49,7 +48,9 @@ export function tourChapters(ws: Workspace, live: () => Workspace): TourChapter[
     pages: ws.role === "source" ? ["profile", "machines", "overview"] : ["sync", "local", "overview"],
     steps: tourSteps(ws, live),
   };
-  const chapters = ws.role === "source" ? sourceChapters(ws) : followerChapters(ws);
+  const chapters = ws.capabilities.simulatedTelemetry
+    ? ws.role === "source" ? sourceChapters(ws) : followerChapters(ws)
+    : [agentsChapter(ws)];
   const linked = chapters.map((chapter, i) => {
     const next = chapters[i + 1];
     if (!next) return chapter;
@@ -82,7 +83,7 @@ function tourSteps(ws: Workspace, live: () => Workspace): TourStep[] {
       {
         target: ["machine"],
         title: "This is your Source",
-        body: `${machine.hostname} holds the one true copy of your setup. Your other machines copy it from here.`,
+        body: `${ws.machineName} holds the one true copy of your setup. Your other machines copy it from here.`,
       },
       {
         target: ["nav-profile"],
@@ -92,7 +93,9 @@ function tourSteps(ws: Workspace, live: () => Workspace): TourStep[] {
       {
         target: ["nav-machines"],
         title: "Machines",
-        body: "Every machine on one map: who's up to date, why not, and where to add a new one.",
+        body: ws.capabilities.simulatedTelemetry
+          ? "Every machine on one map: who's up to date, why not, and where to add a new one."
+          : "See the enrolled machines and their groups. The Source does not report their sync health.",
       },
       handOver,
     ];
@@ -100,8 +103,10 @@ function tourSteps(ws: Workspace, live: () => Workspace): TourStep[] {
   return [
     {
       target: ["machine"],
-      title: "This machine follows atlas",
-      body: `${ws.machineName} copies its setup from atlas. You change the setup there, not here.`,
+      title: ws.capabilities.simulatedTelemetry ? "This machine follows atlas" : "This machine follows a Source",
+      body: ws.capabilities.simulatedTelemetry
+        ? `${ws.machineName} copies its setup from atlas. You change the setup there, not here.`
+        : `${ws.machineName} copies its setup from its enrolled Source. You change the shared setup there, not here.`,
     },
     {
       target: ["nav-sync"],

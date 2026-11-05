@@ -195,7 +195,7 @@ uses simulated state or browser-local persistence.
 | Canonfig version status and Check; enable/disable/apply instructions | Status and Check are **live**. Enable, disable and apply are **terminal-only**, with copyable commands and instructions to stop the GUI first. No write endpoint or command-lease exemption. | `GET /api/self-update`; `POST /api/self-update/check` | E |
 | Source Secrets list, Set, Replace value, Remove, sharing membership | **Live:** `listSecrets/storeSecret/removeSecret` use the CLI failure mapping. Membership changes require replacement enrollment. Values remain write-only and absent from logs, URLs, status and browser persistence. | `GET`/`PUT`/`DELETE /api/secrets` | B frontend, D backend |
 
-Area E uses separate live components, as approved during implementation. The demo settings remain unchanged. Live settings reuse `Field`, `SettingRow`, `CommandBox` and `StatusMark`; consolidating the remaining presentation is follow-up work. The setup page imports C's `GuiSetupStatus` and `GuiSetupJournal` and uses its digest-checked handlers.
+Area E now uses the shared workspace settings screens through the administration slice described in Phase 2d. Its separate live administration components have been removed. Setup remains owned by area C.
 
 ## Decisions for phase 2
 
@@ -207,10 +207,9 @@ Area E uses separate live components, as approved during implementation. The dem
 
 ## Remaining follow-ups
 
-- Consolidate separate demo/live form presentation without introducing a second production data source. The machine-map renderer is already shared.
+- Complete the three Phase 2d area checklists below. The shared screens are the production route targets; their unfinished live operations are explicitly unavailable rather than simulated.
 - Setup mutations serialize within the GUI, and journal writes use their IO lock. The plan-digest check and subsequent domain command are not one cross-process transaction. Another CLI process can replace the journal between those steps; a future domain-level operation must own that complete boundary.
 - Native schedule installation requires a running systemd user manager on Linux. Disposable browser verification uses a private session bus and reports the CLI's human-action-required failure rather than touching the operator's real user manager.
-- The live sidebar remains a vertical list above content at narrow widths. All role-appropriate actions are reachable, but a compact mobile navigation treatment remains a presentation follow-up.
 - Vite reports a vendor chunk above its 500 kB advisory threshold. Production and demo builds succeed; this is a bundle-splitting follow-up, not a missing route.
 
 
@@ -227,3 +226,42 @@ Packaged browser verification used isolated Source and Follower homes, private n
 Linux schedule installation reported the expected human-action-required diagnostic because the isolated session has no systemd user manager. Source agent policy saved, while Source harness configuration correctly refused without follower enrollment; the enrolled Follower saved both. The installer screen had no configured bindings to check. Version status worked; its check correctly refused the unpacked runtime because it was not a user-local global npm installation. Native service installation, SSH tunnel setup and self-update apply were not attempted. Screenshots and downloaded export evidence are under `/tmp/canonfig-ui/e2e/`.
 
 The final packaged overlay retry refused the invalid identifier without corrupting local configuration, and the existing key claim remained readable. Unenrollment ran last: the Source revoked the follower, its local credential was removed, and `GUI_SHARED` was removed from the native credential store. All browser sessions, GUI/transport servers, private keyrings and session buses were stopped; both temporary homes were removed.
+
+## Phase 2d: one screen tree, two data sources
+
+`ui/src/workspace/workspace-types.ts` defines the screen-facing `Workspace` interface. It combines `OverviewSlice`, `ProfileSlice`, `MachinesSlice`, `FollowerSlice` and the typed `AdministrationSlice` from `administration-types.ts`. Field names stay unchanged where their meaning holds. Revision, sync progress, machine platform/state, snapshot counts and other evidence that the backend does not report are optional. Live screens omit the corresponding demo telemetry or explain that it is not reported.
+
+`store.tsx` owns only the React context and browser-local UI state. `SimulatedWorkspaceProvider` in `simulated-store.tsx` retains the demo's fixtures and actions. `LiveWorkspaceProvider` in `live-provider.tsx` composes the hooks in `workspace/live/{overview,profile,machines,follower,administration}.ts`. The providers use the same navigation state, `workspace.tsx` screen tree, `frame.tsx`, sidebar groups, icons, route tabs and mobile navigation. The production bundle guard rejects simulated providers, the demo application and `shared/data.ts`.
+
+Each live resource exposes loading and its decoded CLI error. `LiveWorkspaceProvider` selects the active page's resource state, so the existing skeletons and `ErrorNotice` show pending or failed reads without replacing them with fixture data. `live/resource.ts` owns abortable reads and real operation-ticket polling. Backend state is never persisted in browser storage. Map appearance, dismissed guidance and unfinished UI drafts remain browser-local.
+
+`capabilities` separates unavailable CLI operations from the demo: invitation cancellation, selective scan writes, service restart, private-review deletion and self-update mutations are false in production. `simulatedTelemetry` is false there too. The three area write capabilities remain false until the corresponding checklist is complete. Unfinished operations call `notImplemented` with their member name; shared pages show their explicit integration notice and do not offer a false successful action.
+
+Production session/token bootstrap remains in `live-app.tsx`. Its session determines the allowed role and routes; unconfigured machines redirect to `/setup`. The old screen registry is gone. The existing real setup form is retained only for that unconfigured entry until area C replaces it with the shared onboarding flow. It is not a second registry for configured screens. Live tours include the navigation introduction and Agent policy, without claiming remote health or the demo's Source name.
+
+### Worked example
+
+Overview reads the actual session and CLI status without treating unreachable follower lifecycle stages as Source failures. Source service, Agent policy, Installers, Health check and Canonfig version all use the shared settings screens. Source service exposes real status/install/remove, not restart. Policy save preserves the separate Source harness refusal. Doctor retains failed reports and their CLI diagnostics. Version exposes status/check and terminal instructions for mutations. `ui/src/live/administration.tsx` and the old live Overview have been removed.
+
+### Parallel area ownership and remaining members
+
+The exported `*_NOT_IMPLEMENTED` arrays and adjacent checklist comments in each hook are the handoff source of truth. Counts below count checklist entries, not endpoints. No new screen registry or live-only replacement screen may be added. Each area wires the shared forms, removes its capability gate after verification, and deletes its old `ui/src/live/<area>.tsx` implementation and obsolete support modules when complete.
+
+| Owner | Owned files | Remaining checklist |
+| --- | --- | --- |
+| Profile agent | `workspace/live/profile.ts`, `workspace/profile.tsx`, `workspace/skills.tsx`, `workspace/harnesses.tsx`, profile/publication/source-secret portions of `workspace/source.tsx`; old `live/profile.tsx` and its authoring modules | **11:** `setResources`, `setSecrets`, `markProfileEdit`, `removeProfileEdit`, `publish`, `setListed`, `setSurfaces`, `scannedTools`, `skillSources`, `upstreamSkills`, `profileSchedule` |
+| Machines agent | `workspace/live/machines.ts`, `workspace/machines.tsx`, `onboarding/*`, `shared/machine-map/*`, configured Setup view in `workspace/settings.tsx`; old `live/enrollment.tsx` | **6:** `setFollowers` (revoke), `setInvitations` (create), invitation download, replacement enrollment, setup plan/approve/apply, enrollment tunnel |
+| Follower agent | `workspace/live/follower.ts`, `workspace/follower.tsx`, `workspace/schedule.tsx`, follower secrets/tunnel/local/backup controls; old `live/synchronization.tsx` and `workspace/synchronization/screens.tsx` | **11:** `plan`, `runs`, `setHumanAction`, `setExcluded`, `setBackups`, `setLocal`, `setOverlays`, `followerSchedule`, tunnel controls, secret refresh, private-review creation |
+| Integration owner | `workspace-types.ts`, `store.tsx`, providers, navigation/frame/routes, `live-app.tsx`, build guard, Overview and administration hooks | **0** in the Overview and administration example |
+
+The profile hook already reads folder metadata, revisions, harness selection/surfaces, groups and secret names, and exports a real archive. The machines hook reads enrollment records and invitation metadata without inventing health. The follower hook reads per-resource reports and wires operation-ticket apply/recovery/restore plus real unenrollment; detailed plan/local/schedule projection stays with its area forms. These partial adapters are deliberately not advertised as completed end-to-end workflows.
+
+Shared interface changes go through the integration owner. The profile and follower agents coordinate changes to harness controls; the machines agent owns only Setup within settings, not the completed administration screens. Preserve digest preconditions, explicit setup approval, write-only secret values and the existing CLI failure taxonomy. The demo retains its simulated flows throughout.
+
+### Phase 2d verification
+
+In the disposable Paris Raft workspace, UI typechecking, production/demo builds, packaged CLI compilation, root TypeScript checking and root lint passed. The production module-graph guard passed. The targeted GUI acceptance/routes suite passed all 18 tests across five files, and shared navigation tests passed all 37 cases. UI lint reported 73 warnings and no errors; root and website lint reported no warnings or errors.
+
+Packaged-browser checks used a disposable Source home and named `agent-browser` sessions. They exercised Overview, role-invalid navigation, the mobile navigation sheet, Source service reload, initial Agent policy creation and reload, a real npm installer binding and successful Check, doctor with retained failed-probe evidence, and the real self-update installation refusal. The missing-policy case starts with no radio selected; choosing and saving a policy writes through the API rather than inventing a saved default. Native service install/remove and self-update mutations were not run on the controller.
+
+All six worked-example pages were captured at 1920×1080 and 390×844 for both providers. The 24 originals are `/tmp/canonfig-ui/unify/admin-{demo,live}-{overview,service,agent,installers,health,version}-{1920,390}.png`. Twelve `admin-compare-<page>-<width>.png` images place the demo on the left and live on the right. The shared spacing, navigation and controls match; only real evidence and supported operations differ. Demo Source, Follower Overview/Sync and New machine setup also loaded without browser errors, with four extra `demo-*.png` captures in that directory.

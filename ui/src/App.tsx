@@ -7,7 +7,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { DEMO } from "@/shared/data";
 import { DemoSwitcher } from "@/shared/demo-switcher";
-import { WorkspaceApp } from "@/workspace/workspace";
+import { WorkspaceApp } from "@/workspace/simulated-app";
 import { initializeAppRoute, useAppRoute } from "@/workspace/routes";
 
 initializeAppRoute();

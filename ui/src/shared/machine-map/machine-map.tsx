@@ -1,8 +1,9 @@
-import { followers, followerSelf, machine, revisions } from "@/shared/data";
+import { useWorkspace } from "@/workspace/store";
 import { MachineMap as MapView, type MachineMapProps } from "./map-view";
 
-/** The demo injects fixtures; production imports map-view directly. */
+/** Both modes supply machine records through the workspace provider. */
 export function MachineMap(props: Omit<MachineMapProps, "source" | "followers"> & { followers?: MachineMapProps["followers"] }) {
-  const rows = props.followers ?? followers;
-  return <MapView source={machine} {...props} followers={rows} latestRevision={props.latestRevision ?? revisions[0].sequence} selfId={props.selfId ?? rows.find((row) => row.name === followerSelf.name)?.id} />;
+  const ws = useWorkspace();
+  const rows = props.followers ?? ws.followers;
+  return <MapView source={ws.sourceMachine} {...props} followers={rows} latestRevision={props.latestRevision ?? ws.latest} selfId={props.selfId ?? ws.selfFollower?.id} />;
 }

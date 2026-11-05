@@ -79,7 +79,7 @@ function applicationEntrypoint(): Plugin {
         if (output.type !== "chunk") continue;
         const simulated = Object.keys(output.modules).find((id) => {
           const normalized = id.replaceAll("\\", "/");
-          return normalized.endsWith("/src/shared/data.ts") || normalized.endsWith("/src/workspace/store.tsx");
+          return normalized.endsWith("/src/shared/data.ts") || /\/src\/workspace\/simulated-(store|administration|app)\.tsx?$/.test(normalized);
         });
         if (simulated) this.error(`Production browser bundle imports simulated data: ${simulated}`);
       }

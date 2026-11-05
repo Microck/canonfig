@@ -1,4 +1,4 @@
-import { APP_VERSION, HARNESS_NAMES, type LocalCategory, type AppendLocalCategory, type FollowerState, type Resource, type Follower, type Revision, type HarnessId, type Harness, type Snapshot } from "./metadata";
+import { APP_VERSION, HARNESS_NAMES, skillManifest, type LocalItem, type KeptSurface, type SkillSource, type UpstreamSkill, type LocalCategory, type AppendLocalCategory, type FollowerState, type Resource, type Follower, type Revision, type HarnessId, type Harness, type Snapshot } from "./metadata";
 export * from "./metadata";
 
 // Demo data. Shapes follow the Canonical Folder (src/projection/folder.ts), the harness
@@ -6,13 +6,6 @@ export * from "./metadata";
 // schedule outputs for the simulated GUI.
 // Nothing here talks to a real machine.
 
-/**
- * True in the public demo build (`npm run build:demo`, Vite mode "demo") and on the dev server.
- * ui/vite.config.ts selects this application's entrypoint with the same condition. Production selects
- * live-app.tsx instead, so this module and the simulated store are outside its import graph.
- * Within the demo this flag also gates the demo panel, explanatory copy and simulated page loading.
- */
-export const DEMO = import.meta.env.DEV || import.meta.env.MODE === "demo";
 
 
 export const snapshots: Snapshot[] = [
@@ -322,47 +315,10 @@ export const installers = [
   { name: "winget", path: "-", status: "not on this platform" },
 ];
 
-/**
- * One entry of ~/.canonfig/skills-sources.json, the Source's machine-local record of where an installed skill came
- * from (TrackedSkill in src/skills/manager.ts). It is never published.
- */
-export interface SkillSource {
-  /** The folder item it tracks, `skills/<name>`; its directory is the item's path. */
-  id: string;
-  /** HTTPS Git URL or local repository path. */
-  source: string;
-  /** The branch, tag or commit it follows. */
-  ref: string;
-  /** The skill's directory inside the repository, `.` for the root. */
-  subdir: string;
-  /** The commit the installed copy was taken from. */
-  commit: string;
-  /**
-   * The installed files at that commit, by path, each with a stand-in for its content. Canonfig records a digest of
-   * them (`digest`); comparing the folder's files against it is how a local edit shows.
-   */
-  baseline: Record<string, string>;
-}
-
-/** A skill directory at one commit of an upstream repository, as `canonfig skills check` fetches it. */
-export interface UpstreamSkill {
-  source: string;
-  subdir: string;
-  /** Branches and tags that point at this commit; the commit id itself also works as a ref. */
-  refs: string[];
-  commit: string;
-  /** SKILL.md and the other files, by path, each with a stand-in for its content. */
-  files: Record<string, string>;
-}
 
 /** The only Git repository the demo can fetch from. It's made up, like everything in the demo. */
 export const DEMO_SKILLS_REPO = "https://github.com/example/agent-skills.git";
 
-/**
- * SKILL.md as the demo compares it: the folder editor's Description and Body fields. Upstream SKILL.md files use the
- * same shape, so an unedited copy matches its upstream commit.
- */
-export const skillManifest = (description: string, body: string) => `${description}\n---\n${body}`;
 
 const CODE_REVIEW_V1 = skillManifest("Review a diff for correctness, tests and clarity.", "Read the diff twice. Check each changed function against references/checklist.md.");
 const RELEASE_NOTES_V12 = skillManifest("Draft release notes from merged pull requests.", "Group changes by area. Lead with what users notice.");
@@ -428,29 +384,6 @@ export const selfUpdateSeed = {
   follower: { npmCli: null as string | null },
 };
 
-/** An item in a follower's ~/.canonfig/local/: AGENTS.md, a file for rules, skills, agents and commands, a key of local.jsonc otherwise. */
-export interface LocalItem {
-  /** `<category>/<name>`, unique within local/; `instructions` for local/AGENTS.md. */
-  id: string;
-  category: LocalCategory;
-  /** Relative to ~/.canonfig/local/. */
-  path: string;
-  summary: string;
-  /** For settings: keys by path, as typed JSON text. */
-  keys?: Record<string, string>;
-  /** Editor fields by label: Description and Body for files, Transport, Command or URL for MCP servers. */
-  detail?: Record<string, string>;
-}
-
-/**
- * A harness output `local.appendLocal` shares with this machine that holds content of its own: text after
- * Canonfig's closing marker in an instructions file, or top-level entries Canonfig didn't write in a skills folder.
- */
-export type KeptSurface =
-  /** The machine's text below the closing marker, byte for byte. */
-  | { category: "instructions"; target: string; text: string }
-  /** The machine's own skill folders beside Canonfig's. */
-  | { category: "skills"; target: string; entries: string[] };
 
 export const followerSelf = {
   name: "laptop",

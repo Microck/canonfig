@@ -1,4 +1,4 @@
-// Follower screens use simulated sync plans, schedules, local folder edits, secrets, tunnels, and enrollment.
+// Shared Follower screens read machine data and operations from the workspace provider.
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { toast } from "sonner";
 import { ArrowRight, CaretRight, Check, DotsThree, HourglassMedium, Key, Plus, WarningCircle, X } from "@/components/icons";
@@ -24,19 +24,15 @@ import {
   SOURCE_TEXT_END,
   SOURCE_TEXT_START,
   SETTINGS_FILES,
-  followerSelf,
-  machine,
-  profile,
-  resources,
-  secrets as seedSecrets,
   type HarnessId,
   type KeptSurface,
   type LocalCategory,
   type LocalItem,
   type Resource,
-} from "@/shared/data";
-import { useSharedReader, useSharedState, useWorkspace, type PlanAction, type PlanItem } from "./store";
+} from "@/shared/metadata";
+import { useSharedReader, useSharedState, useWorkspace, type PlanAction, type PlanItem, type Workspace } from "./store";
 import { GetStarted } from "./guide";
+import { WorkspaceEvidence } from "./source";
 import { HarnessTable } from "./harnesses";
 import {
   AnimatedRow,
@@ -70,14 +66,12 @@ const ACTION: Record<PlanAction, { label: string; cls: string; hint: string }> =
 };
 
 const DEFAULT_TIME = "09:00";
-const SOURCE = machine.hostname;
 
 /**
  * Shared-state keys this file owns (see FIXLIST shared contracts). Every reader passes the same
  * initial. `null` schedule means none is set: onboarding seeds it when the schedule was turned off.
  */
 const SCHEDULE_KEY = "follower-schedule";
-const SCHEDULE_INITIAL: Schedule = { cadence: "default", days: [], time: DEFAULT_TIME };
 const TUNNEL_KEY = "tunnel-up";
 const TUNNEL_STARTED_KEY = "tunnel-started-here";
 /**
@@ -88,7 +82,6 @@ const TUNNEL_STARTED_KEY = "tunnel-started-here";
 const CHECKING_KEY = "sync-checking";
 const TUNNEL_BUSY_KEY = "tunnel-busy";
 const SECRETS_KEY = "secrets-refresh";
-const SECRETS_INITIAL = { busy: false, updated: "today at 08:45" };
 
 /**
  * Why this machine can't sync right now, or null. `stopped`: Stop syncing ended it, which blocks
@@ -98,10 +91,10 @@ const SECRETS_INITIAL = { busy: false, updated: "today at 08:45" };
  */
 function useSyncBlocks() {
   const ws = useWorkspace();
-  const [tunnelUp] = useSharedState(TUNNEL_KEY, true);
-  const readTunnelUp = useSharedReader(TUNNEL_KEY, true);
-  const stopped = ws.unenrolled ? `Syncing is stopped on this machine. Joining again needs a new invitation from ${SOURCE}.` : null;
-  const tunnelDown = ws.tunnelConfigured && !tunnelUp ? `The SSH tunnel is stopped, so this machine can't reach ${SOURCE}. Start it in Settings, SSH tunnel.` : null;
+  const [tunnelUp] = useSharedState(TUNNEL_KEY, ws.tunnelUp);
+  const readTunnelUp = useSharedReader(TUNNEL_KEY, ws.tunnelUp);
+  const stopped = ws.unenrolled ? `Syncing is stopped on this machine. Joining again needs a new invitation from ${ws.sourceMachine.hostname}.` : null;
+  const tunnelDown = ws.tunnelConfigured && !tunnelUp ? `The SSH tunnel is stopped, so this machine can't reach ${ws.sourceMachine.hostname}. Start it in Settings, SSH tunnel.` : null;
   const unreachable = () => ws.isStopped() || (ws.tunnelConfigured && !readTunnelUp());
   return { stopped, blocked: stopped ?? tunnelDown, unreachable };
 }
@@ -231,8 +224,8 @@ function HumanActionItem() {
 export function FollowerOverview() {
   const ws = useWorkspace();
   const rev = ws.targetRevision;
-  const [schedule] = useSharedState<Schedule | null>(SCHEDULE_KEY, SCHEDULE_INITIAL);
-  const [tunnelUp] = useSharedState(TUNNEL_KEY, true);
+  const [schedule] = useSharedState<Schedule | null>(SCHEDULE_KEY, ws.followerSchedule);
+  const [tunnelUp] = useSharedState(TUNNEL_KEY, ws.tunnelUp);
   const drifted = ws.plan.find(isHeld);
   const held = ws.plan.filter(isHeld).length;
   const changes = ws.plan.length - held;
@@ -248,7 +241,7 @@ export function FollowerOverview() {
       <PageHeader
         crumbs={["Overview"]}
         actions={
-          ready && !ws.unenrolled && (
+          !ws.capabilities.simulatedTelemetry ? <Button size="sm" variant="outline" onClick={ws.reload}>Reload</Button> : ready && !ws.unenrolled && (
             <Button size="sm" variant="primary" onClick={() => ws.setView("sync")}>
               Review what will change
             </Button>
@@ -256,7 +249,7 @@ export function FollowerOverview() {
         }
       />
       <Body>
-        <StateHeader
+        {!ws.capabilities.simulatedTelemetry ? <StateHeader tone="muted" title={ws.session?.machineName ?? ws.machineName} body="Follower Machine. Status below reflects the recorded synchronization and enrollment evidence." /> : <StateHeader
           tone={tone}
           running={running}
           title={
@@ -274,14 +267,14 @@ export function FollowerOverview() {
           }
           body={
             ws.unenrolled ? (
-              <>This machine no longer gets revisions and has no schedule. Files Canonfig placed stay as they are. Joining again needs a new invitation from {SOURCE}.</>
+              <>This machine no longer gets revisions. Files Canonfig placed stay as they are. Joining again needs a new invitation from {ws.sourceMachine.hostname}.</>
             ) : ready ? (
               <>
                 {ws.appliedRevision === 0 ? (
                   "Nothing is applied on this machine yet."
                 ) : (
                   <>
-                    This machine is on revision <AnimatedNumber value={ws.appliedRevision} />.
+                    {ws.appliedRevision !== undefined && <>This machine is on revision <AnimatedNumber value={ws.appliedRevision} />.</>}
                   </>
                 )}{" "}
                 Revision {rev} changes {changes} {changes === 1 ? "item" : "items"}
@@ -300,12 +293,13 @@ export function FollowerOverview() {
               </>
             )
           }
-        />
+        />}
         {/* Same columns as the Source overview: the side column joins at @3xl, 320px wide. */}
         <div className="grid grid-cols-[minmax(0,1fr)] gap-8 px-4 pt-6 pb-20 @3xl:grid-cols-[minmax(0,1fr)_320px] @3xl:gap-12 @3xl:px-8">
           <div className="min-w-0 space-y-8">
-            <GetStarted rowInset={4} />
-            <section data-tour="follower-needs">
+            <WorkspaceEvidence />
+            {ws.capabilities.simulatedTelemetry && <GetStarted rowInset={4} />}
+            {ws.capabilities.simulatedTelemetry && <section data-tour="follower-needs">
               <SectionLabel>Needs you</SectionLabel>
               <div className="border-t border-border">
                 <InterruptedNotice />
@@ -326,7 +320,7 @@ export function FollowerOverview() {
                         }
                       >
                         You changed <Mono>{drifted.target}</Mono>. Canonfig keeps your edit, reports it and holds what it writes from it. Move the change to your local folder,
-                        or ask {SOURCE} to publish it.
+                        or ask {ws.sourceMachine.hostname} to publish it.
                       </Attention>
                     </AnimatedRow>
                   )}
@@ -338,9 +332,9 @@ export function FollowerOverview() {
                   </div>
                 )}
               </div>
-            </section>
+            </section>}
           </div>
-          <aside className="min-w-0 space-y-8">
+          {ws.capabilities.simulatedTelemetry && <aside className="min-w-0 space-y-8">
             <section data-tour="follower-this-machine">
               <SectionLabel
                 action={
@@ -368,7 +362,7 @@ export function FollowerOverview() {
                 <StatusRow
                   label="Revision"
                   title="Canonfig calls this the profile revision."
-                  value={ws.appliedRevision === 0 ? "None applied yet" : <AnimatedNumber value={ws.appliedRevision} />}
+                  value={ws.appliedRevision === undefined ? "Not reported" : ws.appliedRevision === 0 ? "None applied yet" : <AnimatedNumber value={ws.appliedRevision} />}
                   onClick={() => ws.setView("sync")}
                 />
                 <StatusRow label="Next check" value={schedule ? nextCheck(schedule, DEFAULT_TIME) : "Not scheduled"} onClick={() => ws.setView("schedule")} />
@@ -427,7 +421,7 @@ export function FollowerOverview() {
                 </ol>
               )}
             </section>
-          </aside>
+          </aside>}
         </div>
       </Body>
     </>
@@ -462,16 +456,33 @@ function subscribeSyncDetailLayout(onChange: () => void) {
   return () => query.removeEventListener("change", onChange);
 }
 
-/** Items the Source sends this machine: everything but the gpu group's, which it isn't in. */
-const SENT = resources.filter((r) => !r.groups.includes("gpu")).length;
-const NOT_SENT = resources.length - SENT;
 
 export function SyncView() {
   const ws = useWorkspace();
+  return ws.capabilities.followerWrite ? <SyncForm /> : <FollowerUnavailable title="Sync" members={["sync.plan", "sync.apply", "sync.reviews"]} />;
+}
+
+function FollowerUnavailable({ title, members }: { title: string; members: string[] }) {
+  const ws = useWorkspace();
+  return (
+    <>
+      <PageHeader crumbs={[title]} actions={<Button size="sm" variant="outline" onClick={ws.reload}>Reload</Button>} />
+      <Body>
+        <EmptyState title="This form is not available yet" body={`Not implemented: ${members.join(", ")}. Use the Canonfig CLI for these operations.`} />
+        <div className="max-w-[880px] space-y-8 px-4 py-6 sm:px-8"><WorkspaceEvidence /></div>
+      </Body>
+    </>
+  );
+}
+
+function SyncForm() {
+  const ws = useWorkspace();
+  const sent = ws.resources.filter((r) => r.groups.length === 0 || r.groups.some((group) => ws.selfFollower?.groups.includes(group))).length;
+  const notSent = ws.resources.length - sent;
   const rev = ws.targetRevision;
   const steps = ws.plan;
   const held = steps.filter(isHeld).length;
-  const collisions = unsettledCollisions(ws.local, ws.overlays);
+  const collisions = unsettledCollisions(ws.local, ws.overlays, ws);
   // First adoptions only exist before the run that writes them; afterwards the file holds Canonfig's section.
   const adoption = ws.phase === "plan" ? steps.find((p) => p.adoption) : undefined;
   const sideBySide = useSyncExternalStore(
@@ -489,9 +500,9 @@ export function SyncView() {
   // Column minimums + 4 gaps + row inset padding; narrower screens scroll the list sideways instead of clipping it.
   const colsMin = 18 + 92 + 150 + 200 + 220 + 4 * 12 + 20;
   const current = steps.find((p) => p.resource === selected);
-  const unchanged = Math.max(0, SENT - steps.length);
+  const unchanged = Math.max(0, sent - steps.length);
   const running = ws.phase === "running";
-  const step = Math.min(steps.length, Math.floor((ws.progress / 100) * steps.length) + 1);
+  const step = ws.progress === undefined ? undefined : Math.min(steps.length, Math.floor((ws.progress / 100) * steps.length) + 1);
 
   return (
     <>
@@ -549,7 +560,7 @@ export function SyncView() {
               <h2 className="font-medium">
                 {running ? (
                   <>
-                    Applying step <AnimatedNumber value={step} /> of {steps.length}
+                    {step !== undefined ? <>Applying step <AnimatedNumber value={step} /> of {steps.length}</> : "Applying changes"}
                   </>
                 ) : ws.phase === "done" ? (
                   held > 0 ? (
@@ -577,10 +588,10 @@ export function SyncView() {
                       : null}
               </span>
               <span className="ml-auto shrink-0 rounded bg-background px-2 py-1 font-mono text-xs text-foreground tabular-nums">
-                {running ? `${ws.progress}%` : `${steps.length} ${steps.length === 1 ? "change" : "changes"}`}
+                {running ? ws.progress === undefined ? "Applying" : `${ws.progress}%` : `${steps.length} ${steps.length === 1 ? "change" : "changes"}`}
               </span>
             </div>
-            <DitherProgress value={ws.progress} running={running} label={`Applying revision ${rev}`} className={cn("mt-3", !running && "invisible")} />
+            {ws.progress !== undefined && <DitherProgress value={ws.progress} running={running} label={`Applying revision ${rev}`} className={cn("mt-3", !running && "invisible")} />}
           </div>
         </section>
         {(ws.interrupted || ws.humanAction || collisions.length > 0 || adoption) && (
@@ -599,7 +610,7 @@ export function SyncView() {
                   </Button>
                 }
               >
-                Canonfig hasn't written this file before, so it keeps the entire file as your text, even where it matches what {SOURCE} publishes: matching text doesn't
+                Canonfig hasn't written this file before, so it keeps the entire file as your text, even where it matches what {ws.sourceMachine.hostname} publishes: matching text doesn't
                 show who wrote it. Look at the exact text Canonfig adds and the text it keeps.
               </Attention>
             )}
@@ -631,12 +642,12 @@ export function SyncView() {
             </ListRow>
           );
         })}
-        {(unchanged > 0 || NOT_SENT > 0) && (
+        {(unchanged > 0 || notSent > 0) && (
           <div className="mx-[8px] flex h-[36px] items-center gap-2 px-[10px] text-sm text-faint">
             <Check className="size-3.5" />
             {[
               unchanged > 0 && `${unchanged} other ${unchanged === 1 ? "item already matches" : "items already match"}.`,
-              NOT_SENT > 0 && `${NOT_SENT} ${NOT_SENT === 1 ? "isn't" : "aren't"} sent to this machine.`,
+              notSent > 0 && `${notSent} ${notSent === 1 ? "isn't" : "aren't"} sent to this machine.`,
             ]
               .filter(Boolean)
               .join(" ")}
@@ -668,7 +679,7 @@ function DriftPanel({ item, onClose }: { item: PlanItem; onClose: () => void }) 
       }
     >
       <p className="px-4 py-3 text-base text-pretty text-muted-foreground">
-        You changed <Mono className="text-foreground">{item.target}</Mono>, this machine's copy of what {SOURCE} published, after Canonfig applied revision {applied}. Canonfig
+        You changed <Mono className="text-foreground">{item.target}</Mono>, this machine's copy of what {ws.sourceMachine.hostname} published, after Canonfig applied revision {applied}. Canonfig
         never overwrites it: it keeps your edit, reports it, and holds what it writes from {item.resource} in your harnesses at revision {applied}.
       </p>
       <div className="px-4">
@@ -698,7 +709,7 @@ function DriftPanel({ item, onClose }: { item: PlanItem; onClose: () => void }) 
             published one on this machine.
           </li>
           <li>
-            <span className="text-foreground">Share it with every machine.</span> Ask {SOURCE} to publish the change. Once a revision holds the same content, the file
+            <span className="text-foreground">Share it with every machine.</span> Ask {ws.sourceMachine.hostname} to publish the change. Once a revision holds the same content, the file
             matches again.
           </li>
           <li>
@@ -724,14 +735,14 @@ const proposedText = (sourceAddition: string, retainedLocal: string) => `${SOURC
  * local.allow admits it (withLocalInstructions in src/projection/folder.ts), then links to the rules for harnesses
  * that read rules from their instructions file, as Amp and Codex do (instructionsText in shared-documents.ts).
  */
-function sourceSection(published: Resource[], local: LocalItem[], home: string): string {
+function sourceSection(published: Resource[], local: LocalItem[], home: string, localAllow: LocalCategory[]): string {
   const shared = published.find((r) => r.id === "instructions" && r.change !== "removed")?.detail.Body;
-  const mine = profile.localAllow.includes("instructions") ? local.find((l) => l.id === "instructions")?.detail?.Body : undefined;
+  const mine = localAllow.includes("instructions") ? local.find((l) => l.id === "instructions")?.detail?.Body : undefined;
   const text = shared !== undefined && mine !== undefined ? `${shared}${shared.endsWith("\n") ? "\n" : "\n\n"}${mine}` : (shared ?? mine);
   const sections = text?.trim() ? [text.trim()] : [];
   const rules = [
     ...published.filter((r) => r.category === "rules" && r.change !== "removed").map((r) => ({ path: `${home}/.canonfig/${r.path}`, detail: r.detail })),
-    ...(profile.localAllow.includes("rules") ? local.filter((l) => l.category === "rules").map((l) => ({ path: `${home}/.canonfig/local/${l.path}`, detail: l.detail ?? {} })) : []),
+    ...(localAllow.includes("rules") ? local.filter((l) => l.category === "rules").map((l) => ({ path: `${home}/.canonfig/local/${l.path}`, detail: l.detail ?? {} })) : []),
   ];
   if (rules.length > 0) {
     const scope = (d: Record<string, string>) => {
@@ -767,7 +778,7 @@ function AdoptionPanel({ item, onClose }: { item: PlanItem; onClose: () => void 
   const reviewDir = review && reviewDirOf(review.id);
   const planned = ws.phase === "plan";
   const write = () => {
-    const sourceAddition = sourceSection(ws.resources, ws.local, followerSelf.home);
+    const sourceAddition = sourceSection(ws.resources, ws.local, ws.followerSelf.home, ws.profile.localAllow);
     const files = ws.plan.flatMap((p) => (p.adoption ? [{ target: p.target, sourceAddition, retainedLocal: p.adoption.retained }] : []));
     setReview({ id: DEMO_REVIEW_ID, files });
     toast(`Wrote ${files.length} private ${files.length === 1 ? "review" : "reviews"}`, {
@@ -780,7 +791,7 @@ function AdoptionPanel({ item, onClose }: { item: PlanItem; onClose: () => void 
       subtitle={<Mono>{item.target}</Mono>}
       onClose={onClose}
       footer={
-        review ? (
+        !ws.capabilities.privateReviewDelete ? null : review ? (
           <Button
             variant="outline"
             size="sm"
@@ -803,7 +814,7 @@ function AdoptionPanel({ item, onClose }: { item: PlanItem; onClose: () => void 
         {planned ? (
           <>
             Canonfig hasn't written this file before. It backs it up, adds its own section at the top between two markers, and keeps the entire file you have below it as
-            your text, even where it matches what {SOURCE} publishes: matching text doesn't show who wrote it. Later updates replace only Canonfig's section.
+            your text, even where it matches what {ws.sourceMachine.hostname} publishes: matching text doesn't show who wrote it. Later updates replace only Canonfig's section.
           </>
         ) : (
           <>Applied. Canonfig's section sits at the top of the file and your text below it. Later updates replace only Canonfig's section.</>
@@ -859,12 +870,18 @@ function ReviewText({ label, children }: { label: string; children: string }) {
 
 export function ScheduleView() {
   const ws = useWorkspace();
-  const [saved, setSaved] = useSharedState<Schedule | null>(SCHEDULE_KEY, SCHEDULE_INITIAL);
-  // With no schedule set, the form starts from the Source's default, so Save sets one.
-  const [draft, setDraft] = useState<Schedule>(saved ?? SCHEDULE_INITIAL);
+  return ws.capabilities.followerWrite ? <ScheduleForm /> : <FollowerUnavailable title="Schedule" members={["schedule.read", "schedule.save"]} />;
+}
+
+function ScheduleForm() {
+  const ws = useWorkspace();
+  const [saved, setSaved] = useSharedState<Schedule | null>(SCHEDULE_KEY, ws.followerSchedule);
+  // This is an unsaved form draft, not evidence of an installed schedule.
+  const initial: Schedule = saved ?? { cadence: "default", days: [], time: ws.profileSchedule?.time ?? "" };
+  const [draft, setDraft] = useState<Schedule>(initial);
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
   // With nothing saved, the untouched form is only the Source's default on offer, not an edit to lose.
-  const { dialog: leaveDialog } = useLeaveGuard(JSON.stringify(draft) !== JSON.stringify(saved ?? SCHEDULE_INITIAL), "the schedule");
+  const { dialog: leaveDialog } = useLeaveGuard(JSON.stringify(draft) !== JSON.stringify(initial), "the schedule");
   const error = scheduleError(draft);
   const defaultLabel = "every day at 09:00";
   const { stopped } = useSyncBlocks();
@@ -922,8 +939,6 @@ function localPath(category: LocalCategory, name: string) {
   return category === "skills" ? `skills/${name}/` : `${category}/${name}.md`;
 }
 
-/** Items in this machine's mirror of the revision; a local item that reuses their names needs an overlay. */
-const PUBLISHED = resources.filter((r) => r.change !== "added");
 
 /** Whether two settings key paths name the same key or one sits inside the other. */
 const overlaps = (a: string, b: string) => a === b || a.startsWith(`${b}.`) || b.startsWith(`${a}.`);
@@ -934,23 +949,23 @@ const overlaps = (a: string, b: string) => a === b || a.startsWith(`${b}.`) || b
  * collide, and local/AGENTS.md is appended rather than compared. The message leaves out the command it suggests:
  * here that choice is a button.
  */
-function collisionOf(l: LocalItem): string | null {
-  if (l.category === "instructions" || !profile.localAllow.includes(l.category)) return null;
+function collisionOf(l: LocalItem, ws: Pick<Workspace, "profile" | "resources">): string | null {
+  if (l.category === "instructions" || !ws.profile.localAllow.includes(l.category)) return null;
   const name = l.id.slice(l.category.length + 1);
   if (l.category === "settings") {
-    const published = Object.keys(resources.find((r) => r.id === l.id)?.keys ?? {});
+    const published = Object.keys(ws.resources.find((r) => r.id === l.id)?.keys ?? {});
     for (const key of Object.keys(l.keys ?? {})) {
       const clash = published.find((p) => overlaps(key, p));
       if (clash) return `local setting ${name} ${key} overlaps published setting ${clash}; remove one of them`;
     }
     return null;
   }
-  return PUBLISHED.some((r) => r.id === l.id) ? `local ${LOCAL_ONE[l.category]} ${name} has the same name as a published one; rename or remove one of them` : null;
+  return ws.resources.some((r) => r.change !== "added" && r.id === l.id) ? `local ${LOCAL_ONE[l.category]} ${name} has the same name as a published one; rename or remove one of them` : null;
 }
 
 /** Local items whose collision no overlay settles. Any one stops the whole update before it changes anything. */
-function unsettledCollisions(local: LocalItem[], overlays: string[]) {
-  return local.filter((l) => !overlays.includes(l.id) && collisionOf(l) !== null);
+function unsettledCollisions(local: LocalItem[], overlays: string[], ws: Pick<Workspace, "profile" | "resources">) {
+  return local.filter((l) => !overlays.includes(l.id) && collisionOf(l, ws) !== null);
 }
 
 /** A key claim, `settings/<harness>#<key>` in local.jsonc `overlays`, or null for an item overlay. */
@@ -966,7 +981,7 @@ const covers = (claimed: string, key: string) => key === claimed || key.startsWi
  * The keys Canonfig writes in a harness's settings file here: the ones its adapter always owns and the ones
  * SOURCE publishes in settings.<harness>.
  */
-function writtenKeys(harness: HarnessId) {
+function writtenKeys(harness: HarnessId, resources: Resource[]) {
   return [...(SETTINGS_FILES[harness]?.owned ?? []), ...Object.keys(resources.find((r) => r.id === `settings/${harness}`)?.keys ?? {})];
 }
 
@@ -976,7 +991,7 @@ function writtenKeys(harness: HarnessId) {
  * a claim inside a value only at the next update; here the claim is refused up front, as the local editor refuses
  * a name collision.
  */
-function claimError(harness: HarnessId | "", key: string, overlays: string[], local: LocalItem[]): string | null {
+function claimError(harness: HarnessId | "", key: string, overlays: string[], local: LocalItem[], resources: Resource[]): string | null {
   if (!harness) return "Choose a harness.";
   if (!key) return "Enter a key, such as model.";
   if (!/^(?:[^.\\]|\\[.\\])+(?:\.(?:[^.\\]|\\[.\\])+)*$/.test(key)) return "Use a settings path such as model or tui.theme; write \\. for a dot inside a key name.";
@@ -985,7 +1000,7 @@ function claimError(harness: HarnessId | "", key: string, overlays: string[], lo
   const segments = key.split(".");
   const reserved = SETTINGS_FILES[harness]?.reserved.find((pattern) => pattern.split(".").every((part, i) => i >= segments.length || part === "*" || part === segments[i]));
   if (reserved) return `${HARNESS_NAMES[harness]} keeps ${reserved} for itself, so Canonfig never writes it and there is nothing to claim.`;
-  const whole = writtenKeys(harness).find((written) => key.startsWith(`${written}.`));
+  const whole = writtenKeys(harness, resources).find((written) => key.startsWith(`${written}.`));
   if (whole) return `Canonfig writes ${whole} as one value, so the update would stop: “overlay ${item} claims part of ${whole}, which Canonfig writes as one value; claim ${whole} instead”. Claim ${whole} instead.`;
   const localKey = Object.keys(local.find((l) => l.id === `settings/${harness}`)?.keys ?? {}).find((k) => overlaps(k, key));
   if (localKey) return `Your local settings also set ${localKey} for ${harness}, so the update would stop: “local setting ${harness} ${localKey} overlaps the key claim ${item}; remove one of them”. Remove that key first.`;
@@ -1004,7 +1019,7 @@ function CollisionNotice({ collisions }: { collisions: LocalItem[] }) {
             title={
               <>
                 <Term term="Human Action Required">Needs you</Term>:{" "}
-                {collisions.length === 1 ? `${collisions[0].id} clashes with what ${SOURCE} publishes` : `${collisions.length} local items clash with what ${SOURCE} publishes`}
+                {collisions.length === 1 ? `${collisions[0].id} clashes with what ${ws.sourceMachine.hostname} publishes` : `${collisions.length} local items clash with what ${ws.sourceMachine.hostname} publishes`}
               </>
             }
             actions={
@@ -1013,7 +1028,7 @@ function CollisionNotice({ collisions }: { collisions: LocalItem[] }) {
               </Button>
             }
           >
-            The update stops before it changes anything: {collisions.map((l) => `“${collisionOf(l)}”`).join(" ")}. Rename or remove yours, or let it replace the published one
+            The update stops before it changes anything: {collisions.map((l) => `“${collisionOf(l, ws)}”`).join(" ")}. Rename or remove yours, or let it replace the published one
             on this machine.
           </Attention>
         </AnimatedRow>
@@ -1024,7 +1039,12 @@ function CollisionNotice({ collisions }: { collisions: LocalItem[] }) {
 
 export function LocalView() {
   const ws = useWorkspace();
-  const allowed = profile.localAllow;
+  return ws.capabilities.followerWrite ? <LocalForm /> : <FollowerUnavailable title={PLAIN.localNav} members={["local.items", "local.preferences", "local.overlays"]} />;
+}
+
+function LocalForm() {
+  const ws = useWorkspace();
+  const allowed = ws.profile.localAllow;
   const selected = ws.focus;
   const adding = selected === "new";
   const current = ws.local.find((l) => l.id === selected);
@@ -1040,25 +1060,25 @@ export function LocalView() {
   const [removingOverlay, setRemovingOverlay] = useState<string | null>(null);
   // local.jsonc keeps item overlays and key claims in one list; this section shows the items, KeyClaims the claims.
   const itemOverlays = ws.overlays.filter((o) => claimOf(o) === null);
-  const collisions = unsettledCollisions(ws.local, ws.overlays);
+  const collisions = unsettledCollisions(ws.local, ws.overlays, ws);
   // An item's state as `sync --plan` sees it: ignored outside local.allow, stopping on an unsettled name collision,
   // or projected (replacing the published item when an overlay names it).
   const statusOf = (l: LocalItem): [StatusKind, string, string | undefined] => {
     if (!allowed.includes(l.category)) {
       // The warning `canonfig sync --plan` prints for a category local.allow leaves out (src/projection/plan.ts).
       const where = l.category === "instructions" ? "local/AGENTS.md" : l.category === "mcp" || l.category === "settings" ? `local/local.jsonc ${l.category}` : `local/${l.category}/`;
-      return ["warn", `Not used: ${SOURCE} doesn't allow local ${l.category}`, `${where} is not admitted by canonfig.jsonc local.allow and was not projected`];
+      return ["warn", `Not used: ${ws.sourceMachine.hostname} doesn't allow local ${l.category}`, `${where} is not admitted by canonfig.jsonc local.allow and was not projected`];
     }
-    const collision = collisionOf(l);
+    const collision = collisionOf(l, ws);
     const settings = l.category === "settings";
     if (collision && !ws.overlays.includes(l.id)) return ["act", `${settings ? "Overlaps published keys" : "Same name as a published one"}: the update stops`, collision];
-    if (collision) return ["ok", settings ? `Replaces the ${SOURCE} keys it overlaps` : `Replaces ${SOURCE}'s ${l.id} here`, undefined];
+    if (collision) return ["ok", settings ? `Replaces the ${ws.sourceMachine.hostname} keys it overlaps` : `Replaces ${ws.sourceMachine.hostname}'s ${l.id} here`, undefined];
     return ["ok", l.category === "instructions" ? "Added after the published instructions" : "Added to your harnesses", undefined];
   };
   // Harness files whose own content append-local keeps: what earlier updates kept, plus first adoptions the plan holds.
   const lineCount = (text: string) => text.replace(/\n$/, "").split("\n").length;
   const kept: (KeptSurface & { adopting?: string })[] = [
-    ...ws.kept.filter((k) => profile.appendLocal.includes(k.category)),
+    ...ws.kept.filter((k) => ws.profile.appendLocal.includes(k.category)),
     ...ws.plan.flatMap((p) => (p.adoption ? [{ category: "instructions" as const, target: p.target, text: p.adoption.retained, adopting: ws.phase !== "done" ? p.resource : undefined }] : [])),
   ];
 
@@ -1081,8 +1101,8 @@ export function LocalView() {
       />
       <Body detail={(adding || current) && <LocalEditor key={adding ? "new" : selected} item={adding ? null : current!} onClose={() => ws.go("local")} />}>
         <p className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
-          Items here live in <Mono className="text-foreground">~/.canonfig/local</Mono> on this machine. Canonfig adds them to what {SOURCE} publishes, never replaces them and
-          never sends them to the Source. {SOURCE} decides which kinds a machine may add. Canonfig calls this the <Term term="Local folder">local folder</Term>.
+          Items here live in <Mono className="text-foreground">~/.canonfig/local</Mono> on this machine. Canonfig adds them to what {ws.sourceMachine.hostname} publishes, never replaces them and
+          never sends them to the Source. {ws.sourceMachine.hostname} decides which kinds a machine may add. Canonfig calls this the <Term term="Local folder">local folder</Term>.
         </p>
         <ListHead cols={cols} minWidth={colsMin} data-tour="local-list">
           <span>Name</span>
@@ -1098,10 +1118,10 @@ export function LocalView() {
                 icon={CATEGORY_ICON[c]}
                 label={CATEGORY_LABEL[c].label}
                 count={items.length}
-                hint={ok ? `${SOURCE} allows local ${CATEGORY_LABEL[c].label.toLowerCase()}.` : `${SOURCE}'s canonfig.jsonc local.allow leaves out ${c}, so Canonfig reports these and doesn't use them.`}
+                hint={ok ? `${ws.sourceMachine.hostname} allows local ${CATEGORY_LABEL[c].label.toLowerCase()}.` : `${ws.sourceMachine.hostname}'s canonfig.jsonc local.allow leaves out ${c}, so Canonfig reports these and doesn't use them.`}
                 minWidth={colsMin}
               />
-              {items.length === 0 && <p className="mx-[8px] flex h-9 items-center px-[10px] text-sm text-faint">{ok ? "None yet." : `Not allowed by ${SOURCE}.`}</p>}
+              {items.length === 0 && <p className="mx-[8px] flex h-9 items-center px-[10px] text-sm text-faint">{ok ? "None yet." : `Not allowed by ${ws.sourceMachine.hostname}.`}</p>}
               <RowPresence>
                 {items.map((l) => {
                   const [kind, label, title] = statusOf(l);
@@ -1128,8 +1148,8 @@ export function LocalView() {
             <Term term="Local Overlay">Replacing published items</Term>
           </SectionLabel>
           <p className="pb-2 text-sm text-pretty text-muted-foreground">
-            A local item with the same name as one {SOURCE} publishes stops every update, because Canonfig won't pick one. Rename or remove yours, or let it replace{" "}
-            {SOURCE}'s on this machine. These choices live in local.jsonc and never go to {SOURCE}.
+            A local item with the same name as one {ws.sourceMachine.hostname} publishes stops every update, because Canonfig won't pick one. Rename or remove yours, or let it replace{" "}
+            {ws.sourceMachine.hostname}'s on this machine. These choices live in local.jsonc and never go to {ws.sourceMachine.hostname}.
           </p>
           <div data-tour="local-overlays" className={cn("mt-1 max-w-[880px]", settingsGroup)}>
             {itemOverlays.length === 0 && collisions.length === 0 && <p className="px-[16px] py-3 text-sm text-faint">No local item shares a published item's name.</p>}
@@ -1137,19 +1157,19 @@ export function LocalView() {
               <SettingRow
                 key={`collision:${l.id}`}
                 title={
-                  <span className="flex items-center gap-2" title={collisionOf(l) ?? undefined}>
+                  <span className="flex items-center gap-2" title={collisionOf(l, ws) ?? undefined}>
                     <StatusMark kind="act" />
                     <span className="font-mono text-sm">{l.id}</span>
                   </span>
                 }
-                description={`${l.category === "settings" ? `Sets keys ${SOURCE} also sets` : `Same name as ${SOURCE}'s`}, so the next update stops and needs you.`}
+                description={`${l.category === "settings" ? `Sets keys ${ws.sourceMachine.hostname} also sets` : `Same name as ${ws.sourceMachine.hostname}'s`}, so the next update stops and needs you.`}
               >
                 <Button
                   variant="outline"
                   size="xs"
                   onClick={() => {
                     ws.setOverlays((prev) => [...prev, l.id]);
-                    toast.success(`Yours replaces ${SOURCE}'s ${l.id}`, {
+                    toast.success(`Yours replaces ${ws.sourceMachine.hostname}'s ${l.id}`, {
                       description: `Saved as an overlay in ~/.canonfig/local/local.jsonc.\nThe next update uses your ${l.id} on this machine.${DEMO ? "\nSaved in this demo workspace." : ""}`,
                     });
                   }}
@@ -1160,7 +1180,7 @@ export function LocalView() {
             ))}
             {itemOverlays.map((o) => {
               const mine = ws.local.some((l) => l.id === o && allowed.includes(l.category));
-              const theirs = PUBLISHED.some((r) => r.id === o);
+              const theirs = ws.resources.some((r) => r.change !== "added" && r.id === o);
               // The plan's OVERLAY_UNUSED warning (src/projection/plan.ts), without the command it suggests.
               const unused = `overlay ${o} finds no admitted local/ item of that name, so ${theirs ? "the published item is projected" : "it changes nothing"}`;
               return (
@@ -1176,10 +1196,10 @@ export function LocalView() {
                     mine
                       ? theirs
                         ? o.startsWith("settings/")
-                          ? `Your keys replace the ${SOURCE} keys they overlap in ${o} on this machine; the others stay.`
-                          : `Your ${o} replaces ${SOURCE}'s on this machine.`
-                        : `${SOURCE} doesn't publish ${o}, so yours is simply added.`
-                      : `No local ${o} here, so ${theirs ? `${SOURCE}'s is used` : "this changes nothing"}. Add the local item, or remove this.`
+                          ? `Your keys replace the ${ws.sourceMachine.hostname} keys they overlap in ${o} on this machine; the others stay.`
+                          : `Your ${o} replaces ${ws.sourceMachine.hostname}'s on this machine.`
+                        : `${ws.sourceMachine.hostname} doesn't publish ${o}, so yours is simply added.`
+                      : `No local ${o} here, so ${theirs ? `${ws.sourceMachine.hostname}'s is used` : "this changes nothing"}. Add the local item, or remove this.`
                   }
                 >
                   <Button variant="outline" size="xs" onClick={() => setRemovingOverlay(o)}>
@@ -1198,9 +1218,9 @@ export function LocalView() {
             <Term term="Append-local">Your own content in shared files</Term>
           </SectionLabel>
           <p className="pb-2 text-sm text-pretty text-muted-foreground">
-            {profile.appendLocal.length > 0
-              ? `${SOURCE} shares ${profile.appendLocal.map((c) => APPEND_LOCAL_LABEL[c].toLowerCase()).join(" and ")} with this machine. Canonfig owns only its marked section of each instructions file and the skills it writes; what you put there stays, byte for byte, and never counts as an edit.`
-              : `${SOURCE} doesn't share instructions files or skills folders, so Canonfig owns them whole. Keep your own text and skills in ~/.canonfig/local.`}
+            {ws.profile.appendLocal.length > 0
+              ? `${ws.sourceMachine.hostname} shares ${ws.profile.appendLocal.map((c) => APPEND_LOCAL_LABEL[c].toLowerCase()).join(" and ")} with this machine. Canonfig owns only its marked section of each instructions file and the skills it writes; what you put there stays, byte for byte, and never counts as an edit.`
+              : `${ws.sourceMachine.hostname} doesn't share instructions files or skills folders, so Canonfig owns them whole. Keep your own text and skills in ~/.canonfig/local.`}
           </p>
           {kept.length > 0 && (
             <div data-tour="local-kept" className={cn("mt-1 max-w-[880px]", settingsGroup)}>
@@ -1230,7 +1250,7 @@ export function LocalView() {
         <div className="px-[18px] pt-8">
           <SectionLabel>Harnesses on this machine</SectionLabel>
           <p className="pb-2 text-sm text-pretty text-muted-foreground">
-            Canonfig writes the folder into each harness {SOURCE} lists that is installed here. Untick one to exclude it on this machine only; {SOURCE}'s list stays as it is.
+            Canonfig writes the folder into each harness {ws.sourceMachine.hostname} lists that is installed here. Untick one to exclude it on this machine only; {ws.sourceMachine.hostname}'s list stays as it is.
           </p>
         </div>
         <div data-tour="local-harnesses">
@@ -1244,7 +1264,7 @@ export function LocalView() {
               htmlFor="local-backups"
               description={
                 <>
-                  <Mono>"backups"</Mono> in local.jsonc. Only this machine decides; {SOURCE} can't turn it off.
+                  <Mono>"backups"</Mono> in local.jsonc. Only this machine decides; {ws.sourceMachine.hostname} can't turn it off.
                 </>
               }
             >
@@ -1267,9 +1287,9 @@ export function LocalView() {
         onOpenChange={(o) => !o && setRemovingOverlay(null)}
         title={`Stop replacing ${removingOverlay}?`}
         body={
-          ws.local.some((l) => l.id === removingOverlay && collisionOf(l) !== null)
+          ws.local.some((l) => l.id === removingOverlay && collisionOf(l, ws) !== null)
             ? `Canonfig removes the overlay from ~/.canonfig/local/local.jsonc. Your ${removingOverlay} stays, so the next update stops with the name collision until you rename or remove it.`
-            : `Canonfig removes the overlay from ~/.canonfig/local/local.jsonc. No local item of that name clashes with what ${SOURCE} publishes, so nothing else changes.`
+            : `Canonfig removes the overlay from ~/.canonfig/local/local.jsonc. No local item of that name clashes with what ${ws.sourceMachine.hostname} publishes, so nothing else changes.`
         }
         confirm="Remove"
         onConfirm={() => {
@@ -1301,7 +1321,7 @@ function KeyClaims() {
     return claim ? [{ item, ...claim }] : [];
   });
   const trimmed = key.trim();
-  const error = claimError(harness, trimmed, ws.overlays, ws.local);
+  const error = claimError(harness, trimmed, ws.overlays, ws.local, ws.resources);
   const add = () => {
     setTried(true);
     if (error || !harness) {
@@ -1316,7 +1336,7 @@ function KeyClaims() {
     setTried(false);
   };
   const removed = removing === null ? null : claimOf(removing);
-  const removedValue = removed && resources.find((r) => r.id === `settings/${removed.harness}`)?.keys?.[removed.key];
+  const removedValue = removed && ws.resources.find((r) => r.id === `settings/${removed.harness}`)?.keys?.[removed.key];
 
   return (
     <div className="px-4 pt-8 sm:px-[18px]">
@@ -1325,13 +1345,13 @@ function KeyClaims() {
       </SectionLabel>
       <p className="pb-2 text-sm text-pretty text-muted-foreground">
         Claim one key of a harness's settings file to set it in that file yourself. Canonfig stops writing, removing or checking that key on this machine, and the
-        other keys it writes there keep following {SOURCE}. Claims live in local.jsonc and never go to {SOURCE}.
+        other keys it writes there keep following {ws.sourceMachine.hostname}. Claims live in local.jsonc and never go to {ws.sourceMachine.hostname}.
       </p>
       <div data-tour="local-claims" className={cn("mt-1 max-w-[880px]", settingsGroup)}>
         {claims.length === 0 && <p className="px-[16px] py-3 text-sm text-faint">No key is claimed, so Canonfig writes every key it owns.</p>}
         {claims.map((c) => {
           const name = HARNESS_NAMES[c.harness];
-          const written = writtenKeys(c.harness);
+          const written = writtenKeys(c.harness, ws.resources);
           const whole = written.find((k) => c.key.startsWith(`${k}.`));
           const covered = written.filter((k) => covers(c.key, k));
           // The refusal buildProjection gives, and the plan's CLAIM_UNUSED warning (src/projection/plan.ts).
@@ -1339,7 +1359,7 @@ function KeyClaims() {
             ? ["act", `Canonfig writes ${whole} as one value, so the next update stops. Claim ${whole} instead.`, `overlay ${c.item} claims part of ${whole}, which Canonfig writes as one value; claim ${whole} instead`]
             : covered.length === 0
               ? ["warn", `Canonfig writes no ${c.key} in ${name}'s settings file, so this changes nothing.`, `overlay ${c.item} covers no key Canonfig writes in ${c.harness}'s settings file, so it changes nothing`]
-              : ["ok", `${SOURCE} sets ${covered.join(", ")}. Here you set it in ${name}'s settings file, and Canonfig leaves it alone.`, undefined];
+              : ["ok", `${ws.sourceMachine.hostname} sets ${covered.join(", ")}. Here you set it in ${name}'s settings file, and Canonfig leaves it alone.`, undefined];
           return (
             <SettingRow
               key={`claim:${c.item}`}
@@ -1402,10 +1422,10 @@ function KeyClaims() {
       <ConfirmDialog
         open={removing !== null}
         onOpenChange={(o) => !o && setRemoving(null)}
-        title={`Give ${removed?.key} back to ${SOURCE}?`}
+        title={`Give ${removed?.key} back to ${ws.sourceMachine.hostname}?`}
         body={
-          removed && writtenKeys(removed.harness).some((k) => covers(removed.key, k))
-            ? `Canonfig removes the claim from ~/.canonfig/local/local.jsonc. The next update writes ${SOURCE}'s ${removed.key}${removedValue ? ` (${removedValue})` : ""} over yours in ${HARNESS_NAMES[removed.harness]}'s settings file, and an edit after that counts as a local change.`
+          removed && writtenKeys(removed.harness, ws.resources).some((k) => covers(removed.key, k))
+            ? `Canonfig removes the claim from ~/.canonfig/local/local.jsonc. The next update writes ${ws.sourceMachine.hostname}'s ${removed.key}${removedValue ? ` (${removedValue})` : ""} over yours in ${HARNESS_NAMES[removed.harness]}'s settings file, and an edit after that counts as a local change.`
             : `Canonfig removes the claim from ~/.canonfig/local/local.jsonc. It writes no ${removed?.key} there, so nothing else changes.`
         }
         confirm="Remove"
@@ -1434,7 +1454,7 @@ interface KeyRow {
 function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () => void }) {
   const ws = useWorkspace();
   const isNew = item === null;
-  const allowed = profile.localAllow;
+  const allowed = ws.profile.localAllow;
   // local/AGENTS.md is one file, so a folder that has it offers no second one.
   const kinds = allowed.filter((c) => c !== "instructions" || !ws.local.some((l) => l.id === "instructions" && l !== item));
   const initial: LocalItem = item ?? { id: "", category: kinds[0], path: "", summary: "", detail: {} };
@@ -1452,8 +1472,8 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
   const id = isInstructions ? "instructions" : `${category}/${trimmed}`;
   const isFile = !isInstructions && category !== "mcp" && category !== "settings";
   const transport = detail.Transport ?? "stdio";
-  const published = PUBLISHED.find((r) => r.id === id);
-  const publishedKeys = category === "settings" ? Object.keys(resources.find((r) => r.id === id)?.keys ?? {}) : [];
+  const published = ws.resources.find((r) => r.change !== "added" && r.id === id);
+  const publishedKeys = category === "settings" ? Object.keys(ws.resources.find((r) => r.id === id)?.keys ?? {}) : [];
   const keyClash = (key: string) => publishedKeys.find((p) => overlaps(key, p));
   // What projection would compare: only admitted categories load, and local/AGENTS.md is appended, never compared.
   const collides =
@@ -1470,7 +1490,7 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
         : ws.local.some((l) => l.id === id && l !== item)
           ? `${id} is already in your local folder.`
           : collides && category !== "settings" && !replace
-            ? `${SOURCE} publishes ${id} too, so the update would stop and need you: “local ${LOCAL_ONE[category]} ${trimmed} has the same name as a published one; rename or remove one of them”. Rename yours, or let it replace the published one.`
+            ? `${ws.sourceMachine.hostname} publishes ${id} too, so the update would stop and need you: “local ${LOCAL_ONE[category]} ${trimmed} has the same name as a published one; rename or remove one of them”. Rename yours, or let it replace the published one.`
             : null;
   const requiredError = isFile
     ? category !== "rules" && !detail.Description?.trim()
@@ -1485,7 +1505,7 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
   // part of that section, so marker text in it stops projection for each harness (sourceTextIssue).
   const markerHarness = ws.harnesses.find((h) => h.listed && h.installed && !h.excluded)?.id ?? "codex";
   const markerError =
-    isInstructions && profile.appendLocal.includes("instructions") && [SOURCE_TEXT_START, SOURCE_TEXT_END].some((m) => (detail.Body ?? "").includes(m))
+    isInstructions && ws.profile.appendLocal.includes("instructions") && [SOURCE_TEXT_START, SOURCE_TEXT_END].some((m) => (detail.Body ?? "").includes(m))
       ? `Remove the Canonfig marker text. Every update would stop: “${markerHarness} instructions cannot keep this machine's text: append-local Source text contains a reserved Canonfig marker”.`
       : null;
   const rowError = (r: KeyRow) => {
@@ -1496,7 +1516,7 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
     if (claimed) return `You claimed ${claimed.key} for ${trimmed}, so the update would stop: “local setting ${trimmed} ${key} overlaps the key claim settings/${trimmed}#${claimed.key}; remove one of them”. Remove the key, or remove the claim under Settings keys you set yourself.`;
     const clash = keyClash(key);
     return clash && !replace
-      ? `${SOURCE} sets ${clash} for ${trimmed}, so the update would stop and need you: “local setting ${trimmed} ${key} overlaps published setting ${clash}; remove one of them”. Remove the key, or let yours replace the published one.`
+      ? `${ws.sourceMachine.hostname} sets ${clash} for ${trimmed}, so the update would stop and need you: “local setting ${trimmed} ${key} overlaps published setting ${clash}; remove one of them”. Remove the key, or let yours replace the published one.`
       : null;
   };
   const badRow = category === "settings" ? rows.find((r) => rowError(r) !== null) : undefined;
@@ -1540,7 +1560,7 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
     toast.success(`Saved ${id}`, {
       description: `Written to ~/.canonfig/local/${next.path}.\n${
         isInstructions ? "The next update adds it after the published instructions in every harness." : "The next update adds it to your harnesses."
-      }${overlaid ? `\n${category === "settings" ? `Your keys replace the ${SOURCE} keys they overlap in ${id}` : `Yours replaces ${SOURCE}'s ${id} here`}: saved as an overlay in local.jsonc.` : ""}${DEMO ? "\nSaved in this demo workspace." : ""}`,
+      }${overlaid ? `\n${category === "settings" ? `Your keys replace the ${ws.sourceMachine.hostname} keys they overlap in ${id}` : `Yours replaces ${ws.sourceMachine.hostname}'s ${id} here`}: saved as an overlay in local.jsonc.` : ""}${DEMO ? "\nSaved in this demo workspace." : ""}`,
     });
     leaveWithoutAsking(() => ws.go("local", id, { replace: isNew }));
   };
@@ -1584,10 +1604,10 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
       <div className="grid gap-4 px-4 py-4">
         {!allowed.includes(category) && (
           <p className="text-sm text-pretty text-warn">
-            {SOURCE}'s canonfig.jsonc local.allow leaves out {category}, so Canonfig reports this item and doesn't use it. Ask {SOURCE} to allow local {category}, or remove it.
+            {ws.sourceMachine.hostname}'s canonfig.jsonc local.allow leaves out {category}, so Canonfig reports this item and doesn't use it. Ask {ws.sourceMachine.hostname} to allow local {category}, or remove it.
           </p>
         )}
-        <Field label="Kind" htmlFor="local-category" description={isNew ? `${SOURCE} allows ${allowed.map((c) => CATEGORY_LABEL[c].label.toLowerCase()).join(", ")}.` : undefined}>
+        <Field label="Kind" htmlFor="local-category" description={isNew ? `${ws.sourceMachine.hostname} allows ${allowed.map((c) => CATEGORY_LABEL[c].label.toLowerCase()).join(", ")}.` : undefined}>
           <Select
             value={category}
             disabled={!isNew}
@@ -1767,7 +1787,7 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
             })}
             {publishedKeys.length > 0 && (
               <p className="text-xs text-pretty text-faint">
-                {SOURCE} already sets {publishedKeys.join(", ")} for this harness. A local key that overlaps one of those stops the update unless yours replaces it.
+                {ws.sourceMachine.hostname} already sets {publishedKeys.join(", ")} for this harness. A local key that overlaps one of those stops the update unless yours replaces it.
               </p>
             )}
           </div>
@@ -1776,11 +1796,11 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
           <div className="grid grid-cols-[16px_minmax(0,1fr)] items-start gap-x-2 gap-y-0.5">
             <Checkbox id="local-replace" checked={replace} onCheckedChange={(on) => setReplace(on === true)} className="mt-0.5" />
             <Label htmlFor="local-replace" className="cursor-pointer text-base font-normal text-pretty">
-              Let mine replace {SOURCE}'s on this machine
+              Let mine replace {ws.sourceMachine.hostname}'s on this machine
             </Label>
             <p className="col-start-2 text-sm text-pretty text-faint">
-              {category === "settings" ? `Your keys replace the published keys they overlap in ${id}; ${SOURCE}'s other keys stay.` : `Your ${id} is used here instead of ${SOURCE}'s.`}{" "}
-              Kept in local.jsonc as a <Term term="Local Overlay">local replacement</Term> and never sent to {SOURCE}.
+              {category === "settings" ? `Your keys replace the published keys they overlap in ${id}; ${ws.sourceMachine.hostname}'s other keys stay.` : `Your ${id} is used here instead of ${ws.sourceMachine.hostname}'s.`}{" "}
+              Kept in local.jsonc as a <Term term="Local Overlay">local replacement</Term> and never sent to {ws.sourceMachine.hostname}.
             </p>
           </div>
         )}
@@ -1810,7 +1830,7 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
 
 export function FollowerSecretsView() {
   const ws = useWorkspace();
-  const [refresh, setRefresh] = useSharedState(SECRETS_KEY, SECRETS_INITIAL);
+  const [refresh, setRefresh] = useSharedState(SECRETS_KEY, ws.secretsRefresh);
   const { blocked, unreachable } = useSyncBlocks();
   const cols = "minmax(180px,240px) minmax(140px,1fr)";
   const colsMin = 180 + 140 + 12 + 20;
@@ -1823,7 +1843,7 @@ export function FollowerSecretsView() {
             data-tour="secrets-update"
             size="sm"
             variant="primary"
-            disabled={refresh.busy || blocked !== null}
+            disabled={!ws.capabilities.followerWrite || refresh.busy || blocked !== null}
             onClick={() => {
               setRefresh((prev) => ({ ...prev, busy: true }));
               ws.later(() => {
@@ -1844,18 +1864,13 @@ export function FollowerSecretsView() {
       />
       <Body reloading={refresh.busy}>
         <p data-tour="secrets-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
-          This machine{" "}
-          <Term term="Follower Group">
-            <span className="lowercase">{PLAIN.secretsGroup}</span>
-          </Term>{" "}
-          (group <Mono className="text-foreground">{SECRETS_GROUP}</Mono>), so it gets shared secrets from atlas
-          into the macOS Keychain. Last updated {refresh.updated}.{blocked && ` ${blocked}`}
+          {ws.capabilities.simulatedTelemetry ? <>This machine <Term term="Follower Group"><span className="lowercase">{PLAIN.secretsGroup}</span></Term> (group <Mono className="text-foreground">{SECRETS_GROUP}</Mono>), so it gets shared secrets from {ws.sourceMachine.hostname} into the macOS Keychain. Last updated {refresh.updated}.{blocked && ` ${blocked}`}</> : "Secret values stay in the native credential store. Only metadata is shown here."}
         </p>
         <ListHead cols={cols} minWidth={colsMin} data-tour="secrets-list">
           <span>Name</span>
-          <span>Updated on atlas</span>
+          <span>Updated at Source</span>
         </ListHead>
-        {seedSecrets.map((s) => (
+        {ws.secrets.map((s) => (
           <ListRow key={s.name} cols={cols} minWidth={colsMin} data-tour="secrets-list">
             <span className="flex min-w-0 items-center gap-2">
               <Key className="size-3.5 shrink-0 text-faint" />
@@ -1871,7 +1886,12 @@ export function FollowerSecretsView() {
 
 export function TunnelView() {
   const ws = useWorkspace();
-  const [up, setUp] = useSharedState(TUNNEL_KEY, true);
+  return ws.capabilities.followerWrite ? <TunnelForm /> : <FollowerUnavailable title="SSH tunnel" members={["tunnel.status", "tunnel.start", "tunnel.stop"]} />;
+}
+
+function TunnelForm() {
+  const ws = useWorkspace();
+  const [up, setUp] = useSharedState(TUNNEL_KEY, ws.tunnelUp);
   // Started from this screen (or just now at enrollment), so the seeded uptime would be wrong.
   const [startedHere, setStartedHere] = useSharedState(TUNNEL_STARTED_KEY, false);
   const [busy, setBusy] = useSharedState(TUNNEL_BUSY_KEY, false);
@@ -1883,7 +1903,7 @@ export function TunnelView() {
       if (next) setStartedHere(true);
       setBusy(false);
       // Like the Source service: a completed start is a success; stopping is neutral, as removals are.
-      if (next) toast.success("Tunnel started", { description: `${DEMO ? "In this demo workspace: forwarding" : "Forwarding"} 127.0.0.1:17342 to ${SOURCE}.` });
+      if (next) toast.success("Tunnel started", { description: `${DEMO ? "In this demo workspace: forwarding" : "Forwarding"} 127.0.0.1:17342 to ${ws.sourceMachine.hostname}.` });
       else toast("Tunnel stopped", { description: "Applying changes, checking for updates and updating secrets wait until you start it again." });
     }, 700);
   };
@@ -1892,7 +1912,7 @@ export function TunnelView() {
       <>
         <PageHeader crumbs={["Settings", "SSH tunnel"]} />
         <Body>
-          <EmptyState title="No SSH tunnel" body={`This machine joined without a tunnel, so it connects to ${SOURCE}'s source service directly.`} />
+          <EmptyState title="No SSH tunnel" body={`This machine joined without a tunnel, so it connects to ${ws.sourceMachine.hostname}'s source service directly.`} />
         </Body>
       </>
     );
@@ -1910,7 +1930,7 @@ export function TunnelView() {
       <Body>
         <Column>
           <Lede>
-            This machine reaches the <Term term="Source Machine">Source</Term> through an SSH tunnel: it connects to 127.0.0.1 here, and the tunnel carries that to {SOURCE}. So the
+            This machine reaches the <Term term="Source Machine">Source</Term> through an SSH tunnel: it connects to 127.0.0.1 here, and the tunnel carries that to {ws.sourceMachine.hostname}. So the
             source service never has to listen on the network.
           </Lede>
           <SectionLabel>Status</SectionLabel>
@@ -1938,17 +1958,17 @@ export function TunnelView() {
 /** "Stop syncing this machine", reachable from the Overview's machine menu, the sidebar menu and Enrollment; always confirmed. */
 export function UnenrollDialog() {
   const ws = useWorkspace();
-  const [, setSchedule] = useSharedState<Schedule | null>(SCHEDULE_KEY, SCHEDULE_INITIAL);
+  const [, setSchedule] = useSharedState<Schedule | null>(SCHEDULE_KEY, ws.followerSchedule);
   return (
     <ConfirmDialog
       open={ws.unenrollOpen}
       onOpenChange={ws.setUnenrollOpen}
       title={`Stop syncing ${ws.machineName}?`}
-      body={`This machine stops getting revisions, an update in progress stops, its schedule is removed, and its identity is deleted. Files Canonfig placed stay as they are but aren't managed any more. Joining again needs a new invitation from ${SOURCE}.`}
+      body={ws.capabilities.simulatedTelemetry ? `This machine stops getting revisions, an update in progress stops, its schedule is removed, and its identity is deleted. Files Canonfig placed stay as they are but aren't managed any more. Joining again needs a new invitation from ${ws.sourceMachine.hostname}.` : "Canonfig removes this machine's enrollment. Applied files, the native schedule and tunnel configuration remain. Joining again needs a new invitation."}
       confirm={PLAIN.unenroll}
       onConfirm={() => {
         ws.unenroll();
-        setSchedule(null);
+        if (ws.capabilities.simulatedTelemetry) setSchedule(null);
       }}
     />
   );
@@ -1965,17 +1985,16 @@ export function MachineView() {
           <div className={cn("mt-1", settingsGroup)}>
             <SettingRow title="Name">{ws.machineName}</SettingRow>
             <SettingRow title="Source">
-              {SOURCE}
+              {ws.sourceMachine.hostname}
               {ws.tunnelConfigured ? " (via SSH tunnel)" : ""}
             </SettingRow>
-            <SettingRow title="Identity">{ws.unenrolled ? "Deleted" : <Mono className="text-foreground">f_8c21</Mono>}</SettingRow>
-            <SettingRow title={<Term term="Machine Profile">Profile</Term>} description={`${SOURCE} publishes one profile, and this machine follows it.`}>
-              {profile.name}
+            <SettingRow title="Identity">{ws.unenrolled ? "Deleted" : <Mono className="text-foreground">{ws.selfFollower?.id ?? "Not reported"}</Mono>}</SettingRow>
+            <SettingRow title={<Term term="Machine Profile">Profile</Term>} description={`${ws.sourceMachine.hostname} publishes one profile, and this machine follows it.`}>
+              {ws.profile.name || "Not reported"}
             </SettingRow>
-            <SettingRow title={PLAIN.groups} description={`Groups come from the invitation. To change them, ${SOURCE} makes a new invitation and this machine joins again with it.`}>
-              {/* Name over id keeps the value narrow, so the description keeps its width on a phone. */}
+            <SettingRow title={PLAIN.groups} description={`Groups come from the invitation. To change them, ${ws.sourceMachine.hostname} makes a new invitation and this machine joins again with it.`}>
               <span className="grid justify-items-end">
-                {PLAIN.secretsGroup} <Mono>{SECRETS_GROUP}</Mono>
+                {ws.selfFollower ? ws.selfFollower.groups.map((group) => <Mono key={group}>{group}</Mono>) : "Not reported"}
               </span>
             </SettingRow>
           </div>

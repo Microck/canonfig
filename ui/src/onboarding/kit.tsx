@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { CollapsibleTrigger } from "@/components/ui/collapsible";
 import { RadioGroupItem } from "@/components/ui/radio-group";
 import { Sheet, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { DEMO } from "@/shared/data";
+import { DEMO } from "@/shared/metadata";
 import { GLOSSARY, Logo } from "@/shared/shared";
 
 /**

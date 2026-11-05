@@ -1,4 +1,4 @@
-// Source screens use simulated data for overview, revisions, secrets, and publishing.
+// Shared Source screens read data and operations from the workspace provider.
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ArrowRight, CalendarDots, Check, Cpu, DotsThree, HourglassMedium, Key, UsersThree, type IconComponent } from "@/components/icons";
@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isCoarsePointer } from "@/lib/utils";
 import { AnimatedNumber, DitherProgress, Hint, Mono, StateCell, StateLabel, Term } from "@/shared/shared";
-import { DEMO, PLAIN, SECRETS_GROUP, STATE_META, type Revision } from "@/shared/data";
+import { DEMO, PLAIN, SECRETS_GROUP, STATE_META, type Revision } from "@/shared/metadata";
 import { useSharedState, useWorkspace, type PendingChange, type Workspace } from "./store";
 import { GetStarted } from "./guide";
 import { whyBehind } from "./machines";
@@ -50,17 +50,6 @@ function pendingRow(ws: Workspace, p: PendingChange): { icon: IconComponent; nam
   return { icon: CalendarDots, name: "Profile defaults", what: what("Display name, default schedule and local items"), open: () => ws.navigate(workspaceHref("source", "profile", { profileTab: "defaults" })) };
 }
 
-/**
- * The seeded demo Source's recent history. Each line names the machine or revision it is about and shows only
- * while that machine or revision is in this session, so a new Source does not borrow the demo's past.
- */
-const SEED_ACTIVITY: { follower?: string; revision?: number; what: string; when: string }[] = [
-  { follower: "f_8c21", what: "applied revision 7", when: "12 min ago" },
-  { follower: "f_3b90", what: "has a local edit to skills/code-review, kept and reported there", when: "2 h ago" },
-  { revision: 7, what: "published revision 7", when: "Today 08:41" },
-  { follower: "f_d417", what: "is waiting for someone to run `gh auth login`", when: "Yesterday" },
-  { follower: "f_71ea", what: "stopped reaching the Source", when: "Sat" },
-];
 
 function SectionLink({ onClick, children }: { onClick: () => void; children: string }) {
   return (
@@ -73,6 +62,9 @@ function SectionLink({ onClick, children }: { onClick: () => void; children: str
 function OverviewState() {
   const ws = useWorkspace();
   const onLatest = ws.followers.filter((f) => f.revision === ws.latest).length;
+  if (!ws.capabilities.simulatedTelemetry || ws.latest === undefined) {
+    return <StateHeader tone="muted" title={ws.session?.machineName ?? ws.machineName} body="Source Machine. Publish the Canonical Folder to share configuration with enrolled followers." />;
+  }
   const unreachable = ws.followers.filter((f) => f.state === "offline" && f.revision !== ws.latest);
   const reachable = ws.followers.length - unreachable.length;
   const tone = ws.publishing || ws.syncing.length > 0 ? "ok" : ws.pending.length === 0 ? "ok" : "warn";
@@ -150,18 +142,19 @@ export function SourceOverview() {
   const warn = useChecks().filter((d) => d.result === "warn");
   const [agent] = useAgentPolicy();
   const gridResources = ws.resources.filter((r) => r.change !== "added");
-  const [serviceInstalled] = useSharedState("service-installed", true);
+  const [serviceInstalled] = useSharedState("service-installed", ws.serviceInstalled);
 
   return (
     <>
-      <PageHeader crumbs={["Overview"]} actions={<PublishButton />} />
+      <PageHeader crumbs={["Overview"]} actions={ws.capabilities.simulatedTelemetry ? <PublishButton /> : <Button size="sm" variant="outline" onClick={ws.reload}>Reload</Button>} />
       <Body>
         <OverviewState />
         {/* Two columns only when the page has room; narrower, the side column moves below instead of squeezing the main one to nothing. */}
         <div className="grid grid-cols-[minmax(0,1fr)] gap-8 px-4 pt-6 pb-20 @3xl:grid-cols-[minmax(0,1fr)_320px] @3xl:gap-12 @3xl:px-8">
           <div className="min-w-0 space-y-8">
-            <GetStarted rowInset={4} />
-            <section data-tour="overview-pending">
+            {ws.capabilities.simulatedTelemetry && <GetStarted rowInset={4} />}
+            <WorkspaceEvidence />
+            {ws.capabilities.simulatedTelemetry && <section data-tour="overview-pending">
               <SectionLabel action={<SectionLink onClick={() => ws.setView("profile")}>Profile</SectionLink>}>Unpublished changes</SectionLabel>
               <div className="border-t border-border">
                 <RowPresence>
@@ -192,9 +185,9 @@ export function SourceOverview() {
                   })}
                 </RowPresence>
               </div>
-            </section>
+            </section>}
 
-            {ws.followers.length > 0 && (
+            {ws.capabilities.simulatedTelemetry && ws.followers.length > 0 && (
               <section data-tour="overview-behind">
                 <SectionLabel action={<SectionLink onClick={() => ws.setView("machines")}>All machines</SectionLink>}>Not up to date, and why</SectionLabel>
                 <div className="border-t border-border">
@@ -215,9 +208,9 @@ export function SourceOverview() {
                               <span title={f.name} className="min-w-0 truncate font-medium">
                                 {f.name}
                               </span>
-                              <StateLabel state={f.state} />
+                              {f.state && <StateLabel state={f.state} />}
                               <span className="shrink-0 text-sm text-faint tabular-nums">
-                                {f.revision === null ? (
+                                {f.revision == null ? (
                                   "no revision yet"
                                 ) : (
                                   <>
@@ -243,7 +236,7 @@ export function SourceOverview() {
               </section>
             )}
 
-            {ws.followers.length > 0 && gridResources.length > 0 && (
+            {ws.capabilities.simulatedTelemetry && ws.followers.length > 0 && gridResources.length > 0 && (
               <section data-tour="overview-grid">
                 <SectionLabel>
                   <span className="inline-flex items-center gap-1.5">
@@ -281,7 +274,8 @@ export function SourceOverview() {
                             <span className="block max-w-[180px] truncate text-muted-foreground">{r.id}</span>
                           </th>
                           {ws.followers.map((f) => {
-                            const s = f.resources[r.id] ?? "never-synced";
+                            const s = f.resources?.[r.id];
+                            if (!s) return <td key={f.id} className="p-0" />;
                             return (
                               <td key={f.id} className="p-0">
                                 <Tooltip>
@@ -305,7 +299,7 @@ export function SourceOverview() {
               </section>
             )}
 
-            {ws.latest > 0 && (
+            {ws.capabilities.simulatedTelemetry && ws.latest !== undefined && ws.latest > 0 && (
               <section>
                 <SectionLabel>Activity</SectionLabel>
                 <ol className="border-t border-border">
@@ -313,7 +307,7 @@ export function SourceOverview() {
                     // Publishing records receipt of the revision, not the outcome of applying it on that machine.
                     ...ws.followers.filter((f) => f.lastRun === "Just now").map((f) => ({ who: f.name, what: `received revision ${f.revision}`, when: "Just now" })),
                     ...(latest?.publishedAt === "Just now" ? [{ who: latest.reviewer, what: `published revision ${latest.sequence}`, when: "Just now" }] : []),
-                    ...SEED_ACTIVITY.flatMap((a) => {
+                    ...ws.sourceActivity.flatMap((a) => {
                       const who = a.follower
                         ? ws.followers.find((f) => f.id === a.follower)?.name
                         : ws.revisions.find((r) => r.sequence === a.revision && r.publishedAt === a.when)?.reviewer;
@@ -335,7 +329,7 @@ export function SourceOverview() {
             )}
           </div>
 
-          <aside className="min-w-0 space-y-8">
+          {ws.capabilities.simulatedTelemetry && <aside className="min-w-0 space-y-8">
             <section>
               <SectionLabel action={latest && <SectionLink onClick={() => ws.setView("revisions")}>History</SectionLink>}>Latest revision</SectionLabel>
               <div className="border-t border-border px-1 pt-2.5">
@@ -377,7 +371,7 @@ export function SourceOverview() {
                 />
                 <StatusRow
                   label="AI agent"
-                  value={agent.mode === "deterministic-only" ? AGENT_MODE_LABEL[agent.mode] : `${AGENT_MODE_LABEL[agent.mode]} (${agent.harness})`}
+                  value={!agent ? "Not reported" : agent.mode === "deterministic-only" ? AGENT_MODE_LABEL[agent.mode] : `${AGENT_MODE_LABEL[agent.mode]} (${agent.harness})`}
                   onClick={() => ws.setView("agent")}
                 />
                 <StatusRow
@@ -393,28 +387,80 @@ export function SourceOverview() {
                 />
               </div>
             </section>
-          </aside>
+          </aside>}
         </div>
       </Body>
     </>
   );
 }
 
+/** Only recorded session and status evidence belongs on a live Overview. */
+export function WorkspaceEvidence() {
+  const { session, status } = useWorkspace();
+  if (!session || !status) return null;
+  const { machineRole, lifecycle, tunnel, ...synchronization } = status;
+  return (
+    <>
+      <section>
+        <SectionLabel>This machine</SectionLabel>
+        <div className="border-t border-border">
+          <Prop label="Name">{session.machineName}</Prop>
+          <Prop label="Canonfig version"><Mono>{session.version}</Mono></Prop>
+          <Prop label="Canonical Folder"><Mono>{session.folderPath}</Mono></Prop>
+          {machineRole.follower !== undefined && <Prop label="Follower identity"><Mono>{machineRole.follower}</Mono></Prop>}
+          {machineRole.sourceFingerprint !== undefined && <Prop label="Source fingerprint"><Mono>{machineRole.sourceFingerprint}</Mono></Prop>}
+          {machineRole.tlsFingerprint !== undefined && <Prop label="TLS fingerprint"><Mono>{machineRole.tlsFingerprint}</Mono></Prop>}
+        </div>
+      </section>
+      <section>
+        <SectionLabel>Follower lifecycle</SectionLabel>
+        {session.role !== "follower" && <p className="py-2 text-sm text-muted-foreground">These checks describe follower enrollment, not Source service health.</p>}
+        <div className="border-t border-border">
+          {Object.entries(lifecycle).map(([name, { reached, detail, ...evidence }]) => (
+            <div key={name} className="border-b border-border/70 py-2">
+              <div className="flex gap-3 text-base"><span className="font-medium">{name}</span><span className="text-muted-foreground">{reached ? "Reached" : "Not reached"}</span></div>
+              <p className="text-sm text-muted-foreground">{detail}</p>
+              {Object.keys(evidence).length > 0 && <pre className="mt-2 overflow-auto text-xs">{JSON.stringify(evidence, null, 2)}</pre>}
+            </div>
+          ))}
+        </div>
+      </section>
+      {Object.keys(synchronization).length > 0 && <section><SectionLabel>Synchronization state</SectionLabel><pre className="overflow-auto border-t border-border py-3 text-sm">{JSON.stringify(synchronization, null, 2)}</pre></section>}
+      <section><SectionLabel>SSH tunnel</SectionLabel><pre className="overflow-auto border-t border-border py-3 text-sm">{JSON.stringify(tunnel, null, 2)}</pre></section>
+    </>
+  );
+}
+
 export function PublishDialog() {
   const ws = useWorkspace();
+  if (ws.capabilities.profileWrite) return <PublishForm />;
+  return (
+    <Dialog open={ws.publishOpen} onOpenChange={ws.setPublishOpen}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Publication is not available yet</DialogTitle>
+          <DialogDescription>Not implemented: profile.validate, profile.publish. Publish through the Canonfig CLI.</DialogDescription>
+        </DialogHeader>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function PublishForm() {
+  const ws = useWorkspace();
   const [check, setCheck] = useState(0);
-  const [reviewer, setReviewer] = useState("maria");
+  const [reviewer, setReviewer] = useState(ws.publicationReviewer);
   const [tried, setTried] = useState(false);
   const open = ws.publishOpen;
   const returnFocus = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !ws.capabilities.profileWrite) return;
     setCheck(0);
     setTried(false);
     const t = window.setInterval(() => setCheck((c) => (c >= 100 ? 100 : c + 8)), 90);
     return () => window.clearInterval(t);
-  }, [open]);
+  }, [open, ws.capabilities.profileWrite]);
 
   const checked = check >= 100;
   const reviewerError = tried && !reviewer.trim() ? "Enter the name of the person who reviewed these changes." : null;
@@ -445,6 +491,7 @@ export function PublishDialog() {
           className="contents"
           onSubmit={(e) => {
             e.preventDefault();
+            if (!ws.capabilities.profileWrite) return ws.notImplemented("profile.publish");
             setTried(true);
             if (!checked || ws.publishing || !reviewer.trim()) return;
             ws.publish(reviewer.trim(), () => ws.setPublishOpen(false));
@@ -460,7 +507,7 @@ export function PublishDialog() {
           <section>
             <SectionLabel>
               {ws.pending.length} {ws.pending.length === 1 ? "change" : "changes"}
-              {ws.latest > 0 ? ` since revision ${ws.latest}` : ", your first revision"}
+              {ws.latest !== undefined && ws.latest > 0 ? ` since revision ${ws.latest}` : ", your first revision"}
             </SectionLabel>
             <div className="-mx-4 border-y border-border">
               {ws.pending.map((p) => {
@@ -598,8 +645,8 @@ function RevisionDetail({ revision: r, onClose }: { revision: Revision; onClose:
       }
     >
       <div className="px-4 py-3">
-        <Prop label="Published">{r.publishedAt}</Prop>
-        <Prop label="Reviewed by">{r.reviewer}</Prop>
+        {r.publishedAt && <Prop label="Published">{r.publishedAt}</Prop>}
+        {r.reviewer && <Prop label="Reviewed by">{r.reviewer}</Prop>}
         <Prop
           label={
             <span className="inline-flex items-center gap-1">
@@ -613,9 +660,9 @@ function RevisionDetail({ revision: r, onClose }: { revision: Revision; onClose:
         >
           <Mono className="text-foreground">{r.digest}</Mono>
         </Prop>
-        <Prop label="Changes">{r.changes}</Prop>
+        {r.changes && <Prop label="Changes">{r.changes}</Prop>}
       </div>
-      <div className="border-t border-border px-4 pt-3">
+      {ws.capabilities.simulatedTelemetry && <><div className="border-t border-border px-4 pt-3">
         <SectionLabel>Machines on this revision</SectionLabel>
       </div>
       {on.length === 0 ? (
@@ -626,12 +673,12 @@ function RevisionDetail({ revision: r, onClose }: { revision: Revision; onClose:
             <div key={f.id} className="flex h-8 items-center px-4 text-base">
               {f.name}
               <span className="ml-auto">
-                <StateLabel state={f.state} />
+                {f.state && <StateLabel state={f.state} />}
               </span>
             </div>
           ))}
         </div>
-      )}
+      )}</>}
     </DetailPanel>
   );
 }
@@ -671,10 +718,10 @@ export function SecretsView() {
         crumbs={["Secrets"]}
         actions={
           <>
-            <Button variant="outline" size="sm" disabled={others === 0} onClick={share} data-tour="secrets-share">
+            <Button variant="outline" size="sm" disabled={!ws.capabilities.enrollmentWrite || others === 0} onClick={share} data-tour="secrets-share">
               Share with more machines
             </Button>
-            <Button size="sm" variant="primary" onClick={() => openSet()} data-tour="secrets-set">
+            <Button size="sm" variant="primary" disabled={!ws.capabilities.profileWrite} onClick={() => openSet()} data-tour="secrets-set">
               Set secret
             </Button>
           </>
@@ -694,7 +741,7 @@ export function SecretsView() {
             title="No shared secrets"
             body="Set one to make it available to the machines that can receive secrets."
             action={
-              <Button variant="outline" size="sm" onClick={() => openSet()}>
+              <Button variant="outline" size="sm" disabled={!ws.capabilities.profileWrite} onClick={() => openSet()}>
                 Set secret
               </Button>
             }
@@ -724,12 +771,12 @@ export function SecretsView() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
-                        <DropdownMenuItem onSelect={() => openSet(s.name)}>Replace value…</DropdownMenuItem>
-                        <DropdownMenuItem disabled={others === 0} onSelect={share}>
+                        <DropdownMenuItem disabled={!ws.capabilities.profileWrite} onSelect={() => openSet(s.name)}>Replace value…</DropdownMenuItem>
+                        <DropdownMenuItem disabled={!ws.capabilities.enrollmentWrite || others === 0} onSelect={share}>
                           Share with more machines…
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem variant="destructive" onSelect={() => setRemoving(s.name)}>
+                        <DropdownMenuItem variant="destructive" disabled={!ws.capabilities.profileWrite} onSelect={() => setRemoving(s.name)}>
                           Remove…
                         </DropdownMenuItem>
                       </DropdownMenuContent>

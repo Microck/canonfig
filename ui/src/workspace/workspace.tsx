@@ -3,18 +3,14 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { List, X } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { DEMO } from "@/shared/data";
+import { DEMO } from "@/shared/metadata";
 import { DemoSwitcher } from "@/shared/demo-switcher";
 import { Logo } from "@/shared/shared";
 import { StarPrompt, TipHost, TourHost, TourOffer, TourPicker } from "./guide";
-import { focusPageHeading, followLink, navigate, workspaceHref, type AppRoute } from "./routes";
+import { focusPageHeading, followLink, type AppRoute } from "./routes";
 import { Palette, Sidebar } from "./frame";
 import { navItem } from "./nav";
 import { ChangeGroupsDialog, InviteDialog, MachinesView } from "./machines";
-import type { Setup } from "@/onboarding/onboarding";
-
-// Setup only runs once per machine, so its screens and dither shader load on demand.
-const Onboarding = lazy(() => import("@/onboarding/onboarding").then((m) => ({ default: m.Onboarding })));
 import { ProfileView } from "./profile";
 import { PublishDialog, RevisionsView, SecretsView, SourceOverview } from "./source";
 import { AgentPolicyView, DoctorView, InstallersView, ServiceView, SetupView, VersionView } from "./settings";
@@ -30,7 +26,8 @@ const ScheduleView = lazy(() => follower().then((m) => ({ default: m.ScheduleVie
 const SyncView = lazy(() => follower().then((m) => ({ default: m.SyncView })));
 const TunnelView = lazy(() => follower().then((m) => ({ default: m.TunnelView })));
 const UnenrollDialog = lazy(() => follower().then((m) => ({ default: m.UnenrollDialog })));
-import { WorkspaceProvider, useWorkspace, type View } from "./store";
+import { useWorkspace, type View } from "./store";
+import { ErrorNotice } from "../live/session";
 
 const SOURCE_SCREENS: Partial<Record<View, React.ComponentType>> = {
   overview: SourceOverview,
@@ -58,11 +55,13 @@ const FOLLOWER_SCREENS: Partial<Record<View, React.ComponentType>> = {
   tunnel: TunnelView,
   agent: AgentPolicyView,
   doctor: DoctorView,
+  installers: InstallersView,
+  setup: SetupView,
   machine: MachineView,
   version: VersionView,
 };
 
-function Frame() {
+export function Frame() {
   const ws = useWorkspace();
   const screens = ws.role === "source" ? SOURCE_SCREENS : FOLLOWER_SCREENS;
   const Screen = screens[ws.view];
@@ -94,6 +93,7 @@ function Frame() {
       <MobileNav />
       <Sidebar className="hidden md:flex" />
       <main id="workspace-content" tabIndex={-1} data-tour="main" className="mx-2 mb-2 flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-panel focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring md:my-2 md:ml-0">
+        {ws.pageError && <div className="px-4 pt-4 sm:px-8"><ErrorNotice error={ws.pageError} /></div>}
         <Suspense fallback={null}>
           <Screen key={ws.view} />
         </Suspense>
@@ -201,7 +201,7 @@ function MobileNav() {
 /** Top-level docs sections, which lived at the domain root before the docs moved under /docs/ (website/content/docs). */
 const RETIRED_DOCS_ROOT = /^\/(tutorials|how-to|explanation|reference)(\/|$)/;
 
-function NotFound() {
+export function NotFound({ href = "/source/overview" }: { href?: string }) {
   // GitHub Pages answers every unknown path on the demo's domain with this app's 404.html, mistyped or retired
   // docs links under /docs/ included, so the demo sends those back to the docs (a plain link: they are another site).
   const { pathname, search, hash } = window.location;
@@ -219,8 +219,8 @@ function NotFound() {
         {docs ? (
           <a href="/docs/">Go to the docs</a>
         ) : (
-          <a href="/source/overview" onClick={followLink}>
-            Go to Source overview
+          <a href={href} onClick={followLink}>
+            Open Overview
           </a>
         )}
       </Button>
@@ -228,15 +228,9 @@ function NotFound() {
   );
 }
 
-/**
- * index.html's title ("Canonfig", or the demo build's longer one), kept on <html> the first time this module runs.
- * Fast Refresh re-runs the module in dev after pages have renamed the tab, so re-reading document.title would
- * stack page names ("Overview | Overview | Canonfig").
- */
-const SITE_TITLE = (document.documentElement.dataset.siteTitle ??= document.title);
 
 /** The page's name for the tab and history entry: its sidebar label, so two open tabs or Back's menu tell pages apart. */
-function pageTitle(route: AppRoute): string {
+export function pageTitle(route: AppRoute): string {
   if (route.kind === "setup") return "Setup";
   if (route.kind === "workspace") {
     const item = navItem(route.role, route.view);
@@ -245,26 +239,3 @@ function pageTitle(route: AppRoute): string {
   return "Page not found";
 }
 
-export function WorkspaceApp({ route }: { route: AppRoute }) {
-  const role = route.kind === "workspace" ? route.role : route.kind;
-  // Setup belongs to this role session. Changing pages keeps demo edits; changing roles starts fresh.
-  const [session, setSession] = useState<{ role: typeof role; setup: Setup | null }>({ role, setup: null });
-  const title = `${pageTitle(route)} | ${SITE_TITLE}`;
-  useEffect(() => {
-    document.title = title;
-  }, [title]);
-  if (session.role !== role) {
-    setSession({ role, setup: null });
-    return null;
-  }
-  if (route.kind === "not-found") return <NotFound />;
-  if (route.kind === "setup") return <Suspense fallback={null}><Onboarding onDone={(setup) => {
-    setSession({ role: setup.role, setup });
-    navigate(workspaceHref(setup.role, setup.role === "source" && setup.scan ? "profile" : "overview"));
-  }} /></Suspense>;
-  return (
-    <WorkspaceProvider key={route.role} route={route} navigate={navigate} setup={session.setup}>
-      <Frame />
-    </WorkspaceProvider>
-  );
-}

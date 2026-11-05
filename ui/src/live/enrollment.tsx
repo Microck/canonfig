@@ -183,7 +183,7 @@ function Join({ backend, session }: { backend: WorkspaceBackend; session: GuiSes
   </section>;
 }
 
-function Setup({ backend, session }: { backend: WorkspaceBackend; session: GuiSession }) {
+export function Setup({ backend, session }: { backend: WorkspaceBackend; session: GuiSession }) {
   const action = useActions(backend);
   const [role, setRole] = useState<"source" | "follower">("source");
   const [status, setStatus] = useState<GuiSetupStatus>();

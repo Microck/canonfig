@@ -1,69 +1,42 @@
 /// <reference types="node" />
 import assert from "node:assert/strict";
-import { after, describe, it } from "node:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { describe, it } from "node:test";
+import { isRouteForRole, navigationForRole, navItem } from "../workspace/nav";
+import { parseRoute, workspaceHref } from "../workspace/routes";
 
-// Screen modules install browser listeners, so load the real registry in a DOM environment.
-GlobalRegistrator.register();
-after(() => GlobalRegistrator.unregister());
-const { screensForRole } = await import("../live-app");
-const { overviewPath, sessionScreens } = await import("./session");
+const source = ["overview", "profile", "machines", "revisions", "secrets", "service", "agent", "installers", "setup", "doctor", "version"];
+const follower = ["overview", "machines", "sync", "schedule", "local", "backups", "secrets", "tunnel", "agent", "doctor", "machine", "version", "installers", "setup"];
 
-const paths = {
-  source: [
-    "/source/overview",
-    "/source/profile",
-    "/source/profile/harnesses",
-    "/source/profile/groups",
-    "/source/profile/defaults",
-    "/source/revisions",
-    "/source/secrets",
-    "/source/machines",
-    "/source/machines/list",
-    "/source/settings/service",
-    "/source/settings/agent",
-    "/source/settings/installers",
-    "/source/settings/setup",
-    "/source/settings/health",
-    "/source/settings/version",
-  ],
-  follower: [
-    "/follower/overview",
-    "/follower/machines",
-    "/follower/machines/list",
-    "/follower/enrollment/join",
-    "/follower/sync",
-    "/follower/schedule",
-    "/follower/local-settings",
-    "/follower/backups",
-    "/follower/secrets",
-    "/follower/settings/tunnel",
-    "/follower/settings/enrollment",
-    "/follower/settings/agent",
-    "/follower/settings/installers",
-    "/follower/settings/setup",
-    "/follower/settings/health",
-    "/follower/settings/version",
-  ],
-  unconfigured: ["/setup"],
-};
-
-describe("live workspace navigation", () => {
-  for (const role of ["source", "follower", "unconfigured"] as const) {
-    it(`lists only registered ${role} screens in the sidebar`, () => {
-      const screens = screensForRole(role);
-      assert.deepEqual(screens.map((screen) => screen.href), paths[role]);
-      assert.equal(new Set(screens.map((screen) => screen.href)).size, screens.length);
-      for (const screen of screens) {
-        assert.equal(screen.path(role), screen.href);
-        assert.equal(typeof screen.render, "function");
+describe("shared live workspace navigation", () => {
+  for (const [role, expected] of [["source", source], ["follower", follower]] as const) {
+    it(`uses the polished navigation groups for ${role}`, () => {
+      const navigation = navigationForRole(role, true);
+      const entries = [...navigation.main, ...navigation.settings];
+      assert.deepEqual(entries.map((entry) => entry.view), expected);
+      const paths = entries.map((entry) => workspaceHref(role, entry.view));
+      assert.equal(new Set(paths).size, entries.length);
+      for (const entry of entries) assert.equal(navItem(role, entry.view)?.label, entry.label);
+      for (const href of paths) {
+        assert.equal(isRouteForRole(parseRoute(href), role), true);
+        assert.equal(isRouteForRole(parseRoute(href), role === "source" ? "follower" : "source"), false);
       }
-      assert.ok(screens.some((screen) => screen.href === overviewPath(role)));
     });
   }
-
-  it("keeps the unconfigured Overview out of the registry without a title exception", () => {
-    assert.equal(sessionScreens[0]!.path("unconfigured"), undefined);
-    assert.equal(overviewPath("unconfigured"), "/setup");
+  it("gates tabs by session role and keeps unknown routes unavailable", () => {
+    for (const tab of ["harnesses", "groups", "defaults"]) {
+      assert.equal(isRouteForRole(parseRoute(`/source/profile/${tab}`), "source"), true);
+      assert.equal(isRouteForRole(parseRoute(`/source/profile/${tab}`), "follower"), false);
+    }
+    assert.equal(isRouteForRole(parseRoute("/source/backups"), "source"), false);
+    assert.equal(isRouteForRole(parseRoute("/source/missing"), "source"), false);
+    assert.equal(isRouteForRole(parseRoute("/follower/machines/list"), "follower"), true);
+  });
+  it("requires setup for an unconfigured session", () => {
+    assert.equal(isRouteForRole(parseRoute("/setup"), "unconfigured"), true);
+    assert.equal(isRouteForRole(parseRoute("/source/overview"), "unconfigured"), false);
+    assert.equal(isRouteForRole(parseRoute("/setup"), "source"), false);
+  });
+  it("retains Source backups in demo navigation", () => {
+    assert.equal(navigationForRole("source", false).main.some((entry) => entry.view === "backups"), true);
   });
 });

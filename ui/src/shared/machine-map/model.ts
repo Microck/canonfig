@@ -81,7 +81,7 @@ const DEFAULT_LOOKS: Record<string, { purpose: string; icon: DeviceIcon; accent:
   f_71ea: { purpose: "Build server", icon: "server", accent: "slate" },
 };
 
-const PLATFORM_ICON: Record<Follower["platform"], DeviceIcon> = { macos: "laptop", windows: "desktop", linux: "server" };
+const PLATFORM_ICON: Record<NonNullable<Follower["platform"]>, DeviceIcon> = { macos: "laptop", windows: "desktop", linux: "server" };
 
 const CUSTOM_ICON_SRC = /^data:image\/(svg\+xml|png)[;,]/;
 const HEX = /^#[0-9a-f]{6}$/i;
@@ -352,7 +352,7 @@ export interface Link {
   detail: string | null;
 }
 
-export function linkFor(f: Pick<Follower, "state" | "revision" | "schedule" | "behind">, latest: number, syncing: boolean): Link {
+export function linkFor(f: Required<Pick<Follower, "state" | "revision" | "schedule">> & Pick<Follower, "behind">, latest: number, syncing: boolean): Link {
   const broken = f.state === "offline";
   const behind = f.revision === null || f.revision < latest;
   const tone: LinkTone =

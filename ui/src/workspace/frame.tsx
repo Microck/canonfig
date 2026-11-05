@@ -39,13 +39,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Kbd } from "@/components/ui/kbd";
 import { AnimatedNumber, Logo, StatusMark } from "@/shared/shared";
-import { APP_VERSION, DEMO, PLAIN, machine } from "@/shared/data";
+import { DEMO, PLAIN } from "@/shared/metadata";
 import { DemoSwitcher } from "@/shared/demo-switcher";
-import { useSharedState, useWorkspace, type View } from "./store";
+import { useWorkspace, type View } from "./store";
 import { copy } from "./kit";
 import { useSelfUpdate } from "./settings";
 import { focusPageHeading, followLink, workspaceHref } from "./routes";
-import { NAV, type NavItem } from "./nav";
+import { navigationForRole, type NavItem } from "./nav";
 
 /** ⌘ on Apple platforms, Ctrl elsewhere; the palette listens for both. */
 const MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl ";
@@ -118,7 +118,7 @@ export function Count({ value, tone = "muted", label }: { value: number; tone?: 
 export function Sidebar({ className, onNavigate, onOpenTours }: { className?: string; onNavigate?: () => void; onOpenTours?: () => void }) {
   const ws = useWorkspace();
   const role = ws.role === "source" ? "source" : "follower";
-  const { main, settings } = NAV[role];
+  const { main, settings } = navigationForRole(role);
   const inSettings = settings.some((s) => s.view === ws.view);
   const [open, setOpen] = useState(inSettings);
   const navGroup = useId();
@@ -133,12 +133,11 @@ export function Sidebar({ className, onNavigate, onOpenTours }: { className?: st
     if (inSettings) setOpen(true);
   }, [inSettings]);
 
-  const attention = ws.followers.filter((f) => f.state !== "converged").length;
-  // Same keys and initials as the Source service and SSH tunnel pages that own them.
-  const [serviceInstalled] = useSharedState("service-installed", true);
-  const [tunnelUp] = useSharedState("tunnel-up", true);
+  const attention = ws.followers.filter((f) => f.state !== undefined && f.state !== "converged").length;
+  const serviceInstalled = ws.serviceInstalled;
+  const tunnelUp = ws.tunnelUp;
   const [selfUpdate] = useSelfUpdate();
-  const newer = selfUpdate.latest !== null && selfUpdate.latest !== APP_VERSION ? selfUpdate.latest : null;
+  const newer = selfUpdate.latest !== null && selfUpdate.latest !== ws.version ? selfUpdate.latest : null;
   const badges: Partial<Record<View, React.ReactNode>> =
     role === "source"
       ? {
@@ -147,7 +146,7 @@ export function Sidebar({ className, onNavigate, onOpenTours }: { className?: st
         }
       : {
           // A stopped machine cannot apply, so it must not advertise a ready revision.
-          sync: ws.phase !== "done" && !ws.unenrolled ? <Count tone="warn" value={1} label={`Revision ${ws.targetRevision} ready to apply`} /> : undefined,
+          sync: ws.targetRevision !== undefined && ws.phase !== "done" && !ws.unenrolled ? <Count tone="warn" value={1} label={`Revision ${ws.targetRevision} ready to apply`} /> : undefined,
           // Like the Source's counts, a badge only appears when there is something to count.
           local: ws.local.length > 0 ? <Count value={ws.local.length} label={`${ws.local.length} items in the local folder`} /> : undefined,
         };
@@ -184,17 +183,17 @@ export function Sidebar({ className, onNavigate, onOpenTours }: { className?: st
           }}
         >
           <DropdownMenuLabel className="grid gap-0.5 font-normal">
-            <span className="text-sm text-muted-foreground">{role === "source" ? "The Source: you edit here" : "Gets its setup from atlas"}</span>
+            <span className="text-sm text-muted-foreground">{role === "source" ? "The Source: you edit here" : "Follows its enrolled Source"}</span>
             <span className="text-xs text-faint">
-              Canonfig {APP_VERSION} on {role === "source" ? "Linux" : "macOS"}
+              Canonfig {ws.version}{ws.sourceMachine.platform && role === "source" ? ` on ${ws.sourceMachine.platform}` : ""}
             </span>
           </DropdownMenuLabel>
           {role === "source" ? (
             <>
-              <DropdownMenuItem onSelect={() => copy(machine.folder, "Folder path copied")}>
+              <DropdownMenuItem onSelect={() => copy(ws.folderPath, "Folder path copied")}>
                 Copy Canonfig folder path
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => copy(ws.endpoint, "Endpoint copied")}>Copy source endpoint</DropdownMenuItem>
+              {ws.endpoint && <DropdownMenuItem onSelect={() => copy(ws.endpoint, "Endpoint copied")}>Copy source endpoint</DropdownMenuItem>}
               <DropdownMenuItem onSelect={() => navigateFromMenu("service")}>Source service settings</DropdownMenuItem>
             </>
           ) : (
@@ -264,13 +263,13 @@ export function Sidebar({ className, onNavigate, onOpenTours }: { className?: st
         </button>
         {role === "source" ? (
           <button type="button" onClick={() => ws.setView("service")} className="flex h-7 w-full items-center gap-[6px] rounded text-left text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 pointer-coarse:h-11">
-            <StatusMark kind={serviceInstalled ? "ok" : "off"} />
-            <span>{serviceInstalled ? "Source service running" : "Source service not installed"}</span>
+            <StatusMark kind={ws.capabilities.simulatedTelemetry ? serviceInstalled ? "ok" : "off" : ws.admin.service.data?.state === "running" ? "ok" : "off"} />
+            <span>{ws.capabilities.simulatedTelemetry ? serviceInstalled ? "Source service running" : "Source service not installed" : ws.admin.service.data ? `Source service: ${ws.admin.service.data.state.replaceAll("-", " ")}` : "Source service not reported"}</span>
           </button>
         ) : (
           <button type="button" onClick={() => ws.setView("tunnel")} className="flex h-7 w-full items-center gap-[6px] rounded text-left text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 pointer-coarse:h-11">
             <StatusMark kind={!ws.tunnelConfigured ? "off" : tunnelUp ? "ok" : "offline"} />
-            <span>{!ws.tunnelConfigured ? "No SSH tunnel set up" : tunnelUp ? "Tunnel connected to atlas" : "Tunnel stopped"}</span>
+            <span>{!ws.capabilities.simulatedTelemetry ? "SSH tunnel settings" : !ws.tunnelConfigured ? "No SSH tunnel set up" : tunnelUp ? "Tunnel connected to atlas" : "Tunnel stopped"}</span>
           </button>
         )}
       </div>
@@ -282,7 +281,7 @@ export function Sidebar({ className, onNavigate, onOpenTours }: { className?: st
 export function Palette() {
   const ws = useWorkspace();
   const role = ws.role === "source" ? "source" : "follower";
-  const { main, settings } = NAV[role];
+  const { main, settings } = navigationForRole(role);
 
   const { setPaletteOpen, tourOpen } = ws;
   useEffect(() => {
@@ -328,20 +327,20 @@ export function Palette() {
         <CommandGroup heading="Actions">
           {role === "source" ? (
             <>
-              <CommandItem disabled={ws.pending.length === 0} onSelect={() => run(() => ws.setPublishOpen(true))}>
+              <CommandItem disabled={!ws.capabilities.profileWrite || ws.pending.length === 0} onSelect={() => run(() => ws.setPublishOpen(true))}>
                 <PaperPlaneTilt className="text-muted-foreground" />
                 Publish revision {ws.nextSequence}
                 <CommandShortcut className="text-xs tracking-normal tabular-nums">{ws.pending.length === 0 ? "No changes" : ws.pending.length === 1 ? "1 change" : `${ws.pending.length} changes`}</CommandShortcut>
               </CommandItem>
-              <CommandItem onSelect={() => run(() => ws.setInviteOpen(true))}>
+              <CommandItem disabled={!ws.capabilities.enrollmentWrite} onSelect={() => run(() => ws.setInviteOpen(true))}>
                 <UserPlus className="text-muted-foreground" />
                 Add a machine
               </CommandItem>
-              <CommandItem disabled={ws.followers.length === 0} onSelect={() => run(() => ws.setChangeGroups({}))}>
+              <CommandItem disabled={!ws.capabilities.enrollmentWrite || ws.followers.length === 0} onSelect={() => run(() => ws.setChangeGroups({}))}>
                 <UsersThree className="text-muted-foreground" />
                 Change a machine's groups
               </CommandItem>
-              <CommandItem onSelect={() => run(() => ws.go("profile", "new"))}>
+              <CommandItem disabled={!ws.capabilities.profileWrite} onSelect={() => run(() => ws.go("profile", "new"))}>
                 <FileCode className="text-muted-foreground" />
                 Add to the folder
               </CommandItem>
@@ -352,7 +351,7 @@ export function Palette() {
                 <ArrowsClockwise className="text-muted-foreground" />
                 Review what will change
               </CommandItem>
-              <CommandItem onSelect={() => run(() => ws.go("local", "new"))}>
+              <CommandItem disabled={!ws.capabilities.followerWrite} onSelect={() => run(() => ws.go("local", "new"))}>
                 <Stack className="text-muted-foreground" />
                 Add a local item
               </CommandItem>
@@ -362,7 +361,7 @@ export function Palette() {
             <FoldedMap className="text-muted-foreground" />
             Take the tour
           </CommandItem>
-          {ws.getStartedHidden && (
+          {ws.capabilities.simulatedTelemetry && ws.getStartedHidden && (
             <CommandItem onSelect={() => run(() => (ws.setGetStartedHidden(false), ws.setView("overview")))}>
               <ListChecks className="text-muted-foreground" />
               Show Get started
