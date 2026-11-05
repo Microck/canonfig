@@ -21,7 +21,7 @@ import { listSkills, trackSkill, checkSkills, updateSkills } from "../../skills/
 import { GuiProfileConfigWrite, GuiProfileWrite, GuiPublicationRequest, GuiRevisionSelection, GuiSkillSelection, GuiSkillTrack, profileEndpoints } from "../contract/profile.ts";
 import { GuiOperations } from "../operations.ts";
 import { GuiQueries } from "../queries.ts";
-import { EmptyBody, commandFailure, mutationRoute, queryRoute, type GuiRoute } from "../routing.ts";
+import { EmptyBody, commandFailure, maximumAuthoringBodyBytes, mutationRoute, queryRoute, type GuiRoute } from "../routing.ts";
 
 const changesFrom = (changes: typeof GuiProfileWrite.Type.changes): AuthoringChange[] => changes.map((change) => ({ ...change, files: change.files.map((file) => ({ path: file.path, executable: file.executable, content: Buffer.from(file.base64, "base64") })) }));
 
@@ -59,8 +59,8 @@ export const profileRoutes = Effect.gen(function*() {
   );
   const routes: GuiRoute[] = [
     queryRoute(profileEndpoints.items, snapshot),
-    mutationRoute("PUT", profileEndpoints.items, GuiProfileWrite, (input) => target.pipe(Effect.flatMap((location) => writeAuthoringItems(location, changesFrom(input.changes)).pipe(Effect.provideService(MachineState, machine), Effect.mapError(commandFailure))), Effect.as({ saved: true }))),
-    mutationRoute("PUT", profileEndpoints.config, GuiProfileConfigWrite, (input) => target.pipe(Effect.flatMap((location) => editAuthoringConfig(location, input.expectedDigest, input.edits.map((edit) => ({ path: edit.path, value: edit.value })), changesFrom(input.changes)).pipe(Effect.provideService(MachineState, machine), Effect.mapError(commandFailure))), Effect.as({ saved: true }))),
+    mutationRoute("PUT", profileEndpoints.items, GuiProfileWrite, (input) => target.pipe(Effect.flatMap((location) => writeAuthoringItems(location, changesFrom(input.changes)).pipe(Effect.provideService(MachineState, machine), Effect.mapError(commandFailure))), Effect.as({ saved: true })), 200, { maximumBodyBytes: maximumAuthoringBodyBytes }),
+    mutationRoute("PUT", profileEndpoints.config, GuiProfileConfigWrite, (input) => target.pipe(Effect.flatMap((location) => editAuthoringConfig(location, input.expectedDigest, input.edits.map((edit) => ({ path: edit.path, value: edit.value })), changesFrom(input.changes)).pipe(Effect.provideService(MachineState, machine), Effect.mapError(commandFailure))), Effect.as({ saved: true })), 200, { maximumBodyBytes: maximumAuthoringBodyBytes }),
     mutationRoute("POST", profileEndpoints.scan, EmptyBody, () => target.pipe(Effect.andThen(source.scan({ write: false })), Effect.map(asJson))),
     mutationRoute("POST", profileEndpoints.validate, EmptyBody, () => Effect.gen(function*() {
       const location = yield* target;

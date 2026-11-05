@@ -11,13 +11,13 @@ import { GuiOperation } from "../src/gui/contract.ts";
 import { makeGuiOperations } from "../src/gui/operations.ts";
 import { mutationRoute, failureBody } from "../src/gui/routing.ts";
 
-it("decodes real JSON request bodies before invoking an explicit operation", async () => {
+it.each([undefined, 2 * 1024 * 1024])("decodes real JSON and enforces the body byte limit (%s override)", async (maximumBodyBytes) => {
   const directory = await mkdtemp(join(tmpdir(), "canonfig-gui-route-"));
   const path = join(directory, "saved");
   const route = mutationRoute("PUT", "/api/test", Schema.Struct({ value: Schema.String }), ({ value }) => Effect.tryPromise({
     try: async () => { await writeFile(path, value); return { saved: true }; },
     catch: () => new CliCommandFailure({ category: "verification-or-apply-failure", message: "The file could not be saved." }),
-  }));
+  }), 200, maximumBodyBytes === undefined ? {} : { maximumBodyBytes });
   const server = createServer((request, response) => {
     void Effect.runPromise(route.handle(request, new URL("http://127.0.0.1/api/test")).pipe(Effect.match({
       onSuccess: (body) => { response.writeHead(200); response.end(JSON.stringify(body)); },
@@ -39,6 +39,20 @@ it("decodes real JSON request bodies before invoking an explicit operation", asy
     const response = await fetch(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: '{"value":"written"}' });
     expect(await response.json()).toEqual({ saved: true });
     expect(await readFile(path, "utf8")).toBe("written");
+    const limit = maximumBodyBytes ?? 1024 * 1024;
+    const value = "x".repeat(limit - Buffer.byteLength('{"value":""}'));
+    const atLimit = await fetch(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ value }) });
+    expect(atLimit.status).toBe(200);
+    expect(await atLimit.json()).toEqual({ saved: true });
+    expect(await readFile(path, "utf8")).toBe(value);
+    // Same character count, one extra UTF-8 byte. The bound is bytes, not characters.
+    const overLimit = await fetch(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ value: `${value.slice(1)}é` }) });
+    expect(overLimit.status).toBe(400);
+    expect(await overLimit.json()).toEqual({
+      category: "usage-or-configuration", exitCode: 2,
+      message: `Invalid JSON request: Request body exceeds ${limit} bytes.`,
+    });
+    expect(await readFile(path, "utf8")).toBe(value);
   } finally {
     const closed = once(server, "close");
     server.close();
@@ -46,6 +60,11 @@ it("decodes real JSON request bodies before invoking an explicit operation", asy
     await closed;
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+it.each([0, -1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1])("refuses an unbounded or invalid route body limit (%s)", (maximumBodyBytes) => {
+  expect(() => mutationRoute("PUT", "/api/test", Schema.String, (value) => Effect.succeed(value), 200, { maximumBodyBytes }))
+    .toThrow("maximumBodyBytes must be a positive safe integer.");
 });
 
 it("polls actual journal bytes and retains the CLI failure without invented progress", async () => {

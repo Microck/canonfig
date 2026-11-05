@@ -45,6 +45,28 @@ afterEach(async () => {
 });
 
 describe("profile GUI endpoints", () => {
+  it.each(["/api/profile/items", "/api/profile/config"])("saves an authored item above the default request limit through %s", async (endpoint) => {
+    const machine = fixture();
+    const initialized = machine.invoke(["source", "init"]);
+    expect(initialized.status, initialized.stderr).toBe(0);
+    writeFileSync(join(machine.folder, "canonfig.jsonc"), '{"version":1,"harnesses":[]}');
+    const gui = await server(machine.env);
+    const snapshot = await gui.snapshot();
+    const content = "a".repeat(1024 * 1024);
+    const changes = [{
+      path: "AGENTS.md", expectedDigest: null,
+      files: [{ path: "AGENTS.md", base64: base64(content), executable: false }],
+    }];
+    const body = endpoint === "/api/profile/items" ? { changes } : {
+      expectedDigest: snapshot.items.find((item) => item.path === "canonfig.jsonc")!.digest,
+      edits: [], changes,
+    };
+    const saved = await gui.request(endpoint, "PUT", body);
+    expect(saved.status, JSON.stringify(saved.value)).toBe(200);
+    expect(saved.value).toEqual({ saved: true });
+    expect(readFileSync(join(machine.folder, "AGENTS.md"), "utf8")).toBe(content);
+  }, 60_000);
+
   it("authors files and JSONC with digest conflicts, validates, scans and publishes real revisions", async () => {
     const machine = fixture();
     const initialized = machine.invoke(["source", "init"]); expect(initialized.status, initialized.stderr).toBe(0);

@@ -45,6 +45,8 @@ export interface AuthoringConfigEdit {
   readonly value: Schema.Json | undefined;
 }
 
+/** Total authored bytes, including canonical and local files, that the shared reader admits. */
+export const maximumAuthoringBytes = 128 * 1024 * 1024;
 const digest = (content: Uint8Array) => createHash("sha256").update(content).digest("hex");
 const validPath = (path: string) => path.length > 0 && !path.includes("\\") && !path.includes("\0") &&
   path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
@@ -104,7 +106,7 @@ const readFiles = Effect.fn("Authoring.readFiles")(function*(folder: string) {
       names.push({ path, executable: (observed.mode & 0o100) !== 0 });
     }
   }
-  let remaining = 128 * 1024 * 1024;
+  let remaining = maximumAuthoringBytes;
   for (const entry of names) {
     const path = yield* machine.normalizePath({ path: join(root, entry.path) });
     const content = yield* machine.readFile({ path, anchor, maximumBytes: remaining });
@@ -169,6 +171,11 @@ const prepareChanges = (target: AuthoringTarget, files: Map<string, FolderFile>,
         if (!allow.includes(category) && Object.keys(entries ?? {}).length > 0) throw invalid("local/local.jsonc", `The Source does not allow local ${category}.`);
       }
     }
+  }
+  let remaining = maximumAuthoringBytes;
+  for (const file of candidate.values()) {
+    remaining -= file.content.byteLength;
+    if (remaining < 0) throw invalid(target.folder, `Authoring files exceed the ${maximumAuthoringBytes} byte total limit.`);
   }
   return candidate;
 };

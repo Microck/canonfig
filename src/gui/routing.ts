@@ -4,9 +4,13 @@ import { exitCodeForFailure, type CliFailureCategory } from "../cli/exit-codes.t
 import { describeRuntimeError, type TaggedRuntimeError } from "../cli/failure-taxonomy.ts";
 import { redactText } from "../cli/redaction.ts";
 import { CliCommandFailure } from "../cli/source-commands.ts";
+import { maximumAuthoringBytes } from "../projection/authoring.ts";
 import type { GuiError } from "./contract.ts";
 
 export const EmptyBody = Schema.Record(Schema.String, Schema.Never);
+
+// Allow the reader's aggregate byte budget in base64, plus bounded JSON fields and edits.
+export const maximumAuthoringBodyBytes = 4 * Math.ceil(maximumAuthoringBytes / 3) + 1024 * 1024;
 
 export const failureBody = (category: CliFailureCategory, message: string): GuiError => ({
   category, message: redactText(message), exitCode: exitCodeForFailure(category),
@@ -28,14 +32,18 @@ export const queryRoute = <A extends Schema.Json>(path: string, query: () => Eff
   method: "GET", matches: (pathname) => pathname === path, handle: query,
 });
 
-const requestBody = (request: IncomingMessage) => Effect.tryPromise({
+const requestBody = (request: IncomingMessage, maximumBytes: number) => Effect.tryPromise({
   try: async () => {
     const chunks: Array<Buffer> = [];
     let length = 0;
-    for await (const chunk of request) {
+    for await (const chunk of request.iterator({ destroyOnReturn: false })) {
       const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       length += bytes.length;
-      if (length > 1024 * 1024) throw new Error("Request body exceeds 1 MiB.");
+      if (length > maximumBytes) {
+        // Drain without destroying the socket so the caller receives the CLI-style failure.
+        request.resume();
+        throw new Error(`Request body exceeds ${maximumBytes} bytes.`);
+      }
       chunks.push(bytes);
     }
     const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -54,13 +62,20 @@ export const mutationRoute = <A, B extends Schema.Json>(
   schema: Schema.Codec<A, unknown>,
   operation: (input: A) => Effect.Effect<B, CliCommandFailure>,
   status = 200,
-): GuiRoute => ({
-  method, matches: (pathname) => pathname === path, status,
-  handle: (request) => requestBody(request).pipe(
-    Effect.flatMap((body) => Schema.decodeUnknownEffect(schema)(body, { onExcessProperty: "error" })),
-    Effect.mapError((error) => error instanceof CliCommandFailure ? error : new CliCommandFailure({
-      category: "usage-or-configuration", message: `Invalid request: ${error.message}`,
-    })),
-    Effect.flatMap(operation),
-  ),
-});
+  options: { readonly maximumBodyBytes?: number } = {},
+): GuiRoute => {
+  const maximumBytes = options.maximumBodyBytes ?? 1024 * 1024;
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) {
+    throw new RangeError("maximumBodyBytes must be a positive safe integer.");
+  }
+  return {
+    method, matches: (pathname) => pathname === path, status,
+    handle: (request) => requestBody(request, maximumBytes).pipe(
+      Effect.flatMap((body) => Schema.decodeUnknownEffect(schema)(body, { onExcessProperty: "error" })),
+      Effect.mapError((error) => error instanceof CliCommandFailure ? error : new CliCommandFailure({
+        category: "usage-or-configuration", message: `Invalid request: ${error.message}`,
+      })),
+      Effect.flatMap(operation),
+    ),
+  };
+};

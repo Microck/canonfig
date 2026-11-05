@@ -4,8 +4,9 @@ import { join } from "node:path";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
-import { readAuthoringItem, readAuthoringItems, writeAuthoringItems, editAuthoringConfig, type AuthoringTarget } from "../src/projection/authoring.ts";
+import { maximumAuthoringBytes, readAuthoringItem, readAuthoringItems, writeAuthoringItems, editAuthoringConfig, type AuthoringTarget } from "../src/projection/authoring.ts";
 import { loadCanonicalFiles } from "../src/projection/folder.ts";
+import { commandFailure, failureBody } from "../src/gui/routing.ts";
 
 const homes: string[] = [];
 afterEach(() => { for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true }); });
@@ -80,6 +81,37 @@ describe("shared folder authoring", () => {
     expect(readFileSync(join(target.folder, "canonfig.jsonc"), "utf8")).toBe(before);
     expect(readdirSync(target.folder)).toEqual(["canonfig.jsonc"]);
   });
+
+  it("admits a readable candidate just below the aggregate byte budget and refuses one byte over before writing", async () => {
+    const { target, layer } = fixture();
+    mkdirSync(join(target.folder, "local"));
+    writeFileSync(join(target.folder, "local/AGENTS.md"), "Local instructions\n");
+    const skill = file("skills/large/SKILL.md", "---\nname: large\ndescription: Large binary skill\n---\nInstructions\n");
+    const existingBytes = statSync(join(target.folder, "canonfig.jsonc")).size + statSync(join(target.folder, "local/AGENTS.md")).size;
+    const available = maximumAuthoringBytes - existingBytes - skill.content.byteLength - 1;
+    // Reuse one backing buffer for the candidate; only real filesystem reads allocate the full tree.
+    const chunk = Buffer.alloc(1024 * 1024, 0x61);
+    const assets = Array.from({ length: Math.ceil(available / chunk.byteLength) }, (_, index) => ({
+      path: `skills/large/asset-${index}.bin`, executable: false,
+      content: chunk.subarray(0, Math.min(chunk.byteLength, available - index * chunk.byteLength)),
+    }));
+    await Effect.runPromise(Effect.gen(function*() {
+      const refused = yield* writeAuthoringItems(target, [{
+        path: "skills/large", expectedDigest: null,
+        files: [skill, ...assets, file("skills/large/extra.bin", "xx")],
+      }]).pipe(Effect.mapError(commandFailure), Effect.flip);
+      expect(failureBody(refused.category, refused.message)).toMatchObject({
+        category: "usage-or-configuration", exitCode: 2,
+        message: expect.stringContaining(`Authoring files exceed the ${maximumAuthoringBytes} byte total limit.`),
+      });
+      expect(readdirSync(target.folder).sort()).toEqual(["canonfig.jsonc", "local"]);
+      yield* writeAuthoringItems(target, [{ path: "skills/large", expectedDigest: null, files: [skill, ...assets] }]);
+      const saved = yield* readAuthoringItems(target);
+      const savedBytes = saved.flatMap((item) => item.files).reduce((total, file) => total + file.content.byteLength, 0);
+      expect(savedBytes + statSync(join(target.folder, "local/AGENTS.md")).size).toBe(maximumAuthoringBytes - 1);
+      expect(statSync(join(target.folder, assets[0]!.path)).size).toBe(chunk.byteLength);
+    }).pipe(Effect.provide(layer)));
+  }, 60_000);
 
   it("creates, updates and deletes whole skills with digest preconditions", async () => {
     const { target, layer } = fixture();

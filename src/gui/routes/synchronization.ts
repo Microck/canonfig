@@ -21,7 +21,7 @@ import {
 } from "../contract/synchronization.ts";
 import { GuiOperations } from "../operations.ts";
 import { GuiQueries } from "../queries.ts";
-import { EmptyBody, commandFailure, mutationRoute, queryRoute, type GuiRoute } from "../routing.ts";
+import { EmptyBody, commandFailure, maximumAuthoringBodyBytes, mutationRoute, queryRoute, type GuiRoute } from "../routing.ts";
 
 const secretFailure = (error: SecretTransferError) => new CliCommandFailure({
   category: secretFailureCategory(error), message: error.message,
@@ -121,7 +121,7 @@ export const synchronizationRoutes = Effect.gen(function*() {
       })))),
       Effect.provideService(MachineState, machine), Effect.mapError(commandFailure),
       Effect.andThen(localItems),
-    )),
+    ), 200, { maximumBodyBytes: maximumAuthoringBodyBytes }),
     mutationRoute("PUT", "/api/local/preferences", GuiLocalConfigRequest, ({ expectedDigest, edits }) => localTarget.pipe(
       Effect.flatMap((target) => editAuthoringConfig(target, expectedDigest, edits.map(({ path, value }) => ({ path, value })))),
       Effect.provideService(MachineState, machine), Effect.mapError(commandFailure),

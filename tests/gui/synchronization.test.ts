@@ -170,14 +170,15 @@ it("plans and applies an enrolled follower and performs digest-checked local ope
     expect(failed.state).toBe("failed");
     expect(failed.failure).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   }
-  const change = { path: "AGENTS.md", expectedDigest: null, files: [{ path: "AGENTS.md", base64: Buffer.from("Local instructions\n").toString("base64"), executable: false }] };
+  const localInstructions = `Local instructions\n${"a".repeat(1024 * 1024)}`;
+  const change = { path: "AGENTS.md", expectedDigest: null, files: [{ path: "AGENTS.md", base64: Buffer.from(localInstructions).toString("base64"), executable: false }] };
   const created = await api.call("/api/local/items", "PUT", { changes: [change] });
   expect(created.status).toBe(200);
   const items = Schema.decodeUnknownSync(GuiLocalItems)(created.payload).items;
   const item = items.find((value) => value.path === "AGENTS.md");
   expect(item?.digest).toBeTypeOf("string");
   expect((await api.call("/api/local/items", "PUT", { changes: [change] })).payload).toMatchObject({ category: "conflict-or-drift", exitCode: 4 });
-  expect(readFileSync(join(follower.folder, "local/AGENTS.md"), "utf8")).toBe("Local instructions\n");
+  expect(readFileSync(join(follower.folder, "local/AGENTS.md"), "utf8")).toBe(localInstructions);
   expect((await api.call("/api/local/items", "PUT", { changes: [{ ...change, path: "../escape" }] })).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   expect((await api.call("/api/local/items", "PUT", { changes: [{
     ...change, files: [{ ...change.files[0], base64: "invalid base64!" }],
