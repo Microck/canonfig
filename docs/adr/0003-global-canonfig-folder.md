@@ -152,6 +152,16 @@ Root shows the environment override first, then the default. "Declared" means ke
 - `canonfig harness` and everything behind it: `src/harness-configuration/{cli,cli-arguments,watch}.ts`, `core/{config,scaffold,state,planner,diff,doctor,export,archive}.ts`, `.harness-state.json`, the project build context, `docs/harness-configuration.md`, `docs/harness-archives.md`, `skills/sync-harnesses/`, `skills/setup-canonfig/references/harness-setup.md`, seven test files, the GUI harness page and routes.
 - Hand-written `profile.jsonc`/`tools.jsonc`, `source publish --profile-file`/`--proposal`, `source digest`, `source reconcile-skills`, authorable `file`/`directory`/`config` resources, `append-local` and `sync --review-local`, the `overlay` commands and stored overlays, multi-profile `profile select` and `follower enroll --profile`, `setup --scope project-only`, and `src/profile/legacy-revision.ts`. State from earlier versions fails decoding with a reinitialize message (hard cut).
 
+### 12. State from earlier releases
+
+State that Canonfig 4.0.0 through 5.0.1 wrote (state format 4) is read and carried forward, not refused (`src/state/earlier-state.ts`). The first command that opens it upgrades it in place:
+
+- **Checked first, written never on refusal.** Items with no equivalent stop the upgrade with the item and its recovery, before any write: an unfinished run, a Source that published more than one profile (multi-profile is deferred to issue #254), an applied `skill` resource with its own target, a symlink, a target outside home, an overlay over a key Canonfig manages, or a row this release cannot decode.
+- **Backed up, then one transaction.** A full copy goes next to the database (`state-before-format-6-<UTC time>.sqlite`, created exclusively, no symlink followed, mode 0600). The upgrade rebuilds the format 6 schema and history exactly as a new database gets them, copies every row, checks foreign keys, and commits once.
+- **Journaled.** The append-only `state_upgrades` table records the replaced history, the backup path, the build, and every record renamed, revision emptied and overlay dropped.
+- **Mapped to current equivalents.** Enrollment, run journals, receipts, approvals, blobs, schedules and secret references carry over unchanged. Applied records of authored `file`, `directory` and `config` resources become the records of `resources.<id>` (`harness:resources:<id>`, absolute target, `replace-if-unmodified` or `append-local`) with a `resources` takeover row and no snapshot, so re-authoring them is an update, not a takeover. `selectedProfile` becomes `profile`. Overlay keys are dropped and listed: in state 5.0.1 accepted they never overlap a managed key, and every unmanaged key is follower-owned now. Earlier revisions keep id, profile, sequence, digest, signature and signed bytes but list no resources, so the next publication from `~/.canonfig/` continues the sequence.
+- **Idempotent.** A format 6 database is never upgraded again. State from before 4.0.0 is asked to pass through 5.0.1 once; an unknown history (a newer release) is refused.
+
 ## Consequences
 
 - Users author one folder in the shapes harnesses already use; Canonfig owns paths, formats and translation.

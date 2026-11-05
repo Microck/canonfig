@@ -1,0 +1,62 @@
+---
+title: Upgrade from Canonfig 5.0.1
+description: What this release keeps from a 5.0.1 Source or Follower Machine, what it refuses, and how to get past a refusal.
+---
+
+You do not reinitialize a machine to upgrade it. The first `canonfig` command
+you run after installing this release reads the state that 4.0.0 through 5.0.1
+wrote in `~/.canonfig/state.sqlite` and carries it forward in one step.
+
+## What happens on the first run
+
+1. Canonfig checks every stored item first. If one has no equivalent in this
+   release, it stops, names the item and the step that fixes it, and changes
+   nothing. See [When the upgrade refuses](#when-the-upgrade-refuses).
+2. It copies the whole database to
+   `~/.canonfig/state-before-format-6-<UTC time>.sqlite`, readable only by you.
+3. It upgrades the database in one transaction and records what it changed in
+   the `state_upgrades` table of the same database.
+
+Later runs find the upgraded state and do nothing more.
+
+## What carries over
+
+- **Enrollment.** The Source identity and keys, enrolled followers, follower
+  credentials, groups and invitations stay as they were. Followers keep
+  talking to the Source without a new invitation.
+- **Run history.** Every run, journal entry, drift record, deployment receipt
+  and publication approval stays.
+- **Schedules and secrets.** A follower's schedule choice and the names of
+  shared secrets stay. Secret values never left the credential store.
+- **Applied files.** A follower's record of each `file`, `directory` and
+  `config` resource it applied becomes the record of the `resources` entry of
+  the same name. When the Source declares that resource again in
+  `canonfig.jsonc` (see
+  [Manage files outside harnesses](/how-to/manage-files-outside-harnesses)),
+  the follower updates the file it already owns instead of taking it over.
+- **Published revisions.** A Source keeps every revision it published, with
+  its profile and sequence. This release cannot apply their resources, so
+  publish from `~/.canonfig/` once on the Source after upgrading; the new
+  revision continues the sequence under the same profile id.
+
+Local Overlay keys are dropped and listed in `state_upgrades`. They only ever
+claimed keys Canonfig did not manage, and this release leaves every such key
+to the follower, so nothing changes on disk.
+
+## When the upgrade refuses
+
+The message names the item, the reason, and the recovery. The state is not
+changed and no copy is written.
+
+| Item | Recovery |
+| --- | --- |
+| A run 5.0.1 left unfinished | Install 5.0.1 again, run `canonfig recover` or `canonfig abandon`, then install this release. |
+| A Source that published more than one profile | Keep that Source on 5.0.1, or move the database aside and set the machine up again as the Source of one profile. Publishing several profiles from one Source is tracked in [issue #254](https://github.com/Microck/canonfig/issues/254). |
+| A `skill` resource with its own target, a symlink, or a target outside your home directory | On the Source, with 5.0.1, remove the resource and publish; sync the follower with 5.0.1; then install this release. Skills now come from `~/.canonfig/skills/`. |
+| A Local Overlay over a key Canonfig manages | With 5.0.1, run `canonfig overlay remove <resource>` and sync, then install this release. |
+
+State from a release before 4.0.0 needs one run of 5.0.1 first, for example
+`npx @microck/canonfig@5.0.1 status`.
+
+To go back to 5.0.1 after an upgrade, install 5.0.1 and move the
+`state-before-format-6-*.sqlite` copy to `~/.canonfig/state.sqlite`.
