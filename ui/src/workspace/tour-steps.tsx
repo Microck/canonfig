@@ -197,7 +197,7 @@ function sourceChapters(ws: Workspace): TourChapter[] {
         {
           target: ["profile-items"],
           title: "What your machines get",
-          body: "Each item is a file in ~/.canonfig or an entry in its canonfig.jsonc: instructions, rules, skills, agents, commands, MCP servers, hooks, settings and tools. A letter beside an item marks a change machines don't have yet.",
+          body: "Each item is a file in ~/.canonfig or an entry in its canonfig.jsonc: instructions, rules, skills, agents, commands, MCP servers, hooks, settings and tools. A letter beside an item marks a change machines don't have yet. A skill that came from a Git repository can follow it: open the skill to check for updates.",
           before: () => ws.setView("profile"),
         },
         {

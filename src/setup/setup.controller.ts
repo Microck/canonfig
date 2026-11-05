@@ -7,6 +7,8 @@ import { Effect, Redacted, Schema } from "effect";
 
 import { SourceNotInitializedError } from "../enrollment/enrollment.errors.ts";
 import { Enrollment } from "../enrollment/enrollment.service.ts";
+import { refuseOnFollower, refuseOnSource } from "../state/machine-role.ts";
+import { MachineRoleConflictError } from "../state/state-repository.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { credentialFailureDetail, type MachineStateError } from "../machine/machine-state.errors.ts";
 import type { MachinePath, ProcessResult } from "../machine/machine-state.types.ts";
@@ -18,7 +20,7 @@ import {
   nodeRuntimeIsSupported,
 } from "../runtime/build-identity.ts";
 import type { SetupImportRequest } from "../cli/setup-commands.ts";
-import type { StateRepository } from "../state/state-repository.service.ts";
+import { StateRepository } from "../state/state-repository.service.ts";
 import { SetupError } from "./setup.errors.ts";
 import {
   executeFolderScaffold,
@@ -821,6 +823,27 @@ const planHarnessStage = (
   return Effect.succeed(undefined);
 };
 
+/**
+ * A machine is a Source or a Follower, never both: setup for `role` stops,
+ * with exit 2 and before it inspects or writes anything, when the machine
+ * holds the other role. Plan checks this, and apply checks it again because
+ * the machine can change role between plan and apply.
+ */
+const refuseOtherRole = (
+  role: SetupRole,
+  journalPath: string,
+  operation: string,
+): Effect.Effect<void, SetupError, StateRepository> =>
+  Effect.flatMap(StateRepository, (repository) =>
+    (role === "source"
+      ? refuseOnFollower(repository, "be set up as a Source")
+      : refuseOnSource(repository, "be set up as a Follower", dirname(journalPath))).pipe(
+        Effect.mapError((cause) =>
+          cause instanceof MachineRoleConflictError
+            ? fail(operation, cause.message, "usage")
+            : fail(operation, `the machine's role could not be read: ${cause.message}`, "state")),
+      ));
+
 export const planSetup = (
   input: SetupPlanInput,
   journalPath: string,
@@ -829,6 +852,7 @@ export const planSetup = (
     const machine = yield* MachineState;
     // The role is established before any role-specific inspection runs.
     const role = yield* establishSetupRole(input.roleText);
+    yield* refuseOtherRole(role, journalPath, "setup plan");
     const requestScope = yield* establishSetupScope(input.scopeText ?? "full");
     const chosenMode = input.modeText === undefined ? undefined : yield* establishSetupMode(input.modeText);
     const preflight = yield* runSetupPreflight(role, requestScope);
@@ -990,7 +1014,7 @@ const executeSetupItem = (
   environment: (name: string) => string | undefined,
 ): Effect.Effect<
   { readonly evidence: string; readonly catalog?: SetupProvenance | undefined },
-  SetupError,
+  SetupError | MachineRoleConflictError,
   MachineState | Enrollment
 > =>
   Effect.gen(function*() {
@@ -999,8 +1023,13 @@ const executeSetupItem = (
       case "source-init": {
         const enrollment = yield* Enrollment;
         const material = yield* enrollment.initializeSource().pipe(
+          // A Follower enrollment that landed after apply's own role check
+          // passes through as the role conflict, which apply refuses without
+          // recording the item: a refusal changes nothing, setup.json included.
           Effect.mapError((cause) =>
-            fail("setup apply", `source initialization failed: ${cause.message}`, "prerequisite")),
+            cause instanceof MachineRoleConflictError
+              ? cause
+              : fail("setup apply", `source initialization failed: ${cause.message}`, "prerequisite")),
         );
         return { evidence: `source initialized as ${material.source.keyId}` };
       }
@@ -1234,13 +1263,17 @@ const recordItem = (
 export const applySetup = (
   journalPath: string,
   environment: (name: string) => string | undefined,
-): Effect.Effect<SetupJournal, SetupError, MachineState | Enrollment> =>
+): Effect.Effect<SetupJournal, SetupError, MachineState | Enrollment | StateRepository> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const stored = yield* readJournal(machine, journalPath);
     if (stored === undefined) {
       return yield* fail("setup apply", "no setup plan exists", "usage", "Run setup plan first.");
     }
+    // The machine may have taken the other role since the plan was made (a
+    // Follower plan on a machine that ran `source init`, a Source plan on one
+    // that enrolled). Refuse before anything runs or the journal changes.
+    yield* refuseOtherRole(stored.role, journalPath, "setup apply");
     let journal: SetupJournal = stored;
     if (!isSetupApproved(journal)) {
       return yield* fail(
@@ -1290,7 +1323,11 @@ export const applySetup = (
       }
       const outcome: SetupItemOutcome = yield* executeSetupItem(item, journal, environment).pipe(
         Effect.map((result) => ({ ok: true as const, ...result })),
-        Effect.catch((cause) => Effect.succeed({ ok: false as const, cause })),
+        Effect.catch((cause) =>
+          cause instanceof MachineRoleConflictError
+            ? Effect.fail(fail("setup apply", cause.message, "usage"))
+            : Effect.succeed({ ok: false as const, cause })
+        ),
       );
       if (outcome.ok) {
         journal = yield* recordItem(

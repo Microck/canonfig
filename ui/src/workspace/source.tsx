@@ -509,8 +509,6 @@ export function PublishDialog() {
               className="w-56"
             />
           </Field>
-
-
           <DialogFooter>
             <div className="flex shrink-0 gap-2">
               <Button type="button" variant="ghost" disabled={ws.publishing} onClick={() => ws.setPublishOpen(false)}>

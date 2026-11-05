@@ -16,6 +16,7 @@ const pages: [WorkspaceRole, View, string][] = [
   ["source", "installers", "settings/installers"],
   ["source", "setup", "settings/setup"],
   ["source", "doctor", "settings/health"],
+  ["source", "version", "settings/version"],
   ["follower", "overview", "overview"],
   ["follower", "machines", "machines"],
   ["follower", "sync", "sync"],
@@ -27,6 +28,7 @@ const pages: [WorkspaceRole, View, string][] = [
   ["follower", "agent", "settings/agent"],
   ["follower", "doctor", "settings/health"],
   ["follower", "machine", "settings/enrollment"],
+  ["follower", "version", "settings/version"],
 ];
 
 describe("canonical workspace routes", () => {

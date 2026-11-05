@@ -396,6 +396,29 @@ export const resources: Resource[] = [
     },
   },
   {
+    id: "skills/release-notes",
+    category: "skills",
+    path: "skills/release-notes/",
+    groups: [],
+    summary: "2 files",
+    detail: {
+      Description: "Draft release notes from merged pull requests.",
+      Files: "SKILL.md, templates/notes.md",
+      Body: "Group changes by area. Lead with what users notice. Skip chores and dependency bumps.",
+    },
+  },
+  {
+    id: "skills/debugging",
+    category: "skills",
+    path: "skills/debugging/",
+    groups: [],
+    summary: "SKILL.md",
+    detail: {
+      Description: "Find the root cause of a failing test or crash.",
+      Body: "Reproduce the failure first. Change one thing at a time and write down what each run shows.",
+    },
+  },
+  {
     id: "agents/researcher",
     category: "agents",
     path: "agents/researcher.md",
@@ -592,6 +615,112 @@ export const installers = [
   { name: "apt", path: "/usr/bin/apt-get", status: "bound" },
   { name: "winget", path: "-", status: "not on this platform" },
 ];
+
+/**
+ * One entry of ~/.canonfig/skills-sources.json, the Source's machine-local record of where an installed skill came
+ * from (TrackedSkill in src/skills/manager.ts). It is never published.
+ */
+export interface SkillSource {
+  /** The folder item it tracks, `skills/<name>`; its directory is the item's path. */
+  id: string;
+  /** HTTPS Git URL or local repository path. */
+  source: string;
+  /** The branch, tag or commit it follows. */
+  ref: string;
+  /** The skill's directory inside the repository, `.` for the root. */
+  subdir: string;
+  /** The commit the installed copy was taken from. */
+  commit: string;
+  /**
+   * The installed files at that commit, by path, each with a stand-in for its content. Canonfig records a digest of
+   * them (`digest`); comparing the folder's files against it is how a local edit shows.
+   */
+  baseline: Record<string, string>;
+}
+
+/** A skill directory at one commit of an upstream repository, as `canonfig skills check` fetches it. */
+export interface UpstreamSkill {
+  source: string;
+  subdir: string;
+  /** Branches and tags that point at this commit; the commit id itself also works as a ref. */
+  refs: string[];
+  commit: string;
+  /** SKILL.md and the other files, by path, each with a stand-in for its content. */
+  files: Record<string, string>;
+}
+
+/** The only Git repository the demo can fetch from. It's made up, like everything in the demo. */
+export const DEMO_SKILLS_REPO = "https://github.com/example/agent-skills.git";
+
+/**
+ * SKILL.md as the demo compares it: the folder editor's Description and Body fields. Upstream SKILL.md files use the
+ * same shape, so an unedited copy matches its upstream commit.
+ */
+export const skillManifest = (description: string, body: string) => `${description}\n---\n${body}`;
+
+const CODE_REVIEW_V1 = skillManifest("Review a diff for correctness, tests and clarity.", "Read the diff twice. Check each changed function against references/checklist.md.");
+const RELEASE_NOTES_V12 = skillManifest("Draft release notes from merged pull requests.", "Group changes by area. Lead with what users notice.");
+
+/**
+ * What DEMO_SKILLS_REPO holds. code-review's `main` moved past the commit atlas has, so a check finds an update;
+ * release-notes is pinned to tag v1.2.0, and atlas's copy was edited since; debugging matches `main` but isn't
+ * tracked yet.
+ */
+export const upstreamSkills: UpstreamSkill[] = [
+  {
+    source: DEMO_SKILLS_REPO,
+    subdir: "skills/code-review",
+    refs: [],
+    commit: "3c9e1f4a7b2d8e05c6a9f1b3d7e2c4a8f0b6d913",
+    files: { "SKILL.md": CODE_REVIEW_V1, "references/checklist.md": "checklist 1", "references/tone.md": "tone 1" },
+  },
+  {
+    source: DEMO_SKILLS_REPO,
+    subdir: "skills/code-review",
+    refs: ["main"],
+    commit: "8f41d2c09a7e3b61f5d4c2a8e9b07f3d1c6a5e42",
+    files: {
+      "SKILL.md": skillManifest(
+        "Review a diff for correctness, tests and clarity.",
+        "Read the diff twice. Check each changed function against references/checklist.md, then look for risky input handling with references/security.md.",
+      ),
+      "references/checklist.md": "checklist 2",
+      "references/security.md": "security 1",
+    },
+  },
+  {
+    source: DEMO_SKILLS_REPO,
+    subdir: "skills/release-notes",
+    refs: ["v1.2.0"],
+    commit: "b7a3e9d1f04c2685e3a1d9c7f6b2e08a4d5c3f19",
+    files: { "SKILL.md": RELEASE_NOTES_V12, "templates/notes.md": "template 1" },
+  },
+  {
+    source: DEMO_SKILLS_REPO,
+    subdir: "skills/debugging",
+    refs: ["main"],
+    commit: "e2d6b4f81a9c3075d2e8f1b6a4c9d03e7f5b2a68",
+    files: { "SKILL.md": skillManifest("Find the root cause of a failing test or crash.", "Reproduce the failure first. Change one thing at a time and write down what each run shows.") },
+  },
+];
+
+/** atlas's skills-sources.json. */
+export const skillSources: SkillSource[] = [
+  { id: "skills/code-review", source: DEMO_SKILLS_REPO, ref: "main", subdir: "skills/code-review", commit: upstreamSkills[0].commit, baseline: upstreamSkills[0].files },
+  { id: "skills/release-notes", source: DEMO_SKILLS_REPO, ref: "v1.2.0", subdir: "skills/release-notes", commit: upstreamSkills[2].commit, baseline: upstreamSkills[2].files },
+];
+
+/**
+ * The newest stable patch in APP_VERSION's major.minor line on the demo's npm registry. Self-update only moves
+ * within that line (latestPatch in src/runtime/self-update/core.ts).
+ */
+export const LATEST_PATCH = APP_VERSION.replace(/\d+$/, (patch) => String(Number(patch) + 1));
+
+/** Each demo machine's self-update opt-in: the official npm-cli.js it uses, or null before opting in. */
+export const selfUpdateSeed = {
+  source: { npmCli: "/home/ubuntu/.npm-global/lib/node_modules/npm/bin/npm-cli.js" as string | null },
+  follower: { npmCli: null as string | null },
+};
 
 /** An item in a follower's ~/.canonfig/local/: AGENTS.md, a file for rules, skills, agents and commands, a key of local.jsonc otherwise. */
 export interface LocalItem {

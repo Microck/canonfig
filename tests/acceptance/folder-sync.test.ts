@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -222,6 +222,24 @@ const appliedFollowers = (state: string): Record<string, number> => {
 
 const read = (path: string) => readFileSync(path, "utf8");
 
+/** Every file under `folder` but the state database, by relative path, with its bytes. */
+const folderFiles = (folder: string): Record<string, string> =>
+  Object.fromEntries(
+    readdirSync(folder, { recursive: true, encoding: "utf8" })
+      .filter((path) => !path.startsWith("state.sqlite") && statSync(join(folder, path)).isFile())
+      .sort()
+      .map((path) => [path, readFileSync(join(folder, path), "base64")]),
+  );
+
+const rowCount = (state: string, table: string): number => {
+  const database = new DatabaseSync(state, { readOnly: true });
+  try {
+    return Number(database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()?.count);
+  } finally {
+    database.close();
+  }
+};
+
 describe("folder sync across a Source and its followers", () => {
   it("publishes, enrolls, mirrors and projects, and re-keys an earlier local projection", async () => {
     const { source, endpoint } = await startSource();
@@ -349,5 +367,99 @@ describe("folder sync across a Source and its followers", () => {
     expect(JSON.stringify(collided.envelope)).toContain("deploy");
     expect(existsSync(join(follower.home, ".claude"))).toBe(false);
     expect(read(join(follower.folder, "local", "skills", "deploy", "SKILL.md"))).toContain("Mine.");
+  }, 240_000);
+
+  it("keeps each machine a Source or a Follower, never both", async () => {
+    // A plain machine becomes a Source (startSource runs init and publish)
+    // and another plain machine follows it.
+    const { source, endpoint } = await startSource();
+    const follower = machine("laptop", ["claude-code"]);
+    enroll(source, endpoint, follower, "laptop");
+    succeed(follower.run(["sync", "--apply"]), "follower sync");
+    const mirror = folderFiles(follower.folder);
+
+    // The Follower's folder is the Source's mirror: it cannot also become a
+    // Source, plan a Source setup, or run any Source command that scans,
+    // publishes, serves or grants access.
+    const inviteOutput = join(follower.home, "follower.invite");
+    for (const [command, action] of [
+      [["source", "init"], "become a Source"],
+      [["source", "scan"], "scan its folder for tools"],
+      [["source", "publish", "--reviewer", "reviewer@example.test"], "publish a revision"],
+      [["source", "serve", "--port", "1"], "serve as a Source"],
+      [["source", "service", "install", "--port", "1"], "install the Source service"],
+      [["source", "invite", "--endpoint", endpoint, "--output", inviteOutput], "invite followers"],
+      [["source", "revoke", "desk"], "revoke followers"],
+      [["setup", "plan", "--role", "source"], "be set up as a Source"],
+    ] as const) {
+      const refused = follower.run(command);
+      expect(refused.status, `${command.join(" ")}: ${refused.stdout}${refused.stderr}`).toBe(2);
+      expect(refused.envelope.message).toContain(`follows the Source at ${endpoint}`);
+      expect(refused.envelope.message).toContain(`as laptop`);
+      expect(refused.envelope.message).toContain(`so it cannot ${action}`);
+      expect(refused.envelope.message).toContain("canonfig follower unenroll");
+    }
+    expect(folderFiles(follower.folder)).toEqual(mirror);
+    expect(existsSync(inviteOutput)).toBe(false);
+    expect(rowCount(follower.state, "enrollment_source")).toBe(0);
+
+    // An enrollment the Source accepted but this machine has not finished
+    // already holds the Follower role.
+    const state = new DatabaseSync(follower.state);
+    try {
+      state.prepare("UPDATE follower_sync_configuration SET configuration_json = json_set(configuration_json, '$.enrollmentPending', json('true'))").run();
+    } finally {
+      state.close();
+    }
+    const pending = follower.run(["source", "init"]);
+    expect(pending.status, pending.stdout + pending.stderr).toBe(2);
+    expect(pending.envelope.message).toContain(`is enrolling with the Source at ${endpoint}`);
+    expect(rowCount(follower.state, "enrollment_source")).toBe(0);
+
+    // The Source cannot enroll as a Follower or plan a Follower setup. The
+    // refusal comes before the invitation is used.
+    const invitation = join(source.home, "self.invite");
+    succeed(source.run(["source", "invite", "--endpoint", endpoint, "--output", invitation]), "invite");
+    const envelope = read(invitation);
+    for (const [command, input] of [
+      [["follower", "enroll", "--stdin", "--name", "self"], envelope],
+      [["setup", "plan", "--role", "follower"], undefined],
+    ] as const) {
+      const refused = source.run(command, input);
+      expect(refused.status, `${command.join(" ")}: ${refused.stdout}${refused.stderr}`).toBe(2);
+      expect(refused.envelope.message).toContain("this machine is a Source");
+      expect(refused.envelope.message).toContain(`move ${source.folder} aside`);
+    }
+    expect(rowCount(source.state, "follower_sync_configuration")).toBe(0);
+    expect(existsSync(join(source.folder, "setup.json"))).toBe(false);
+
+    const desk = machine("desk");
+    succeed(desk.run(["follower", "enroll", "--stdin", "--name", "desk"], envelope), "enroll with the unused invitation");
+
+    // A plan made before the machine took the other role is refused at apply,
+    // before any item runs and without touching setup.json.
+    const planAndApprove = (target: Machine, role: string) => {
+      succeed(target.run(["setup", "plan", "--role", role]), `setup plan --role ${role}`);
+      succeed(target.run(["setup", "approve", "--approver", "reviewer@example.test"]), "setup approve");
+      return readFileSync(join(target.folder, "setup.json"));
+    };
+    // A Follower plan, then source init.
+    const bench = machine("bench");
+    const followerPlan = planAndApprove(bench, "follower");
+    succeed(bench.run(["source", "init"]), "bench source init");
+    const benchApply = bench.run(["setup", "apply"]);
+    expect(benchApply.status, benchApply.stdout + benchApply.stderr).toBe(2);
+    expect(benchApply.envelope.message).toContain("this machine is a Source");
+    expect(readFileSync(join(bench.folder, "setup.json"))).toEqual(followerPlan);
+    // A Source plan, then follower enroll.
+    const studio = machine("studio");
+    const sourcePlan = planAndApprove(studio, "source");
+    enroll(source, endpoint, studio, "studio");
+    const studioApply = studio.run(["setup", "apply"]);
+    expect(studioApply.status, studioApply.stdout + studioApply.stderr).toBe(2);
+    expect(studioApply.envelope.message).toContain(`follows the Source at ${endpoint}`);
+    expect(readFileSync(join(studio.folder, "setup.json"))).toEqual(sourcePlan);
+    expect(rowCount(studio.state, "enrollment_source")).toBe(0);
+    expect(existsSync(join(studio.folder, "canonfig.jsonc"))).toBe(false);
   }, 240_000);
 });

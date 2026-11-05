@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   ActionId,
+  CertificateFingerprint,
   BlobId,
   CredentialReference,
   ContentDigest,
@@ -40,6 +41,7 @@ import {
 import {
   ActiveRunExistsError,
   EarlierStateFormatError,
+  MachineRoleConflictError,
   RepositoryDecodeError,
   RepositorySqlError,
   RevisionImmutableError,
@@ -247,6 +249,77 @@ describe("StateRepository SQLite adapter", () => {
     expect(row.configuration_json).toContain(credentialReference);
     expect(row.configuration_json).not.toContain("credentialValue");
     expect(row.configuration_json).not.toContain("secret");
+  });
+
+  it("saves one role record at a time and refuses the other inside its write transaction", async () => {
+    const followedSource = decode(SourceIdentity)({ keyId: "ed25519:followed", publicKeyFingerprint: "followed" });
+    const credentialReference = decode(CredentialReference)("secure-store://canonfig/follower");
+    const followerConfiguration = (path: string) => ({
+      sourceIdentity: followedSource,
+      configuration: {
+        schemaVersion: 1 as const,
+        follower: { ...follower(), credentialReference },
+        profile: decode(ProfileId)("profile-1"),
+        source: { endpoint: "https://127.0.0.1:17342", tlsFingerprint: "tls-followed", signingFingerprint: "followed" },
+        credentialReference,
+        cacheDirectory: join(dirname(path), "cache"),
+        stateLocation: path,
+        agentPolicy: "deterministic-only" as const,
+        enrollmentPending: true as const,
+        scheduledInvocation: defaultScheduledInvocation,
+        updatedAt: "2026-08-15T12:00:00Z",
+      },
+    });
+    const ownSource = decode(Schema.Struct({
+      identity: SourceIdentity,
+      signingKeyReference: CredentialReference,
+      tlsKeyReference: CredentialReference,
+      tlsCertificateReference: CredentialReference,
+      tlsFingerprint: CertificateFingerprint,
+    }))({
+      identity: { keyId: "ed25519:own", publicKeyFingerprint: "own" },
+      signingKeyReference: "secure-store://canonfig/signing",
+      tlsKeyReference: "secure-store://canonfig/tls-key",
+      tlsCertificateReference: "secure-store://canonfig/tls-certificate",
+      tlsFingerprint: "tls-own",
+    });
+    const rows = (path: string) => {
+      const database = new DatabaseSync(path, { readOnly: true });
+      try {
+        const count = (table: string) => Number(database.prepare(`SELECT count(*) AS count FROM ${table}`).get()?.count);
+        return {
+          source: count("enrollment_source"),
+          follower: count("follower_sync_configuration"),
+          followers: count("followers"),
+          signingKey: database.prepare("SELECT public_key_fingerprint AS key FROM source_identity").get()?.key,
+        };
+      } finally {
+        database.close();
+      }
+    };
+
+    // A pending enrollment already makes the machine a Follower.
+    const enrolling = databasePath();
+    const refusedSource = await runWithRepository(enrolling, Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.saveFollowerSynchronizationConfiguration(followerConfiguration(enrolling));
+      return yield* Effect.flip(repository.saveEnrollmentSource(ownSource));
+    }));
+    expect(refusedSource).toBeInstanceOf(MachineRoleConflictError);
+    expect(refusedSource.message).toContain("is enrolling with the Source at https://127.0.0.1:17342");
+    expect(refusedSource.message).toContain("so it cannot be a Source");
+    expect(rows(enrolling)).toEqual({ source: 0, follower: 1, followers: 1, signingKey: "followed" });
+
+    const sourcePath = databasePath();
+    const refusedFollower = await runWithRepository(sourcePath, Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.saveEnrollmentSource(ownSource);
+      return yield* Effect.flip(repository.saveFollowerSynchronizationConfiguration(followerConfiguration(sourcePath)));
+    }));
+    expect(refusedFollower).toBeInstanceOf(MachineRoleConflictError);
+    expect(refusedFollower.message).toContain("this machine is a Source (signing key own), so it cannot be a Follower");
+    expect(refusedFollower.message).toContain(`move ${dirname(sourcePath)} aside`);
+    expect(rows(sourcePath)).toEqual({ source: 1, follower: 0, followers: 0, signingKey: "own" });
   });
 
   it("refuses state an earlier release created and asks to reinitialize", async () => {

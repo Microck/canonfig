@@ -50,9 +50,10 @@ export type SourceView =
   | "agent"
   | "installers"
   | "setup"
-  | "doctor";
+  | "doctor"
+  | "version";
 
-export type FollowerView = "overview" | "machines" | "sync" | "schedule" | "local" | "backups" | "secrets" | "tunnel" | "agent" | "doctor" | "machine";
+export type FollowerView = "overview" | "machines" | "sync" | "schedule" | "local" | "backups" | "secrets" | "tunnel" | "agent" | "doctor" | "machine" | "version";
 
 export type View = SourceView | FollowerView | "not-found";
 
@@ -346,6 +347,10 @@ export interface Workspace {
   setInviteOpen: SetState<boolean>;
   resources: Resource[];
   setResources: SetState<Resource[]>;
+  /** Reads the folder's items when called, for a delayed callback that must see an edit saved while it waited. */
+  readResources: () => Resource[];
+  /** Reads the unpublished changes and the next revision number when called, like readResources. */
+  readQueue: () => { pending: PendingChange[]; nextSequence: number };
   revisions: Revision[];
   /** Newest published revision, 0 before the first publish. */
   latest: number;
@@ -566,6 +571,16 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
   const timers = useRef<number[]>([]);
   useEffect(() => () => timers.current.forEach((t) => window.clearTimeout(t)), []);
   const later = useCallback((fn: () => void, ms: number) => void timers.current.push(window.setTimeout(fn, ms)), []);
+  // Delayed callbacks close over the render that started them; readResources goes through this instead. Synced after
+  // each commit, which lands long before any ws.later callback runs.
+  const latestResources = useRef(resources);
+  const latestQueue = useRef({ pending, nextSequence });
+  useEffect(() => {
+    latestResources.current = resources;
+    latestQueue.current = { pending, nextSequence };
+  }, [resources, pending, nextSequence]);
+  const readResources = useCallback(() => latestResources.current, []);
+  const readQueue = useCallback(() => latestQueue.current, []);
 
   const publish = useCallback(
     (reviewer: string, onDone: () => void) => {
@@ -834,6 +849,8 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     unenrolled,
     unenroll,
     later,
+    readResources,
+    readQueue,
     isStopped,
     focus,
     navigate,
@@ -862,12 +879,16 @@ function sharedSeed(setup: Setup | null): Record<string, unknown> {
       "service-installed": setup.service === "service",
       // Setup just installed the service, so it started now, not at the demo's seeded time.
       "service-since": `today ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`,
+      // A new Source tracks no skill upstreams and hasn't turned on Canonfig updates.
+      "skill-sources": [],
+      "self-update": { npmCli: null, latest: null },
     };
   if (setup?.role === "follower")
     return {
       "tunnel-up": setup.tunnel,
       // null: no schedule was ever set. With one, the readers' initial (`schedule set --default`) is what onboarding ran.
       ...(setup.schedule ? {} : { "follower-schedule": null }),
+      "self-update": { npmCli: null, latest: null },
     };
   return {};
 }

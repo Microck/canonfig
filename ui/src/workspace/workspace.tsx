@@ -17,7 +17,7 @@ import type { Setup } from "@/onboarding/onboarding";
 const Onboarding = lazy(() => import("@/onboarding/onboarding").then((m) => ({ default: m.Onboarding })));
 import { ProfileView } from "./profile";
 import { PublishDialog, RevisionsView, SecretsView, SourceOverview } from "./source";
-import { AgentPolicyView, DoctorView, InstallersView, ServiceView, SetupView } from "./settings";
+import { AgentPolicyView, DoctorView, InstallersView, ServiceView, SetupView, VersionView } from "./settings";
 import { BackupsView } from "./harnesses";
 // A session is one role, so the Follower screens load only when a Follower workspace opens. All of them share
 // one chunk: after the first Follower page suspends once, page changes inside the role never suspend.
@@ -44,6 +44,7 @@ const SOURCE_SCREENS: Partial<Record<View, React.ComponentType>> = {
   installers: InstallersView,
   setup: SetupView,
   doctor: DoctorView,
+  version: VersionView,
 };
 
 const FOLLOWER_SCREENS: Partial<Record<View, React.ComponentType>> = {
@@ -58,6 +59,7 @@ const FOLLOWER_SCREENS: Partial<Record<View, React.ComponentType>> = {
   agent: AgentPolicyView,
   doctor: DoctorView,
   machine: MachineView,
+  version: VersionView,
 };
 
 function Frame() {

@@ -5,11 +5,11 @@ Canonfig keeps declared AI agent configuration aligned across a set of machines.
 ## Language
 
 **Source Machine**:
-The machine that owns canonical configuration state for a Canonfig installation.
+The machine that owns canonical configuration state for a Canonfig installation. A machine is a Source Machine or a Follower Machine, never both.
 _Avoid_: Central authority machine, main machine
 
 **Follower Machine**:
-A machine that receives canonical configuration state from the Source Machine while retaining explicitly local configuration.
+A machine that receives canonical configuration state from the Source Machine while retaining explicitly local configuration. It cannot also be a Source Machine.
 _Avoid_: Client machine, replica
 
 **Machine Profile**:

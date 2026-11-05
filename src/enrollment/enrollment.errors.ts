@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import { TaggedError } from "../domain/tagged-error.ts";
 import type { CredentialStorageError } from "../machine/machine-state.errors.ts";
-import type { FollowerNotFoundError } from "../state/state-repository.errors.ts";
+import type { FollowerNotFoundError, MachineRoleConflictError } from "../state/state-repository.errors.ts";
 
 export class SourceNotInitializedError extends TaggedError<SourceNotInitializedError>()(
   "SourceNotInitializedError",
@@ -123,6 +123,8 @@ export class SourceCredentialMismatchError extends TaggedError<SourceCredentialM
 
 export type EnrollmentError =
   | SourceNotInitializedError
+  // Saving the Source identity on an enrolled Follower.
+  | MachineRoleConflictError
   // Naming a follower the Source Machine never enrolled is an ordinary
   // enrollment outcome, distinct from a credential that fails to authenticate.
   | FollowerNotFoundError

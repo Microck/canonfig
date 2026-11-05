@@ -238,3 +238,4 @@ Other failures:
 | --- | --- | --- |
 | "Missing required option: --reviewer" (exit 2) | `--reviewer` is required. | Add `--reviewer "$USER"`. |
 | "the profile revision could not be signed (...); run 'canonfig source init' first" | This machine has no Source Machine keys. | Run Source setup, or `canonfig source init`. |
+| "this machine follows the Source at ... (signing key ...) as ... (...), so it cannot publish a revision: a machine is either a Source or a Follower, never both. ..." (exit 2) | This machine is an enrolled Follower Machine. Its `~/.canonfig/` is the mirror of the Source Machine named in the message, and nothing was published or changed. | Publish on that Source Machine. To make this machine a Source instead, run `canonfig follower unenroll`, then `canonfig source init`. |
