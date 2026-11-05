@@ -166,10 +166,10 @@ in an isolated temporary directory and checks its reported version.
 Publication and verification are separate jobs. If publication and tag creation
 succeeded but verification failed, rerun only the failed verification job. Never
 rerun publication or reuse the version. Verification can also be run independently
-with Node.js 24 and npm on the release runner:
+with Node.js 24 and npm on the release runner. Substitute the version being verified:
 
 ```bash
-node tools/release/verify-published.mjs 5.0.1
+node tools/release/verify-published.mjs 6.0.0
 ```
 
 The verification helper only reads from npm and installs into a disposable local
