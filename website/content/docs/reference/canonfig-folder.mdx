@@ -40,9 +40,9 @@ it.
 | `skills/` | Yes | One directory per skill, each with a `SKILL.md`. |
 | `hooks/` | Yes | Scripts a hook runs. Every file here must be run by a hook. |
 | `local/` | No | Items only this machine projects. See [The local folder](#the-local-folder). |
-| `.backups/` | No | Takeover snapshots. See [Restore a harness from a backup](/how-to/restore-from-a-backup). |
+| `.backups/` | No | Takeover snapshots, of harnesses and of folder entries `canonfig import --replace` replaced. See [Restore a harness from a backup](/how-to/restore-from-a-backup). |
 | `.runtime/` | No | `hook-runner.mjs`, which every projected hook calls. |
-| `state.sqlite` | No | Enrollment, Profile Revisions, run journal, and Applied Resource Records. |
+| `state.sqlite` | No | Enrollment, Profile Revisions, run journal, Applied Resource Records, and the export and import journal. |
 | `setup.json` | No | The `canonfig setup` plan, approval, and progress. |
 | `policy.json` | No | The agent policy of a machine that is not enrolled. |
 | `canonfig.log` | No | The command log. |
@@ -312,7 +312,7 @@ takes these keys:
 | `mcp` | object: name to [MCP server](#mcp-servers) | MCP servers only this machine adds. |
 | `settings` | object: harness id to object of key path to value | Settings keys only this machine adds. |
 | `excludeHarnesses` | array of harness ids | Harnesses this machine never projects, even when listed. `canonfig harnesses exclude` and `canonfig restore` edit it. |
-| `backups` | boolean | `false` turns takeover snapshots off on this machine. Default `true`. |
+| `backups` | boolean | `false` turns harness takeover snapshots off on this machine; `canonfig import --replace` still snapshots the folder entries it replaces. Default `true`. |
 
 The Source Machine decides which categories local items may add, with
 `local.allow` in `canonfig.jsonc`. A local category that `local.allow` does not

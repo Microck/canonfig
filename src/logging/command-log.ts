@@ -9,7 +9,7 @@ import {
   openSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, win32 } from "node:path";
 
 const COMMAND_ACTIONS = new Map<string, ReadonlySet<string>>([
   ["self-update", new Set(["enable", "disable", "status", "check", "apply", "auto"])],
@@ -23,6 +23,8 @@ const COMMAND_ACTIONS = new Map<string, ReadonlySet<string>>([
 ]);
 const SINGLE_COMMANDS = new Set([
   "doctor",
+  "export",
+  "import",
   "recover",
   "restore",
   "status",
@@ -95,8 +97,13 @@ const nodeFileOperations: CommandLogFileOperations = {
     closeSync(openSync(path, "a", 0o600));
   },
   restrictWindowsAccess: (path, environment) => {
+    // Resolve PowerShell like the Source service does, not through PATH: a
+    // scheduled run or a narrowed PATH would otherwise drop every log entry.
+    const merged = { ...process.env, ...environment };
+    const powershell = merged.CANONFIG_POWERSHELL
+      ?? win32.join(merged.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
     const result = spawnSync(
-      "powershell.exe",
+      powershell,
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_ACL_SCRIPT],
       {
         env: {

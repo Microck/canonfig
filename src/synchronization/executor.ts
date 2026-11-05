@@ -496,6 +496,8 @@ export interface ActionResult {
   readonly rollbackReference?: string | undefined;
   /** Physical rollback failed, so terminal cleanup must preserve its snapshot. */
   readonly rollbackFailed?: boolean | undefined;
+  /** A no-replace write found its target taken; see `SynchronizationOutcome` `occupiedTarget`. */
+  readonly occupiedTarget?: string | undefined;
 }
 
 export const driftResult = (
@@ -821,15 +823,24 @@ export const executeSynchronizationAction = (
       ),
     );
     return yield* work.pipe(
-      Effect.catch((error) =>
-        rollbackPrepared(prepared).pipe(
+      Effect.catch((error) => {
+        // A no-replace write refused because a file took the name after
+        // planning (EEXIST from the hard link) is reported apart from the
+        // reason, so `canonfig import` can name it as a conflict.
+        const occupiedTarget = detail.kind === "write-file" && detail.noReplace === true
+            && error instanceof MachineFilesystemError && /\bEEXIST\b/u.test(error.message)
+          ? detail.target
+          : undefined;
+        return rollbackPrepared(prepared).pipe(
           Effect.match({
             onSuccess: (): ActionResult => ({
               kind: "failed", reason: actionFailureReason(state, error, input.knownSecrets ?? []),
+              occupiedTarget,
             }),
             onFailure: (rollbackError): ActionResult => ({
               kind: "failed", reason: `${actionFailureReason(state, error, input.knownSecrets ?? [])}; rollback failed: ${redact(rollbackError, input.knownSecrets ?? [])}${prepared?.rollbackReference === undefined ? "" : `; rollback snapshot retained at ${prepared.rollbackReference}`}`,
               rollbackFailed: true, rollbackReference: prepared?.rollbackReference,
+              occupiedTarget,
             }),
           }),
           Effect.flatMap((failure) => journal(
@@ -842,8 +853,8 @@ export const executeSynchronizationAction = (
               ...failure, reason: redact(journalError, input.knownSecrets ?? []),
             })),
           )),
-        )
-      ),
+        );
+      }),
     );
   }).pipe(
     Effect.catch((error) =>
@@ -1110,6 +1121,7 @@ export const executeSynchronizationPlan = (
       readonly reference?: string | undefined;
     }> = [];
     let failedReason: string | undefined;
+    let occupiedTarget: string | undefined;
 
     const runActions = Effect.gen(function*() {
       for (let index = 0; index < states.length; index += 1) {
@@ -1135,6 +1147,7 @@ export const executeSynchronizationPlan = (
         if (result.human !== undefined) human.push(result.human);
         if (result.drift !== undefined) drift.push(result.drift);
         if (result.reason !== undefined) failedReason = result.reason;
+        if (result.occupiedTarget !== undefined) occupiedTarget = result.occupiedTarget;
         if (result.kind !== "verified") {
           if (result.kind === "failed") {
             for (const completed of completedRollbacks.reverse()) {
@@ -1195,7 +1208,7 @@ export const executeSynchronizationPlan = (
     yield* runActions;
 
     const outcome: SynchronizationOutcome = failedReason !== undefined
-      ? { outcome: "Failed", run: input.id, reason: failedReason }
+      ? { outcome: "Failed", run: input.id, reason: failedReason, occupiedTarget }
       : drift.length > 0
       ? { outcome: "FollowerDrift", run: input.id, conflicts: drift }
       : human.length > 0

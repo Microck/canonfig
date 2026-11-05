@@ -26,7 +26,7 @@ import {
   type MachineStateError,
 } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
-import { FilePermissionSnapshot, type InstallDestinationHint, type MachinePath } from "../machine/machine-state.types.ts";
+import { FilePermissionSnapshot, type FileIdentity, type InstallDestinationHint, type MachinePath } from "../machine/machine-state.types.ts";
 import { temporaryEntryName } from "../machine/temporary-entries.ts";
 import {
   directoryVerificationDigest,
@@ -126,6 +126,8 @@ interface RollbackMaterial {
   readonly reference: string;
   readonly stored: ReadonlyArray<StoredFile>;
   readonly restore: Effect.Effect<void, SynchronizationExecutionInputError | MachineStateError, MachineState>;
+  /** Only the part of `restore` that removes the parents the write created. */
+  readonly removeCreatedParents: Effect.Effect<void, MachineStateError, MachineState>;
 }
 
 export interface ResourceExecutionContext {
@@ -713,10 +715,16 @@ const captureRollback = (
       path: rollbackPath,
       content: encoder.encode(JSON.stringify([...stored, ...createdParents])),
     });
+    const removeParents = removeCreatedParents(createdParents, false);
     const restore = restoreStoredFiles(stored, rollbackPath.absolute, root).pipe(
-      Effect.andThen(removeCreatedParents(createdParents, false)),
+      Effect.andThen(removeParents),
     );
-    return { reference: rollbackPath.absolute, stored, restore };
+    return {
+      reference: rollbackPath.absolute,
+      stored,
+      restore,
+      removeCreatedParents: removeParents,
+    };
   });
 
 const rollbackPaths = (
@@ -1078,39 +1086,71 @@ const targetPath = (
     return yield* machine.normalizePath({ path: target });
   });
 
+type WriteFileDetail = Extract<PlannedAction["detail"], { readonly kind: "write-file" }>;
+
+/**
+ * Write one file. Its rollback touches the target only to undo what this
+ * write did there, judged from the write's own result rather than from
+ * whether it returned: a no-replace write that found the name taken
+ * published nothing and leaves that file alone, and a target that was absent
+ * is removed only while the name still refers to the file this write
+ * published, so a file another process put there is never deleted.
+ */
 const prepareWrite = (
   context: ResourceExecutionContext,
-  target: string,
-  digest: string,
+  detail: WriteFileDetail,
 ): Effect.Effect<PreparedResourceAction, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
   Effect.gen(function*() {
-    const path = yield* targetPath(target);
+    const path = yield* targetPath(detail.target);
     const rollback = yield* captureRollback(context, [path]);
+    const symlinkTo = context.desired.kind === "file" ? context.desired.symlinkTo : undefined;
+    // The file this write put at `path`: atomicWrite's result, or the file
+    // named by an error raised after publication. Undefined while nothing
+    // was published.
+    let published: FileIdentity | undefined;
     const execute = Effect.gen(function*() {
       const machine = yield* MachineState;
-      if (context.desired.kind !== "file") {
-        const content = yield* artifact(context.artifacts, digest);
-        yield* machine.atomicWrite({ path, content });
+      if (symlinkTo !== undefined) {
+        yield* machine.replaceSymlink({ path, target: symlinkTo });
         return;
       }
-      if (context.desired.symlinkTo !== undefined) {
-        yield* machine.replaceSymlink({
-          path,
-          target: context.desired.symlinkTo,
-        });
-        return;
-      }
-      const content = yield* artifact(context.artifacts, digest);
-      yield* machine.atomicWrite({
+      const content = yield* artifact(context.artifacts, detail.digest);
+      published = yield* machine.atomicWrite({
         path,
         content,
-        mode: context.desired.mode ?? (context.desired.executable ? 0o700 : 0o600),
-      });
+        mode: context.desired.kind === "file"
+          ? context.desired.mode ?? (context.desired.executable ? 0o700 : 0o600)
+          : undefined,
+        noReplace: detail.noReplace,
+      }).pipe(
+        Effect.tapErrorTag("UnconfirmedPublicationError", (error) =>
+          Effect.sync(() => {
+            published = error.published;
+          })
+        ),
+      );
+    });
+    const undo = Effect.suspend(() => {
+      // A symlink write reports no identity, so it is undone as captured.
+      if (symlinkTo !== undefined) return rollback.restore;
+      const written = published;
+      if (rollback.stored[0]?.state === "absent") {
+        const removeWritten = written === undefined
+          ? Effect.void
+          : Effect.gen(function*() {
+            const machine = yield* MachineState;
+            yield* machine.removeFile({ path, identity: written });
+          });
+        return removeWritten.pipe(Effect.andThen(rollback.removeCreatedParents));
+      }
+      // A no-replace write never touches the target before it publishes.
+      if (detail.noReplace === true && written === undefined) return rollback.removeCreatedParents;
+      return rollback.restore;
     });
     return {
       rollbackReference: rollback.reference,
       execute,
-      rollback: rollback.restore,
+      rollback: undo,
     };
   });
 
@@ -2015,7 +2055,7 @@ export const prepareResourceAction = (
   const detail = context.action.detail;
   switch (detail.kind) {
     case "write-file":
-      return prepareWrite(context, detail.target, detail.digest);
+      return prepareWrite(context, detail);
     case "write-config":
       return prepareConfig(context, detail.target, detail.keys, detail.removes);
     case "mirror-directory":

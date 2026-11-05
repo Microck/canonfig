@@ -67,6 +67,7 @@ import type {
   CreateEnrollmentInvitationInput,
   DeploymentReceipt,
   DriftRecord,
+  ArchiveEvent,
   HarnessTakeover,
   EnrollmentSourceRecord,
   FinalizeEnrollmentInput,
@@ -88,7 +89,7 @@ import type {
   StoredResourceBlob,
   VerificationEvidence,
 } from "./state-repository.types.ts";
-import { stateFormatVersion, stateMigrations, stateSchemaMigration } from "./state-schema.ts";
+import { stateFormatVersion, stateMigrations, stateSchemaMigrations } from "./state-schema.ts";
 import { buildIdentity } from "../runtime/build-identity.ts";
 import type {
   PlanningLocalRevision,
@@ -336,7 +337,7 @@ const makeRepository = Effect.gen(function*() {
   const sql = yield* SqlClient.SqlClient;
 
   // A database from before state format 6 has a different migration history.
-  // Running the current migration over it would fail halfway or, worse,
+  // Running the current migrations over it would fail halfway or, worse,
   // succeed against tables whose rows this release cannot decode.
   const history = yield* sql`
     SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
@@ -347,7 +348,7 @@ const makeRepository = Effect.gen(function*() {
     Effect.flatMap((rows) => Schema.decodeUnknownEffect(Schema.Array(MigrationRow))(rows)),
     Effect.mapError((error) => new RepositorySqlError({ operation: "read state schema history", message: String(error) })),
   );
-  if (history.some((row) => row.migration_id !== stateSchemaMigration.id || row.name !== stateSchemaMigration.name)) {
+  if (history.some((row, index) => row.migration_id !== stateSchemaMigrations[index]?.id || row.name !== stateSchemaMigrations[index]?.name)) {
     return yield* new EarlierStateFormatError({
       migrations: history.map((row) => `${String(row.migration_id).padStart(4, "0")}_${row.name}`),
     });
@@ -1807,6 +1808,18 @@ const makeRepository = Effect.gen(function*() {
     },
   );
 
+  const recordArchiveEvent = Effect.fn("StateRepository.recordArchiveEvent")(
+    function*(event: ArchiveEvent): Effect.fn.Return<void, StateRepositoryError> {
+      yield* sql`
+        INSERT INTO archive_events (occurred_at, command, outcome, archive, sha256, signer)
+        VALUES (
+          ${event.occurredAt}, ${event.command}, ${event.outcome},
+          ${event.archive}, ${event.sha256 ?? null}, ${event.signer ?? null}
+        )
+      `.pipe(Effect.mapError(sqlError("record archive event")));
+    },
+  );
+
   const releaseTakeovers = Effect.fn("StateRepository.releaseTakeovers")(
     function*(
       surfaces: ReadonlyArray<{ readonly harness: string; readonly surface: string }>,
@@ -2831,6 +2844,7 @@ const makeRepository = Effect.gen(function*() {
     loadHarnessTakeovers,
     recordHarnessTakeovers,
     removeRunTakeovers,
+    recordArchiveEvent,
     releaseTakeovers,
     loadStartedResources,
     adoptLocalProjection,

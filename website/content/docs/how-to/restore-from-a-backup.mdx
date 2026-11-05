@@ -33,10 +33,16 @@ Each run that takes over at least one harness writes one snapshot under
 Snapshots stay on the machine. They are never published or sent anywhere.
 Their directories have mode `0700` and their files `0600`.
 
-Canonfig keeps the first snapshot, which holds the state from before Canonfig
-ever wrote to a harness, and the 4 most recent. A run that rolls back deletes
-the snapshot it wrote. Later runs that only update surfaces Canonfig already
-manages take no snapshot.
+Canonfig keeps the first snapshot that holds harnesses, which holds the state
+from before Canonfig ever wrote to a harness, and the 4 most recent. A run that
+rolls back deletes the snapshot it wrote. Later runs that only update surfaces
+Canonfig already manages take no snapshot.
+
+`canonfig import --replace` also writes a snapshot, of the Canonical Folder
+entries it replaces, under `canonfig/.canonfig/` instead of a harness.
+Retention keeps the first of those too. Restoring one puts those folder
+entries back; see
+[Replace a folder that already has content](/how-to/export-and-import#replace-a-folder-that-already-has-content).
 
 ## Find a snapshot
 

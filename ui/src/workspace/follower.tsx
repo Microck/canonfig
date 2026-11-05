@@ -758,10 +758,16 @@ export function LocalView() {
       <PageHeader
         crumbs={[PLAIN.localNav]}
         actions={
-          // One gold action per view: while the editor is open its Save is the commit, so this steps down, like Profile's Add item.
-          <Button size="sm" variant={adding || current ? "outline" : "primary"} disabled={allowed.length === 0} onClick={startAdding} data-tour="local-add">
-            <Plus /> Add a local item
-          </Button>
+          <>
+            {/* `canonfig export` takes this machine's mirror together with its local folder. */}
+            <Button size="sm" variant="outline" onClick={ws.exportArchive} title="Download ~/.canonfig/ and its local folder as a .tar.gz with a checksum manifest">
+              Export
+            </Button>
+            {/* One gold action per view: while the editor is open its Save is the commit, so this steps down, like Profile's Add item. */}
+            <Button size="sm" variant={adding || current ? "outline" : "primary"} disabled={allowed.length === 0} onClick={startAdding} data-tour="local-add">
+              <Plus /> Add a local item
+            </Button>
+          </>
         }
       />
       <Body detail={(adding || current) && <LocalEditor key={adding ? "new" : selected} item={adding ? null : current!} onClose={() => ws.go("local")} />}>

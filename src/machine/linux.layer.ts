@@ -1,10 +1,12 @@
 import { installedSystemdCommand } from "./installed-scheduler-command.ts";
 import { fileSchedulerIdentity } from "./scheduler-identity.ts";
+import { openAnchoredDirectory, sameIdentity } from "./anchored-directory.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   access,
   chmod,
+  link,
   lstat,
   mkdir,
   open,
@@ -50,6 +52,7 @@ import {
   InvalidMachinePathError,
   InvalidSchedulerJobError,
   MachineFilesystemError,
+  UnconfirmedPublicationError,
   type MachineStateError,
   ProcessOutputLimitError,
   ProcessStartError,
@@ -72,6 +75,7 @@ import type {
   ExecutableQuery,
   FileDigest,
   FileContent,
+  FileIdentity,
   FilePermissions,
   LinuxMachineStateOptions,
   LoadCredentialInput,
@@ -491,34 +495,80 @@ const syncHandle = (
     },
   );
 
+/** Where an atomic write may publish: below `anchor` only, and without replacing when `noReplace`. */
+interface WritePlacement {
+  readonly anchor?: string | undefined;
+  readonly noReplace?: boolean | undefined;
+}
+
 const atomicWriteFile = (
   path: string,
   content: FileContent,
   mode: number,
-): Effect.Effect<void, MachineFilesystemError> =>
-  promiseEffect("atomically write file", path, async () => {
-    await mkdir(dirname(path), { recursive: true, mode: defaultDirectoryMode });
-    const temporary = makeTemporarySibling(path);
-    let handle: Awaited<ReturnType<typeof open>> | undefined;
-    try {
-      handle = await open(temporary, "wx", mode);
-      await writeFileContent(handle, content);
-      await syncHandle(handle);
-      await handle.chmod(mode);
-      await handle.close();
-      handle = undefined;
-      await prepareManagedLeafKind(path, "non-directory");
-      await rename(temporary, path);
-      const directory = await open(dirname(path), "r");
+  placement: WritePlacement = {},
+): Effect.Effect<FileIdentity, MachineFilesystemError | UnconfirmedPublicationError> =>
+  Effect.tryPromise({
+    try: async () => {
+      // An anchored write publishes into the existing directory it opened; it
+      // never creates parents, which would follow whatever the path names now.
+      const anchored = placement.anchor === undefined
+        ? undefined
+        : await openAnchoredDirectory(placement.anchor, dirname(path));
+      if (anchored === undefined) await mkdir(dirname(path), { recursive: true, mode: defaultDirectoryMode });
+      const parent = anchored?.base ?? dirname(path);
+      const target = join(parent, basename(path));
+      const temporary = join(parent, temporaryEntryName());
+      let handle: Awaited<ReturnType<typeof open>> | undefined;
       try {
-        await syncHandle(directory);
+        handle = await open(temporary, "wx", mode);
+        await writeFileContent(handle, content);
+        await syncHandle(handle);
+        await handle.chmod(mode);
+        const written = await handle.stat({ bigint: true });
+        await handle.close();
+        handle = undefined;
+        if (placement.noReplace === true) {
+          // A hard link fails with EEXIST when the name exists, even when
+          // another process created it after any earlier check.
+          await link(temporary, target);
+        } else {
+          await prepareManagedLeafKind(target, "non-directory");
+          await rename(temporary, target);
+        }
+        // From here the file is visible at `path`, so a failure must say
+        // what the name holds now instead of reading as nothing written.
+        const published: FileIdentity = { dev: written.dev, ino: written.ino };
+        const unconfirmed = (state: "in-place" | "replaced", cause: unknown) =>
+          new UnconfirmedPublicationError({ path, state, published, message: messageOf(cause) });
+        if (anchored !== undefined) {
+          try {
+            await anchored.verify();
+            if (!sameIdentity(await lstat(target, { bigint: true }), written)) {
+              throw new Error(`${path} no longer names the file Canonfig published`);
+            }
+          } catch (cause) {
+            throw unconfirmed("replaced", cause);
+          }
+        }
+        try {
+          const directory = await open(parent, "r");
+          try {
+            await syncHandle(directory);
+          } finally {
+            await directory.close();
+          }
+        } catch (cause) {
+          throw unconfirmed("in-place", `the directory entry could not be flushed to disk: ${messageOf(cause)}`);
+        }
+        return published;
       } finally {
-        await directory.close();
+        if (handle !== undefined) await handle.close().catch(() => undefined);
+        await rm(temporary, { force: true }).catch(() => undefined);
+        await anchored?.close();
       }
-    } finally {
-      if (handle !== undefined) await handle.close().catch(() => undefined);
-      await rm(temporary, { force: true }).catch(() => undefined);
-    }
+    },
+    catch: (cause) =>
+      cause instanceof UnconfirmedPublicationError ? cause : filesystemError("atomically write file", path)(cause),
   }).pipe(Effect.uninterruptible);
 
 const descriptorPath = (handle: FileHandle): string =>
@@ -818,11 +868,23 @@ const readBounded = (
         maximumBytes: input.prefixBytes,
       });
     }
+    const anchor = input.anchor === undefined ? undefined : yield* checkLinuxPath(input.anchor);
     return yield* Effect.tryPromise({
-      try: () => regularFileBytes(path, input.maximumBytes, input.prefixBytes),
+      try: async () => {
+        if (anchor === undefined) return regularFileBytes(path, input.maximumBytes, input.prefixBytes);
+        const directory = await openAnchoredDirectory(anchor, dirname(path));
+        try {
+          const bytes = await regularFileBytes(join(directory.base, basename(path)), input.maximumBytes, input.prefixBytes);
+          await directory.verify();
+          return bytes;
+        } finally {
+          await directory.close();
+        }
+      },
+      // The size error names the requested path, not the anchored descriptor path.
       catch: (cause) =>
         cause instanceof FileSizeLimitError
-          ? cause
+          ? new FileSizeLimitError({ path, maximumBytes: input.maximumBytes })
           : filesystemError("read file", path)(cause),
     });
   });
@@ -1680,9 +1742,12 @@ export const linuxMachineStateLayer = (
       );
 
       const atomicWrite = Effect.fn("MachineState.atomicWrite")(
-        function*(input: AtomicWriteInput): Effect.fn.Return<void, MachineStateError> {
+        function*(input: AtomicWriteInput): Effect.fn.Return<FileIdentity, MachineStateError> {
           const path = yield* checkLinuxPath(input.path);
-          yield* atomicWriteFile(path, input.content, input.permissions?.mode ?? input.mode ?? defaultFileMode);
+          return yield* atomicWriteFile(path, input.content, input.permissions?.mode ?? input.mode ?? defaultFileMode, {
+            anchor: input.anchor === undefined ? undefined : yield* checkLinuxPath(input.anchor),
+            noReplace: input.noReplace,
+          });
         },
       );
 
@@ -1712,7 +1777,19 @@ export const linuxMachineStateLayer = (
       const removeFile = Effect.fn("MachineState.removeFile")(
         function*(input: RemoveFileInput): Effect.fn.Return<void, MachineStateError> {
           const path = yield* checkLinuxPath(input.path);
-          yield* promiseEffect("remove file", path, () => rm(path, { force: true }));
+          const identity = input.identity;
+          yield* promiseEffect("remove file", path, async () => {
+            if (identity !== undefined) {
+              // Narrows, not closes, the window: another process can still
+              // swap the name between this check and the unlink.
+              const current = await lstat(path, { bigint: true }).catch((cause: unknown) => {
+                if (errorCode(cause) === "ENOENT" || errorCode(cause) === "ENOTDIR") return undefined;
+                throw cause;
+              });
+              if (current === undefined || !sameIdentity(current, identity)) return;
+            }
+            await rm(path, { force: true });
+          });
         },
       );
 

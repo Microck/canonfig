@@ -143,14 +143,15 @@ export interface PlanningProfileRevision extends ProfileRevision {
 /**
  * A revision Canonfig built on this machine. No Source signed it. `origin`
  * says what it was built from: the Canonical Folder (`sync` on the Source or
- * an unenrolled machine), a takeover snapshot (`restore`), or a Source
+ * an unenrolled machine), a takeover snapshot (`restore`), an export archive
+ * (`import`, whose `originDigest` is the archive manifest's), or a Source
  * revision a follower mirrors and projects (`revision`); `originDigest`
  * identifies that content. It is stored in `local_revisions`, never served,
  * and holds no file content: a run's content is kept beside the run until it
  * completes.
  */
 export interface PlanningLocalRevision {
-  readonly origin: "folder" | "snapshot" | "revision";
+  readonly origin: "folder" | "snapshot" | "archive" | "revision";
   readonly id: ProfileRevisionId;
   readonly originDigest: ContentDigest;
   readonly resources: ReadonlyArray<PublishedResource>;
@@ -174,6 +175,13 @@ export interface SynchronizationPlannerInput {
   readonly follower: FollowerId;
   readonly observedState: ObservedState;
   readonly appliedResources: ReadonlyArray<AppliedResourceRecord>;
+  /**
+   * Plan every `write-file` to publish without replacing: a file that
+   * appears at the target after planning fails the write instead of being
+   * overwritten. `canonfig import` sets it when it may not overwrite; sync,
+   * restore and follower runs never do.
+   */
+  readonly noReplace?: boolean | undefined;
 }
 
 export type SkillDriftState =
@@ -230,6 +238,8 @@ export interface ResourcePlanningContext {
   readonly observed: ObservedResourceState;
   readonly applied?: AppliedResourceRecord | undefined;
   readonly platform: Platform;
+  /** See `SynchronizationPlannerInput.noReplace`. */
+  readonly noReplace?: boolean | undefined;
 }
 
 /** Immutable content made available to the apply engine by the transport boundary. */

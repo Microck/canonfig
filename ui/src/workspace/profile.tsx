@@ -368,6 +368,10 @@ export function ProfileView() {
         crumbs={["Profile", defaults.name]}
         actions={
           <>
+            {/* `canonfig export`: the whole folder, not just the profile items listed here, signed with the Source key. */}
+            <Button variant="outline" size="sm" onClick={ws.exportArchive} title="Download ~/.canonfig/ as a .tar.gz with a checksum manifest signed by this Source">
+              Export
+            </Button>
             <Button variant="outline" size="sm" onClick={() => setDiscoverOpen(true)} data-tour="profile-add">
               Discover tools
             </Button>
