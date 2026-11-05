@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { Effect, Fiber, Layer, ManagedRuntime, Redacted, Schema } from "effect";
+import { parse as parseJsonc } from "jsonc-parser";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AgentResolutionLive } from "../../src/agent/agent-resolution.layer.ts";
@@ -1324,6 +1325,27 @@ process.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringi
     expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
     expect(read(instructions)).not.toContain("rules/style.md");
     expect(existsSync(rule)).toBe(false);
+  });
+
+  it("applies the Source's per-harness surfaces on the follower", async () => {
+    const root = temporaryRoot("surfaces-follower");
+    const source = await startSource(root, (folder) => authorFolder(folder, {
+      harnesses: ["claude-code"],
+      mcp: { git: { transport: "stdio", command: "uvx", args: ["mcp-server-git"] } },
+      surfaces: { "claude-code": ["mcp"] },
+    }, {
+      "AGENTS.md": "Prefer small diffs.\n",
+      "skills/deploy/SKILL.md": "---\nname: deploy\ndescription: Deploy\n---\nDeploy.\n",
+    }));
+    const follower = await enroll(root, source, { name: "Surfaces follower", harnesses: ["claude-code"] });
+    // Hand-written files in surfaces the follower does not get must survive.
+    const instructions = join(follower.home, ".claude", "CLAUDE.md");
+    write(instructions, "my own notes\n");
+    expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
+    expect(parseJsonc(read(join(follower.folder, "canonfig.jsonc"))).surfaces).toEqual({ "claude-code": ["mcp"] });
+    expect(Object.keys(JSON.parse(read(join(follower.home, ".claude.json"))).mcpServers)).toEqual(["git"]);
+    expect(read(instructions)).toBe("my own notes\n");
+    expect(existsSync(join(follower.home, ".claude", "skills", "deploy"))).toBe(false);
   });
 
   it("retires no harness output while a mirror item has drifted", async () => {

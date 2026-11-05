@@ -98,7 +98,9 @@ const machine = (name: string, harnesses: ReadonlyArray<TargetId> = []): Machine
       env: environment,
       encoding: "utf8",
       input,
-      timeout: 60_000,
+      // A full follower apply under tsx can exceed a minute on hosted Windows
+      // runners; past the budget spawnSync kills it and reports status null.
+      timeout: 180_000,
     });
     const text = result.stdout.trim().length > 0 ? result.stdout : result.stderr;
     let envelope: CliResult["envelope"] = {};
@@ -107,7 +109,9 @@ const machine = (name: string, harnesses: ReadonlyArray<TargetId> = []): Machine
     } catch {
       // The assertion on `status` reports stdout and stderr.
     }
-    return { status: result.status, stdout: result.stdout, stderr: result.stderr, envelope };
+    // Name a kill or spawn failure (e.g. ETIMEDOUT) in stderr, so a null status explains itself.
+    const stderr = result.error === undefined ? result.stderr : `${result.stderr}\n${result.error.message}`;
+    return { status: result.status, stdout: result.stdout, stderr, envelope };
   };
   const folder = join(home, ".canonfig");
   return { home, folder, state: join(folder, "state.sqlite"), bin, environment, run };
