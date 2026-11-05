@@ -62,6 +62,7 @@ export const mirrorItem = (
     if (category === "instructions") return file("AGENTS.md", "file");
     if (category === "harnesses") return entryOf(resource.spec, "harnesses");
     if (category === "local-policy") return entryOf(resource.spec, "local");
+    if (category === "surfaces") return entryOf(resource.spec, "surfaces");
     return undefined;
   }
   if (category === "hook-scripts") {

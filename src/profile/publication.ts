@@ -223,6 +223,8 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
   }
   resources.push(jsonItem("harnesses", "harnesses", [...new Set(config.harnesses)]));
   if (config.local !== undefined) resources.push(jsonItem("local-policy", "local", asJson(config.local)));
+  // Followers project with the same per-harness category limits the Source does.
+  if (config.surfaces !== undefined) resources.push(jsonItem("surfaces", "surfaces", asJson(config.surfaces)));
   for (const [id, tool] of Object.entries(tools)) {
     resources.push({
       id: `tools:${id}`,
