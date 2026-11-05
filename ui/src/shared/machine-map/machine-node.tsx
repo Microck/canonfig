@@ -8,7 +8,7 @@ import { DitherShader, fillStyle, usePrefersReducedMotion } from "@/lib/dither";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { StateLabel, Term } from "@/shared/shared";
-import type { Follower, FollowerState } from "@/shared/data";
+import type { Follower, FollowerState } from "@/shared/metadata";
 import { ADD_W, DEVICE_ICONS, ICON_TILE_TINT, MapActionsContext, NODE_H, NODE_W, type ResolvedLook } from "./model";
 
 // Platform reads as a word ahead of the purpose: Solar has no brand logos, and a name is clearer than a 14px glyph
@@ -18,10 +18,10 @@ const PLATFORM: Record<Follower["platform"], string> = { macos: "macOS", linux: 
 export type MachineNodeData = {
   kind: "source" | "follower";
   hostname: string;
-  platform: Follower["platform"];
+  platform: Follower["platform"] | undefined;
   look: ResolvedLook;
-  revision: number | null;
-  latest: number;
+  revision: number | null | undefined;
+  latest: number | undefined;
   /** Follower state; `null` for the Source. */
   state: FollowerState | null;
   isSelf: boolean;
@@ -87,7 +87,7 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
   const accent = look.color;
   // Revision 0 means nothing applied yet (a just-joined follower) or nothing published (a new Source): show it as missing.
   const revision = data.revision === 0 ? null : data.revision;
-  const behind = data.kind === "follower" && (revision === null || revision < data.latest);
+  const behind = data.kind === "follower" && data.latest !== undefined && revision !== undefined && (revision === null || revision < data.latest);
 
   return (
     <>
@@ -167,13 +167,13 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
               {look.name !== data.hostname && <span className="truncate font-mono text-xs text-faint">{data.hostname}</span>}
             </div>
             <div className="truncate text-sm text-muted-foreground">
-              {PLATFORM[data.platform]} · {look.purpose || <span className="text-faint">No purpose set</span>}
+              {data.platform && <>{PLATFORM[data.platform]} · </>}{look.purpose || <span className="text-faint">No purpose set</span>}
             </div>
           </div>
         </div>
         <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-t border-border px-3 text-xs">
           <span className="flex min-w-0 items-center gap-1.5 text-faint">
-            {revision === null ? (
+            {revision === undefined ? "Revision not reported" : revision === null ? (
               "No revision yet"
             ) : (
               <span className="truncate font-mono">
@@ -188,7 +188,7 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
             <span className="text-sm text-ok">Publishing…</span>
           ) : (
             <span className="text-sm text-muted-foreground">
-              <Term term="Source Machine" />
+              <Term term={data.kind === "source" ? "Source Machine" : "Follower Machine"} />
             </span>
           )}
         </div>

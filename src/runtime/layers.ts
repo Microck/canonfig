@@ -1788,6 +1788,7 @@ export const runtimeLayer = (
   );
   return Layer.mergeAll(
     machine,
+    state,
     guiQueriesLayer(dirname(statePath)).pipe(Layer.provide(state)),
     sourceCommandsLayer(dirname(statePath)).pipe(Layer.provide(dependencies)),
     followerCommandsLayer(

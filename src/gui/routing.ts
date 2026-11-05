@@ -49,7 +49,7 @@ const requestBody = (request: IncomingMessage) => Effect.tryPromise({
 export const mutationRoute = <A, B extends Schema.Json>(
   method: "POST" | "PUT" | "DELETE",
   path: string,
-  schema: Schema.Codec<A>,
+  schema: Schema.Codec<A, unknown>,
   operation: (input: A) => Effect.Effect<B, CliCommandFailure>,
   status = 200,
 ): GuiRoute => ({

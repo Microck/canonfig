@@ -36,7 +36,8 @@ export default function LiveApp({ backend = httpBackend }: { backend?: Workspace
       try {
         session = await backend.session(controller.signal);
         if (controller.signal.aborted) return;
-        if (window.location.pathname === "/") window.history.replaceState(null, "", overviewPath(session.role));
+        if (session.role === "unconfigured") window.history.replaceState(null, "", "/setup");
+        else if (window.location.pathname === "/") window.history.replaceState(null, "", overviewPath(session.role));
         setState({ kind: "loading", session });
         const status = await backend.status(controller.signal);
         if (controller.signal.aborted) return;
@@ -59,9 +60,9 @@ export default function LiveApp({ backend = httpBackend }: { backend?: Workspace
   }, [reload, backend]);
 
   const session = state.session;
-  const href = session ? overviewPath(session.role) : "/";
+  const href = session ? session.role === "unconfigured" ? "/setup" : overviewPath(session.role) : "/";
   const available = session === undefined ? [] : screens.flatMap((screen) => {
-    const path = screen.path(session.role);
+    const path = session.role === "unconfigured" && screen.title === "Overview" ? undefined : screen.path(session.role);
     return path === undefined ? [] : [{ ...screen, href: path }];
   });
   const screen = available.find((screen) => screen.href === window.location.pathname);
@@ -90,7 +91,7 @@ export default function LiveApp({ backend = httpBackend }: { backend?: Workspace
             <section className="grid justify-items-start gap-4">
               <h2 className="text-xl font-semibold">This page is not available for this machine</h2>
               <p className="max-w-prose text-muted-foreground">This page has no live backend for this machine. Use the Canonfig CLI for operations not listed in the sidebar.</p>
-              <Button asChild variant="secondary" size="lg" className="min-h-10 pointer-coarse:min-h-11"><a href={href}>Open Overview</a></Button>
+              <Button asChild variant="secondary" size="lg" className="min-h-10 pointer-coarse:min-h-11"><a href={href}>{session?.role === "unconfigured" ? "Open setup" : "Open Overview"}</a></Button>
             </section>
           ) : (
             <>

@@ -24,6 +24,8 @@ import type {
   DeploymentReceipt,
   HarnessTakeover,
   EnrollmentSourceRecord,
+  EnrollmentFollowerSummary,
+  EnrollmentInvitationSummary,
   FollowerCredentialRecord,
   FinalizeEnrollmentInput,
   JournalActionInput,
@@ -76,6 +78,10 @@ export class StateRepository extends Context.Service<StateRepository, {
   ) => Effect.Effect<void, StateRepositoryError>;
   readonly getEnrollmentSource: (
   ) => Effect.Effect<EnrollmentSourceRecord | undefined, StateRepositoryError>;
+  readonly listEnrollmentFollowers: (
+  ) => Effect.Effect<ReadonlyArray<EnrollmentFollowerSummary>, StateRepositoryError>;
+  readonly listEnrollmentInvitations: (
+  ) => Effect.Effect<ReadonlyArray<EnrollmentInvitationSummary>, StateRepositoryError>;
   readonly createEnrollmentInvitation: (
     input: CreateEnrollmentInvitationInput,
   ) => Effect.Effect<void, StateRepositoryError>;

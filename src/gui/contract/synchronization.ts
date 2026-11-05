@@ -12,6 +12,21 @@ export const GuiScheduleRequest = Schema.Union([
 export const GuiHarnessRequest = Schema.Struct({
   harness: Schema.Literals(TARGET_IDS), action: Schema.Literals(["include", "exclude"]),
 });
+export const GuiHarnessReport = Schema.Struct({
+  folder: Schema.String, configured: Schema.Boolean,
+  listed: Schema.Array(Schema.Literals(TARGET_IDS)), excluded: Schema.Array(Schema.Literals(TARGET_IDS)),
+  detected: Schema.Array(Schema.Literals(TARGET_IDS)), notInstalled: Schema.Array(Schema.Literals(TARGET_IDS)),
+  snapshots: Schema.Number, latestSnapshot: Schema.optionalKey(Schema.String),
+  change: Schema.optionalKey(GuiHarnessRequest), warnings: Schema.optionalKey(Schema.Array(Schema.String)),
+  harnesses: Schema.Array(Schema.Struct({
+    harness: Schema.Literals(TARGET_IDS), name: Schema.String, installed: Schema.Boolean,
+    executable: Schema.optionalKey(Schema.String), root: Schema.String, rootExists: Schema.Boolean,
+    status: Schema.Literals(["selected", "not-installed", "excluded", "detected", "absent"]),
+    listed: Schema.Boolean, excluded: Schema.Boolean,
+    pinnedRoot: Schema.optionalKey(Schema.String), snapshot: Schema.optionalKey(Schema.String),
+  })),
+});
+export interface GuiHarnessReport extends Schema.Schema.Type<typeof GuiHarnessReport> {}
 export const GuiOverlayRequest = Schema.Struct({ item: Schema.NonEmptyString });
 export const GuiRestoreRequest = Schema.Struct({ snapshot: Schema.NonEmptyString });
 export const GuiBackups = Schema.Struct({ snapshots: Schema.Array(Schema.String) });
@@ -29,7 +44,11 @@ export interface GuiLocalItems extends Schema.Schema.Type<typeof GuiLocalItems> 
 export const GuiLocalChange = Schema.Struct({
   path: Schema.NonEmptyString,
   expectedDigest: Schema.NullOr(Schema.String),
-  files: Schema.Array(Schema.Struct({ path: Schema.NonEmptyString, base64: Schema.String, executable: Schema.Boolean })),
+  files: Schema.Array(Schema.Struct({
+    path: Schema.NonEmptyString,
+    base64: Schema.String.check(Schema.isPattern(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u)),
+    executable: Schema.Boolean,
+  })),
 });
 export const GuiLocalWrite = Schema.Struct({ changes: Schema.Array(GuiLocalChange) });
 export const GuiLocalConfigRequest = Schema.Struct({

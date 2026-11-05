@@ -17,7 +17,7 @@ export class GuiRequestError extends Error {
 }
 
 /** Decode only at the HTTP boundary. The browser never imports command services or demo state. */
-export async function request<T>(url: string, schema: Schema.Codec<T>, signal: AbortSignal, mutation?: {
+export async function request<T>(url: string, schema: Schema.Codec<T, unknown>, signal: AbortSignal, mutation?: {
   method: "POST" | "PUT" | "DELETE"; body: unknown;
 }): Promise<T> {
   let response: Response;
