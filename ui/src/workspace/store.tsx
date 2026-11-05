@@ -373,6 +373,8 @@ export interface Workspace {
   snapshots: Snapshot[];
   /** Simulates `canonfig restore <snapshot>`: puts the snapshot back and excludes its harnesses here. */
   restore: (snapshot: string) => void;
+  /** Simulates `canonfig export`: downloads ~/.canonfig/ and local/ as one .tar.gz with a checksum manifest. */
+  exportArchive: () => void;
   /** This machine's ~/.canonfig/local/ items. */
   local: LocalItem[];
   setLocal: SetState<LocalItem[]>;
@@ -616,6 +618,14 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     [],
   );
 
+  // Export changes nothing Canonfig manages, so unlike restore it adds no run.
+  const exportArchive = useCallback(() => {
+    const name = `canonfig-export-${new Date().toISOString().replaceAll(":", "-").replace(/\.\d+Z$/u, "Z")}.tar.gz`;
+    toast.success("Exported the Canonfig folder", {
+      description: `Downloaded ${name}, with a manifest.json of every file's size and SHA-256.\nState, backups and credentials stay on this machine.${DEMO ? "\nSimulated in this demo; no file was written." : ""}`,
+    });
+  }, []);
+
   const recover = useCallback(() => {
     setInterrupted(false);
     setRuns((prev) => prev.map((r) => (r.n === 41 ? { ...r, what: "Recovered: all 5 steps done", when: "Just now", tone: "ok" } : r)));
@@ -764,6 +774,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     setBackups,
     snapshots,
     restore,
+    exportArchive,
     local,
     setLocal,
     unenrollOpen,
