@@ -6,6 +6,8 @@ import { redactText } from "../cli/redaction.ts";
 import { CliCommandFailure } from "../cli/source-commands.ts";
 import type { GuiError } from "./contract.ts";
 
+export const EmptyBody = Schema.Record(Schema.String, Schema.Never);
+
 export const failureBody = (category: CliFailureCategory, message: string): GuiError => ({
   category, message: redactText(message), exitCode: exitCodeForFailure(category),
 });

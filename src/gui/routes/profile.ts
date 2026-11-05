@@ -21,9 +21,8 @@ import { listSkills, trackSkill, checkSkills, updateSkills } from "../../skills/
 import { GuiProfileConfigWrite, GuiProfileWrite, GuiPublicationRequest, GuiRevisionSelection, GuiSkillSelection, GuiSkillTrack, profileEndpoints } from "../contract/profile.ts";
 import { GuiOperations } from "../operations.ts";
 import { GuiQueries } from "../queries.ts";
-import { commandFailure, mutationRoute, queryRoute, type GuiRoute } from "../routing.ts";
+import { EmptyBody, commandFailure, mutationRoute, queryRoute, type GuiRoute } from "../routing.ts";
 
-const EmptyBody = Schema.Record(Schema.String, Schema.Never);
 const changesFrom = (changes: typeof GuiProfileWrite.Type.changes): AuthoringChange[] => changes.map((change) => ({ ...change, files: change.files.map((file) => ({ path: file.path, executable: file.executable, content: Buffer.from(file.base64, "base64") })) }));
 
 export const profileRoutes = Effect.gen(function*() {

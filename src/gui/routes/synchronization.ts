@@ -21,9 +21,8 @@ import {
 } from "../contract/synchronization.ts";
 import { GuiOperations } from "../operations.ts";
 import { GuiQueries } from "../queries.ts";
-import { commandFailure, mutationRoute, queryRoute, type GuiRoute } from "../routing.ts";
+import { EmptyBody, commandFailure, mutationRoute, queryRoute, type GuiRoute } from "../routing.ts";
 
-const EmptyBody = Schema.Record(Schema.String, Schema.Never);
 const secretFailure = (error: SecretTransferError) => new CliCommandFailure({
   category: secretFailureCategory(error), message: error.message,
 });

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Effect, Schema } from "effect";
+import { Effect } from "effect";
 import { isNestedCommandLauncher } from "../../agent/agent-resolution.service.ts";
 import { FollowerCommands } from "../../cli/follower-commands.ts";
 import { CliCommandFailure, SourceCommands, type CliPayload } from "../../cli/source-commands.ts";
@@ -21,9 +21,7 @@ import {
   GuiSourceServiceInput,
 } from "../contract/administration.ts";
 import { GuiQueries } from "../queries.ts";
-import { failureBody, mutationRoute, queryRoute, type GuiRoute } from "../routing.ts";
-
-const EmptyBody = Schema.Record(Schema.String, Schema.Never);
+import { EmptyBody, failureBody, mutationRoute, queryRoute, type GuiRoute } from "../routing.ts";
 
 const report = (operation: Effect.Effect<CliPayload, CliCommandFailure>) => operation.pipe(
   Effect.map((value) => ({ report: toJson(value), error: null })),
