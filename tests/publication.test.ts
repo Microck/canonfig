@@ -336,6 +336,21 @@ describe("publishing the Canonical Folder", () => {
     expect(String(failure.message)).toContain("this Source publishes profile workstation");
   });
 
+  it.each([
+    ["an unlisted harness", { hermes: ["mcp"] }, "surfaces names hermes, which harnesses does not list"],
+    ["a category the harness cannot take", { codex: ["commands"] }, "surfaces.codex: OpenAI Codex does not support commands"],
+  ])("refuses to publish a surfaces selection with %s", async (_case, surfaces, message) => {
+    const fixture = workspace({ surfaces });
+    const failure = await publishFailure(fixture, makeSigner().signer);
+    expect(String(failure.message)).toContain(message);
+  });
+
+  it("publishes a valid surfaces selection", async () => {
+    const fixture = workspace({ surfaces: { codex: ["mcp", "skills"] } });
+    const published = await publishAt(fixture, makeSigner().signer);
+    expect(published.resources.map((resource) => resource.id)).toContain("surfaces");
+  });
+
   it("refuses a folder whose revision metadata exceeds the transport budget", async () => {
     const fixture = workspace();
     const notes = join(fixture.folder, "skills", "deploy", "notes");
