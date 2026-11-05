@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
-import { open, realpath } from "node:fs/promises";
+import { open, realpath, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { backup as backupSqlite, DatabaseSync } from "node:sqlite";
 
 import { SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { Effect, Schema } from "effect";
@@ -347,7 +348,10 @@ const readEarlierState = Effect.fn("StateRepository.readEarlierState")(function*
 /**
  * A full copy of the database, written next to it before anything changes:
  * created exclusively and without following a symlink at that name, readable
- * only by this user, then filled by SQLite's own consistent copy.
+ * only by this user, then filled by SQLite's backup API from a second,
+ * read-only connection. Called while the upgrade's transaction holds the
+ * write lock and has written nothing, so that connection reads exactly the
+ * committed state the upgrade checked.
  */
 const backupDatabase = Effect.fn("StateRepository.backupEarlierState")(function*() {
   const sql = yield* SqlClient.SqlClient;
@@ -373,10 +377,15 @@ const backupDatabase = Effect.fn("StateRepository.backupEarlierState")(function*
         0o600,
       );
       await handle.close();
+      const source = new DatabaseSync(file, { readOnly: true });
+      try {
+        await backupSqlite(source, backup);
+      } finally {
+        source.close();
+      }
     },
-    catch: (error) => new RepositorySqlError({ operation: "back up earlier state", message: `could not create ${backup}: ${String(error)}` }),
+    catch: (error) => new RepositorySqlError({ operation: "back up earlier state", message: `could not write ${backup}: ${String(error)}` }),
   });
-  yield* sql`VACUUM INTO ${backup}`.pipe(Effect.mapError(sqlFailure("back up earlier state")));
   return backup;
 });
 
@@ -389,10 +398,6 @@ const applyUpgrade = Effect.fn("StateRepository.applyEarlierStateUpgrade")(funct
   const sql = yield* SqlClient.SqlClient;
   const failure = sqlFailure("upgrade earlier state");
   const run = <A>(statement: Effect.Effect<A, SqlError>) => statement.pipe(Effect.mapError(failure));
-
-  // Another process may have upgraded the state since it was planned; inside
-  // the transaction the history cannot change again.
-  if (classifyStateHistory(yield* readStateHistory()) !== "state-format-4") return;
 
   // Foreign keys are checked once, at the end, against the whole new schema.
   yield* run(sql`PRAGMA defer_foreign_keys = ON`);
@@ -508,17 +513,30 @@ const applyUpgrade = Effect.fn("StateRepository.applyEarlierStateUpgrade")(funct
 
 /**
  * Upgrade a state format 4 database in place, or fail with the item that
- * stops it. Planning reads and checks everything first, so a refusal leaves
- * the database untouched and writes no backup.
+ * stops it. Everything happens in one `BEGIN IMMEDIATE` transaction, so a
+ * still-running earlier release cannot write between the checks and the
+ * rewrite: the history is read again, every item is checked, the backup is
+ * taken from the state just checked, and only then are rows rewritten. A
+ * refusal ends the transaction before anything is written and leaves no
+ * backup.
  */
 export const upgradeStateFormat4 = Effect.fn("StateRepository.upgradeStateFormat4")(function*(
   history: ReadonlyArray<MigrationRecord>,
   home: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const plan = yield* readEarlierState();
-  const backup = yield* backupDatabase();
-  yield* sql.withTransaction(applyUpgrade(plan, home, history, backup)).pipe(
+  const upgrade = Effect.gen(function*() {
+    // Another process may have upgraded the state since the caller read it.
+    if (classifyStateHistory(yield* readStateHistory()) !== "state-format-4") return;
+    const plan = yield* readEarlierState();
+    const backup = yield* backupDatabase();
+    // The transaction rolls back on failure; the copy of state that stayed
+    // as it was goes with it, so a failed upgrade leaves nothing behind.
+    yield* applyUpgrade(plan, home, history, backup).pipe(
+      Effect.tapError(() => Effect.promise(() => rm(backup, { force: true }))),
+    );
+  });
+  yield* sql.withTransaction(upgrade).pipe(
     Effect.mapError((error) => error instanceof EarlierStateUpgradeError || error instanceof RepositorySqlError
       ? error
       : new RepositorySqlError({ operation: "upgrade earlier state", message: String(error) })),

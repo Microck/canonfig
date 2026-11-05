@@ -1,5 +1,6 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { chmodSync, cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -11,7 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ContentDigest, FollowerId, ProfileId } from "../src/domain/brand.ts";
 import { runtimeStateLayer } from "../src/runtime/state-layer.ts";
 import { StateInitializationError } from "../src/runtime/state-initialization.errors.ts";
-import { EarlierStateFormatError } from "../src/state/state-repository.errors.ts";
+import { EarlierStateFormatError, EarlierStateUpgradeError } from "../src/state/state-repository.errors.ts";
 import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
 import { StateRepository } from "../src/state/state-repository.service.ts";
 
@@ -240,6 +241,73 @@ describe("state from Canonfig 5.0.1", () => {
     expect(contentOf(state)).toEqual(before);
     expect(backups(state)).toEqual([]);
   });
+
+  it("refuses an unfinished run on every open and upgrades once it is finished", async () => {
+    const { home, state } = install("follower");
+    const database = new DatabaseSync(state);
+    database.prepare(`
+      INSERT INTO synchronization_runs (id, follower_id, revision_id, status, plan_json, started_at)
+      SELECT 'run-unfinished', follower_id, revision_id, 'Interrupted', '{}', '2026-11-05T00:00:00.000Z'
+      FROM synchronization_runs LIMIT 1
+    `).run();
+    database.close();
+    const before = contentOf(state);
+    const open = () => Effect.runPromise(Effect.flip(
+      Effect.flatMap(StateRepository, () => Effect.void).pipe(Effect.provide(stateRepositoryLayer(state, { home }))),
+    ));
+
+    for (const attempt of [1, 2]) {
+      const refused = await open();
+      expect(refused, `attempt ${attempt}`).toBeInstanceOf(EarlierStateUpgradeError);
+      expect(refused).toMatchObject({ item: "synchronization run run-unfinished (Interrupted)" });
+      expect(contentOf(state)).toEqual(before);
+      expect(backups(state)).toEqual([]);
+    }
+
+    const finishing = new DatabaseSync(state);
+    finishing.prepare("UPDATE synchronization_runs SET status = 'Failed', completed_at = started_at WHERE id = 'run-unfinished'").run();
+    finishing.close();
+    await withRepository(state, home, Effect.flatMap(StateRepository, () => Effect.void));
+    expect(rows(state, "SELECT count(*) AS count FROM effect_sql_migrations")).toEqual([{ count: 2 }]);
+    expect(backups(state)).toHaveLength(1);
+  });
+
+  it("checks what another writer committed while the upgrade waited for the write lock", async () => {
+    const { home, state } = install("follower");
+    // WAL, as a running 5.0.1 leaves it: readers never wait for that writer.
+    const wal = new DatabaseSync(state);
+    wal.exec("PRAGMA journal_mode = WAL");
+    wal.close();
+    // A 5.0.1 process that holds the write lock, starts a run, and commits
+    // one second later. The upgrade opens while that write is pending. The
+    // delay is real on purpose: SQLite's lock lives across processes, and
+    // the upgrade's synchronous busy wait (5 s) must see the commit land.
+    const writer = spawn(process.execPath, ["-e", `
+      const { DatabaseSync } = require("node:sqlite");
+      const db = new DatabaseSync(process.env.STATE);
+      db.exec("BEGIN IMMEDIATE");
+      db.prepare(\`
+        INSERT INTO synchronization_runs (id, follower_id, revision_id, status, plan_json, started_at)
+        SELECT 'run-concurrent', follower_id, revision_id, 'applying', '{}', '2026-11-05T00:00:00.000Z'
+        FROM synchronization_runs LIMIT 1
+      \`).run();
+      process.stdout.write("locked\\n");
+      setTimeout(() => { db.exec("COMMIT"); db.close(); }, 1000);
+    `], { env: { ...process.env, STATE: state }, stdio: ["ignore", "pipe", "inherit"] });
+    const exited = once(writer, "exit");
+    await once(writer.stdout, "data");
+
+    const refused = await Effect.runPromise(Effect.flip(
+      Effect.flatMap(StateRepository, () => Effect.void).pipe(Effect.provide(stateRepositoryLayer(state, { home }))),
+    ));
+    await exited;
+    // Planned before the lock, the upgrade would have missed the run and
+    // carried it forward; checked under the lock, it is refused.
+    expect(refused).toBeInstanceOf(EarlierStateUpgradeError);
+    expect(refused).toMatchObject({ item: "synchronization run run-concurrent (applying)" });
+    expect(rows(state, "SELECT count(*) AS count FROM effect_sql_migrations")).toEqual([{ count: 21 }]);
+    expect(backups(state)).toEqual([]);
+  }, 30_000);
 
   it("asks state from before 4.0.0 to pass through 5.0.1 and refuses a history it does not know", async () => {
     const histories = [
