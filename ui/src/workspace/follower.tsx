@@ -48,7 +48,7 @@ import {
   settingsGroup,
   useLeaveGuard,
 } from "./kit";
-import { Column, ConfirmDialog, Lede, SELF_UPDATING, useSelfUpdating } from "./settings";
+import { Column, ConfirmDialog, Lede } from "./settings";
 import { ScheduleFields, nextCheck, scheduleError, scheduleSummary, type Schedule } from "./schedule";
 
 const ACTION: Record<PlanAction, { label: string; cls: string; hint: string }> = {
@@ -82,19 +82,17 @@ const SECRETS_INITIAL = { busy: false, updated: "today at 08:45" };
 /**
  * Why this machine can't sync right now, or null. `stopped`: Stop syncing ended it, which blocks
  * every sync action (apply, checking, recovery, schedule, secrets). `blocked`: anything that must
- * reach the Source (apply, checking, secret refresh) also waits while the SSH tunnel is stopped or
- * Canonfig is updating itself, whose gate refuses every other Canonfig command until it finishes.
+ * reach the Source (apply, checking, secret refresh) also waits while the SSH tunnel is stopped.
  * `unreachable` reads the connection when called, for an operation already waiting when it stops.
  */
 function useSyncBlocks() {
   const ws = useWorkspace();
   const [tunnelUp] = useSharedState(TUNNEL_KEY, true);
   const readTunnelUp = useSharedReader(TUNNEL_KEY, true);
-  const updating = useSelfUpdating();
   const stopped = ws.unenrolled ? `Syncing is stopped on this machine. Joining again needs a new invitation from ${SOURCE}.` : null;
   const tunnelDown = ws.tunnelConfigured && !tunnelUp ? `The SSH tunnel is stopped, so this machine can't reach ${SOURCE}. Start it in Settings, SSH tunnel.` : null;
   const unreachable = () => ws.isStopped() || (ws.tunnelConfigured && !readTunnelUp());
-  return { stopped, blocked: stopped ?? tunnelDown ?? (updating ? SELF_UPDATING : null), unreachable };
+  return { stopped, blocked: stopped ?? tunnelDown, unreachable };
 }
 
 /** A drifted item: its mirror file keeps your edit, and every run leaves it and its projections as they are. */

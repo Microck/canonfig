@@ -12,7 +12,6 @@ import { DEMO, DEMO_SKILLS_REPO, skillManifest, skillSources, upstreamSkills, ty
 import { Mono, StatusMark, type StatusKind } from "@/shared/shared";
 import { useSharedReader, useSharedState, useWorkspace } from "./store";
 import { Field, Prop, SectionLabel, useDialogReturnFocus } from "./kit";
-import { useSelfUpdating } from "./settings";
 
 type Files = Record<string, string>;
 
@@ -184,8 +183,6 @@ export function SkillUpstream({ resource, editing }: { resource: Resource; editi
   const [checks, setChecks] = useSkillChecks();
   // Shared, like the service page's busy state: the guard survives leaving the panel, and switching roles cancels the result.
   const [busy, setBusy] = useSkillBusy();
-  // A Canonfig update holds every other command back, skills included (VersionView waits for skill-busy the same way).
-  const selfUpdating = useSelfUpdating();
   const [tracking, setTracking] = useState(false);
   // Where focus goes once tracking succeeds and its Track upstream button is gone.
   const checkButton = useRef<HTMLButtonElement>(null);
@@ -313,11 +310,11 @@ export function SkillUpstream({ resource, editing }: { resource: Resource; editi
             </p>
           )}
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <Button ref={checkButton} type="button" variant="secondary" size="sm" disabled={busy !== null || selfUpdating} onClick={() => check(record)}>
+            <Button ref={checkButton} type="button" variant="secondary" size="sm" disabled={busy !== null} onClick={() => check(record)}>
               {busy === `check:${id}` ? "Checking…" : "Check for updates"}
             </Button>
             {result?.status === "update-available" && (
-              <Button type="button" variant="secondary" size="sm" disabled={busy !== null || editing || selfUpdating} aria-describedby={noteId} onClick={() => update(record)}>
+              <Button type="button" variant="secondary" size="sm" disabled={busy !== null || editing} aria-describedby={noteId} onClick={() => update(record)}>
                 {busy === `update:${id}` ? "Updating…" : `Update to ${short(result.nextCommit)}`}
               </Button>
             )}

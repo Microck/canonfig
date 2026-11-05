@@ -1,6 +1,7 @@
-// What holds back a Canonfig self-update. Pure, with no React, so VersionView and its node tests share one rule.
+// What holds back a self-update change: `self-update disable` refuses while another Canonfig command holds its update
+// lease, and an interrupted sync blocks opting in. Pure, with no React, so VersionView and its node tests share one rule.
 
-/** The Canonfig command whose update lease (commandLease in coordination.ts) an update waits for. */
+/** The Canonfig command whose update lease (commandLease in coordination.ts) a self-update change waits for. */
 export type UpdateBusy = "service" | "setup" | "publish" | "sync" | "skill";
 
 export interface UpdateGateInput {

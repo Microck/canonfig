@@ -818,14 +818,14 @@ function sharedSeed(setup: Setup | null): Record<string, unknown> {
       "service-since": `today ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`,
       // A new Source tracks no skill upstreams and hasn't turned on Canonfig updates.
       "skill-sources": [],
-      "self-update": { npmCli: null, latest: null, installed: null },
+      "self-update": { npmCli: null, latest: null },
     };
   if (setup?.role === "follower")
     return {
       "tunnel-up": setup.tunnel,
       // null: no schedule was ever set. With one, the readers' initial (`schedule set --default`) is what onboarding ran.
       ...(setup.schedule ? {} : { "follower-schedule": null }),
-      "self-update": { npmCli: null, latest: null, installed: null },
+      "self-update": { npmCli: null, latest: null },
     };
   return {};
 }

@@ -138,7 +138,7 @@ export function Sidebar({ className, onNavigate, onOpenTours }: { className?: st
   const [serviceInstalled] = useSharedState("service-installed", true);
   const [tunnelUp] = useSharedState("tunnel-up", true);
   const [selfUpdate] = useSelfUpdate();
-  const newer = selfUpdate.latest !== null && selfUpdate.latest !== (selfUpdate.installed ?? APP_VERSION) ? selfUpdate.latest : null;
+  const newer = selfUpdate.latest !== null && selfUpdate.latest !== APP_VERSION ? selfUpdate.latest : null;
   const badges: Partial<Record<View, React.ReactNode>> =
     role === "source"
       ? {
