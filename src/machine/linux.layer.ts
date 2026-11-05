@@ -1,10 +1,12 @@
 import { installedSystemdCommand } from "./installed-scheduler-command.ts";
 import { fileSchedulerIdentity } from "./scheduler-identity.ts";
+import { openAnchoredDirectory, sameIdentity } from "./anchored-directory.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   access,
   chmod,
+  link,
   lstat,
   mkdir,
   open,
@@ -491,25 +493,52 @@ const syncHandle = (
     },
   );
 
+/** Where an atomic write may publish: below `anchor` only, and without replacing when `noReplace`. */
+interface WritePlacement {
+  readonly anchor?: string | undefined;
+  readonly noReplace?: boolean | undefined;
+}
+
 const atomicWriteFile = (
   path: string,
   content: FileContent,
   mode: number,
+  placement: WritePlacement = {},
 ): Effect.Effect<void, MachineFilesystemError> =>
   promiseEffect("atomically write file", path, async () => {
-    await mkdir(dirname(path), { recursive: true, mode: defaultDirectoryMode });
-    const temporary = makeTemporarySibling(path);
+    // An anchored write publishes into the existing directory it opened; it
+    // never creates parents, which would follow whatever the path names now.
+    const anchored = placement.anchor === undefined
+      ? undefined
+      : await openAnchoredDirectory(placement.anchor, dirname(path));
+    if (anchored === undefined) await mkdir(dirname(path), { recursive: true, mode: defaultDirectoryMode });
+    const parent = anchored?.base ?? dirname(path);
+    const target = join(parent, basename(path));
+    const temporary = join(parent, temporaryEntryName());
     let handle: Awaited<ReturnType<typeof open>> | undefined;
     try {
       handle = await open(temporary, "wx", mode);
       await writeFileContent(handle, content);
       await syncHandle(handle);
       await handle.chmod(mode);
+      const written = await handle.stat({ bigint: true });
       await handle.close();
       handle = undefined;
-      await prepareManagedLeafKind(path, "non-directory");
-      await rename(temporary, path);
-      const directory = await open(dirname(path), "r");
+      if (placement.noReplace === true) {
+        // A hard link fails with EEXIST when the name exists, even when
+        // another process created it after any earlier check.
+        await link(temporary, target);
+      } else {
+        await prepareManagedLeafKind(target, "non-directory");
+        await rename(temporary, target);
+      }
+      if (anchored !== undefined) {
+        await anchored.verify();
+        if (!sameIdentity(await lstat(target, { bigint: true }), written)) {
+          throw new Error(`${path} changed while it was published`);
+        }
+      }
+      const directory = await open(parent, "r");
       try {
         await syncHandle(directory);
       } finally {
@@ -518,6 +547,7 @@ const atomicWriteFile = (
     } finally {
       if (handle !== undefined) await handle.close().catch(() => undefined);
       await rm(temporary, { force: true }).catch(() => undefined);
+      await anchored?.close();
     }
   }).pipe(Effect.uninterruptible);
 
@@ -818,11 +848,23 @@ const readBounded = (
         maximumBytes: input.prefixBytes,
       });
     }
+    const anchor = input.anchor === undefined ? undefined : yield* checkLinuxPath(input.anchor);
     return yield* Effect.tryPromise({
-      try: () => regularFileBytes(path, input.maximumBytes, input.prefixBytes),
+      try: async () => {
+        if (anchor === undefined) return regularFileBytes(path, input.maximumBytes, input.prefixBytes);
+        const directory = await openAnchoredDirectory(anchor, dirname(path));
+        try {
+          const bytes = await regularFileBytes(join(directory.base, basename(path)), input.maximumBytes, input.prefixBytes);
+          await directory.verify();
+          return bytes;
+        } finally {
+          await directory.close();
+        }
+      },
+      // The size error names the requested path, not the anchored descriptor path.
       catch: (cause) =>
         cause instanceof FileSizeLimitError
-          ? cause
+          ? new FileSizeLimitError({ path, maximumBytes: input.maximumBytes })
           : filesystemError("read file", path)(cause),
     });
   });
@@ -1682,7 +1724,10 @@ export const linuxMachineStateLayer = (
       const atomicWrite = Effect.fn("MachineState.atomicWrite")(
         function*(input: AtomicWriteInput): Effect.fn.Return<void, MachineStateError> {
           const path = yield* checkLinuxPath(input.path);
-          yield* atomicWriteFile(path, input.content, input.permissions?.mode ?? input.mode ?? defaultFileMode);
+          yield* atomicWriteFile(path, input.content, input.permissions?.mode ?? input.mode ?? defaultFileMode, {
+            anchor: input.anchor === undefined ? undefined : yield* checkLinuxPath(input.anchor),
+            noReplace: input.noReplace,
+          });
         },
       );
 

@@ -364,17 +364,22 @@ canonfig import ~/canonfig-setup.tar.gz --replace
 on the machine. Without `--output` the archive is
 `canonfig-export-<UTC time>.tar.gz` in the working directory. The output must
 end in `.tar.gz`, sit in an existing directory inside your home directory and
-outside `~/.canonfig/`, and must not exist yet unless you pass `--force`. The
-archive gets mode `0600`, or an ACL that grants only your user on Windows.
+outside `~/.canonfig/`, and must not exist yet unless you pass `--force`. Without
+`--force` the archive is published with a hard link, which never replaces a
+file, even one created while the export ran; on a filesystem without hard
+links, choose another directory or pass `--force`. The archive gets mode
+`0600`, or an ACL that grants only your user on Windows.
 
 The archive starts with `manifest.json`: the Canonfig version, the time of the
 export, the machine's role (`source`, `follower` or `standalone`), and for
 every file its path, size, SHA-256 and mode. Entries are sorted by path, and
 every entry has owner, group and time 0. The command prints the archive's own
-SHA-256 and the manifest's. A literal credential in an MCP server, hook or
-settings entry of `canonfig.jsonc` or `local/local.jsonc` stops the export,
-with the same rule as publication, and a file named `.env`, `.env.*`,
-`auth.json` or `credentials.json` in the folder stops it too.
+SHA-256 and the manifest's. Export reads each file once and checks those exact
+bytes: a literal credential anywhere in the folder, comments and hook scripts
+included, stops it, as does a credential in an MCP server, hook or settings
+entry of `canonfig.jsonc` or `local/local.jsonc` under publication's rule, or a
+file named `.env`, `.env.*`, `auth.json` or `credentials.json`. A link, FIFO or
+other special file, or more than 128 MiB of content, stops it too.
 
 `--include-harnesses` adds the harness files Canonfig manages on this machine,
 from its Applied Resource Records, under `harnesses/<harness>/<path below

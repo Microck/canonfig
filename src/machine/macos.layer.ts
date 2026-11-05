@@ -602,12 +602,18 @@ export const macosMachineStateLayer = (
             Effect.flatMap((path) => machine.ensureDirectory({ ...input, path })),
           ),
         atomicWrite: (input) =>
-          requireMacosPath(input.path).pipe(
-            Effect.flatMap((path) => machine.atomicWrite({ ...input, path })),
+          Effect.all({
+            path: requireMacosPath(input.path),
+            anchor: input.anchor === undefined ? Effect.succeed(undefined) : requireMacosPath(input.anchor),
+          }).pipe(
+            Effect.flatMap(({ path, anchor }) => machine.atomicWrite({ ...input, path, anchor })),
           ),
         readFile: (input) =>
-          requireMacosPath(input.path).pipe(
-            Effect.flatMap((path) => machine.readFile({ ...input, path })),
+          Effect.all({
+            path: requireMacosPath(input.path),
+            anchor: input.anchor === undefined ? Effect.succeed(undefined) : requireMacosPath(input.anchor),
+          }).pipe(
+            Effect.flatMap(({ path, anchor }) => machine.readFile({ ...input, path, anchor })),
           ),
         removeFile: (input) =>
           requireMacosPath(input.path).pipe(

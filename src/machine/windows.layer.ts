@@ -3,6 +3,7 @@ import { registeredSchedulerIdentity } from "./scheduler-identity.ts";
 import { createHash, randomBytes } from "node:crypto";
 import {
   access,
+  link,
   lstat,
   mkdir,
   open,
@@ -37,6 +38,7 @@ import {
 import { MachineState } from "./machine-state.service.ts";
 import { windowsCredentialScript, windowsCredentialTimeoutMilliseconds, windowsPowerShellExecutable } from "./windows-credentials.ts";
 import { relocateFileContent, writeFileContent } from "./file-content.ts";
+import { openAnchoredDirectory, sameIdentity } from "./anchored-directory.ts";
 import { linuxMachineStateLayer } from "./linux.layer.ts";
 import { installDestinationDirectories } from "./install-destinations.ts";
 import {
@@ -847,12 +849,21 @@ export const windowsMachineStateLayer = (
         path: string,
         content: FileContent,
         permissionPolicy: FilePermissionPolicy,
+        placement: { readonly anchor?: string | undefined; readonly noReplace?: boolean | undefined } = {},
       ): Effect.Effect<void, MachineStateError> => {
         const parent = win32.dirname(path);
         return Effect.gen(function*() {
+          // An anchored write publishes into the existing directory reached
+          // from its anchor without links, and never creates that directory.
+          const anchored = placement.anchor === undefined
+            ? undefined
+            : yield* Effect.tryPromise({
+              try: () => openAnchoredDirectory(placement.anchor!, parent),
+              catch: (cause) => filesystemFailure("open anchored Windows directory", parent, cause),
+            });
           // A file resource does not own its existing parent or siblings. Restrict
           // an empty staging directory before creating any content inside it.
-          yield* ensureFileParent(parent);
+          if (anchored === undefined) yield* ensureFileParent(parent);
           const staging = yield* Effect.tryPromise({
             try: async () => {
               const staging = win32.join(parent, temporaryEntryName());
@@ -885,13 +896,28 @@ export const windowsMachineStateLayer = (
                 filesystemFailure("atomically write Windows file", path, cause),
             });
             yield* setPrivateAcl(temporary, false);
+            if (placement.noReplace !== true) {
+              yield* Effect.tryPromise({
+                try: () => prepareWindowsManagedLeafKind(path, "non-directory"),
+                catch: (cause) =>
+                  filesystemFailure("prepare Windows file replacement", path, cause),
+              });
+            }
             yield* Effect.tryPromise({
-              try: () => prepareWindowsManagedLeafKind(path, "non-directory"),
-              catch: (cause) =>
-                filesystemFailure("prepare Windows file replacement", path, cause),
-            });
-            yield* Effect.tryPromise({
-              try: () => rename(temporary, path),
+              try: async () => {
+                const written = await lstat(temporary, { bigint: true });
+                await anchored?.verify();
+                // A hard link fails with EEXIST when the name exists, even
+                // when another process created it after an earlier check.
+                if (placement.noReplace === true) await link(temporary, path);
+                else await rename(temporary, path);
+                if (anchored !== undefined) {
+                  await anchored.verify();
+                  if (!sameIdentity(await lstat(path, { bigint: true }), written)) {
+                    throw new Error(`${path} changed while it was published`);
+                  }
+                }
+              },
               catch: (cause) =>
                 filesystemFailure("replace Windows file", path, cause),
             });
@@ -907,7 +933,7 @@ export const windowsMachineStateLayer = (
             Effect.ensuring(Effect.promise(() =>
               rm(temporary, { force: true }).catch(() => undefined).then(() =>
                 rmdir(staging).catch(() => undefined)
-              )
+              ).then(() => anchored?.close())
             )),
           );
         }).pipe(Effect.uninterruptible);
@@ -1518,18 +1544,25 @@ export const windowsMachineStateLayer = (
             ),
           ),
         atomicWrite: (input) =>
-          requireWindowsPath(input.path).pipe(
-            Effect.flatMap((path) =>
+          Effect.all({
+            path: requireWindowsPath(input.path),
+            anchor: input.anchor === undefined ? Effect.succeed(undefined) : requireWindowsPath(input.anchor),
+          }).pipe(
+            Effect.flatMap(({ path, anchor }) =>
               secureAtomicWrite(
                 path.absolute,
                 input.content,
                 input,
+                { anchor: anchor?.absolute, noReplace: input.noReplace },
               )
             ),
           ),
         readFile: (input) =>
-          requireWindowsPath(input.path).pipe(
-            Effect.flatMap((path) => machine.readFile({ ...input, path })),
+          Effect.all({
+            path: requireWindowsPath(input.path),
+            anchor: input.anchor === undefined ? Effect.succeed(undefined) : requireWindowsPath(input.anchor),
+          }).pipe(
+            Effect.flatMap(({ path, anchor }) => machine.readFile({ ...input, path, anchor })),
           ),
         removeFile: (input) =>
           requireWindowsPath(input.path).pipe(

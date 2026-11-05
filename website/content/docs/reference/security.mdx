@@ -78,13 +78,18 @@ Machine cannot turn off a Follower Machine's backups. See
 ## Export archives
 
 `canonfig export` reads only the authoring allowlist and `local/`, with the
-same link and containment checks as publication. A literal credential in
-`canonfig.jsonc` or `local/local.jsonc`, or a file named `.env`, `.env.*`,
-`auth.json` or `credentials.json` in those entries, stops the export. With
+same link and containment checks as publication, and reads each file once,
+never through a link, a FIFO or past 128 MiB in total. The bytes it checks are
+the bytes it archives: a literal credential in any folder file, comments and
+hook scripts included, a credential in `canonfig.jsonc` or
+`local/local.jsonc` under publication's rule, or a file named `.env`,
+`.env.*`, `auth.json` or `credentials.json` stops the export. With
 `--include-harnesses` it adds a harness surface only while the surface holds
 exactly what Canonfig last wrote, and from a shared file only the keys
 Canonfig owns. The archive is written with mode `0600`, or an ACL that grants
-only your user on Windows, inside your home directory.
+only your user on Windows, into a directory inside your home directory that it
+reaches without links at the moment it publishes, and without `--force` it
+never replaces an existing file.
 
 `manifest.json` in the archive records every file's path, size, SHA-256 and
 mode, so you can check what left the machine. It is an integrity record, not a

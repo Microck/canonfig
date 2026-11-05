@@ -1,5 +1,4 @@
-import { constants } from "node:fs";
-import { lstat, open, readFile, realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 
@@ -13,6 +12,7 @@ import { MachineState } from "../machine/machine-state.service.ts";
 import type { MachinePath } from "../machine/machine-state.types.ts";
 import { asJson, sha256BytesHex } from "../profile/profile-codec.ts";
 import { literalCredentialLocation } from "../profile/publication-credentials.ts";
+import { containsLiteralCredential } from "../secrets/credential-policy.ts";
 import { packageVersion } from "../runtime/build-identity.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { configKeysDigest, getConfigPath, parseConfigDocument, renderConfigDocument } from "../synchronization/config-codec.ts";
@@ -20,10 +20,9 @@ import {
   AUTHORING_ENTRIES,
   CanonicalFolderError,
   decodeFolderConfig,
+  decodeLocalConfig,
   holdsEntries,
   listFolderFiles,
-  readFolderConfig,
-  readLocalConfig,
 } from "./folder.ts";
 import { TARGET_IDS } from "./model.ts";
 import {
@@ -480,86 +479,126 @@ const lstatIfPresent = async (path: string) => {
 };
 
 /**
- * A regular file's bytes and permission bits, opened without following a
- * final link, so a file swapped for a link after listing is refused rather
- * than followed out of the folder.
+ * The bytes left of an export's content limit. Every read is bounded by what
+ * remains, so the limit holds before a file is loaded, not after.
  */
-const readRegular = async (path: string): Promise<{ readonly content: Uint8Array; readonly mode: number } | undefined> => {
-  let handle;
-  try {
-    handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-  } catch (error) {
-    if (error instanceof Error && isMissing(error)) return undefined;
-    if (error instanceof Error && errorCode(error) === "ELOOP") {
-      throw new ArchiveRequestError({ path, message: "is a link; an export holds regular files only" });
-    }
-    throw error;
-  }
-  try {
-    const stat = await handle.stat();
-    if (!stat.isFile()) throw new ArchiveRequestError({ path, message: "is not a regular file; an export holds regular files only" });
-    return { content: await handle.readFile(), mode: stat.mode & 0o777 };
-  } finally {
-    await handle.close();
-  }
-};
+interface ContentBudget {
+  remaining: number;
+}
+
+const overBudget = (path: string) =>
+  new ArchiveRequestError({
+    path,
+    message: `would take the export past ${MAXIMUM_CONTENT_BYTES} bytes of content, the most an archive holds; move large files out of the folder, then export again`,
+  });
 
 /**
- * The folder's authored entries and `local/`, as `folder/...` entries.
- * Nothing else in the folder is opened. The directory listings refuse links
- * and anything resolving outside the folder, as publication does.
+ * One regular file's bytes, read through the machine's guarded reader: no
+ * link anywhere below `anchor`, a non-blocking open so a FIFO is refused
+ * rather than waited on, the size checked before reading and enforced while
+ * reading against the budget. Undefined when the file does not exist.
  */
-const collectFolder = async (folder: string): Promise<Array<ArchiveFile>> => {
-  const files: Array<ArchiveFile> = [];
-  for (const entry of FOLDER_ENTRIES) {
-    const listed = FOLDER_FILES.has(entry) ? [{ path: entry }] : (await listFolderFiles(folder, entry)).map((file) => ({ path: `${entry}/${file.path}` }));
-    for (const file of listed) {
-      const absolute = join(folder, ...file.path.split("/"));
-      const read = await readRegular(absolute);
-      if (read === undefined) {
-        if (FOLDER_FILES.has(entry)) continue;
-        throw new ArchiveRequestError({ path: absolute, message: "disappeared while the export read the folder; run the export again" });
-      }
-      if (credentialFileName(basename(absolute))) {
-        throw new ArchiveRequestError({ path: absolute, message: "is a credential file; an export never holds one. Move it out of the Canonical Folder, then export again" });
-      }
-      files.push({ path: `${FOLDER_PREFIX}${file.path}`, ...read });
-    }
-  }
-  return files;
-};
+const readBudgeted = (anchor: string, path: string, budget: ContentBudget, limit = budget.remaining) =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const content = yield* machine.readFile({
+      path: yield* machine.normalizePath({ path }),
+      anchor: yield* machine.normalizePath({ path: anchor }),
+      maximumBytes: Math.min(limit, budget.remaining),
+    }).pipe(
+      Effect.map((bytes): Uint8Array | undefined => bytes),
+      Effect.catchTag("FileSizeLimitError", () =>
+        limit < budget.remaining
+          ? Effect.fail(new ArchiveRequestError({ path, message: `is larger than ${limit} bytes, the most export reads from one harness file` }))
+          : Effect.fail(overBudget(path))
+      ),
+      Effect.catchTag("MachineFilesystemError", (error) =>
+        /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message)
+          ? Effect.succeed(undefined)
+          : Effect.fail(new ArchiveRequestError({ path, message: `cannot be exported: ${error.message}; an export holds regular files reached without links only` }))
+      ),
+    );
+    if (content !== undefined) budget.remaining -= content.length;
+    return content;
+  });
 
 /**
- * Refuse a literal credential in the items `canonfig.jsonc` and
- * `local/local.jsonc` declare, with the same rule publication applies: MCP
- * secrets and similar values must be environment references, so no secret
- * value enters an archive.
+ * The folder's authored entries and `local/`, as `folder/...` entries, each
+ * file read exactly once: these bytes are the ones checked for credentials
+ * and the ones archived. The directory listings refuse links and anything
+ * resolving outside the folder, as publication does; the reads are anchored
+ * at the folder, so an ancestor swapped for a link after listing is refused.
+ * A folder file's mode is 0755 when its owner may execute it, else 0644.
  */
-const assertNoLiteralCredentials = async (folder: string): Promise<void> => {
-  const configPath = join(folder, "canonfig.jsonc");
-  const config = await readFolderConfig(folder);
-  if (config === undefined) {
-    throw new ArchiveRequestError({ path: configPath, message: "does not exist, so there is no Canonical Folder to export; create it with 'canonfig setup plan --role source'" });
-  }
-  const local = await readLocalConfig(folder) ?? {};
-  const items = (file: string, values: { readonly mcp?: object | undefined; readonly settings?: object | undefined }, hooks: ReadonlyArray<{ readonly id: string }> = []) => [
-    ...Object.entries(values.mcp ?? {}).map(([name, value]) => [file, `mcp.${name}`, value] as const),
-    ...hooks.map((hook) => [file, `hooks.${hook.id}`, hook] as const),
-    ...Object.entries(values.settings ?? {}).map(([harness, value]) => [file, `settings.${harness}`, value] as const),
-  ];
-  for (const [file, itemPath, value] of [
-    ...items(configPath, config, config.hooks ?? []),
-    ...items(join(folder, "local", "local.jsonc"), local),
-  ]) {
-    const location = literalCredentialLocation(itemPath, Schema.decodeUnknownSync(ConfigValue)(asJson(value)));
-    if (location !== undefined) {
-      throw new ArchiveRequestError({
-        path: file,
-        message: `has a literal credential at ${location} [REDACTED]; an export never holds secret values. Replace it with an environment reference such as { "fromEnv": "NAME" }, then export again`,
+const collectFolder = (folder: string, budget: ContentBudget) =>
+  Effect.gen(function*() {
+    const realFolder = yield* archiveWork(folder, () => realpath(folder));
+    const files: Array<ArchiveFile> = [];
+    for (const entry of FOLDER_ENTRIES) {
+      const listed = FOLDER_FILES.has(entry)
+        ? [{ path: entry, executable: false }]
+        : (yield* archiveWork(join(folder, entry), () => listFolderFiles(realFolder, entry)))
+          .map((file) => ({ path: `${entry}/${file.path}`, executable: file.executable }));
+      for (const file of listed) {
+        const absolute = join(realFolder, ...file.path.split("/"));
+        if (credentialFileName(basename(absolute))) {
+          return yield* new ArchiveRequestError({ path: absolute, message: "is a credential file; an export never holds one. Move it out of the Canonical Folder, then export again" });
+        }
+        const content = yield* readBudgeted(realFolder, absolute, budget);
+        if (content === undefined) {
+          if (FOLDER_FILES.has(entry)) continue;
+          return yield* new ArchiveRequestError({ path: absolute, message: "disappeared while the export read the folder; run the export again" });
+        }
+        files.push({ path: `${FOLDER_PREFIX}${file.path}`, content, mode: file.executable ? 0o755 : 0o644 });
+      }
+    }
+    return files;
+  });
+
+/**
+ * Refuse any secret value in the bytes about to be archived. Every folder
+ * file, comments and hook scripts included, gets the literal-credential
+ * pattern check; the items `canonfig.jsonc` and `local/local.jsonc` declare,
+ * decoded from those same bytes, also get publication's field-name rule, so
+ * MCP secrets must be environment references.
+ */
+const assertNoLiteralCredentials = (folder: string, files: ReadonlyArray<ArchiveFile>) =>
+  Effect.gen(function*() {
+    const refuse = (path: string, location: string) =>
+      new ArchiveRequestError({
+        path,
+        message: `has a literal credential${location} [REDACTED]; an export never holds secret values. Replace it with an environment reference such as { "fromEnv": "NAME" } or $NAME, then export again`,
       });
+    const textOf = (path: string) => {
+      const file = files.find((candidate) => candidate.path === `${FOLDER_PREFIX}${path}`);
+      return file === undefined ? undefined : new TextDecoder().decode(file.content);
+    };
+    for (const file of files) {
+      if (containsLiteralCredential(new TextDecoder().decode(file.content))) {
+        return yield* refuse(join(folder, ...file.path.slice(FOLDER_PREFIX.length).split("/")), "");
+      }
     }
-  }
-};
+    const configPath = join(folder, "canonfig.jsonc");
+    const configText = textOf("canonfig.jsonc");
+    if (configText === undefined) {
+      return yield* new ArchiveRequestError({ path: configPath, message: "does not exist, so there is no Canonical Folder to export; create it with 'canonfig setup plan --role source'" });
+    }
+    const localPath = join(folder, "local", "local.jsonc");
+    const localText = textOf("local/local.jsonc");
+    const [config, local] = yield* Effect.try({
+      try: () => [decodeFolderConfig(configPath, configText), localText === undefined ? {} : decodeLocalConfig(localPath, localText)] as const,
+      catch: (error) => error instanceof CanonicalFolderError ? error : new ArchiveRequestError({ path: configPath, message: String(error) }),
+    });
+    const items = (file: string, values: { readonly mcp?: object | undefined; readonly settings?: object | undefined }, hooks: ReadonlyArray<{ readonly id: string }> = []) => [
+      ...Object.entries(values.mcp ?? {}).map(([name, value]) => [file, `mcp.${name}`, value] as const),
+      ...hooks.map((hook) => [file, `hooks.${hook.id}`, hook] as const),
+      ...Object.entries(values.settings ?? {}).map(([harness, value]) => [file, `settings.${harness}`, value] as const),
+    ];
+    for (const [file, itemPath, value] of [...items(configPath, config, config.hooks ?? []), ...items(localPath, local)]) {
+      const location = literalCredentialLocation(itemPath, Schema.decodeUnknownSync(ConfigValue)(asJson(value)));
+      if (location !== undefined) return yield* refuse(file, ` at ${location}`);
+    }
+  });
 
 /** A harness surface export left out, and why. */
 export interface SkippedHarnessSurface {
@@ -582,14 +621,14 @@ interface CapturedFile {
 /** A surface's files, or why export leaves the surface out. */
 type SurfaceCapture = { readonly files: ReadonlyArray<CapturedFile> } | { readonly leftOut: string };
 
-const leftOut = (reason: string): SurfaceCapture => ({ leftOut: reason });
-
 /**
  * What one applied harness surface holds now, when that is exactly what
  * Canonfig last wrote: a file, the owned files of a directory, or the owned
- * keys of a shared file rendered alone.
+ * keys of a shared file rendered alone. Reads are anchored at the real home
+ * directory and bounded by the budget; a surface left out gives its bytes
+ * back to the budget.
  */
-const surfaceFiles = (record: AppliedResourceRecord, target: MachinePath) =>
+const surfaceFiles = (record: AppliedResourceRecord, target: MachinePath, home: string, budget: ContentBudget) =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const kindOf = (path: MachinePath) =>
@@ -599,7 +638,12 @@ const surfaceFiles = (record: AppliedResourceRecord, target: MachinePath) =>
           /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message) ? Effect.succeed("absent") : Effect.fail(error)
         ),
       );
-    const read = (path: MachinePath) => machine.readFile({ path, maximumBytes: MAXIMUM_HARNESS_FILE_BYTES });
+    const before = budget.remaining;
+    const read = (path: MachinePath) => readBudgeted(home, path.absolute, budget, MAXIMUM_HARNESS_FILE_BYTES);
+    const leftOut = (reason: string): SurfaceCapture => {
+      budget.remaining = before;
+      return { leftOut: reason };
+    };
     const kind = yield* kindOf(target);
     const unexpected = (expected: string) => leftOut(kind === "absent" ? "is missing" : `is a ${kind}, not a ${expected}`);
     switch (record.kind) {
@@ -607,7 +651,7 @@ const surfaceFiles = (record: AppliedResourceRecord, target: MachinePath) =>
         if (record.symlinkTo !== undefined) return leftOut("is a link Canonfig applied, which an export does not hold");
         if (kind !== "regular") return unexpected("regular file");
         const content = yield* read(target);
-        if (sha256BytesHex(content) !== record.digest) return leftOut(changedSinceApply);
+        if (content === undefined || sha256BytesHex(content) !== record.digest) return leftOut(changedSinceApply);
         return { files: [{ content, mode: (yield* machine.permissions(target)).mode }] } satisfies SurfaceCapture;
       }
       case "directory": {
@@ -619,7 +663,7 @@ const surfaceFiles = (record: AppliedResourceRecord, target: MachinePath) =>
           const child = yield* machine.normalizePath({ path: owned.path, base: target });
           if ((yield* kindOf(child)) !== "regular") return leftOut(changedSinceApply);
           const content = yield* read(child);
-          if (sha256BytesHex(content) !== owned.digest) return leftOut(changedSinceApply);
+          if (content === undefined || sha256BytesHex(content) !== owned.digest) return leftOut(changedSinceApply);
           files.push({ below: owned.path, content, mode: (yield* machine.permissions(child)).mode });
         }
         return { files } satisfies SurfaceCapture;
@@ -629,9 +673,11 @@ const surfaceFiles = (record: AppliedResourceRecord, target: MachinePath) =>
         const format = record.configFormat;
         const keys = record.ownedKeys ?? [];
         if (format === undefined || keys.length === 0) return leftOut("has no owned keys on record");
+        const bytes = yield* read(target);
+        if (bytes === undefined) return leftOut("is missing");
         let document;
         try {
-          document = parseConfigDocument(format, new TextDecoder().decode(yield* read(target)));
+          document = parseConfigDocument(format, new TextDecoder().decode(bytes));
         } catch {
           return leftOut(`cannot be parsed as ${format}`);
         }
@@ -643,6 +689,7 @@ const surfaceFiles = (record: AppliedResourceRecord, target: MachinePath) =>
         // Only the owned keys leave the machine: every other key of a shared
         // file (logins, trust, history) is the harness's own state.
         const content = renderConfigDocument({ format, keys: present });
+        budget.remaining = before - content.length;
         return { files: [{ content, mode: 0o600, keys: present.map((entry) => entry.path) }] } satisfies SurfaceCapture;
       }
       default:
@@ -656,10 +703,11 @@ const surfaceFiles = (record: AppliedResourceRecord, target: MachinePath) =>
  * surface that changed since Canonfig applied it is left out and reported, so
  * an archive never holds content Canonfig did not write.
  */
-const collectHarnesses = (records: ReadonlyArray<AppliedResourceRecord>) =>
+const collectHarnesses = (records: ReadonlyArray<AppliedResourceRecord>, budget: ContentBudget) =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const home = (yield* machine.userDirectories()).home;
+    const realHome = yield* archiveWork(home.absolute, () => realpath(home.absolute));
     const paths = home.platform === "windows" ? win32 : posix;
     const files: Array<ArchiveFile> = [];
     const skipped: Array<SkippedHarnessSurface> = [];
@@ -673,7 +721,8 @@ const collectHarnesses = (records: ReadonlyArray<AppliedResourceRecord>) =>
         continue;
       }
       const belowHome = fromHome.split(paths.sep).join("/");
-      const captured = yield* surfaceFiles(record, yield* machine.normalizePath({ path: record.target }));
+      const target = yield* machine.normalizePath({ path: paths.join(realHome, fromHome) });
+      const captured = yield* surfaceFiles(record, target, realHome, budget);
       if ("leftOut" in captured) {
         skip(captured.leftOut);
         continue;
@@ -695,11 +744,11 @@ const collectHarnesses = (records: ReadonlyArray<AppliedResourceRecord>) =>
 
 /**
  * Where the archive goes: a `.tar.gz` in an existing directory inside the
- * home directory and outside the Canonical Folder, refused when it exists
- * unless `force`. Without `--output`, a timestamped name in the working
- * directory.
+ * home directory and outside the Canonical Folder. Without `--output`, a
+ * timestamped name in the working directory. These checks fail early with a
+ * clear message; publication enforces them again (see `exportFolder`).
  */
-const destinationOf = async (input: ExportInput, home: string): Promise<string> => {
+const destinationOf = async (input: ExportInput, home: string) => {
   const stamp = input.now.toISOString().replaceAll(":", "-").replace(/\.\d+Z$/u, "Z");
   const requested = resolve(input.cwd, input.output ?? `canonfig-export-${stamp}.tar.gz`);
   if (!requested.endsWith(".tar.gz")) throw new ArchiveRequestError({ path: requested, message: "must end in .tar.gz" });
@@ -724,11 +773,12 @@ const destinationOf = async (input: ExportInput, home: string): Promise<string> 
   const destination = join(parent, basename(requested));
   const existing = await lstatIfPresent(destination);
   if (existing?.isDirectory() === true) throw new ArchiveRequestError({ path: destination, message: "is a directory; name the archive file" });
-  if (existing !== undefined && !input.force) {
-    throw new ArchiveConflictError({ path: destination, message: "already exists; pass --force to replace it, or choose another --output" });
-  }
-  return destination;
+  if (existing !== undefined && !input.force) throw outputExists(destination);
+  return { destination, realHome };
 };
+
+const outputExists = (destination: string) =>
+  new ArchiveConflictError({ path: destination, message: "already exists; pass --force to replace it, or choose another --output" });
 
 export interface ExportInput {
   readonly folder: string;
@@ -752,11 +802,16 @@ export const exportFolder = Effect.fn("Archive.export")(function*(input: ExportI
   const repository = yield* StateRepository;
   const identity = yield* machineIdentity;
   const home = (yield* machine.userDirectories()).home.absolute;
-  const destination = yield* archiveWork(input.output ?? input.cwd, () => destinationOf(input, home));
-  yield* archiveWork(input.folder, () => assertNoLiteralCredentials(input.folder));
-  const folderFiles = yield* archiveWork(input.folder, () => collectFolder(input.folder));
+  const { destination, realHome } = yield* archiveWork(input.output ?? input.cwd, () => destinationOf(input, home));
+  const budget: ContentBudget = { remaining: MAXIMUM_CONTENT_BYTES };
+  const folderFiles = yield* collectFolder(input.folder, budget);
+  // Harness files are not pattern-scanned: each is a projection of these
+  // checked items, and a harness config spells an environment reference in
+  // its own syntax (Codex `env_http_headers` maps a header to a bare
+  // variable name), which the pattern would misread as a literal.
+  yield* assertNoLiteralCredentials(input.folder, folderFiles);
   const harnesses = input.includeHarnesses
-    ? yield* collectHarnesses(yield* repository.loadAppliedResources(identity.follower))
+    ? yield* collectHarnesses(yield* repository.loadAppliedResources(identity.follower), budget)
     : { files: [], skipped: [] };
   const files = [...folderFiles, ...harnesses.files].sort(byPath);
 
@@ -790,7 +845,29 @@ export const exportFolder = Effect.fn("Archive.export")(function*(input: ExportI
   };
   const manifestBytes = new TextEncoder().encode(`${JSON.stringify(manifest, undefined, 2)}\n`);
   const archive = encodeArchive([{ path: MANIFEST_PATH, content: manifestBytes, mode: 0o644 }, ...files]);
-  yield* machine.atomicWrite({ path: yield* machine.normalizePath({ path: destination }), content: archive, mode: 0o600 });
+  // The checked parent is real and below the real home, and the write is
+  // anchored there: it publishes only into that directory, reached without
+  // links, so a parent swapped since the checks cannot move the archive out
+  // of home or into the folder. Without --force it publishes by hard link,
+  // which refuses a file even when one appeared after the checks.
+  yield* machine.atomicWrite({
+    path: yield* machine.normalizePath({ path: destination }),
+    anchor: yield* machine.normalizePath({ path: realHome }),
+    noReplace: !input.force,
+    content: archive,
+    mode: 0o600,
+  }).pipe(
+    Effect.catchTag("MachineFilesystemError", (error): Effect.Effect<never, ArchiveConflictError | ArchiveRequestError> => {
+      if (/\bEEXIST\b/u.test(error.message)) return Effect.fail(outputExists(destination));
+      if (!input.force && /\b(?:EPERM|ENOTSUP|EOPNOTSUPP|ENOSYS|EXDEV)\b/u.test(error.message)) {
+        return Effect.fail(new ArchiveRequestError({
+          path: destination,
+          message: `could not be published without replacing: this filesystem refused the hard link that guarantees it (${error.message}). Choose an --output on a local disk, or pass --force`,
+        }));
+      }
+      return Effect.fail(new ArchiveRequestError({ path: destination, message: `could not be written: ${error.message}` }));
+    }),
+  );
   return {
     output: destination,
     bytes: archive.length,
@@ -830,15 +907,22 @@ export const planImport = (input: {
   readonly appliedResources: ReadonlyArray<AppliedResourceRecord>;
 }) =>
   Effect.gen(function*() {
-    const bytes = yield* archiveWork(input.archive, async () => {
-      const stat = await lstatIfPresent(input.archive);
-      if (stat === undefined) throw new ArchiveRequestError({ path: input.archive, message: "does not exist" });
-      if (!stat.isFile()) throw new ArchiveRequestError({ path: input.archive, message: "is not a regular file" });
-      if (stat.size > MAXIMUM_ARCHIVE_BYTES) {
-        throw new ArchiveIntegrityError({ path: input.archive, message: `is larger than any export (${MAXIMUM_ARCHIVE_BYTES} bytes)` });
-      }
-      return readFile(input.archive);
-    });
+    // One no-follow, non-blocking open of a regular file, its size checked on
+    // that handle before reading and enforced while reading, so neither a
+    // swapped path, a FIFO nor a file that grows can bypass the bound.
+    const machine = yield* MachineState;
+    const bytes = yield* machine.readFile({
+      path: yield* machine.normalizePath({ path: input.archive }),
+      maximumBytes: MAXIMUM_ARCHIVE_BYTES,
+    }).pipe(
+      Effect.catchTag("FileSizeLimitError", () =>
+        Effect.fail(new ArchiveIntegrityError({ path: input.archive, message: `is larger than any export (${MAXIMUM_ARCHIVE_BYTES} bytes)` }))),
+      Effect.catchTag("MachineFilesystemError", (error) =>
+        Effect.fail(new ArchiveRequestError({
+          path: input.archive,
+          message: /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message) ? "does not exist" : `cannot be read as a regular file: ${error.message}`,
+        }))),
+    );
     const verified = yield* archiveWork(input.archive, async () => verifyArchive(input.archive, bytes));
     const configuration = verified.folderFiles.find((file) => file.path === "canonfig.jsonc")!;
     yield* Effect.try({

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -153,6 +153,17 @@ describe("import refuses archives a Canonfig export never produces", () => {
     expect((await target.withArchive(archiveOf([config, extra], { listed: [config] }))).message).toContain("does not list");
     expect((await target.withArchive(archiveOf([config], { listed: [config, extra] }))).message).toContain("which the archive does not hold");
     expect((await target.withArchive(archiveOf([config], { manifestFirst: false }))).message).toContain("does not start with manifest.json");
+  });
+
+  it("refuses an archive larger than any export from its size, before reading it", async () => {
+    const target = machine();
+    const path = join(target.root, "huge.tar.gz");
+    writeFileSync(path, "");
+    // Sparse, so only a size check on the opened file refuses it quickly.
+    truncateSync(path, 512 * 1024 * 1024);
+    const error = await target.importing(path);
+    expect(error._tag).toBe("ArchiveIntegrityError");
+    expect(error.message).toContain("larger than any export");
   });
 
   it("refuses an enrolled follower before reading the archive", async () => {

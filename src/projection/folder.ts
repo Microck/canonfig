@@ -699,9 +699,8 @@ export const readFolderConfig = (folder: string): Promise<FolderConfig | undefin
 /** Decode `canonfig.jsonc` text, for a caller that edits the file and checks the result. */
 export const decodeFolderConfig = (path: string, text: string): FolderConfig => decodeJsonc(path, text, CanonfigJsonc);
 
-/** `local/local.jsonc` as authored, or undefined when it does not exist. */
-export const readLocalConfig = (folder: string): Promise<typeof LocalJsonc.Type | undefined> =>
-  readJsonc(diskSource(folder), join(folder, "local", "local.jsonc"), LocalJsonc);
+/** Decode `local/local.jsonc` text, for a caller that read the bytes itself. */
+export const decodeLocalConfig = (path: string, text: string): typeof LocalJsonc.Type => decodeJsonc(path, text, LocalJsonc);
 
 /** Every regular file under one of the folder's directories, relative to it, `/`-separated, unread. */
 export const listFolderFiles = (folder: string, directory: string): Promise<ReadonlyArray<ListedFile>> =>
