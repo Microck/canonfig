@@ -33,7 +33,7 @@ import {
 import { SCANNED_TOOLS, toolFromScan, useSharedState, useWorkspace } from "./store";
 import { ScheduleFields, WEEK, scheduleError, scheduleSummary, type Schedule } from "./schedule";
 import { HarnessTable } from "./harnesses";
-import { SkillSummary, SkillUpstream } from "./skills";
+import { SkillSummary, SkillUpstream, useMoveSkillTracking, useSkillUpdating } from "./skills";
 import {
   AnimatedRow,
   Body,
@@ -542,10 +542,24 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
   // publication state, not an edit: publishing clears it on the saved item while this editor is open, and
   // the draft must still count as matching the item it now shows, so the comparison leaves it out.
   const content = (r: Resource) => JSON.stringify({ ...r, change: undefined });
-  const dirty =
-    content(draft) !== content(resource) ||
-    name !== nameOf(resource) ||
-    JSON.stringify(rows.map(({ name: k, value }) => [k, value])) !== JSON.stringify(Object.entries(resource.keys ?? {}));
+  const matches = (r: Resource) =>
+    content(draft) === content(r) && name === nameOf(r) && JSON.stringify(rows.map(({ name: k, value }) => [k, value])) === JSON.stringify(Object.entries(r.keys ?? {}));
+  const dirty = !matches(resource);
+  // The saved item can change under an open editor: a skill update lands, or a panel reopened mid-update shows the
+  // item from before it. An untouched draft follows the saved item, so the panel shows it and stays clean; a draft
+  // with edits is left alone. Adjusted during render, so the stale draft never paints.
+  const [shown, setShown] = useState(resource);
+  if (shown !== resource) {
+    setShown(resource);
+    if (matches(shown)) {
+      setDraft(resource);
+      setName(nameOf(resource));
+      setRows(keyRowsOf(resource));
+    }
+  }
+  // A running skill update locks the editor, so no edit can land under it.
+  const updating = useSkillUpdating(resource.id);
+  const moveTracking = useMoveSkillTracking();
   const updateRows = (next: KeyRow[]) => {
     setRows(next);
     setDraft((d) => ({ ...d, keys: Object.fromEntries(next.filter((r) => r.name.trim()).map((r) => [r.name.trim(), r.value])) }));
@@ -592,6 +606,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
     const base: Resource = { ...draft, id, path: itemPath(category, trimmed), change: isNew ? "added" : resource.change ?? "modified" };
     const next = { ...base, summary: summaryOf(base) };
     ws.setResources((prev) => (isNew ? [...prev, next] : prev.map((r) => (r.id === resource.id ? next : r))));
+    if (!isNew && category === "skills" && id !== resource.id) moveTracking(resource.id, id);
     const unpublished = ws.pending.length + (resource.change && !isNew ? 0 : 1);
     toast.success(isNew ? `Added ${id}` : `Saved ${id}`, {
       description: `Written to ${next.path}.\nGoes out with revision ${ws.nextSequence}: ${unpublished} unpublished ${unpublished === 1 ? "change" : "changes"}.${DEMO ? "\nSaved in this demo workspace." : ""}`,
@@ -615,7 +630,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
       footer={
         <>
           {!isNew && (
-            <Button variant="destructive" size="sm" onClick={() => setConfirmRemove(true)}>
+            <Button variant="destructive" size="sm" disabled={updating} onClick={() => setConfirmRemove(true)}>
               Remove…
             </Button>
           )}
@@ -624,11 +639,11 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
               variant="ghost"
               size="sm"
               onClick={isNew ? () => leaveWithoutAsking(onClose) : () => (setDraft(resource), setName(nameOf(resource)), setRows(keyRowsOf(resource)), setTried(false))}
-              disabled={!isNew && !dirty}
+              disabled={updating || (!isNew && !dirty)}
             >
               {isNew ? "Cancel" : "Discard"}
             </Button>
-            <Button type="submit" form="item-form" variant="primary" size="sm" disabled={!isNew && !dirty}>
+            <Button type="submit" form="item-form" variant="primary" size="sm" disabled={updating || (!isNew && !dirty)}>
               {isNew ? "Add to the folder" : "Save to the folder"}
             </Button>
           </div>
@@ -637,12 +652,13 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
     >
       <form
         id="item-form"
-        className="grid gap-4 px-4 py-4"
+        className="px-4 py-4"
         onSubmit={(e) => {
           e.preventDefault();
           save(e.currentTarget);
         }}
       >
+        <fieldset disabled={updating} className="grid min-w-0 gap-4">
         <Field label="Kind" htmlFor="item-category" hint={isNew ? <>Where the <Term term="Profile Resource">item</Term> lives in ~/.canonfig decides which harness files it reaches.</> : undefined}>
           <Select
             value={category}
@@ -757,16 +773,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
             <Mono className="text-foreground">{draft.detail.Files}</Mono>
           </Prop>
         )}
-        {category === "skills" && !isNew && resource.change !== "removed" && (
-          <SkillUpstream
-            resource={resource}
-            editing={dirty}
-            onUpdated={(next) => {
-              setDraft(next);
-              setTried(false);
-            }}
-          />
-        )}
+        {category === "skills" && !isNew && resource.change !== "removed" && <SkillUpstream resource={resource} editing={dirty} />}
         {draft.detail.Evidence && (
           <Prop label="Found in">
             <Mono className="text-foreground">{draft.detail.Evidence}</Mono>
@@ -878,6 +885,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
             </CollapsibleContent>
           </Collapsible>
         )}
+        </fieldset>
       </form>
 
       <Dialog open={confirmRemove} onOpenChange={setConfirmRemove}>
@@ -910,6 +918,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
               variant="destructive"
               onClick={() => {
                 ws.setResources((prev) => (resource.change === "added" ? prev.filter((r) => r.id !== resource.id) : prev.map((r) => (r.id === resource.id ? { ...r, change: "removed" as const } : r))));
+                if (category === "skills") moveTracking(resource.id, null);
                 setConfirmRemove(false);
                 leaveWithoutAsking(onClose);
                 toast(`Removed ${resource.id}`, { description: "Publish to apply this to followers." });

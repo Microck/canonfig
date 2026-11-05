@@ -3,15 +3,15 @@
 // ~/.canonfig/skills-sources.json, which stays on the Source and is never published. An update only changes the
 // skill in the Canonfig folder, so machines get it with the next revision, like any other edit.
 // Demo state: the fetch reads `upstreamSkills` in shared/data.ts, never the network.
-import { useId, useState, type FormEvent } from "react";
+import { useId, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { DEMO, DEMO_SKILLS_REPO, skillManifest, skillSources, upstreamSkills, type Resource, type SkillSource } from "@/shared/data";
 import { Mono, StatusMark, type StatusKind } from "@/shared/shared";
-import { useSharedState, useWorkspace } from "./store";
-import { Field, Prop, SectionLabel } from "./kit";
+import { useSharedReader, useSharedState, useWorkspace } from "./store";
+import { Field, Prop, SectionLabel, useDialogReturnFocus } from "./kit";
 
 type Files = Record<string, string>;
 
@@ -32,6 +32,33 @@ function useSkillSources() {
 /** The last check of each tracked skill this session, by item id. Checks aren't stored anywhere else: `list` reads no network. */
 function useSkillChecks() {
   return useSharedState<Record<string, SkillCheck>>("skill-checks", {});
+}
+
+/** The running check, update or tracking, as `<kind>:<item id>`: one at a time, like the CLI's skill lock. */
+function useSkillBusy() {
+  return useSharedState<string | null>("skill-busy", null);
+}
+
+/** Whether an update of this skill is running. The item editor locks while it does, so no edit lands under it. */
+export function useSkillUpdating(id: string) {
+  return useSkillBusy()[0] === `update:${id}`;
+}
+
+/**
+ * Keeps skills-sources.json in step with the folder when the item editor renames or removes a skill: a renamed skill
+ * keeps its record (its `name` and `path`) and last check under the new id, and a removed one loses them, so a later
+ * skill with the old name starts untracked instead of inheriting them. `to` is null for a removal.
+ */
+export function useMoveSkillTracking() {
+  const [, setSources] = useSkillSources();
+  const [, setChecks] = useSkillChecks();
+  return (from: string, to: string | null) => {
+    setSources((prev) => prev.flatMap((s) => (s.id !== from ? [s] : to ? [{ ...s, id: to }] : [])));
+    setChecks((prev) => {
+      const { [from]: moved, ...rest } = prev;
+      return to && moved ? { ...rest, [to]: moved } : rest;
+    });
+  };
 }
 
 const short = (commit: string) => commit.slice(0, 7);
@@ -141,84 +168,81 @@ function FileChanges({ check }: { check: SkillCheck }) {
  * The Upstream part of a skill's detail panel. A tracked skill shows its repository, the ref it follows and the commit
  * its copy came from; Check fetches that ref and previews the files an update changes, and Update replaces the skill in
  * the folder with that commit. Both refuse a copy edited since Canonfig installed it, as the CLI does: there is no force.
- * An untracked skill offers to start tracking. `editing` (the panel has unsaved edits) holds Update back, so the update
- * never lands under a draft; `onUpdated` hands the panel the updated item to show.
+ * An untracked skill offers to start tracking. `editing` (the panel has unsaved edits) holds Update back, and the editor
+ * locks while an update runs (useSkillUpdating), so the update never lands under a draft. The panel shows the updated
+ * item by following its saved resource (ItemEditor in profile.tsx).
  */
-export function SkillUpstream({ resource, editing, onUpdated }: { resource: Resource; editing: boolean; onUpdated: (next: Resource) => void }) {
+export function SkillUpstream({ resource, editing }: { resource: Resource; editing: boolean }) {
   const ws = useWorkspace();
   const [sources, setSources] = useSkillSources();
+  const readSources = useSharedReader<SkillSource[]>("skill-sources", skillSources);
   const [checks, setChecks] = useSkillChecks();
   // Shared, like the service page's busy state: the guard survives leaving the panel, and switching roles cancels the result.
-  const [busy, setBusy] = useSharedState<string | null>("skill-busy", null);
+  const [busy, setBusy] = useSkillBusy();
   const [tracking, setTracking] = useState(false);
+  // Where focus goes once tracking succeeds and its Track upstream button is gone.
+  const checkButton = useRef<HTMLButtonElement>(null);
   const noteId = useId();
   const record = sources.find((s) => s.id === resource.id);
   const result = record ? checks[resource.id] : undefined;
   const id = resource.id;
 
-  if (!record)
-    return (
-      <section aria-label="Upstream" className="grid gap-1.5">
-        <SectionLabel
-          action={
-            <Button type="button" variant="outline" size="xs" onClick={() => setTracking(true)}>
-              Track upstream…
-            </Button>
-          }
-        >
-          Upstream
-        </SectionLabel>
-        <p className="text-sm text-pretty text-faint">Not tracked. If this skill came from a Git repository, track it so Canonfig can check that repository for updates.</p>
-        <TrackSkillDialog resource={resource} open={tracking} onOpenChange={setTracking} />
-      </section>
-    );
-
-  const check = () => {
+  const check = (tracked: SkillSource) => {
     setBusy(`check:${id}`);
     ws.later(() => {
       setBusy(null);
-      const fetched = fetchSkill(record.source, record.ref, record.subdir);
+      const fetched = fetchSkill(tracked.source, tracked.ref, tracked.subdir);
       if (!fetched.ok) {
         toast.error(`Couldn't check ${id}`, { description: fetched.error });
         return;
       }
-      const next = compare(resource, record, fetched);
+      const next = compare(ws.readResources().find((r) => r.id === id) ?? resource, tracked, fetched);
       setChecks((prev) => ({ ...prev, [id]: next }));
-      if (next.status === "unchanged") toast(`${id} is up to date`, { description: `It matches ${record.ref} at ${short(next.nextCommit)}.` });
+      if (next.status === "unchanged") toast(`${id} is up to date`, { description: `It matches ${tracked.ref} at ${short(next.nextCommit)}.` });
       else if (next.status === "update-available")
-        toast(`Update available for ${id}`, { description: `Files at ${short(next.nextCommit)} on ${record.ref}: ${countText(next)}.\nReview them, then update.` });
+        toast(`Update available for ${id}`, { description: `Files at ${short(next.nextCommit)} on ${tracked.ref}: ${countText(next)}.\nReview them, then update.` });
       else toast(`${id} has local edits`, { description: "Canonfig won't update it until you move or back up your changes." });
     }, 900);
   };
 
-  const update = () => {
+  const refuseLocalEdits = () => toast.error(`Didn't update ${id}`, { description: "It has local edits, so no skill was updated.\nMove or back up your changes first." });
+
+  const update = (tracked: SkillSource) => {
     // `skills update --apply` checks again before it replaces anything, so an edit saved after the last check still blocks it.
-    const fetched = fetchSkill(record.source, record.ref, record.subdir);
+    const fetched = fetchSkill(tracked.source, tracked.ref, tracked.subdir);
     if (!fetched.ok) {
       toast.error(`Couldn't update ${id}`, { description: fetched.error });
       return;
     }
-    const latest = compare(resource, record, fetched);
+    const latest = compare(resource, tracked, fetched);
     setChecks((prev) => ({ ...prev, [id]: latest }));
-    if (latest.status === "local-edits") {
-      toast.error(`Didn't update ${id}`, { description: "It has local edits, so no skill was updated.\nMove or back up your changes first." });
-      return;
-    }
+    if (latest.status === "local-edits") return refuseLocalEdits();
     if (latest.status === "unchanged") {
-      toast(`${id} is up to date`, { description: `It matches ${record.ref} at ${short(latest.nextCommit)}.` });
+      toast(`${id} is up to date`, { description: `It matches ${tracked.ref} at ${short(latest.nextCommit)}.` });
       return;
     }
     setBusy(`update:${id}`);
     ws.later(() => {
-      const next = updatedItem(resource, fetched.files);
-      ws.setResources((prev) => prev.map((r) => (r.id === id ? next : r)));
+      setBusy(null);
+      // And once more right before replacing, as updateSkills does inside its lock: compare what the folder and
+      // skills-sources.json hold now, not what they held when the update started.
+      const current = ws.readResources().find((r) => r.id === id && r.change !== "removed");
+      const now = readSources().find((s) => s.id === id);
+      if (!current || now?.commit !== tracked.commit) {
+        toast.error(`Didn't update ${id}`, { description: "It changed in the folder while the update ran, so no skill was updated.\nCheck again." });
+        return;
+      }
+      const again = compare(current, now, fetched);
+      if (again.status === "local-edits") {
+        setChecks((prev) => ({ ...prev, [id]: again }));
+        return refuseLocalEdits();
+      }
+      ws.setResources((prev) => prev.map((r) => (r.id === id ? updatedItem(current, fetched.files) : r)));
       setSources((prev) => prev.map((s) => (s.id === id ? { ...s, commit: fetched.commit, baseline: fetched.files } : s)));
       setChecks((prev) => ({ ...prev, [id]: { status: "unchanged", nextCommit: fetched.commit, added: [], changed: [], removed: [] } }));
-      setBusy(null);
-      onUpdated(next);
-      const unpublished = ws.pending.length + (resource.change ? 0 : 1);
+      const unpublished = ws.pending.length + (current.change ? 0 : 1);
       toast.success(`Updated ${id}`, {
-        description: `Now at ${short(fetched.commit)} from ${record.ref}. Files: ${countText(latest)}.\nGoes out with revision ${ws.nextSequence}: ${unpublished} unpublished ${unpublished === 1 ? "change" : "changes"}.${DEMO ? "\nSaved in this demo workspace." : ""}`,
+        description: `Now at ${short(fetched.commit)} from ${tracked.ref}. Files: ${countText(again)}.\nGoes out with revision ${ws.nextSequence}: ${unpublished} unpublished ${unpublished === 1 ? "change" : "changes"}.${DEMO ? "\nSaved in this demo workspace." : ""}`,
       });
     }, 900);
   };
@@ -226,61 +250,82 @@ export function SkillUpstream({ resource, editing, onUpdated }: { resource: Reso
   const state = result ? STATE[result.status] : null;
   return (
     <section aria-label="Upstream" className="grid gap-1">
-      <SectionLabel>Upstream</SectionLabel>
-      <Prop label="Repository">
-        <Mono className="break-all text-foreground">{record.source}</Mono>
-      </Prop>
-      <Prop label="Follows">
-        <Mono className="text-foreground">{record.ref}</Mono>
-        {record.subdir !== "." && (
-          <>
-            {" in "}
-            <Mono className="break-all text-foreground">{record.subdir}</Mono>
-          </>
-        )}
-      </Prop>
-      <Prop label="Installed from">
-        <span title={record.commit}>
-          <Mono className="text-foreground">{short(record.commit)}</Mono>
-        </span>
-      </Prop>
-      <Prop label="State">
-        <span className="inline-flex items-center gap-1.5" aria-live="polite">
-          <StatusMark kind={state?.kind ?? "off"} />
-          {state && result ? state.label(result, record.ref) : "Not checked yet"}
-        </span>
-      </Prop>
-      {result && result.status !== "unchanged" && (
-        <div className="mt-1 grid gap-1.5">
-          <p className="text-sm text-muted-foreground">
-            Compared with {record.ref} at <Mono>{short(result.nextCommit)}</Mono>:
-          </p>
-          <FileChanges check={result} />
-        </div>
+      {!record ? (
+        <>
+          <SectionLabel
+            action={
+              <Button type="button" variant="outline" size="xs" onClick={() => setTracking(true)}>
+                Track upstream…
+              </Button>
+            }
+          >
+            Upstream
+          </SectionLabel>
+          <p className="text-sm text-pretty text-faint">Not tracked. If this skill came from a Git repository, track it so Canonfig can check that repository for updates.</p>
+        </>
+      ) : (
+        <>
+          <SectionLabel>Upstream</SectionLabel>
+          <Prop label="Repository">
+            <Mono className="break-all text-foreground">{record.source}</Mono>
+          </Prop>
+          <Prop label="Follows">
+            <Mono className="text-foreground">{record.ref}</Mono>
+            {record.subdir !== "." && (
+              <>
+                {" in "}
+                <Mono className="break-all text-foreground">{record.subdir}</Mono>
+              </>
+            )}
+          </Prop>
+          <Prop label="Installed from">
+            <span title={record.commit}>
+              <Mono className="text-foreground">{short(record.commit)}</Mono>
+            </span>
+          </Prop>
+          <Prop label="State">
+            <span className="inline-flex items-center gap-1.5" aria-live="polite">
+              <StatusMark kind={state?.kind ?? "off"} />
+              {state && result ? state.label(result, record.ref) : "Not checked yet"}
+            </span>
+          </Prop>
+          {result && result.status !== "unchanged" && (
+            <div className="mt-1 grid gap-1.5">
+              <p className="text-sm text-muted-foreground">
+                Compared with {record.ref} at <Mono>{short(result.nextCommit)}</Mono>:
+              </p>
+              <FileChanges check={result} />
+            </div>
+          )}
+          {result?.status === "local-edits" && (
+            <p className="mt-1 text-sm text-pretty text-muted-foreground">
+              This copy changed since Canonfig installed <Mono>{short(record.commit)}</Mono>, so Canonfig won't update it: it never overwrites local edits and has no way to force
+              it. Move or back up your changes, then track the revision they match.
+            </p>
+          )}
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <Button ref={checkButton} type="button" variant="secondary" size="sm" disabled={busy !== null} onClick={() => check(record)}>
+              {busy === `check:${id}` ? "Checking…" : "Check for updates"}
+            </Button>
+            {result?.status === "update-available" && (
+              <Button type="button" variant="secondary" size="sm" disabled={busy !== null || editing} aria-describedby={noteId} onClick={() => update(record)}>
+                {busy === `update:${id}` ? "Updating…" : `Update to ${short(result.nextCommit)}`}
+              </Button>
+            )}
+          </div>
+          {result?.status === "update-available" && (
+            <p id={noteId} className="text-sm text-pretty text-faint">
+              {busy === `update:${id}`
+                ? "The editor is locked until the update finishes."
+                : editing
+                  ? "Save or discard your edits before updating."
+                  : "Updating replaces this skill's folder in ~/.canonfig with that commit. Nothing reaches other machines until you publish, and Canonfig never runs the skill's files."}
+            </p>
+          )}
+        </>
       )}
-      {result?.status === "local-edits" && (
-        <p className="mt-1 text-sm text-pretty text-muted-foreground">
-          This copy changed since Canonfig installed <Mono>{short(record.commit)}</Mono>, so Canonfig won't update it: it never overwrites local edits and has no way to force it.
-          Move or back up your changes, then track the revision they match.
-        </p>
-      )}
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        <Button type="button" variant="secondary" size="sm" disabled={busy !== null} onClick={check}>
-          {busy === `check:${id}` ? "Checking…" : "Check for updates"}
-        </Button>
-        {result?.status === "update-available" && (
-          <Button type="button" variant="secondary" size="sm" disabled={busy !== null || editing} aria-describedby={editing ? noteId : undefined} onClick={update}>
-            {busy === `update:${id}` ? "Updating…" : `Update to ${short(result.nextCommit)}`}
-          </Button>
-        )}
-      </div>
-      {result?.status === "update-available" && (
-        <p id={noteId} className="text-sm text-pretty text-faint">
-          {editing
-            ? "Save or discard your edits before updating."
-            : "Updating replaces this skill's folder in ~/.canonfig with that commit. Nothing reaches other machines until you publish, and Canonfig never runs the skill's files."}
-        </p>
-      )}
+      {/* Mounted for tracked skills too, so it closes normally once tracking succeeds and hands focus to Check. */}
+      <TrackSkillDialog resource={resource} open={tracking} onOpenChange={setTracking} onTracked={() => checkButton.current?.focus()} />
     </section>
   );
 }
@@ -315,11 +360,13 @@ function subdirError(subdir: string) {
 /**
  * Starts tracking a skill that is already in the folder (`canonfig skills track`). Canonfig fetches the ref and records
  * it only when every file matches the folder's copy: it never adopts edits it can't explain. Tracking changes no files.
+ * Cancel returns focus to Track upstream; after tracking that button is gone, so `onTracked` places focus instead.
  */
-function TrackSkillDialog({ resource, open, onOpenChange }: { resource: Resource; open: boolean; onOpenChange: (open: boolean) => void }) {
+function TrackSkillDialog({ resource, open, onOpenChange, onTracked }: { resource: Resource; open: boolean; onOpenChange: (open: boolean) => void; onTracked: () => void }) {
   const ws = useWorkspace();
   const [, setSources] = useSkillSources();
-  const [busy, setBusy] = useSharedState<string | null>("skill-busy", null);
+  const [busy, setBusy] = useSkillBusy();
+  const returnFocus = useDialogReturnFocus(onTracked);
   const [source, setSource] = useState("");
   const [ref, setRef] = useState("");
   const [subdir, setSubdir] = useState(".");
@@ -347,7 +394,7 @@ function TrackSkillDialog({ resource, open, onOpenChange }: { resource: Resource
       setBusy(null);
       const fetched = fetchSkill(normalized, trimmed.ref, trimmed.subdir);
       if (!fetched.ok) return setRefusal(fetched.error);
-      if (!sameFiles(folderFiles(resource, fetched.files), fetched.files))
+      if (!sameFiles(folderFiles(ws.readResources().find((r) => r.id === resource.id) ?? resource, fetched.files), fetched.files))
         return setRefusal(
           `This skill doesn't match ${trimmed.ref} (${short(fetched.commit)}) in that repository, so Canonfig won't track it: it never adopts edits it can't explain. Choose the branch, tag or commit the skill came from, or make its files match first.`,
         );
@@ -362,7 +409,7 @@ function TrackSkillDialog({ resource, open, onOpenChange }: { resource: Resource
   return (
     // Closing waits for a running check, so its answer always has somewhere to show.
     <Dialog open={open} onOpenChange={(next) => !checking && onOpenChange(next)}>
-      <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md">
+      <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md" {...returnFocus}>
         <form className="contents" noValidate onSubmit={submit}>
           <DialogHeader>
             <DialogTitle>Track {resource.id}</DialogTitle>

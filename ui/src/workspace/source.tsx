@@ -13,7 +13,7 @@ import { DEMO, PLAIN, SECRETS_GROUP, STATE_META, type Revision } from "@/shared/
 import { useSharedState, useWorkspace, type PendingChange, type Workspace } from "./store";
 import { GetStarted } from "./guide";
 import { whyBehind } from "./machines";
-import { useAgentPolicy, useChecks, warningName } from "./settings";
+import { SELF_UPDATING_NOTE, SelfUpdatingNote, useAgentPolicy, useChecks, useSelfUpdating, warningName } from "./settings";
 import { workspaceHref } from "./routes";
 import {
   AnimatedRow,
@@ -407,6 +407,8 @@ export function PublishDialog() {
   const [tried, setTried] = useState(false);
   const open = ws.publishOpen;
   const returnFocus = useRef<HTMLElement | null>(null);
+  // `source publish` is a command, so it waits for a Canonfig update.
+  const updating = useSelfUpdating();
 
   useEffect(() => {
     if (!open) return;
@@ -446,7 +448,7 @@ export function PublishDialog() {
           onSubmit={(e) => {
             e.preventDefault();
             setTried(true);
-            if (!checked || ws.publishing || !reviewer.trim()) return;
+            if (!checked || ws.publishing || updating || !reviewer.trim()) return;
             ws.publish(reviewer.trim(), () => ws.setPublishOpen(false));
           }}
         >
@@ -509,14 +511,13 @@ export function PublishDialog() {
               className="w-56"
             />
           </Field>
-
-
+          {updating && <SelfUpdatingNote />}
           <DialogFooter>
             <div className="flex shrink-0 gap-2">
               <Button type="button" variant="ghost" disabled={ws.publishing} onClick={() => ws.setPublishOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" variant="primary" disabled={!checked || ws.publishing}>
+              <Button type="submit" variant="primary" disabled={!checked || ws.publishing || updating} aria-describedby={updating ? SELF_UPDATING_NOTE : undefined}>
                 {ws.publishing ? "Publishing…" : !checked ? "Checking files…" : `Publish revision ${ws.nextSequence}`}
               </Button>
             </div>

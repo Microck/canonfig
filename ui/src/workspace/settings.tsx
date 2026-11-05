@@ -12,8 +12,8 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DitherProgress, Hint, Mono, StatusMark, Term } from "@/shared/shared";
 import { APP_VERSION, DEMO, LATEST_PATCH, agentPolicy, doctor, installers, selfUpdateSeed } from "@/shared/data";
-import { useSharedState, useWorkspace } from "./store";
-import { Body, CommandBox, Field, ListHead, ListRow, PageHeader, SectionLabel, SettingRow, settingsGroup, useLeaveGuard } from "./kit";
+import { useSharedReader, useSharedState, useWorkspace } from "./store";
+import { Body, CommandBox, Field, ListHead, ListRow, PageHeader, SectionLabel, SettingRow, settingsGroup, useDialogReturnFocus, useLeaveGuard } from "./kit";
 import { focusPageHeading } from "./routes";
 
 const LINGER_FIX = "sudo loginctl enable-linger ubuntu";
@@ -74,9 +74,11 @@ function ConfirmDialog({
   confirm: string;
   onConfirm: () => void;
 }) {
+  // Cancel returns to the button that asked; confirming often removes it, so focus then goes to the page heading.
+  const returnFocus = useDialogReturnFocus(focusPageHeading);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md">
+      <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md" {...returnFocus}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription className="text-base text-pretty">{body}</DialogDescription>
@@ -101,6 +103,33 @@ function ConfirmDialog({
 }
 
 export { ConfirmDialog };
+
+/** Shared key of the running Canonfig update's step (VersionView); null while none runs. */
+const SELF_UPDATE_STEP = "self-update-step";
+
+/**
+ * Whether Canonfig is updating itself. Its update gate refuses every other Canonfig command until the new version is in
+ * place (acquireGate in src/runtime/self-update/coordination.ts), so actions that run one stay disabled meanwhile and
+ * point at SelfUpdatingNote (aria-describedby={SELF_UPDATING_NOTE}).
+ */
+export function useSelfUpdating() {
+  return useSharedState<number | null>(SELF_UPDATE_STEP, null)[0] !== null;
+}
+
+/** Why an action waits while Canonfig updates itself, in words. */
+export const SELF_UPDATING = "Canonfig is updating itself. Actions here wait until it finishes.";
+/** The id of SelfUpdatingNote, for aria-describedby on the actions it explains. */
+export const SELF_UPDATING_NOTE = "self-updating-note";
+
+/** Shown on a page whose actions wait for a Canonfig update. One per page. */
+export function SelfUpdatingNote({ className }: { className?: string }) {
+  return (
+    <p id={SELF_UPDATING_NOTE} className={cn("flex items-center gap-1.5 text-sm text-muted-foreground", className)}>
+      <HourglassMedium className="size-3.5 shrink-0" />
+      {SELF_UPDATING}
+    </p>
+  );
+}
 
 /** Reinstalling keeps the port onboarding chose; 17342 is the CLI's default. */
 function installCommand(endpoint: string) {
@@ -127,6 +156,8 @@ export function ServiceView() {
   // Set when the person resumes setup after its linger step (SetupView).
   const [lingerMarked] = useSharedState("linger-marked", false);
   const [confirm, setConfirm] = useState(false);
+  // An update can only run while the service is off, so Install is the action it holds back.
+  const updating = useSelfUpdating();
   const act = (next: boolean, label: string, msg: string) => {
     setBusy(label);
     ws.later(() => {
@@ -142,7 +173,13 @@ export function ServiceView() {
         crumbs={["Settings", "Source service"]}
         actions={
           !installed ? (
-            <Button size="sm" variant="primary" disabled={!!busy} onClick={() => act(true, "install", `Source service installed${IN_DEMO}`)}>
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={!!busy || updating}
+              aria-describedby={updating ? SELF_UPDATING_NOTE : undefined}
+              onClick={() => act(true, "install", `Source service installed${IN_DEMO}`)}
+            >
               {busy === "install" ? "Installing…" : "Install service"}
             </Button>
           ) : undefined
@@ -186,6 +223,7 @@ export function ServiceView() {
               </SettingRow>
             )}
           </div>
+          {updating && <SelfUpdatingNote className="mt-4" />}
           {installed && (
             <div className="mt-4 flex items-center gap-2">
               <Button variant="outline" size="sm" disabled={!!busy} onClick={() => act(true, "restart", `Source service restarted${IN_DEMO}`)}>
@@ -653,6 +691,9 @@ export function SetupView() {
   const steps = SETUP_STEPS;
   const last = steps.length - 1;
   const serviceStep = steps.findIndex((s) => s.id === "service");
+  // Approve, apply and resume are each a setup command, so they wait for a Canonfig update.
+  const updating = useSelfUpdating();
+  const held = { disabled: updating, "aria-describedby": updating ? SELF_UPDATING_NOTE : undefined };
   const apply = () => {
     setJournal({ phase: "applying", at: 0 });
     // Chained ws.later steps: setup keeps applying while the user looks at another page of this
@@ -676,11 +717,11 @@ export function SetupView() {
   };
   const primary =
     phase === "planned" ? (
-      <Button size="sm" variant="primary" onClick={() => setJournal({ phase: "approved", at: 0 })}>
+      <Button size="sm" variant="primary" {...held} onClick={() => setJournal({ phase: "approved", at: 0 })}>
         Approve plan
       </Button>
     ) : phase === "approved" ? (
-      <Button size="sm" variant="primary" onClick={apply}>
+      <Button size="sm" variant="primary" {...held} onClick={apply}>
         Apply
       </Button>
     ) : null;
@@ -693,6 +734,7 @@ export function SetupView() {
             The setup command writes each step to a journal before running it, so an interrupted setup resumes where it stopped.
             {DEMO && " In this demo, progress carries on while you visit other pages, and is lost on reload or when you switch roles."}
           </Lede>
+          {updating && <SelfUpdatingNote className="-mt-3 mb-4" />}
           <SectionLabel action={<span className="text-xs text-faint tabular-nums">Journal #3</span>}>
             {phase === "planned" ? "Plan" : phase === "complete" ? "Done" : "Approved plan"}
           </SectionLabel>
@@ -743,6 +785,7 @@ export function SetupView() {
                 <Button
                   variant="outline"
                   size="sm"
+                  {...held}
                   onClick={() => {
                     setJournal({ phase: "complete", at: last });
                     setLingerMarked(true);
@@ -842,7 +885,10 @@ export function DoctorView() {
   // instead, so a service or linger change made mid-run is reflected (same pattern as guide.tsx).
   const latest = useRef(checks);
   latest.current = checks;
+  // `canonfig doctor` is a command too, so it waits for a Canonfig update.
+  const updating = useSelfUpdating();
   const run = () => {
+    if (updating) return;
     setRunning(true);
     setProgress(0);
     let v = 0;
@@ -871,7 +917,7 @@ export function DoctorView() {
       <PageHeader
         crumbs={["Settings", "Health check"]}
         actions={
-          <Button size="sm" variant="primary" disabled={running} onClick={run}>
+          <Button size="sm" variant="primary" disabled={running || updating} aria-describedby={updating ? SELF_UPDATING_NOTE : undefined} onClick={run}>
             {running ? "Checking…" : "Run checks"}
           </Button>
         }
@@ -879,6 +925,7 @@ export function DoctorView() {
       <Body>
         <Column>
           <Lede>The health check (Canonfig calls it doctor) tests whether this machine can run Canonfig. It changes nothing, and each problem lists the command that fixes it.</Lede>
+          {updating && <SelfUpdatingNote className="-mt-3 mb-4" />}
           <div className="mb-4 h-1.5">{running && <DitherProgress label="Running health check" value={progress} />}</div>
           <div data-tour="doctor-results" className="border-t border-border" aria-live="polite">
             {checks.map((d, i) => {
@@ -951,37 +998,41 @@ export function VersionView() {
   const ws = useWorkspace();
   const [state, setState] = useSelfUpdate();
   // Shared like Setup's journal: an update carries on while you visit other pages of this role. null: none running.
-  const [step, setStep] = useSharedState<number | null>("self-update-step", null);
-  const [checking, setChecking] = useSharedState("self-update-checking", false);
+  const [step, setStep] = useSharedState<number | null>(SELF_UPDATE_STEP, null);
+  // The running check, as an object only that check holds: turning updates off clears it, so a check that was
+  // already asking npm finds itself replaced and drops its answer instead of advertising a patch.
+  const [checking, setChecking] = useSharedState<object | null>("self-update-checking", null);
+  const readChecking = useSharedReader<object | null>("self-update-checking", null);
   const [serviceInstalled] = useSharedState("service-installed", true);
+  const readServiceInstalled = useSharedReader("service-installed", true);
+  const [journal] = useSharedState("setup-journal", JOURNAL_SEED);
+  const readJournal = useSharedReader("setup-journal", JOURNAL_SEED);
   const [enabling, setEnabling] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [disabling, setDisabling] = useState(false);
-  // Turning updates on or starting an update replaces the header button that opened the dialog, so focus goes to
-  // the page heading instead of falling to the document.
-  const committed = useRef(false);
-  const returnFocus = (event: Event) => {
-    if (!committed.current) return;
-    committed.current = false;
-    event.preventDefault();
-    focusPageHeading();
-  };
+  // Cancel returns focus to the button that opened a dialog; turning updates on or starting one replaces or disables
+  // that button, so focus goes to the page heading instead.
+  const enableFocus = useDialogReturnFocus(focusPageHeading);
+  const confirmFocus = useDialogReturnFocus(focusPageHeading);
   const on = state.npmCli !== null;
   // What the installed package reports, which a check compares against: the running version until an update lands.
   const current = state.installed ?? APP_VERSION;
   const available = on && state.latest !== null && state.latest !== current;
   const running = step !== null;
   // Every other Canonfig command holds an update lease while it runs (commandLease in coordination.ts): on the Source the
-  // background service, on a follower a sync in progress. Updating and turning updates off wait for them.
-  const busyWith = ws.role === "source" ? (serviceInstalled ? "service" : null) : ws.phase === "running" ? "sync" : null;
+  // background service, a setup being applied or a publish; on a follower a sync in progress. Updating waits for them.
+  const sourceBusy = (service: boolean, setup: Journal) => (service ? "service" : setup.phase === "applying" ? "setup" : ws.publishing ? "publish" : null);
+  const busyWith = ws.role === "source" ? sourceBusy(serviceInstalled, journal) : ws.phase === "running" ? "sync" : null;
   // An interrupted sync must be finished with this version first (assertNoUnfinishedRun); it blocks opting in too.
   const unfinished = ws.role === "follower" && ws.interrupted;
   const blocked = available && (busyWith !== null || unfinished);
 
   const check = () => {
-    setChecking(true);
+    const run = {};
+    setChecking(run);
     ws.later(() => {
-      setChecking(false);
+      if (readChecking() !== run) return;
+      setChecking(null);
       setState((prev) => ({ ...prev, latest: LATEST_PATCH }));
       if (LATEST_PATCH === current) toast("Canonfig is up to date", { description: `${current} is the newest ${RELEASE_LINE} release.` });
       else toast(`Canonfig ${LATEST_PATCH} is available`, { description: `This machine has ${current}.\nOnly patches in the ${RELEASE_LINE} line are offered.` });
@@ -989,12 +1040,22 @@ export function VersionView() {
   };
 
   const update = () => {
-    committed.current = true;
     setConfirming(false);
     setStep(0);
-    // Chained like Setup's apply: each step lands in shared state, and switching roles cancels the rest.
+    // Chained like Setup's apply: each step lands in shared state, and switching roles cancels the rest. Other actions
+    // that run a Canonfig command wait meanwhile (useSelfUpdating).
     const advance = (i: number): void =>
       ws.later(() => {
+        // Before swapping packages, check again that nothing else of Canonfig's started, as update in core.ts does:
+        // a setup that was applying may have installed the service since. A follower's sync can't start meanwhile.
+        const busyNow = ws.role === "source" ? sourceBusy(readServiceInstalled(), readJournal()) : null;
+        if (i === UPDATE_STEPS.length - 1 && busyNow) {
+          setStep(null);
+          toast.error("Canonfig didn't update", {
+            description: `${busyNow === "publish" ? "A publish" : busyNow === "setup" ? "Setup" : "The source service"} started while it got ready, so ${APP_VERSION} stays in place.\nUpdate again once it's stopped or finished.`,
+          });
+          return;
+        }
         if (i < UPDATE_STEPS.length) {
           setStep(i);
           advance(i + 1);
@@ -1036,7 +1097,7 @@ export function VersionView() {
             </Button>
           ) : (
             <>
-              <Button size="sm" variant={available ? "outline" : "primary"} disabled={checking || running} onClick={check}>
+              <Button size="sm" variant={available ? "outline" : "primary"} disabled={checking !== null || running} onClick={check}>
                 {checking ? "Checking…" : "Check for updates"}
               </Button>
               {available && (
@@ -1098,7 +1159,11 @@ export function VersionView() {
                     ? `Update #41 was interrupted. Recover or abandon it on Sync first: Canonfig doesn't ${on ? "update itself" : "turn updates on"} while a sync is unfinished.`
                     : busyWith === "service"
                       ? "The source service is running, and Canonfig installs an update only while no other Canonfig command runs. It never stops a service itself, so stop it in a terminal, update, then start it again."
-                      : "An update of this machine's setup is running. Update Canonfig once it finishes."}
+                      : busyWith === "setup"
+                        ? "Setup is applying its steps. Update Canonfig once it finishes."
+                        : busyWith === "publish"
+                          ? "A revision is being published. Update Canonfig once it's published."
+                          : "An update of this machine's setup is running. Update Canonfig once it finishes."}
                 </span>
               </p>
               {unfinished && (
@@ -1150,13 +1215,12 @@ export function VersionView() {
       </Body>
 
       <Dialog open={enabling} onOpenChange={setEnabling}>
-        <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md" onCloseAutoFocus={returnFocus}>
+        <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md" {...enableFocus}>
           <EnableUpdatesForm
             unfinished={unfinished}
             onCancel={() => setEnabling(false)}
             onEnable={(npmCli) => {
               setState((prev) => ({ ...prev, npmCli }));
-              committed.current = true;
               setEnabling(false);
               toast.success("Updates turned on", {
                 description: `Canonfig can now install ${RELEASE_LINE} patches with this npm.\nStart the services and schedules you stopped again.${DEMO ? "\nSaved in this demo workspace." : ""}`,
@@ -1167,7 +1231,7 @@ export function VersionView() {
       </Dialog>
 
       <Dialog open={confirming} onOpenChange={setConfirming}>
-        <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md" onCloseAutoFocus={returnFocus}>
+        <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md" {...confirmFocus}>
           <DialogHeader>
             <DialogTitle>Update Canonfig to {LATEST_PATCH}?</DialogTitle>
             <DialogDescription className="text-base text-pretty">
@@ -1197,10 +1261,17 @@ export function VersionView() {
           // `self-update disable` refuses while other commands run, like an update does.
           if (busyWith) {
             toast.error("Updates are still on", {
-              description: busyWith === "service" ? "The source service is running.\nStop it first, then turn updates off." : "A sync is running.\nTurn updates off once it finishes.",
+              description:
+                busyWith === "service"
+                  ? "The source service is running.\nStop it first, then turn updates off."
+                  : busyWith === "sync"
+                    ? "A sync is running.\nTurn updates off once it finishes."
+                    : "Another Canonfig command is running.\nTurn updates off once it finishes.",
             });
             return;
           }
+          // A check still asking npm finds its run replaced and drops its answer, so it can't advertise a patch now.
+          setChecking(null);
           setState((prev) => ({ ...prev, npmCli: null, latest: null }));
           toast("Updates turned off", { description: "Backups of earlier versions and the update records stay on this machine." });
         }}

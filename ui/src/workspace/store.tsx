@@ -317,6 +317,8 @@ export interface Workspace {
   setInviteOpen: SetState<boolean>;
   resources: Resource[];
   setResources: SetState<Resource[]>;
+  /** Reads the folder's items when called, for a delayed callback that must see an edit saved while it waited. */
+  readResources: () => Resource[];
   revisions: Revision[];
   /** Newest published revision, 0 before the first publish. */
   latest: number;
@@ -530,6 +532,13 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
   const timers = useRef<number[]>([]);
   useEffect(() => () => timers.current.forEach((t) => window.clearTimeout(t)), []);
   const later = useCallback((fn: () => void, ms: number) => void timers.current.push(window.setTimeout(fn, ms)), []);
+  // Delayed callbacks close over the render that started them; readResources goes through this instead. Synced after
+  // each commit, which lands long before any ws.later callback runs.
+  const latestResources = useRef(resources);
+  useEffect(() => {
+    latestResources.current = resources;
+  }, [resources]);
+  const readResources = useCallback(() => latestResources.current, []);
 
   const publish = useCallback(
     (reviewer: string, onDone: () => void) => {
@@ -772,6 +781,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     unenrolled,
     unenroll,
     later,
+    readResources,
     isStopped,
     focus,
     navigate,

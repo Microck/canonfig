@@ -604,6 +604,28 @@ export function DetailPanel({
 }
 
 /**
+ * Focus handling for a Dialog opened from state rather than a DialogTrigger, which Radix can't return focus to on
+ * its own. Spread the result on DialogContent: closing returns focus to the control that opened the dialog, or calls
+ * `fallback` when that control is gone or disabled, as after an action that replaces the button that started it.
+ */
+export function useDialogReturnFocus(fallback: () => void) {
+  const opener = useRef<HTMLElement | null>(null);
+  return {
+    onOpenAutoFocus: () => {
+      const active = document.activeElement;
+      opener.current = active instanceof HTMLElement && !active.closest('[role="dialog"]') ? active : null;
+    },
+    onCloseAutoFocus: (event: Event) => {
+      event.preventDefault();
+      const target = opener.current;
+      opener.current = null;
+      if (target?.isConnected && !target.matches(":disabled")) target.focus();
+      else fallback();
+    },
+  };
+}
+
+/**
  * Asks before in-app navigation discards an unsaved draft. While `dirty`, every in-app link, row, sidebar
  * entry, palette command and Demo switcher change goes through the guard in routes.ts and opens `dialog`
  * instead; Discard changes completes the navigation, Keep editing stays. Browser Back/Forward and reloads
