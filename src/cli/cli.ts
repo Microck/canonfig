@@ -1,7 +1,6 @@
 import { Effect, Option, Schema } from "effect";
 import type { MachineState } from "../machine/machine-state.service.ts";
 
-import type { MachineState } from "../machine/machine-state.service.ts";
 import {
   CertificateFingerprint,
   FollowerId,

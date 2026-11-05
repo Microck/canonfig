@@ -153,19 +153,37 @@ work, not a second implementation of any CLI service.
 
 ### Synchronization and local state
 
-| Screen/action | CLI/service mapping | Proposed endpoint | Owner |
+| Screen/action | CLI/service mapping | Endpoint | State |
 | --- | --- | --- | --- |
-| Sync Check for updates, plan list/details, Apply changes, held/drift explanation, collision links | `sync --plan/--apply`, `FollowerCommands.synchronize`; real plan/outcome from `src/projection/sync.ts`. Drift panel explains manual resolution, not a force overwrite. | `POST /api/sync/plan`, `/api/sync/apply` | D |
-| Interrupted run Recover/Abandon confirmations; Human Action Required Check again | `recover`, `abandon`, corresponding FollowerCommands methods; rerun actual diagnostics/planning for Check again, never clear a boolean as evidence. | `POST /api/recovery`, `/api/recovery/abandon`, `/api/sync/plan` | D |
-| Adoption review exact additions/retained text/whole-file preview, Show exact text, Delete review | `sync --plan --review-local` writes private reviews. Gap: no read/delete review command; do not expose private contents in ordinary status/logs. | `POST /api/sync/reviews`; read/delete only after private review API exists | D |
-| Schedule cadence/default/days/time, preview next check, Save | `schedule set`, `schedule set --default`, `schedule status`; FollowerCommands schedule methods. Native status must supply platform facts; demo launchd label/wake guarantee is not portable. | `GET`/`PUT /api/schedule` | D |
-| Local settings list/details, add/edit/rename/delete/save/discard local instructions/rules/skills/agents/commands/MCP/settings | Shared authoring API with `scope: "local"`, validated by the same folder loader and Source allowlist. | `GET /api/local/items`; `PUT`/`DELETE /api/local/items/:id` | D |
-| Local collision replace-published choice; overlays add/remove; key claims harness/key add/remove | `overlay list/set/remove`, `FollowerCommands.overlays`; retain exact key-path and collision semantics. | `GET`/`PUT`/`DELETE /api/local/overlays/:item` | D |
-| Local managed harness toggles; backup preference; retained append-local content details | `harnesses include/exclude`, `FollowerCommands.harnesses`; backup preference edits `local/local.jsonc`; retained content is a protected read gap. | `GET /api/harnesses`; `PUT /api/harnesses/:id`; proposed `/api/local/preferences` and `/api/local/retained` after shared APIs | D |
-| Backups list, Restore confirmation, restore/exclusion outcome | `restore [snapshot]`, `FollowerCommands.restore`, `src/projection/takeover.ts`. Gap: listing and successful-restore evidence must not be inferred from harness exclusions. | `GET /api/backups`; `POST /api/backups/:id/restore` | D |
-| Follower Secrets metadata and Update secrets | `secrets list/sync`, `src/secrets/secret-store.ts`, `secret-client.ts`. | `GET /api/secrets`; `POST /api/secrets/sync` | D |
-| Tunnel status/start/stop | `tunnel status/start/stop`, `FollowerCommands.tunnelStatus/restartTunnel/stopTunnel`; recorded configuration supports restart. | `GET /api/tunnel`; `POST /api/tunnel/start`, `/stop` | D |
-| Enrollment details/copy fingerprints; Stop syncing from Overview/sidebar/Enrollment | `follower unenroll`, `FollowerCommands.unenroll`. Gap: demo also removes schedule/stops work; CLI leaves schedule/tunnel configuration for explicit `schedule remove` and `tunnel stop --forget`. | `GET /api/enrollment`; `DELETE /api/enrollment` without invented cleanup | D |
+| Sync check, plan details, apply, held/drift explanation, collision link | `FollowerCommands.synchronize`; plan and apply are polled operations. Final journal evidence is bound to the command's exact run ID, never the latest run. Drift requires manual resolution, not force overwrite. | `POST /api/sync/plan`, `/api/sync/apply` | Live |
+| Recover, Abandon, Check again | `FollowerCommands.recover/abandon`; confirmations preserve the CLI's no-rollback semantics. Check again runs a fresh plan. | `POST /api/recovery`, `/api/recovery/abandon`, `/api/sync/plan` | Live |
+| Adoption review creation | `sync --plan --review-local`; returns only the CLI's review metadata. | `POST /api/sync/reviews` | Live |
+| Adoption review exact text, whole-file previews, delete | No protected read/delete CLI operation exists. Private review contents remain on disk. | None | Hidden |
+| Schedule cadence, Source default, days/time, native status, Save | `FollowerCommands.scheduleStatus/setSchedule`; next-run and platform facts appear only when supplied by native status. No invented preview or wake guarantee. | `GET`/`PUT /api/schedule` | Live |
+| Local instructions, rules, skills, agents, commands: list, add, edit, rename, delete, save, discard | Shared authoring API with `scope: "local"`, Source `local.allow`, digest preconditions, binary-safe skill assets, executable flags and reload on conflicts. Rename is one checked transaction. | `GET`/`PUT /api/local/items`; an empty file list deletes the item | Live |
+| Local MCP/settings keys and backups preference | `editAuthoringConfig` updates `local/local.jsonc` with digest checks and preserves comments. Backup disable requires confirmation. | `PUT /api/local/preferences` | Live |
+| Collision replacement, overlays and exact key claims | `FollowerCommands.overlays`; item and key-claim names stay in JSON bodies. Removing a claim permits the next sync to manage the key again. | `GET`/`PUT`/`DELETE /api/local/overlays` | Live |
+| Managed harness include/exclude | `FollowerCommands.harnesses`; `GuiHarnessReport` exposes actual installed/listed/excluded state for this screen and enrollment preferences. | `GET`/`PUT /api/harnesses` | Live |
+| Retained append-local content details | No protected content-read API exists. | None | Hidden |
+| Backups list, restore confirmation and outcome | `listSnapshots` lists real takeover snapshots; `FollowerCommands.restore` supplies actual restore/exclusion evidence as a polled operation. | `GET /api/backups`; `POST /api/backups/restore` | Live |
+| Follower Secrets list and update | `listSecrets` and `synchronizeSharedSecrets`; only names and origins are returned. | `GET /api/secrets`; `POST /api/secrets/sync` | Live |
+| Tunnel status, start and stop | `FollowerCommands.tunnelStatus/restartTunnel/stopTunnel`; start uses recorded configuration, stop keeps it. First-time configuration belongs to enrollment. | `GET /api/tunnel`; `POST /api/tunnel/start`, `/api/tunnel/stop` | Live |
+| Enrollment details, copy fingerprints and unenroll | C supplies the safe `GuiEnrollment` read contract and handler. D calls `FollowerCommands.unenroll` exactly: applied files, native schedule and tunnel configuration remain. | `GET`/`DELETE /api/enrollment` | Live; read/copy verification pending C integration |
+| Local settings Export | `FollowerCommands.exportArchive`; the server checks the returned archive hash, downloads actual bytes and removes its unique temporary file. No arbitrary output path is accepted. | `POST /api/exports` | Live |
+
+D also owns the Source secrets handlers used by B: `GET /api/secrets` returns
+`GuiSecrets`, `PUT /api/secrets` accepts write-only `{ name, value }` and returns
+`GuiSecretSummary`, and `DELETE /api/secrets` accepts `{ name }` and returns
+`GuiSecretRemoval`. Follower sync returns `GuiSecretSync`. These shapes and
+`GuiArchiveDownload` are defined in `src/gui/contract/synchronization.ts`.
+Secret values never enter responses, URLs, logs or browser storage; even malformed
+secret-request diagnostics omit the submitted input.
+
+The parent approved separate live synchronization screens in
+`ui/src/workspace/synchronization/screens.tsx`. The existing simulated screens stay
+unchanged for the demo build. Consolidating their presentation behind the backend
+seam remains a design follow-up, not a second production data source. No D control
+uses simulated state or browser-local persistence.
 
 ### Settings and shared secrets
 

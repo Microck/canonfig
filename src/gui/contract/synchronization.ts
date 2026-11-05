@@ -4,7 +4,6 @@ import { SyncScheduleSchema } from "../../schedule/schedule-manager.types.ts";
 
 export const GuiSynchronizationResult = Schema.Record(Schema.String, Schema.Json);
 export interface GuiSynchronizationResult extends Schema.Schema.Type<typeof GuiSynchronizationResult> {}
-export const GuiEmptyRequest = Schema.Struct({});
 export const GuiScheduleRequest = Schema.Union([
   Schema.Struct({ profileDefault: Schema.Literal(true) }),
   Schema.Struct({ schedule: SyncScheduleSchema }),
