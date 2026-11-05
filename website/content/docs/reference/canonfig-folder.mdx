@@ -42,9 +42,9 @@ it.
 | `hooks/` | Yes | Scripts a hook runs. Every file here must be run by a hook. |
 | `files/` | Yes | Content of [authored resources](/how-to/manage-files-outside-harnesses). Every file here must be read by a resource. |
 | `local/` | No | Items only this machine projects. See [The local folder](#the-local-folder). |
-| `.backups/` | No | Takeover snapshots. See [Restore a harness from a backup](/how-to/restore-from-a-backup). |
+| `.backups/` | No | Takeover snapshots, of harnesses and of folder entries `canonfig import --replace` replaced. See [Restore a harness from a backup](/how-to/restore-from-a-backup). |
 | `.runtime/` | No | `hook-runner.mjs`, which every projected hook calls. |
-| `state.sqlite` | No | Enrollment, Profile Revisions, run journal, and Applied Resource Records. |
+| `state.sqlite` | No | Enrollment, Profile Revisions, run journal, Applied Resource Records, and the export and import journal. |
 | `setup.json` | No | The `canonfig setup` plan, approval, and progress. |
 | `policy.json` | No | The agent policy of a machine that is not enrolled. |
 | `canonfig.log` | No | The command log. |
@@ -319,7 +319,7 @@ takes these keys:
 | `excludeHarnesses` | array of harness ids | Harnesses this machine never projects, even when listed. `canonfig harnesses exclude` and `canonfig restore` edit it. |
 | `excludeResources` | array of resource ids | Authored resources this machine never projects. `canonfig restore` adds the ones it gives back. |
 | `overlays` | array of `<category>/<name>` or `settings/<harness>#<key>` | Local Overlays: published items this machine's local item replaces. Key claims: settings keys Canonfig never writes, removes, or checks on this machine, while the other keys of that settings file follow the Source. `canonfig overlay set` and `remove` edit it. See [Replace a published item on one machine](/how-to/use-local-overlays). |
-| `backups` | boolean | `false` turns takeover snapshots off on this machine. Default `true`. |
+| `backups` | boolean | `false` turns harness takeover snapshots off on this machine; `canonfig import --replace` still snapshots the folder entries it replaces. Default `true`. |
 
 The Source Machine decides which categories local items may add, with
 `local.allow` in `canonfig.jsonc`. A local category that `local.allow` does not

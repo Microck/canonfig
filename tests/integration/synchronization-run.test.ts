@@ -49,7 +49,7 @@ import type {
   SynchronizationOutcome,
 } from "../../src/domain/synchronization.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
-import { MachineFilesystemError } from "../../src/machine/machine-state.errors.ts";
+import { MachineFilesystemError, UnconfirmedPublicationError } from "../../src/machine/machine-state.errors.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import {
   canonicalJson,
@@ -3169,16 +3169,21 @@ process.exit(1);
     };
   };
 
-  /** Writes the target for real, parents included, then reports a failure. */
+  /**
+   * Writes the target for real, parents included, then reports a failure
+   * after publication, as the layer does when a later step such as the
+   * Windows ACL fails with the file already in place.
+   */
   const failAfterWriting = (fixture: Fixture) =>
     decorateMachine(fixture.root, (service) => ({
       ...service,
       atomicWrite: (input) =>
         input.path.absolute === fixture.target
-          ? service.atomicWrite(input).pipe(Effect.andThen(Effect.fail(new MachineFilesystemError({
-            operation: "restrict Windows ACL",
+          ? service.atomicWrite(input).pipe(Effect.flatMap((published) => Effect.fail(new UnconfirmedPublicationError({
             path: input.path.absolute,
-            message: "icacls did not apply the requested current-user ACL",
+            state: "in-place",
+            published,
+            message: "its permissions could not be finalized: icacls did not apply the requested current-user ACL",
           }))))
           : service.atomicWrite(input),
     }));
@@ -3207,11 +3212,12 @@ process.exit(1);
         input.path.absolute === fixture.target
           ? service.atomicWrite(input).pipe(
             // Something else writes into a directory the run created.
-            Effect.andThen(Effect.promise(() => writeFile(join(fixture.root, "home", "new", "foreign.txt"), "keep"))),
-            Effect.andThen(Effect.fail(new MachineFilesystemError({
-              operation: "test write",
+            Effect.tap(() => Effect.promise(() => writeFile(join(fixture.root, "home", "new", "foreign.txt"), "keep"))),
+            Effect.flatMap((published) => Effect.fail(new UnconfirmedPublicationError({
               path: input.path.absolute,
-              message: "injected failure",
+              state: "in-place",
+              published,
+              message: "injected failure after publication",
             }))),
           )
           : service.atomicWrite(input),

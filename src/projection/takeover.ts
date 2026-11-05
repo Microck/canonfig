@@ -13,15 +13,21 @@ import type { ConfigJson } from "../synchronization/config-value.ts";
 import type { ConfigFormat } from "./harness.ts";
 
 /**
- * Takeover snapshots: the content a harness surface held before Canonfig
- * first wrote it, under `~/.canonfig/.backups/<UTC>/`.
+ * Takeover snapshots: content Canonfig is about to overwrite, under
+ * `~/.canonfig/.backups/<UTC>/`. That is what a harness surface held before
+ * Canonfig first wrote it, or the Canonical Folder entries an
+ * `import --replace` (or a restore of such a backup) replaces, recorded under
+ * the owner `canonicalFolderOwner` instead of a harness.
  *
- * Each snapshot has `manifest.json` and one directory per harness holding the
+ * Each snapshot has `manifest.json` and one directory per owner holding the
  * copied files at their path relative to the home directory, plus `keys.json`
  * with the prior values of the config keys taken over (never the whole file,
  * so credentials sharing that file never enter a backup). Directories are
  * created 0700 and files 0600 through the protected machine writer.
  */
+
+/** The snapshot owner of Canonical Folder entries, where a takeover names its harness. */
+export const canonicalFolderOwner = "canonfig";
 
 export class TakeoverSnapshotError extends TaggedError<TakeoverSnapshotError>()(
   "TakeoverSnapshotError",
@@ -170,17 +176,26 @@ export const deleteSnapshot = (backups: string, id: string): Effect.Effect<void,
   });
 
 /**
- * Keep the first snapshot, the state before Canonfig ever wrote, and the four
- * most recent. Called after a run that wrote a new snapshot did not roll back.
- * Runs hold the run lock, so a temporary directory left then belongs to a
- * capture that was killed and is removed too.
+ * Keep the first harness snapshot, the harnesses' state before Canonfig ever
+ * wrote, the first folder snapshot, the folder before an import first
+ * replaced it, and the four most recent. Kept apart, so a folder backup taken
+ * before any takeover never pushes the first harness snapshot out. Called
+ * after a run that wrote a new snapshot did not roll back. Runs hold the run
+ * lock, so a temporary directory left then belongs to a capture that was
+ * killed and is removed too.
  */
 export const pruneSnapshots = (backups: string): Effect.Effect<ReadonlyArray<string>, TakeoverSnapshotError> =>
   Effect.gen(function*() {
     const stale = (yield* backupEntries(backups)).filter((name) => name.startsWith(temporaryPrefix));
     yield* Effect.forEach(stale, (name) => deleteSnapshot(backups, name), { discard: true });
     const snapshots = yield* listSnapshots(backups);
-    const pruned = snapshots.slice(1, Math.max(1, snapshots.length - 4));
+    const holdsFolder = new Set<string>();
+    for (const id of snapshots) {
+      const manifest = yield* readManifest(join(backups, id), id).pipe(Effect.mapError(snapshotError(join(backups, id))));
+      if (manifest.entries.some((entry) => entry.harness === canonicalFolderOwner)) holdsFolder.add(id);
+    }
+    const firsts = new Set([snapshots.find((id) => holdsFolder.has(id)), snapshots.find((id) => !holdsFolder.has(id))]);
+    const pruned = snapshots.slice(0, Math.max(0, snapshots.length - 4)).filter((id) => !firsts.has(id));
     yield* Effect.forEach(pruned, (id) => deleteSnapshot(backups, id), { discard: true });
     return pruned;
   });

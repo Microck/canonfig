@@ -605,7 +605,7 @@ const summarizeHarnesses = (data: PayloadRecord, outline: Outline): boolean => {
 const summaries: ReadonlyArray<readonly [(command: string) => boolean, (data: PayloadRecord, outline: Outline) => boolean]> = [
   [(command) => command === "doctor", summarizeDoctor],
   [(command) => command === "status", summarizeStatus],
-  [(command) => command.startsWith("sync.") || command === "restore", summarizeSync],
+  [(command) => command.startsWith("sync.") || command === "restore" || command.startsWith("import"), summarizeSync],
   [(command) => command === "harnesses" || command.startsWith("harnesses."), summarizeHarnesses],
   [(command) => command === "source.publish" || command === "profile.show", summarizeRevision],
   [(command) => command === "profile.list", summarizeProfileList],

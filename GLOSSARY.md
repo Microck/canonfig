@@ -29,7 +29,7 @@ Writing the Canonical Folder's items into a Target Harness's own global files an
 _Avoid_: Export, install
 
 **Takeover Snapshot**:
-The backup of a Target Harness's owned surfaces that Canonfig takes before its first write to that harness, kept under `~/.canonfig/.backups/`.
+The backup, kept under `~/.canonfig/.backups/`, of content Canonfig is about to overwrite: a Target Harness's owned surfaces before Canonfig's first write to that harness, or the Canonical Folder entries that `canonfig import --replace` (or a restore of such a backup) replaces.
 _Avoid_: Journal, run backup
 
 **Observed State**:

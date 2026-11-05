@@ -16,6 +16,7 @@ import type { SourceIdentity } from "../domain/identity.ts";
 import type { ProfileRevision } from "../domain/profile.ts";
 import type { StateRepositoryError } from "./state-repository.errors.ts";
 import type {
+  ArchiveEvent,
   CompleteRunInput,
   CancelPendingEnrollmentInput,
   ConsumeEnrollmentInvitationInput,
@@ -144,6 +145,10 @@ export class StateRepository extends Context.Service<StateRepository, {
   /** Forget the takeovers a run recorded, after that run rolled back. */
   readonly removeRunTakeovers: (
     run: RunId,
+  ) => Effect.Effect<void, StateRepositoryError>;
+  /** Append one export or import to `archive_events`; rows are never changed or deleted. */
+  readonly recordArchiveEvent: (
+    event: ArchiveEvent,
   ) => Effect.Effect<void, StateRepositoryError>;
   /** Forget surfaces a restore gave back to their harness. */
   readonly releaseTakeovers: (

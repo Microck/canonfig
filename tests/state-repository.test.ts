@@ -277,6 +277,49 @@ describe("StateRepository SQLite adapter", () => {
     expect(runtime.message).toContain(`move ${path} aside`);
   });
 
+  it("journals exports and imports apart from runs, so the last sync stays the last sync", async () => {
+    const path = databasePath();
+    const latest = await runWithRepository(path, Effect.gen(function*() {
+      yield* seed();
+      const repository = yield* StateRepository;
+      yield* start(repository, "run-sync", follower().id, revision().id);
+      yield* repository.completeRun({
+        run: asRunId("run-sync"),
+        completedAt: "2026-08-15T12:03:00Z",
+        outcome: decode(SynchronizationOutcomeSchema)({ outcome: "Converged", run: "run-sync", verified: [] }),
+        appliedResources: [],
+      });
+      yield* repository.recordArchiveEvent({
+        occurredAt: "2026-08-15T12:04:00Z",
+        command: "export",
+        outcome: "Exported",
+        archive: "/home/user/setup.tar.gz",
+        sha256: digestC,
+        signer: "unsigned",
+      });
+      return yield* repository.latestDeploymentReceipt(follower().id);
+    }));
+    expect(latest).toMatchObject({ run: "run-sync", outcome: "Converged" });
+
+    const database = new DatabaseSync(path);
+    try {
+      expect(database.prepare("SELECT occurred_at, command, outcome, archive, sha256, signer FROM archive_events").all().map((row) => ({ ...row }))).toEqual([{
+        occurred_at: "2026-08-15T12:04:00Z",
+        command: "export",
+        outcome: "Exported",
+        archive: "/home/user/setup.tar.gz",
+        sha256: digestC,
+        signer: "unsigned",
+      }]);
+      expect(database.prepare("SELECT COUNT(*) AS count FROM synchronization_runs").get()?.count).toBe(1);
+      // The journal is append-only.
+      expect(() => database.exec("UPDATE archive_events SET outcome = 'Error'")).toThrow("append-only");
+      expect(() => database.exec("DELETE FROM archive_events")).toThrow("append-only");
+    } finally {
+      database.close();
+    }
+  });
+
   it("publishes immutable revisions idempotently and rejects changed content", async () => {
     const path = databasePath();
     const changed = revision("revision-1", 1, '{"profile":"changed"}');

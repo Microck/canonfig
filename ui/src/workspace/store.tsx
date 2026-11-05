@@ -403,6 +403,8 @@ export interface Workspace {
   snapshots: Snapshot[];
   /** Simulates `canonfig restore <snapshot>`: puts the snapshot back and excludes its harnesses here. */
   restore: (snapshot: string) => void;
+  /** Simulates `canonfig export`: downloads ~/.canonfig/ and local/ as one .tar.gz with a checksum manifest, signed on the Source. */
+  exportArchive: () => void;
   /** This machine's ~/.canonfig/local/ items. */
   local: LocalItem[];
   setLocal: SetState<LocalItem[]>;
@@ -653,6 +655,26 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     [],
   );
 
+  // Export changes nothing Canonfig manages, so unlike restore it adds no run.
+  // Only the demo simulates it. Outside the demo this page has no way to
+  // write the archive, so it points to the CLI instead of claiming a download.
+  // On the Source the CLI signs the manifest with the Source signing key; a
+  // follower's export is unsigned.
+  const exportArchive = useCallback(() => {
+    const signing = role === "source" ? " On the Source it signs the manifest with the Source signing key." : "";
+    if (!DEMO) {
+      toast("Export runs from the CLI", {
+        description: `Run canonfig export on this machine. It writes ~/.canonfig/ to a .tar.gz with a manifest.json of every file's size and SHA-256.${signing}`,
+      });
+      return;
+    }
+    const name = `canonfig-export-${new Date().toISOString().replaceAll(":", "-").replace(/\.\d+Z$/u, "Z")}.tar.gz`;
+    const signed = role === "source" ? "\nSigned with this Source's signing key." : "";
+    toast.success("Exported the Canonfig folder", {
+      description: `Downloaded ${name}, with a manifest.json of every file's size and SHA-256.${signed}\nState, backups and credentials stay on this machine.\nSimulated in this demo; no file was written.`,
+    });
+  }, [role]);
+
   const recover = useCallback(() => {
     setInterrupted(false);
     setRuns((prev) => prev.map((r) => (r.n === 41 ? { ...r, what: "Recovered: all 5 steps done", when: "Just now", tone: "ok" } : r)));
@@ -801,6 +823,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     setBackups,
     snapshots,
     restore,
+    exportArchive,
     local,
     setLocal,
     overlays,

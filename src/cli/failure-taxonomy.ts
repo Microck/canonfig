@@ -457,6 +457,25 @@ export const failureTaxonomy = {
     "usage-or-configuration",
     (error) => `takeover snapshot ${text(error.snapshot)} does not exist`,
   ),
+  // `canonfig export` and `canonfig import`; each message ends with the fix.
+  ArchiveRequestError: describe(
+    "usage-or-configuration",
+    (error) => `${text(error.path)} ${error.message}; nothing was written`,
+  ),
+  ArchiveConflictError: describe(
+    "conflict-or-drift",
+    (error) => `${text(error.path)} ${error.message}; nothing was written`,
+  ),
+  // Export published the archive, then a check failed: the message says what
+  // the output path holds, so it never claims nothing was written.
+  ArchivePublicationError: describe(
+    "verification-or-apply-failure",
+    (error) => `${text(error.path)} ${error.message}`,
+  ),
+  ArchiveIntegrityError: describe(
+    "verification-or-apply-failure",
+    (error) => `${text(error.path)} ${error.message}; nothing was imported`,
+  ),
   FollowerSynchronizationConfigurationError: declared(
     "usage-or-configuration",
     (error) =>
@@ -742,6 +761,13 @@ export const failureTaxonomy = {
     "verification-or-apply-failure",
     (error) =>
       `${text(error.operation)} failed on ${text(error.path)}`,
+  ),
+  UnconfirmedPublicationError: describe(
+    "verification-or-apply-failure",
+    (error) =>
+      text(error.state) === "in-place"
+        ? `${text(error.path)} was written, but ${error.message}`
+        : `${text(error.path)} no longer holds the file Canonfig wrote: ${error.message}`,
   ),
   NpmArtifactError: declared(
     "verification-or-apply-failure",

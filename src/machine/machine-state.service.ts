@@ -14,6 +14,7 @@ import type {
   FileDigest,
   FilePermissions,
   FilePermissionSnapshot,
+  FileIdentity,
   LoadCredentialInput,
   MachinePath,
   MachineDirectoryEntry,
@@ -52,10 +53,15 @@ export class MachineState extends Context.Service<MachineState, {
   readonly ensureDirectory: (
     input: EnsureDirectoryInput,
   ) => Effect.Effect<void, MachineStateError>;
-  /** Publish protected content and new parents; preserve existing parent and sibling permissions. */
+  /**
+   * Publish protected content and new parents; preserve existing parent and
+   * sibling permissions. Returns the file it published. A failure after the
+   * file became visible is an `UnconfirmedPublicationError`, never a plain
+   * filesystem error.
+   */
   readonly atomicWrite: (
     input: AtomicWriteInput,
-  ) => Effect.Effect<void, MachineStateError>;
+  ) => Effect.Effect<FileIdentity, MachineStateError>;
   readonly readFile: (
     input: ReadFileInput,
   ) => Effect.Effect<Uint8Array, MachineStateError>;

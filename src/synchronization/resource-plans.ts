@@ -60,6 +60,7 @@ interface WriteFileActionDetail {
   previousSourceDigest?: string;
   adoptionNotice?: string;
   retainedLocalDigest?: string;
+  noReplace?: boolean;
 }
 
 interface WriteFileDraft extends ResourceActionDraft {
@@ -348,6 +349,7 @@ const writeFile = (
     && context.observed.managedSourceDigest !== undefined) {
     detail.previousSourceDigest = context.observed.managedSourceDigest;
   }
+  if (context.noReplace === true) detail.noReplace = true;
   return { kind: "write-file", detail };
 };
 

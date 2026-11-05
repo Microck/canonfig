@@ -80,6 +80,19 @@ const literalCredentialPath = (
   return undefined;
 };
 
+/**
+ * Where the first literal credential sits in one canonfig.jsonc item, as a
+ * JSON path text (`keys.mcp.docs.headers.Authorization`), or undefined. The
+ * item path names where the item lives (`mcp.<name>`, `hooks.<id>`,
+ * `settings.<harness>`), not a field, so an MCP server called `api-key` is
+ * not a credential by its name. Field names inside the value still are.
+ * Publication and `canonfig export` both refuse what this finds.
+ */
+export const literalCredentialLocation = (itemPath: string, value: ConfigValue): string | undefined => {
+  const issue = literalCredentialPath(value, [...configPathSegments(itemPath)]);
+  return issue === undefined ? undefined : redactText(jsonPathText("keys", issue));
+};
+
 /** Publication rejects credentials; it never redacts or changes accepted bytes. */
 export const publicationCredentialIssue = (
   resources: ReadonlyArray<ProfileResourceInput>,
@@ -87,13 +100,9 @@ export const publicationCredentialIssue = (
   for (const resource of resources) {
     if (resource.spec.kind !== "config") continue;
     for (const key of resource.spec.keys) {
-      // A key path names where an item lives in canonfig.jsonc (`mcp.<name>`,
-      // `hooks.<id>`, `settings.<harness>`), not a field, so an MCP server
-      // called `api-key` is not a credential by its name. Field names inside
-      // the value still are.
-      const issue = literalCredentialPath(key.value, [...configPathSegments(key.path)]);
-      if (issue !== undefined) {
-        return `config resource ${redactText(resource.id)} at ${redactText(jsonPathText("keys", issue))} contains a literal credential [REDACTED]; remove the value and use a symbolic environment reference or named shared-secret binding, store shared values with canonfig secrets set, then review and publish again`;
+      const location = literalCredentialLocation(key.path, key.value);
+      if (location !== undefined) {
+        return `config resource ${redactText(resource.id)} at ${location} contains a literal credential [REDACTED]; remove the value and use a symbolic environment reference or named shared-secret binding, store shared values with canonfig secrets set, then review and publish again`;
       }
     }
   }

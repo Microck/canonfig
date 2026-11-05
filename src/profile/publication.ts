@@ -28,6 +28,7 @@ import { sourceBytesIssue, sourceTextIssue } from "../domain/text-composition.ts
 import {
   CanonicalFolderError,
   hookScript,
+  intendedExecutable,
   itemResourceId,
   listFolderFiles,
   loadAuthoredFolder,
@@ -216,11 +217,9 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
         message: "is not run by any hook in canonfig.jsonc, so it would never reach a follower; reference it from a hook or remove it",
       });
     }
-    // Windows cannot report POSIX execute bits. An enabled hook that names a
-    // script directly expresses the author's intent to run it; preserve that
-    // intent for Unix followers. Disabled-only scripts keep their observed mode.
-    const intendedExecutable = executable || (process.platform === "win32" && enabledScripts.has(script));
-    resources.push(fileItem(hookScriptId(script, configPath), script, intendedExecutable));
+    // Windows cannot report POSIX execute bits; see `intendedExecutable`.
+    const executableIntent = intendedExecutable(script, executable, enabledScripts);
+    resources.push(fileItem(hookScriptId(script, configPath), script, executableIntent));
   }
 
   // Authored resources: the definition is a JSON item, each file it reads a

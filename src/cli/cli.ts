@@ -95,6 +95,19 @@ export type CliCommand =
   }
   | { readonly _tag: "Restore"; readonly snapshot?: string | undefined }
   | {
+    readonly _tag: "Export";
+    readonly output?: string | undefined;
+    readonly includeHarnesses: boolean;
+    readonly force: boolean;
+  }
+  | {
+    readonly _tag: "Import";
+    readonly archive: string;
+    readonly dryRun: boolean;
+    readonly replace: boolean;
+    readonly expectKey: string | undefined;
+  }
+  | {
     readonly _tag: "Harnesses";
     readonly change?: { readonly action: "include" | "exclude"; readonly harness: TargetId } | undefined;
   }
@@ -876,6 +889,35 @@ const evaluateCommand = (
       if (options.positionals.length > 1) return invalid("Usage: canonfig restore [<snapshot>]");
       return command({ _tag: "Restore", snapshot: options.positionals[0] }, format);
     }
+    if (area === "export") {
+      const options = parseOptions(arguments_.slice(1), new Set(["--output"]), new Set(["--include-harnesses", "--force"]));
+      if (options.positionals.length > 0) {
+        return invalid("Usage: canonfig export [--output <file.tar.gz>] [--include-harnesses] [--force]");
+      }
+      return command({
+        _tag: "Export",
+        output: one(options, "--output"),
+        includeHarnesses: options.switches.has("--include-harnesses"),
+        force: options.switches.has("--force"),
+      }, format);
+    }
+    if (area === "import") {
+      const options = parseOptions(arguments_.slice(1), new Set(["--expect-key"]), new Set(["--dry-run", "--replace"]));
+      const usage = "Usage: canonfig import <file.tar.gz> [--dry-run] [--replace] [--expect-key <fingerprint>]";
+      if (options.positionals.length !== 1) return invalid(usage);
+      // The fingerprint `canonfig status` shows on the Source: SHA-256 hex.
+      const expectKey = one(options, "--expect-key")?.toLowerCase();
+      if (expectKey !== undefined && !/^[0-9a-f]{64}$/u.test(expectKey)) {
+        return invalid(`--expect-key takes the Source's signing key fingerprint, 64 hex digits as 'canonfig status' shows it on the Source. ${usage}`);
+      }
+      return command({
+        _tag: "Import",
+        archive: options.positionals[0]!,
+        dryRun: options.switches.has("--dry-run"),
+        replace: options.switches.has("--replace"),
+        expectKey,
+      }, format);
+    }
     if (area === "harnesses") {
       const options = parseOptions(arguments_.slice(1), new Set(), new Set());
       const [action, harness, ...extra] = options.positionals;
@@ -990,6 +1032,8 @@ export const commandName = (value: CliCommand): string => {
     case "Synchronize": return `sync.${value.mode}`;
     case "Overlays": return value.change === undefined ? "overlay.list" : `overlay.${value.change.action}`;
     case "Restore": return "restore";
+    case "Export": return "export";
+    case "Import": return value.dryRun ? "import.dry-run" : "import";
     case "Harnesses": return value.change === undefined ? "harnesses" : `harnesses.${value.change.action}`;
     case "Recover": return "recover";
     case "Abandon": return "abandon";
@@ -1063,6 +1107,14 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
       });
     case "Overlays": return yield* follower.overlays({ change: value.change });
     case "Restore": return yield* follower.restore({ snapshot: value.snapshot });
+    case "Export":
+      return yield* follower.exportArchive({
+        output: value.output,
+        includeHarnesses: value.includeHarnesses,
+        force: value.force,
+      });
+    case "Import":
+      return yield* follower.importArchive({ archive: value.archive, dryRun: value.dryRun, replace: value.replace, expectKey: value.expectKey });
     case "Harnesses": return yield* follower.harnesses({ change: value.change });
     case "Recover": return yield* follower.recover({ noInput: value.noInput });
     case "Abandon": return yield* follower.abandon();

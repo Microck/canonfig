@@ -659,6 +659,22 @@ export const hookScript = (hook: FolderHook, path: string): string | undefined =
 };
 
 /**
+ * Whether a folder file should carry execute permission when it leaves this
+ * machine. Windows cannot report POSIX execute bits, so an enabled hook that
+ * names a script directly expresses the author's intent to run it, and that
+ * intent is kept for Unix machines. A script only disabled hooks name keeps
+ * its observed mode, as does every file on a Unix machine. Publication and
+ * export both apply this, so a script leaves a Windows Source the same way
+ * whichever path it takes.
+ */
+export const intendedExecutable = (
+  script: string,
+  observedExecutable: boolean,
+  enabledScripts: ReadonlySet<string>,
+  platform: NodeJS.Platform = process.platform,
+): boolean => observedExecutable || (platform === "win32" && enabledScripts.has(script));
+
+/**
  * A relative `run[0]` names a script in the folder's `hooks/` directory and
  * becomes absolute, so harnesses can run it from any working directory. A bare
  * command name is looked up on PATH when the hook runs.
@@ -838,18 +854,21 @@ export const readFolderConfig = (folder: string): Promise<FolderConfig | undefin
 /** Decode `canonfig.jsonc` text, for a caller that edits the file and checks the result. */
 export const decodeFolderConfig = (path: string, text: string): FolderConfig => decodeJsonc(path, text, CanonfigJsonc);
 
+/** Decode `local/local.jsonc` text, for a caller that read the bytes itself. */
+export const decodeLocalConfig = (path: string, text: string): typeof LocalJsonc.Type => decodeJsonc(path, text, LocalJsonc);
+
 /** Every regular file under one of the folder's directories, relative to it, `/`-separated, unread. */
 export const listFolderFiles = (folder: string, directory: string): Promise<ReadonlyArray<ListedFile>> =>
   listFiles(diskSource(folder), join(folder, directory));
 
 /** The authoring allowlist: the only top-level entries of `~/.canonfig/` that are published or mirrored. */
-const AUTHORING_ENTRIES = ["canonfig.jsonc", "AGENTS.md", "rules", "skills", "agents", "commands", "hooks", "files"] as const;
+export const AUTHORING_ENTRIES = ["canonfig.jsonc", "AGENTS.md", "rules", "skills", "agents", "commands", "hooks", "files"] as const;
 
 /**
  * Whether a path holds something: any file, and any directory with something
  * in it. Nothing beneath it is read or checked.
  */
-const holdsEntries = async (path: string): Promise<boolean> => {
+export const holdsEntries = async (path: string): Promise<boolean> => {
   try {
     const stat = await lstat(path);
     return !stat.isDirectory() || (await readdir(path)).length > 0;

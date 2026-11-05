@@ -83,6 +83,11 @@ export type ActionDetail =
     readonly adoptionNotice?: string | undefined;
     /** Exact unmanaged bytes retained locally; no text enters the public plan. */
     readonly retainedLocalDigest?: string | undefined;
+    /**
+     * Publish without replacing: fail when a file appeared at `target` after
+     * planning instead of overwriting it. Set only by `canonfig import`.
+     */
+    readonly noReplace?: boolean | undefined;
   }
   | {
     readonly kind: "write-config";
@@ -177,7 +182,18 @@ export type SynchronizationOutcome =
   | { readonly outcome: "Converged"; readonly run: RunId; readonly verified: ReadonlyArray<ResourceId> }
   | { readonly outcome: "HumanActionRequired"; readonly run: RunId; readonly actions: ReadonlyArray<HumanAction> }
   | { readonly outcome: "FollowerDrift"; readonly run: RunId; readonly conflicts: ReadonlyArray<DriftConflict> }
-  | { readonly outcome: "Failed"; readonly run: RunId; readonly reason: string; readonly rollbackIncomplete?: boolean; readonly failedRollbackResources?: ReadonlyArray<ResourceId> }
+  | {
+    readonly outcome: "Failed";
+    readonly run: RunId;
+    readonly reason: string;
+    readonly rollbackIncomplete?: boolean;
+    readonly failedRollbackResources?: ReadonlyArray<ResourceId>;
+    /**
+     * A no-replace write found this target taken by a file that appeared
+     * after planning; that write published nothing and left the file alone.
+     */
+    readonly occupiedTarget?: string;
+  }
   | { readonly outcome: "Interrupted"; readonly run: RunId; readonly completedActions: ReadonlyArray<ActionId> };
 
 export interface DriftConflict {
@@ -342,6 +358,7 @@ export const ActionDetailSchema = Schema.Union([
     previousSourceDigest: Schema.optional(ContentDigest),
     adoptionNotice: Schema.optional(Schema.NonEmptyString),
     retainedLocalDigest: Schema.optional(ContentDigest),
+    noReplace: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
     kind: Schema.Literal("write-config"),
@@ -479,6 +496,7 @@ export const SynchronizationOutcomeSchema = Schema.Union([
     reason: Schema.NonEmptyString,
     rollbackIncomplete: Schema.optional(Schema.Boolean),
     failedRollbackResources: Schema.optional(Schema.Array(ResourceIdSchema)),
+    occupiedTarget: Schema.optional(Schema.NonEmptyString),
   }),
   Schema.Struct({
     outcome: Schema.Literal("Interrupted"),
@@ -691,11 +709,12 @@ const DesiredFileSchema = Schema.Struct({
 
 /**
  * The stored form of a revision this machine built: a local projection
- * (`folder`, `snapshot`) or a follower run built from a Source revision
- * (`revision`), which also mirrors items and installs tools.
+ * (`folder`, `snapshot`), an import of an export archive (`archive`), or a
+ * follower run built from a Source revision (`revision`), which also mirrors
+ * items and installs tools.
  */
 export const PlanningLocalRevisionSchema = Schema.Struct({
-  origin: Schema.Literals(["folder", "snapshot", "revision"]),
+  origin: Schema.Literals(["folder", "snapshot", "archive", "revision"]),
   id: ProfileRevisionId,
   originDigest: ContentDigest,
   resources: Schema.Array(PublishedResourceSchema),

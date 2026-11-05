@@ -58,7 +58,26 @@ export type FilePermissionPolicy =
 export type AtomicWriteInput = {
   readonly path: MachinePath;
   readonly content: FileContent;
+  /**
+   * Publish only into the existing directory reached from this one through
+   * real directories, never a link (see `anchored-directory.ts`). Missing
+   * parents are an error instead of being created.
+   */
+  readonly anchor?: MachinePath | undefined;
+  /** Fail with EEXIST instead of replacing a file already at `path`; publication is a hard link. */
+  readonly noReplace?: boolean | undefined;
 } & FilePermissionPolicy;
+
+/**
+ * Which filesystem object a path names (lstat `dev` and `ino`; the volume
+ * serial and file index on Windows). `atomicWrite` returns the file it
+ * published, so a caller can later tell its own file from one another
+ * process put at the same name.
+ */
+export interface FileIdentity {
+  readonly dev: bigint;
+  readonly ino: bigint;
+}
 
 /**
  * The longest path, terminator included, that Win32 file calls and native
@@ -74,10 +93,18 @@ export interface ReadFileInput {
   readonly maximumBytes: number;
   /** Read only this leading byte count; maximumBytes still bounds the whole file. */
   readonly prefixBytes?: number;
+  /** Read only a file reached from this directory through real directories, never a link. */
+  readonly anchor?: MachinePath | undefined;
 }
 
 export interface RemoveFileInput {
   readonly path: MachinePath;
+  /**
+   * Remove only while `path` still names this file; leave whatever else is
+   * there, or nothing, alone. Rollback uses it so it never deletes a file
+   * another process created or swapped in at the name.
+   */
+  readonly identity?: FileIdentity | undefined;
 }
 
 export interface RemoveEmptyDirectoryInput {
