@@ -45,6 +45,8 @@ import { BlobTransferProgress } from "../enrollment/blob-transfer-progress.ts";
 import { humanTransferProgress } from "./transfer-progress.ts";
 import { runGui } from "../gui/server.ts";
 import type { GuiQueries } from "../gui/queries.ts";
+import type { MachineState } from "../machine/machine-state.service.ts";
+import type { StateRepository } from "../state/state-repository.service.ts";
 
 export type CliCommand =
   | { readonly _tag: "Ui"; readonly port: number; readonly open: boolean }
@@ -1183,7 +1185,7 @@ export const runCli = Effect.fn("runCli")(function*(
 ): Effect.fn.Return<
   CliExitCodeValue,
   never,
-  SourceCommands | FollowerCommands | SetupCommands | GuiQueries
+  SourceCommands | FollowerCommands | SetupCommands | GuiQueries | MachineState | StateRepository
 > {
   const outcome = evaluateCli(arguments_);
   if (outcome._tag === "Help" || outcome._tag === "Version") {
@@ -1208,7 +1210,7 @@ export const runCli = Effect.fn("runCli")(function*(
       || (outcome.command._tag === "Synchronize" && outcome.command.scheduled !== true));
   // Automatic shared-secret sync is part of the apply result. Complete it
   // before rendering so stdout never promises success before a later failure.
-  const operation: Effect.Effect<CliPayload, CliCommandFailure, SourceCommands | FollowerCommands | SetupCommands | GuiQueries> =
+  const operation: Effect.Effect<CliPayload, CliCommandFailure, SourceCommands | FollowerCommands | SetupCommands | GuiQueries | MachineState | StateRepository> =
     outcome.command._tag === "Ui" ? runGui(outcome.command, io) : executeCommand(outcome.command);
   const execution = operation.pipe(
     Effect.tap(() => outcome.command._tag === "Synchronize" && outcome.command.mode === "apply"
