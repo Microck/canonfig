@@ -51,7 +51,9 @@ jobs:
 
       # CLI contracts do not use the website workspace; repository validation installs it.
       - name: Install locked dependencies
-        run: npm ci --workspaces=false
+        run: |
+          npm ci --workspaces=false
+          npm ci --prefix ui
 
       # The E2E test packs the CLI itself and its prepack builds dist and
       # build-receipt.json in the checkout, so the workflow builds exactly once.
@@ -120,13 +122,18 @@ jobs:
           cache: npm
 
       - name: Install locked dependencies
-        run: npm ci
+        run: |
+          npm ci
+          npm ci --prefix ui
 
       - name: Typecheck
         run: npm run typecheck
 
       - name: Lint
         run: npm run lint
+
+      - name: Build browser assets for integration tests
+        run: npm run build:cli
 
       - name: Test
         run: npm test

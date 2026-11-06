@@ -1,33 +1,40 @@
 # Canonfig UI
 
-The browser frontend lives in `ui/`. Workspace screens are in `src/workspace/`, shared components and demo data in `src/shared/`, and first-run setup in `src/onboarding/`. See [the architecture decision](../docs/adr/0001-local-browser-gui.md).
+The browser frontend lives in `ui/`. Production and demo share the screens in `src/workspace/`, including the frame, sidebar and mobile navigation. Production enters through `src/live-app.tsx` and `LiveWorkspaceProvider`; the demo uses `SimulatedWorkspaceProvider`. See [the architecture decision](../docs/adr/0001-local-browser-gui.md).
 
-Machine operations still use simulated data in every build. The Demo panel selects a Source, Follower or new machine; it does not connect to a real machine. CLI serving and backend integration are not implemented yet, so this frontend is not included in the published CLI package.
+The packaged `canonfig ui` reads the real machine through the same services as the CLI. Overview, Profile, machines, onboarding, Follower workflows and administration use the shared screens with live reads and mutations. The [Phase 2d inventory](../docs/plans/canonfig-ui.md#phase-2d-one-screen-tree-two-data-sources) records the supported operations and verification evidence. Production never mounts the simulated provider or simulates success.
+
+Run `canonfig ui` to open the packaged interface, or `canonfig ui --port 5317 --no-open` to choose a loopback port and open the printed single-use URL yourself. Keep the terminal running; Ctrl-C or SIGTERM stops the server. Bare `canonfig` still prints help.
 
 Run from the repository root:
 
 ```bash
+npm ci
 npm --prefix ui ci
 npm run ui:dev
 ```
 
-Open `http://localhost:5317/source/overview`. The independent frontend lockfile stays in `ui/package-lock.json`. Root scripts `ui:typecheck`, `ui:lint` and `ui:build` delegate to this package. Production CLI packaging remains separate.
+Open `http://localhost:5317/source/overview` for the development demo. The independent frontend lockfile stays in `ui/package-lock.json`. Root scripts `ui:typecheck`, `ui:lint` and `ui:build` delegate to this package.
 
 ## Builds
 
 | Command | Output | Use |
 | --- | --- | --- |
-| `npm --prefix ui run build` | `ui/dist/` | The app `canonfig ui` will serve on loopback |
+| `npm --prefix ui run build` | `ui/dist/` | Production frontend; CLI packaging places the assets in root `dist/ui/` |
 | `npm --prefix ui run build:demo` | `ui/dist-demo/` | The public demo at https://canonfig.micr.dev/, published to GitHub Pages with the docs under `/docs/` |
 
-`DEMO` in `src/shared/data.ts` is true for the demo build (Vite mode `demo`) and the dev server, and false for the production build, which drops the code it gates. It gates only demo chrome:
+Vite's build-selected `@app` entrypoint loads `src/live-app.tsx` for production and `src/App.tsx` for development or mode `demo`. `src/gui-client.ts` sends same-origin requests with the session cookie and decodes responses using direct imports from `src/gui/contract.ts`. Area contracts are shared, not generated copies. Mutations use explicit typed endpoints, and long operations poll real results and journals. Errors preserve the CLI category, exit code and message. Reload reads fresh machine state.
+
+The production build checks its module graph and fails if it imports `src/shared/data.ts`, the simulated providers or the demo application. `src/workspace/store.tsx` is the shared context; `workspace-types.ts` defines the typed slices and capabilities. Live resources expose loading and decoded errors to the existing skeletons and error notices.
+
+`DEMO` in `src/shared/metadata.ts` is true for the demo build and dev server. Within the demo application it gates:
 
 - the Demo panel (`src/shared/demo-switcher.tsx`): an "Interactive demo with made-up data" note, the role links, and links to the docs, the install tutorial and the GitHub repository. It sits in the desktop sidebar, at the bottom-left of setup and not-found pages from 768px, and behind a Demo button in the mobile top bar and setup header;
 - copy that describes the demo itself, such as "Saved in this demo workspace" and "This demo discards it";
-- the simulated first-visit page load (`SIMULATED_LOAD_MS`), which imitates the real fetch; production shows each page at once;
+- the simulated first-visit page load (`SIMULATED_LOAD_MS`), which imitates a fetch;
 - the `?star=1` preview.
 
-Both builds still run on the simulated data in `src/shared/data.ts` and `src/workspace/store.tsx` until the loopback backend lands; the production build has no real data path yet. Simulated actions such as Check for updates keep their short waits in both builds.
+Demo screens use simulated data in `src/shared/data.ts` and `src/workspace/simulated-store.tsx`, including short waits for actions such as Check for updates. They are not a second backend for production. See [the screen/action inventory](../docs/plans/canonfig-ui.md) for the CLI mappings and hidden operations.
 
 The demo build also replaces the page title and adds a description, canonical URL, and Open Graph and Twitter card tags to `index.html`, and writes `404.html` as a copy of it, so GitHub Pages boots the app on deep links such as `/follower/sync`. `vite.config.ts` holds this in its `demoSite` plugin. The theme colour and viewport tags sit in `index.html` itself, so both builds have them. The site assembly (`scripts/build-pages.mjs`) adds the docs and `robots.txt`.
 
@@ -44,7 +51,9 @@ Keep the wordmark and tagline inside the central 1200x600: X and Slack crop the 
 
 ## Browser routes
 
-The URL selects the role, screen and view tab. Links can be opened directly or refreshed, and browser Back/Forward follows navigation. `/` opens `/source/overview`; unknown or role-invalid paths show a not-found page.
+Production opens the actual machine's `/source/overview` or `/follower/overview`. An unconfigured machine opens `/setup`, where Source setup plans and reviews real import offers or Follower enrollment accepts an invitation. The sidebar uses the shared role-specific navigation groups. Unsupported and wrong-role paths show an unavailable page rather than switching data sources.
+
+The table below lists demo routes. In the demo, the URL selects the role, screen and view tab; links support direct loads, refresh, and browser Back/Forward. `/` opens `/source/overview`; unknown or role-invalid paths show a not-found page.
 
 | Screen | Source | Follower |
 | --- | --- | --- |
@@ -72,13 +81,19 @@ The URL selects the role, screen and view tab. Links can be opened directly or r
 
 First-run setup is `/setup`. Retired role and variant query parameters are not routing aliases.
 
-## Guidance and presentation
+Live routes use the shared `src/workspace/nav.ts` and `routes.ts`. Unlike the demo table, Source backups are not offered, while installers and machine setup are available for both configured roles. Map customization is browser-local and does not rename an enrollment identity. Machine inventory reports enrollment records, not remote health, schedules or synchronization progress.
+
+Self-update status and checks are live. Enable, disable and apply remain terminal operations after stopping the GUI; the GUI does not bypass its command lease. Invitation cancellation, selective scan writes, Source service restart and protected adoption-review reads/deletion are hidden because the CLI has no matching operation. Unenrollment leaves applied files, schedule and tunnel configuration intact.
+
+The follower's stored Source identity does not include a machine name. Its map card uses "Source" as the title and shows the enrollment endpoint below it. Long revision identifiers, fingerprints and paths wrap inside setting rows and detail panels instead of widening the page. Status pages show named evidence, not raw JSON responses; exact configuration editors still show the authored file contents.
+
+## Demo guidance and presentation
 
 Guidance lives in `src/workspace/guide.tsx`, with the spotlight component in `src/tour/`. It has three parts, remembered per role in localStorage: a tour offer on the first visit that opens the tour picker (a four-stop quick tour, then one chapter per area), a Get started list on Overview, and one tip on the first visit to a complex page. Take the tour, in the sidebar or the command palette, opens a picker with that short tour and one chapter of three to five stops per area (`src/workspace/tour-steps.tsx`). Selecting a chapter previews its steps and the pages it visits, numbered in order on a copy of the sidebar, so each chapter's `pages` list must match where its steps go. Finished chapters get a tick, can run again, and end with a button to the next chapter. Append `?tour=1` to start the short tour; reopen a page tip from its "?" button.
 
 After 15 minutes with the workspace on screen, counted across visits and only while its tab is visible and focused, a toast asks for a GitHub star (`StarPrompt` in `src/workspace/guide.tsx`). It waits while the tour, its offer, a page tip or a dialog is open. Any way of closing it stops it for good. In the demo, append `?star=1` to show it straight away.
 
-In the demo, workspace pages pretend to fetch their data from the local Canonfig service, as the real GUI will. The first visit to each page (each Profile and Machines tab counts as its own) in a page load waits `SIMULATED_LOAD_MS` (700ms, in `src/workspace/store.tsx`) and shows a loading skeleton over the page body and the detail panel's body and footer; page headers, the sidebar and dialogs never load. Sync's Check for updates and the Follower's Update secrets show it again while they run, in both builds. Pages a tour opens, or that are open while the tour or its picker is, don't load, and a page's first-visit tip waits until its content is revealed. Skeletons come from [skullet](https://github.com/lochie/skullet) (MIT), pinned at 0.0.3: `Body` in `src/workspace/kit.tsx` measures them from the real content, so nothing moves on reveal, and `App.tsx` themes them to the palette. The highlight sweep and fades stop under reduced motion. Mark decorative art with `skullet-ignore` so it draws no placeholder.
+In the demo, workspace pages pretend to fetch their data from the local Canonfig service. The first visit to each page (each Profile and Machines tab counts as its own) in a page load waits `SIMULATED_LOAD_MS` (700ms, in `src/workspace/navigation-state.ts`) and shows a loading skeleton over the page body and the detail panel's body and footer; page headers, the sidebar and dialogs never load. The demo's Check for updates and Update secrets actions show it again while they run. Pages a tour opens, or that are open while the tour or its picker is, don't load, and a page's first-visit tip waits until its content is revealed. Skeletons come from [skullet](https://github.com/lochie/skullet) (MIT), pinned at 0.0.3: `Body` in `src/workspace/kit.tsx` measures them from the real content, so nothing moves on reveal, and each application themes them to the palette. The highlight sweep and fades stop under reduced motion. Mark decorative art with `skullet-ignore` so it draws no placeholder.
 
 The machine map in `src/shared/machine-map/` also runs alone at `/map-demo.html?role=source|follower`, with `&publishing=1`, `&syncing=<follower ids>` and `&customize=<id>`. This separate component demo and `/break.html` are development-only entrypoints served by `vite`, not application routes; neither build includes them.
 
@@ -98,12 +113,16 @@ Below 768px, a navigation sheet replaces the sidebar. It traps focus and closes 
 
 Profile settings edits include unfinished key rows: adding a blank key enables Save and Discard. Save reports empty or duplicate key names without changing the saved item, focuses the first invalid field, and associates each key error with its input. Discard restores the saved fields and key rows.
 
-Machine-owned content follows ADR 0003 section 11. Profile → Defaults edits `local.allow` (now including `instructions`, which is `local/AGENTS.md`) and `local.appendLocal` (instructions files, skills folders). Profile items include authored `resources.<id>` under "Files outside harnesses": a file or directory with `replace` or `append-local`, or a config merge of keys; the editor refuses a target outside `~/`, with a `.` or `..` segment, overlapping another resource, or overlapping `~/.canonfig`, `~/.agents` or any adapter's paths (`RESERVED_PATHS` in `src/shared/data.ts`, taken from the adapters' default Linux and macOS layouts), quoting Canonfig's own messages. On a Follower, Local settings lists Local Overlays and unsettled name collisions, with set ("Let mine replace it") and remove; an unsettled collision disables Apply on Sync, as the engine stops the run. The local item editor offers the same overlay when a name or settings key collides. Local settings also lists key claims (`settings/<harness>#<key>` entries of the same `overlays` list) under "Settings keys you set yourself", with add and remove; adding refuses a harness without a settings file, a key the harness keeps for itself, a key inside a value Canonfig writes whole, and a key the machine's local settings also set (`SETTINGS_FILES` in `src/shared/data.ts`, held equal to the adapters by a test), quoting Canonfig's messages. Local settings also lists what append-local keeps of the machine's own text and skills. Sync's first adoptions of an append-local file get a review step, the GUI's `sync --plan --review-local`: on request it shows the exact text Canonfig adds, the text it keeps and the whole file, and can delete the private review.
+Machine-owned content follows ADR 0003 section 11. Profile → Defaults edits `local.allow` (now including `instructions`, which is `local/AGENTS.md`) and `local.appendLocal` (instructions files, skills folders). Profile items include authored `resources.<id>` under "Files outside harnesses": a file or directory with `replace` or `append-local`, or a config merge of keys; the editor refuses a target outside `~/`, with a `.` or `..` segment, overlapping another resource, or overlapping `~/.canonfig`, `~/.agents` or any adapter's paths (`RESERVED_PATHS` in `src/shared/metadata.ts`, taken from the adapters' default Linux and macOS layouts), quoting Canonfig's own messages. On a Follower, Local settings lists Local Overlays and unsettled name collisions, with set ("Let mine replace it") and remove; an unsettled collision disables Apply on Sync, as the engine stops the run. The local item editor offers the same overlay when a name or settings key collides. Local settings also lists key claims (`settings/<harness>#<key>` entries of the same `overlays` list) under "Settings keys you set yourself", with add and remove; adding refuses a harness without a settings file, a key the harness keeps for itself, a key inside a value Canonfig writes whole, and a key the machine's local settings also set (`SETTINGS_FILES` in `src/shared/metadata.ts`, held equal to the adapters by a test), quoting Canonfig's messages. Local settings also lists what append-local keeps of the machine's own text and skills. Sync's first adoptions of an append-local file get a review step, the GUI's `sync --plan --review-local`: on request it shows the exact text Canonfig adds, the text it keeps and the whole file, and can delete the private review.
 A skill's detail panel on the Source has an Upstream section for `canonfig skills` (`src/workspace/skills.tsx`). A tracked skill shows its repository, the branch, tag or commit it follows and the commit its copy came from. Check for updates lists the new, changed and removed files before anything changes; Update replaces the skill in the folder with that commit, marks it modified for the next revision and is held back while the panel has unsaved edits. A copy edited since Canonfig installed it shows why it can't update, and Update checks again before it replaces anything, so an edit saved after the last check still blocks it. An untracked skill offers Track upstream…, which records the source only when every file matches. The list's Summary shows the ref a tracked skill follows, or the last check's state when it found something. The demo fetches only `https://github.com/example/agent-skills.git`, from `upstreamSkills` in `src/shared/data.ts`.
 
 While a skill update runs, the item editor is locked, and the update compares the folder's copy once more right before replacing it. An editor whose draft is untouched follows its saved item when that changes, so a panel opened mid-update shows the updated skill and stays clean. Renaming a tracked skill keeps its source record and last check under the new name; removing it drops them.
 
-Settings, Canonfig version shows the running version and `canonfig self-update` for both roles. Updates stay off until the person names npm's `npm-cli.js` and confirms nothing else of Canonfig's runs; an interrupted sync refuses that, as the CLI does. Check asks for the newest patch in the current major.minor line, and turning updates off drops the answer of a check still running; a running source service, sync or other Canonfig command refuses turning updates off. Installing a patch is CLI-only for now: when one is available, the page shows `canonfig self-update apply --apply` to run in a terminal, and the machine menu names the patch. Why the GUI does not apply updates itself is in [ADR 0001](../docs/adr/0001-local-browser-gui.md#self-update-from-the-gui).
+Settings, Canonfig version shows the running version for both roles. Turn on updates by entering the absolute path to npm's `npm-cli.js` and confirming that every other Canonfig process is stopped and its schedules are paused. Windows paths are supported. Only a user-private npm installation under your home is supported, and an interrupted sync blocks opt-in.
+
+Check for updates finds the newest patch in the current major.minor line. Install asks for confirmation, then shows actual updater phases while polling the operation. Another Canonfig command can defer installation; the page keeps the CLI detail and exit code 0 visible. Errors preserve the CLI message and exit code. Turning updates off also refuses while another command holds an update lease.
+
+After installation, the GUI stops and the page shows the installed version and a copyable `canonfig ui` command. Run it again for a new session. The old page makes no further server requests, and Canonfig does not restart services or schedules. The public demo simulates these actions without installing packages. See [ADR 0001](../docs/adr/0001-local-browser-gui.md#self-update-from-the-gui).
 
 Dialogs opened from state rather than a trigger (`useDialogReturnFocus` in `src/workspace/kit.tsx`, including every `ConfirmDialog`) return focus to the button that opened them on Cancel or Escape, and to the page heading or the next control when that button is gone or disabled.
 

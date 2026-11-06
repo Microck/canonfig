@@ -594,6 +594,16 @@ afterAll(() => {
 });
 
 describe("packed Canonfig executable", () => {
+  it("ships the live browser even when npm pack inherits the test environment", () => {
+    const assets = resolve(packageRoot, "dist", "ui", "assets");
+    const browserCode = readdirSync(assets)
+      .filter((name) => name.endsWith(".js"))
+      .map((name) => readFileSync(resolve(assets, name), "utf8"))
+      .join("\n");
+    expect(browserCode).toContain("/api/session");
+    expect(browserCode).not.toContain("https://github.com/example/agent-skills.git");
+  });
+
   it("runs shipped help and version entrypoints", () => {
     const help = invoke(source, ["--help"]);
     const version = invoke(bare, ["--version"]);

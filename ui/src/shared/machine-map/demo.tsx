@@ -1,7 +1,8 @@
 // The machine map alone, full size, with simulated data for screenshots and review.
 import { useState } from "react";
 import { toast } from "sonner";
-import { MachineMap } from "./machine-map";
+import { MachineMap } from "./map-view";
+import { machine, followers, revisions, followerSelf } from "../data";
 import type { MapRole } from "./model";
 
 // By default the laptop is mid-run so every edge style shows at once.
@@ -28,6 +29,10 @@ export function MachineMapDemo({
       </header>
       <MachineMap
         role={role}
+        source={machine}
+        followers={followers}
+        latestRevision={revisions[0].sequence}
+        selfId={followers.find((follower) => follower.name === followerSelf.name)?.id}
         syncing={syncing}
         publishing={publishing}
         customizeId={customizeId}

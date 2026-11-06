@@ -26,15 +26,15 @@ import {
   RESERVED_PATHS,
   SECRETS_GROUP,
   itemPath,
-  machine,
-  profile,
   type AppendLocalCategory,
   type HarnessId,
   type ItemCategory,
   type LocalCategory,
   type Resource,
-} from "@/shared/data";
-import { SCANNED_TOOLS, toolFromScan, useSharedState, useWorkspace } from "./store";
+} from "@/shared/metadata";
+import { useSharedState, useWorkspace } from "./store";
+import { authoredItems, draftFiles, type ExactDraft } from "./profile-authoring";
+import { ExactItemFields, ProfileActionNotice } from "./profile-authoring-controls";
 import { ScheduleFields, WEEK, scheduleError, scheduleSummary, type Schedule } from "./schedule";
 import { HarnessTable } from "./harnesses";
 import { SkillSummary, SkillUpstream, useMoveSkillTracking, useSkillLocked } from "./skills";
@@ -175,7 +175,7 @@ const NAME_PLACEHOLDER: Record<ItemCategory, string> = {
 };
 
 /** The name part of an item id: `code-review` for `skills/code-review`, empty for `instructions`. */
-const nameOf = (r: Resource) => (r.category === "instructions" ? "" : r.id.slice(r.category.length + 1));
+const nameOf = (r: Resource) => (r.category === "instructions" ? "" : r.id.startsWith("files/") ? r.id.slice(6) : r.id.slice(r.category.length + 1));
 
 function blankItem(category: ItemCategory): Resource {
   // Fields with a fixed set of values start on the first one, so the draft is valid as far as they go.
@@ -307,7 +307,9 @@ const COLS_MIN = 16 + 150 + 180 + 140 + 140 + 4 * 12 + 20;
 
 /** A checkbox row per Follower Group; the whole row toggles. */
 function GroupPicker({ idPrefix, value, onChange }: { idPrefix: string; value: string[]; onChange: (groups: string[]) => void }) {
-  const [groups] = useGroups();
+  const ws = useWorkspace();
+  const [demoGroups] = useGroups();
+  const groups = ws.profileLive ? ws.profile.groups : demoGroups;
   return (
     <div className="grid gap-0.5">
       {groups.map((g) => {
@@ -339,7 +341,7 @@ function GroupPicker({ idPrefix, value, onChange }: { idPrefix: string; value: s
  */
 interface ProfileDefaults {
   name: string;
-  schedule: Schedule;
+  schedule: Schedule | null;
   localAllow: LocalCategory[];
   appendLocal: AppendLocalCategory[];
 }
@@ -353,9 +355,9 @@ function useProfileDefaults(which: "saved" | "published" = "saved") {
   const ws = useWorkspace();
   return useSharedState<ProfileDefaults>(which === "saved" ? "profile-defaults" : "profile-defaults-published", {
     name: ws.profileName,
-    schedule: { cadence: "daily", days: [], time: "09:00" },
-    localAllow: profile.localAllow,
-    appendLocal: profile.appendLocal,
+    schedule: ws.profileSchedule,
+    localAllow: ws.profile.localAllow,
+    appendLocal: ws.profile.appendLocal,
   });
 }
 
@@ -373,7 +375,8 @@ function sameDefaults(a: ProfileDefaults, b: ProfileDefaults) {
  * canonfig.jsonc `scheduleDefault`: `daily@HH:mm` or `weekly:Mon,Thu@HH:mm` (src/projection/folder.ts), always in
  * each follower's local time, since every scheduler backend can render only that.
  */
-function scheduleDefaultOf(s: Schedule) {
+function scheduleDefaultOf(s: Schedule | null) {
+  if (!s) return null;
   if (s.cadence === "daily") return `daily@${s.time}`;
   const days = s.cadence === "weekdays" ? WEEK.slice(0, 5) : WEEK.filter((d) => s.days.includes(d));
   return `weekly:${days.join(",")}@${s.time}`;
@@ -381,7 +384,8 @@ function scheduleDefaultOf(s: Schedule) {
 
 export function ProfileView() {
   const ws = useWorkspace();
-  const [groups] = useGroups();
+  const [demoGroups] = useGroups();
+  const groups = ws.profileLive ? ws.profile.groups : demoGroups;
   const [defaults] = useProfileDefaults();
   const tab = ws.profileTab;
   const selected = ws.focus;
@@ -391,15 +395,19 @@ export function ProfileView() {
   const proposed = ws.proposed.filter((id) => ws.resources.some((r) => r.id === id));
   const grouped = useMemo(() => CATEGORIES.map((c) => ({ category: c, items: ws.resources.filter((r) => r.category === c) })).filter((g) => g.items.length), [ws.resources]);
   const current = ws.resources.find((r) => r.id === selected);
+  // Keep an open editor mounted even if Reload discovers that its item was removed on disk.
+  const [lastCurrent, setLastCurrent] = useState(current);
+  if (current && current !== lastCurrent) setLastCurrent(current);
+  const editing = current ?? (lastCurrent?.id === selected ? lastCurrent : undefined);
 
   const close = () => ws.go("profile");
   const startCreating = () => ws.go("profile", "new");
 
   const detail =
-    tab === "items" && (creating || current) ? (
+    tab === "items" && (creating || editing) ? (
       <ItemEditor
-        key={creating ? "new" : current!.id}
-        resource={creating ? blankItem(ws.resources.some((r) => r.id === "instructions") ? "rules" : "instructions") : current!}
+        key={creating ? "new" : editing!.id}
+        resource={creating ? blankItem(ws.resources.some((r) => r.id === "instructions") ? "rules" : "instructions") : editing!}
         isNew={creating}
         onClose={close}
         onSaved={(id) => ws.go("profile", id, { replace: creating })}
@@ -409,40 +417,42 @@ export function ProfileView() {
   return (
     <>
       <PageHeader
-        crumbs={["Profile", defaults.name]}
+        crumbs={(ws.profileLive ? ws.profileName : defaults.name) ? ["Profile", ws.profileLive ? ws.profileName : defaults.name] : ["Profile"]}
         actions={
           <>
             {/* `canonfig export`: the whole folder, not just the profile items listed here, signed with the Source key. */}
             <Button variant="outline" size="sm" onClick={ws.exportArchive} title="Download ~/.canonfig/ as a .tar.gz with a checksum manifest signed by this Source">
               Export
             </Button>
-            <Button variant="outline" size="sm" onClick={() => setDiscoverOpen(true)} data-tour="profile-add">
+            <Button variant="outline" size="sm" disabled={!ws.capabilities.profileWrite || ws.profileLive?.busy} onClick={() => { setDiscoverOpen(true); if (ws.profileLive) void ws.profileLive.scan(); }} data-tour="profile-add">
               Discover tools
             </Button>
-            <Button variant={ws.pending.length === 0 && !detail && tab === "items" ? "primary" : "outline"} size="sm" onClick={startCreating} data-tour="profile-add">
+            <Button variant={ws.pending.length === 0 && !detail && tab === "items" ? "primary" : "outline"} size="sm" disabled={!ws.capabilities.profileWrite} onClick={startCreating} data-tour="profile-add">
               <Plus />
               Add item
             </Button>
-            {ws.pending.length > 0 && (
+            {ws.capabilities.profileWrite && (ws.profileLive || ws.pending.length > 0 && ws.nextSequence !== undefined) && (
               <Button size="sm" data-tour="publish" variant={detail || tab === "defaults" ? "outline" : "primary"} onClick={() => ws.setPublishOpen(true)}>
-                Publish revision <AnimatedNumber value={ws.nextSequence} />
+                Publish revision {ws.nextSequence !== undefined && <AnimatedNumber value={ws.nextSequence} />}
               </Button>
             )}
           </>
         }
       />
+      {!detail && !discoverOpen && !ws.publishOpen && <ProfileActionNotice />}
+      {ws.profileLive?.archive && <div className="border-b border-border px-4 py-3"><SectionLabel>Export verification</SectionLabel><Prop label="Archive">{ws.profileLive.archive.filename}</Prop><Prop label="Archive fingerprint"><Mono>{ws.profileLive.archive.sha256}</Mono></Prop><Prop label="Manifest fingerprint"><Mono>{ws.profileLive.archive.manifestSha256}</Mono></Prop><Prop label="Signer"><Mono>{ws.profileLive.archive.signer}</Mono></Prop></div>}
       <Toolbar
         right={
           <span data-tour="profile-folder" className="flex min-w-0 items-center gap-1.5 text-sm whitespace-nowrap text-faint">
             <span className="hidden sm:inline">Folder</span>
             <button
               type="button"
-              title={`Copy path ${machine.folder}`}
-              aria-label={`Copy folder path ${machine.folder}`}
+              title={`Copy path ${ws.sourceMachine.folder}`}
+              aria-label={`Copy folder path ${ws.sourceMachine.folder}`}
               className="truncate rounded font-mono text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
-              onClick={() => copy(machine.folder, "Folder path copied")}
+              onClick={() => copy(ws.sourceMachine.folder, "Folder path copied")}
             >
-              {machine.folder}
+              {ws.sourceMachine.folder}
             </button>
             <Hint label="the Canonfig folder">
               The <Term term="Canonical Folder">Canonfig folder</Term> is the source of truth.{"\n"}Edits here are written into its files, and canonfig.jsonc keeps your comments.
@@ -488,7 +498,7 @@ export function ProfileView() {
               title="The folder is empty"
               body="Add the instructions, rules, skills, MCP servers, settings and tools every machine should have, or discover tools your folder runs."
               action={
-                <Button variant="outline" size="sm" onClick={startCreating}>
+                <Button variant="outline" size="sm" disabled={!ws.capabilities.profileWrite} onClick={startCreating}>
                   Add item
                 </Button>
               }
@@ -550,7 +560,7 @@ export function ProfileView() {
       )}
       {tab === "harnesses" && <HarnessesTab />}
       {tab === "groups" && <GroupsTab />}
-      {tab === "defaults" && <DefaultsTab />}
+      {tab === "defaults" && (ws.capabilities.profileWrite ? <DefaultsTab key={ws.profileLive?.snapshot?.items.find((item) => item.path === "canonfig.jsonc")?.digest} /> : <Body><EmptyState title="Defaults form is not available yet" body="Use the Canonfig CLI to edit defaults." /></Body>)}
       <DiscoverDialog open={discoverOpen} onOpenChange={setDiscoverOpen} />
     </>
   );
@@ -601,12 +611,19 @@ function resourcePathError(field: "Target" | "Source", value: string, name: stri
 function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource; isNew: boolean; onClose: () => void; onSaved: (id: string) => void }) {
   const ws = useWorkspace();
   const [draft, setDraft] = useState<Resource>(resource);
+  const [snapshot, setSnapshot] = useState(ws.profileLive?.snapshot);
+  const [saved, setSaved] = useState(false);
+  const latestSnapshot = ws.profileLive?.snapshot;
+  const diskItem = useMemo(() => latestSnapshot ? authoredItems(latestSnapshot).find((entry) => entry.resource.id === resource.id) : undefined, [latestSnapshot, resource.id]);
+  const authored = useMemo(() => snapshot ? authoredItems(snapshot).find((entry) => entry.resource.id === resource.id) : undefined, [snapshot, resource.id]);
+  const [exact, setExact] = useState<ExactDraft | undefined>(authored?.exact);
   const [name, setName] = useState(nameOf(resource));
   const [confirmRemove, setConfirmRemove] = useState(false);
   const returnFocus = useRef<HTMLElement | null>(null);
   const [tried, setTried] = useState(false);
   const setDetail = (k: string, v: string) => setDraft((d) => ({ ...d, detail: { ...d.detail, [k]: v } }));
   const category = draft.category;
+  const exactContent = exact && (exact.json !== undefined || category !== "hooks" || authored?.itemPath);
   const isSettings = category === "settings";
   // Settings and config resources are both key maps written into another file; they share the key rows.
   const hasKeys = isSettings || (category === "resources" && isConfig(draft.detail));
@@ -626,21 +643,33 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
   const content = (r: Resource) => JSON.stringify({ ...r, change: undefined });
   const matches = (r: Resource) =>
     content(draft) === content(r) && name === nameOf(r) && JSON.stringify(rows.map(({ name: k, value }) => [k, value])) === JSON.stringify(Object.entries(r.keys ?? {}));
-  const dirty = !matches(resource);
-  // The saved item can change under an open editor: a skill update lands, or a panel reopened mid-update shows the
-  // item from before it. An untouched draft follows the saved item, so the panel shows it and stays clean; a draft
-  // with edits is left alone. Adjusted during render, so the stale draft never paints.
   const [shown, setShown] = useState(resource);
-  if (shown !== resource) {
+  const dirty = !matches(shown) || JSON.stringify(exact) !== JSON.stringify(authored?.exact) || (!!snapshot && !isNew && !authored);
+  const diskChanged = useMemo(() => !!snapshot && !!latestSnapshot && JSON.stringify(snapshot.items.map(({ path, digest }) => [path, digest])) !== JSON.stringify(latestSnapshot.items.map(({ path, digest }) => [path, digest])), [snapshot, latestSnapshot]);
+  // Refresh clean or just-saved editors. An unsaved draft keeps its captured digests
+  // until the person explicitly discards it or accepts the new disk version.
+  if ((shown !== resource || latestSnapshot !== snapshot) && (!dirty || saved) && (!ws.profileLive || diskItem || isNew)) {
     setShown(resource);
-    if (matches(shown)) {
-      setDraft(resource);
-      setName(nameOf(resource));
-      setRows(keyRowsOf(resource));
-    }
+    setSnapshot(latestSnapshot);
+    setDraft(resource);
+    setExact(diskItem?.exact);
+    setName(nameOf(resource));
+    setRows(keyRowsOf(resource));
+    setSaved(false);
   }
+  const discard = () => {
+    if (!diskItem && ws.profileLive) { leaveWithoutAsking(onClose); return; }
+    setSnapshot(latestSnapshot);
+    setShown(resource);
+    setDraft(resource);
+    setExact(diskItem?.exact);
+    setName(nameOf(resource));
+    setRows(keyRowsOf(resource));
+    setTried(false);
+  };
   // A running skill check or update locks the editor, so no edit or rename can land under it.
-  const updating = useSkillLocked(resource.id);
+  const skillLocked = useSkillLocked(resource.id);
+  const updating = skillLocked || ws.profileLive?.busy === true;
   const moveTracking = useMoveSkillTracking();
   const updateRows = (next: KeyRow[]) => {
     setRows(next);
@@ -660,9 +689,9 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
   const { dialog: leaveDialog, leaveWithoutAsking } = useLeaveGuard(dirty, isNew ? "this new item" : resource.id);
 
   const trimmed = name.trim();
-  const id = category === "instructions" ? "instructions" : `${category}/${trimmed}`;
+  const id = authored?.itemPath && exact ? resource.id : category === "instructions" ? "instructions" : `${category}/${trimmed}`;
   const nameError =
-    category === "instructions"
+    category === "instructions" || authored?.itemPath && exact
       ? null
       : !trimmed
         ? isSettings
@@ -680,10 +709,11 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
   };
   const asWritten: Resource = { ...draft, id, path: itemPath(category, trimmed) };
 
-  const save = (form: HTMLFormElement) => {
+  const save = async (form: HTMLFormElement) => {
+    if (!ws.capabilities.profileWrite) return ws.notImplemented("profile.items.save");
     setTried(true);
-    const badField = fields.find(fieldError);
-    const badRow = hasKeys ? rows.find((r) => !r.name.trim() || rows.some((x) => x.id !== r.id && x.name.trim() === r.name.trim())) : undefined;
+    const badField = exactContent ? undefined : fields.find(fieldError);
+    const badRow = !exactContent && hasKeys ? rows.find((r) => !r.name.trim() || rows.some((x) => x.id !== r.id && x.name.trim() === r.name.trim())) : undefined;
     if (nameError || badField || badRow) {
       const selector = nameError ? "#item-name" : badField ? `#item-${badField.label.replace(/\W/g, "")}` : `#item-key-${badRow!.id}`;
       form.querySelector<HTMLElement>(selector)?.focus();
@@ -691,6 +721,14 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
     }
     const base: Resource = { ...draft, id, path: itemPath(category, trimmed), change: isNew ? "added" : resource.change ?? "modified" };
     const next = { ...base, summary: summaryOf(base) };
+    if (ws.profileLive && snapshot) {
+      if (await ws.profileLive.saveItem(snapshot, isNew ? undefined : resource, next, exact)) {
+        setSaved(true);
+        toast.success(isNew ? `Added ${id}` : `Saved ${id}`, { description: "Written to the Canonical Folder. Publish to send it to followers." });
+        leaveWithoutAsking(() => onSaved(id));
+      }
+      return;
+    }
     ws.setResources((prev) => (isNew ? [...prev, next] : prev.map((r) => (r.id === resource.id ? next : r))));
     if (!isNew && category === "skills" && id !== resource.id) moveTracking(resource.id, id);
     const unpublished = ws.pending.length + (resource.change && !isNew ? 0 : 1);
@@ -698,6 +736,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
       description: `Written to ${next.path}.\nGoes out with revision ${ws.nextSequence}: ${unpublished} unpublished ${unpublished === 1 ? "change" : "changes"}.${DEMO ? "\nSaved in this demo workspace." : ""}`,
     });
     setDraft(next);
+    setShown(next);
     setRows(keyRowsOf(next));
     setTried(false);
     leaveWithoutAsking(() => onSaved(id));
@@ -716,7 +755,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
       footer={
         <>
           {!isNew && (
-            <Button variant="destructive" size="sm" disabled={updating} onClick={() => setConfirmRemove(true)}>
+            <Button variant="destructive" size="sm" disabled={!ws.capabilities.profileWrite || updating || diskChanged} onClick={() => setConfirmRemove(true)}>
               Remove…
             </Button>
           )}
@@ -724,27 +763,42 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
             <Button
               variant="ghost"
               size="sm"
-              onClick={isNew ? () => leaveWithoutAsking(onClose) : () => (setDraft(resource), setName(nameOf(resource)), setRows(keyRowsOf(resource)), setTried(false))}
+              onClick={isNew ? () => leaveWithoutAsking(onClose) : discard}
               disabled={updating || (!isNew && !dirty)}
             >
               {isNew ? "Cancel" : "Discard"}
             </Button>
-            <Button type="submit" form="item-form" variant="primary" size="sm" disabled={updating || (!isNew && !dirty)}>
+            <Button type="submit" form="item-form" variant="primary" size="sm" disabled={!ws.capabilities.profileWrite || updating || diskChanged || (!isNew && !dirty)}>
               {isNew ? "Add to the folder" : "Save to the folder"}
             </Button>
           </div>
         </>
       }
     >
+      <ProfileActionNotice />
+      {diskChanged && <section aria-label="Changed on disk" className="grid gap-3 border-b border-border p-4">
+        <p className="text-sm">The folder changed on disk. Your draft is still in the editor below. Review the new version before saving.</p>
+        <SectionLabel>New disk version</SectionLabel>
+        {!diskItem ? <p>This item was removed from disk.</p> : <>
+          {diskItem.value !== undefined && <pre className="overflow-auto whitespace-pre-wrap font-mono text-sm">{JSON.stringify(diskItem.value, null, 2)}</pre>}
+          {(diskItem.exact?.files ?? draftFiles(latestSnapshot?.items.find((item) => item.path === diskItem.itemPath)?.files ?? [])).map((file) => <div key={file.path}><Mono>{file.path}{file.encoding === "base64" ? " (base64)" : ""}</Mono><pre className="overflow-auto whitespace-pre-wrap font-mono text-sm">{file.content}</pre></div>)}
+        </>}
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={discard}>Discard my edits</Button>
+          <Button type="button" variant="outline" size="sm" onClick={() => { setSnapshot(latestSnapshot); setShown(resource); }}>Re-apply my edits</Button>
+        </div>
+        <SectionLabel>Your draft</SectionLabel>
+      </section>}
       <form
         id="item-form"
         className="px-4 py-4"
         onSubmit={(e) => {
           e.preventDefault();
-          save(e.currentTarget);
+          void save(e.currentTarget);
         }}
       >
-        <fieldset disabled={updating} className="grid min-w-0 gap-4">
+        {!ws.capabilities.profileWrite && <p className="mb-4 text-sm text-muted-foreground">Read only. Not implemented: profile.items.save, profile.items.remove. Edit the Canonical Folder through the CLI.</p>}
+        <fieldset disabled={!ws.capabilities.profileWrite || updating} className="grid min-w-0 gap-4">
         <Field label="Kind" htmlFor="item-category" hint={isNew ? <>Where the <Term term="Profile Resource">item</Term> lives in ~/.canonfig decides which harness files it reaches.</> : undefined}>
           <Select
             value={category}
@@ -752,6 +806,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
               setDraft(blankItem(c));
               setName("");
               setRows([]);
+              setExact(ws.profileLive && (c === "tools" || c === "resources") ? { json: "{}", files: [] } : undefined);
             }}
             disabled={!isNew}
           >
@@ -797,6 +852,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
               <Input
                 id="item-name"
                 value={name}
+                disabled={!!authored?.exact && !!authored.itemPath}
                 placeholder={NAME_PLACEHOLDER[category]}
                 onChange={(e) => setName(e.target.value)}
                 aria-invalid={tried && !!nameError}
@@ -810,7 +866,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
           )
         )}
 
-        {fields.map((f) => {
+        {exactContent && exact ? <ExactItemFields value={exact} onChange={setExact} path={category === "skills" ? `${id}/SKILL.md` : authored?.itemPath ?? `${id}.md`} /> : fields.map((f) => {
           const fid = `item-${f.label.replace(/\W/g, "")}`;
           const error = tried ? fieldError(f) : null;
           return (
@@ -853,6 +909,8 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
             </Field>
           );
         })}
+        {ws.profileLive && category === "hooks" && !exactContent && (exact ? <ExactItemFields value={exact} onChange={setExact} path={`hooks/${trimmed}.sh`} /> : <Button type="button" variant="outline" size="sm" onClick={() => setExact({ files: [] })}>Add supporting files</Button>)}
+        {ws.profileLive && category === "skills" && !isNew && !exact && <Button type="button" variant="outline" size="sm" disabled={dirty} onClick={() => setExact({ files: draftFiles(snapshot?.items.find((item) => item.path === authored?.itemPath)?.files ?? []) })}>Edit full file tree</Button>}
 
         {category === "skills" && draft.detail.Files && (
           <Prop label="Files">
@@ -866,7 +924,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
           </Prop>
         )}
 
-        {hasKeys && (
+        {!exact && hasKeys && (
           <div className="grid gap-2">
             <SectionLabel
               action={
@@ -962,7 +1020,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
           <GroupPicker idPrefix="grp" value={draft.groups} onChange={(groups) => setDraft((d) => ({ ...d, groups }))} />
         </Field>
 
-        {category !== "tools" && (
+        {!exact && category !== "tools" && (
           <Collapsible>
             <CollapsibleTrigger className="group flex h-7 w-full items-center gap-1 rounded text-sm font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60">
               <CaretRight className="size-3.5 transition-transform duration-150 ease-snap group-data-[state=open]:rotate-90" />
@@ -1004,7 +1062,11 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
             </Button>
             <Button
               variant="destructive"
-              onClick={() => {
+              onClick={async () => {
+                if (ws.profileLive && snapshot) {
+                  if (await ws.profileLive.saveItem(snapshot, resource, resource, exact, true)) { setConfirmRemove(false); leaveWithoutAsking(onClose); toast.success(`Removed ${resource.id}`); }
+                  return;
+                }
                 ws.setResources((prev) => (resource.change === "added" ? prev.filter((r) => r.id !== resource.id) : prev.map((r) => (r.id === resource.id ? { ...r, change: "removed" as const } : r))));
                 if (category === "skills") moveTracking(resource.id, null);
                 setConfirmRemove(false);
@@ -1035,6 +1097,7 @@ function HarnessesTab() {
       <HarnessTable
         edit="listed"
         onToggle={(id, on) => {
+          if (ws.profileLive) { ws.setListed((prev) => on ? [...prev, id] : prev.filter((h) => h !== id)); return; }
           ws.setListed((prev) => (on ? [...prev, id] : prev.filter((h) => h !== id)));
           // canonfig.jsonc refuses `surfaces` for a harness it does not list, so the choice goes with it.
           if (!on) ws.setSurfaces(({ [id]: _dropped, ...rest }) => rest);
@@ -1051,7 +1114,8 @@ function HarnessesTab() {
 
 function GroupsTab() {
   const ws = useWorkspace();
-  const [groups, setGroups] = useGroups();
+  const [demoGroups, setGroups] = useGroups();
+  const groups = ws.profileLive ? ws.profile.groups : demoGroups;
   const selected = ws.focus;
   const [open, setOpen] = useState(false);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -1084,6 +1148,7 @@ function GroupsTab() {
           variant="outline"
           size="sm"
           className="ml-auto shrink-0"
+          disabled={!ws.capabilities.profileWrite}
           onClick={() => {
             setName("");
             setDesc("");
@@ -1138,11 +1203,15 @@ function GroupsTab() {
         >
           <form
             className="contents"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
               setTried(true);
               // Move focus to the field so keyboard and screen-reader users land on the error.
               if (problem) return document.getElementById("g-name")?.focus();
+              if (ws.profileLive?.snapshot) {
+                if (await ws.profileLive.saveConfig(ws.profileLive.snapshot, [{ path: ["groups", trimmed], value: [] }])) { setOpen(false); toast.success(`Added group ${trimmed}`); }
+                return;
+              }
               setGroups((g) => [...g, { name: trimmed, description: desc.trim() || "No description" }]);
               // A group is profile content, so it waits for the next revision like an item edit.
               ws.markProfileEdit({ area: "group", id: trimmed, change: "added" });
@@ -1168,9 +1237,9 @@ function GroupsTab() {
                   className="font-mono text-sm"
                 />
               </Field>
-              <Field label="What it's for" htmlFor="g-desc">
+              {!ws.profileLive && <Field label="What it's for" htmlFor="g-desc">
                 <Input id="g-desc" value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Laptops used for client work" autoComplete="off" />
-              </Field>
+              </Field>}
             </div>
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
@@ -1190,6 +1259,7 @@ function GroupsTab() {
 
 function GroupDetail({ group: g, onClose }: { group: Group; onClose: () => void }) {
   const ws = useWorkspace();
+  const [removing, setRemoving] = useState(false);
   const members = ws.followers.filter((f) => f.groups.includes(g.name));
   const outside = ws.followers.length - members.length;
   const items = ws.resources.filter((r) => r.groups.includes(g.name));
@@ -1199,9 +1269,10 @@ function GroupDetail({ group: g, onClose }: { group: Group; onClose: () => void 
       subtitle={g.name === SECRETS_GROUP ? <Mono>{g.name}</Mono> : undefined}
       onClose={onClose}
       footer={
-        <Button variant="secondary" size="sm" className="ml-auto" disabled={outside === 0} onClick={() => ws.setChangeGroups({ addGroup: g.name })}>
-          Add a machine…
-        </Button>
+        <div className="flex w-full gap-2">
+          {ws.profileLive?.snapshot && <Button variant="destructive" size="sm" disabled={ws.profileLive.busy} onClick={() => setRemoving(true)}>Remove group</Button>}
+          {!ws.profileLive && <Button variant="secondary" size="sm" className="ml-auto" disabled={outside === 0} onClick={() => ws.setChangeGroups({ addGroup: g.name })}>Add a machine…</Button>}
+        </div>
       }
     >
       <p className="border-b border-border px-4 py-3 text-base text-pretty text-muted-foreground">
@@ -1217,9 +1288,7 @@ function GroupDetail({ group: g, onClose }: { group: Group; onClose: () => void 
           {members.map((f) => (
             <div key={f.id} className="flex h-8 items-center gap-2 px-4 text-base">
               {f.name}
-              <Button variant="outline" size="xs" className="ml-auto" onClick={() => ws.setChangeGroups({ followerId: f.id })}>
-                Change groups…
-              </Button>
+              {!ws.profileLive && <Button variant="outline" size="xs" className="ml-auto" onClick={() => ws.setChangeGroups({ followerId: f.id })}>Change groups…</Button>}
             </div>
           ))}
         </div>
@@ -1241,24 +1310,34 @@ function GroupDetail({ group: g, onClose }: { group: Group; onClose: () => void 
       <p className="border-t border-border px-4 py-3 text-sm text-pretty text-faint">
         A machine's groups come from the invitation it joined with. Adding or removing one makes a new invitation, and the machine joins again with it.
       </p>
+      <Dialog open={removing} onOpenChange={setRemoving}>
+        <DialogContent showCloseButton={false}>
+          <DialogHeader><DialogTitle>Remove {g.name}?</DialogTitle><DialogDescription>Its items will become available to every machine unless another group restricts them. Existing machine enrollments stay unchanged.</DialogDescription></DialogHeader>
+          <ProfileActionNotice />
+          <DialogFooter><Button variant="outline" onClick={() => setRemoving(false)}>Cancel</Button><Button variant="destructive" disabled={ws.profileLive?.busy} onClick={async () => { if (ws.profileLive?.snapshot && await ws.profileLive.saveConfig(ws.profileLive.snapshot, [{ path: ["groups", g.name] }])) { setRemoving(false); onClose(); } }}>Remove group</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
     </DetailPanel>
   );
 }
 
 function DefaultsTab() {
   const ws = useWorkspace();
-  const [saved, setSaved] = useProfileDefaults();
+  const [demoSaved, setSaved] = useProfileDefaults();
+  const saved = ws.profileLive ? { name: ws.profileName, schedule: ws.profileSchedule, localAllow: ws.profile.localAllow, appendLocal: ws.profile.appendLocal } : demoSaved;
+  const [profileId, setProfileId] = useState(ws.profile.id);
   const [published, setPublished] = useProfileDefaults("published");
   const [name, setName] = useState(saved.name);
-  const [schedule, setSchedule] = useState<Schedule>(saved.schedule);
+  const [schedule, setSchedule] = useState<Schedule>(saved.schedule ?? { cadence: "daily", days: [], time: "" });
+  const [scheduleEnabled, setScheduleEnabled] = useState(!ws.profileLive || saved.schedule !== null);
   const [localAllow, setLocalAllow] = useState<LocalCategory[]>(saved.localAllow);
   const [appendLocal, setAppendLocal] = useState<AppendLocalCategory[]>(saved.appendLocal);
   const [tried, setTried] = useState(false);
   const trimmed = name.trim();
   const nameError = tried && !trimmed ? "Enter a display name." : null;
-  const scheduleProblem = scheduleError(schedule);
+  const scheduleProblem = scheduleEnabled ? scheduleError(schedule) : null;
   // Compares what Save would write, so day picks hidden under a daily cadence don't count as edits.
-  const dirty = !sameDefaults({ name, schedule, localAllow, appendLocal }, saved);
+  const dirty = profileId !== ws.profile.id || !sameDefaults({ name, schedule: scheduleEnabled ? schedule : null, localAllow, appendLocal }, saved);
   const { dialog: leaveDialog } = useLeaveGuard(dirty, "the profile defaults");
   const allowed = LOCAL_CATEGORIES.filter((c) => localAllow.includes(c));
   const shared = APPEND_LOCAL_CATEGORIES.filter((c) => appendLocal.includes(c));
@@ -1266,11 +1345,16 @@ function DefaultsTab() {
     <Body>
       <form
         className="max-w-[880px] px-4 py-6 sm:px-8"
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
           setTried(true);
           if (!trimmed || scheduleProblem) return;
           const next = { name: trimmed, schedule, localAllow: allowed, appendLocal: shared };
+          if (ws.profileLive?.snapshot) {
+            const edits = [{ path: ["profile", "name"], value: trimmed }, ...(!ws.profile.id ? [{ path: ["profile", "id"], value: profileId }] : []), { path: ["scheduleDefault"], ...(scheduleEnabled ? { value: scheduleDefaultOf(schedule) } : {}) }, { path: ["local", "allow"], value: allowed }, { path: ["local", "appendLocal"], value: shared }];
+            if (await ws.profileLive.saveConfig(ws.profileLive.snapshot, edits)) toast.success("Defaults saved");
+            return;
+          }
           // Saving unchanged values is not an edit. Saving the published values back withdraws the edit,
           // so unpublished changes only ever list defaults that differ from the latest revision.
           const edited = ws.pending.some((c) => c.area === "defaults");
@@ -1298,14 +1382,15 @@ function DefaultsTab() {
             <Input id="p-name" value={name} onChange={(e) => setName(e.target.value)} aria-invalid={!!nameError} aria-describedby={nameError ? "p-name-note" : undefined} autoComplete="off" />
           </Field>
           <Field label="Profile id" description="Every revision carries this id, and Canonfig needs it to publish.">
-            <Mono className="text-sm text-foreground">{profile.id}</Mono>
+            {ws.profileLive && !ws.profile.id ? <Input aria-label="Profile id" value={profileId} onChange={(event) => setProfileId(event.target.value)} required /> : <Mono className="text-sm text-foreground">{ws.profile.id}</Mono>}
           </Field>
         </div>
         <SectionLabel className="mt-6">
           <Term term="Synchronization Schedule">Default schedule</Term>
         </SectionLabel>
         <p className="mb-3 text-sm text-pretty text-muted-foreground">New machines check for revisions at this time unless they set their own. Times are each machine's local time.</p>
-        <ScheduleFields idPrefix="def" value={schedule} onChange={setSchedule} />
+        {ws.profileLive && <Label className="mb-3 flex min-h-8 items-center gap-2"><Checkbox checked={scheduleEnabled} onCheckedChange={(checked) => setScheduleEnabled(checked === true)} />Set a default schedule</Label>}
+        {scheduleEnabled && <ScheduleFields idPrefix="def" value={schedule} onChange={setSchedule} />}
 
         <SectionLabel className="mt-6">
           <Term term="Local folder">What machines may add locally</Term>
@@ -1350,8 +1435,8 @@ function DefaultsTab() {
           >
             <span className="text-faint">// ~/.canonfig/canonfig.jsonc{"\n"}</span>
             {[
-              `"profile": ${JSON.stringify({ id: profile.id, name: trimmed || saved.name })},`,
-              ...(scheduleProblem ? [] : [`"scheduleDefault": ${JSON.stringify(scheduleDefaultOf(schedule))},`]),
+              `"profile": ${JSON.stringify({ id: profileId, name: trimmed || saved.name })},`,
+              ...(!scheduleEnabled || scheduleProblem ? [] : [`"scheduleDefault": ${JSON.stringify(scheduleDefaultOf(schedule))},`]),
               `"local": { "allow": [${allowed.map((c) => JSON.stringify(c)).join(", ")}]${shared.length ? `, "appendLocal": [${shared.map((c) => JSON.stringify(c)).join(", ")}]` : ""} }`,
             ].join("\n")}
           </pre>
@@ -1362,7 +1447,7 @@ function DefaultsTab() {
         </div>
         {/* Same pattern as the item editor: nothing to save or discard until the form differs from what was saved. */}
         <div className="mt-8 flex gap-2">
-          <Button type="submit" variant="primary" size="sm" disabled={!dirty || scheduleProblem !== null}>
+          <Button type="submit" variant="primary" size="sm" disabled={!dirty || scheduleProblem !== null || ws.profileLive?.busy}>
             Save defaults
           </Button>
           <Button
@@ -1372,7 +1457,9 @@ function DefaultsTab() {
             disabled={!dirty}
             onClick={() => {
               setName(saved.name);
-              setSchedule(saved.schedule);
+              setSchedule(saved.schedule ?? { cadence: "daily", days: [], time: "" });
+              setScheduleEnabled(!ws.profileLive || saved.schedule !== null);
+              setProfileId(ws.profile.id);
               setLocalAllow(saved.localAllow);
               setAppendLocal(saved.appendLocal);
               setTried(false);
@@ -1390,20 +1477,20 @@ function DefaultsTab() {
 function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const ws = useWorkspace();
   const [progress, setProgress] = useState(0);
-  const [picked, setPicked] = useState<string[]>(["node", "prettier"]);
+  const [picked, setPicked] = useState<string[]>(ws.scannedTools.filter((tool) => tool.id === "node" || tool.id === "prettier").map((tool) => tool.id));
   const returnFocus = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !ws.capabilities.simulatedTelemetry) return;
     setProgress(0);
     const t = window.setInterval(() => setProgress((p) => (p >= 100 ? 100 : p + 10)), 110);
     return () => window.clearInterval(t);
-  }, [open]);
+  }, [open, ws.capabilities.simulatedTelemetry]);
 
-  const done = progress >= 100;
+  const done = ws.profileLive ? ws.profileLive.scanDone : progress >= 100;
   const inFolder = (id: string) => ws.resources.some((r) => r.id === `tools/${id}`);
   // Picked tools the folder already has stay as they are, so the button counts and adds only the new ones.
-  const pickedTools = SCANNED_TOOLS.filter((f) => picked.includes(f.id));
+  const pickedTools = ws.scannedTools.filter((f) => picked.includes(f.id));
   const fresh = pickedTools.filter((f) => !inFolder(f.id));
   const present = pickedTools.filter((f) => inFolder(f.id)).map((f) => f.id);
   const presentNote = present.length ? `${present.join(", ")} ${present.length === 1 ? "is" : "are"} already in the folder.` : "";
@@ -1424,22 +1511,23 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
         <DialogHeader>
           <DialogTitle>Discover tools</DialogTitle>
           <DialogDescription className="text-base text-pretty">
-            Canonfig reads the instructions, skills, hook scripts and MCP commands in <span className="font-mono text-sm text-foreground">{machine.folder}</span> and proposes a
+            Canonfig reads the instructions, skills, hook scripts and MCP commands in <span className="font-mono text-sm text-foreground">{ws.sourceMachine.folder}</span> and proposes a
             tool for each program they run. It runs nothing. Tools you add go into canonfig.jsonc, which keeps its comments.
             {DEMO && " This demo reads no files and shows example results."}
           </DialogDescription>
         </DialogHeader>
+        <ProfileActionNotice />
         {!done ? (
           <div className="grid h-[132px] content-center gap-2" aria-live="polite">
-            <DitherProgress value={progress} label="Finding tools" />
+            {ws.capabilities.simulatedTelemetry && <DitherProgress value={progress} label="Finding tools" />}
             <span className="text-sm text-muted-foreground">Finding tools…</span>
           </div>
         ) : (
           <>
             <div className="-mx-4 border-y border-border">
-              {SCANNED_TOOLS.map((f) => (
+              {ws.scannedTools.map((f) => (
                 <label key={f.id} className="flex h-11 cursor-pointer items-center gap-3 border-b border-border/70 px-4 last:border-b-0 hover:bg-raised/50">
-                  <Checkbox checked={picked.includes(f.id)} onCheckedChange={(c) => setPicked((p) => (c ? [...p, f.id] : p.filter((x) => x !== f.id)))} />
+                  {ws.capabilities.selectiveScanWrite && <Checkbox checked={picked.includes(f.id)} onCheckedChange={(c) => setPicked((p) => (c ? [...p, f.id] : p.filter((x) => x !== f.id)))} />}
                   <span className="grid min-w-0">
                     <span className="text-base font-medium">{f.id}</span>
                     <Mono className="truncate text-faint">{f.command}</Mono>
@@ -1450,7 +1538,7 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
                 </label>
               ))}
             </div>
-            {fresh.length === 0 && (
+            {ws.capabilities.selectiveScanWrite && fresh.length === 0 && (
               <p id="discover-none" className="text-sm text-pretty text-muted-foreground">
                 {noneNew}
               </p>
@@ -1460,14 +1548,14 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
         <DialogFooter className="items-center sm:justify-between">
           <div className="flex shrink-0 gap-2">
             <Button variant="ghost" onClick={() => onOpenChange(false)}>
-              Cancel
+              {ws.profileLive ? "Close" : "Cancel"}
             </Button>
-            <Button
+            {ws.capabilities.selectiveScanWrite && <Button
               variant="primary"
               disabled={!done || fresh.length === 0}
               aria-describedby={done && fresh.length === 0 ? "discover-none" : undefined}
               onClick={() => {
-                ws.setResources((prev) => [...prev, ...fresh.map(toolFromScan)]);
+                ws.setResources((prev) => [...prev, ...fresh.map(ws.toolFromScan)]);
                 onOpenChange(false);
                 toast.success(`Added ${fresh.length} ${fresh.length === 1 ? "tool" : "tools"}`, {
                   description: `${presentNote ? `${presentNote}\n` : ""}Publish to send ${fresh.length === 1 ? "it" : "them"} to your machines.`,
@@ -1475,7 +1563,7 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
               }}
             >
               {fresh.length === 0 ? "Add tools" : `Add ${fresh.length} ${fresh.length === 1 ? "tool" : "tools"}`}
-            </Button>
+            </Button>}
           </div>
         </DialogFooter>
       </DialogContent>

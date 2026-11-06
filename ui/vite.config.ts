@@ -60,8 +60,40 @@ function demoSite(): Plugin {
   };
 }
 
+/** Match DEMO exactly, using Vite's resolved DEV value without importing simulated data. */
+function applicationEntrypoint(): Plugin {
+  let entrypoint: string;
+  let demo = false;
+  return {
+    name: "canonfig-application-entrypoint",
+    config(_config, env) {
+      // npm pack also runs under Vitest. Its inherited NODE_ENV=test must not
+      // select demo screens or disable the production module-graph guard.
+      if (env.command === "build") process.env.NODE_ENV = "production";
+    },
+    configResolved(config) {
+      demo = !config.isProduction || config.mode === "demo";
+      entrypoint = path.resolve(import.meta.dirname, demo ? "./src/App.tsx" : "./src/live-app.tsx");
+    },
+    resolveId(id) {
+      if (id === "@app") return entrypoint;
+    },
+    generateBundle(_options, bundle) {
+      if (demo) return;
+      for (const output of Object.values(bundle)) {
+        if (output.type !== "chunk") continue;
+        const simulated = Object.keys(output.modules).find((id) => {
+          const normalized = id.replaceAll("\\", "/");
+          return normalized.endsWith("/src/shared/data.ts") || /\/src\/workspace\/simulated-(store|administration|app)\.tsx?$/.test(normalized);
+        });
+        if (simulated) this.error(`Production browser bundle imports simulated data: ${simulated}`);
+      }
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss(), demoSite()],
+  plugins: [react(), tailwindcss(), demoSite(), applicationEntrypoint()],
   resolve: { alias: { "@": path.resolve(import.meta.dirname, "./src") } },
   build: {
     rolldownOptions: {

@@ -14,6 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import { Effect, Layer, Option, Redacted, Schema } from "effect";
 
 import { ProfileId, SourceSignature } from "../domain/brand.ts";
+import { guiQueriesLayer } from "../gui/queries.ts";
 import { localProjectionFollower } from "../domain/synchronization.ts";
 import { AgentPolicy } from "../domain/identity.ts";
 import { AgentResolutionWithSecretsLive } from "../agent/agent-resolution.layer.ts";
@@ -49,6 +50,8 @@ import { macosMachineStateLayer } from "../machine/macos.layer.ts";
 import { windowsMachineStateLayer } from "../machine/windows.layer.ts";
 import { nativeSecretStoreLayer } from "../secrets/native-secret-store.ts";
 import { clearTransferredSecrets } from "../secrets/secret-store.ts";
+import { synchronizeSharedSecrets } from "../secrets/secret-client.ts";
+import { secretFailureCategory } from "../secrets/cli.ts";
 import { ProfileCatalog } from "../profile/profile-catalog.service.ts";
 import {
   InvalidPublicationResourcesError,
@@ -594,6 +597,7 @@ const runtimeProfileCatalogLayer: Layer.Layer<
 );
 
 interface PolicyFile {
+  readonly read: () => Effect.Effect<typeof AgentPolicy.Type | undefined, CliCommandFailure>;
   readonly get: () => Effect.Effect<typeof AgentPolicy.Type, CliCommandFailure>;
   readonly set: (
     policy: typeof AgentPolicy.Type,
@@ -602,52 +606,68 @@ interface PolicyFile {
 
 const policyFile = (
   path: string,
-): PolicyFile => ({
-  get: () =>
-    Effect.tryPromise({
-      try: () => readFile(path, "utf8"),
-      catch: () => new CliCommandFailure({
+): PolicyFile => {
+  const read = () => Effect.tryPromise({
+    try: async () => {
+      try {
+        return await readFile(path, "utf8");
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+        throw error;
+      }
+    },
+    catch: () => new CliCommandFailure({
+      category: "usage-or-configuration",
+      message: "agent policy configuration could not be read",
+    }),
+  }).pipe(
+    Effect.flatMap((text) => {
+      if (text === undefined) return Effect.succeed(undefined);
+      let decodedJson: unknown;
+      try {
+        decodedJson = JSON.parse(text);
+      } catch {
+        return Effect.fail(new CliCommandFailure({
+          category: "usage-or-configuration",
+          message: "agent policy configuration is malformed",
+        }));
+      }
+      const decoded = Schema.decodeUnknownOption(
+        Schema.Struct({ policy: AgentPolicy }),
+      )(decodedJson);
+      return Option.isSome(decoded)
+        ? Effect.succeed(decoded.value.policy)
+        : Effect.fail(new CliCommandFailure({
+          category: "usage-or-configuration",
+          message: "agent policy configuration is invalid",
+        }));
+    }),
+  );
+  return {
+    read,
+    get: () => read().pipe(Effect.flatMap((policy) => policy === undefined
+      ? Effect.fail(new CliCommandFailure({
         category: "usage-or-configuration",
         message: "agent policy is not configured",
+      }))
+      : Effect.succeed(policy))),
+    set: (policy) =>
+      Effect.tryPromise({
+        try: async () => {
+          await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+          await writeFile(path, `${JSON.stringify({ policy })}\n`, {
+            encoding: "utf8",
+            mode: 0o600,
+          });
+          return policy;
+        },
+        catch: () => new CliCommandFailure({
+          category: "usage-or-configuration",
+          message: "agent policy configuration could not be written",
+        }),
       }),
-    }).pipe(
-      Effect.flatMap((text) => {
-        let decodedJson: unknown;
-        try {
-          decodedJson = JSON.parse(text);
-        } catch {
-          return Effect.fail(new CliCommandFailure({
-            category: "usage-or-configuration",
-            message: "agent policy configuration is malformed",
-          }));
-        }
-        const decoded = Schema.decodeUnknownOption(
-          Schema.Struct({ policy: AgentPolicy }),
-        )(decodedJson);
-        return Option.isSome(decoded)
-          ? Effect.succeed(decoded.value.policy)
-          : Effect.fail(new CliCommandFailure({
-            category: "usage-or-configuration",
-            message: "agent policy configuration is invalid",
-          }));
-      }),
-    ),
-  set: (policy) =>
-    Effect.tryPromise({
-      try: async () => {
-        await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-        await writeFile(path, `${JSON.stringify({ policy })}\n`, {
-          encoding: "utf8",
-          mode: 0o600,
-        });
-        return policy;
-      },
-      catch: () => new CliCommandFailure({
-        category: "usage-or-configuration",
-        message: "agent policy configuration could not be written",
-      }),
-    }),
-});
+  };
+};
 
 const followerCommandsLayer = (
   statePath: string,
@@ -1259,6 +1279,17 @@ const followerCommandsLayer = (
               Effect.provideService(Tunnel, tunnel),
               Effect.catchTag("TunnelDownError", (error) => Effect.fail(commandFailure(error))),
             )),
+            // Apply is one command for every caller, including GUI tickets and schedules.
+            // Retain the completed file run as failure evidence if secret refresh fails.
+            Effect.tap((result) => input.mode === "apply" ? synchronizeSharedSecrets().pipe(
+              Effect.provideService(MachineState, machine),
+              Effect.provideService(StateRepository, repository),
+              Effect.mapError((error) => new CliCommandFailure({
+                category: secretFailureCategory(error),
+                message: `File synchronization completed, but shared-secret synchronization failed: ${error.message}`,
+                details: result,
+              })),
+            ) : Effect.void),
             Effect.flatMap((result) =>
               record("completed").pipe(Effect.as(result))
             ),
@@ -1753,11 +1784,12 @@ export const runtimeMachineLayer = (
 
 export const runtimeLayer = (
   options: RuntimeLayerOptions = {},
+  machine: Layer.Layer<MachineState> = runtimeMachineLayer(options),
 ) => {
   const root = join(homedir(), ".canonfig");
   const statePath = options.statePath ?? join(root, "state.sqlite");
+  const policyPath = options.policyPath ?? join(root, "policy.json");
   const state = runtimeStateLayer(statePath);
-  const machine = machineLayer(statePath);
   const enrollment = EnrollmentLive.pipe(Layer.provide(Layer.merge(state, machine)));
   const profiles = runtimeProfileCatalogLayer.pipe(
     Layer.provide(Layer.mergeAll(state, machine, enrollment)),
@@ -1786,10 +1818,13 @@ export const runtimeLayer = (
     sourceService,
   );
   return Layer.mergeAll(
+    machine,
+    state,
+    guiQueriesLayer(dirname(statePath), policyFile(policyPath).read).pipe(Layer.provide(state)),
     sourceCommandsLayer(dirname(statePath)).pipe(Layer.provide(dependencies)),
     followerCommandsLayer(
       statePath,
-      options.policyPath ?? join(root, "policy.json"),
+      policyPath,
       options.doctorSource ?? doctorSourceFromEnvironment(),
       options.doctorAgent ?? doctorAgentFromEnvironment(),
     ).pipe(

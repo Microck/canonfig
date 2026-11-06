@@ -55,13 +55,34 @@ on linux, Keychain on macos, and Credential Manager on windows.
 
 <img src="https://raw.githubusercontent.com/Microck/canonfig/main/.github/assets/readme/walkthrough.gif" width="880" alt="the canonfig browser interface: the Source overview, the machine map, the profile, then a follower's sync page checking for updates">
 
-the browser interface covers the whole loop: see what changed in the Source's
-folder, publish it, watch every machine pick it up, and choose which harnesses
-each machine projects into. [try the interactive demo](https://canonfig.micr.dev); it
-runs in your browser on made-up machines.
+run the browser interface on this machine:
 
-the interface is a preview and isn't in the npm package yet. to sync real
-machines, use the commands below.
+```sh
+canonfig ui
+```
+
+it opens this machine's workspace, or setup when the machine is not configured.
+the server runs in your terminal on `127.0.0.1` with a free port. use
+`canonfig ui --port 5317 --no-open` to choose a port and open the printed
+single-use URL yourself. stop it with Ctrl-C.
+
+on a Source, author the profile, choose harnesses and groups, validate and publish
+revisions, manage secrets, export the profile, and invite followers. on a Follower,
+inspect and apply sync plans, recover or abandon interrupted runs, edit allowed
+local items and overlays, manage harness exclusions, restore backups, refresh
+secrets, and set the schedule. both roles show real status and settings.
+errors keep the CLI's diagnostics. map names and appearance stay in this browser.
+the Source card on a Follower shows "Source" and its endpoint because enrollment
+does not store the Source machine's name.
+
+self-update status, checks, enable, disable and apply are available on the
+Canonfig version page. stop other Canonfig processes before updating; after
+activation, restart with `canonfig ui`. unenrollment leaves applied files,
+the native schedule and tunnel configuration in place, as the CLI does.
+
+the [interactive demo](https://canonfig.micr.dev) and images below use made-up
+machines. its fleet health, revision and progress displays are not remote
+telemetry from the live GUI.
 
 <table>
   <tr>
@@ -233,13 +254,14 @@ and [operate](skills/operate-canonfig/SKILL.md) skills.
 
 ```sh
 npm ci
+npm ci --prefix ui
 npm run build:cli
 npm run docs:validate
 npm test
 ```
 
-the browser interface lives in [`ui/`](ui/README.md) and runs on demo data
-(`npm --prefix ui ci`, then `npm run ui:dev`). see the
+the browser frontend lives in [`ui/`](ui/README.md). its development server runs
+the simulated demo (`npm --prefix ui ci`, then `npm run ui:dev`). see the
 [release runbook](docs/release-runbook.md) for every release gate.
 
 ## license

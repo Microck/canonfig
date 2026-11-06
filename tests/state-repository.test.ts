@@ -1162,4 +1162,33 @@ describe("StateRepository SQLite adapter", () => {
       passedVerifications: 1,
     });
   });
+  it("returns safe enrollment summaries without local projection or bearer material", async () => {
+    const rows = await runWithRepository(databasePath(), Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.registerFollower({ follower: follower("local") });
+      yield* repository.registerFollower({ follower: follower() });
+      yield* repository.createEnrollmentInvitation({
+        codeDigest: digestA, nonceDigest: digestB,
+        intendedSourceFingerprint: decode(CertificateFingerprint)("sha256:" + "a".repeat(64)),
+        tlsFingerprint: decode(CertificateFingerprint)("sha256:" + "b".repeat(64)),
+        endpoint: "https://127.0.0.1:7341", groups: [],
+        expiresAt: "2030-01-01T00:00:00Z",
+      });
+      yield* repository.revokeFollower(follower().id);
+      return {
+        followers: yield* repository.listEnrollmentFollowers(),
+        invitations: yield* repository.listEnrollmentInvitations(),
+      };
+    }));
+    expect(rows.followers).toEqual([{
+      id: "follower-1", name: "Follower follower-1", groups: ["base"],
+      enrolledAt: "2026-08-15T12:00:00Z", revoked: true,
+      pending: false, credentialPresent: false,
+    }]);
+    expect(rows.invitations).toEqual([{
+      endpoint: "https://127.0.0.1:7341", groups: [],
+      expiresAt: "2030-01-01T00:00:00Z", consumed: false,
+    }]);
+    expect(JSON.stringify(rows)).not.toMatch(/credentialReference|codeDigest|nonce|keyId/);
+  });
 });

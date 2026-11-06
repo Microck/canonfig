@@ -29,6 +29,8 @@ const pages: [WorkspaceRole, View, string][] = [
   ["follower", "doctor", "settings/health"],
   ["follower", "machine", "settings/enrollment"],
   ["follower", "version", "settings/version"],
+  ["follower", "installers", "settings/installers"],
+  ["follower", "setup", "settings/setup"],
 ];
 
 describe("canonical workspace routes", () => {
@@ -87,7 +89,7 @@ describe("canonical workspace routes", () => {
       "/source/sync", "/source/settings/tunnel", "/source/settings/enrollment", "/source/profile/items",
       "/source/machines/map", "/source/doctor", "/source/profile/", "/source", "/source/no-such-page", "/source/local-settings",
       "/follower/profile", "/follower/profile/groups", "/follower/profile/harnesses", "/follower/revisions", "/follower/settings/service",
-      "/follower/settings/setup", "/follower/settings/installers", "/follower/local", "/follower/machine",
+      "/follower/local", "/follower/machine",
     ]) {
       const route = parseRoute(href);
       assert.equal(route.kind, "workspace", href);

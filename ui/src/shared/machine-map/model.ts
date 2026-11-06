@@ -6,7 +6,7 @@ import { createContext, useSyncExternalStore } from "react";
 import type { IconComponent } from "@/components/icons";
 import { Briefcase, Circuitry, Cloud, Cpu, Desktop, DeviceMobile, GameController, HardDrives, House, Laptop, Package } from "@/components/icons";
 import { ditherPath } from "@/lib/dither";
-import type { Follower, FollowerState } from "@/shared/data";
+import { DEMO, type Follower, type FollowerState } from "@/shared/metadata";
 
 export type MapRole = "source" | "follower";
 
@@ -81,14 +81,14 @@ const DEFAULT_LOOKS: Record<string, { purpose: string; icon: DeviceIcon; accent:
   f_71ea: { purpose: "Build server", icon: "server", accent: "slate" },
 };
 
-const PLATFORM_ICON: Record<Follower["platform"], DeviceIcon> = { macos: "laptop", windows: "desktop", linux: "server" };
+const PLATFORM_ICON: Record<NonNullable<Follower["platform"]>, DeviceIcon> = { macos: "laptop", windows: "desktop", linux: "server" };
 
 const CUSTOM_ICON_SRC = /^data:image\/(svg\+xml|png)[;,]/;
 const HEX = /^#[0-9a-f]{6}$/i;
 
-export function resolveLook(id: string, hostname: string, platform: Follower["platform"], look: Look | undefined): ResolvedLook {
-  const preset = DEFAULT_LOOKS[id];
-  const baseIcon = preset?.icon ?? PLATFORM_ICON[platform];
+export function resolveLook(id: string, hostname: string, platform: Follower["platform"] | undefined, look: Look | undefined): ResolvedLook {
+  const preset = DEMO && platform !== undefined ? DEFAULT_LOOKS[id] : undefined;
+  const baseIcon = preset?.icon ?? (platform === undefined ? "desktop" : PLATFORM_ICON[platform]);
   const baseAccent = preset?.accent ?? "slate";
   // Stored looks come from localStorage (and other tabs), so unknown keys and malformed custom values fall back.
   const iconSrc = look?.customIcon && CUSTOM_ICON_SRC.test(look.customIcon) ? look.customIcon : "";
@@ -352,7 +352,7 @@ export interface Link {
   detail: string | null;
 }
 
-export function linkFor(f: Pick<Follower, "state" | "revision" | "schedule" | "behind">, latest: number, syncing: boolean): Link {
+export function linkFor(f: Required<Pick<Follower, "state" | "revision" | "schedule">> & Pick<Follower, "behind">, latest: number, syncing: boolean): Link {
   const broken = f.state === "offline";
   const behind = f.revision === null || f.revision < latest;
   const tone: LinkTone =

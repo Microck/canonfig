@@ -1,15 +1,16 @@
-// The harness list and the takeover backups page, shared by the Source and the Follower. Both read the
-// simulated `canonfig harnesses` report and ~/.canonfig/.backups from the workspace; restore is simulated.
+// The harness list and takeover backups page share the active workspace's reports and restore action.
 import { useRef, useState } from "react";
 import { CaretDown } from "@/components/icons";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { HARNESS_NAMES, DEMO, SURFACE_CATEGORIES, SURFACE_NAMES, SURFACE_SUPPORT, type Harness, type HarnessId, type Snapshot, type SurfaceCategory } from "@/shared/data";
+import { HARNESS_NAMES, DEMO, SURFACE_CATEGORIES, SURFACE_NAMES, SURFACE_SUPPORT, type Harness, type HarnessId, type Snapshot, type SurfaceCategory } from "@/shared/metadata";
 import { Mono, StatusMark, Term, type StatusKind } from "@/shared/shared";
 import { useWorkspace } from "./store";
 import { AnimatedRow, Body, EmptyState, ListHead, ListRow, PageHeader, RowPresence } from "./kit";
 import { ConfirmDialog } from "./settings";
+import { FollowerOperationEvidence } from "./follower-evidence";
+
 
 /** What Canonfig does with a harness on this machine, from the three facts `canonfig harnesses` reports. */
 function harnessStatus(h: Harness): { kind: StatusKind; label: string; hint: string } {
@@ -43,7 +44,7 @@ function surfacesLabel(selected: SurfaceCategory[] | undefined): string {
  */
 function SurfacesMenu({ harness }: { harness: Harness }) {
   const ws = useWorkspace();
-  const supported = SURFACE_SUPPORT[harness.id];
+  const supported = ws.profileLive?.snapshot ? SURFACE_CATEGORIES.filter((category) => ws.profileLive!.snapshot!.supportedSurfaces[harness.id]?.includes(category)) : SURFACE_SUPPORT[harness.id];
   const selected = ws.surfaces[harness.id];
   const label = surfacesLabel(selected);
   // Radix puts focus back on the trigger when the menu closes, which draws its focus ring even after a
@@ -54,7 +55,7 @@ function SurfacesMenu({ harness }: { harness: Harness }) {
       const { [harness.id]: _dropped, ...rest } = prev;
       return next === undefined ? rest : { ...rest, [harness.id]: next };
     });
-    ws.markProfileEdit({ area: "harnesses", id: "harnesses", change: "modified" });
+    if (!ws.profileLive) ws.markProfileEdit({ area: "harnesses", id: "harnesses", change: "modified" });
   };
   const toggle = (category: SurfaceCategory, on: boolean) => {
     const current = selected ?? supported;
@@ -65,7 +66,7 @@ function SurfacesMenu({ harness }: { harness: Harness }) {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         {/* -ml-[7px] cancels px-1.5 plus the button's 1px border so the label lines up with "Not listed" and the column heading; the hover fill bleeds into the gutter. */}
-        <Button variant="ghost" size="sm" className="-ml-[7px] min-w-0 justify-between gap-1 px-1.5 font-normal" title={label} aria-label={`What ${harness.name} gets: ${label}`}>
+        <Button variant="ghost" size="sm" disabled={ws.profileLive?.busy} className="-ml-[7px] min-w-0 justify-between gap-1 px-1.5 font-normal" title={label} aria-label={`What ${harness.name} gets: ${label}`}>
           <span className="truncate">{label}</span>
           <CaretDown className="shrink-0 text-faint" />
         </Button>
@@ -87,7 +88,7 @@ function SurfacesMenu({ harness }: { harness: Harness }) {
           return (
             <DropdownMenuCheckboxItem
               key={category}
-              disabled={!available}
+              disabled={!available || ws.profileLive?.busy}
               checked={available && (selected === undefined || selected.includes(category))}
               // Keep the menu open so several categories can be changed in one go.
               onSelect={(event) => event.preventDefault()}
@@ -98,7 +99,7 @@ function SurfacesMenu({ harness }: { harness: Harness }) {
           );
         })}
         <DropdownMenuSeparator />
-        <DropdownMenuItem disabled={selected === undefined} onSelect={() => change(undefined)}>
+        <DropdownMenuItem disabled={selected === undefined || ws.profileLive?.busy} onSelect={() => change(undefined)}>
           Everything
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -143,6 +144,7 @@ export function HarnessTable({ edit, onToggle }: { edit?: "listed" | "managed"; 
                 <Checkbox
                   id={id}
                   checked={checked}
+                  disabled={edit === "listed" ? !ws.capabilities.profileWrite || ws.profileLive?.busy : !ws.capabilities.followerWrite}
                   aria-label={edit === "listed" ? `List ${h.name}` : `Manage ${h.name} on this machine`}
                   onCheckedChange={(c) => onToggle?.(h.id, !!c)}
                 />
@@ -152,7 +154,7 @@ export function HarnessTable({ edit, onToggle }: { edit?: "listed" | "managed"; 
               <Mono className="truncate text-faint">{h.id}</Mono>
             </span>
             {/* Only a listed harness gets anything, so an unlisted row has no choice to make. */}
-            {edit === "listed" && (h.listed ? <SurfacesMenu harness={h} /> : <span className="text-sm text-faint">Not listed</span>)}
+            {edit === "listed" && (h.listed ? ws.capabilities.profileWrite ? <SurfacesMenu harness={h} /> : <span className="text-sm text-faint">Read only</span> : <span className="text-sm text-faint">Not listed</span>)}
             <span className="flex min-w-0 items-center gap-1.5 text-sm text-muted-foreground" title={status.hint}>
               <StatusMark kind={status.kind} />
               <span className="truncate">{status.label}</span>
@@ -180,19 +182,19 @@ export function BackupsView() {
   const [restoring, setRestoring] = useState<Snapshot | null>(null);
   const cols = "minmax(220px,280px) minmax(160px,1fr) 64px 120px";
   const colsMin = 220 + 160 + 64 + 120 + 3 * 12 + 20;
-  const recent = ws.snapshots.filter((s) => !s.first).length;
+  const recent = ws.snapshots.filter((s) => s.first === false).length;
   // Newest first, the way people look for the one to restore.
   const shown = [...ws.snapshots].reverse();
   return (
     <>
-      <PageHeader crumbs={["Backups"]} />
+      <PageHeader crumbs={["Backups"]} actions={ws.followerLive && <Button size="sm" variant="outline" onClick={ws.reload}>Reload</Button>} />
       <Body>
         <p data-tour="backups-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
           Before Canonfig first writes to a harness, it copies what that harness had into <Mono className="text-foreground">~/.canonfig/.backups</Mono>. It keeps the first
           snapshot, from before it ever wrote, and the {RECENT_KEPT} most recent; a new one replaces the oldest of those {RECENT_KEPT}. Canonfig calls each one a{" "}
           <Term term="Takeover Snapshot">takeover snapshot</Term>. Snapshots never leave this machine.
         </p>
-        {!ws.backups && (
+        {ws.backups === false && (
           <p className="flex items-center gap-2 border-b border-border px-[18px] py-3 text-sm text-pretty text-warn">
             <StatusMark kind="warn" />
             Backups are off on this machine: local/local.jsonc sets "backups": false, so Canonfig takes over a new harness without a snapshot.
@@ -210,7 +212,7 @@ export function BackupsView() {
             </ListHead>
             <RowPresence>
               {shown.map((s) => {
-                const done = s.harnesses.every((h) => ws.excluded.includes(h));
+                const done = ws.capabilities.simulatedTelemetry && s.harnesses.length > 0 && s.harnesses.every((h) => ws.excluded.includes(h));
                 return (
                   <AnimatedRow key={s.id}>
                     <ListRow cols={cols} minWidth={colsMin} data-tour="backups-list">
@@ -223,11 +225,11 @@ export function BackupsView() {
                         )}
                       </span>
                       <span className="truncate text-sm text-muted-foreground" title={s.harnesses.join(", ")}>
-                        {namesOf(s.harnesses)}
+                        {s.harnesses.length > 0 ? namesOf(s.harnesses) : "Not reported"}
                       </span>
-                      <span className="text-sm text-muted-foreground tabular-nums">{s.files}</span>
+                      <span className="text-sm text-muted-foreground tabular-nums">{s.files ?? "Not reported"}</span>
                       <span className="flex justify-end">
-                        <Button variant="outline" size="xs" disabled={done} title={done ? "Its harnesses are already excluded on this machine." : undefined} onClick={() => setRestoring(s)}>
+                        <Button variant="outline" size="xs" disabled={done || ws.followerLive?.action.loading} title={done ? "Its harnesses are already excluded on this machine." : undefined} onClick={() => setRestoring(s)}>
                           {done ? "Restored" : "Restore…"}
                         </Button>
                       </span>
@@ -237,22 +239,21 @@ export function BackupsView() {
               })}
             </RowPresence>
             <p className="px-[18px] py-3 text-sm text-pretty text-faint">
-              {recent} of {RECENT_KEPT} recent {recent === 1 ? "snapshot" : "snapshots"} kept. For files a harness shares with its own state, like{" "}
+              {ws.snapshots.every((snapshot) => snapshot.first !== undefined) && <>{recent} of {RECENT_KEPT} recent {recent === 1 ? "snapshot" : "snapshots"} kept. </>}For files a harness shares with its own state, like{" "}
               <Mono>~/.claude.json</Mono>, a snapshot holds only the keys Canonfig owns, so sign-in data never enters a backup.
             </p>
           </>
         )}
+        {ws.followerLive?.operationName === "Restore backup" && <FollowerOperationEvidence />}
       </Body>
       <ConfirmDialog
         open={restoring !== null}
         onOpenChange={(open) => !open && setRestoring(null)}
-        title={restoring ? `Restore ${namesOf(restoring.harnesses)}?` : ""}
+        title={restoring ? `Restore ${restoring.harnesses.length > 0 ? namesOf(restoring.harnesses) : restoring.id}?` : ""}
         body={
           restoring && (
             <>
-              Canonfig writes snapshot <Mono className="text-foreground">{restoring.id}</Mono> back as a recorded update, removing files it added where the harness had none, and excludes{" "}
-              {namesOf(restoring.harnesses)} on this machine in <Mono className="text-foreground">~/.canonfig/local/local.jsonc</Mono>, so the next sync leaves{" "}
-              {restoring.harnesses.length === 1 ? "it" : "them"} alone. It refuses a file that changed since Canonfig last wrote it and changes nothing.
+              Canonfig restores snapshot <Mono className="text-foreground">{restoring.id}</Mono> and excludes its restored harnesses from future synchronization. It refuses files that changed since Canonfig last wrote them.
               {DEMO && " This demo changes no files."}
             </>
           )

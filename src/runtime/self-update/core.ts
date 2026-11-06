@@ -85,19 +85,46 @@ export async function enable(root: string,npmCli: string,confirmIdle: boolean,ru
   const release=acquireGate(directory);
   try {
     if(existsSync(join(directory,"pending.json")))throw new Error("Interrupted self-update must be recovered before enabling");
+    if(readersActive(directory))throw new Error("Cannot enable while Canonfig commands are active");
     if(existsSync(join(directory,"settings.json")))throw new Error("Self-updating is already configured; use status or disable first");
     const [major,minor]=parseVersion(location.version);const state=join(home,".canonfig","state.sqlite");assertNoUnfinishedRun(state);
     writeFileSync(join(directory,"settings.json"),JSON.stringify({version:1,root:location.root,prefix:location.prefix,npmCli,node:process.execPath,line:`${major}.${minor}`,state},null,2)+"\n",{flag:"wx",mode:0o600});
     syncFile(join(directory,"settings.json"));syncDirectory(directory);
   }finally{release();}
 }
+export function disable(root: string): void {
+  const directory = updateDirectory(root);
+  const release = acquireGate(directory);
+  try {
+    if (existsSync(join(directory, "pending.json")) || readersActive(directory)) {
+      throw new Error("Cannot disable while commands or an interrupted transaction exist");
+    }
+    rmSync(join(directory, "settings.json"));
+    syncDirectory(directory);
+  } finally { release(); }
+}
+
+export interface UpdateProgress {
+  readonly phase: "checking" | "staging" | "verifying" | "activating" | "complete";
+  readonly candidate: string | null;
+}
 export interface UpdateResult {current:string;candidate:string;status:"current"|"available"|"deferred"|"updated";detail:string}
-export async function update(root:string,apply:boolean,runner:Runner=run,signal?:AbortSignal, home=homedir()):Promise<UpdateResult>{
+export async function update(root:string,apply:boolean,runner:Runner=run,signal?:AbortSignal, home=homedir(), onProgress?: (progress: UpdateProgress) => void):Promise<UpdateResult>{
   if(signal?.aborted)throw new Error("Self-update cancelled");
   const location=installation(root,home);const directory=updateDirectory(location.root);const settings=readSettings(directory);
   const [major,minor]=parseVersion(location.version);
   if(settings.root!==location.root||settings.prefix!==location.prefix||settings.line!==`${major}.${minor}`||settings.node!==process.execPath||settings.state!==join(home,".canonfig","state.sqlite"))throw new Error("Installation, Node runtime or release line changed; disable and explicitly re-enable self-updating after review");
   if(existsSync(join(directory,"pending.json")))throw new Error("Interrupted self-update: preserve and inspect the pending journal and retained backup. No automatic takeover.");
+  const progress = (phase: UpdateProgress["phase"], candidate: string | null) => {
+    if (!apply) return;
+    const value: UpdateProgress = { phase, candidate };
+    const path = join(directory, "progress.json");
+    regular(path);
+    writeFileSync(path, JSON.stringify(value) + "\n", { mode: 0o600 });
+    syncFile(path);
+    onProgress?.(value);
+  };
+  progress("checking", null);
   // Global mode ignores project .npmrc; isolated empty files ignore user/global
   // scope registries and credentials. The explicit scope override also wins
   // against npm defaults. The runner strips npm config/auth environment values.
@@ -112,17 +139,25 @@ export async function update(root:string,apply:boolean,runner:Runner=run,signal?
   const versions=Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.String)))(raw);
   const candidate=latestPatch(location.version,versions);
   const result:UpdateResult={current:location.version,candidate,status:candidate===location.version?"current":"available",detail:"Only stable patches within the enabled major.minor line are eligible."};
-  if(!apply||candidate===location.version)return result;
+  if(!apply||candidate===location.version) {
+    progress("complete", candidate);
+    return result;
+  }
   const release=acquireGate(directory);
   try {
     if(JSON.stringify(readSettings(directory))!==JSON.stringify(settings))throw new Error("Self-update settings changed while checking; no update applied");
-    if(readersActive(directory))return {...result,status:"deferred",detail:"Canonfig commands are active (or left a stale lease). Retry after they finish; do not remove live leases."};
+    if(readersActive(directory)) {
+      progress("complete", candidate);
+      return {...result,status:"deferred",detail:"Canonfig commands are active (or left a stale lease). Retry after they finish; do not remove live leases."};
+    }
     assertNoUnfinishedRun(settings.state);
     if(installation(root,home).version!==location.version)throw new Error("Installation changed during check");
     const token=randomUUID();const stage=join(directory,`stage-${token}`);const backup=join(directory,`backup-${location.version}-${token}`);
     mkdirSync(stage,{mode:0o700});
     try {
+    progress("staging", candidate);
     await runner({executable:settings.node,args:[settings.npmCli,"install","--global","--prefix",stage,"--install-strategy=nested","--ignore-scripts","--no-audit","--no-fund",`@microck/canonfig@${candidate}`,...common],timeout:900_000},signal);
+    progress("verifying", candidate);
     const staged=join(stage,...(process.platform==="win32"?[]:["lib"]),"node_modules","@microck","canonfig");
     const metadata=Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({name:Schema.Literal("@microck/canonfig"),version:Schema.String,dependencies:Schema.Record(Schema.String,Schema.String)})))(readFileSync(join(staged,"package.json"),"utf8"));
     if(metadata.name!=="@microck/canonfig"||metadata.version!==candidate||lstatSync(staged).isSymbolicLink())throw new Error("Staged package identity mismatch");
@@ -140,11 +175,13 @@ export async function update(root:string,apply:boolean,runner:Runner=run,signal?
     if(readersActive(directory)||installation(root,home).version!==location.version)throw new Error("Installation became busy or changed before activation");
     const journal=join(directory,"pending.json");
     writeFileSync(journal,JSON.stringify({version:1,root:location.root,backup,staged,previous:location.version,candidate},null,2)+"\n",{flag:"wx",mode:0o600});syncFile(journal);syncDirectory(directory);
+    progress("activating", candidate);
     renameSync(location.root,backup);syncDirectory(dirname(location.root));syncDirectory(directory);
     // A failed second rename deliberately retains the gate/journal evidence for
     // operator recovery; never delete the old package or pretend it succeeded.
     renameSync(staged,location.root);syncDirectory(dirname(location.root));
     renameSync(journal,join(directory,"last-transaction.json"));syncDirectory(directory);
+    progress("complete", candidate);
     return {...result,status:"updated",detail:`Retained previous package at ${backup}. Restart this updater under the new build; refresh managed follower bindings with sync --apply. No service was restarted.`};
     } catch(error) {
       // A pending journal (even partial) owns recovery evidence. Only discard

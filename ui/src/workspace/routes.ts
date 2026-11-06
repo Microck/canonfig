@@ -1,5 +1,5 @@
 import { useMemo, useSyncExternalStore, type MouseEvent } from "react";
-import type { Role } from "@/shared/data";
+import type { Role } from "@/shared/metadata";
 import type { FollowerView, SourceView, View } from "./store";
 
 export type WorkspaceRole = Exclude<Role, "unconfigured">;
@@ -33,6 +33,8 @@ const FOLLOWER_PATHS: Record<FollowerView, string> = {
   secrets: "secrets",
   tunnel: "settings/tunnel",
   agent: "settings/agent",
+  installers: "settings/installers",
+  setup: "settings/setup",
   doctor: "settings/health",
   machine: "settings/enrollment",
   version: "settings/version",

@@ -13,10 +13,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AnimatedNumber, Hint, Mono, StateLabel, Term } from "@/shared/shared";
-import { DEMO, PLAIN, SECRETS_GROUP, followers as seedFollowers, followerSelf, machine, type Follower } from "@/shared/data";
+import { DEMO, PLAIN, SECRETS_GROUP, type Follower } from "@/shared/metadata";
 import { SOURCE_ID } from "@/shared/machine-map/model";
 import { shq } from "@/shared/shell";
 import { useSharedState, useWorkspace, type Invitation } from "./store";
+import { ErrorNotice } from "../live/session";
+import { requestError } from "./live/resource";
+import type { GuiRequestError } from "../gui-client";
+import type { GuiInvitationDownload } from "../../../src/gui/contract/enrollment";
+import { EnrollmentOnboarding } from "@/onboarding/enrollment-controller";
 import {
   AnimatedRow,
   Body,
@@ -102,7 +107,8 @@ export function nextStep(f: Follower): { title: string; body: ReactNode; command
 }
 
 /** One plain sentence for why a machine isn't up to date on the latest revision, or null when it is. */
-export function whyBehind(f: Follower, latest: number, syncing: boolean): string | null {
+export function whyBehind(f: Follower, latest: number | undefined, syncing: boolean): string | null {
+  if (latest === undefined || f.revision === undefined || f.state === undefined) return null;
   const behind = f.revision === null || f.revision < latest;
   if (f.state === "offline") return `Can't reach the Source${f.note ? ` (${f.note.charAt(0).toLowerCase()}${f.note.slice(1)})` : ""}. On revision ${f.revision ?? "none"} of ${latest}.`;
   if (f.state === "drift") return `${f.note ?? "Someone edited a managed file"} on ${f.name}. Canonfig keeps that edit there and holds the item until it's settled on ${f.name}.`;
@@ -110,7 +116,7 @@ export function whyBehind(f: Follower, latest: number, syncing: boolean): string
   if (f.state === "failed") return `Its last update failed and was put back. On revision ${f.revision ?? "none"}.`;
   if (!behind) return null;
   if (syncing) return `Getting revision ${latest} now.`;
-  return `On revision ${f.revision ?? "none"}. Gets revision ${latest} at its next check (${f.schedule}).`;
+  return `On revision ${f.revision ?? "none"}. Gets revision ${latest} at its next check${f.schedule ? ` (${f.schedule})` : ""}.`;
 }
 
 export function MachinesView() {
@@ -157,7 +163,7 @@ function SourceMachinesView() {
         right={
           ws.followers.length > 0 && (
             <span className="text-sm text-muted-foreground tabular-nums">
-              <AnimatedNumber value={upToDate} /> of <AnimatedNumber value={ws.followers.length} /> up to date on revision <AnimatedNumber value={ws.latest} />
+              {ws.capabilities.simulatedTelemetry && ws.latest !== undefined && <><AnimatedNumber value={upToDate} /> of <AnimatedNumber value={ws.followers.length} /> up to date on revision <AnimatedNumber value={ws.latest} /></>}
             </span>
           )
         }
@@ -216,7 +222,7 @@ function SourceMachinesView() {
                 </ListHead>
                 <RowPresence>
                   {ws.followers.map((f) => {
-                    const behind = f.revision !== null && f.revision < ws.latest;
+                    const behind = f.revision != null && ws.latest !== undefined && f.revision < ws.latest;
                     return (
                       <AnimatedRow key={f.id}>
                         <ListRow cols={cols} minWidth={colsMin} selected={selected === f.id} onClick={() => setSelected(f.id)} className="group">
@@ -232,12 +238,12 @@ function SourceMachinesView() {
                           >
                             <span className="truncate">{f.name}</span>
                           </span>
-                          <span className="text-sm text-muted-foreground">{PLATFORM[f.platform]}</span>
+                          <span className="text-sm text-muted-foreground">{f.platform ? PLATFORM[f.platform] : "Not reported"}</span>
                           <GroupChips groups={f.groups} empty="None" />
                           <span className={behind ? "text-sm text-warn tabular-nums" : "text-sm text-muted-foreground tabular-nums"}>
-                            {f.revision === null ? "None" : <AnimatedNumber value={f.revision} />}
+                            {f.revision === undefined ? "Not reported" : f.revision === null ? "None" : <AnimatedNumber value={f.revision} />}
                           </span>
-                          <StateLabel state={f.state} />
+                          {f.state ? <StateLabel state={f.state} /> : <span className="text-sm text-faint">Not reported</span>}
                           <span className="text-sm text-muted-foreground tabular-nums">{f.lastRun}</span>
                           {!current && <span className="truncate text-sm text-faint tabular-nums">{f.schedule}</span>}
                         </ListRow>
@@ -277,18 +283,18 @@ function Invitations() {
                     <span className="min-w-0 truncate font-medium" title={name(inv)}>{name(inv)}</span>
                     <Mono className="col-start-1 row-start-2 min-w-0 break-all text-sm sm:col-start-auto sm:row-start-auto">{inv.file}</Mono>
                     <span className="col-start-1 text-sm text-muted-foreground sm:col-start-auto">Expires {inv.expires}</span>
-                    <Button
+                    {ws.capabilities.invitationCancel && <Button
                       variant="destructive"
                       size="xs"
                       className="col-start-2 row-span-3 row-start-1 min-h-11 justify-self-end sm:col-start-auto sm:row-span-1 sm:row-start-auto sm:min-h-0"
                       aria-label={`Cancel invitation for ${name(inv)}`}
                       onClick={() => {
-                        ws.setInvitations((p) => p.filter((x) => x.id !== inv.id));
+                        ws.setInvitations!((p) => p.filter((x) => x.id !== inv.id));
                         toast("Invitation cancelled", { description: "It can no longer be used to join." });
                       }}
                     >
                       Cancel
-                    </Button>
+                    </Button>}
                   </div>
                 </AnimatedRow>
               ))}
@@ -304,17 +310,16 @@ function Invitations() {
 function FollowerMachinesView() {
   const ws = useWorkspace();
   const map = ws.machinesMode === "map";
-  const laptop = seedFollowers.find((f) => f.name === followerSelf.name)!;
-  const self: Follower = {
-    ...laptop,
-    name: ws.machineName,
-    revision: ws.appliedRevision === 0 ? null : ws.appliedRevision,
-    // A machine that has applied nothing yet (just joined) cannot be up to date.
-    state: ws.humanAction ? "human-action" : ws.driftOpen ? "drift" : ws.appliedRevision === 0 ? "never-synced" : "converged",
-  };
+  const [joining, setJoining] = useState(false);
+  const [customizeId, setCustomizeId] = useState<string | null>(null);
+  const open = (id: string) => ws.enrollment
+    ? ws.navigate(workspaceHref("follower", "machines", { machinesMode: ws.machinesMode, focus: id }))
+    : ws.setView(id === SOURCE_ID ? "tunnel" : "machine");
+  if (joining && ws.enrollmentBackend && ws.session) return <EnrollmentOnboarding backend={ws.enrollmentBackend} session={ws.session} onCancel={() => setJoining(false)} />;
+  const self = ws.selfFollower;
   return (
     <>
-      <PageHeader crumbs={["Machines"]} />
+      <PageHeader crumbs={["Machines"]} actions={ws.enrollment && <Button size="sm" variant="outline" onClick={() => setJoining(true)}>Replace enrollment</Button>} />
       <Toolbar>
         <ToolbarTab active={map} href={workspaceHref("follower", "machines")}>
           <TreeStructure bold={map} className="size-3.5" /> Map
@@ -323,15 +328,20 @@ function FollowerMachinesView() {
           <ListBullets bold={!map} className="size-3.5" /> List
         </ToolbarTab>
       </Toolbar>
-      <Body>
-        {map ? <div data-tour="machine-map" className="flex h-full flex-col">
+      <Body detail={ws.enrollment && ws.focus ? <EnrollmentDetail source={ws.focus === SOURCE_ID} onClose={() => ws.navigate(workspaceHref("follower", "machines", { machinesMode: ws.machinesMode }))} onCustomize={() => {
+        setCustomizeId(ws.focus);
+        ws.navigate(workspaceHref("follower", "machines", { focus: ws.focus }));
+      }} /> : undefined}>
+        {!self ? <EmptyState title="Enrollment unavailable" body="Reload to read this machine's enrollment." /> : map ? <div data-tour="machine-map" className="flex h-full flex-col">
           <MachineMap
             role="follower"
             followers={[self]}
             selfId={self.id}
             latestRevision={ws.targetRevision}
             syncing={ws.phase === "running" ? [self.id] : []}
-            onOpenMachine={(id) => ws.setView(id === SOURCE_ID ? "tunnel" : "machine")}
+            onOpenMachine={open}
+            customizeId={customizeId}
+            onCustomizeChange={setCustomizeId}
             className="min-h-0 flex-1"
           />
         </div> : (
@@ -339,15 +349,15 @@ function FollowerMachinesView() {
             <ListHead cols="minmax(112px,240px) 140px minmax(200px,1fr)" minWidth={508}>
               <span>Machine</span><span>Role</span><span>Details</span>
             </ListHead>
-            <ListRow cols="minmax(112px,240px) 140px minmax(200px,1fr)" minWidth={508} onClick={() => ws.setView("tunnel")}>
-              <span className="truncate font-medium">{machine.hostname}</span>
+            <ListRow cols="minmax(112px,240px) 140px minmax(200px,1fr)" minWidth={508} onClick={() => open(SOURCE_ID)}>
+              <span className="truncate font-medium">{ws.sourceMachine.hostname}</span>
               <span className="text-muted-foreground">Source</span>
               <Mono className="truncate">{ws.endpoint}</Mono>
             </ListRow>
-            <ListRow cols="minmax(112px,240px) 140px minmax(200px,1fr)" minWidth={508} onClick={() => ws.setView("machine")}>
+            <ListRow cols="minmax(112px,240px) 140px minmax(200px,1fr)" minWidth={508} onClick={() => open(self.id)}>
               <span className="truncate font-medium">{self.name}</span>
               <span className="text-muted-foreground">This follower</span>
-              <StateLabel state={self.state} />
+              {self.state && <StateLabel state={self.state} />}
             </ListRow>
           </div>
         )}
@@ -356,10 +366,32 @@ function FollowerMachinesView() {
   );
 }
 
+function EnrollmentDetail({ source, onClose, onCustomize }: { source: boolean; onClose: () => void; onCustomize: () => void }) {
+  const ws = useWorkspace();
+  const enrollment = ws.enrollment!;
+  return <DetailPanel title={source ? "Source Machine" : enrollment.follower.name} subtitle={<span className="text-sm text-muted-foreground">{source ? "The Source this machine follows" : "This machine"}</span>} onClose={onClose} footer={<Button variant="ghost" size="sm" onClick={onCustomize}>Customize look</Button>}>
+    <div className="px-4 py-3">
+      {source ? <>
+        <Prop label="Address"><Mono className="break-all">{enrollment.source.endpoint}</Mono></Prop>
+        {([["Signing fingerprint", enrollment.source.signingFingerprint], ["TLS fingerprint", enrollment.source.tlsFingerprint]] as const).map(([label, value]) => <Prop key={label} label={label}>
+          <Mono className="break-all">{value}</Mono>
+          <Button variant="ghost" size="xs" onClick={async () => { try { await navigator.clipboard.writeText(value); toast(`${label} copied`); } catch { toast.error("Clipboard unavailable. Select and copy the fingerprint."); } }}>Copy {label.toLowerCase()}</Button>
+        </Prop>)}
+      </> : <>
+        <Prop label="Identity"><Mono className="break-all">{enrollment.follower.id}</Mono></Prop>
+        <Prop label="Groups"><GroupChips groups={[...enrollment.follower.groups]} empty="Base profile only" /></Prop>
+        <Prop label="Enrolled">{enrollment.follower.enrolledAt}</Prop>
+        <Prop label="Enrollment">{enrollment.follower.revoked ? "Revoked" : enrollment.pending ? "Pending" : "Enrolled"}</Prop>
+        <Prop label="Revision">Revision not reported</Prop>
+      </>}
+    </div>
+  </DetailPanel>;
+}
+
 function SourceDetail({ onClose, onCustomize }: { onClose: () => void; onCustomize: () => void }) {
   const ws = useWorkspace();
   // Same key and initial as the Source service page that owns it, so a removal shows here too.
-  const [serviceInstalled] = useSharedState("service-installed", true);
+  const [serviceInstalled] = useSharedState("service-installed", ws.serviceInstalled);
   return (
     <DetailPanel
       title={ws.machineName}
@@ -383,14 +415,14 @@ function SourceDetail({ onClose, onCustomize }: { onClose: () => void; onCustomi
         You edit the profile here and publish revisions. Every other machine copies from it.
       </p>
       <div className="px-4 py-3">
-        <Prop label="Latest revision">{ws.latest === 0 ? "None published yet" : <>Revision <AnimatedNumber value={ws.latest} /></>}</Prop>
-        <Prop label="Unpublished">
+        {ws.latest !== undefined && <Prop label="Latest revision">{ws.latest === 0 ? "None published yet" : <>Revision <AnimatedNumber value={ws.latest} /></>}</Prop>}
+        {ws.capabilities.simulatedTelemetry && <Prop label="Unpublished">
           <AnimatedNumber value={ws.pending.length} /> {ws.pending.length === 1 ? "change" : "changes"}
-        </Prop>
+        </Prop>}
         <Prop label="Address">
           <Mono className="break-all text-foreground">{ws.endpoint}</Mono>
         </Prop>
-        <Prop label="Service">{serviceInstalled ? "Running" : "Not installed"}</Prop>
+        {ws.capabilities.simulatedTelemetry && <Prop label="Service">{serviceInstalled ? "Running" : "Not installed"}</Prop>}
       </div>
     </DetailPanel>
   );
@@ -401,15 +433,17 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
   const [revokeOpen, setRevokeOpen] = useState(false);
   const returnFocus = useRef<HTMLElement | null>(null);
   const step = nextStep(f);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<GuiRequestError | null>(null);
   const why = whyBehind(f, ws.latest, ws.syncing.includes(f.id));
   return (
     <DetailPanel
       title={f.name}
-      subtitle={<StateLabel state={f.state} />}
+      subtitle={f.state ? <StateLabel state={f.state} /> : <span className="text-sm text-muted-foreground">{f.note}</span>}
       onClose={onClose}
       footer={
         <>
-          <Button variant="destructive" size="sm" onClick={() => setRevokeOpen(true)}>
+          <Button variant="destructive" size="sm" disabled={f.note === "Revoked"} onClick={() => setRevokeOpen(true)}>
             Revoke…
           </Button>
           <Button variant="ghost" size="sm" className="ml-auto" onClick={onCustomize}>
@@ -430,10 +464,10 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
         </section>
       )}
       <div className="px-4 py-3">
-        <Prop label="System">{PLATFORM[f.platform]}</Prop>
+        {f.platform && <Prop label="System">{PLATFORM[f.platform]}</Prop>}
         <Prop label={<Term term="Profile Revision">Revision</Term>}>
-          {f.revision === null ? "None yet" : <AnimatedNumber value={f.revision} />}
-          {f.revision !== null && f.revision < ws.latest && <span className="text-muted-foreground"> of {ws.latest}</span>}
+          {f.revision === undefined ? "Revision not reported" : f.revision === null ? "None yet" : <AnimatedNumber value={f.revision} />}
+          {f.revision != null && ws.latest !== undefined && f.revision < ws.latest && <span className="text-muted-foreground"> of {ws.latest}</span>}
         </Prop>
         <Prop label={<Term term="Follower Group">{PLAIN.groups}</Term>}>
           <span className="flex flex-wrap items-center gap-2">
@@ -443,8 +477,8 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
             </Button>
           </span>
         </Prop>
-        <Prop label="Checks">{f.schedule}</Prop>
-        <Prop label="Last update">{f.lastRun}</Prop>
+        {f.schedule && <Prop label="Checks">{f.schedule}</Prop>}
+        {f.lastRun && <Prop label="Last update">{f.lastRun}</Prop>}
         <Prop
           label={
             <span className="inline-flex items-center gap-1">
@@ -455,14 +489,15 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
           <Mono className="break-all text-foreground">{f.id}</Mono>
         </Prop>
       </div>
-      <div className="border-t border-border px-4 pt-3">
+      {f.resources && <div className="border-t border-border px-4 pt-3">
         <SectionLabel>What it has</SectionLabel>
-      </div>
+      </div>}
       <div className="pb-3">
         {ws.resources
           .filter((r) => r.change !== "added")
           .map((r) => {
-            const state = f.resources[r.id] ?? "never-synced";
+            const state = f.resources?.[r.id];
+            if (!state) return null;
             const Icon = CATEGORY_ICON[r.category];
             const problem = state === "drift" || state === "human-action";
             return (
@@ -501,23 +536,31 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
             <DialogTitle>Revoke {f.name}?</DialogTitle>
             <DialogDescription className="text-base text-pretty">
               {f.name} stops getting revisions right away and can't reconnect with its current identity. Files already on it stay as they are. Adding it again needs a new invitation.
-              {ws.invitations.some((inv) => inv.replaces === f.id) && " Its waiting group-change invitation is cancelled too."}
+              {ws.capabilities.invitationCancel && ws.invitations.some((inv) => inv.replaces === f.id) && " Its waiting group-change invitation is cancelled too."}
             </DialogDescription>
           </DialogHeader>
+          {error && <ErrorNotice error={error} />}
           <DialogFooter>
             <Button variant="ghost" onClick={() => setRevokeOpen(false)}>
               Cancel
             </Button>
             <Button
               variant="destructive"
-              onClick={() => {
-                // A replacement invitation re-joins this follower, so it dies with the follower: otherwise it could
-                // re-establish the revoked enrollment. Both lists change in the same event.
-                ws.setFollowers((prev) => prev.filter((x) => x.id !== f.id));
-                ws.setInvitations((prev) => prev.filter((inv) => inv.replaces !== f.id));
-                setRevokeOpen(false);
-                onClose();
-                toast(`Revoked ${f.name}`, { description: `Identity ${f.id} no longer works.` });
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                setError(null);
+                try {
+                  if (ws.revokeFollower) await ws.revokeFollower(f.id);
+                  else {
+                    ws.setFollowers!((prev) => prev.filter((x) => x.id !== f.id));
+                    ws.setInvitations!((prev) => prev.filter((inv) => inv.replaces !== f.id));
+                  }
+                  setRevokeOpen(false);
+                  onClose();
+                  toast(`Revoked ${f.name}`, { description: `Identity ${f.id} no longer works.` });
+                } catch (cause) { setError(requestError(cause)); }
+                finally { setBusy(false); }
               }}
             >
               Revoke {f.name}
@@ -559,6 +602,7 @@ interface SubmittedInvitation {
   endpoint: string;
   url: URL;
   expiry: keyof typeof EXPIRY;
+  download?: GuiInvitationDownload;
 }
 
 const ID_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -574,9 +618,11 @@ function newInvitationId(taken: Invitation[]) {
 /** One checkbox row per group; the secrets group shows what it does, with its real name in mono. */
 function GroupChecks({ idPrefix, value, onChange, disabled }: { idPrefix: string; value: string[]; onChange: (groups: string[]) => void; disabled?: boolean }) {
   const [groups] = useGroups();
+  // Secret sharing is an enrollment permission, even when no authored group uses it.
+  const choices = [{ name: SECRETS_GROUP, description: "" }, ...groups.filter((group) => group.name !== SECRETS_GROUP)];
   return (
     <div className="grid gap-0.5">
-      {groups.map((g) => (
+      {choices.map((g) => (
         <Label key={g.name} htmlFor={`${idPrefix}-${g.name}`} className="flex min-h-11 cursor-pointer items-center gap-2 text-base font-normal sm:min-h-8">
           <Checkbox
             id={`${idPrefix}-${g.name}`}
@@ -619,6 +665,19 @@ function Step({ title, note, command }: { title: ReactNode; note?: ReactNode; co
 }
 
 export function InviteDialog() {
+  return <InviteForm />;
+}
+
+function downloadInvitation(invitation: GuiInvitationDownload) {
+  const url = URL.createObjectURL(new Blob([invitation.envelope], { type: "text/plain;charset=utf-8" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = invitation.filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function InviteForm() {
   const ws = useWorkspace();
   const [name, setName] = useState("");
   const [endpoint, setEndpoint] = useState(ws.endpoint);
@@ -628,6 +687,7 @@ export function InviteDialog() {
   const [inviteId, setInviteId] = useState(() => newInvitationId(ws.invitations));
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<SubmittedInvitation | null>(null);
+  const [error, setError] = useState<GuiRequestError | null>(null);
   const [tried, setTried] = useState(false);
   const creating = useRef<number | undefined>(undefined);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -640,6 +700,7 @@ export function InviteDialog() {
     setResult(null);
     setBusy(false);
     setTried(false);
+    setError(null);
   };
 
   // Each opening starts fresh. Resetting on open, not on a timer after closing, means a quick reopen can't
@@ -666,7 +727,7 @@ export function InviteDialog() {
   const resultLocal = !!result && LOOPBACK.includes(result.url.hostname);
   const sshHost = `${ws.machineName}.local`;
 
-  const create = () => {
+  const create = async () => {
     setTried(true);
     if (!url) {
       document.getElementById("inv-ep")?.focus();
@@ -674,15 +735,24 @@ export function InviteDialog() {
     }
     const submitted: SubmittedInvitation = { file, name: trimmedName, groups, endpoint: endpoint.trim(), url, expiry };
     setBusy(true);
-    creating.current = window.setTimeout(() => {
-      ws.setInvitations((p) => [...p, { id: inviteId, file: submitted.file, name: submitted.name, groups: submitted.groups, expires: EXPIRY[submitted.expiry].at }]);
-      setResult(submitted);
-      setBusy(false);
-    }, 700);
+    setError(null);
+    if (ws.createInvitation) {
+      try {
+        const download = await ws.createInvitation({ endpoint: submitted.endpoint, groups, expiresInMilliseconds: { "15m": 900_000, "1h": 3_600_000, "24h": 86_400_000 }[expiry] });
+        setResult({ ...submitted, file: download.filename, download });
+      } catch (cause) { setError(requestError(cause)); }
+      finally { setBusy(false); }
+    } else {
+      creating.current = window.setTimeout(() => {
+        ws.setInvitations!((p) => [...p, { id: inviteId, file: submitted.file, name: submitted.name, groups: submitted.groups, expires: EXPIRY[submitted.expiry].at }]);
+        setResult(submitted);
+        setBusy(false);
+      }, 700);
+    }
   };
 
   return (
-    <Dialog open={ws.inviteOpen} onOpenChange={ws.setInviteOpen}>
+    <Dialog open={ws.inviteOpen} onOpenChange={(open) => { if (!busy || !ws.createInvitation) ws.setInviteOpen(open); }}>
       <DialogContent
         className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] gap-5 overflow-y-auto sm:max-w-[540px]"
         onOpenAutoFocus={(event) => {
@@ -691,7 +761,7 @@ export function InviteDialog() {
           if (active instanceof HTMLElement && !active.closest('[role="dialog"]')) returnFocus.current = active;
           // On touch, focus the dialog itself rather than raise the keyboard for an optional name.
           if (isCoarsePointer()) (event.target as HTMLElement).focus();
-          else document.getElementById("inv-name")?.focus();
+          else document.getElementById(ws.createInvitation ? "inv-ep" : "inv-name")?.focus();
         }}
         onCloseAutoFocus={(event) => {
           event.preventDefault();
@@ -716,9 +786,9 @@ export function InviteDialog() {
             </DialogHeader>
             {/* While Creating, the invitation was already submitted from these values, so the fields lock until the result shows. */}
             <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
-              <Field label="Machine name" htmlFor="inv-name" description="Optional. Fills in the commands below; the machine can pick another name.">
+              {!ws.createInvitation && <Field label="Machine name" htmlFor="inv-name" description="Optional. Fills in the commands below; the machine can pick another name.">
                 <Input id="inv-name" value={name} onChange={(e) => setName(e.target.value)} disabled={busy} placeholder="work-laptop" aria-describedby="inv-name-note" autoComplete="off" spellCheck={false} />
-              </Field>
+              </Field>}
               <Field
                 label="Address it connects to"
                 htmlFor="inv-ep"
@@ -755,7 +825,7 @@ export function InviteDialog() {
               <Field label={<Term term="Follower Group">{PLAIN.groups}</Term>} description="Groups add items on top of the base profile. Leave empty for the base profile only.">
                 <GroupChecks idPrefix="inv" value={groups} onChange={setGroups} disabled={busy} />
               </Field>
-              <Collapsible>
+              {!ws.createInvitation && <Collapsible>
                 <CollapsibleTrigger className="group flex min-h-11 items-center gap-1 rounded text-sm font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 sm:min-h-8">
                   <CaretRight className="size-3.5 transition-transform duration-150 ease-snap group-data-[state=open]:rotate-90" />
                   Advanced
@@ -765,11 +835,12 @@ export function InviteDialog() {
                     <Input id="inv-out" value={outDir} onChange={(e) => setOutDir(e.target.value)} disabled={busy} autoComplete="off" spellCheck={false} className="font-mono text-sm" />
                   </Field>
                 </CollapsibleContent>
-              </Collapsible>
+              </Collapsible>}
             </div>
+            {error && <ErrorNotice error={error} />}
             <DialogFooter className="flex-col items-stretch gap-3 sm:flex-col">
               <div className="flex justify-end gap-2">
-                <Button type="button" variant="ghost" onClick={() => ws.setInviteOpen(false)}>
+                <Button type="button" variant="ghost" disabled={busy && !!ws.createInvitation} onClick={() => ws.setInviteOpen(false)}>
                   Cancel
                 </Button>
                 <Button type="submit" variant="primary" disabled={busy}>
@@ -783,11 +854,11 @@ export function InviteDialog() {
             <DialogHeader>
               <DialogTitle>Invitation ready</DialogTitle>
               <DialogDescription className="text-base text-pretty">
-                Saved {DEMO && "in this demo workspace "}as <Mono className="break-all text-sm text-foreground">{result.file}</Mono>
-                {DEMO ? "; no file was written. A real invitation works" : ". It works"} once and expires {EXPIRY[result.expiry].at}. Anyone holding it can join a
-                machine, so move it privately.
+                {result.download ? "Download " : `Saved ${DEMO ? "in this demo workspace " : ""}as `}<Mono className="break-all text-sm text-foreground">{result.file}</Mono>
+                {result.download ? `. It works once and expires ${result.download.expiresAt}.` : `${DEMO ? "; no file was written. A real invitation works" : ". It works"} once and expires ${EXPIRY[result.expiry].at}.`} Anyone holding it can join a machine, so move it privately.
               </DialogDescription>
             </DialogHeader>
+            {result.download && <Button variant="primary" onClick={() => downloadInvitation(result.download!)}>Download invitation</Button>}
             <Steps>
               <Step
                 title="Copy the file to the other machine, for example with scp:"
@@ -803,7 +874,7 @@ export function InviteDialog() {
                   />
                   <Step
                     title={<>Still on {host}, start the SSH tunnel to {ws.machineName}:</>}
-                    command={`canonfig tunnel start --invitation ${shq(`~/${resultFileName}`)} --ssh-host ${shq(sshHost)} --ssh-user maria --ssh-host-key-file ./source-host-key.pub`}
+                    command={`canonfig tunnel start --invitation ${shq(`~/${resultFileName}`)} --ssh-host ${shq(sshHost)} --ssh-user ${ws.createInvitation ? "<ssh-user>" : "maria"} --ssh-host-key-file ./source-host-key.pub`}
                     note={tunnelNote(result.url)}
                   />
                 </>
@@ -845,12 +916,20 @@ export function InviteDialog() {
  * `follower enroll --replace` on that machine. This dialog builds exactly that.
  */
 export function ChangeGroupsDialog() {
+  return <ChangeGroupsForm />;
+}
+
+function ChangeGroupsForm() {
   const ws = useWorkspace();
   const req = ws.changeGroups;
   const open = req !== null;
   const [followerId, setFollowerId] = useState<string>("");
   const [groups, setGroups] = useState<string[]>([]);
   const [file, setFile] = useState<string | null>(null);
+  const [download, setDownload] = useState<GuiInvitationDownload | null>(null);
+  const [endpoint, setEndpoint] = useState(ws.endpoint);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<GuiRequestError | null>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
 
   const pickFollower = (id: string) => {
@@ -864,6 +943,9 @@ export function ChangeGroupsDialog() {
     if (!req) return;
     pickFollower(req.followerId ?? ws.followers.find((x) => !req.addGroup || !x.groups.includes(req.addGroup))?.id ?? ws.followers[0]?.id ?? "");
     setFile(null);
+    setDownload(null);
+    setEndpoint(ws.endpoint);
+    setError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [req]);
 
@@ -873,11 +955,11 @@ export function ChangeGroupsDialog() {
   const removed = before.filter((g) => !groups.includes(g));
   const unchanged = added.length === 0 && removed.length === 0;
   const out = `~/canonfig-invite-${f?.name ?? "machine"}-groups.json`;
-  const fileName = out.split("/").pop()!;
-  const close = () => ws.setChangeGroups(null);
+  const fileName = file?.split("/").pop() ?? out.split("/").pop()!;
+  const close = () => { if (!busy) ws.setChangeGroups(null); };
 
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && close()}>
+    <Dialog open={open} onOpenChange={(o) => !o && !busy && close()}>
       <DialogContent
         className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] gap-5 overflow-y-auto sm:max-w-[540px]"
         onKeyDownCapture={(event) => {
@@ -900,11 +982,22 @@ export function ChangeGroupsDialog() {
         {!file || !f ? (
           <form
             className="contents"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
-              if (!f || unchanged) return;
-              ws.setInvitations((p) => [...p.filter((x) => x.replaces !== f.id), { id: `G-${f.id}`, file: out, name: f.name, groups, expires: "in 1 hour", replaces: f.id }]);
-              setFile(out);
+              if (!f || unchanged || busy) return;
+              setBusy(true);
+              setError(null);
+              try {
+                if (ws.createInvitation) {
+                  const invitation = await ws.createInvitation({ endpoint, groups, expiresInMilliseconds: 3_600_000 });
+                  setDownload(invitation);
+                  setFile(invitation.filename);
+                } else {
+                  ws.setInvitations!((p) => [...p.filter((x) => x.replaces !== f.id), { id: `G-${f.id}`, file: out, name: f.name, groups, expires: "in 1 hour", replaces: f.id }]);
+                  setFile(out);
+                }
+              } catch (cause) { setError(requestError(cause)); }
+              finally { setBusy(false); }
             }}
           >
             <DialogHeader>
@@ -916,7 +1009,7 @@ export function ChangeGroupsDialog() {
             </DialogHeader>
             {!req?.followerId && (
               <Field label="Machine" htmlFor="cg-machine">
-                <Select value={followerId} onValueChange={pickFollower}>
+                <Select value={followerId} onValueChange={pickFollower} disabled={busy}>
                   <SelectTrigger id="cg-machine" className="w-56">
                     <SelectValue placeholder="Pick a machine" />
                   </SelectTrigger>
@@ -932,8 +1025,12 @@ export function ChangeGroupsDialog() {
               </Field>
             )}
             <Field label={<Term term="Follower Group">{PLAIN.groups}</Term>}>
-              <GroupChecks idPrefix="cg" value={groups} onChange={setGroups} />
+              <GroupChecks idPrefix="cg" value={groups} onChange={setGroups} disabled={busy} />
             </Field>
+            {ws.createInvitation && <Field label="Address it connects to" htmlFor="cg-endpoint">
+              <Input id="cg-endpoint" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} disabled={busy} />
+            </Field>}
+            {error && <ErrorNotice error={error} />}
             <p className="text-sm text-pretty text-muted-foreground" aria-live="polite">
               {unchanged
                 ? "No change yet. Tick or untick a group."
@@ -942,10 +1039,10 @@ export function ChangeGroupsDialog() {
             </p>
             <DialogFooter className="flex-col items-stretch gap-3 sm:flex-col">
               <div className="flex justify-end gap-2">
-                <Button type="button" variant="ghost" onClick={close}>
+                <Button type="button" variant="ghost" disabled={busy} onClick={close}>
                   Cancel
                 </Button>
-                <Button type="submit" variant="primary" disabled={!f || unchanged}>
+                <Button type="submit" variant="primary" disabled={!f || unchanged || busy}>
                   Create invitation
                 </Button>
               </div>
@@ -956,10 +1053,11 @@ export function ChangeGroupsDialog() {
             <DialogHeader>
               <DialogTitle>Re-join {f.name} with its new groups</DialogTitle>
               <DialogDescription className="text-base text-pretty">
-                Saved {DEMO && "in this demo workspace "}as <Mono className="break-all text-sm text-foreground">{file}</Mono>
-                {DEMO ? "; no file was written. A real invitation works" : ". It works"} once and expires in 1 hour. Until {f.name} re-joins, it keeps its old groups.
+                {download ? "Download " : `Saved ${DEMO ? "in this demo workspace " : ""}as `}<Mono className="break-all text-sm text-foreground">{file}</Mono>
+                {download ? `. It works once and expires ${download.expiresAt}.` : `${DEMO ? "; no file was written. A real invitation works" : ". It works"} once and expires in 1 hour.`} Until {f.name} re-joins, it keeps its old groups.
               </DialogDescription>
             </DialogHeader>
+            {download && <Button variant="primary" onClick={() => downloadInvitation(download)}>Download invitation</Button>}
             <Steps>
               <Step title={<>Copy the file to {f.name}, for example with scp:</>} command={`scp ${shq(file)} ${shq(f.name)}:~/`} />
               <Step

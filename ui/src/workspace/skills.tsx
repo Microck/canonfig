@@ -2,16 +2,17 @@
 // (src/skills/manager.ts, docs/skill-updates.md). The record of where each skill came from is
 // ~/.canonfig/skills-sources.json, which stays on the Source and is never published. An update only changes the
 // skill in the Canonfig folder, so machines get it with the next revision, like any other edit.
-// Demo state: the fetch reads `upstreamSkills` in shared/data.ts, never the network.
+// The workspace supplies upstream records and owns whether these operations are available.
 import { useId, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { DEMO, DEMO_SKILLS_REPO, skillManifest, skillSources, upstreamSkills, type Resource, type SkillSource } from "@/shared/data";
+import { DEMO, skillManifest, type Resource, type SkillSource, type UpstreamSkill } from "@/shared/metadata";
 import { Mono, StatusMark, type StatusKind } from "@/shared/shared";
 import { useSharedReader, useSharedState, useWorkspace } from "./store";
 import { Field, Prop, SectionLabel, useDialogReturnFocus } from "./kit";
+import { ProfileActionNotice } from "./profile-authoring-controls";
 
 type Files = Record<string, string>;
 
@@ -19,24 +20,30 @@ type Files = Record<string, string>;
 interface SkillCheck {
   status: "unchanged" | "update-available" | "local-edits";
   nextCommit: string;
-  added: string[];
-  changed: string[];
-  removed: string[];
+  added: readonly string[];
+  changed: readonly string[];
+  removed: readonly string[];
 }
 
 /** The Source's skills-sources.json. A Source fresh out of onboarding starts with none (store.tsx sharedSeed). */
 function useSkillSources() {
-  return useSharedState<SkillSource[]>("skill-sources", skillSources);
+  const ws = useWorkspace();
+  const [sources, setSources] = useSharedState<SkillSource[]>("skill-sources", ws.skillSources);
+  return [ws.profileLive ? ws.skillSources : sources, setSources] as const;
 }
 
 /** The last check of each tracked skill this session, by item id. Checks aren't stored anywhere else: `list` reads no network. */
 function useSkillChecks() {
-  return useSharedState<Record<string, SkillCheck>>("skill-checks", {});
+  const ws = useWorkspace();
+  const [checks, setChecks] = useSharedState<Record<string, SkillCheck>>("skill-checks", {});
+  return [ws.profileLive ? ws.profileLive.skillChecks : checks, setChecks] as const;
 }
 
 /** The running check, update or tracking, as `<kind>:<item id>`: one at a time, like the CLI's skill lock. */
 function useSkillBusy() {
-  return useSharedState<string | null>("skill-busy", null);
+  const ws = useWorkspace();
+  const [busy, setBusy] = useSharedState<string | null>("skill-busy", null);
+  return [ws.profileLive ? ws.profileLive.busy ? ws.profileLive.skillBusy ?? "busy" : null : busy, setBusy] as const;
 }
 
 /**
@@ -70,7 +77,7 @@ const short = (commit: string) => commit.slice(0, 7);
 type Fetched = { ok: true; commit: string; files: Files } | { ok: false; error: string };
 
 /** Fetches one skill directory at one ref, as fetchSkill in src/skills/upstream.ts does with Git. */
-function fetchSkill(source: string, ref: string, subdir: string): Fetched {
+function fetchSkill(upstreamSkills: UpstreamSkill[], source: string, ref: string, subdir: string): Fetched {
   const known = upstreamSkills.filter((u) => u.source === source && (u.refs.includes(ref) || u.commit === ref));
   if (known.length === 0)
     return { ok: false, error: `Couldn't fetch ${ref} from that repository. Check the address and the branch, tag or commit, that Git is installed here, and that the repository is public.` };
@@ -179,7 +186,7 @@ function FileChanges({ check }: { check: SkillCheck }) {
 export function SkillUpstream({ resource, editing }: { resource: Resource; editing: boolean }) {
   const ws = useWorkspace();
   const [sources, setSources] = useSkillSources();
-  const readSources = useSharedReader<SkillSource[]>("skill-sources", skillSources);
+  const readSources = useSharedReader<SkillSource[]>("skill-sources", ws.skillSources);
   const [checks, setChecks] = useSkillChecks();
   // Shared, like the service page's busy state: the guard survives leaving the panel, and switching roles cancels the result.
   const [busy, setBusy] = useSkillBusy();
@@ -192,10 +199,12 @@ export function SkillUpstream({ resource, editing }: { resource: Resource; editi
   const id = resource.id;
 
   const check = (tracked: SkillSource) => {
+    if (!ws.capabilities.profileWrite) return ws.notImplemented("skills.check");
+    if (ws.profileLive) { ws.profileLive.checkSkill(id.slice(7)); return; }
     setBusy(`check:${id}`);
     ws.later(() => {
       setBusy(null);
-      const fetched = fetchSkill(tracked.source, tracked.ref, tracked.subdir);
+      const fetched = fetchSkill(ws.upstreamSkills, tracked.source, tracked.ref, tracked.subdir);
       if (!fetched.ok) {
         toast.error(`Couldn't check ${id}`, { description: fetched.error });
         return;
@@ -212,8 +221,10 @@ export function SkillUpstream({ resource, editing }: { resource: Resource; editi
   const refuseLocalEdits = () => toast.error(`Didn't update ${id}`, { description: "It has local edits, so no skill was updated.\nMove or back up your changes first." });
 
   const update = (tracked: SkillSource) => {
+    if (!ws.capabilities.profileWrite) return ws.notImplemented("skills.update");
+    if (ws.profileLive) { ws.profileLive.updateSkill(id.slice(7)); return; }
     // `skills update --apply` checks again before it replaces anything, so an edit saved after the last check still blocks it.
-    const fetched = fetchSkill(tracked.source, tracked.ref, tracked.subdir);
+    const fetched = fetchSkill(ws.upstreamSkills, tracked.source, tracked.ref, tracked.subdir);
     if (!fetched.ok) {
       toast.error(`Couldn't update ${id}`, { description: fetched.error });
       return;
@@ -260,7 +271,7 @@ export function SkillUpstream({ resource, editing }: { resource: Resource; editi
         <>
           <SectionLabel
             action={
-              <Button type="button" variant="outline" size="xs" onClick={() => setTracking(true)}>
+              <Button type="button" variant="outline" size="xs" disabled={!ws.capabilities.profileWrite} onClick={() => setTracking(true)}>
                 Track upstream…
               </Button>
             }
@@ -310,11 +321,11 @@ export function SkillUpstream({ resource, editing }: { resource: Resource; editi
             </p>
           )}
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <Button ref={checkButton} type="button" variant="secondary" size="sm" disabled={busy !== null} onClick={() => check(record)}>
+            <Button ref={checkButton} type="button" variant="secondary" size="sm" disabled={!ws.capabilities.profileWrite || busy !== null} onClick={() => check(record)}>
               {busy === `check:${id}` ? "Checking…" : "Check for updates"}
             </Button>
             {result?.status === "update-available" && (
-              <Button type="button" variant="secondary" size="sm" disabled={busy !== null || editing} aria-describedby={noteId} onClick={() => update(record)}>
+              <Button type="button" variant="secondary" size="sm" disabled={!ws.capabilities.profileWrite || busy !== null || editing} aria-describedby={noteId} onClick={() => update(record)}>
                 {busy === `update:${id}` ? "Updating…" : `Update to ${short(result.nextCommit)}`}
               </Button>
             )}
@@ -383,10 +394,11 @@ function TrackSkillDialog({ resource, open, onOpenChange, onTracked }: { resourc
   const errors = { source: sourceError(trimmed.source), ref: refError(trimmed.ref), subdir: subdirError(trimmed.subdir) };
   const shown = (key: keyof typeof errors) => (tried ? errors[key] : null);
 
-  const submit = (event: FormEvent<HTMLFormElement>) => {
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     // The dialog renders through a portal but stays inside the item editor's form in React's tree; keep its submit there.
     event.stopPropagation();
+    if (!ws.capabilities.profileWrite) return ws.notImplemented("skills.track");
     setTried(true);
     setRefusal(null);
     const first = (Object.keys(errors) as (keyof typeof errors)[]).find((k) => errors[k]);
@@ -397,13 +409,17 @@ function TrackSkillDialog({ resource, open, onOpenChange, onTracked }: { resourc
     // One skill command at a time: another skill's check finishing can't re-enable Track mid-flight and double-submit.
     if (busy !== null) return;
     const normalized = trimmed.source.startsWith("https://") ? new URL(trimmed.source).href : trimmed.source;
+    if (ws.profileLive) {
+      if (await ws.profileLive.trackSkill(resource.id.slice(7), normalized, trimmed.ref, trimmed.subdir)) { onOpenChange(false); toast.success(`Tracking ${resource.id}`); }
+      return;
+    }
     setBusy(`track:${resource.id}`);
     ws.later(() => {
       setBusy(null);
       // The skill may have been removed or renamed while fetching; then there is nothing left to track under this id.
       const live = ws.readResources().find((r) => r.id === resource.id && r.change !== "removed");
       if (!live) return setRefusal(`${resource.id} is no longer in the folder, so Canonfig didn't track it.`);
-      const fetched = fetchSkill(normalized, trimmed.ref, trimmed.subdir);
+      const fetched = fetchSkill(ws.upstreamSkills, normalized, trimmed.ref, trimmed.subdir);
       if (!fetched.ok) return setRefusal(fetched.error);
       if (!sameFiles(folderFiles(live, fetched.files), fetched.files))
         return setRefusal(
@@ -428,12 +444,13 @@ function TrackSkillDialog({ resource, open, onOpenChange, onTracked }: { resourc
               Name the Git repository this skill came from. Canonfig fetches it and records it only if every file matches your copy. Nothing in the folder changes.
             </DialogDescription>
           </DialogHeader>
+          <ProfileActionNotice />
           <div className="grid gap-3">
             <Field
               label="Repository"
               htmlFor="track-source"
               error={shown("source")}
-              description={DEMO ? `This demo can only fetch ${DEMO_SKILLS_REPO}.` : "A public HTTPS address, or a local repository path."}
+              description={DEMO ? `This demo can only fetch ${ws.demoSkillsRepo}.` : "A public HTTPS address, or a local repository path."}
             >
               <Input
                 id="track-source"

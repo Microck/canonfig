@@ -56,7 +56,7 @@ const gitIdentity = (root: string): BuildReceipt["git"] => {
   const options = { cwd: root, encoding: "utf8" as const, timeout: 5_000, maxBuffer: 1024 * 1024 };
   const commit = spawnSync("git", ["rev-parse", "--verify", "HEAD"], options);
   if (commit.status !== 0 || !/^[a-f0-9]{40,64}$/u.test(commit.stdout.trim())) return null;
-  const status = spawnSync("git", ["status", "--porcelain", "--untracked-files=normal", "--", "src", "tools/release", "package.json", "package-lock.json", "tsconfig.json"], options);
+  const status = spawnSync("git", ["status", "--porcelain", "--untracked-files=normal", "--", "src", "ui/src", "ui/public", "ui/package.json", "ui/package-lock.json", "ui/index.html", "ui/vite.config.ts", "ui/tsconfig.json", "ui/tsconfig.app.json", "ui/tsconfig.node.json", "tools/release", "package.json", "package-lock.json", "tsconfig.json"], options);
   if (status.status !== 0) return null;
   return { commit: commit.stdout.trim(), dirty: status.stdout.length > 0 };
 };
@@ -69,12 +69,15 @@ export const createBuildReceipt = (root: string): BuildReceipt => {
   const sourceFiles = describeFiles(root, [
     ...filesUnder(root, "src"),
     ...filesUnder(root, "tools/release"),
+    ...filesUnder(root, "ui/src"),
+    ...filesUnder(root, "ui/public"),
+    ...["package.json", "package-lock.json", "index.html", "vite.config.ts", "tsconfig.json", "tsconfig.app.json", "tsconfig.node.json"].flatMap((path) => filesUnder(root, `ui/${path}`)),
     ...["package.json", "package-lock.json", "tsconfig.json"].flatMap((path) => filesUnder(root, path)),
   ]);
   // An absent or empty `dist` means the same thing, and says so more usefully
   // than a missing-input rejection would.
   const compiled = existsSync(join(root, "dist")) ? filesUnder(root, "dist") : [];
-  const compiledFiles = describeFiles(root, compiled.filter((path) => path.endsWith(".js")));
+  const compiledFiles = describeFiles(root, compiled.filter((path) => path.endsWith(".js") || path.startsWith(`dist${sep}ui${sep}`)));
   if (compiledFiles.length === 0) throw new Error("Cannot create a build receipt before compiling the CLI");
   return {
     schema: "canonfig.build/v1",
@@ -88,9 +91,9 @@ export const createBuildReceipt = (root: string): BuildReceipt => {
 };
 
 /**
- * The receipt stays out of `dist` on purpose: the published package ships only
- * compiled JavaScript, and a per-file hash manifest is build evidence for CI,
- * not payload for every install. CI preserves this file as a workflow artifact.
+ * The receipt stays out of `dist` on purpose: a per-file hash manifest is
+ * build evidence for CI, not payload for every install. CI preserves this
+ * file as a workflow artifact.
  */
 export const buildReceiptPath = (root: string): string => join(root, "build-receipt.json");
 

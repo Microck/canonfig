@@ -20,8 +20,8 @@ import {
   Stethoscope,
   type IconComponent,
 } from "@/components/icons";
-import { PLAIN } from "@/shared/data";
-import type { WorkspaceRole } from "./routes";
+import { DEMO, PLAIN, type Role } from "@/shared/metadata";
+import type { AppRoute, WorkspaceRole } from "./routes";
 import type { View } from "./store";
 
 export interface NavItem {
@@ -72,5 +72,26 @@ export const NAV: Record<WorkspaceRole, { main: NavItem[]; settings: NavItem[] }
 };
 
 /** The sidebar entry for a role's page, if it has one (the not-found view has none). */
-export const navItem = (role: WorkspaceRole, view: View): NavItem | undefined =>
-  NAV[role].main.find((n) => n.view === view) ?? NAV[role].settings.find((n) => n.view === view);
+export function navItem(role: WorkspaceRole, view: View): NavItem | undefined {
+  const navigation = navigationForRole(role);
+  return navigation.main.find((item) => item.view === view) ?? navigation.settings.find((item) => item.view === view);
+}
+
+/** The session role chooses routes; demo-only backups never enter Source live navigation. */
+export function navigationForRole(role: WorkspaceRole, live = !DEMO) {
+  const navigation = NAV[role];
+  if (!live) return navigation;
+  return {
+    main: navigation.main.filter((item) => role !== "source" || item.view !== "backups"),
+    settings: role === "follower"
+      ? [...navigation.settings, ...SOURCE_SETTINGS.filter((item) => item.view === "installers" || item.view === "setup")]
+      : navigation.settings,
+  };
+}
+
+export function isRouteForRole(route: AppRoute, role: Role): boolean {
+  if (role === "unconfigured") return route.kind === "setup";
+  if (route.kind !== "workspace" || route.role !== role) return false;
+  const navigation = navigationForRole(role, true);
+  return [...navigation.main, ...navigation.settings].some((item) => item.view === route.view);
+}

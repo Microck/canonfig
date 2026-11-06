@@ -17,7 +17,8 @@ configuration, and strip inherited npm configuration/authentication environment
 variables and Node injection options. Private registries are not supported.
 
 **Before enabling for the first time, stop every existing Canonfig process and
-pause its schedules.** Processes started before you enable it hold no update lease.
+pause its schedules.** If you enable from the browser interface, leave only that
+`canonfig ui` process running. Processes started before opt-in hold no update lease.
 Find the actual npm `bin/npm-cli.js` for your Node installation; do not substitute
 an npm shell shim. Paths below are examples, not discoveries of your machine.
 
@@ -31,8 +32,10 @@ canonfig self-update status
 processes and schedules were stopped. Enable does not install a background
 service. After enabling, ordinary Canonfig commands register leases, including
 Sources and foreground watchers. Restart the services you stopped under this
-opted-in installation so they participate. Failed processes can leave leases;
-these are never reclaimed automatically based on a guessed PID age.
+opted-in installation so they participate. Failed processes can leave leases.
+Under the coordination gate, the next command or updater removes a reader only
+when the OS confirms its PID no longer exists. Live or reused PIDs, inaccessible
+processes and malformed leases remain blockers; elapsed time never proves staleness.
 
 ## Check, apply and automate
 
@@ -63,6 +66,32 @@ scheduled follower bindings may need refreshing with the normal `sync --apply`.
 No credentials, enrollment or user configuration are migrated by the updater.
 If the Node executable path, the installation path or the major.minor line changes, review and
 explicitly disable/re-enable the configuration rather than reusing stale intent.
+
+## Update from the browser
+
+Open the Canonfig version page in `canonfig ui`. The same installation limits,
+patch-only policy and recovery rules apply as in the terminal.
+
+1. Stop all other Canonfig processes and pause schedules before first enable.
+   Enter the absolute path to npm's `bin/npm-cli.js` and confirm that the other
+   processes are idle. The GUI joins update coordination when enable succeeds.
+2. Check for an eligible patch, then apply it. The page reports the updater's
+   checking, staging, verifying, activating and complete phases, with the selected
+   version once known.
+3. After a successful update, run `canonfig ui` again in your terminal and open
+   its new launch URL. The old server delivers the result before it exits and
+   frees its port. It does not restart itself or other services.
+
+You do not need to stop this GUI to enable, disable or apply updates from its
+version page. It temporarily releases only its own command lease. Another GUI,
+Source, watcher or command still defers apply and prevents disable. Finish or
+stop those processes, then retry. Deferred apply leaves the server running and
+shows the CLI's detail as a successful deferred result, with exit code 0.
+
+Disable retains backups and receipts. Failed operations show the CLI's exact
+message and Human Action Required exit code 3. In particular, an unfinished sync
+or pending update still requires recovery; the GUI does not bypass it. Stop the
+GUI before using a separate terminal to apply or disable updates.
 
 ## Staging, safety and recovery
 
@@ -103,9 +132,9 @@ gate/readers with all writers stopped. Then verify the CLI version before
 resuming. Ordinary CLI commands deliberately refuse to run while a pending
 transaction remains. If unsure, keep the installation stopped and seek a reviewed
 manual restore. Do not run npm over an unfinished transaction.
-No automatic rollback or stale-lock takeover is
-claimed. POSIX directory entries are flushed; Windows directory-entry power-loss
-durability is not claimed.
+No automatic rollback or stale-gate takeover is claimed. Only reader leases with
+confirmed-absent PIDs are reclaimed automatically. POSIX directory entries are
+flushed; Windows directory-entry power-loss durability is not claimed.
 
 Disable only while idle, retaining backups and receipts:
 

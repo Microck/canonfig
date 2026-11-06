@@ -11,11 +11,12 @@ import { TaggedError } from "../domain/tagged-error.ts";
  *   approval for the current digest). Exit 2.
  * - `prerequisite`: the machine cannot take the requested role yet (missing
  *   key storage, missing native capability). Exit 3.
+ * - `conflict`: the reviewed plan changed or another process owns setup. Exit 4.
  * - `state`: the setup journal itself is unreadable or unwritable. Exit 1.
  */
 export class SetupError extends TaggedError<SetupError>()("SetupError", {
   operation: Schema.String,
   message: Schema.String,
   recovery: Schema.optional(Schema.String),
-  category: Schema.Literals(["usage", "prerequisite", "state"]),
+  category: Schema.Literals(["usage", "prerequisite", "conflict", "state"]),
 }) {}

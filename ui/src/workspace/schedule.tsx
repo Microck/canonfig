@@ -14,12 +14,14 @@ const WEEKDAYS: Day[] = ["Mon", "Tue", "Wed", "Thu", "Fri"];
 const FULL: Record<Day, string> = { Mon: "Monday", Tue: "Tuesday", Wed: "Wednesday", Thu: "Thursday", Fri: "Friday", Sat: "Saturday", Sun: "Sunday" };
 
 /** "default" follows the profile's schedule; "days" is any set of weekdays. */
-export type Cadence = "default" | "daily" | "weekdays" | "days";
+export type Cadence = "default" | "daily" | "weekdays" | "days" | "custom";
 
 export interface Schedule {
   cadence: Cadence;
   days: Day[];
   time: string;
+  expression?: string;
+  timezone?: string;
 }
 
 function daysOf(s: Schedule): Day[] {
@@ -39,6 +41,7 @@ const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
  */
 export function scheduleError(s: Schedule): string | null {
   if (s.cadence === "default") return null;
+  if (s.cadence === "custom") return s.expression?.trim() ? null : "Enter a schedule expression.";
   if (s.cadence === "days" && s.days.length === 0) return DAYS_ERROR;
   if (!TIME.test(s.time)) return TIME_ERROR;
   return null;
@@ -48,6 +51,7 @@ const TIME_ERROR = "Enter a complete time, like 09:00.";
 
 export function scheduleSummary(s: Schedule, defaultLabel: string) {
   if (s.cadence === "default") return defaultLabel;
+  if (s.cadence === "custom") return s.expression ?? "No expression";
   if (s.cadence === "daily") return `Every day at ${s.time}`;
   if (s.cadence === "weekdays") return `Weekdays at ${s.time}`;
   const days = daysOf(s);
@@ -90,19 +94,22 @@ export function ScheduleFields({
   value,
   onChange,
   defaultLabel,
+  allowCustom = false,
 }: {
   idPrefix: string;
   value: Schedule;
   onChange: (s: Schedule) => void;
   /** Offer "use the profile's default" first, labelled with what that default is. */
   defaultLabel?: string;
+  allowCustom?: boolean;
 }) {
   // A half-typed time ("10:") is not a mistake yet, so its error waits until the field loses focus. Both forms
   // disable Save while the schedule is incomplete, so no Save attempt has to reveal it sooner.
   const [timeBlurred, setTimeBlurred] = useState(false);
-  const options = defaultLabel ? [{ value: "default" as const, label: `Same as the Source (${defaultLabel})` }, ...OPTIONS] : OPTIONS;
+  const choices = allowCustom ? [...OPTIONS, { value: "custom" as const, label: "Custom expression" }] : OPTIONS;
+  const options = defaultLabel ? [{ value: "default" as const, label: `Same as the Source (${defaultLabel})` }, ...choices] : choices;
   const shownDays = daysOf(value);
-  const custom = value.cadence !== "default";
+  const custom = value.cadence !== "default" && value.cadence !== "custom";
   // Both problems can hold at once, so each shows under its own control.
   const daysError = value.cadence === "days" && value.days.length === 0 ? DAYS_ERROR : null;
   const timeError = timeBlurred && custom && !TIME.test(value.time) ? TIME_ERROR : null;
@@ -130,6 +137,9 @@ export function ScheduleFields({
           ))}
         </RadioGroup>
       </Field>
+      {value.cadence === "custom" && <Field label="Schedule expression" htmlFor={`${idPrefix}-expression`}>
+        <Input id={`${idPrefix}-expression`} value={value.expression ?? ""} onChange={(event) => onChange({ ...value, expression: event.target.value })} />
+      </Field>}
       {custom && (
         <div className="flex flex-wrap items-start gap-4">
           {value.cadence !== "daily" && (

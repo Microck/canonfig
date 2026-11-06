@@ -46,6 +46,43 @@ use `--json` for the full value and in scripts.
 Every failure Canonfig can explain uses a code other than 1, so a script can
 tell a refusal from a crash.
 
+## Browser interface
+
+```bash
+canonfig ui
+canonfig ui --port 5317 --no-open
+```
+
+Starts the browser interface in the foreground on this machine. It uses the
+same commands as the CLI for setup, profile authoring and publishing,
+enrollment, sync, local settings and administration, including self-updates.
+The public interactive demo uses made-up machines instead.
+
+| Option | Effect |
+| --- | --- |
+| `--port <n>` | Choose the loopback server's port. Without it, the operating system selects a free port. |
+| `--no-open` | Print the launch URL without opening the browser. |
+
+The server binds only to `127.0.0.1`. Open the printed URL on the same
+machine. Its token can establish a browser session only once; the browser
+then uses a session cookie. Keep the launch URL private. Requests with the
+wrong Host or Origin are rejected.
+
+Keep the terminal open while using the interface. Ctrl-C stops it with
+exit 130; SIGTERM stops it with exit 143. The command holds a self-update
+lease. The Canonfig version page can enable, disable and apply updates by
+releasing only its own lease. Other running Canonfig processes still block
+activation and disable. After a successful update, the server exits cleanly;
+run `canonfig ui` again and open its new launch URL. Stop the interface first
+if you apply an update from a separate terminal.
+Running bare `canonfig` still prints help.
+
+If the browser does not open, open the printed URL yourself. If its token
+has already been used and that browser no longer has the cookie, stop the
+command and launch it again for a fresh session. Use Overview's Reload
+action after resolving a reported status error. Browser errors preserve
+the CLI failure category, exit code, and message listed above.
+
 ## Self-update
 
 ```bash
@@ -70,8 +107,13 @@ Minor and major upgrades stay manual.
 | `apply` | `--apply` required. Installs, verifies, and activates the patch only when Canonfig is idle. |
 | `auto` | Without `--apply`, previews once. `--apply` keeps running in the foreground and checks every `--interval <seconds>` (default 86400, from 60 to 604800). `--once` runs one pass, for an external scheduler. |
 
-A running command or an unfinished sync blocks activation. After activating,
-`auto` exits; start it again under the activated version. See the
+A running command or an unfinished sync blocks activation. The browser's
+Canonfig version page supports the same operations, with the npm CLI path
+and an explicit idle confirmation for first enable. Leave only that GUI
+running when you confirm. A deferred apply shows the CLI detail with exit
+code 0 and leaves the GUI open; updater failures retain Human Action Required
+exit code 3. After activation, `auto` or the GUI exits; restart it under the
+activated version. See the
 [self-update guide](https://github.com/Microck/canonfig/blob/main/docs/self-update.md).
 
 ## Source Machine

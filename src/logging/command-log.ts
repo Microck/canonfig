@@ -243,7 +243,9 @@ export const registerCommandLogSignalHandlers = (log: CommandLog): void => {
       observedSignal ??= exitCode;
       log.complete(exitCode);
       process.removeListener(signal, handler);
-      process.kill(process.pid, signal);
+      // The runtime already receives this event and owns scoped cleanup.
+      // Re-sending it on Windows would terminate the process immediately.
+      if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
     };
     process.once(signal, handler);
   };

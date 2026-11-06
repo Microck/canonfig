@@ -1,4 +1,4 @@
-// The GUI currently uses simulated machine data and actions in both builds; DEMO adds the demo panel. ?tour=1 replays the tour.
+// Demo-only application. The production build selects live-app.tsx instead.
 import { Component, type ReactNode } from "react";
 import { SkulletProvider } from "skullet/react";
 import type { SkulletTheme } from "skullet";
@@ -7,8 +7,10 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { DEMO } from "@/shared/data";
 import { DemoSwitcher } from "@/shared/demo-switcher";
-import { WorkspaceApp } from "@/workspace/workspace";
-import { useAppRoute } from "@/workspace/routes";
+import { WorkspaceApp } from "@/workspace/simulated-app";
+import { initializeAppRoute, useAppRoute } from "@/workspace/routes";
+
+initializeAppRoute();
 
 /**
  * Loading skeletons (workspace Body, kit.tsx) in the app's palette: bars in the muted surface tone, read on

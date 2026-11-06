@@ -191,15 +191,11 @@ const validatePackageContents = (
   if (artifact.name !== "@microck/canonfig" || artifact.version !== "6.0.0") {
     fail(`unexpected packed identity: ${artifact.name}@${artifact.version}`);
   }
-  // Self-update adds staged activation, coordination and recovery modules.
-  // These bounded budgets include those shipped safety checks; no files or
-  // validation are removed to make the package appear smaller.
-  // Harness detection, the Source setup import and its setup stage add about
-  // 60 KB unpacked. Signed export/import (#257) and the restored machine-local
-  // modes with key claims (#258) add about 19 KB packed; that candidate
-  // measured 493,853 packed / 2,187,729 unpacked bytes. Keep a small
-  // build-identity margin while rejecting unintended assets.
-  if (artifact.size > 505_000 || artifact.unpackedSize > 2_230_000) {
+  // The shared live screens include full authoring, enrollment, synchronization,
+  // administration and the machine map. The integrated production package measured
+  // 1,237,671 packed / 4,277,427 unpacked bytes, including the subset fonts.
+  // Keep about 4% packed and 3% unpacked headroom for build identity and small changes.
+  if (artifact.size > 1_290_000 || artifact.unpackedSize > 4_410_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );
@@ -210,6 +206,7 @@ const validatePackageContents = (
     "README.md",
     "package.json",
     "dist/runtime/main.js",
+    "dist/ui/index.html",
   ]) {
     if (!paths.includes(required)) fail(`package omits required file: ${required}`);
   }
@@ -219,10 +216,11 @@ const validatePackageContents = (
       || path === "README.md"
       || path === "package.json"
       || /^dist\/.+\.(?:js|d\.ts)$/u.test(path)
+      || /^dist\/ui\/.+\.(?:html|js|css|svg|png|ico|woff2?|txt)$/u.test(path)
     ) continue;
     fail(`package contains unintended file: ${path}`);
   }
-  const shippedModules = paths.filter((path) => /^dist\/.+\.js$/u.test(path));
+  const shippedModules = paths.filter((path) => /^dist\/.+\.js$/u.test(path) && !path.startsWith("dist/ui/"));
   for (const modulePath of shippedModules) {
     const sourcePath = resolve(
       projectRoot,

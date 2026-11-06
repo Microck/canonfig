@@ -1,4 +1,4 @@
-// Shared components for the simulated first-run flow.
+// Shared components for the first-run flow.
 import { useContext, useEffect, useId, useLayoutEffect, useRef, type ComponentType, type ReactNode } from "react";
 import { AnimatePresence, motion, PresenceContext, useIsPresent, useReducedMotion, type Variants } from "motion/react";
 import { CaretRight, Check, Question, WarningCircle } from "@/components/icons";
@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { CollapsibleTrigger } from "@/components/ui/collapsible";
 import { RadioGroupItem } from "@/components/ui/radio-group";
 import { Sheet, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { DEMO } from "@/shared/data";
+import { DEMO } from "@/shared/metadata";
 import { GLOSSARY, Logo } from "@/shared/shared";
 
 /**
@@ -170,6 +170,7 @@ export function RadioRow({
   icon: Icon,
   children,
   className,
+  disabled,
 }: {
   value: string;
   title: ReactNode;
@@ -177,6 +178,7 @@ export function RadioRow({
   icon?: ComponentType<{ className?: string }>;
   children?: ReactNode;
   className?: string;
+  disabled?: boolean;
 }) {
   const id = useId();
   // The radio and icon centre on the whole text block (title, description, children), so a
@@ -191,7 +193,7 @@ export function RadioRow({
         className,
       )}
     >
-      <RadioGroupItem id={id} value={value} />
+      <RadioGroupItem id={id} value={value} disabled={disabled} />
       {Icon && <Icon className="size-5 shrink-0 text-muted-foreground" />}
       <span className="min-w-0 flex-1">
         <span className="block leading-none font-medium">{title}</span>
