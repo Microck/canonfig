@@ -28,15 +28,16 @@ export function LiveWorkspaceProvider({ backend, session, route, children }: {
   const service = admin.service.data;
   const resources: Partial<Record<Workspace["view"], ResourceState>> = {
     overview: overview.overviewState,
-    profile: profile.profileState, revisions: profile.profileStates.revisions, secrets: profile.profileStates.secrets,
+    profile: profile.profileState, revisions: profile.profileStates.revisions,
+    secrets: session.role === "follower" ? follower.followerState : profile.profileStates.secrets,
     machines: machines.machinesState, sync: follower.followerState, schedule: follower.followerStates.schedule,
-    local: follower.followerState, backups: follower.followerStates.backups, tunnel: follower.followerStates.tunnel,
-    machine: machines.machineStates.enrollment,
+    local: follower.followerStates.local, backups: follower.followerStates.backups, tunnel: follower.followerStates.tunnel,
+    machine: session.role === "follower" ? follower.followerState : machines.machineStates.enrollment,
   };
   const resource = resources[route.view];
   const workspace: Workspace = {
     ...overview, ...profile, ...machines, ...follower, admin,
-    capabilities: { ...overview.capabilities, enrollmentWrite: true },
+    capabilities: { ...overview.capabilities, enrollmentWrite: true, followerWrite: true },
     profileTab: route.profileTab, machinesMode: route.machinesMode,
     endpoint: session.role === "source" ? service?.endpoint ?? "" : machines.endpoint,
     sourceMachine: { ...machines.sourceMachine, ...(session.role === "source" && service ? { endpoint: service.endpoint, platform: service.platform, service: service.state } : {}) },

@@ -175,6 +175,10 @@ it("plans and applies an enrolled follower and performs digest-checked local ope
   const created = await api.call("/api/local/items", "PUT", { changes: [change] });
   expect(created.status).toBe(200);
   const items = Schema.decodeUnknownSync(GuiLocalItems)(created.payload).items;
+  expect(created.payload).toMatchObject({
+    config: {},
+    canonicalConfig: { local: { allow: ["instructions", "rules", "skills", "agents", "mcp", "settings"] } },
+  });
   const item = items.find((value) => value.path === "AGENTS.md");
   expect(item?.digest).toBeTypeOf("string");
   expect((await api.call("/api/local/items", "PUT", { changes: [change] })).payload).toMatchObject({ category: "conflict-or-drift", exitCode: 4 });
@@ -214,6 +218,7 @@ it("plans and applies an enrolled follower and performs digest-checked local ope
   const config = await getConfig();
   const preference = { expectedDigest: config?.digest ?? null, edits: [{ path: ["backups"], value: false }] };
   expect((await api.call("/api/local/preferences", "PUT", preference)).status).toBe(200);
+  expect((await api.call("/api/local/items")).payload).toMatchObject({ config: { backups: false } });
   expect((await api.call("/api/local/preferences", "PUT", preference)).payload).toMatchObject({ category: "conflict-or-drift", exitCode: 4 });
   const beforeInvalidOverlay = readFileSync(join(follower.folder, "local/local.jsonc"), "utf8");
   for (const method of ["PUT", "DELETE"]) {

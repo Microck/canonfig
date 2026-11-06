@@ -38,7 +38,11 @@ export const GuiLocalItem = Schema.Struct({
   path: Schema.String, digest: Schema.NullOr(Schema.String), files: Schema.Array(GuiLocalFile),
 });
 export interface GuiLocalItem extends Schema.Schema.Type<typeof GuiLocalItem> {}
-export const GuiLocalItems = Schema.Struct({ items: Schema.Array(GuiLocalItem) });
+export const GuiLocalItems = Schema.Struct({
+  items: Schema.Array(GuiLocalItem),
+  config: Schema.Record(Schema.String, Schema.Json),
+  canonicalConfig: Schema.Record(Schema.String, Schema.Json),
+});
 export interface GuiLocalItems extends Schema.Schema.Type<typeof GuiLocalItems> {}
 export const GuiLocalChange = Schema.Struct({
   path: Schema.NonEmptyString,

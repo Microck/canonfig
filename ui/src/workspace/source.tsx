@@ -38,6 +38,7 @@ import {
   copy,
   useLeaveGuard,
 } from "./kit";
+import { TunnelEvidence } from "./follower-evidence";
 
 const AGENT_MODE_LABEL: Record<string, string> = { "deterministic-only": "Off", "agent-propose": "Proposes only", "agent-apply": "Applies fixes" };
 
@@ -428,7 +429,7 @@ export function WorkspaceEvidence() {
         </div>
       </section>
       {Object.keys(synchronization).length > 0 && <section><SectionLabel>Synchronization state</SectionLabel><pre className="overflow-auto border-t border-border py-3 text-sm">{JSON.stringify(synchronization, null, 2)}</pre></section>}
-      <section><SectionLabel>SSH tunnel</SectionLabel><pre className="overflow-auto border-t border-border py-3 text-sm">{JSON.stringify(tunnel, null, 2)}</pre></section>
+      <section><SectionLabel>SSH tunnel</SectionLabel><TunnelEvidence report={tunnel} /></section>
     </>
   );
 }

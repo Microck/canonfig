@@ -1,5 +1,4 @@
-// The harness list and the takeover backups page, shared by the Source and the Follower. Both read the
-// simulated `canonfig harnesses` report and ~/.canonfig/.backups from the workspace; restore is simulated.
+// The harness list and takeover backups page share the active workspace's reports and restore action.
 import { useRef, useState } from "react";
 import { CaretDown } from "@/components/icons";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -10,6 +9,8 @@ import { Mono, StatusMark, Term, type StatusKind } from "@/shared/shared";
 import { useWorkspace } from "./store";
 import { AnimatedRow, Body, EmptyState, ListHead, ListRow, PageHeader, RowPresence } from "./kit";
 import { ConfirmDialog } from "./settings";
+import { FollowerOperationEvidence } from "./follower-evidence";
+
 
 /** What Canonfig does with a harness on this machine, from the three facts `canonfig harnesses` reports. */
 function harnessStatus(h: Harness): { kind: StatusKind; label: string; hint: string } {
@@ -186,7 +187,7 @@ export function BackupsView() {
   const shown = [...ws.snapshots].reverse();
   return (
     <>
-      <PageHeader crumbs={["Backups"]} />
+      <PageHeader crumbs={["Backups"]} actions={ws.followerLive && <Button size="sm" variant="outline" onClick={ws.reload}>Reload</Button>} />
       <Body>
         <p data-tour="backups-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
           Before Canonfig first writes to a harness, it copies what that harness had into <Mono className="text-foreground">~/.canonfig/.backups</Mono>. It keeps the first
@@ -228,7 +229,7 @@ export function BackupsView() {
                       </span>
                       <span className="text-sm text-muted-foreground tabular-nums">{s.files ?? "Not reported"}</span>
                       <span className="flex justify-end">
-                        <Button variant="outline" size="xs" disabled={done} title={done ? "Its harnesses are already excluded on this machine." : undefined} onClick={() => setRestoring(s)}>
+                        <Button variant="outline" size="xs" disabled={done || ws.followerLive?.action.loading} title={done ? "Its harnesses are already excluded on this machine." : undefined} onClick={() => setRestoring(s)}>
                           {done ? "Restored" : "Restore…"}
                         </Button>
                       </span>
@@ -243,6 +244,7 @@ export function BackupsView() {
             </p>
           </>
         )}
+        {ws.followerLive?.operationName === "Restore backup" && <FollowerOperationEvidence />}
       </Body>
       <ConfirmDialog
         open={restoring !== null}
