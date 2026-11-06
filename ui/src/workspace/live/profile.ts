@@ -71,7 +71,8 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
       setSkillBusy(`${kind}:skills/${name}`);
       setSkillChecks(({ [`skills/${name}`]: _previous, ...checks }) => checks);
       try {
-        const checks = await backend.request(profileEndpoints[kind], GuiSkillChecks, signal, { method: "POST", body: { name } });
+        const completed = await operations.operation(profileEndpoints[kind], { name }, signal);
+        const checks = Schema.decodeUnknownSync(GuiSkillChecks)(completed.result);
         setSkillChecks((previous) => ({ ...previous, ...Object.fromEntries(checks.map((check) => [`skills/${check.name}`, kind === "update" ? { ...check, status: "unchanged" as const } : check])) }));
       } finally { setSkillBusy(null); }
     });
@@ -93,7 +94,10 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
     inspectRevision: (sequence) => { const entry = revisions.data?.revisions.find((entry) => entry.sequence === sequence); if (entry) void run(async (signal) => { setRevisionDetail(null); setRevisionDetail(await backend.request(profileEndpoints.revision, Schema.Json, signal, { method: "POST", body: { revision: entry.id } })); }, false); },
     trackSkill: (name, source, ref, subdir) => run(async (signal) => {
       setSkillBusy(`track:skills/${name}`);
-      try { await backend.request(profileEndpoints.track, GuiTrackedSkill, signal, { method: "POST", body: { name, source, ref, subdir } }); }
+      try {
+        const completed = await operations.operation(profileEndpoints.track, { name, source, ref, subdir }, signal);
+        Schema.decodeUnknownSync(GuiTrackedSkill)(completed.result);
+      }
       finally { setSkillBusy(null); }
     }),
     checkSkill: (name) => skillAction("check", name), updateSkill: (name) => skillAction("update", name),

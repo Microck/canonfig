@@ -1,10 +1,11 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { isNestedCommandLauncher } from "../../agent/agent-resolution.service.ts";
 import { FollowerCommands } from "../../cli/follower-commands.ts";
 import { CliCommandFailure, SourceCommands, type CliPayload } from "../../cli/source-commands.ts";
+import { sanitizeCliData } from "../../cli/render.ts";
 import { HumanActionRequiredError, type MachineStateError } from "../../machine/machine-state.errors.ts";
 import { MachineState } from "../../machine/machine-state.service.ts";
 import { asJson as toJson } from "../../profile/profile-codec.ts";
@@ -38,6 +39,16 @@ const installerFailure = (error: MachineStateError) => new CliCommandFailure({
   message: error instanceof HumanActionRequiredError
     ? error.recovery : "Installer binding operation failed; inspect local executable and Canonfig directory access.",
 });
+
+/** Keep credential-bearing collections write-only, rather than editable redaction markers. */
+const harnessResponse = (value: CliPayload) => {
+  const safe = Schema.decodeUnknownSync(GuiAgentHarness)(sanitizeCliData(value, [], true));
+  return {
+    ...safe,
+    arguments: safe.arguments?.some((argument) => argument.includes("[REDACTED]")) ? undefined : safe.arguments,
+    environment: safe.environment?.some(({ name, value }) => `${name}${value}`.includes("[REDACTED]")) ? undefined : safe.environment,
+  };
+};
 
 export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () => void, onSettled: () => void) => Effect.gen(function*() {
   const source = yield* SourceCommands;
@@ -79,10 +90,13 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
     queryRoute("/api/agent/harness", () => repository.getFollowerSynchronizationConfiguration().pipe(
       Effect.mapError(commandFailure),
       Effect.map((configuration): GuiAgentHarnessRead => configuration?.agentHarness === undefined
-        ? { configured: false } : { configured: true, value: configuration.agentHarness }),
+        ? { configured: false } : { configured: true, value: harnessResponse(configuration.agentHarness) }),
       Effect.map(toJson),
     )),
     mutationRoute("PUT", "/api/agent/harness", GuiAgentHarness, (input) => Effect.gen(function*() {
+      if (JSON.stringify(input).includes("[REDACTED]")) return yield* new CliCommandFailure({
+        category: "usage-or-configuration", message: "Redaction markers are not harness values. Reload settings and supply replacements only for fields you want to change.",
+      });
       let message: string | undefined;
       if (input.kind === "custom" && input.model !== undefined) {
         message = "--model applies to codex and claude; pass a custom harness's model with --argument";
@@ -103,7 +117,14 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
         message = `${unclassifiable.executable} launches nested commands that cannot be bounded by an execution model; remove it from the agent harness allowlist`;
       }
       if (message !== undefined) return yield* new CliCommandFailure({ category: "usage-or-configuration", message });
-      return toJson(yield* follower.setAgentHarness(input));
+      const previous = (yield* repository.getFollowerSynchronizationConfiguration().pipe(Effect.mapError(commandFailure)))?.agentHarness;
+      const configuration = {
+        ...input,
+        // An omitted write-only collection keeps its stored value. An explicit array replaces it.
+        arguments: input.arguments ?? (input.kind === "custom" && previous?.kind === "custom" ? previous.arguments : undefined),
+        environment: input.environment ?? previous?.environment,
+      };
+      return toJson(harnessResponse(yield* follower.setAgentHarness(configuration)));
     })),
     mutationRoute("POST", "/api/doctor", EmptyBody,
       () => report(follower.doctor({ noInput: true, timeoutMilliseconds: 10_000 }))),

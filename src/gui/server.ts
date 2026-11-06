@@ -24,7 +24,6 @@ export interface GuiOptions {
   readonly open: boolean;
 }
 
-const cookieName = "canonfig_session";
 interface AssetContentTypes {
   readonly [extension: string]: string | undefined;
 }
@@ -53,7 +52,7 @@ const sameSecret = (actual: string | undefined, expected: string): boolean => {
   return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
 };
 
-const sessionCookie = (request: IncomingMessage): string | undefined => {
+const sessionCookie = (request: IncomingMessage, cookieName: string): string | undefined => {
   const cookies = (request.headers.cookie ?? "").split(";").map((entry) => entry.trim());
   const matches = cookies.filter((entry) => entry.startsWith(`${cookieName}=`));
   return matches.length === 1 ? matches[0]?.slice(cookieName.length + 1) : undefined;
@@ -134,6 +133,8 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
   const pending = new Set<AbortController>();
   const token = randomBytes(32).toString("hex");
   const session = randomBytes(32).toString("hex");
+  // Cookies are host-scoped, not port-scoped. Concurrent GUIs need distinct names.
+  const cookieName = `canonfig_session_${randomBytes(16).toString("hex")}`;
   let tokenUsed = false;
   let origin = "";
 
@@ -162,7 +163,7 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
       response.end();
       return;
     }
-    if (!sameSecret(sessionCookie(request), session)) {
+    if (!sameSecret(sessionCookie(request, cookieName), session)) {
       json(response, 401, failureBody("authentication-or-revocation", "Open the sign-in URL printed by canonfig ui to start this browser session."));
       return;
     }

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { Context, Effect, Schema } from "effect";
+import { Context, Effect, Schema, Scope } from "effect";
 import { CliCommandFailure } from "../cli/source-commands.ts";
 import { GuiOperation, type GuiOperationTicket } from "./contract.ts";
 import { failureBody, type GuiRoute } from "./routing.ts";
@@ -20,7 +20,9 @@ interface OperationRecord {
 
 /** HTTP disconnection does not cancel an apply. The GUI scope still owns its lifetime. */
 export const makeGuiOperations = Effect.gen(function*() {
-  const scope = yield* Effect.scope;
+  // Register one child-scope finalizer before the HTTP listener is acquired.
+  // Shutdown closes the listener first, then waits for non-cancellable work.
+  const scope = yield* Effect.acquireRelease(Scope.make(), (scope, exit) => Scope.close(scope, exit));
   const operations = new Map<string, OperationRecord>();
   const start = Effect.fn("GuiOperations.start")(function*(
     operation: Effect.Effect<Schema.Json, CliCommandFailure>,

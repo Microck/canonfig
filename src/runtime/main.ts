@@ -141,42 +141,6 @@ const writeUsageFailure = async (message: string): Promise<void> => {
   nodeCliIo.setExitCode(CliExitCode.usageOrConfiguration);
 };
 
-/** Shared-secret synchronization contributes to the single apply result. */
-const synchronizeSecretsAfterApply = ({ Effect }: typeof EffectModule) =>
-  Effect.promise(() => Promise.all([
-    import("../secrets/runtime-layer.ts"),
-    import("../secrets/secret-client.ts"),
-    import("../secrets/secret-store.ts"),
-    import("../secrets/cli.ts"),
-    import("../cli/source-commands.ts"),
-  ])).pipe(
-    Effect.flatMap(([
-      { secretRuntimeLayer },
-      { synchronizeSharedSecrets },
-      { SecretTransferError },
-      { secretFailureCategory },
-      { CliCommandFailure },
-    ]) =>
-      synchronizeSharedSecrets().pipe(
-        Effect.provide(secretRuntimeLayer()),
-        Effect.mapError((cause) => {
-          const error = cause instanceof SecretTransferError
-            ? cause
-            : new SecretTransferError({
-              category: "state",
-              operation: "synchronize shared secrets",
-              message: "the secret synchronization state is unavailable",
-            });
-          return new CliCommandFailure({
-            category: secretFailureCategory(error),
-            message: `File synchronization completed, but shared-secret synchronization failed: ${error.message}`,
-          });
-        }),
-      )
-    ),
-    Effect.asVoid,
-  );
-
 // Help and --version are answered here, before any command graph loads. The
 // groups with their own dispatchers answer their own help, and a positional
 // invitation is refused below even when --help accompanies it.
@@ -316,7 +280,7 @@ if (early !== undefined) {
     await runMain((effect) =>
       effect.Effect.promise(() => import("./layers.ts")).pipe(
         effect.Effect.flatMap(({ runtimeLayer }) =>
-          runCli(arguments_, nodeCliIo, synchronizeSecretsAfterApply(effect), lease).pipe(
+          runCli(arguments_, nodeCliIo, lease).pipe(
             // `source serve` is the one command that outlives its own effect:
             // it returns once the loopback server is listening and the process
             // must then stay up to serve. Waiting on the exit code rather than

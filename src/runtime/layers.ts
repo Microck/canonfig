@@ -50,6 +50,8 @@ import { macosMachineStateLayer } from "../machine/macos.layer.ts";
 import { windowsMachineStateLayer } from "../machine/windows.layer.ts";
 import { nativeSecretStoreLayer } from "../secrets/native-secret-store.ts";
 import { clearTransferredSecrets } from "../secrets/secret-store.ts";
+import { synchronizeSharedSecrets } from "../secrets/secret-client.ts";
+import { secretFailureCategory } from "../secrets/cli.ts";
 import { ProfileCatalog } from "../profile/profile-catalog.service.ts";
 import {
   InvalidPublicationResourcesError,
@@ -1277,6 +1279,17 @@ const followerCommandsLayer = (
               Effect.provideService(Tunnel, tunnel),
               Effect.catchTag("TunnelDownError", (error) => Effect.fail(commandFailure(error))),
             )),
+            // Apply is one command for every caller, including GUI tickets and schedules.
+            // Retain the completed file run as failure evidence if secret refresh fails.
+            Effect.tap((result) => input.mode === "apply" ? synchronizeSharedSecrets().pipe(
+              Effect.provideService(MachineState, machine),
+              Effect.provideService(StateRepository, repository),
+              Effect.mapError((error) => new CliCommandFailure({
+                category: secretFailureCategory(error),
+                message: `File synchronization completed, but shared-secret synchronization failed: ${error.message}`,
+                details: result,
+              })),
+            ) : Effect.void),
             Effect.flatMap((result) =>
               record("completed").pipe(Effect.as(result))
             ),
@@ -1771,12 +1784,12 @@ export const runtimeMachineLayer = (
 
 export const runtimeLayer = (
   options: RuntimeLayerOptions = {},
+  machine: Layer.Layer<MachineState> = runtimeMachineLayer(options),
 ) => {
   const root = join(homedir(), ".canonfig");
   const statePath = options.statePath ?? join(root, "state.sqlite");
   const policyPath = options.policyPath ?? join(root, "policy.json");
   const state = runtimeStateLayer(statePath);
-  const machine = machineLayer(statePath);
   const enrollment = EnrollmentLive.pipe(Layer.provide(Layer.merge(state, machine)));
   const profiles = runtimeProfileCatalogLayer.pipe(
     Layer.provide(Layer.mergeAll(state, machine, enrollment)),

@@ -112,7 +112,7 @@ describe("canonfig ui command", () => {
     const headers = { Cookie: cookie, Origin: server.origin };
     expect(await requestStatus(`${server.origin}/api/session`, { ...headers, Host: "localhost" })).toBe(403);
     expect((await fetch(`${server.origin}/api/session`, { headers: { ...headers, Origin: "null" } })).status).toBe(403);
-    expect((await fetch(`${server.origin}/api/session`, { headers: { Cookie: "canonfig_session=wrong" } })).status).toBe(401);
+    expect((await fetch(`${server.origin}/api/session`, { headers: { Cookie: `${cookie.split("=")[0]}=wrong` } })).status).toBe(401);
     const session = await fetch(`${server.origin}/api/session`, { headers });
     expect(await session.json()).toEqual({ role: "unconfigured", machineName: hostname(), version: programVersion, folderPath: join(machine.home, ".canonfig") });
     const index = await fetch(`${server.origin}/`, { headers });
@@ -137,6 +137,25 @@ describe("canonfig ui command", () => {
     await once(listener, "listening");
     listener.close();
     await once(listener, "close");
+  }, 60_000);
+
+  it("keeps two GUI instances authorized in one host cookie jar", async () => {
+    const machine = fixture();
+    const servers = [await start(machine.env), await start(machine.env)];
+    const jar = new Map<string, string>();
+    for (const server of servers) {
+      const exchange = await fetch(server.url, { redirect: "manual" });
+      expect(exchange.status).toBe(303);
+      const cookie = exchange.headers.get("set-cookie")?.split(";")[0];
+      if (cookie === undefined) throw new Error("No session cookie issued");
+      const separator = cookie.indexOf("=");
+      jar.set(cookie.slice(0, separator), cookie.slice(separator + 1));
+    }
+    const cookie = [...jar].map(([name, value]) => `${name}=${value}`).join("; ");
+    for (const server of servers) {
+      expect((await fetch(`${server.origin}/api/session`, { headers: { Cookie: cookie } })).status).toBe(200);
+    }
+    expect(jar.size).toBe(2);
   }, 60_000);
 
   it("returns the CLI status payload unchanged for an initialized Source", async () => {

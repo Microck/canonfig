@@ -1,13 +1,14 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { createServer, type Socket } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { Schema } from "effect";
 import { GuiProfileFile, GuiProfileSnapshot, GuiRevisions, GuiSkills } from "../../src/gui/contract/profile.ts";
 import { GuiLocalChange } from "../../src/gui/contract/synchronization.ts";
-import { GuiOperation } from "../../src/gui/contract/operations.ts";
+import { GuiOperation, GuiOperationTicket } from "../../src/gui/contract/operations.ts";
 
 const entry = resolve("src/runtime/main.ts");
 const homes: string[] = [];
@@ -38,7 +39,19 @@ async function server(env: NodeJS.ProcessEnv) {
     const value: unknown = await response.json(); return { status: response.status, value };
   }
   const snapshot = async () => Schema.decodeUnknownSync(GuiProfileSnapshot)((await request("/api/profile/items")).value);
-  return { request, snapshot };
+  async function operation(path: string, body: unknown) {
+    const started = await request(path, "POST", body);
+    expect(started.status).toBe(202);
+    const ticket = Schema.decodeUnknownSync(GuiOperationTicket)(started.value);
+    const deadline = Date.now() + 30_000;
+    let polled: typeof GuiOperation.Type;
+    do {
+      polled = Schema.decodeUnknownSync(GuiOperation)((await request(`/api/operations/${ticket.id}`)).value);
+      if (Date.now() > deadline) throw new Error("Skill operation did not finish");
+    } while (polled.state === "running");
+    return polled;
+  }
+  return { request, snapshot, operation, child };
 }
 afterEach(async () => {
   for (const child of children.splice(0)) if (child.exitCode === null && child.signalCode === null) { const exited = once(child, "exit"); child.kill("SIGTERM"); await exited; }
@@ -152,17 +165,101 @@ describe("profile GUI endpoints", () => {
     writeFileSync(join(upstream, "SKILL.md"), original); git(["add", "."]); git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "initial"]);
     mkdirSync(join(machine.folder, "skills", "review"), { recursive: true }); writeFileSync(join(machine.folder, "skills", "review", "SKILL.md"), original);
     const gui = await server(machine.env);
-    expect((await gui.request("/api/skills/track", "POST", { name: "review", source: upstream, ref: "main", subdir: "." })).status).toBe(200);
+    expect((await gui.operation("/api/skills/track", { name: "review", source: upstream, ref: "main", subdir: "." })).state).toBe("succeeded");
     expect(Schema.decodeUnknownSync(GuiSkills)((await gui.request("/api/skills")).value).skills).toHaveLength(1);
     writeFileSync(join(upstream, "SKILL.md"), `${original}Check tests.\n`); git(["add", "."]); git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "update"]);
-    expect((await gui.request("/api/skills/check", "POST", { name: "review" })).value).toMatchObject([{ status: "update-available", changed: ["SKILL.md"] }]);
-    expect((await gui.request("/api/skills/update", "POST", { name: "review" })).status).toBe(200);
+    expect((await gui.operation("/api/skills/check", { name: "review" })).result).toMatchObject([{ status: "update-available", changed: ["SKILL.md"] }]);
+    expect((await gui.operation("/api/skills/update", { name: "review" })).state).toBe("succeeded");
     expect(readFileSync(join(machine.folder, "skills", "review", "SKILL.md"), "utf8")).toContain("Check tests");
     writeFileSync(join(machine.folder, "skills", "review", "SKILL.md"), `${original}Local edits.\n`);
-    expect((await gui.request("/api/skills/update", "POST", { name: "review" })).value).toMatchObject({ category: "conflict-or-drift", exitCode: 4 });
-    expect((await gui.request("/api/skills/check", "POST", { name: "review" })).value).toMatchObject({ category: "conflict-or-drift", exitCode: 4, message: "Local edits detected in review. Reconcile the local files before updating." });
-    expect((await gui.request("/api/skills/check", "POST", { name: "missing" })).value).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+    expect((await gui.operation("/api/skills/update", { name: "review" })).failure).toMatchObject({ category: "conflict-or-drift", exitCode: 4 });
+    expect((await gui.operation("/api/skills/check", { name: "review" })).failure).toMatchObject({ category: "conflict-or-drift", exitCode: 4, message: "Local edits detected in review. Reconcile the local files before updating." });
+    expect((await gui.operation("/api/skills/check", { name: "missing" })).failure).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   }, 120_000);
+
+  it.runIf(process.platform !== "win32").each(["track", "update"] as const)(
+    "owns %s Git work after request disconnect and waits for cleanup on shutdown", async (action) => {
+      const machine = fixture();
+      expect(machine.invoke(["source", "init"]).status).toBe(0);
+      writeFileSync(join(machine.folder, "canonfig.jsonc"), '{"version":1,"harnesses":[]}');
+      const upstream = join(machine.home, "upstream"); mkdirSync(upstream);
+      const git = (args: string[]) => {
+        const result = spawnSync("git", args, { cwd: upstream, encoding: "utf8" });
+        expect(result.status, result.stderr).toBe(0);
+      };
+      git(["init", "-b", "main"]);
+      const original = "---\nname: review\ndescription: Review changes\n---\nReview.\n";
+      writeFileSync(join(upstream, "SKILL.md"), original);
+      git(["add", "."]); git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "initial"]);
+      mkdirSync(join(machine.folder, "skills/review"), { recursive: true });
+      writeFileSync(join(machine.folder, "skills/review/SKILL.md"), original);
+      const bin = join(machine.home, "bin"); mkdirSync(bin);
+      const gui = await server({ ...machine.env, PATH: `${bin}:${machine.env.PATH}` });
+      const tracking = { name: "review", source: upstream, ref: "main", subdir: "." };
+      if (action === "update") {
+        expect((await gui.operation("/api/skills/track", tracking)).state).toBe("succeeded");
+        writeFileSync(join(upstream, "SKILL.md"), `${original}Updated.\n`);
+        git(["add", "."]); git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "update"]);
+      }
+      const connected = Promise.withResolvers<{ socket: Socket; directory: string }>();
+      const gate = createServer((socket) => {
+        socket.once("data", (bytes) => connected.resolve({ socket, directory: bytes.toString() }));
+      });
+      gate.listen(0, "127.0.0.1"); await once(gate, "listening");
+      const address = gate.address();
+      if (address === null || Schema.is(Schema.String)(address)) throw new Error("No gate address");
+      const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+      // This fixture delays, then runs the real Git binary. It does not replace
+      // Git output or filesystem work with a mock.
+      writeFileSync(join(bin, "git"), `#!${process.execPath}
+const { spawn } = require("node:child_process");
+const args = process.argv.slice(2);
+function execute() {
+  const child = spawn(${JSON.stringify(realGit)}, args, { stdio: "inherit" });
+  child.on("exit", (code) => process.exit(code ?? 1));
+}
+if (args.includes("fetch")) {
+  const socket = require("node:net").createConnection(${address.port}, "127.0.0.1", () => socket.write(process.cwd()));
+  socket.on("end", execute);
+  socket.resume();
+} else execute();
+`, { mode: 0o755 });
+      let held: { socket: Socket; directory: string } | undefined;
+      // A real subprocess watchdog releases the fixture even if a regression
+      // prevents the HTTP response. TestClock cannot control that subprocess.
+      const safetyRelease = setTimeout(() => { void connected.promise.then(({ socket }) => socket.end()); }, 10_000);
+      try {
+        const started = await gui.request(`/api/skills/${action}`, "POST", action === "track" ? tracking : { name: "review" });
+        expect(started.status).toBe(202);
+        const ticket = Schema.decodeUnknownSync(GuiOperationTicket)(started.value);
+        held = await connected.promise;
+        expect(existsSync(held.directory)).toBe(true);
+        const polled = await gui.request(`/api/operations/${ticket.id}`);
+        expect(polled.value).toMatchObject({ state: "running", journal: null });
+        // The initiating response has closed; no request owns this Git process.
+        expect((await gui.request("/api/self-update/disable", "POST", {})).status).toBe(409);
+        const exited = once(gui.child, "exit");
+        gui.child.kill("SIGTERM");
+        // Wait until the server has stopped accepting HTTP, rather than guessing
+        // when its shutdown finalizer starts.
+        await expect.poll(async () => {
+          try { await gui.request("/api/session"); return false; } catch { return true; }
+        }).toBe(true);
+        expect(gui.child.exitCode).toBeNull();
+        expect(gui.child.signalCode).toBeNull();
+        held.socket.end();
+        const [code, signal] = await exited;
+        expect(signal).toBeNull(); expect(code).toBe(143);
+        expect(existsSync(held.directory)).toBe(false);
+        if (action === "track") expect(readFileSync(join(machine.folder, "skills-sources.json"), "utf8")).toContain("review");
+        else expect(readFileSync(join(machine.folder, "skills/review/SKILL.md"), "utf8")).toContain("Updated.");
+      } finally {
+        clearTimeout(safetyRelease);
+        held?.socket.end();
+        gate.close();
+      }
+    }, 60_000,
+  );
 
   it("refuses every profile operation without the Source role", async () => {
     const machine = fixture(); const gui = await server(machine.env);
