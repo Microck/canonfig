@@ -53,9 +53,14 @@ import {
   StatusRow,
   settingsGroup,
   useLeaveGuard,
+  copy,
 } from "./kit";
 import { Column, ConfirmDialog, Lede } from "./settings";
 import { ScheduleFields, nextCheck, scheduleError, scheduleSummary, type Schedule } from "./schedule";
+import { FollowerOperationEvidence, TunnelEvidence } from "./follower-evidence";
+import { LocalAuthoringEditor } from "./follower-authoring";
+import { record, text } from "./live/follower";
+export { FollowerOperationEvidence } from "./follower-evidence";
 
 const ACTION: Record<PlanAction, { label: string; cls: string; hint: string }> = {
   write: { label: "Write", cls: "bg-ok/12 text-ok", hint: "Replace the harness file or folder with the revision's copy." },
@@ -94,8 +99,8 @@ function useSyncBlocks() {
   const [tunnelUp] = useSharedState(TUNNEL_KEY, ws.tunnelUp);
   const readTunnelUp = useSharedReader(TUNNEL_KEY, ws.tunnelUp);
   const stopped = ws.unenrolled ? `Syncing is stopped on this machine. Joining again needs a new invitation from ${ws.sourceMachine.hostname}.` : null;
-  const tunnelDown = ws.tunnelConfigured && !tunnelUp ? `The SSH tunnel is stopped, so this machine can't reach ${ws.sourceMachine.hostname}. Start it in Settings, SSH tunnel.` : null;
-  const unreachable = () => ws.isStopped() || (ws.tunnelConfigured && !readTunnelUp());
+  const tunnelDown = ws.tunnelConfigured && !(ws.followerLive ? ws.tunnelUp : tunnelUp) ? `The SSH tunnel is stopped, so this machine can't reach ${ws.sourceMachine.hostname}. Start it in Settings, SSH tunnel.` : null;
+  const unreachable = () => ws.isStopped() || (ws.tunnelConfigured && !(ws.followerLive ? ws.tunnelUp : readTunnelUp()));
   return { stopped, blocked: stopped ?? tunnelDown, unreachable };
 }
 
@@ -145,7 +150,7 @@ function InterruptedNotice() {
               tone="bad"
               title={
                 <>
-                  <Term term="Synchronization Run">Update</Term> #41 was interrupted
+                  <Term term="Synchronization Run">Update</Term> {ws.followerLive ? "" : "#41 "}was interrupted
                 </>
               }
               actions={
@@ -159,8 +164,7 @@ function InterruptedNotice() {
                 </>
               }
             >
-              It stopped yesterday at 21:14 after 3 of 5 steps, when this machine went to sleep. Recover finishes the other 2. Abandon closes it and leaves the 3 finished steps in
-              place; nothing is rolled back.{stopped && ` ${stopped}`}
+              {ws.followerLive ? "Recover resumes the recorded writes. Abandon closes the run and leaves applied changes in place; nothing is rolled back." : "It stopped yesterday at 21:14 after 3 of 5 steps, when this machine went to sleep. Recover finishes the other 2. Abandon closes it and leaves the 3 finished steps in place; nothing is rolled back."}{stopped && ` ${stopped}`}
             </Attention>
           </AnimatedRow>
         )}
@@ -168,16 +172,16 @@ function InterruptedNotice() {
       <ConfirmDialog
         open={confirming === "recover"}
         onOpenChange={(o) => !o && setConfirming(null)}
-        title="Recover update #41?"
-        body="Canonfig runs the 2 remaining steps from the run's journal and writes them to this machine. The 3 finished steps stay as they are."
+        title={ws.followerLive ? "Recover interrupted update?" : "Recover update #41?"}
+        body={ws.followerLive ? "Canonfig resumes this run's recorded writes. Finished steps stay in place." : "Canonfig runs the 2 remaining steps from the run's journal and writes them to this machine. The 3 finished steps stay as they are."}
         confirm="Recover"
         onConfirm={ws.recover}
       />
       <ConfirmDialog
         open={confirming === "abandon"}
         onOpenChange={(o) => !o && setConfirming(null)}
-        title="Abandon update #41?"
-        body="3 finished steps stay; nothing is rolled back. The remaining 2 don't run."
+        title={ws.followerLive ? "Abandon interrupted update?" : "Abandon update #41?"}
+        body={ws.followerLive ? "Finished steps stay; nothing is rolled back. The remaining steps do not run." : "3 finished steps stay; nothing is rolled back. The remaining 2 don't run."}
         confirm="Abandon"
         onConfirm={ws.abandon}
       />
@@ -187,6 +191,7 @@ function InterruptedNotice() {
 
 function HumanActionItem() {
   const ws = useWorkspace();
+  if (ws.followerLive) return null;
   return (
     <RowPresence>
       {ws.humanAction && (
@@ -458,25 +463,13 @@ function subscribeSyncDetailLayout(onChange: () => void) {
 
 
 export function SyncView() {
-  const ws = useWorkspace();
-  return ws.capabilities.followerWrite ? <SyncForm /> : <FollowerUnavailable title="Sync" members={["sync.plan", "sync.apply", "sync.reviews"]} />;
+  return <SyncForm />;
 }
 
-function FollowerUnavailable({ title, members }: { title: string; members: string[] }) {
-  const ws = useWorkspace();
-  return (
-    <>
-      <PageHeader crumbs={[title]} actions={<Button size="sm" variant="outline" onClick={ws.reload}>Reload</Button>} />
-      <Body>
-        <EmptyState title="This form is not available yet" body={`Not implemented: ${members.join(", ")}. Use the Canonfig CLI for these operations.`} />
-        <div className="max-w-[880px] space-y-8 px-4 py-6 sm:px-8"><WorkspaceEvidence /></div>
-      </Body>
-    </>
-  );
-}
 
 function SyncForm() {
   const ws = useWorkspace();
+  const live = ws.followerLive;
   const sent = ws.resources.filter((r) => r.groups.length === 0 || r.groups.some((group) => ws.selfFollower?.groups.includes(group))).length;
   const notSent = ws.resources.length - sent;
   const rev = ws.targetRevision;
@@ -517,6 +510,7 @@ function SyncForm() {
               size="sm"
               disabled={running || checking || blocks.blocked !== null}
               onClick={() => {
+                if (live) { live.check(); return; }
                 setChecking(true);
                 ws.later(() => {
                   setChecking(false);
@@ -532,7 +526,7 @@ function SyncForm() {
               <Button
                 size="sm"
                 variant="primary"
-                disabled={running || ws.interrupted || blocks.blocked !== null || collisions.length > 0}
+                disabled={running || ws.interrupted || blocks.blocked !== null || collisions.length > 0 || (live !== undefined && live.operation?.state !== "succeeded")}
                 onClick={ws.applyPlan}
                 data-tour="sync-apply"
               >
@@ -553,6 +547,19 @@ function SyncForm() {
           ) : undefined
         }
       >
+        {live ? <>
+          <InterruptedNotice />
+          {!live.operation && <EmptyState title="Check for a revision" body="Check for updates to read the real plan. Nothing changes until you apply." />}
+          <FollowerOperationEvidence />
+          <div className="space-y-3 border-t border-border px-[18px] py-5">
+            <SectionLabel>Held items and local changes</SectionLabel>
+            <p className="max-w-prose text-sm text-muted-foreground">Canonfig leaves drifted items as they are. Move your edit into the Local folder, ask the Source to publish it, or restore the published content. Resolve local name collisions with an overlay or by renaming your item.</p>
+            <Button variant="outline" size="sm" onClick={() => ws.go("local")}>Open Local settings</Button>
+            <SectionLabel className="pt-4">Private adoption review</SectionLabel>
+            <p className="max-w-prose text-sm text-muted-foreground">Create the CLI's private review files before first adoption. Their text stays on this machine and cannot be read or deleted in the browser.</p>
+            <Button variant="outline" size="sm" disabled={running || blocks.blocked !== null} onClick={live.createReview}>Create private review</Button>
+          </div>
+        </> : <>
         <section data-tour="sync-summary" className="relative isolate overflow-hidden border-b border-border" aria-live="polite">
           <StateBand tone={ws.phase === "plan" || held > 0 ? "warn" : "ok"} mode={running ? "running" : "idle"} className="-z-10 opacity-70" />
           <div className="px-[18px] py-4">
@@ -654,6 +661,7 @@ function SyncForm() {
           </div>
         )}
         <div className="pb-16" />
+        </>}
       </Body>
     </>
   );
@@ -870,12 +878,13 @@ function ReviewText({ label, children }: { label: string; children: string }) {
 
 export function ScheduleView() {
   const ws = useWorkspace();
-  return ws.capabilities.followerWrite ? <ScheduleForm /> : <FollowerUnavailable title="Schedule" members={["schedule.read", "schedule.save"]} />;
+  return <ScheduleForm key={ws.followerLive ? JSON.stringify(ws.followerSchedule) : "demo"} />;
 }
 
 function ScheduleForm() {
   const ws = useWorkspace();
-  const [saved, setSaved] = useSharedState<Schedule | null>(SCHEDULE_KEY, ws.followerSchedule);
+  const [simulatedSaved, setSaved] = useSharedState<Schedule | null>(SCHEDULE_KEY, ws.followerSchedule);
+  const saved = ws.followerLive ? ws.followerSchedule : simulatedSaved;
   // This is an unsaved form draft, not evidence of an installed schedule.
   const initial: Schedule = saved ?? { cadence: "default", days: [], time: ws.profileSchedule?.time ?? "" };
   const [draft, setDraft] = useState<Schedule>(initial);
@@ -883,7 +892,7 @@ function ScheduleForm() {
   // With nothing saved, the untouched form is only the Source's default on offer, not an edit to lose.
   const { dialog: leaveDialog } = useLeaveGuard(JSON.stringify(draft) !== JSON.stringify(initial), "the schedule");
   const error = scheduleError(draft);
-  const defaultLabel = "every day at 09:00";
+  const defaultLabel = ws.followerLive ? "published default" : "every day at 09:00";
   const { stopped } = useSyncBlocks();
   return (
     <>
@@ -894,12 +903,16 @@ function ScheduleForm() {
             data-tour="schedule-save"
             size="sm"
             variant="primary"
-            disabled={!dirty || error !== null || stopped !== null}
-            onClick={() =>
-              (setSaved(draft),
-              ws.reach("schedule"),
-              toast.success("Schedule saved", { description: `${scheduleSummary(draft, `Same as the Source: ${defaultLabel}`)}.${DEMO ? "\nSaved in this demo workspace." : ""}` }))
-            }
+            disabled={(!dirty && !ws.followerLive) || error !== null || stopped !== null || ws.followerLive?.action.loading}
+            onClick={async () => {
+              if (ws.followerLive) {
+                if (await ws.followerLive.saveSchedule(draft)) toast.success("Schedule saved");
+                return;
+              }
+              setSaved(draft);
+              ws.reach("schedule");
+              toast.success("Schedule saved", { description: `${scheduleSummary(draft, `Same as the Source: ${defaultLabel}`)}.${DEMO ? "\nSaved in this demo workspace." : ""}` });
+            }}
           >
             Save schedule
           </Button>
@@ -913,15 +926,20 @@ function ScheduleForm() {
               ? ` ${stopped} Its schedule was removed.`
               : saved === null && " No schedule is set yet, so this machine only updates when you apply from Sync. Save one to turn it on."}
           </Lede>
-          <ScheduleFields idPrefix="sch" value={draft} onChange={setDraft} defaultLabel={defaultLabel} />
-          <div data-tour="schedule-next" className={cn("mt-8", settingsGroup)}>
+          <ScheduleFields idPrefix="sch" value={draft} onChange={setDraft} defaultLabel={defaultLabel} allowCustom={!!ws.followerLive} />
+          {ws.followerLive ? <div className={cn("mt-8", settingsGroup)}>
+            <SettingRow title="Native schedule" description={text(ws.followerLive.schedule?.detail)}>{text(ws.followerLive.schedule?.state)?.replaceAll("-", " ") ?? "Not reported"}</SettingRow>
+            {text(ws.followerLive.schedule?.nextRun) && <SettingRow title="Next check">{text(ws.followerLive.schedule?.nextRun)}</SettingRow>}
+            {text(ws.followerLive.schedule?.platform) && <SettingRow title="Platform">{text(ws.followerLive.schedule?.platform)}</SettingRow>}
+            {text(ws.followerLive.schedule?.unattendedRuns) && <SettingRow title="Recorded runs">{text(ws.followerLive.schedule?.unattendedRuns)}</SettingRow>}
+          </div> : <div data-tour="schedule-next" className={cn("mt-8", settingsGroup)}>
             {/* Only a saved schedule has a real next check; an edited or never-saved one is a preview. */}
             <SettingRow title={!stopped && dirty ? "If you save this" : "Next check"}>{stopped ? "None" : nextCheck(draft, DEFAULT_TIME)}</SettingRow>
             <SettingRow title="Runs through" description="launchd agent">
               <Mono className="text-foreground">com.canonfig.follower</Mono>
             </SettingRow>
             <SettingRow title="If asleep">Runs when it wakes up</SettingRow>
-          </div>
+          </div>}
         </Column>
       </Body>
       {leaveDialog}
@@ -1038,13 +1056,12 @@ function CollisionNotice({ collisions }: { collisions: LocalItem[] }) {
 }
 
 export function LocalView() {
-  const ws = useWorkspace();
-  return ws.capabilities.followerWrite ? <LocalForm /> : <FollowerUnavailable title={PLAIN.localNav} members={["local.items", "local.preferences", "local.overlays"]} />;
+  return <LocalForm />;
 }
 
 function LocalForm() {
   const ws = useWorkspace();
-  const allowed = ws.profile.localAllow;
+  const allowed = ws.followerLive?.allowed ?? ws.profile.localAllow;
   const selected = ws.focus;
   const adding = selected === "new";
   const current = ws.local.find((l) => l.id === selected);
@@ -1053,17 +1070,21 @@ function LocalForm() {
   const startAdding = () => ws.go("local", "new");
   const toggleHarness = (id: HarnessId, on: boolean) => {
     ws.setExcluded((prev) => (on ? prev.filter((h) => h !== id) : [...prev, id]));
+    if (ws.followerLive) return;
     toast(on ? `Managing ${HARNESS_NAMES[id]} here again` : `Excluded ${HARNESS_NAMES[id]} on this machine`, {
       description: `Saved to ~/.canonfig/local/local.jsonc.\n${on ? "The next update writes the folder into it again." : "The next update leaves it alone."}${DEMO ? "\nSaved in this demo workspace." : ""}`,
     });
   };
   const [removingOverlay, setRemovingOverlay] = useState<string | null>(null);
+  const [disableBackups, setDisableBackups] = useState(false);
+  const [overlayDraft, setOverlayDraft] = useState("");
   // local.jsonc keeps item overlays and key claims in one list; this section shows the items, KeyClaims the claims.
   const itemOverlays = ws.overlays.filter((o) => claimOf(o) === null);
   const collisions = unsettledCollisions(ws.local, ws.overlays, ws);
   // An item's state as `sync --plan` sees it: ignored outside local.allow, stopping on an unsettled name collision,
   // or projected (replacing the published item when an overlay names it).
   const statusOf = (l: LocalItem): [StatusKind, string, string | undefined] => {
+    if (ws.followerLive) return [allowed.includes(l.category) ? "ok" : "warn", allowed.includes(l.category) ? "Local item; checked on the next sync" : "Not admitted by the Source", undefined];
     if (!allowed.includes(l.category)) {
       // The warning `canonfig sync --plan` prints for a category local.allow leaves out (src/projection/plan.ts).
       const where = l.category === "instructions" ? "local/AGENTS.md" : l.category === "mcp" || l.category === "settings" ? `local/local.jsonc ${l.category}` : `local/${l.category}/`;
@@ -1088,8 +1109,9 @@ function LocalForm() {
         crumbs={[PLAIN.localNav]}
         actions={
           <>
+            {ws.followerLive && <Button size="sm" variant="outline" disabled={ws.followerLive.action.loading} onClick={() => { if ((!adding && !current) || window.confirm("Reload local settings and discard unsaved edits?")) ws.reload(); }}>Reload</Button>}
             {/* `canonfig export` takes this machine's mirror together with its local folder. */}
-            <Button size="sm" variant="outline" onClick={ws.exportArchive} title="Download ~/.canonfig/ and its local folder as a .tar.gz with a checksum manifest">
+            <Button size="sm" variant="outline" disabled={ws.followerLive?.action.loading} onClick={ws.followerLive?.exportArchive ?? ws.exportArchive} title="Download ~/.canonfig/ and its local folder as a .tar.gz with a checksum manifest">
               Export
             </Button>
             {/* One gold action per view: while the editor is open its Save is the commit, so this steps down, like Profile's Add item. */}
@@ -1099,7 +1121,9 @@ function LocalForm() {
           </>
         }
       />
-      <Body detail={(adding || current) && <LocalEditor key={adding ? "new" : selected} item={adding ? null : current!} onClose={() => ws.go("local")} />}>
+      <Body detail={(adding || current) && (ws.followerLive
+        ? <LocalAuthoringEditor live={ws.followerLive} key={`${adding ? "new" : selected}:${ws.followerLive.local?.items.find((entry) => entry.path === current?.path)?.digest ?? ""}`} item={adding ? null : current!} onClose={() => ws.go("local")} />
+        : <LocalEditor key={adding ? "new" : selected} item={adding ? null : current!} onClose={() => ws.go("local")} />)}>
         <p className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
           Items here live in <Mono className="text-foreground">~/.canonfig/local</Mono> on this machine. Canonfig adds them to what {ws.sourceMachine.hostname} publishes, never replaces them and
           never sends them to the Source. {ws.sourceMachine.hostname} decides which kinds a machine may add. Canonfig calls this the <Term term="Local folder">local folder</Term>.
@@ -1152,7 +1176,11 @@ function LocalForm() {
             {ws.sourceMachine.hostname}'s on this machine. These choices live in local.jsonc and never go to {ws.sourceMachine.hostname}.
           </p>
           <div data-tour="local-overlays" className={cn("mt-1 max-w-[880px]", settingsGroup)}>
-            {itemOverlays.length === 0 && collisions.length === 0 && <p className="px-[16px] py-3 text-sm text-faint">No local item shares a published item's name.</p>}
+            {ws.followerLive && <form className="flex flex-wrap gap-2 px-4 py-3" onSubmit={(event) => { event.preventDefault(); if (overlayDraft.trim()) ws.setOverlays((current) => [...current, overlayDraft.trim()]); }}>
+              <Input aria-label="Local item overlay" placeholder="rules/my-rule" className="min-w-40 flex-1" value={overlayDraft} onChange={(event) => setOverlayDraft(event.target.value)} />
+              <Button type="submit" variant="outline" size="sm" disabled={ws.followerLive.action.loading || !overlayDraft.trim()}>Set overlay</Button>
+            </form>}
+            {itemOverlays.length === 0 && collisions.length === 0 && <p className="px-[16px] py-3 text-sm text-faint">{ws.followerLive ? "No item overlays recorded." : "No local item shares a published item's name."}</p>}
             {collisions.map((l) => (
               <SettingRow
                 key={`collision:${l.id}`}
@@ -1169,6 +1197,7 @@ function LocalForm() {
                   size="xs"
                   onClick={() => {
                     ws.setOverlays((prev) => [...prev, l.id]);
+                    if (ws.followerLive) return;
                     toast.success(`Yours replaces ${ws.sourceMachine.hostname}'s ${l.id}`, {
                       description: `Saved as an overlay in ~/.canonfig/local/local.jsonc.\nThe next update uses your ${l.id} on this machine.${DEMO ? "\nSaved in this demo workspace." : ""}`,
                     });
@@ -1180,7 +1209,7 @@ function LocalForm() {
             ))}
             {itemOverlays.map((o) => {
               const mine = ws.local.some((l) => l.id === o && allowed.includes(l.category));
-              const theirs = ws.resources.some((r) => r.change !== "added" && r.id === o);
+              const theirs = ws.followerLive ? undefined : ws.resources.some((r) => r.change !== "added" && r.id === o);
               // The plan's OVERLAY_UNUSED warning (src/projection/plan.ts), without the command it suggests.
               const unused = `overlay ${o} finds no admitted local/ item of that name, so ${theirs ? "the published item is projected" : "it changes nothing"}`;
               return (
@@ -1193,6 +1222,7 @@ function LocalForm() {
                     </span>
                   }
                   description={
+                    ws.followerLive ? "The local item replaces the published item on this machine. Sync checks that both items exist." :
                     mine
                       ? theirs
                         ? o.startsWith("settings/")
@@ -1212,7 +1242,13 @@ function LocalForm() {
         </div>
 
         <KeyClaims />
+        {ws.followerLive?.archive && <div className="px-[18px] pt-8"><SectionLabel>Verified export</SectionLabel><div className={settingsGroup}>
+          <SettingRow title="Archive checksum"><Mono className="break-all">{ws.followerLive.archive.sha256}</Mono></SettingRow>
+          <SettingRow title="Manifest checksum"><Mono className="break-all">{ws.followerLive.archive.manifestSha256}</Mono></SettingRow>
+          <SettingRow title="Signer"><Mono className="break-all">{ws.followerLive.archive.signer}</Mono></SettingRow>
+        </div></div>}
 
+        {!ws.followerLive && <>
         <div className="px-4 pt-8 sm:px-[18px]">
           <SectionLabel>
             <Term term="Append-local">Your own content in shared files</Term>
@@ -1246,6 +1282,7 @@ function LocalForm() {
             </div>
           )}
         </div>
+        </>}
 
         <div className="px-[18px] pt-8">
           <SectionLabel>Harnesses on this machine</SectionLabel>
@@ -1272,6 +1309,7 @@ function LocalForm() {
                 id="local-backups"
                 checked={ws.backups}
                 onCheckedChange={(on) => {
+                  if (ws.followerLive) { if (on) ws.setBackups(true); else setDisableBackups(true); return; }
                   ws.setBackups(on);
                   toast(on ? "Backups on" : "Backups off on this machine", {
                     description: `${on ? "Canonfig backs up each harness before it first writes there." : `Saved as "backups": false in ~/.canonfig/local/local.jsonc.\nCanonfig takes over new harnesses without a snapshot; existing snapshots stay.`}${DEMO ? "\nSaved in this demo workspace." : ""}`,
@@ -1282,6 +1320,7 @@ function LocalForm() {
           </div>
         </div>
       </Body>
+      <ConfirmDialog open={disableBackups} onOpenChange={setDisableBackups} title="Turn off takeover backups?" body="Future takeovers will not preserve the prior harness content. Existing snapshots remain." confirm="Turn off backups" onConfirm={() => ws.setBackups(false)} />
       <ConfirmDialog
         open={removingOverlay !== null}
         onOpenChange={(o) => !o && setRemovingOverlay(null)}
@@ -1295,6 +1334,7 @@ function LocalForm() {
         onConfirm={() => {
           const item = removingOverlay;
           ws.setOverlays((prev) => prev.filter((o) => o !== item));
+          if (ws.followerLive) return;
           toast(`Removed the overlay for ${item}`, { description: `Saved to ~/.canonfig/local/local.jsonc.${DEMO ? "\nSaved in this demo workspace." : ""}` });
         }}
       />
@@ -1329,6 +1369,7 @@ function KeyClaims() {
       return;
     }
     ws.setOverlays((prev) => [...prev, `settings/${harness}#${trimmed}`]);
+    if (ws.followerLive) return;
     toast.success(`${trimmed} is yours in ${HARNESS_NAMES[harness]}'s settings`, {
       description: `Saved as a key claim in ~/.canonfig/local/local.jsonc.\nThe next update stops writing it; set it in ${HARNESS_NAMES[harness]}'s own settings file.${DEMO ? "\nSaved in this demo workspace." : ""}`,
     });
@@ -1355,7 +1396,8 @@ function KeyClaims() {
           const whole = written.find((k) => c.key.startsWith(`${k}.`));
           const covered = written.filter((k) => covers(c.key, k));
           // The refusal buildProjection gives, and the plan's CLAIM_UNUSED warning (src/projection/plan.ts).
-          const [kind, description, title]: [StatusKind, string, string | undefined] = whole
+          const [kind, description, title]: [StatusKind, string, string | undefined] = ws.followerLive
+            ? ["ok", `This key belongs to this machine. The next sync checks the claim against published settings.`, undefined] : whole
             ? ["act", `Canonfig writes ${whole} as one value, so the next update stops. Claim ${whole} instead.`, `overlay ${c.item} claims part of ${whole}, which Canonfig writes as one value; claim ${whole} instead`]
             : covered.length === 0
               ? ["warn", `Canonfig writes no ${c.key} in ${name}'s settings file, so this changes nothing.`, `overlay ${c.item} covers no key Canonfig writes in ${c.harness}'s settings file, so it changes nothing`]
@@ -1424,6 +1466,7 @@ function KeyClaims() {
         onOpenChange={(o) => !o && setRemoving(null)}
         title={`Give ${removed?.key} back to ${ws.sourceMachine.hostname}?`}
         body={
+          ws.followerLive ? "Canonfig removes the claim. The next sync may write the published value to this key again." :
           removed && writtenKeys(removed.harness, ws.resources).some((k) => covers(removed.key, k))
             ? `Canonfig removes the claim from ~/.canonfig/local/local.jsonc. The next update writes ${ws.sourceMachine.hostname}'s ${removed.key}${removedValue ? ` (${removedValue})` : ""} over yours in ${HARNESS_NAMES[removed.harness]}'s settings file, and an edit after that counts as a local change.`
             : `Canonfig removes the claim from ~/.canonfig/local/local.jsonc. It writes no ${removed?.key} there, so nothing else changes.`
@@ -1432,6 +1475,7 @@ function KeyClaims() {
         onConfirm={() => {
           const item = removing;
           ws.setOverlays((prev) => prev.filter((o) => o !== item));
+          if (ws.followerLive) return;
           toast(`Removed the claim on ${removed?.key}`, { description: `Saved to ~/.canonfig/local/local.jsonc.${DEMO ? "\nSaved in this demo workspace." : ""}` });
         }}
       />
@@ -1843,8 +1887,9 @@ export function FollowerSecretsView() {
             data-tour="secrets-update"
             size="sm"
             variant="primary"
-            disabled={!ws.capabilities.followerWrite || refresh.busy || blocked !== null}
+            disabled={ws.followerLive ? ws.followerLive.action.loading || blocked !== null : !ws.capabilities.followerWrite || refresh.busy || blocked !== null}
             onClick={() => {
+              if (ws.followerLive) { ws.followerLive.refreshSecrets(); return; }
               setRefresh((prev) => ({ ...prev, busy: true }));
               ws.later(() => {
                 if (unreachable()) {
@@ -1858,25 +1903,26 @@ export function FollowerSecretsView() {
               }, 900);
             }}
           >
-            {refresh.busy ? "Updating…" : "Update secrets"}
+            {(ws.followerLive ? ws.secretsRefresh.busy : refresh.busy) ? "Updating…" : "Update secrets"}
           </Button>
         }
       />
       <Body reloading={refresh.busy}>
         <p data-tour="secrets-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
           {ws.capabilities.simulatedTelemetry ? <>This machine <Term term="Follower Group"><span className="lowercase">{PLAIN.secretsGroup}</span></Term> (group <Mono className="text-foreground">{SECRETS_GROUP}</Mono>), so it gets shared secrets from {ws.sourceMachine.hostname} into the macOS Keychain. Last updated {refresh.updated}.{blocked && ` ${blocked}`}</> : "Secret values stay in the native credential store. Only metadata is shown here."}
+          {ws.followerLive && ws.secretsRefresh.updated && <span role="status"> {ws.secretsRefresh.updated}</span>}
         </p>
         <ListHead cols={cols} minWidth={colsMin} data-tour="secrets-list">
           <span>Name</span>
-          <span>Updated at Source</span>
+          <span>{ws.followerLive ? "Origin" : "Updated at Source"}</span>
         </ListHead>
-        {ws.secrets.map((s) => (
+        {(ws.followerLive ? ws.followerLive.secrets : ws.secrets).map((s) => (
           <ListRow key={s.name} cols={cols} minWidth={colsMin} data-tour="secrets-list">
             <span className="flex min-w-0 items-center gap-2">
               <Key className="size-3.5 shrink-0 text-faint" />
               <span className="truncate font-mono text-sm">{s.name}</span>
             </span>
-            <span className="text-sm text-muted-foreground tabular-nums">{s.updated}</span>
+            <span className="text-sm text-muted-foreground tabular-nums">{"origin" in s ? s.origin === "source" ? "Shared by the Source" : "This machine" : s.updated}</span>
           </ListRow>
         ))}
       </Body>
@@ -1885,17 +1931,19 @@ export function FollowerSecretsView() {
 }
 
 export function TunnelView() {
-  const ws = useWorkspace();
-  return ws.capabilities.followerWrite ? <TunnelForm /> : <FollowerUnavailable title="SSH tunnel" members={["tunnel.status", "tunnel.start", "tunnel.stop"]} />;
+  return <TunnelForm />;
 }
 
 function TunnelForm() {
   const ws = useWorkspace();
-  const [up, setUp] = useSharedState(TUNNEL_KEY, ws.tunnelUp);
+  const [simulatedUp, setUp] = useSharedState(TUNNEL_KEY, ws.tunnelUp);
+  const up = ws.followerLive ? ws.tunnelUp : simulatedUp;
   // Started from this screen (or just now at enrollment), so the seeded uptime would be wrong.
   const [startedHere, setStartedHere] = useSharedState(TUNNEL_STARTED_KEY, false);
-  const [busy, setBusy] = useSharedState(TUNNEL_BUSY_KEY, false);
+  const [simulatedBusy, setBusy] = useSharedState(TUNNEL_BUSY_KEY, false);
+  const busy = ws.followerLive ? ws.followerLive.action.loading : simulatedBusy;
   const toggle = () => {
+    if (ws.followerLive) { ws.followerLive.toggleTunnel(); return; }
     const next = !up;
     setBusy(true);
     ws.later(() => {
@@ -1910,7 +1958,7 @@ function TunnelForm() {
   if (!ws.tunnelConfigured) {
     return (
       <>
-        <PageHeader crumbs={["Settings", "SSH tunnel"]} />
+        <PageHeader crumbs={["Settings", "SSH tunnel"]} actions={ws.followerLive && <Button size="sm" variant="outline" onClick={ws.reload}>Reload</Button>} />
         <Body>
           <EmptyState title="No SSH tunnel" body={`This machine joined without a tunnel, so it connects to ${ws.sourceMachine.hostname}'s source service directly.`} />
         </Body>
@@ -1934,7 +1982,7 @@ function TunnelForm() {
             source service never has to listen on the network.
           </Lede>
           <SectionLabel>Status</SectionLabel>
-          <div data-tour="tunnel-status" className={cn("mt-1", settingsGroup)}>
+          {ws.followerLive ? <TunnelEvidence report={ws.followerLive.tunnel ?? {}} /> : <div data-tour="tunnel-status" className={cn("mt-1", settingsGroup)}>
             <SettingRow title="State">
               <span className="inline-flex items-center gap-1.5 text-base">
                 <StatusMark kind={up ? "ok" : "offline"} />
@@ -1948,7 +1996,7 @@ function TunnelForm() {
             <SettingRow title="Host key" description="Pinned when this machine joined. The tunnel refuses to connect if atlas presents a different key.">
               <Mono className="text-foreground">SHA256:mG3k…Q9a</Mono>
             </SettingRow>
-          </div>
+          </div>}
         </Column>
       </Body>
     </>
@@ -1978,7 +2026,7 @@ export function MachineView() {
   const ws = useWorkspace();
   return (
     <>
-      <PageHeader crumbs={["Settings", "Enrollment"]} />
+      <PageHeader crumbs={["Settings", "Enrollment"]} actions={ws.followerLive && <Button size="sm" variant="outline" onClick={ws.reload}>Reload</Button>} />
       <Body>
         <Column>
           <SectionLabel>How it joined</SectionLabel>
@@ -1990,13 +2038,18 @@ export function MachineView() {
             </SettingRow>
             <SettingRow title="Identity">{ws.unenrolled ? "Deleted" : <Mono className="text-foreground">{ws.selfFollower?.id ?? "Not reported"}</Mono>}</SettingRow>
             <SettingRow title={<Term term="Machine Profile">Profile</Term>} description={`${ws.sourceMachine.hostname} publishes one profile, and this machine follows it.`}>
-              {ws.profile.name || "Not reported"}
+              {ws.followerLive ? text(record(ws.followerLive.local?.canonicalConfig.profile).name) ?? "Not reported" : ws.profile.name || "Not reported"}
             </SettingRow>
             <SettingRow title={PLAIN.groups} description={`Groups come from the invitation. To change them, ${ws.sourceMachine.hostname} makes a new invitation and this machine joins again with it.`}>
               <span className="grid justify-items-end">
                 {ws.selfFollower ? ws.selfFollower.groups.map((group) => <Mono key={group}>{group}</Mono>) : "Not reported"}
               </span>
             </SettingRow>
+            {ws.followerLive?.enrollment && <>
+              <SettingRow title="Enrolled">{ws.followerLive.enrollment.follower.enrolledAt}</SettingRow>
+              <SettingRow title="Enrollment state">{ws.followerLive.enrollment.pending ? "Pending" : ws.followerLive.enrollment.follower.revoked ? "Revoked" : "Enrolled"}</SettingRow>
+              {([["Source signing fingerprint", ws.followerLive.enrollment.source.signingFingerprint], ["TLS fingerprint", ws.followerLive.enrollment.source.tlsFingerprint]] as const).map(([label, value]) => <SettingRow key={label} title={label}><span className="flex min-w-0 items-center gap-2"><Mono className="break-all">{value}</Mono><Button variant="outline" size="xs" onClick={() => { void copy(value, "Fingerprint copied"); }}>Copy</Button></span></SettingRow>)}
+            </>}
           </div>
 
           <SectionLabel className="mt-10">{PLAIN.unenroll}</SectionLabel>

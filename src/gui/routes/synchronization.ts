@@ -8,8 +8,8 @@ import { CliCommandFailure, type CliPayload } from "../../cli/source-commands.ts
 import { RunId } from "../../domain/brand.ts";
 import { MachineState } from "../../machine/machine-state.service.ts";
 import { sha256BytesHex } from "../../profile/profile-codec.ts";
-import { readAuthoringItems, writeAuthoringItems, editAuthoringConfig, type AuthoringItem } from "../../projection/authoring.ts";
-import { parseOverlay } from "../../projection/folder.ts";
+import { readAuthoringItem, readAuthoringItems, writeAuthoringItems, editAuthoringConfig, type AuthoringItem } from "../../projection/authoring.ts";
+import { decodeFolderConfig, decodeLocalConfig, parseOverlay } from "../../projection/folder.ts";
 import { listSnapshots } from "../../projection/takeover.ts";
 import { synchronizeSharedSecrets } from "../../secrets/secret-client.ts";
 import { listSecrets, storeSecret, removeSecret, type SecretTransferError } from "../../secrets/secret-store.ts";
@@ -65,10 +65,19 @@ export const synchronizationRoutes = Effect.gen(function*() {
     folder: session.folderPath, scope: "local" as const, statePath: join(session.folderPath, "state.sqlite"),
   })));
   const localItems = () => localTarget.pipe(
-    Effect.flatMap((target) => readAuthoringItems(target)),
+    Effect.flatMap((target) => Effect.gen(function*() {
+      const items = yield* readAuthoringItems(target);
+      const canonical = yield* readAuthoringItem({ ...target, scope: "canonical" }, "canonfig.jsonc");
+      const config = (item: AuthoringItem | undefined) => item?.files[0] === undefined ? {} :
+        (item.path === "local.jsonc" ? decodeLocalConfig : decodeFolderConfig)(item.path, new TextDecoder("utf-8", { fatal: true }).decode(item.files[0].content));
+      const decoded = yield* Effect.try({
+        try: () => ({ config: config(items.find((item) => item.path === "local.jsonc")), canonicalConfig: config(canonical) }),
+        catch: (cause) => invalid(String(cause)),
+      });
+      return { items: items.map(itemResponse), ...decoded };
+    })),
     Effect.provideService(MachineState, machine),
     Effect.mapError(commandFailure),
-    Effect.map((items) => ({ items: items.map(itemResponse) })),
   );
   const changeOverlay = (action: "set" | "remove", item: string) => {
     // The command service expects the same boundary validation as the CLI parser.

@@ -177,11 +177,31 @@ D also owns the Source secrets handlers used by B: `GET /api/secrets` returns
 Secret values never enter responses, URLs, logs or browser storage; even malformed
 secret-request diagnostics omit the submitted input.
 
-The parent approved separate live synchronization screens in
-`ui/src/workspace/synchronization/screens.tsx`. The existing simulated screens stay
-unchanged for the demo build. Consolidating their presentation behind the backend
-seam remains a design follow-up, not a second production data source. No D control
-uses simulated state or browser-local persistence.
+The polished Follower screens now use `workspace/live/follower.ts` through the
+typed workspace interface. Plan, apply, recovery, abandonment and restore render
+real operation evidence with human labels. Local editing preserves complete file
+trees, binary assets, executable bits and digest preconditions; configuration
+edits preserve unrelated keys and comments. The demo keeps its simulated flow.
+The old live-only synchronization screen and registry have been removed.
+
+Follower verification: UI typechecking, production and demo builds, packaged CLI
+compilation, root TypeScript checking and root lint passed in a disposable Paris
+Raft workspace. The GUI acceptance/synchronization tests passed 5 cases, and
+navigation tests passed 37. UI lint reported 73 warnings and no errors.
+Packaged-browser checks covered plan, apply, private review, local file/config
+editing, rename/removal, binary skill assets and executable bits, a refused save
+with its draft retained, overlays/key claims, harness toggles, backups preference,
+verified export and real daily/weekday native schedules. The scheduler refusal
+was resolved by starting the disposable guest's user manager, then saving again.
+An enrolled Follower sidebar did not offer Join a Source.
+
+Sixteen demo-left/live-right comparisons cover eight pages at 1920×1080 and
+390×844: `/tmp/canonfig-ui/unify/sync-compare-<page>-<width>.png`.
+Both browser sessions reported no errors during the final capture pass.
+Verification stopped at the requested wrap-up: recovery/abandonment, restore,
+secret refresh, tunnel start/stop and unenroll still need browser exercises.
+The mobile Sync comparison also exposes a long revision value overflowing its
+setting row; visual acceptance is not complete.
 
 ### Settings and shared secrets
 
@@ -251,10 +271,10 @@ The exported `*_NOT_IMPLEMENTED` arrays and adjacent checklist comments in each 
 | --- | --- | --- |
 | Profile agent | `workspace/live/profile.ts`, `workspace/profile.tsx`, `workspace/skills.tsx`, `workspace/harnesses.tsx`, profile/publication/source-secret portions of `workspace/source.tsx`; old `live/profile.tsx` and its authoring modules | **11:** `setResources`, `setSecrets`, `markProfileEdit`, `removeProfileEdit`, `publish`, `setListed`, `setSurfaces`, `scannedTools`, `skillSources`, `upstreamSkills`, `profileSchedule` |
 | Machines agent | `workspace/live/machines.ts`, `workspace/machines.tsx`, `onboarding/*`, `shared/machine-map/*`, configured Setup view in `workspace/settings.tsx`; old `live/enrollment.tsx` | **6:** `setFollowers` (revoke), `setInvitations` (create), invitation download, replacement enrollment, setup plan/approve/apply, enrollment tunnel |
-| Follower agent | `workspace/live/follower.ts`, `workspace/follower.tsx`, `workspace/schedule.tsx`, follower secrets/tunnel/local/backup controls; old `live/synchronization.tsx` and `workspace/synchronization/screens.tsx` | **11:** `plan`, `runs`, `setHumanAction`, `setExcluded`, `setBackups`, `setLocal`, `setOverlays`, `followerSchedule`, tunnel controls, secret refresh, private-review creation |
+| Follower agent | `workspace/live/follower.ts`, `workspace/follower.tsx`, `workspace/schedule.tsx`, follower secrets/tunnel/local/backup controls; old `live/synchronization.tsx` and `workspace/synchronization/screens.tsx` | **0:** live operation plans/outcomes and run IDs, human-action recheck, harness exclusions, backups preference/restore, complete local editing, overlays/key claims, native schedule, tunnel controls, secret refresh, private-review creation, enrollment/unenroll and verified archive download are wired to the real API. Unreported progress and fleet telemetry stay absent. |
 | Integration owner | `workspace-types.ts`, `store.tsx`, providers, navigation/frame/routes, `live-app.tsx`, build guard, Overview and administration hooks | **0** in the Overview and administration example |
 
-The profile hook already reads folder metadata, revisions, harness selection/surfaces, groups and secret names, and exports a real archive. The machines hook reads enrollment records and invitation metadata without inventing health. The follower hook reads per-resource reports and wires operation-ticket apply/recovery/restore plus real unenrollment; detailed plan/local/schedule projection stays with its area forms. These partial adapters are deliberately not advertised as completed end-to-end workflows.
+The profile hook already reads folder metadata, revisions, harness selection/surfaces, groups and secret names, and exports a real archive. The machines hook reads enrollment records and invitation metadata without inventing health. The follower hook supplies full local authoring records and actual operation tickets to the shared forms; its capability is enabled. The remaining profile and machines partial adapters are not advertised as completed end-to-end workflows.
 
 Shared interface changes go through the integration owner. The profile and follower agents coordinate changes to harness controls; the machines agent owns only Setup within settings, not the completed administration screens. Preserve digest preconditions, explicit setup approval, write-only secret values and the existing CLI failure taxonomy. The demo retains its simulated flows throughout.
 

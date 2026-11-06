@@ -1,3 +1,4 @@
+import type { FollowerLive } from "./follower-types";
 import type { Dispatch, SetStateAction } from "react";
 import type { AppendLocalCategory, Follower, FollowerState, Harness, HarnessId, ItemCategory, KeptSurface, LocalCategory, LocalItem, Resource, Revision, SkillSource, Snapshot, SurfaceCategory, UpstreamSkill } from "@/shared/metadata";
 import type { GuiRequestError, GuiSession, GuiStatus } from "../gui-client";
@@ -279,6 +280,8 @@ export interface MachinesSlice {
 }
 
 export interface FollowerSlice {
+  /** Real command evidence and digest-aware authoring; absent in the simulated provider. */
+  followerLive?: FollowerLive;
   followerState: ResourceState;
   followerStates: Record<"harnesses" | "local" | "schedule" | "backups" | "overlays" | "tunnel", ResourceState>;
   followerSchedule: Schedule | null;
