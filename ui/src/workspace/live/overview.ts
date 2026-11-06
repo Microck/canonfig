@@ -20,7 +20,7 @@ export function useLiveOverview(backend: WorkspaceBackend, session: GuiSession, 
     capabilities: {
       invitationCancel: false, selectiveScanWrite: false, serviceRestart: false,
       privateReviewDelete: false, simulatedTelemetry: false, selfUpdateMutations: false,
-      profileWrite: false, enrollmentWrite: false, followerWrite: false,
+      profileWrite: true, enrollmentWrite: false, followerWrite: false,
     },
     notImplemented,
     later: () => notImplemented("Simulated operation"),

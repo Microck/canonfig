@@ -140,6 +140,7 @@ describe("profile GUI endpoints", () => {
     expect(readFileSync(join(machine.folder, "skills", "review", "SKILL.md"), "utf8")).toContain("Check tests");
     writeFileSync(join(machine.folder, "skills", "review", "SKILL.md"), `${original}Local edits.\n`);
     expect((await gui.request("/api/skills/update", "POST", { name: "review" })).value).toMatchObject({ category: "conflict-or-drift", exitCode: 4 });
+    expect((await gui.request("/api/skills/check", "POST", { name: "review" })).value).toMatchObject({ category: "conflict-or-drift", exitCode: 4, message: "Local edits detected in review. Reconcile the local files before updating." });
     expect((await gui.request("/api/skills/check", "POST", { name: "missing" })).value).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   }, 120_000);
 

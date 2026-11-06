@@ -4,6 +4,10 @@ import type { GuiRequestError, GuiSession, GuiStatus } from "../gui-client";
 import type { MachinesMode, Navigate, NavigateOptions, ProfileTab, WorkspaceRole } from "./routes";
 import type { AdministrationSlice } from "./administration-types";
 import type { Schedule } from "./schedule";
+import type { Schema } from "effect";
+import type { GuiProfileSnapshot, GuiProfileValidation, GuiProfileConfigWrite, GuiSkillCheck } from "../../../src/gui/contract/profile";
+import type { GuiArchiveDownload } from "../../../src/gui/contract/synchronization";
+import type { ExactDraft } from "./profile-authoring";
 
 type SetState<T> = Dispatch<SetStateAction<T>>;
 
@@ -208,6 +212,28 @@ export interface OverviewSlice {
 }
 
 export interface ProfileSlice {
+  profileLive?: {
+    snapshot: GuiProfileSnapshot | null;
+    busy: boolean;
+    error: GuiRequestError | null;
+    validation: GuiProfileValidation | null;
+    archive: GuiArchiveDownload | null;
+    skillChecks: Record<string, GuiSkillCheck>;
+    skillBusy: string | null;
+    scanDone: boolean;
+    revisionDetail: Schema.Json | null;
+    reload: () => void;
+    saveItem: (snapshot: GuiProfileSnapshot, before: Resource | undefined, next: Resource, exact?: ExactDraft, remove?: boolean) => Promise<boolean>;
+    saveConfig: (snapshot: GuiProfileSnapshot, edits: typeof GuiProfileConfigWrite.Type.edits) => Promise<boolean>;
+    setSecret: (name: string, value: string) => Promise<boolean>;
+    removeSecret: (name: string) => Promise<boolean>;
+    validate: () => Promise<boolean>;
+    scan: () => Promise<boolean>;
+    inspectRevision: (sequence: number) => void;
+    trackSkill: (name: string, source: string, ref: string, subdir: string) => Promise<boolean>;
+    checkSkill: (name: string) => void;
+    updateSkill: (name: string) => void;
+  };
   profileState: ResourceState;
   profileStates: Record<"items" | "revisions" | "skills" | "secrets", ResourceState>;
   publicationReviewer: string;
