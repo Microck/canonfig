@@ -1122,7 +1122,7 @@ function LocalForm() {
         }
       />
       <Body detail={(adding || current) && (ws.followerLive
-        ? <LocalAuthoringEditor live={ws.followerLive} key={`${adding ? "new" : selected}:${ws.followerLive.local?.items.find((entry) => entry.path === current?.path)?.digest ?? ""}`} item={adding ? null : current!} onClose={() => ws.go("local")} />
+        ? <LocalAuthoringEditor live={ws.followerLive} key={`${adding ? "new" : selected}:${ws.followerLive.local?.items.find((entry) => entry.path === (adding || current?.category === "mcp" || current?.category === "settings" ? "local.jsonc" : current?.path))?.digest ?? ""}`} item={adding ? null : current!} onClose={() => ws.go("local")} />
         : <LocalEditor key={adding ? "new" : selected} item={adding ? null : current!} onClose={() => ws.go("local")} />)}>
         <p className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
           Items here live in <Mono className="text-foreground">~/.canonfig/local</Mono> on this machine. Canonfig adds them to what {ws.sourceMachine.hostname} publishes, never replaces them and

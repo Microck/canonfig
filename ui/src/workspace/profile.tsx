@@ -395,15 +395,19 @@ export function ProfileView() {
   const proposed = ws.proposed.filter((id) => ws.resources.some((r) => r.id === id));
   const grouped = useMemo(() => CATEGORIES.map((c) => ({ category: c, items: ws.resources.filter((r) => r.category === c) })).filter((g) => g.items.length), [ws.resources]);
   const current = ws.resources.find((r) => r.id === selected);
+  // Keep an open editor mounted even if Reload discovers that its item was removed on disk.
+  const [lastCurrent, setLastCurrent] = useState(current);
+  if (current && current !== lastCurrent) setLastCurrent(current);
+  const editing = current ?? (lastCurrent?.id === selected ? lastCurrent : undefined);
 
   const close = () => ws.go("profile");
   const startCreating = () => ws.go("profile", "new");
 
   const detail =
-    tab === "items" && (creating || current) ? (
+    tab === "items" && (creating || editing) ? (
       <ItemEditor
-        key={creating ? "new" : `${current!.id}:${ws.profileLive?.snapshot?.items.map((item) => item.digest).join(":") ?? ""}`}
-        resource={creating ? blankItem(ws.resources.some((r) => r.id === "instructions") ? "rules" : "instructions") : current!}
+        key={creating ? "new" : editing!.id}
+        resource={creating ? blankItem(ws.resources.some((r) => r.id === "instructions") ? "rules" : "instructions") : editing!}
         isNew={creating}
         onClose={close}
         onSaved={(id) => ws.go("profile", id, { replace: creating })}
@@ -607,7 +611,10 @@ function resourcePathError(field: "Target" | "Source", value: string, name: stri
 function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource; isNew: boolean; onClose: () => void; onSaved: (id: string) => void }) {
   const ws = useWorkspace();
   const [draft, setDraft] = useState<Resource>(resource);
-  const [snapshot] = useState(ws.profileLive?.snapshot);
+  const [snapshot, setSnapshot] = useState(ws.profileLive?.snapshot);
+  const [saved, setSaved] = useState(false);
+  const latestSnapshot = ws.profileLive?.snapshot;
+  const diskItem = useMemo(() => latestSnapshot ? authoredItems(latestSnapshot).find((entry) => entry.resource.id === resource.id) : undefined, [latestSnapshot, resource.id]);
   const authored = useMemo(() => snapshot ? authoredItems(snapshot).find((entry) => entry.resource.id === resource.id) : undefined, [snapshot, resource.id]);
   const [exact, setExact] = useState<ExactDraft | undefined>(authored?.exact);
   const [name, setName] = useState(nameOf(resource));
@@ -636,19 +643,30 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
   const content = (r: Resource) => JSON.stringify({ ...r, change: undefined });
   const matches = (r: Resource) =>
     content(draft) === content(r) && name === nameOf(r) && JSON.stringify(rows.map(({ name: k, value }) => [k, value])) === JSON.stringify(Object.entries(r.keys ?? {}));
-  const dirty = !matches(resource) || JSON.stringify(exact) !== JSON.stringify(authored?.exact);
-  // The saved item can change under an open editor: a skill update lands, or a panel reopened mid-update shows the
-  // item from before it. An untouched draft follows the saved item, so the panel shows it and stays clean; a draft
-  // with edits is left alone. Adjusted during render, so the stale draft never paints.
   const [shown, setShown] = useState(resource);
-  if (shown !== resource) {
+  const dirty = !matches(shown) || JSON.stringify(exact) !== JSON.stringify(authored?.exact) || (!!snapshot && !isNew && !authored);
+  const diskChanged = useMemo(() => !!snapshot && !!latestSnapshot && JSON.stringify(snapshot.items.map(({ path, digest }) => [path, digest])) !== JSON.stringify(latestSnapshot.items.map(({ path, digest }) => [path, digest])), [snapshot, latestSnapshot]);
+  // Refresh clean or just-saved editors. An unsaved draft keeps its captured digests
+  // until the person explicitly discards it or accepts the new disk version.
+  if ((shown !== resource || latestSnapshot !== snapshot) && (!dirty || saved) && (!ws.profileLive || diskItem || isNew)) {
     setShown(resource);
-    if (matches(shown)) {
-      setDraft(resource);
-      setName(nameOf(resource));
-      setRows(keyRowsOf(resource));
-    }
+    setSnapshot(latestSnapshot);
+    setDraft(resource);
+    setExact(diskItem?.exact);
+    setName(nameOf(resource));
+    setRows(keyRowsOf(resource));
+    setSaved(false);
   }
+  const discard = () => {
+    if (!diskItem && ws.profileLive) { leaveWithoutAsking(onClose); return; }
+    setSnapshot(latestSnapshot);
+    setShown(resource);
+    setDraft(resource);
+    setExact(diskItem?.exact);
+    setName(nameOf(resource));
+    setRows(keyRowsOf(resource));
+    setTried(false);
+  };
   // A running skill check or update locks the editor, so no edit or rename can land under it.
   const skillLocked = useSkillLocked(resource.id);
   const updating = skillLocked || ws.profileLive?.busy === true;
@@ -705,6 +723,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
     const next = { ...base, summary: summaryOf(base) };
     if (ws.profileLive && snapshot) {
       if (await ws.profileLive.saveItem(snapshot, isNew ? undefined : resource, next, exact)) {
+        setSaved(true);
         toast.success(isNew ? `Added ${id}` : `Saved ${id}`, { description: "Written to the Canonical Folder. Publish to send it to followers." });
         leaveWithoutAsking(() => onSaved(id));
       }
@@ -717,6 +736,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
       description: `Written to ${next.path}.\nGoes out with revision ${ws.nextSequence}: ${unpublished} unpublished ${unpublished === 1 ? "change" : "changes"}.${DEMO ? "\nSaved in this demo workspace." : ""}`,
     });
     setDraft(next);
+    setShown(next);
     setRows(keyRowsOf(next));
     setTried(false);
     leaveWithoutAsking(() => onSaved(id));
@@ -735,7 +755,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
       footer={
         <>
           {!isNew && (
-            <Button variant="destructive" size="sm" disabled={!ws.capabilities.profileWrite || updating} onClick={() => setConfirmRemove(true)}>
+            <Button variant="destructive" size="sm" disabled={!ws.capabilities.profileWrite || updating || diskChanged} onClick={() => setConfirmRemove(true)}>
               Remove…
             </Button>
           )}
@@ -743,12 +763,12 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
             <Button
               variant="ghost"
               size="sm"
-              onClick={isNew ? () => leaveWithoutAsking(onClose) : () => (setDraft(resource), setExact(authored?.exact), setName(nameOf(resource)), setRows(keyRowsOf(resource)), setTried(false))}
+              onClick={isNew ? () => leaveWithoutAsking(onClose) : discard}
               disabled={updating || (!isNew && !dirty)}
             >
               {isNew ? "Cancel" : "Discard"}
             </Button>
-            <Button type="submit" form="item-form" variant="primary" size="sm" disabled={!ws.capabilities.profileWrite || updating || (!isNew && !dirty)}>
+            <Button type="submit" form="item-form" variant="primary" size="sm" disabled={!ws.capabilities.profileWrite || updating || diskChanged || (!isNew && !dirty)}>
               {isNew ? "Add to the folder" : "Save to the folder"}
             </Button>
           </div>
@@ -756,6 +776,19 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
       }
     >
       <ProfileActionNotice />
+      {diskChanged && <section aria-label="Changed on disk" className="grid gap-3 border-b border-border p-4">
+        <p className="text-sm">The folder changed on disk. Your draft is still in the editor below. Review the new version before saving.</p>
+        <SectionLabel>New disk version</SectionLabel>
+        {!diskItem ? <p>This item was removed from disk.</p> : <>
+          {diskItem.value !== undefined && <pre className="overflow-auto whitespace-pre-wrap font-mono text-sm">{JSON.stringify(diskItem.value, null, 2)}</pre>}
+          {(diskItem.exact?.files ?? draftFiles(latestSnapshot?.items.find((item) => item.path === diskItem.itemPath)?.files ?? [])).map((file) => <div key={file.path}><Mono>{file.path}{file.encoding === "base64" ? " (base64)" : ""}</Mono><pre className="overflow-auto whitespace-pre-wrap font-mono text-sm">{file.content}</pre></div>)}
+        </>}
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={discard}>Discard my edits</Button>
+          <Button type="button" variant="outline" size="sm" onClick={() => { setSnapshot(latestSnapshot); setShown(resource); }}>Re-apply my edits</Button>
+        </div>
+        <SectionLabel>Your draft</SectionLabel>
+      </section>}
       <form
         id="item-form"
         className="px-4 py-4"

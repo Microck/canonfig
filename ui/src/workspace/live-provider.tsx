@@ -18,10 +18,10 @@ export function livePageResources(session: GuiSession, route: WorkspaceRoute): r
   if (!isRouteForRole(route, session.role)) return [];
   const shared = ["/api/status"];
   const pages: Partial<Record<Workspace["view"], readonly string[]>> = {
-    profile: ["/api/profile/items", "/api/revisions", ...(route.profileTab === "items" ? ["/api/skills"] : []), ...(route.profileTab === "harnesses" ? ["/api/harnesses"] : [])],
+    profile: ["/api/profile/items", "/api/revisions", ...(route.profileTab === "items" ? ["/api/skills"] : []), ...(route.profileTab === "harnesses" ? ["/api/harnesses"] : []), ...(route.profileTab === "groups" ? ["/api/machines"] : [])],
     revisions: ["/api/revisions"],
     machines: session.role === "source" ? ["/api/machines", "/api/profile/items", "/api/source-service"] : ["/api/enrollment"],
-    secrets: session.role === "source" ? ["/api/secrets"] : ["/api/secrets", "/api/tunnel"],
+    secrets: session.role === "source" ? ["/api/secrets", "/api/machines"] : ["/api/secrets", "/api/tunnel"],
     sync: ["/api/tunnel"],
     schedule: ["/api/schedule"],
     local: ["/api/local/items", "/api/harnesses", "/api/local/overlays"],
@@ -71,8 +71,8 @@ function LiveWorkspace({ backend, session, route, cache, paths, onInstalled, chi
   const service = admin.service.data;
   const resources: Partial<Record<Workspace["view"], ResourceState>> = {
     overview: overview.overviewState,
-    profile: resourceState([profile.profileState, follower.followerStates.harnesses]), revisions: profile.profileStates.revisions,
-    secrets: session.role === "follower" ? follower.followerState : profile.profileStates.secrets,
+    profile: resourceState([profile.profileState, follower.followerStates.harnesses, machines.machineStates.inventory]), revisions: profile.profileStates.revisions,
+    secrets: session.role === "follower" ? follower.followerState : resourceState([profile.profileStates.secrets, machines.machineStates.inventory]),
     machines: resourceState([machines.machinesState, admin.service, profile.profileStates.items]),
     sync: follower.followerState, schedule: follower.followerStates.schedule,
     local: follower.followerStates.local,
