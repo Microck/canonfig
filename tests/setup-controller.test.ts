@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
-import { establishSetupScope, probeTools, runSetupPreflight, setupStatus } from "../src/setup/setup.controller.ts";
+import { approveSetup, establishSetupScope, probeTools, runSetupPreflight, setupStatus } from "../src/setup/setup.controller.ts";
 import { scaffoldProfile } from "../src/setup/setup.folder.ts";
 
 import {
@@ -103,6 +103,20 @@ const journal = (overrides: Partial<SetupJournal> = {}): SetupJournal => ({
 });
 
 describe("setup controller decisions", () => {
+  it("refuses approval of a digest other than the journal without writing", async () => {
+    const home = mkdtempSync(join(tmpdir(), "canonfig-setup-digest-"));
+    const path = join(home, "setup.json");
+    const original = JSON.stringify(journal({ approvals: [] }));
+    writeFileSync(path, original);
+    try {
+      const result = await Effect.runPromise(approveSetup("reviewer", path, "stale").pipe(
+        Effect.result, Effect.provide(linuxMachineStateLayer({ environment: [{ name: "HOME", value: home }] })),
+      ));
+      expect(result._tag).toBe("Failure");
+      expect(readFileSync(path, "utf8")).toBe(original);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
   it.runIf(process.platform === "linux")(
     "reports Source key-storage prerequisites before initialization",
     async () => {

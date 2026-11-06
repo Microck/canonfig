@@ -59,9 +59,9 @@ Long operations use `GuiOperations`, provided to every area route factory. Captu
 - `writeAuthoringItems(target, changes)` accepts `{ path, expectedDigest, files }` for each item. An empty file list deletes it. A skill change contains its entire desired tree. Instructions, rules, agents, commands, hook scripts and `files/` content use the same writer.
 - `editAuthoringConfig(target, expectedDigest, edits, changes?)` applies JSONC key-path edits through `jsonc-parser` `modify`/`applyEdits`. `undefined` removes a key. Optional item changes let a resource declaration and its file content validate together. Canonical keys include harnesses, surfaces, MCP, hooks, settings, tools, credentials, groups, scheduleDefault, local policy, resources and profile. The local target edits `local/local.jsonc`.
 
-The writer holds the existing cross-process run lock, checks each item's digest, validates the complete candidate with the existing folder loader in memory, and re-reads the authoring snapshot before publication. Invalid candidates and stale preconditions write no authoring files. Local additions outside `local.allow` are refused. Every changed file publishes through anchored `MachineState.atomicWrite`; create uses no-replace publication. Files are protected at 0600, executable scripts at 0700. Symlinks, special files and traversal are refused.
+The writer holds the existing cross-process run lock, checks each item's digest, validates the complete candidate with the existing folder loader in memory, and re-reads the authoring snapshot before publication. Invalid candidates and stale preconditions write no authoring files. Local additions or modifications outside `local.allow` are refused; unchanged retained entries and removals remain permitted after the Source narrows its policy. Every changed file publishes through anchored `MachineState.atomicWrite`; create uses no-replace publication. Files are protected at 0600, executable scripts at 0700. Symlinks, special files and traversal are refused. Canonical and local file schemas validate base64 in linear time without recursive regular-expression matching, including large binary skill assets.
 
-Atomicity is per file, not a whole-directory transaction. A filesystem failure midway through a multi-file skill/resource edit must be reported and reloaded; do not report the whole edit as saved. The run lock serializes Canonfig writers. Digests detect hand edits visible at the final check, not an external editor racing the subsequent filesystem rename.
+Atomicity is per file, not a whole-directory transaction. Whole-skill replacement removes digest-checked obsolete files and empty directories before publishing new files, so a path can change between a file and a directory. A filesystem failure midway through a multi-file skill/resource edit must be reported and reloaded; do not report the whole edit as saved. The run lock serializes Canonfig writers. Digests detect hand edits visible at the final check, not an external editor racing the subsequent filesystem rename.
 
 ### Fonts and release size
 
@@ -99,7 +99,7 @@ Area B uses the same profile, publication, revision, skill and Source Secret scr
 
 Source Secrets is live through D's shared contract: list metadata, set/replace a write-only value, and confirmed removal. Values never enter browser persistence. Sharing membership changes remain replacement invitations, not an invented membership mutation. B adds no duplicate secrets or export handlers.
 
-Canonical authoring also runs projection's `projectResources` boundary check before any candidate writes. Authored targets inside any adapter-owned or never-touch path are refused with the projection diagnostic, without writing the config or its associated files.
+Canonical authoring also runs projection's `projectResources` boundary check on the full authored resource set before any candidate writes, before machine-local `excludeResources` filtering. Authored targets inside any adapter-owned or never-touch path are refused with the projection diagnostic, without writing the config or its associated files.
 
 ### Machines, invitations, and onboarding
 
@@ -126,11 +126,16 @@ accepts `{ approver, planDigest }` and returns that same journal. `POST /api/set
 accepts `{ planDigest }` and returns `GuiOperationTicket` with HTTP 202. Area E uses
 these same endpoints and schemas, not a second setup controller.
 
-Approve/apply reject stale digests with `conflict-or-drift` and exit code 4.
-GUI setup mutations are serialized. Apply polling reads real setup status only
-while it matches the captured plan digest; a later unrelated plan is not presented
-as the operation's journal. Enrollment and tunnel tickets have no setup journal.
-No browser completion checkbox certifies readiness.
+Approve/apply reject stale digests with `conflict-or-drift` and exit code 4. The
+domain controller compares the requested digest while holding a cross-process
+setup-journal lock through the mutation. Plan, approve and apply all use that lock,
+including CLI invocations. CLI approve/apply do not present an interactive digest
+confirmation, so they retain their existing behavior against the current journal;
+GUI requests supply the digest shown in the review.
+Apply polling reads real setup status only while it matches the captured plan
+digest; a later unrelated plan is not presented as the operation's journal.
+Enrollment and tunnel tickets have no setup journal. No browser completion
+checkbox certifies readiness.
 
 Enrollment now uses the shared machine screens and onboarding wizard in both builds.
 The live controller preserves setup digests and human approval, inspects real
