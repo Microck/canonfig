@@ -45,7 +45,7 @@ import flags so the plan shows what is offered. `--file` names approved
 tool-discovery inputs only.
 
 ```bash
-npm install --global @microck/canonfig@6.1.0
+npm install --global @microck/canonfig@6.1.1
 canonfig --version
 canonfig setup plan --role source --mode simple --intent "prepare source"
 ```

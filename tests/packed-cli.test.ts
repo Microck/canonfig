@@ -611,10 +611,10 @@ describe("packed Canonfig executable", () => {
     const sourceStatus = invoke(source, ["status", "--json"]);
     expect(help).toMatchObject({ status: 0, stderr: "" });
     expect(help.stdout).toContain("Usage: canonfig");
-    expect(version).toMatchObject({ status: 0, stdout: "6.1.0\n", stderr: "" });
+    expect(version).toMatchObject({ status: 0, stdout: "6.1.1\n", stderr: "" });
     expect(versionJson).toMatchObject({ status: 0, stderr: "" });
     expect(JSON.parse(versionJson.stdout)).toMatchObject({
-      packageVersion: "6.1.0",
+      packageVersion: "6.1.1",
       sourceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
     expect(sourceStatus).toMatchObject({ status: 0, stderr: "" });
