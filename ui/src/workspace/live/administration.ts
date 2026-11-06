@@ -124,12 +124,14 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
     return harness.run(async (signal) => {
       const body = {
         ...bounds, kind, executable: next.executable || kind,
-        ...(kind === "custom" ? { arguments: next.args } : next.model ? { model: next.model } : {}),
+        ...(kind === "custom"
+          ? savedHarness?.arguments === undefined && next.args.length === 0 ? {} : { arguments: next.args }
+          : next.model ? { model: next.model } : {}),
         allowedPaths: next.paths, maximumInputBytes: next.maximumInputBytes,
       };
-      const savedHarness = await backend.request("/api/agent/harness", GuiAgentHarness, signal, { method: "PUT", body });
+      const updatedHarness = await backend.request("/api/agent/harness", GuiAgentHarness, signal, { method: "PUT", body });
       if (!signal.aborted) {
-        harness.setData({ configured: true, value: savedHarness });
+        harness.setData({ configured: true, value: updatedHarness });
         setSavedMessage("Policy and harness saved.");
       }
     });

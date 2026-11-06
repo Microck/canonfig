@@ -269,6 +269,37 @@ it("reads fresh enrolled Follower settings, saves them, and preserves malformed 
     .toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   expect((await api("/api/agent/harness")).body).toEqual({ configured: true, value: harness });
   expect((await api("/api/source-service")).body).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  const privateHarness = {
+    ...harness,
+    arguments: ["--token", "fixture-argument-credential"],
+    environment: [{ name: "API_TOKEN", value: "fixture-environment-credential" }],
+    secretBindings: [{ name: "OTHER_TOKEN", secret: "stored-token-name" }],
+  };
+  const savedPrivate = await api("/api/agent/harness", "PUT", privateHarness);
+  expect(savedPrivate.status).toBe(200);
+  expect(JSON.stringify(savedPrivate.body)).not.toContain("fixture-argument-credential");
+  expect(JSON.stringify(savedPrivate.body)).not.toContain("fixture-environment-credential");
+  const safeHarness = Schema.decodeUnknownSync(GuiAgentHarnessRead)((await api("/api/agent/harness")).body);
+  if (!safeHarness.configured) throw new Error("Harness was not saved");
+  expect(safeHarness.value.arguments).toBeUndefined();
+  expect(safeHarness.value.environment).toBeUndefined();
+  expect(safeHarness.value.secretBindings).toEqual(privateHarness.secretBindings);
+  expect(JSON.stringify(safeHarness)).not.toContain("[REDACTED]");
+  const savedBounds = await api("/api/agent/harness", "PUT", { ...safeHarness.value, maximumInputBytes: 8192 });
+  expect(savedBounds.status).toBe(200);
+  const readStoredHarness = () => {
+    const database = new DatabaseSync(join(follower.home, ".canonfig", "state.sqlite"));
+    try {
+      const row = Schema.decodeUnknownSync(Schema.Struct({ configuration_json: Schema.String }))(
+        database.prepare("SELECT configuration_json FROM follower_sync_configuration WHERE singleton = 1").get(),
+      );
+      return JSON.parse(row.configuration_json).agentHarness;
+    } finally { database.close(); }
+  };
+  expect(readStoredHarness()).toMatchObject({ ...privateHarness, maximumInputBytes: 8192 });
+  expect((await api("/api/agent/harness", "PUT", { ...safeHarness.value, arguments: ["--version"], environment: [] })).status).toBe(200);
+  expect(readStoredHarness()).toMatchObject({ arguments: ["--version"], environment: [] });
+  expect((await api("/api/agent/harness", "PUT", { ...harness, arguments: ["--token", "[REDACTED]"] })).status).not.toBe(200);
   const database = new DatabaseSync(join(follower.home, ".canonfig", "state.sqlite"));
   try {
     database.prepare("UPDATE follower_sync_configuration SET configuration_json = ? WHERE singleton = 1").run("{");

@@ -9,7 +9,9 @@ export const GuiAgentHarness = Schema.Struct({
   kind: Schema.Literals(["codex", "claude", "custom"]),
   executable: Schema.NonEmptyString,
   model: Schema.optionalKey(Schema.NonEmptyString.check(Schema.isPattern(/^[^\s-][^\s]*$/u))),
+  /** Omitted in responses when credential-bearing; omitted writes preserve the stored collection. */
   arguments: Schema.optionalKey(Schema.Array(Schema.String)),
+  /** Omitted in responses when credential-bearing; an explicit array replaces the stored collection. */
   environment: Schema.optionalKey(Schema.Array(Schema.Struct({ name: Schema.NonEmptyString, value: Schema.String }))),
   secretBindings: Schema.optionalKey(Schema.Array(Schema.Struct({ name: Schema.NonEmptyString, secret: Schema.NonEmptyString }))),
   maximumInputBytes: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(1024 * 1024)),
