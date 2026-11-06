@@ -10,6 +10,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { isCoarsePointer } from "@/lib/utils";
 import { AnimatedNumber, DitherProgress, Hint, Mono, StateCell, StateLabel, Term } from "@/shared/shared";
 import { DEMO, PLAIN, SECRETS_GROUP, STATE_META, type Revision } from "@/shared/metadata";
+import { ErrorNotice } from "../live/session";
 import { useSharedState, useWorkspace, type PendingChange, type Workspace } from "./store";
 import { GetStarted } from "./guide";
 import { whyBehind } from "./machines";
@@ -651,8 +652,9 @@ function RevisionDetail({ revision: r, onClose }: { revision: Revision; onClose:
   const ws = useWorkspace();
   const on = ws.followers.filter((f) => f.revision === r.sequence);
   const inspectRevision = useEffectEvent((sequence: number) => ws.profileLive?.inspectRevision(sequence));
-  useEffect(() => { inspectRevision(r.sequence); }, [r.sequence]);
-  const inspected = object(ws.profileLive?.revisionDetail ?? undefined);
+  useEffect(() => inspectRevision(r.sequence), [r.sequence]);
+  const detail = ws.profileLive?.revisionDetail?.sequence === r.sequence ? ws.profileLive.revisionDetail : null;
+  const inspected = object(detail?.data ?? undefined);
   const publishedResources = Array.isArray(inspected.resources) ? inspected.resources.map(object) : [];
   return (
     <DetailPanel
@@ -683,7 +685,13 @@ function RevisionDetail({ revision: r, onClose }: { revision: Revision; onClose:
         </Prop>
         {r.changes && <Prop label="Changes">{r.changes}</Prop>}
       </div>
-      {ws.profileLive && <div className="border-t border-border px-4 py-3"><SectionLabel>Published resources</SectionLabel>{publishedResources.map((resource, index) => <Prop key={index} label={String(resource.id ?? resource.kind ?? "Resource")}><Mono>{String(resource.digest ?? "")}</Mono></Prop>)}{typeof inspected.signature === "string" && <Prop label="Signature"><Mono>{inspected.signature}</Mono></Prop>}</div>}
+      {ws.profileLive && <div className="border-t border-border px-4 py-3" aria-busy={!detail || detail.loading}>
+        <SectionLabel>Published resources</SectionLabel>
+        {(!detail || detail.loading) && <p role="status">Loading revision…</p>}
+        {detail?.error && <ErrorNotice error={detail.error} />}
+        {publishedResources.map((resource, index) => <Prop key={index} label={String(resource.id ?? resource.kind ?? "Resource")}><Mono>{String(resource.digest ?? "")}</Mono></Prop>)}
+        {typeof inspected.signature === "string" && <Prop label="Signature"><Mono>{inspected.signature}</Mono></Prop>}
+      </div>}
       {ws.capabilities.simulatedTelemetry && <><div className="border-t border-border px-4 pt-3">
         <SectionLabel>Machines on this revision</SectionLabel>
       </div>

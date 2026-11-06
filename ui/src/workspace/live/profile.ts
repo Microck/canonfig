@@ -49,7 +49,23 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
   const [skillBusy, setSkillBusy] = useState<string | null>(null);
   const [scannedTools, setScannedTools] = useState<ScannedTool[]>([]);
   const [scanDone, setScanDone] = useState(false);
-  const [revisionDetail, setRevisionDetail] = useState<Schema.Json | null>(null);
+  const [revisionDetail, setRevisionDetail] = useState<NonNullable<ProfileSlice["profileLive"]>["revisionDetail"]>(null);
+  const revisionRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => revisionRequest.current?.abort(), []);
+  function inspectRevision(sequence: number) {
+    revisionRequest.current?.abort();
+    const controller = new AbortController();
+    revisionRequest.current = controller;
+    const entry = revisions.data?.revisions.find((revision) => revision.sequence === sequence);
+    setRevisionDetail({ sequence, data: null, loading: !!entry, error: null });
+    if (entry) void backend.request(profileEndpoints.revision, Schema.Json, controller.signal, {
+      method: "POST", body: { revision: entry.id },
+    }).then(
+      (data) => { if (!controller.signal.aborted) setRevisionDetail({ sequence, data, loading: false, error: null }); },
+      (cause: unknown) => { if (!controller.signal.aborted) setRevisionDetail({ sequence, data: null, loading: false, error: requestError(cause) }); },
+    );
+    return () => controller.abort();
+  }
   const [pending, setPending] = useState<ProfileEdit[]>([]);
   const config = items.data?.config ?? {};
   const profileConfig = object(config.profile), localConfig = object(config.local);
@@ -90,7 +106,7 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
         return { id: String(tool.id), executable: String(tool.executable), command: strings(evidence.invocation).join(" "), file: String(evidence.sourcePath ?? ""), where: String(tool.reviewStatus ?? "") };
       })); setScanDone(true);
     }, false),
-    inspectRevision: (sequence) => { const entry = revisions.data?.revisions.find((entry) => entry.sequence === sequence); if (entry) void run(async (signal) => { setRevisionDetail(null); setRevisionDetail(await backend.request(profileEndpoints.revision, Schema.Json, signal, { method: "POST", body: { revision: entry.id } })); }, false); },
+    inspectRevision,
     trackSkill: (name, source, ref, subdir) => run(async (signal) => {
       setSkillBusy(`track:skills/${name}`);
       try { await backend.request(profileEndpoints.track, GuiTrackedSkill, signal, { method: "POST", body: { name, source, ref, subdir } }); }

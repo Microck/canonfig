@@ -54,6 +54,7 @@ export function useEnrollmentController(backend: WorkspaceBackend, session: GuiS
   GuiSetupStatus | null, (status: GuiSetupStatus | null) => void,
 ]): EnrollmentController {
   const actions = useLiveActions(backend, () => {});
+  const resources = useContext(LiveResourcesContext);
   const [plan, setPlan] = useState<GuiSetupJournal | null>(null);
   const [importReview, setImportReview] = useState<GuiSetupJournal | null>(null);
   const localStatus = useState<GuiSetupStatus | null>(null);
@@ -108,11 +109,16 @@ export function useEnrollmentController(backend: WorkspaceBackend, session: GuiS
       return actions.run(async (signal) => {
         const digest = plan?.planDigest ?? status?.planDigest;
         if (!digest) throw new Error("Create and approve a setup plan before applying it.");
-        await actions.operation("/api/setup/apply", { planDigest: digest }, signal);
-        const actual = await backend.request("/api/setup", GuiSetupStatus, signal);
-        setStatus(actual);
-        // A successful command can stop for human action. Only the journal certifies completion.
-        setApplied(actual.stage === "complete");
+        try {
+          await actions.operation("/api/setup/apply", { planDigest: digest }, signal);
+          const actual = await backend.request("/api/setup", GuiSetupStatus, signal);
+          setStatus(actual);
+          // A successful command can stop for human action. Only the journal certifies completion.
+          setApplied(actual.stage === "complete");
+        } finally {
+          // A failed apply can still have imported files or initialized machine state.
+          resources?.cache.invalidate(["/api/status", "/api/profile/items", "/api/harnesses", "/api/skills", "/api/local/items", "/api/local/overlays"]);
+        }
       });
     },
     reloadStatus,

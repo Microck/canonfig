@@ -139,16 +139,18 @@ for (const role of ["source", "follower"] as const) {
       assert.equal(requests.filter((path) => path === "/api/setup").length, 1);
       const apply = [...container.querySelectorAll("button")].find((button) => button.textContent === "Apply approved setup");
       assert.ok(apply);
+      const statusReadsBeforeApply = requests.filter((path) => path === "/api/status").length;
       await act(async () => { apply.click(); });
       await settle("Apply approved setup");
       assert.deepEqual(mutations.at(-1), { path: "/api/setup/apply", body: { planDigest: "navigation-plan" } });
       assert.equal(requests.filter((path) => path === "/api/setup").length, 2, "Apply refreshes setup exactly once");
-      const afterApply = requests.length;
+      const afterApply = requests.filter((path) => path !== "/api/status").length;
       await act(async () => { navigate(`/${role}/overview`); });
       await settle("Navigation fixture");
       await act(async () => { navigate(`/${role}/settings/setup`); });
       await settle("Apply approved setup");
-      assert.equal(requests.length, afterApply, "Setup keeps its post-mutation status on revisit");
+      assert.equal(requests.filter((path) => path !== "/api/status").length, afterApply, "Setup keeps its post-mutation status on revisit");
+      assert.equal(requests.filter((path) => path === "/api/status").length, statusReadsBeforeApply + 1, "Apply refreshes machine status before Overview reuses it");
       if (role === "source") {
         await act(async () => { navigate("/source/settings/agent"); });
         await settle("Not configured yet");
