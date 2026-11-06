@@ -1,5 +1,5 @@
 // Shared Source screens read data and operations from the workspace provider.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ArrowRight, CalendarDots, Check, Cpu, DotsThree, HourglassMedium, Key, UsersThree, type IconComponent } from "@/components/icons";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,8 @@ import { GetStarted } from "./guide";
 import { whyBehind } from "./machines";
 import { useAgentPolicy, useChecks, warningName } from "./settings";
 import { workspaceHref } from "./routes";
+import { ProfileActionNotice } from "./profile-authoring-controls";
+import { object } from "./profile-authoring";
 import {
   AnimatedRow,
   Body,
@@ -445,6 +447,14 @@ export function PublishDialog() {
     </Dialog>
   );
 }
+function validationMessage(error: string) {
+  try {
+    const value = object(JSON.parse(error));
+    const label = typeof value._tag === "string" ? value._tag.replace(/Error$/, "").replace(/([a-z])([A-Z])/g, "$1 $2") : "Validation failed";
+    return [label, ...Object.entries(value).filter(([key]) => key !== "_tag").map(([key, value]) => `${key.replace(/([a-z])([A-Z])/g, "$1 $2")}: ${Array.isArray(value) ? value.join(", ") : String(value)}`)].join(". ");
+  } catch { return error; }
+}
+
 
 function PublishForm() {
   const ws = useWorkspace();
@@ -453,16 +463,19 @@ function PublishForm() {
   const [tried, setTried] = useState(false);
   const open = ws.publishOpen;
   const returnFocus = useRef<HTMLElement | null>(null);
+  const live = ws.profileLive !== undefined;
+  const validate = useEffectEvent(() => ws.profileLive?.validate());
 
   useEffect(() => {
     if (!open || !ws.capabilities.profileWrite) return;
+    if (live) { void validate(); return; }
     setCheck(0);
     setTried(false);
     const t = window.setInterval(() => setCheck((c) => (c >= 100 ? 100 : c + 8)), 90);
     return () => window.clearInterval(t);
-  }, [open, ws.capabilities.profileWrite]);
+  }, [open, ws.capabilities.profileWrite, live]);
 
-  const checked = check >= 100;
+  const checked = ws.profileLive ? ws.profileLive.validation?.valid === true : check >= 100;
   const reviewerError = tried && !reviewer.trim() ? "Enter the name of the person who reviewed these changes." : null;
 
   return (
@@ -494,7 +507,7 @@ function PublishForm() {
             if (!ws.capabilities.profileWrite) return ws.notImplemented("profile.publish");
             setTried(true);
             if (!checked || ws.publishing || !reviewer.trim()) return;
-            ws.publish(reviewer.trim(), () => ws.setPublishOpen(false));
+            ws.publish(reviewer.trim(), () => { ws.setPublishOpen(false); if (ws.profileLive) ws.go("revisions"); });
           }}
         >
           <DialogHeader>
@@ -504,7 +517,8 @@ function PublishForm() {
             </DialogDescription>
           </DialogHeader>
 
-          <section>
+          <ProfileActionNotice />
+          {ws.capabilities.simulatedTelemetry && <section>
             <SectionLabel>
               {ws.pending.length} {ws.pending.length === 1 ? "change" : "changes"}
               {ws.latest !== undefined && ws.latest > 0 ? ` since revision ${ws.latest}` : ", your first revision"}
@@ -522,16 +536,18 @@ function PublishForm() {
                 );
               })}
             </div>
-          </section>
+          </section>}
 
           <section className="grid gap-2" aria-live="polite">
             <div className="flex items-center gap-2 text-base">
               {checked ? <Check className="size-3.5 text-ok" /> : <HourglassMedium className="size-3.5 text-muted-foreground" />}
               <span className={checked ? "text-foreground" : "text-muted-foreground"}>
-                {checked ? `Checked ${ws.pending.length} ${ws.pending.length === 1 ? "change" : "changes"}: no problems` : "Checking the files first (about a second)…"}
+                {ws.profileLive ? ws.profileLive.validation ? checked ? "Folder and resource validation passed" : "Validation failed" : ws.profileLive.busy ? "Checking the Canonical Folder…" : "Validate the Canonical Folder before publishing" : checked ? `Checked ${ws.pending.length} ${ws.pending.length === 1 ? "change" : "changes"}: no problems` : "Checking the files first (about a second)…"}
               </span>
             </div>
-            <DitherProgress value={ws.publishing ? 100 : check} running={!checked || ws.publishing} tone="ok" label="File check" />
+            {ws.capabilities.simulatedTelemetry && <DitherProgress value={ws.publishing ? 100 : check} running={!checked || ws.publishing} tone="ok" label="File check" />}
+            {ws.profileLive?.validation?.errors.map((error, index) => <p key={index} className="text-sm text-bad">{validationMessage(error)}</p>)}
+            {ws.profileLive && <Button type="button" variant="outline" size="sm" disabled={ws.profileLive.busy} onClick={() => void ws.profileLive?.validate()}>Validate folder</Button>}
             <p className="text-sm text-pretty text-faint">
               Canonfig reads every file in this change and records a fingerprint of it, so each machine can confirm it got exactly these files.
               {DEMO && " This demo reads no files: the check is a short wait, and the fingerprint is a stand-in made from the revision number and change list."} Publish
@@ -581,7 +597,8 @@ export function RevisionsView() {
   const colsMin = 72 + 200 + 140 + 110 + 120 + 4 * 12 + 20;
   return (
     <>
-      <PageHeader crumbs={["Revisions"]} actions={<PublishButton />} />
+      <PageHeader crumbs={["Revisions"]} actions={ws.profileLive ? <Button size="sm" onClick={() => ws.setPublishOpen(true)}>Publish revision</Button> : <PublishButton />} />
+      <ProfileActionNotice />
       <Body detail={current && <RevisionDetail key={current.sequence} revision={current} onClose={() => ws.go("revisions")} />}>
         {ws.revisions.length === 0 && ws.pending.length === 0 ? (
           <EmptyState title="No revisions yet" body="Each time you publish the profile, it becomes a numbered revision here that machines can apply." />
@@ -633,6 +650,10 @@ export function RevisionsView() {
 function RevisionDetail({ revision: r, onClose }: { revision: Revision; onClose: () => void }) {
   const ws = useWorkspace();
   const on = ws.followers.filter((f) => f.revision === r.sequence);
+  const inspectRevision = useEffectEvent((sequence: number) => ws.profileLive?.inspectRevision(sequence));
+  useEffect(() => { inspectRevision(r.sequence); }, [r.sequence]);
+  const inspected = object(ws.profileLive?.revisionDetail ?? undefined);
+  const publishedResources = Array.isArray(inspected.resources) ? inspected.resources.map(object) : [];
   return (
     <DetailPanel
       title={`Revision ${r.sequence}`}
@@ -662,6 +683,7 @@ function RevisionDetail({ revision: r, onClose }: { revision: Revision; onClose:
         </Prop>
         {r.changes && <Prop label="Changes">{r.changes}</Prop>}
       </div>
+      {ws.profileLive && <div className="border-t border-border px-4 py-3"><SectionLabel>Published resources</SectionLabel>{publishedResources.map((resource, index) => <Prop key={index} label={String(resource.id ?? resource.kind ?? "Resource")}><Mono>{String(resource.digest ?? "")}</Mono></Prop>)}{typeof inspected.signature === "string" && <Prop label="Signature"><Mono>{inspected.signature}</Mono></Prop>}</div>}
       {ws.capabilities.simulatedTelemetry && <><div className="border-t border-border px-4 pt-3">
         <SectionLabel>Machines on this revision</SectionLabel>
       </div>
@@ -727,6 +749,7 @@ export function SecretsView() {
           </>
         }
       />
+      <ProfileActionNotice />
       <Body>
         <p data-tour="secrets-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
           Canonfig keeps these in this machine's credential store and sends them only to machines that{" "}
@@ -790,11 +813,11 @@ export function SecretsView() {
         <div className="pb-16" />
       </Body>
 
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={open} onOpenChange={(next) => { setOpen(next); if (!next) setValue(""); }}>
         <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md">
           <form
             className="contents"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
               setTried(true);
               const badName = !editing && (!trimmed || ws.secrets.some((s) => s.name === trimmed));
@@ -802,7 +825,12 @@ export function SecretsView() {
                 document.getElementById(badName ? "sec-name" : "sec-value")?.focus();
                 return;
               }
+              if (ws.profileLive) {
+                if (!await ws.profileLive.setSecret(editing ?? trimmed, value)) return;
+                setValue("");
+              } else {
               ws.setSecrets((p) => (editing ? p.map((s) => (s.name === editing ? { ...s, updated: "Today" } : s)) : [...p, { name: trimmed, updated: "Today", sharedWith: receivers.length }]));
+              }
               setOpen(false);
               toast.success(editing ? `Replaced ${editing}` : `Saved ${trimmed}`, { description: DEMO ? "Saved in this demo workspace." : undefined });
             }}
@@ -813,6 +841,7 @@ export function SecretsView() {
                 Machines that can receive secrets get it on their next update{receivers.length ? `: ${receivers.map((f) => f.name).join(", ")}` : ""}.
               </DialogDescription>
             </DialogHeader>
+            <ProfileActionNotice />
             <div className="grid gap-3">
               {!editing && (
                 <Field label="Name" htmlFor="sec-name" error={nameError}>
@@ -848,10 +877,10 @@ export function SecretsView() {
               </Field>
             </div>
             <DialogFooter>
-              <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
+              <Button type="button" variant="ghost" onClick={() => { setOpen(false); setValue(""); }}>
                 Cancel
               </Button>
-              <Button type="submit" variant="primary">
+              <Button type="submit" variant="primary" disabled={ws.profileLive?.busy}>
                 Save secret
               </Button>
             </DialogFooter>
@@ -868,14 +897,17 @@ export function SecretsView() {
               {DEMO && " This demo only removes the name from the list."}
             </DialogDescription>
           </DialogHeader>
+          <ProfileActionNotice />
           <DialogFooter>
             <Button variant="ghost" onClick={() => setRemoving(null)}>
               Cancel
             </Button>
             <Button
               variant="destructive"
-              onClick={() => {
-                ws.setSecrets((p) => p.filter((s) => s.name !== removing));
+              disabled={ws.profileLive?.busy}
+              onClick={async () => {
+                if (ws.profileLive) { if (!removing || !await ws.profileLive.removeSecret(removing)) return; }
+                else ws.setSecrets((p) => p.filter((s) => s.name !== removing));
                 toast(`Removed ${removing}`, { description: DEMO ? "Removed from this demo workspace." : undefined });
                 setRemoving(null);
               }}

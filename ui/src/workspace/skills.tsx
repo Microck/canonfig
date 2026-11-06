@@ -12,6 +12,7 @@ import { DEMO, skillManifest, type Resource, type SkillSource, type UpstreamSkil
 import { Mono, StatusMark, type StatusKind } from "@/shared/shared";
 import { useSharedReader, useSharedState, useWorkspace } from "./store";
 import { Field, Prop, SectionLabel, useDialogReturnFocus } from "./kit";
+import { ProfileActionNotice } from "./profile-authoring-controls";
 
 type Files = Record<string, string>;
 
@@ -19,25 +20,30 @@ type Files = Record<string, string>;
 interface SkillCheck {
   status: "unchanged" | "update-available" | "local-edits";
   nextCommit: string;
-  added: string[];
-  changed: string[];
-  removed: string[];
+  added: readonly string[];
+  changed: readonly string[];
+  removed: readonly string[];
 }
 
 /** The Source's skills-sources.json. A Source fresh out of onboarding starts with none (store.tsx sharedSeed). */
 function useSkillSources() {
   const ws = useWorkspace();
-  return useSharedState<SkillSource[]>("skill-sources", ws.skillSources);
+  const [sources, setSources] = useSharedState<SkillSource[]>("skill-sources", ws.skillSources);
+  return [ws.profileLive ? ws.skillSources : sources, setSources] as const;
 }
 
 /** The last check of each tracked skill this session, by item id. Checks aren't stored anywhere else: `list` reads no network. */
 function useSkillChecks() {
-  return useSharedState<Record<string, SkillCheck>>("skill-checks", {});
+  const ws = useWorkspace();
+  const [checks, setChecks] = useSharedState<Record<string, SkillCheck>>("skill-checks", {});
+  return [ws.profileLive ? ws.profileLive.skillChecks : checks, setChecks] as const;
 }
 
 /** The running check, update or tracking, as `<kind>:<item id>`: one at a time, like the CLI's skill lock. */
 function useSkillBusy() {
-  return useSharedState<string | null>("skill-busy", null);
+  const ws = useWorkspace();
+  const [busy, setBusy] = useSharedState<string | null>("skill-busy", null);
+  return [ws.profileLive ? ws.profileLive.busy ? ws.profileLive.skillBusy ?? "busy" : null : busy, setBusy] as const;
 }
 
 /**
@@ -194,6 +200,7 @@ export function SkillUpstream({ resource, editing }: { resource: Resource; editi
 
   const check = (tracked: SkillSource) => {
     if (!ws.capabilities.profileWrite) return ws.notImplemented("skills.check");
+    if (ws.profileLive) { ws.profileLive.checkSkill(id.slice(7)); return; }
     setBusy(`check:${id}`);
     ws.later(() => {
       setBusy(null);
@@ -215,6 +222,7 @@ export function SkillUpstream({ resource, editing }: { resource: Resource; editi
 
   const update = (tracked: SkillSource) => {
     if (!ws.capabilities.profileWrite) return ws.notImplemented("skills.update");
+    if (ws.profileLive) { ws.profileLive.updateSkill(id.slice(7)); return; }
     // `skills update --apply` checks again before it replaces anything, so an edit saved after the last check still blocks it.
     const fetched = fetchSkill(ws.upstreamSkills, tracked.source, tracked.ref, tracked.subdir);
     if (!fetched.ok) {
@@ -386,7 +394,7 @@ function TrackSkillDialog({ resource, open, onOpenChange, onTracked }: { resourc
   const errors = { source: sourceError(trimmed.source), ref: refError(trimmed.ref), subdir: subdirError(trimmed.subdir) };
   const shown = (key: keyof typeof errors) => (tried ? errors[key] : null);
 
-  const submit = (event: FormEvent<HTMLFormElement>) => {
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     // The dialog renders through a portal but stays inside the item editor's form in React's tree; keep its submit there.
     event.stopPropagation();
@@ -401,6 +409,10 @@ function TrackSkillDialog({ resource, open, onOpenChange, onTracked }: { resourc
     // One skill command at a time: another skill's check finishing can't re-enable Track mid-flight and double-submit.
     if (busy !== null) return;
     const normalized = trimmed.source.startsWith("https://") ? new URL(trimmed.source).href : trimmed.source;
+    if (ws.profileLive) {
+      if (await ws.profileLive.trackSkill(resource.id.slice(7), normalized, trimmed.ref, trimmed.subdir)) { onOpenChange(false); toast.success(`Tracking ${resource.id}`); }
+      return;
+    }
     setBusy(`track:${resource.id}`);
     ws.later(() => {
       setBusy(null);
@@ -432,6 +444,7 @@ function TrackSkillDialog({ resource, open, onOpenChange, onTracked }: { resourc
               Name the Git repository this skill came from. Canonfig fetches it and records it only if every file matches your copy. Nothing in the folder changes.
             </DialogDescription>
           </DialogHeader>
+          <ProfileActionNotice />
           <div className="grid gap-3">
             <Field
               label="Repository"

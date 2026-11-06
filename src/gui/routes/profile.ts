@@ -89,7 +89,7 @@ export const profileRoutes = Effect.gen(function*() {
     mutationRoute("POST", profileEndpoints.track, GuiSkillTrack, (input) => skillCall((location) => trackSkill(location, { ...input, path: `skills/${input.name}` }))),
     mutationRoute("POST", profileEndpoints.check, GuiSkillSelection, (input) => skillCall(async (location) => {
       const checks = await checkSkills(location, [input.name]);
-      if (checks.some((check) => check.status === "local-edits")) throw new CanonfigError("SKILL_LOCAL_EDITED", `Local edits detected in ${input.name}. Reconcile the local files before updating. ${JSON.stringify(checks)}`);
+      if (checks.some((check) => check.status === "local-edits")) throw new CanonfigError("SKILL_LOCAL_EDITED", `Local edits detected in ${input.name}. Reconcile the local files before updating.`);
       return checks;
     })),
     mutationRoute("POST", profileEndpoints.update, GuiSkillSelection, (input) => skillCall((location) => updateSkills(location, [input.name]))),

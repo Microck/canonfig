@@ -43,7 +43,7 @@ function surfacesLabel(selected: SurfaceCategory[] | undefined): string {
  */
 function SurfacesMenu({ harness }: { harness: Harness }) {
   const ws = useWorkspace();
-  const supported = SURFACE_SUPPORT[harness.id];
+  const supported = ws.profileLive?.snapshot ? SURFACE_CATEGORIES.filter((category) => ws.profileLive!.snapshot!.supportedSurfaces[harness.id]?.includes(category)) : SURFACE_SUPPORT[harness.id];
   const selected = ws.surfaces[harness.id];
   const label = surfacesLabel(selected);
   // Radix puts focus back on the trigger when the menu closes, which draws its focus ring even after a
@@ -54,7 +54,7 @@ function SurfacesMenu({ harness }: { harness: Harness }) {
       const { [harness.id]: _dropped, ...rest } = prev;
       return next === undefined ? rest : { ...rest, [harness.id]: next };
     });
-    ws.markProfileEdit({ area: "harnesses", id: "harnesses", change: "modified" });
+    if (!ws.profileLive) ws.markProfileEdit({ area: "harnesses", id: "harnesses", change: "modified" });
   };
   const toggle = (category: SurfaceCategory, on: boolean) => {
     const current = selected ?? supported;
@@ -65,7 +65,7 @@ function SurfacesMenu({ harness }: { harness: Harness }) {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         {/* -ml-[7px] cancels px-1.5 plus the button's 1px border so the label lines up with "Not listed" and the column heading; the hover fill bleeds into the gutter. */}
-        <Button variant="ghost" size="sm" className="-ml-[7px] min-w-0 justify-between gap-1 px-1.5 font-normal" title={label} aria-label={`What ${harness.name} gets: ${label}`}>
+        <Button variant="ghost" size="sm" disabled={ws.profileLive?.busy} className="-ml-[7px] min-w-0 justify-between gap-1 px-1.5 font-normal" title={label} aria-label={`What ${harness.name} gets: ${label}`}>
           <span className="truncate">{label}</span>
           <CaretDown className="shrink-0 text-faint" />
         </Button>
@@ -87,7 +87,7 @@ function SurfacesMenu({ harness }: { harness: Harness }) {
           return (
             <DropdownMenuCheckboxItem
               key={category}
-              disabled={!available}
+              disabled={!available || ws.profileLive?.busy}
               checked={available && (selected === undefined || selected.includes(category))}
               // Keep the menu open so several categories can be changed in one go.
               onSelect={(event) => event.preventDefault()}
@@ -98,7 +98,7 @@ function SurfacesMenu({ harness }: { harness: Harness }) {
           );
         })}
         <DropdownMenuSeparator />
-        <DropdownMenuItem disabled={selected === undefined} onSelect={() => change(undefined)}>
+        <DropdownMenuItem disabled={selected === undefined || ws.profileLive?.busy} onSelect={() => change(undefined)}>
           Everything
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -143,7 +143,7 @@ export function HarnessTable({ edit, onToggle }: { edit?: "listed" | "managed"; 
                 <Checkbox
                   id={id}
                   checked={checked}
-                  disabled={edit === "listed" ? !ws.capabilities.profileWrite : !ws.capabilities.followerWrite}
+                  disabled={edit === "listed" ? !ws.capabilities.profileWrite || ws.profileLive?.busy : !ws.capabilities.followerWrite}
                   aria-label={edit === "listed" ? `List ${h.name}` : `Manage ${h.name} on this machine`}
                   onCheckedChange={(c) => onToggle?.(h.id, !!c)}
                 />
