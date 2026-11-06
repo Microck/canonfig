@@ -174,7 +174,7 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
         e.stopPropagation();
         onClose();
       }}
-      className="absolute top-2 right-2 z-10 flex max-h-[calc(100%-1rem)] w-[284px] flex-col overflow-hidden rounded-lg border border-border-strong bg-popover shadow-xl shadow-black/50"
+      className="absolute top-2 right-2 z-10 flex max-h-[calc(100%_-_1rem)] w-[284px] max-w-[calc(100%_-_1rem)] flex-col overflow-hidden rounded-lg border border-border-strong bg-popover shadow-xl shadow-black/50"
     >
       <header className="flex items-start gap-2 border-b border-border px-3.5 pt-3 pb-2.5">
         <div className="min-w-0 flex-1">

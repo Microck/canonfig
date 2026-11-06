@@ -1,5 +1,5 @@
-// First-run flow for a simulated, unconfigured machine.
-// `onDone` returns the setup choices that seed the new workspace role.
+// Shared first-run flow. Demo choices seed the simulated workspace; live operations
+// preserve the backend's plan digest, approval, invitation and enrollment evidence.
 import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { AnimatePresence, cubicBezier, LayoutGroup, motion, useIsPresent, usePresenceData, useReducedMotion, type Variants } from "motion/react";
@@ -14,9 +14,11 @@ import { RadioGroup } from "@/components/ui/radio-group";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { DEMO, HARNESS_NAMES, harnesses, machine, profile, type HarnessId } from "@/shared/data";
+import { DEMO, HARNESS_NAMES, type Harness, type HarnessId } from "@/shared/metadata";
 import { DitherProgress, Hint, Mono, Term } from "@/shared/shared";
 import { DisclosureTrigger, Facts, Field, FieldError, OnboardingShell, PROGRESS_MARK, RadioRow, STEP_ITEMS, STEP_MS, StepTransition, Stepper, simulate, useFocusOnMount } from "./kit";
+import { ErrorNotice } from "@/live/session";
+import { SetupEvidence, type EnrollmentController } from "./enrollment-controller";
 
 // Rings drifting inward toward the centre: many machines converging on one.
 // At speed 1 a ring takes about 20 seconds to move one ring inward.
@@ -161,13 +163,23 @@ export interface FollowerSetup {
 }
 
 export type Setup = SourceSetup | FollowerSetup;
+export interface OnboardingData {
+  hostname: string;
+  endpoint: string;
+  profileName: string;
+  harnesses: Pick<Harness, "id" | "name" | "installed" | "listed" | "excluded">[];
+  offers: ImportOffer[];
+  skipped: { source: HarnessId; path: string; reason: string }[];
+  importNotes?: readonly string[];
+  followerInstalled: HarnessId[];
+}
 
 const DEFAULT_PORT = 17342;
 
 /* What the one-time import offers, shaped like ImportCandidate in src/projection/import.ts. */
 type ImportCategory = "instructions" | "rules" | "skills" | "agents" | "commands" | "mcp";
 
-interface ImportOffer {
+export interface ImportOffer {
   /** `<source>/<category>/<name>`, the id `setup plan --import` takes. */
   id: string;
   /** The harness it comes from, or "agents" for the shared ~/.agents/skills/ several harnesses read. */
@@ -182,6 +194,7 @@ interface ImportOffer {
   target: string;
   /** Credential-looking values, each replaced by a `fromEnv` reference before anything is copied. */
   secrets: { field: string; fromEnv: string }[];
+  credentialNotes?: string[];
   /** What the import drops or converts because Canonfig's format has no place for it; never a value. */
   notes: string[];
 }
@@ -195,50 +208,6 @@ const CATEGORY_LABEL: Record<ImportCategory, string> = {
   mcp: "MCP server",
 };
 
-/** One offer, with its id and folder destination derived the way src/projection/import.ts does (targetOf). */
-function offer(
-  source: ImportOffer["source"],
-  category: ImportCategory,
-  name: string,
-  path: string,
-  { harnesses = [source as HarnessId], secrets = [], notes = [] }: { harnesses?: HarnessId[]; secrets?: ImportOffer["secrets"]; notes?: string[] } = {},
-): ImportOffer {
-  const target =
-    category === "instructions" ? "AGENTS.md" : category === "skills" ? `skills/${name}` : category === "mcp" ? `canonfig.jsonc#mcp.${name}` : `${category}/${name}.md`;
-  return { id: `${source}/${category}/${name}`, source, harnesses, category, name, path, target, secrets, notes };
-}
-
-// Example harness content on atlas, each item with its own content: when two are offered for
-// one target they differ, so the CLI lists them as a collision until one is named. Here Claude
-// Code's CLAUDE.md and Codex's AGENTS.md both import as AGENTS.md. The MCP servers show
-// credential-looking values becoming `fromEnv` references, named as ServerDecoder in
-// src/projection/import.ts names them: an env key keeps its name, a header becomes <SERVER>_<KEY>.
-const IMPORT_OFFERS: ImportOffer[] = [
-  offer("claude-code", "instructions", "AGENTS.md", "~/.claude/CLAUDE.md"),
-  offer("claude-code", "rules", "typescript", "~/.claude/rules/typescript.md"),
-  offer("claude-code", "skills", "review", "~/.claude/skills/review"),
-  offer("claude-code", "agents", "researcher", "~/.claude/agents/researcher.md", {
-    notes: ["Its tools list isn't copied: Claude Code's tool names don't match Canonfig's capabilities, so it starts read-only."],
-  }),
-  offer("claude-code", "commands", "ship", "~/.claude/commands/ship.md"),
-  offer("claude-code", "mcp", "github", "~/.claude.json", { secrets: [{ field: "env.GITHUB_TOKEN", fromEnv: "GITHUB_TOKEN" }] }),
-  offer("codex", "instructions", "AGENTS.md", "~/.codex/AGENTS.md"),
-  offer("codex", "mcp", "linear", "~/.codex/config.toml", {
-    secrets: [{ field: "headers.Authorization", fromEnv: "LINEAR_AUTHORIZATION" }],
-    notes: ["Its X-Timeout header isn't copied, because its value isn't text."],
-  }),
-  offer("opencode", "commands", "review-pr", "~/.config/opencode/commands/review-pr.md"),
-  offer("agents", "skills", "release-notes", "~/.agents/skills/release-notes", { harnesses: ["codex", "cursor"] }),
-];
-
-/**
- * What the scan found but can't import, with the reason it gives (ImportSkip in src/projection/import.ts). Setup lists
- * these for review; they stay in the harness until Canonfig takes it over, and in its backup after that.
- */
-const IMPORT_SKIPPED: { source: HarnessId; path: string; reason: string }[] = [
-  { source: "claude-code", path: "~/.claude/skills/scratch", reason: "It has no SKILL.md." },
-  { source: "opencode", path: "~/.config/opencode/agents/helper.yaml", reason: "Only .md agents are imported." },
-];
 
 /** Where an offer comes from, in words: a harness, or the shared skills folder. */
 const sourceName = (source: ImportOffer["source"]) => (source === "agents" ? "Shared skills" : HARNESS_NAMES[source]);
@@ -246,16 +215,13 @@ const sourceName = (source: ImportOffer["source"]) => (source === "agents" ? "Sh
 /** "Don't import" in a collision's choice. */
 const NO_IMPORT = "none";
 
-// The demo machine that joins as a follower has these harnesses installed; atlas lists more.
-const FOLLOWER_INSTALLED: HarnessId[] = ["codex", "claude-code", "oh-my-pi", "opencode"];
-/** The harnesses atlas's canonfig.jsonc lists, which every follower gets. */
-const LISTED = harnesses.filter((h) => h.listed);
 
-export function Onboarding({ onDone }: { onDone: (setup: Setup) => void }) {
-  const [stage, setStage] = useState<Stage>("choose");
+export function Onboarding({ onDone, data, live, onCancel }: { onDone: (setup: Setup) => void; data: OnboardingData; live?: EnrollmentController; onCancel?: () => void }) {
+  const [stage, setStage] = useState<Stage>(live?.session.role === "follower" ? "follower" : "choose");
   // The wizard left with "Change my answer", or null on the first visit, which gets the full entrance.
   const [returnedFrom, setReturnedFrom] = useState<Role | null>(null);
   const back = (from: Role) => {
+    if (onCancel) { onCancel(); return; }
     setReturnedFrom(from);
     setStage("choose");
   };
@@ -272,7 +238,7 @@ export function Onboarding({ onDone }: { onDone: (setup: Setup) => void }) {
   };
 
   return (
-    <OnboardingShell hostname={machine.hostname} backdrop={<SetupBackdrop job={job} />}>
+    <OnboardingShell hostname={data.hostname} backdrop={<SetupBackdrop job={live ? live.applied ? { progress: 100, steps: 1, done: true } : null : job} />}>
       {/* In the demo, md:pb-40 clears the fixed demo panel (220px wide and about 122px tall, 12px
           from the left and from the bottom, App.tsx) at the end of the scroll, where the cards can
           reach under it. From xl the cards start right of it, so normal padding returns and a
@@ -285,10 +251,15 @@ export function Onboarding({ onDone }: { onDone: (setup: Setup) => void }) {
             the picked card's shell (CardShell) can grow straight into the wizard card's place.
             `custom` tells the leaving choice which card was picked. */}
         <AnimatePresence mode="popLayout" custom={stage}>
-          {stage === "choose" && <Choose key="choose" returnedFrom={returnedFrom} onPick={setStage} />}
-          {stage === "source" && <SourceWizard key="source" job={job} onRun={run} onBack={() => back("source")} onDone={onDone} />}
-          {stage === "follower" && <FollowerWizard key="follower" job={job} onRun={run} onBack={() => back("follower")} onDone={onDone} />}
+          {stage === "choose" && <Choose key="choose" returnedFrom={returnedFrom} onPick={(role) => {
+            if (live && role === "source") void live.planSetup(undefined, undefined, () => setStage(role));
+            else setStage(role);
+          }} />}
+          {stage === "source" && <SourceWizard key="source" data={data} live={live} job={job} onRun={run} onBack={() => back("source")} onDone={onDone} />}
+          {stage === "follower" && <FollowerWizard key="follower" data={data} live={live} job={job} onRun={run} onBack={() => back("follower")} onDone={onDone} />}
         </AnimatePresence>
+        {stage === "choose" && live?.state.loading && <p role="status">Inspecting this machine…</p>}
+        {stage === "choose" && live?.state.error && <ErrorNotice error={live.state.error} />}
       </div>
     </OnboardingShell>
   );
@@ -687,7 +658,7 @@ function Wizard({
                 </span>
               </Button>
             ) : (
-              <Button type="submit" variant="secondary" className="min-w-24">
+              <Button type="submit" variant="secondary" className="min-w-24" disabled={busy}>
                 Continue
               </Button>
             )}
@@ -752,7 +723,7 @@ function RunList({ items, progress }: { items: string[]; progress: number }) {
  * new height; the check draws as the badge lands, the text rises in behind it 50ms apart,
  * and the Wizard's green sweep crosses the card. About 800ms in all, and none of it repeats.
  */
-function Finished({ title, children, next, action, onOpen }: { title: string; children: ReactNode; next: ReactNode; action: string; onOpen: () => void }) {
+function Finished({ title, children, next, action, onOpen, busy = false }: { title: string; children: ReactNode; next: ReactNode; action: string; onOpen: () => void; busy?: boolean }) {
   const heading = useFocusOnMount<HTMLHeadingElement>();
   const reduced = useReducedMotion();
   return (
@@ -768,7 +739,7 @@ function Finished({ title, children, next, action, onOpen }: { title: string; ch
       </div>
       <div className="rise-in mt-6 flex flex-col items-start justify-between gap-4 border-t border-border pt-4 sm:flex-row sm:items-center sm:gap-6" style={{ animationDelay: "250ms" }}>
         <p className="text-muted-foreground">{next}</p>
-        <Button type="button" variant="default" onClick={onOpen}>
+        <Button type="button" variant="default" disabled={busy} onClick={onOpen}>
           {action}
           <ArrowRight data-icon="inline-end" />
         </Button>
@@ -783,6 +754,8 @@ function Finished({ title, children, next, action, onOpen }: { title: string; ch
 
 /** A role's wizard. `job` is the setup job once it starts (Onboarding owns it); `onRun` starts it with the list's length. */
 interface WizardProps<S extends Setup> {
+  data: OnboardingData;
+  live?: EnrollmentController;
   job: Job | null;
   onRun: (ms: number, steps: number) => void;
   onBack: () => void;
@@ -793,28 +766,30 @@ interface WizardProps<S extends Setup> {
 const SOURCE_STEPS = ["Your profile", "Harnesses", "Import", "The service", "Create"];
 const SOURCE_STEP = { profile: 0, harnesses: 1, import: 2, service: 3, create: 4 } as const;
 
-const INSTALLED = harnesses.filter((h) => h.installed);
-const NOT_INSTALLED = harnesses.filter((h) => !h.installed);
 
 /** A bordered row holding a checkbox and its label text. */
 const CHECK_ROW = "flex min-h-11 cursor-pointer items-start gap-3 rounded-lg border border-border px-3.5 py-3 hover:bg-raised/50 sm:min-h-10";
 
-function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) {
+function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<SourceSetup>) {
+  const { harnesses, offers: IMPORT_OFFERS, skipped: IMPORT_SKIPPED } = data;
+  const INSTALLED = harnesses.filter((h) => h.installed);
+  const NOT_INSTALLED = harnesses.filter((h) => !h.installed);
   const [step, setStep] = useState(0);
   const [tried, setTried] = useState(false);
-  const [name, setName] = useState(profile.name);
+  const [name, setName] = useState(data.profileName);
   // Setup lists the installed harnesses until the person edits the list, as `setup plan` does without --harness.
   // Any harness can be listed, installed or not, as `--harness` allows.
-  const [listed, setListed] = useState<HarnessId[]>(() => INSTALLED.map((h) => h.id));
+  const [listed, setListed] = useState<HarnessId[]>(() => (live ? harnesses.filter((h) => h.listed) : INSTALLED).map((h) => h.id));
   // The import choice: checked items, and for each target that several items collide on, the one picked. Nothing by default.
   const [checked, setChecked] = useState<string[]>([]);
   const [picks, setPicks] = useState<Record<string, string>>({});
+  const [allowCredentials, setAllowCredentials] = useState(false);
   const [scan, setScan] = useState(true);
   const [service, setService] = useState<"service" | "manual">("service");
   const [port, setPort] = useState(String(DEFAULT_PORT));
   const [advanced, setAdvanced] = useState(false);
-  const progress = job?.progress ?? null;
-  const done = !!job?.done;
+  const progress = live ? null : job?.progress ?? null;
+  const done = live ? live.applied : !!job?.done;
 
   // In TARGET_IDS order, whatever order they were checked in.
   const selected = harnesses.filter((h) => listed.includes(h.id)).map((h) => h.id);
@@ -852,32 +827,35 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
   return (
     <Wizard
       role="source"
-      title="Make atlas the Source"
-      steps={SOURCE_STEPS}
+      title={`Make ${data.hostname} the Source`}
+      steps={live ? ["Your profile", "Harnesses", "Import", "Approve", "Create"] : SOURCE_STEPS}
       step={step}
       onStep={(s) => {
         setTried(false);
-        setStep(s);
+        if (live && s === SOURCE_STEP.import && step === SOURCE_STEP.harnesses) void live.planSetup(selected, undefined, () => setStep(s));
+        else if (live && s === SOURCE_STEP.service && step === SOURCE_STEP.import) void live.planSetup(selected, imported, () => setStep(s));
+        else if (live && s === SOURCE_STEP.create && !live.approved) setTried(true);
+        else setStep(s);
       }}
       onBack={onBack}
-      finalLabel="Make atlas the Source"
+      finalLabel={`Make ${data.hostname} the Source`}
       busyLabel="Creating…"
-      blocked={(step === SOURCE_STEP.profile && !name.trim()) || (step === SOURCE_STEP.service && !portValid)}
+      blocked={live ? step === SOURCE_STEP.service && !live.approved : (step === SOURCE_STEP.profile && !name.trim()) || (step === SOURCE_STEP.service && !portValid)}
       onBlocked={() => {
         setTried(true);
         // The port lives under Advanced; its error must be visible.
         if (step === SOURCE_STEP.service) setAdvanced(true);
       }}
-      busy={progress !== null && !done}
-      onFinish={() => onRun(2600, creates.length)}
+      busy={live ? live.state.loading : progress !== null && !done}
+      onFinish={() => live ? void live.applySetup() : onRun(2600, creates.length)}
       done={
         done ? (
           <Finished
-            title="atlas is now the Source"
-            action={scan ? "Review proposed tools" : "Open Canonfig"}
+            title={`${data.hostname} is now the Source`}
+            action={!live && scan ? "Review proposed tools" : "Open Canonfig"}
             onOpen={() => onDone({ role: "source", profileName: name.trim(), harnesses: selected, imported, service, port: portNumber, scan })}
             next={
-              scan ? (
+              !live && scan ? (
                 <>
                   Next: check the tools Canonfig proposed, then publish your first <Term term="Profile Revision" />.
                 </>
@@ -894,22 +872,23 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
         ) : undefined
       }
     >
+      {live?.state.error && <ErrorNotice error={live.state.error} />}
       {step === SOURCE_STEP.profile && (
         <div className="space-y-5">
           <p className="leading-relaxed text-muted-foreground">
-            Your <Term term="Machine Profile" /> lives in your <Term term="Canonical Folder" />, <Mono className="text-foreground">~/.canonfig/</Mono> on atlas: its instructions, rules,
+            Your <Term term="Machine Profile" /> lives in your <Term term="Canonical Folder" />, <Mono className="text-foreground">~/.canonfig/</Mono> on {data.hostname}: its instructions, rules,
             skills, agents and commands, and the settings in canonfig.jsonc. Other machines get what you publish from it.
           </p>
-          <Field label="Profile name" htmlFor="ob-name" hint="Canonfig saves it in ~/.canonfig/canonfig.jsonc." error={nameError} className="sm:max-w-80">
+          {live ? <Facts items={[["Profile name", data.profileName], ["Naming", "Setup uses this machine's hostname. Rename the profile later in Defaults."]]} /> : <Field label="Profile name" htmlFor="ob-name" hint="Canonfig saves it in ~/.canonfig/canonfig.jsonc." error={nameError} className="sm:max-w-80">
             <Input id="ob-name" value={name} onChange={(e) => setName(e.target.value)} aria-invalid={!!nameError} aria-describedby={nameError ? "ob-name-error" : undefined} />
-          </Field>
+          </Field>}
         </div>
       )}
       {step === SOURCE_STEP.harnesses && (
         <div className="space-y-5">
           <p className="leading-relaxed text-muted-foreground">
-            Canonfig writes your folder into each <Term term="Target Harness" /> on this list, on atlas and on every machine that follows it and has the harness installed. These are
-            installed on atlas{DEMO && " in this demo"}.
+            Canonfig writes your folder into each <Term term="Target Harness" /> on this list, on {data.hostname} and on every machine that follows it and has the harness installed.
+            {` These are installed on ${data.hostname}${DEMO ? " in this demo" : ""}.`}
           </p>
           <ul aria-label="Installed harnesses" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {INSTALLED.map((h) => (
@@ -929,11 +908,11 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
             ))}
           </ul>
           <Collapsible>
-            <DisclosureTrigger>Not installed on atlas ({NOT_INSTALLED.length})</DisclosureTrigger>
+            <DisclosureTrigger>Not installed on {data.hostname} ({NOT_INSTALLED.length})</DisclosureTrigger>
             <CollapsibleContent className="mt-3 space-y-3">
               <p className="text-sm text-muted-foreground">
                 Canonfig counts a harness as installed when its program is in Canonfig's install folders, ~/.local/bin or PATH. Check one to list it anyway: machines that have it
-                get your folder, and atlas takes it over, with a backup, once it's installed here.
+                get your folder, and this machine takes it over, with a backup, once it's installed here.
               </p>
               <ul aria-label="Harnesses not installed" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {NOT_INSTALLED.map((h) => (
@@ -962,11 +941,22 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
             Canonfig can copy what these harnesses already hold into <Mono className="text-foreground">~/.canonfig/</Mono>, once. Nothing is imported unless you check it.
             {DEMO && " This demo offers example items and doesn't read your files."}
           </p>
+          {data.importNotes?.map((note) => <p key={note} className="text-sm text-muted-foreground">{note}</p>)}
+          {live && <label className={CHECK_ROW}>
+            <Checkbox checked={allowCredentials} onCheckedChange={(checked) => {
+              setAllowCredentials(checked === true);
+              if (!checked) {
+                setChecked((ids) => ids.filter((id) => !offered.find((offer) => offer.id === id)?.credentialNotes?.length));
+                setPicks({});
+              }
+            }} />
+            Allow imports that replace literal secrets with environment references
+          </label>}
           {single.length > 0 && (
             <label className={CHECK_ROW}>
               <Checkbox
                 checked={importAll}
-                onCheckedChange={(c) => setChecked((ids) => (c === true ? [...new Set([...ids, ...single.map((o) => o.id)])] : ids.filter((id) => !single.some((o) => o.id === id))))}
+                onCheckedChange={(c) => setChecked((ids) => (c === true ? [...new Set([...ids, ...single.filter((o) => !live || allowCredentials || !o.credentialNotes?.length).map((o) => o.id)])] : ids.filter((id) => !single.some((o) => o.id === id))))}
                 className="mt-px"
               />
               <span>
@@ -985,6 +975,7 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
                     <li key={o.id}>
                       <label className="flex min-h-11 cursor-pointer items-start gap-3 px-3.5 py-3 hover:bg-raised/50 sm:min-h-10">
                         <Checkbox
+                          disabled={!!live && !allowCredentials && !!o.credentialNotes?.length}
                           checked={checked.includes(o.id)}
                           onCheckedChange={(c) => setChecked((ids) => (c === true ? [...ids, o.id] : ids.filter((id) => id !== o.id)))}
                           className="mt-px"
@@ -1006,7 +997,7 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
               </p>
               <RadioGroup value={picks[c.target] ?? NO_IMPORT} onValueChange={(v) => setPicks((p) => ({ ...p, [c.target]: v }))} className="gap-2">
                 {c.offers.map((o) => (
-                  <RadioRow key={o.id} value={o.id} title={sourceName(o.source)} description={<Mono>{o.path}</Mono>} />
+                  <RadioRow key={o.id} value={o.id} title={sourceName(o.source)} description={<Mono>{o.path || o.id}</Mono>} disabled={!!live && !allowCredentials && !!o.credentialNotes?.length} />
                 ))}
                 <RadioRow value={NO_IMPORT} title="Don't import" />
               </RadioGroup>
@@ -1037,7 +1028,7 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
             <Term term="Takeover Snapshot" /> in <Mono>~/.canonfig/.backups/</Mono> first, so you can put it back from Backups. With Backups off, nothing is copied. Files and
             folders Canonfig has nothing to write into stay as they are.
           </p>
-          <label className={CHECK_ROW}>
+          {!live && <label className={CHECK_ROW}>
             <Checkbox checked={scan} onCheckedChange={(c) => setScan(c === true)} className="mt-px" />
             <span>
               <span className="font-medium">Suggest tools from the folder</span>
@@ -1045,10 +1036,10 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
                 Reads the folder's instructions, skills, hook scripts and MCP commands, and suggests a tool for each program they need. Nothing is added until you review it.
               </span>
             </span>
-          </label>
+          </label>}
         </div>
       )}
-      {step === SOURCE_STEP.service && (
+      {step === SOURCE_STEP.service && (live ? <><SetupEvidence controller={live} approval />{tried && !live.approved && <FieldError>Enter your name and approve this plan before continuing.</FieldError>}</> :
         <div className="space-y-5">
           <p className="leading-relaxed text-muted-foreground">
             Other machines connect to a small service on atlas. It only accepts connections from atlas itself, so they reach it over SSH, which each machine sets up when it joins.
@@ -1091,9 +1082,9 @@ function SourceWizard({ job, onRun, onBack, onDone }: WizardProps<SourceSetup>) 
       )}
       {step === SOURCE_STEP.create && (
         <div>
-          {progress === null ? (
+          {live ? <SetupEvidence controller={live} /> : progress === null ? (
             <>
-              <p className="mb-3 leading-relaxed text-muted-foreground">Canonfig creates these on atlas:</p>
+              <p className="mb-3 leading-relaxed text-muted-foreground">Canonfig creates these on {data.hostname}:</p>
               <ul className="space-y-2">
                 {creates.map((c) => (
                   <li key={c} className="flex items-center gap-2.5">
@@ -1131,13 +1122,14 @@ function OfferText({ offer }: { offer: ImportOffer }) {
         {offer.category !== "instructions" && <Mono className="ml-2 text-foreground">{offer.name}</Mono>}
       </span>
       <span className="mt-1 block text-sm text-muted-foreground">
-        From <Mono>{offer.path}</Mono> to <Mono>{offer.target}</Mono>
+        {offer.path ? <>From <Mono>{offer.path}</Mono> to </> : <>Imports <Mono>{offer.id}</Mono> to </>}<Mono>{offer.target}</Mono>
       </span>
       {offer.secrets.map((s) => (
         <span key={s.field} className="mt-1 block text-sm text-muted-foreground">
           <Mono>{s.field}</Mono> looks like a credential, so it becomes <Mono className="text-foreground">{`{ "fromEnv": "${s.fromEnv}" }`}</Mono> and its value isn't copied.
         </span>
       ))}
+      {offer.credentialNotes?.map((note) => <span key={note} className="mt-1 block text-sm text-muted-foreground">{note}</span>)}
       {offer.notes.map((note) => (
         <span key={note} className="mt-1 block text-sm text-muted-foreground">
           {note}
@@ -1151,7 +1143,9 @@ function OfferText({ offer }: { offer: ImportOffer }) {
 /* Follower enroll                                                     */
 /* ------------------------------------------------------------------ */
 
-function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetup>) {
+function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<FollowerSetup>) {
+  const LISTED = data.harnesses.filter((h) => h.listed);
+  const FOLLOWER_INSTALLED = data.followerInstalled;
   const [step, setStep] = useState(0);
   const [tried, setTried] = useState(false);
   const [invite, setInvite] = useState<string | null>(null);
@@ -1159,17 +1153,25 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
   const [pasted, setPasted] = useState("");
   const [pasteTried, setPasteTried] = useState(false);
   const [tunnel, setTunnel] = useState(true);
-  const [sshHost, setSshHost] = useState("atlas.local");
-  const [sshUser, setSshUser] = useState("maria");
+  const [sshHost, setSshHost] = useState(live ? "" : "atlas.local");
+  const [sshUser, setSshUser] = useState(live ? "" : "maria");
   const [hostKey, setHostKey] = useState("./source-host-key.pub");
   const [advanced, setAdvanced] = useState(false);
   const [trusted, setTrusted] = useState(false);
-  const [name, setName] = useState("laptop");
+  const [sourceTrusted, setSourceTrusted] = useState(false);
+  const [replace, setReplace] = useState(false);
+  const [sshPort, setSshPort] = useState("22");
+  const [localPort, setLocalPort] = useState("");
+  const [name, setName] = useState(live ? data.hostname : "laptop");
   // Harnesses the person excludes on this machine; Canonfig projects the rest of atlas's list that is installed here.
   const [excluded, setExcluded] = useState<HarnessId[]>([]);
-  const [useSchedule, setUseSchedule] = useState(true);
-  const progress = job?.progress ?? null;
-  const done = !!job?.done;
+  const [liveExcluded, setLiveExcluded] = useState<HarnessId[] | null>(null);
+  const selectedExclusions = liveExcluded ?? [...(live?.harnessReport?.excluded ?? [])];
+  const [preferencesChanged, setPreferencesChanged] = useState(false);
+  const [useSchedule, setUseSchedule] = useState(!live);
+  const progress = live ? null : job?.progress ?? null;
+  const done = live ? live.joined : !!job?.done;
+  const sourceName = live ? "the Source" : "atlas";
 
   const steps = [
     ...(tunnel ? ["Opening the SSH tunnel to atlas"] : []),
@@ -1181,15 +1183,18 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
 
   // Typing keeps only lowercase letters, digits and dashes (spaces become dashes); edge dashes are trimmed
   // here rather than per keystroke, so typing "my laptop" can pass through "my-". Everything below uses this.
-  const machineName = name.replace(/^-+|-+$/g, "");
+  const machineName = live ? name.trim() : name.replace(/^-+|-+$/g, "");
 
   // Validate late: these only show after a Continue that couldn't proceed.
   const errors = {
-    invite: step === 0 && invite === null ? "Use the example file, or paste the invitation." : null,
-    host: step === 1 && tunnel && !sshHost.trim() ? "Enter the SSH host for atlas." : null,
-    user: step === 1 && tunnel && !sshUser.trim() ? "Enter your SSH user on atlas." : null,
-    hostKey: step === 1 && tunnel && !hostKey.trim() ? "Enter the path to atlas's SSH host public key file." : null,
-    trusted: step === 1 && tunnel && !trusted ? "Confirm the fingerprint matches atlas." : null,
+    invite: step === 0 && invite === null ? (live ? "Choose a file or paste the complete invitation." : "Use the example file, or paste the invitation.") : null,
+    host: step === 1 && tunnel && !sshHost.trim() ? `Enter the SSH host for ${sourceName}.` : null,
+    user: step === 1 && tunnel && !sshUser.trim() ? `Enter your SSH user on ${sourceName}.` : null,
+    hostKey: step === 1 && tunnel && !hostKey.trim() ? "Enter the path to the Source's SSH host public key file." : null,
+    trusted: step === 1 && tunnel && !trusted ? "Confirm the host key matches the Source." : null,
+    sourceTrusted: live && step === 1 && !sourceTrusted ? "Verify the Source and TLS fingerprints before continuing." : null,
+    replace: live?.session.role === "follower" && step === 2 && !replace ? "Confirm replacement of this machine's enrollment." : null,
+    ports: live && step === 1 && tunnel && (![sshPort, localPort].every((port) => /^\d+$/.test(port) && Number(port) >= 1 && Number(port) <= 65535)) ? "Use whole port numbers from 1 to 65535." : null,
     name: step === 2 && !machineName ? "Enter a name for this machine." : null,
   };
   const blocked = Object.values(errors).some(Boolean);
@@ -1197,16 +1202,17 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
 
   // The demo doesn't decode invitations: it accepts the example's prefix and then shows example details,
   // and the copy around it says so rather than implying a real check.
-  const pasteValid = pasted.trim().startsWith("canonfig-invite-v1:");
+  const pasteValid = live ? !!pasted.trim() : pasted.trim().startsWith("canonfig-invite-v1:");
   const readPasted = () => {
     setPasteTried(true);
-    if (pasteValid) setInvite("(pasted)");
+    if (live) void live.inspectInvitation(pasted, (inspection) => { setInvite("(pasted)"); setSourceTrusted(false); setTrusted(false); setLocalPort(new URL(inspection.endpoint).port || "443"); });
+    else if (pasteValid) setInvite("(pasted)");
   };
 
   return (
     <Wizard
       role="follower"
-      title="Copy the setup from atlas"
+      title={`Copy the setup from ${sourceName}`}
       steps={["Invitation", "Connection", "This machine"]}
       step={step}
       onStep={(s) => {
@@ -1214,33 +1220,54 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
         setStep(s);
       }}
       onBack={onBack}
-      finalLabel="Join atlas"
+      finalLabel={`Join ${sourceName}`}
       busyLabel="Joining…"
       blocked={blocked}
       onBlocked={() => {
         setTried(true);
         // The host key file lives under Advanced; its error must be visible.
-        if (errors.hostKey) setAdvanced(true);
+        if (errors.hostKey || errors.ports) setAdvanced(true);
       }}
-      busy={progress !== null && !done}
-      onFinish={() => onRun(3000, steps.length)}
+      busy={live ? live.state.loading : progress !== null && !done}
+      onFinish={() => live ? void live.join({ name: machineName, replace, tunnel, sshHost, sshUser, sshPort: Number(sshPort), hostKey, localPort: Number(localPort) }) : onRun(3000, steps.length)}
       done={
         done ? (
           <Finished
-            title={`${machineName} now follows atlas`}
+            title={`${machineName} now follows ${sourceName}`}
             action="Open Canonfig"
+            busy={live?.state.loading}
             onOpen={() => onDone({ role: "follower", name: machineName, tunnel, schedule: useSchedule, excluded })}
-            next="Next: see what revision 7 would change here, before you apply it."
+            next={live ? "Next: review what the profile would change here in Sync before applying it." : "Next: see what revision 7 would change here, before you apply it."}
           >
-            atlas can disconnect this machine on its own, without affecting the others. Canonfig hasn't changed any files here yet.
+            {!live && "Canonfig hasn't changed any files here yet. "}{sourceName} can disconnect this machine on its own, without affecting the others.
+            {live && <div className="mt-4 space-y-4">
+              {live.state.error && <ErrorNotice error={live.state.error} />}
+              <Button type="button" variant="outline" disabled={live.state.loading} onClick={() => void live.loadHarnesses()}>Reload local preferences</Button>
+              {live.harnessReport && <>
+                <ul className="divide-y divide-border rounded-lg border border-border">
+                  {live.harnessReport.harnesses.map((h) => <li key={h.harness}><label className="flex min-h-11 items-center gap-3 px-3.5 py-2.5">
+                    <Checkbox checked={!selectedExclusions.includes(h.harness)} disabled={live.state.loading} onCheckedChange={(checked) => {
+                      setLiveExcluded(checked ? selectedExclusions.filter((id) => id !== h.harness) : [...selectedExclusions, h.harness]);
+                      setPreferencesChanged(true);
+                    }} />
+                    <span className="min-w-0 flex-1">{h.name}</span><span className="text-sm text-muted-foreground">{!h.installed ? "Not installed" : !h.listed ? "Not listed" : "Installed"}</span>
+                  </label></li>)}
+                </ul>
+                <label className={CHECK_ROW}><Checkbox checked={useSchedule} disabled={live.state.loading} onCheckedChange={(checked) => { setUseSchedule(checked === true); setPreferencesChanged(true); }} />Use the profile's default schedule</label>
+                <p className="text-sm text-muted-foreground">The CLI requires an applied profile before selecting its default schedule. If refused, apply from Sync and set the schedule afterwards.</p>
+                <Button type="button" disabled={live.state.loading} onClick={() => { setPreferencesChanged(false); void live.savePreferences(selectedExclusions, useSchedule); }}>Save local preferences</Button>
+                {live.preferencesSaved && !preferencesChanged && <p role="status">Local preferences saved.</p>}
+              </>}
+            </div>}
           </Finished>
         ) : undefined
       }
     >
+      {live?.state.error && <ErrorNotice error={live.state.error} />}
       {step === 0 && (
         <div className="space-y-4">
           <p className="leading-relaxed text-muted-foreground">
-            On atlas, create a single-use invitation file (<Mono>canonfig source invite</Mono> does the same), then copy it to this machine, for example with scp.
+            On {sourceName}, create a single-use invitation file (<Mono>canonfig source invite</Mono> does the same), then copy it to this machine, for example with scp.
           </p>
           {invite === null ? (
             paste ? (
@@ -1248,7 +1275,7 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
                 <Field
                   label="Invitation contents"
                   htmlFor="ob-paste"
-                  error={pasteTried && !pasteValid ? `That isn't the example invitation.${DEMO ? " In this demo, pasted invitations start with canonfig-invite-v1:" : ""}` : null}
+                  error={pasteTried && !pasteValid ? live ? "Paste the complete invitation contents." : "That isn't the example invitation. In this demo, pasted invitations start with canonfig-invite-v1:" : null}
                 >
                   <Textarea
                     id="ob-paste"
@@ -1260,7 +1287,7 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
                         readPasted();
                       }
                     }}
-                    placeholder="canonfig-invite-v1:…"
+                    placeholder={live ? "Paste the complete envelope, including EOF" : "canonfig-invite-v1:…"}
                     spellCheck={false}
                     aria-invalid={pasteTried && !pasteValid}
                     aria-describedby={pasteTried && !pasteValid ? "ob-paste-error" : undefined}
@@ -1283,9 +1310,12 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
                   <p className="mt-3 font-medium">Add the invitation file</p>
                   <p className="mt-1 text-sm text-muted-foreground">Usually named canonfig-invite.{DEMO && " This demo uses an example file."}</p>
                   <div className="mt-4 flex flex-wrap justify-center gap-2">
-                    <Button type="button" variant="outline" size="sm" onClick={() => setInvite("~/Downloads/canonfig-invite")}>
+                    {live ? <Input type="file" aria-label="Invitation file" onChange={async (event) => {
+                      const file = event.target.files?.[0];
+                      if (file) void live.inspectInvitation(await file.text(), (inspection) => { setInvite(file.name); setSourceTrusted(false); setTrusted(false); setLocalPort(new URL(inspection.endpoint).port || "443"); });
+                    }} /> : <Button type="button" variant="outline" size="sm" onClick={() => setInvite("~/Downloads/canonfig-invite")}>
                       Use the example file
-                    </Button>
+                    </Button>}
                     <Button type="button" variant="ghost" size="sm" onClick={() => setPaste(true)}>
                       Paste contents
                     </Button>
@@ -1298,19 +1328,19 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
             <div className="rounded-lg border border-border bg-raised/40 px-4 py-4">
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 <Check className="size-4 text-ok" />
-                <span className="font-medium">Example invitation from atlas</span>
-                <Button type="button" variant="ghost" size="xs" className="ml-auto text-muted-foreground" onClick={() => setInvite(null)}>
+                <span className="font-medium">{live ? "Invitation inspected" : "Example invitation from atlas"}</span>
+                <Button type="button" variant="ghost" size="xs" className="ml-auto text-muted-foreground" onClick={() => { setInvite(null); live?.clearInvitation(); setSourceTrusted(false); setTrusted(false); }}>
                   Use another
                 </Button>
               </div>
               <Facts
                 items={[
                   ["File", <Mono className="text-foreground">{invite === "(pasted)" ? "Pasted" : invite}</Mono>],
-                  ["Endpoint", <Mono className="text-foreground">{machine.endpoint}</Mono>],
-                  ["Expires", "In 52 minutes, or once used"],
+                  ["Endpoint", <Mono className="text-foreground">{live?.inspection?.endpoint ?? data.endpoint}</Mono>],
+                  ["Expires", live?.inspection?.expiresAt ?? "In 52 minutes, or once used"],
                   [
                     <Term term="Follower Group">Groups</Term>,
-                    <>
+                    live ? live.inspection?.groups.join(", ") || "Base profile only" : <>
                       Can receive secrets <Mono>canonfig:secrets</Mono>
                     </>,
                   ],
@@ -1323,13 +1353,18 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
       {step === 1 && (
         <div className="space-y-5">
           <p className="leading-relaxed text-muted-foreground">
-            The invitation's address, 127.0.0.1, means “this machine”. An SSH tunnel forwards that port on this machine to atlas, so the address reaches atlas from here.
+            {live ? "Use an SSH tunnel when the Source is on another machine and its invitation uses a loopback address. Turn it off only when this machine can already reach the endpoint." : "The invitation's address, 127.0.0.1, means this machine. An SSH tunnel forwards that port on this machine to atlas, so the address reaches atlas from here."}
           </p>
+          {live?.inspection && <>
+            <Facts items={[["Source fingerprint", <Mono className="break-all">{live.inspection.sourceFingerprint}</Mono>], ["TLS fingerprint", <Mono className="break-all">{live.inspection.tlsFingerprint}</Mono>]]} />
+            <label className={CHECK_ROW}><Checkbox checked={sourceTrusted} onCheckedChange={(checked) => setSourceTrusted(checked === true)} />I verified both fingerprints through a trusted channel.</label>
+            {shown("sourceTrusted") && <FieldError>{shown("sourceTrusted")}</FieldError>}
+          </>}
           <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-border px-3.5 py-3 hover:bg-raised/50">
             <Switch checked={tunnel} onCheckedChange={setTunnel} />
             <span>
               <span className="font-medium">Connect through an SSH tunnel</span>
-              <span className="mt-0.5 block text-sm text-muted-foreground">Uses the SSH access you already have to atlas. Canonfig opens the tunnel before each sync.</span>
+              <span className="mt-0.5 block text-sm text-muted-foreground">Uses the SSH access you already have to {sourceName}. Canonfig opens the tunnel before each sync.</span>
             </span>
           </label>
           {tunnel && (
@@ -1367,13 +1402,13 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
               </div>
               <div className={cn("rounded-lg border px-3.5 py-3", shown("trusted") ? "border-bad/60" : "border-border")}>
                 <div className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
-                  atlas's SSH host key, from <Mono>{hostKey}</Mono>
-                  <Hint label="checking the SSH host key">{"Compare it with the output of “ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub” on atlas.\nChange the file under Advanced."}</Hint>
+                  {sourceName}'s SSH host key, from <Mono>{hostKey}</Mono>
+                  <Hint label="checking the SSH host key">Compare this file with the Source's SSH host public key through a trusted channel. Change the file under Advanced.</Hint>
                 </div>
-                <Mono className="mt-1 block text-foreground">ED25519 SHA256:Jx7qL2c9…vR0wPq4sE</Mono>
+                {!live && <Mono className="mt-1 block text-foreground">ED25519 SHA256:Jx7qL2c9…vR0wPq4sE</Mono>}
                 <label className="mt-3 flex min-h-11 cursor-pointer items-center gap-2.5 sm:min-h-10">
                   <Checkbox checked={trusted} onCheckedChange={(c) => setTrusted(c === true)} aria-invalid={!!shown("trusted")} aria-describedby={shown("trusted") ? "ob-trusted-error" : undefined} />
-                  This matches atlas
+                  This matches {sourceName}
                 </label>
               </div>
               {shown("trusted") && <FieldError id="ob-trusted-error">{shown("trusted")}</FieldError>}
@@ -1381,9 +1416,9 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
                 <DisclosureTrigger>Advanced</DisclosureTrigger>
                 <CollapsibleContent className="mt-3">
                   <Field
-                    label="atlas's SSH host public key file"
+                    label="Source SSH host public key file"
                     htmlFor="ob-hostkey"
-                    hint="A copy of /etc/ssh/ssh_host_ed25519_key.pub from atlas, for example made with scp."
+                    hint="A verified copy of the Source's /etc/ssh/ssh_host_ed25519_key.pub on this machine."
                     error={shown("hostKey")}
                   >
                     <Input
@@ -1400,6 +1435,11 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
                       className="font-mono text-[12px]"
                     />
                   </Field>
+                  {live && <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                    <Field label="SSH port" htmlFor="ob-ssh-port"><Input id="ob-ssh-port" value={sshPort} onChange={(event) => setSshPort(event.target.value)} /></Field>
+                    <Field label="Local tunnel port" htmlFor="ob-local-port"><Input id="ob-local-port" value={localPort} onChange={(event) => setLocalPort(event.target.value)} /></Field>
+                    {shown("ports") && <FieldError>{shown("ports")}</FieldError>}
+                  </div>}
                 </CollapsibleContent>
               </Collapsible>
             </>
@@ -1410,12 +1450,12 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
         <div className="space-y-5">
           {progress === null ? (
             <>
-              <Field label="Name for this machine" htmlFor="ob-mname" hint="Shown on atlas." error={shown("name")} className="sm:max-w-80">
+              <Field label="Name for this machine" htmlFor="ob-mname" hint={`Shown on ${sourceName}.`} error={shown("name")} className="sm:max-w-80">
                 <Input
                   id="ob-mname"
                   value={name}
                   // Collapse dash runs too: typing spaces one at a time turns "a  b" into "a--b" otherwise.
-                  onChange={(e) => setName(e.target.value.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-+/g, "-"))}
+                  onChange={(e) => setName(live ? e.target.value : e.target.value.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-+/g, "-"))}
                   onBlur={() => setName(machineName)}
                   spellCheck={false}
                   autoComplete="off"
@@ -1423,7 +1463,7 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
                   aria-describedby={shown("name") ? "ob-mname-error" : undefined}
                 />
               </Field>
-              <section aria-labelledby="ob-harnesses" className="space-y-2">
+              {!live && <section aria-labelledby="ob-harnesses" className="space-y-2">
                 <h3 id="ob-harnesses" className="text-sm font-medium">
                   Harnesses atlas lists
                 </h3>
@@ -1455,14 +1495,16 @@ function FollowerWizard({ job, onRun, onBack, onDone }: WizardProps<FollowerSetu
                 <p className="text-sm text-muted-foreground">
                   Before the first sync writes into a harness, Canonfig copies the harness's files into a <Term term="Takeover Snapshot" /> in <Mono>~/.canonfig/.backups/</Mono>.
                 </p>
-              </section>
-              <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border px-3.5 py-3 hover:bg-raised/50">
+              </section>}
+              {!live && <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border px-3.5 py-3 hover:bg-raised/50">
                 <Checkbox checked={useSchedule} onCheckedChange={(c) => setUseSchedule(c === true)} className="mt-px" />
                 <span className="font-medium">Sync daily at 09:00, the profile's default schedule</span>
-              </label>
+              </label>}
               <p className="text-sm text-muted-foreground">
-                Joining downloads <Term term="Profile Revision">revision 7</Term>, the latest setup atlas published, but changes no files. Before the first sync, you'll see exactly what would change.
+                {live ? "Joining records this machine's enrollment. Review actual synchronization evidence in Sync. Local harness and schedule preferences are available after joining." : <>Joining downloads <Term term="Profile Revision">revision 7</Term>, the latest setup atlas published, but changes no files. Before the first sync, you'll see exactly what would change.</>}
               </p>
+              {live?.session.role === "follower" && <label className={CHECK_ROW}><Checkbox checked={replace} onCheckedChange={(checked) => setReplace(checked === true)} />Replace this machine's current enrollment with this invitation.</label>}
+              {shown("replace") && <FieldError>{shown("replace")}</FieldError>}
             </>
           ) : (
             <>

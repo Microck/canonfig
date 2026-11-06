@@ -3,7 +3,7 @@ import { navigate, workspaceHref, type AppRoute } from "./routes";
 import type { Setup } from "@/onboarding/onboarding";
 import { SimulatedWorkspaceProvider } from "./simulated-store";
 import { Frame, NotFound, pageTitle } from "./workspace";
-const Onboarding = lazy(() => import("@/onboarding/onboarding").then((module) => ({ default: module.Onboarding })));
+const Onboarding = lazy(() => import("@/onboarding/simulated-onboarding").then((module) => ({ default: module.SimulatedOnboarding })));
 const SITE_TITLE = (document.documentElement.dataset.siteTitle ??= document.title);
 
 export function WorkspaceApp({ route }: { route: AppRoute }) {

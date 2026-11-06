@@ -1,21 +1,20 @@
-import { useState } from "react";
-import { GuiEnrollment, GuiMachines, GuiSetupStatus } from "../../../../src/gui/contract/enrollment";
+import { useEffect, useRef, useState } from "react";
+import { Schema } from "effect";
+import { GuiEnrollment, GuiInvitationDownload, GuiMachines, GuiSetupStatus } from "../../../../src/gui/contract/enrollment";
 import type { GuiSession, WorkspaceBackend } from "../../gui-client";
 import type { ChangeGroupsRequest, MachinesSlice } from "../workspace-types";
-import { notImplemented, resourceState, useLiveResource } from "./resource";
+import { resourceState, useLiveResource } from "./resource";
 
-/** Phase 2d checklist: operation forms must preserve invitation envelopes, plan digests and explicit approval.
- * notImplemented: setFollowers (revoke), setInvitations (create), invitation download,
- * replacement enrollment, setup plan/approve/apply, enrollment tunnel.
- * Delete ui/src/live/enrollment.tsx once the shared onboarding and machine forms are wired.
- */
-export const MACHINES_NOT_IMPLEMENTED = ["setFollowers", "setInvitations", "invitation download", "replacement enrollment", "setup plan/approve/apply", "enrollment tunnel"] as const;
-
-export function useLiveMachines(backend: WorkspaceBackend, session: GuiSession, revision: number): Omit<MachinesSlice, "machinesMode"> {
+export function useLiveMachines(backend: WorkspaceBackend, session: GuiSession, revision: number, reload: () => void): Omit<MachinesSlice, "machinesMode"> {
   const source = session.role === "source";
   const inventory = useLiveResource(backend, "/api/machines", GuiMachines, source, revision);
   const enrollment = useLiveResource(backend, "/api/enrollment", GuiEnrollment, session.role === "follower", revision);
   const setup = useLiveResource(backend, "/api/setup", GuiSetupStatus, false, revision);
+  const controller = useRef(new AbortController());
+  useEffect(() => {
+    controller.current = new AbortController();
+    return () => controller.current.abort();
+  }, []);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [changeGroups, setChangeGroups] = useState<ChangeGroupsRequest | null>(null);
   const endpoint = enrollment.data?.source.endpoint ?? "";
@@ -29,17 +28,27 @@ export function useLiveMachines(backend: WorkspaceBackend, session: GuiSession, 
     note: enrollment.data.follower.revoked ? "Revoked" : enrollment.data.pending ? "Enrollment pending" : "Enrolled",
   } : undefined;
   return {
+    enrollmentBackend: backend,
+    ...(enrollment.data ? { enrollment: enrollment.data } : {}),
     machinesState: resourceState([inventory, enrollment]),
     machineStates: { inventory, enrollment, setup },
     sourceMachine: { hostname: source ? session.machineName : endpoint, folder: source ? session.folderPath : "", endpoint },
     followerSelf: { name: session.machineName, home: "", source: endpoint, local: [], overlays: [], kept: [] },
     selfFollower, endpoint, justJoined: enrollment.data?.pending ?? false,
     inviteOpen, setInviteOpen, followers,
-    setFollowers: () => notImplemented("setFollowers"),
+    async revokeFollower(id) {
+      await backend.request("/api/machines/revoke", Schema.Json, controller.current.signal, { method: "POST", body: { follower: id } });
+      reload();
+    },
+    async createInvitation(input) {
+      const invitation = await backend.request("/api/invitations", GuiInvitationDownload, controller.current.signal, { method: "POST", body: input });
+      reload();
+      return invitation;
+    },
     invitations: (inventory.data?.invitations ?? []).filter((invitation) => !invitation.consumed).map((invitation, index) => ({
       id: `${invitation.endpoint}:${invitation.expiresAt}:${index}`,
-      file: "", name: "", groups: [...invitation.groups], expires: invitation.expiresAt,
+      file: invitation.endpoint, name: "Single-use invitation", groups: [...invitation.groups], expires: invitation.expiresAt,
     })),
-    setInvitations: () => notImplemented("setInvitations"), syncing: [], changeGroups, setChangeGroups,
+    syncing: [], changeGroups, setChangeGroups,
   };
 }

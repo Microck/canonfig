@@ -110,9 +110,9 @@ function FixtureViews({ rows }: { rows: Follower[] }) {
   const ws = useWorkspace();
   const [ready, setReady] = useState(false);
   useLayoutEffect(() => {
-    ws.setFollowers(rows);
+    ws.setFollowers!(rows);
     ws.setResources([]);
-    ws.setInvitations([]);
+    ws.setInvitations!([]);
     setReady(true);
   }, [rows]);
   if (!ready) return null;
