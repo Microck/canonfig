@@ -22,7 +22,7 @@ export function LiveWorkspaceProvider({ backend, session, route, children }: {
   const reload = useCallback(() => setRevision((value) => value + 1), []);
   const overview = useLiveOverview(backend, session, route, revision, reload);
   const profile = useLiveProfile(backend, session, revision, reload);
-  const machines = useLiveMachines(backend, session, revision);
+  const machines = useLiveMachines(backend, session, revision, reload);
   const follower = useLiveFollower(backend, session, overview.status, revision, reload);
   const admin = useLiveAdministration(backend, session);
   const service = admin.service.data;
@@ -36,6 +36,7 @@ export function LiveWorkspaceProvider({ backend, session, route, children }: {
   const resource = resources[route.view];
   const workspace: Workspace = {
     ...overview, ...profile, ...machines, ...follower, admin,
+    capabilities: { ...overview.capabilities, enrollmentWrite: true },
     profileTab: route.profileTab, machinesMode: route.machinesMode,
     endpoint: session.role === "source" ? service?.endpoint ?? "" : machines.endpoint,
     sourceMachine: { ...machines.sourceMachine, ...(session.role === "source" && service ? { endpoint: service.endpoint, platform: service.platform, service: service.state } : {}) },

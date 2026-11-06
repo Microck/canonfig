@@ -143,11 +143,12 @@ while it matches the captured plan digest; a later unrelated plan is not present
 as the operation's journal. Enrollment and tunnel tickets have no setup journal.
 No browser completion checkbox certifies readiness.
 
-Live enrollment forms remain separate from the demo forms in this phase, as
-authorized during implementation. They reuse the existing controls and list rows.
-The map renderer is shared through `map-view.tsx`; `machine-map.tsx` injects demo
-fixtures. Consolidating the remaining demo/live form presentation is follow-up
-work, not a second implementation of any CLI service.
+Enrollment now uses the shared machine screens and onboarding wizard in both builds.
+The live controller preserves setup digests and human approval, inspects real
+invitation files or pasted envelopes, and runs enrollment or tunnel operations.
+Only the simulated onboarding adapter imports demo fixtures. Configured Setup
+reads the same backend journal. Map appearance stays browser-local; demo purposes
+and remote telemetry never become live machine facts.
 
 ### Synchronization and local state
 
@@ -237,7 +238,7 @@ Each live resource exposes loading and its decoded CLI error. `LiveWorkspaceProv
 
 `capabilities` separates unavailable CLI operations from the demo: invitation cancellation, selective scan writes, service restart, private-review deletion and self-update mutations are false in production. `simulatedTelemetry` is false there too. The three area write capabilities remain false until the corresponding checklist is complete. Unfinished operations call `notImplemented` with their member name; shared pages show their explicit integration notice and do not offer a false successful action.
 
-Production session/token bootstrap remains in `live-app.tsx`. Its session determines the allowed role and routes; unconfigured machines redirect to `/setup`. The old screen registry is gone. The existing real setup form is retained only for that unconfigured entry until area C replaces it with the shared onboarding flow. It is not a second registry for configured screens. Live tours include the navigation introduction and Agent policy, without claiming remote health or the demo's Source name.
+Production session/token bootstrap remains in `live-app.tsx`. Its session determines the allowed role and routes; unconfigured machines redirect to `/setup`. The old screen registry is gone. Both builds now render the shared onboarding flow, with a real enrollment controller in production and fixture injection in the demo. Live tours include the navigation introduction and Agent policy, without claiming remote health or the demo's Source name.
 
 ### Worked example
 
@@ -250,13 +251,20 @@ The exported `*_NOT_IMPLEMENTED` arrays and adjacent checklist comments in each 
 | Owner | Owned files | Remaining checklist |
 | --- | --- | --- |
 | Profile agent | `workspace/live/profile.ts`, `workspace/profile.tsx`, `workspace/skills.tsx`, `workspace/harnesses.tsx`, profile/publication/source-secret portions of `workspace/source.tsx`; old `live/profile.tsx` and its authoring modules | **11:** `setResources`, `setSecrets`, `markProfileEdit`, `removeProfileEdit`, `publish`, `setListed`, `setSurfaces`, `scannedTools`, `skillSources`, `upstreamSkills`, `profileSchedule` |
-| Machines agent | `workspace/live/machines.ts`, `workspace/machines.tsx`, `onboarding/*`, `shared/machine-map/*`, configured Setup view in `workspace/settings.tsx`; old `live/enrollment.tsx` | **6:** `setFollowers` (revoke), `setInvitations` (create), invitation download, replacement enrollment, setup plan/approve/apply, enrollment tunnel |
+| Machines agent | `workspace/live/machines.ts`, `workspace/machines.tsx`, `onboarding/*`, `shared/machine-map/*`, configured Setup view in `workspace/settings.tsx`; removed `live/enrollment.tsx` | **0:** revoke, invitation creation/download, replacement enrollment, setup plan/approve/apply and enrollment tunnel use the real API. Unsupported invitation cancellation stays hidden. |
 | Follower agent | `workspace/live/follower.ts`, `workspace/follower.tsx`, `workspace/schedule.tsx`, follower secrets/tunnel/local/backup controls; old `live/synchronization.tsx` and `workspace/synchronization/screens.tsx` | **11:** `plan`, `runs`, `setHumanAction`, `setExcluded`, `setBackups`, `setLocal`, `setOverlays`, `followerSchedule`, tunnel controls, secret refresh, private-review creation |
 | Integration owner | `workspace-types.ts`, `store.tsx`, providers, navigation/frame/routes, `live-app.tsx`, build guard, Overview and administration hooks | **0** in the Overview and administration example |
 
 The profile hook already reads folder metadata, revisions, harness selection/surfaces, groups and secret names, and exports a real archive. The machines hook reads enrollment records and invitation metadata without inventing health. The follower hook reads per-resource reports and wires operation-ticket apply/recovery/restore plus real unenrollment; detailed plan/local/schedule projection stays with its area forms. These partial adapters are deliberately not advertised as completed end-to-end workflows.
 
 Shared interface changes go through the integration owner. The profile and follower agents coordinate changes to harness controls; the machines agent owns only Setup within settings, not the completed administration screens. Preserve digest preconditions, explicit setup approval, write-only secret values and the existing CLI failure taxonomy. The demo retains its simulated flows throughout.
+
+Area C keeps Source import collisions and secret-reference opt-in explicit.
+Live setup omits simulated progress and service/scan choices that are not setup
+inputs. Follower onboarding shows actual Source fingerprints, requires replacement
+consent, and loads local harness preferences after enrollment. Schedule selection
+preserves the CLI's applied-profile prerequisite. Neither enrollment nor saving
+local preferences is presented as a completed synchronization.
 
 ### Phase 2d verification
 

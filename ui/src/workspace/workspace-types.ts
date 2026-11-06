@@ -4,6 +4,8 @@ import type { GuiRequestError, GuiSession, GuiStatus } from "../gui-client";
 import type { MachinesMode, Navigate, NavigateOptions, ProfileTab, WorkspaceRole } from "./routes";
 import type { AdministrationSlice } from "./administration-types";
 import type { Schedule } from "./schedule";
+import type { WorkspaceBackend } from "../gui-client";
+import type { GuiEnrollment, GuiInvitationDownload } from "../../../src/gui/contract/enrollment";
 
 type SetState<T> = Dispatch<SetStateAction<T>>;
 
@@ -258,6 +260,10 @@ export interface ProfileSlice {
 export interface MachinesSlice {
   machinesState: ResourceState;
   machineStates: Record<"inventory" | "enrollment" | "setup", ResourceState>;
+  enrollmentBackend?: WorkspaceBackend;
+  enrollment?: GuiEnrollment;
+  createInvitation?: (input: { endpoint: string; expiresInMilliseconds: number; groups: string[] }) => Promise<GuiInvitationDownload>;
+  revokeFollower?: (id: string) => Promise<void>;
   sourceMachine: SourceMachine;
   followerSelf: FollowerSelf;
   selfFollower?: Follower;
@@ -268,9 +274,9 @@ export interface MachinesSlice {
   inviteOpen: boolean;
   setInviteOpen: SetState<boolean>;
   followers: Follower[];
-  setFollowers: SetState<Follower[]>;
+  setFollowers?: SetState<Follower[]>;
   invitations: Invitation[];
-  setInvitations: SetState<Invitation[]>;
+  setInvitations?: SetState<Invitation[]>;
   /** Followers fetching the revision that was just published. */
   syncing: string[];
   machinesMode: MachinesMode;

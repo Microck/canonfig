@@ -6,7 +6,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { httpBackend, type WorkspaceBackend, type GuiSession } from "./gui-client";
 import { ErrorNotice, overviewPath } from "./live/session";
-import { Setup } from "./live/enrollment";
+import { EnrollmentOnboarding } from "./onboarding/enrollment-controller";
 import { LiveWorkspaceProvider } from "./workspace/live-provider";
 import { Frame, NotFound, pageTitle } from "./workspace/workspace";
 import { isRouteForRole } from "./workspace/nav";
@@ -50,7 +50,7 @@ export default function LiveApp({ backend = httpBackend }: { backend?: Workspace
   } else if (state.kind === "error") {
     content = <main className="mx-auto max-w-[880px] space-y-4 p-6"><ErrorNotice error={state.error} title="Workspace could not load" /><Button onClick={() => setRevision((value) => value + 1)}>Reload</Button></main>;
   } else if (state.session.role === "unconfigured") {
-    content = <ScreenContext value={{ pageLoading: false, navigate }}><main className="mx-auto max-w-[880px] px-4 py-6 sm:px-8"><Setup backend={backend} session={state.session} /></main></ScreenContext>;
+    content = <ScreenContext value={{ pageLoading: false, navigate }}><EnrollmentOnboarding backend={backend} session={state.session} /></ScreenContext>;
   } else if (route.kind !== "workspace" || !isRouteForRole(route, state.session.role)) {
     content = <NotFound href={overviewPath(state.session.role)} />;
   } else {

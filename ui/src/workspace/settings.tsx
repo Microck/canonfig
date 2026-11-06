@@ -13,6 +13,7 @@ import { DitherProgress, Hint, Mono, StatusMark, Term } from "@/shared/shared";
 import { DEMO } from "@/shared/metadata";
 import { shq } from "@/shared/shell";
 import { ErrorNotice } from "@/live/session";
+import { SetupJournal } from "@/onboarding/enrollment-controller";
 import { useWorkspace } from "./store";
 import type { SavedPolicy } from "./administration-types";
 export type { SavedPolicy } from "./administration-types";
@@ -543,10 +544,15 @@ export function InstallersView() {
   );
 }
 
+
 export function SetupView() {
   const ws = useWorkspace();
   const setup = ws.admin.setup;
   const installed = ws.admin.service.data?.manager.installed;
+  if (ws.enrollmentBackend && ws.session) return <>
+    <PageHeader crumbs={["Settings", "Setup"]} />
+    <Body><Column><SetupJournal backend={ws.enrollmentBackend} session={ws.session} /></Column></Body>
+  </>;
   if (!setup) return null;
   const { phase, at } = setup.journal;
   const steps = setup.steps;
