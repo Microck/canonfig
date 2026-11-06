@@ -171,7 +171,7 @@ rerun publication or reuse the version. Verification can also be run independent
 with Node.js 24 and npm on the release runner:
 
 ```bash
-node tools/release/verify-published.mjs 6.0.0
+node tools/release/verify-published.mjs 6.1.0
 ```
 
 The verification helper only reads from npm and installs into a disposable local

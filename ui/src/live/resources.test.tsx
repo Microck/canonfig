@@ -51,7 +51,7 @@ for (const role of ["source", "follower"] as const) {
     const mutations: { path: string; body: unknown }[] = [];
     const setup = { discoveryPaths: [], stage: "approved", approved: true, approvals: [], stages: [], items: [], catalog: [], planDigest: "navigation-plan" };
     const responses: Record<string, unknown> = {
-      "/api/session": { role, machineName: "Navigation fixture", folderPath: "/tmp/navigation-fixture", version: "6.0.0" },
+      "/api/session": { role, machineName: "Navigation fixture", folderPath: "/tmp/navigation-fixture", version: "6.1.0" },
       "/api/status": { machineRole: { role }, lifecycle: {}, tunnel: null },
       "/api/installers": { bindings: [], suggestions: [] },
       "/api/agent/policy": { configured: false, default: "deterministic-only" },
@@ -175,10 +175,10 @@ it("self-update renders persisted progress and stops requests after installation
   const requests: string[] = [];
   let operationReads = 0;
   const responses: Record<string, unknown> = {
-    "/api/session": { role: "source", machineName: "Update fixture", folderPath: "/tmp/update-fixture", version: "6.0.0" },
+    "/api/session": { role: "source", machineName: "Update fixture", folderPath: "/tmp/update-fixture", version: "6.1.0" },
     "/api/status": { machineRole: { role: "source" }, lifecycle: {}, tunnel: null },
     "/api/self-update": { enabled: true, pending: false, platform: "linux", settings: { npmCli: "/tmp/update-fixture/npm/bin/npm-cli.js" } },
-    "/api/self-update/check": { current: "6.0.0", candidate: "6.0.1", status: "available", detail: "Patch available." },
+    "/api/self-update/check": { current: "6.1.0", candidate: "6.1.1", status: "available", detail: "Patch available." },
     "/api/self-update/apply": { id: "update-operation" },
   };
   // This disposable HTTP fixture exercises the real browser transport and schemas,
@@ -194,8 +194,8 @@ it("self-update renders persisted progress and stops requests after installation
     if (path === "/api/operations/update-operation") {
       operationReads += 1;
       outgoing.end(JSON.stringify(operationReads === 1
-        ? { id: "update-operation", state: "running", journal: { phase: "staging", candidate: "6.0.1" } }
-        : { id: "update-operation", state: "succeeded", journal: { phase: "complete", candidate: "6.0.1" }, result: { current: "6.0.0", candidate: "6.0.1", status: "updated", detail: "Installed 6.0.1." } }));
+        ? { id: "update-operation", state: "running", journal: { phase: "staging", candidate: "6.1.1" } }
+        : { id: "update-operation", state: "succeeded", journal: { phase: "complete", candidate: "6.1.1" }, result: { current: "6.1.0", candidate: "6.1.1", status: "updated", detail: "Installed 6.1.1." } }));
       return;
     }
     outgoing.statusCode = path in responses ? path === "/api/self-update/apply" ? 202 : 200 : 404;
@@ -235,11 +235,11 @@ it("self-update renders persisted progress and stops requests after installation
     await settle("/tmp/update-fixture/npm/bin/npm-cli.js");
     await click("Check for updates");
     await settle("Patch available.");
-    await click("Install 6.0.1…");
+    await click("Install 6.1.1…");
     assert.ok(document.body.textContent?.includes("After installation, this GUI stops."));
     await click("Install update");
-    await settle("staging 6.0.1");
-    await settle("Canonfig 6.0.1 is installed. Start canonfig ui again.");
+    await settle("staging 6.1.1");
+    await settle("Canonfig 6.1.1 is installed. Start canonfig ui again.");
     assert.equal(container.querySelector('[role="status"] .font-mono')?.textContent, "canonfig ui");
     assert.ok(!container.querySelector('[role="status"]')?.textContent?.includes("`"));
     assert.equal(operationReads, 2);
@@ -250,7 +250,7 @@ it("self-update renders persisted progress and stops requests after installation
     await act(async () => { navigate("/source/settings/version"); });
     await act(async () => { await delay(550); });
     assert.deepEqual(requests, completedRequests, "completion must unmount resource reads and stop operation polling");
-    assert.ok(container.textContent?.includes("Canonfig 6.0.1 is installed."));
+    assert.ok(container.textContent?.includes("Canonfig 6.1.1 is installed."));
     assert.equal(container.querySelectorAll("button").length, 1, "only the copy command control remains");
   } finally {
     await act(async () => { root.unmount(); });

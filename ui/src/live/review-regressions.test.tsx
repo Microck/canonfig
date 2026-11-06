@@ -83,7 +83,7 @@ async function fixture(path: string, responses: Record<string, unknown>, handler
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
-  const session = GuiSession.make({ role: path.startsWith("/follower") ? "follower" : "source", machineName: "Review fixture", folderPath: "/tmp/review-fixture", version: "6.0.0" });
+  const session = GuiSession.make({ role: path.startsWith("/follower") ? "follower" : "source", machineName: "Review fixture", folderPath: "/tmp/review-fixture", version: "6.1.0" });
   await act(async () => { root.render(<Fixture backend={backend} session={session} />); });
   return {
     container, requests, mutations,
