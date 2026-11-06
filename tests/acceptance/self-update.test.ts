@@ -80,6 +80,19 @@ describe("self-update policy and package activation",()=>{
   const gate=acquireGate(updateDirectory(f.root));expect(()=>commandLease(f.root)).toThrow("busy");gate();
   expect((await update(f.root,true,f.runner,undefined,f.home)).status).toBe("updated");
  });
+ it.each([
+  ["live PID regardless of age", JSON.stringify({pid:process.pid,started:"1970-01-01T00:00:00.000Z"})],
+  ["malformed JSON", "{"],
+  ["invalid PID", JSON.stringify({pid:-1})],
+  ["mismatched PID", JSON.stringify({pid:process.pid+1})],
+ ])("retains a reader with %s",async(_description,record)=>{
+  const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
+  const readers=join(updateDirectory(f.root),"readers");mkdirSync(readers,{recursive:true});
+  const path=join(readers,`${process.pid}-retained.json`);writeFileSync(path,record);
+  expect((await update(f.root,true,f.runner,undefined,f.home)).status).toBe("deferred");
+  expect(()=>disable(f.root)).toThrow("Cannot disable");
+  expect(readFileSync(path,"utf8")).toBe(record);
+ });
  it("registers its own lease after enabling and removes it when disabling",async()=>{
   const f=fixture();const lease=managedCommandLease(f.root);const readers=join(updateDirectory(f.root),"readers");
   try {

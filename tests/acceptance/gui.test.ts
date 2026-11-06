@@ -69,14 +69,21 @@ const start = async (env: NodeJS.ProcessEnv) => {
   } finally { clearTimeout(deadline); }
 };
 
-const stop = async (child: ChildProcess) => {
+const stop = async (child: ChildProcess, signal: "SIGINT" | "SIGTERM" = "SIGTERM") => {
   if (child.exitCode !== null || child.signalCode !== null) return;
   const exited = once(child, "exit");
-  child.kill("SIGTERM");
-  const [code, signal] = await exited;
+  child.kill(signal);
+  const [code, receivedSignal] = await exited;
   children.delete(child);
-  expect(signal).toBeNull();
-  expect(code).toBe(143);
+  // Node's Windows kill API forcibly terminates; it cannot send console Ctrl-C.
+  // As in the Source-process tests, assert termination and port reuse instead.
+  if (process.platform === "win32") {
+    expect(receivedSignal).toBe(signal);
+    expect(code).toBeNull();
+  } else {
+    expect(receivedSignal).toBeNull();
+    expect(code).toBe(signal === "SIGINT" ? 130 : 143);
+  }
 };
 
 afterEach(async () => {
@@ -93,7 +100,7 @@ describe("canonfig ui command", () => {
     }
   });
 
-  it("authenticates once, guards every resource and frees the port on SIGTERM", async () => {
+  it.each(["SIGINT", "SIGTERM"] as const)("authenticates once, guards every resource and frees the port on %s", async (signal) => {
     const machine = fixture();
     const server = await start(machine.env);
     expect((await fetch(`${server.origin}/api/session`)).status).toBe(401);
@@ -131,7 +138,7 @@ describe("canonfig ui command", () => {
         method, headers: { ...headers, Origin: "https://example.invalid", "x-canonfig-request": "browser", "Content-Type": "application/json" }, body: "{}",
       })).status).toBe(403);
     }
-    await stop(server.child);
+    await stop(server.child, signal);
     const listener = createServer();
     listener.listen(Number(new URL(server.origin).port), "127.0.0.1");
     await once(listener, "listening");

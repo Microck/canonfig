@@ -28,11 +28,18 @@ async function fixture() {
   return machine;
 }
 
-async function stop(child: ChildProcess) {
+async function stop(child: ChildProcess, signal: "SIGINT" | "SIGTERM" | "SIGKILL" = "SIGTERM") {
   if (child.exitCode === null && child.signalCode === null) {
     const exited = once(child, "exit");
-    child.kill("SIGTERM");
-    await exited;
+    child.kill(signal);
+    const [code, receivedSignal] = await exited;
+    if (process.platform === "win32" || signal === "SIGKILL") {
+      expect(receivedSignal).toBe(signal);
+      expect(code).toBeNull();
+    } else {
+      expect(receivedSignal).toBeNull();
+      expect(code).toBe(signal === "SIGINT" ? 130 : 143);
+    }
   }
   children.delete(child);
 }
@@ -162,6 +169,11 @@ describe("GUI self-update with a disposable npm installation", () => {
     expect(checked.status).toBe(200);
     expect(Schema.decodeUnknownSync(GuiSelfUpdateCheck)(checked.body)).toMatchObject({ current: previous, candidate, status: "available" });
     expect(machine.version()).toBe(previous);
+    // A forcibly killed GUI cannot release its lease on any platform. Activation
+    // must reclaim that dead reader under its gate, without touching this GUI.
+    const crashed = await start(machine);
+    await stop(crashed.child, "SIGKILL");
+    expect(machine.readers()).toHaveLength(2);
     const id = await apply(server);
     await machine.downloadStarted;
     const running = Schema.decodeUnknownSync(GuiOperation)((await server.api(`/api/operations/${id}`)).body);
@@ -188,7 +200,7 @@ describe("GUI self-update with a disposable npm installation", () => {
     const closed = once(port, "close"); port.close(); await closed;
   }, 120_000);
 
-  it("defers for a second command lease and preserves the CLI disable refusal", async () => {
+  it.each(["SIGINT", "SIGKILL"] as const)("defers for a second command lease and recovers after %s without weakening the CLI disable refusal", async (signal) => {
     const machine = await fixture();
     const server = await start(machine);
     await enable(server, machine.npmCli);
@@ -211,7 +223,16 @@ describe("GUI self-update with a disposable npm installation", () => {
     expect(Schema.decodeUnknownSync(GuiError)(refused.body)).toEqual({ category: "human-action-required", exitCode: 3, message: cliFailure.message });
     expect(machine.readers()).toContain(otherLease);
     expect((await server.api("/api/self-update")).status).toBe(200);
-    await stop(second.child);
+    await stop(second.child, signal);
+    // Windows child.kill is not console Ctrl-C and cannot run finalizers. The
+    // next ordinary command must reclaim its dead reader, never a live one.
+    expect(machine.readers()).toHaveLength(process.platform === "win32" || signal === "SIGKILL" ? 2 : 1);
+    const nextCommand = machine.invoke(["--version"]);
+    expect(nextCommand.status, nextCommand.stderr).toBe(0);
+    const port = createPortListener();
+    port.listen(Number(new URL(second.origin).port), "127.0.0.1");
+    await once(port, "listening");
+    const closed = once(port, "close"); port.close(); await closed;
     expect(machine.readers()).toHaveLength(1);
     const disabled = await server.api("/api/self-update/disable", {});
     expect(disabled.status).toBe(200);

@@ -61,6 +61,13 @@ const exitBeforeRuntime = (signal: NodeJS.Signals): void => {
 };
 process.on("SIGINT", exitBeforeRuntime);
 process.on("SIGTERM", exitBeforeRuntime);
+if (process.platform === "win32") {
+  // NodeRuntime handles SIGINT/SIGTERM only. Forward console events in-process:
+  // process.kill would force termination on Windows without running finalizers.
+  process.on("SIGBREAK", () => process.emit("SIGINT", "SIGINT"));
+  // Windows may still force termination about ten seconds after console close.
+  process.on("SIGHUP", () => process.emit("SIGTERM", "SIGTERM"));
+}
 
 const arguments_ = process.argv.slice(2);
 const selfUpdateCommand = arguments_.filter((arg) => arg !== "--json")[0] === "self-update";
@@ -119,12 +126,13 @@ const runMain = async (
   ]);
   const teardown: EffectModule.Runtime.Teardown = (exit, onExit) =>
     effect.Runtime.defaultTeardown(exit, (code) => onExit(observedSignalExitCode() ?? code));
-  process.removeListener("SIGINT", exitBeforeRuntime);
-  process.removeListener("SIGTERM", exitBeforeRuntime);
+  // Keep startup handlers until every asynchronous import has completed.
   const [{ runtimeFailureResult }, { renderCliResult }] = await Promise.all([
     import("./failure-output.ts"),
     import("../cli/render.ts"),
   ]);
+  process.removeListener("SIGINT", exitBeforeRuntime);
+  process.removeListener("SIGTERM", exitBeforeRuntime);
   NodeRuntime.runMain(program(effect).pipe(effect.Effect.catchCause((cause) => {
     if (effect.Cause.hasInterruptsOnly(cause)) return effect.Effect.failCause(cause);
     const result = runtimeFailureResult(cause, command, process.env.CANONFIG_DEBUG === "1");

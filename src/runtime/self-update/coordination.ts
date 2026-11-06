@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readdirSync, rmSync, writeFileSync, lstatSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, lstatSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export const updateDirectory = (root: string) => join(dirname(root), ".canonfig-self-update");
@@ -23,7 +23,7 @@ export function acquireGate(directory: string): () => void {
   catch { throw new Error(`Self-update coordination is busy or interrupted: ${gate}. Never clear it while a worker is active.`); }
   return () => rmSync(gate, { recursive: true });
 }
-/** Only installations explicitly opted in pay for a lease. Never reclaim a stale lease automatically. */
+/** Only installations explicitly opted in pay for a lease. */
 export function commandLease(root: string): (() => void) | undefined {
   const directory = updateDirectory(root);
   const settings = join(directory, "settings.json");
@@ -37,16 +37,49 @@ export function commandLease(root: string): (() => void) | undefined {
     if (entry(join(directory, "pending.json"))) throw new Error("Interrupted self-update: restore the retained package before running Canonfig commands.");
     const readers = join(directory, "readers");
     mkdirSync(readers, { recursive: true, mode: 0o700 });
+    readersActive(directory);
     const path = join(readers, `${process.pid}-${randomUUID()}.json`);
     writeFileSync(path, JSON.stringify({ pid: process.pid, started: new Date().toISOString() }), { flag: "wx", mode: 0o600 });
     return () => rmSync(path, { force: true });
   } finally { release(); }
 }
+
+const readerPid = (path: string, name: string): number | undefined => {
+  regular(path);
+  let record: unknown;
+  try { record = JSON.parse(readFileSync(path, "utf8")); }
+  catch (error) {
+    if (error instanceof SyntaxError || (error instanceof Error && "code" in error && error.code === "ENOENT")) return;
+    throw error;
+  }
+  if (!(record instanceof Object) || !("pid" in record) || !Number.isSafeInteger(record.pid)) return;
+  const pid = Number(record.pid);
+  if (pid <= 0 || !name.startsWith(`${pid}-`)) return;
+  return pid;
+};
+
+/** Called under the gate: retain live, reused and unknown PIDs; reclaim only ESRCH. */
 export function readersActive(directory: string): boolean {
   const readers = join(directory, "readers");
-  if (!entry(readers)) return false;
-  if (!lstatSync(readers).isDirectory() || lstatSync(readers).isSymbolicLink()) throw new Error("Invalid self-update readers directory");
-  return readdirSync(readers).length > 0;
+  const info = entry(readers);
+  if (!info) return false;
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Invalid self-update readers directory");
+  let active = false;
+  for (const name of readdirSync(readers)) {
+    const path = join(readers, name);
+    const pid = readerPid(path, name);
+    if (pid !== undefined) {
+      try { process.kill(pid, 0); }
+      catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ESRCH") {
+          rmSync(path, { force: true });
+          continue;
+        }
+      }
+    }
+    active = true;
+  }
+  return active;
 }
 
 export interface ManagedCommandLease {

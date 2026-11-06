@@ -32,8 +32,10 @@ canonfig self-update status
 processes and schedules were stopped. Enable does not install a background
 service. After enabling, ordinary Canonfig commands register leases, including
 Sources and foreground watchers. Restart the services you stopped under this
-opted-in installation so they participate. Failed processes can leave leases;
-these are never reclaimed automatically based on a guessed PID age.
+opted-in installation so they participate. Failed processes can leave leases.
+Under the coordination gate, the next command or updater removes a reader only
+when the OS confirms its PID no longer exists. Live or reused PIDs, inaccessible
+processes and malformed leases remain blockers; elapsed time never proves staleness.
 
 ## Check, apply and automate
 
@@ -130,9 +132,9 @@ gate/readers with all writers stopped. Then verify the CLI version before
 resuming. Ordinary CLI commands deliberately refuse to run while a pending
 transaction remains. If unsure, keep the installation stopped and seek a reviewed
 manual restore. Do not run npm over an unfinished transaction.
-No automatic rollback or stale-lock takeover is
-claimed. POSIX directory entries are flushed; Windows directory-entry power-loss
-durability is not claimed.
+No automatic rollback or stale-gate takeover is claimed. Only reader leases with
+confirmed-absent PIDs are reclaimed automatically. POSIX directory entries are
+flushed; Windows directory-entry power-loss durability is not claimed.
 
 Disable only while idle, retaining backups and receipts:
 

@@ -295,6 +295,26 @@ describe("command logging", () => {
         }
       }),
     );
+    it(`leaves ${signal} cleanup to the runtime listener`, () => {
+      // Emit the same Node event a console delivers. child.kill cannot deliver
+      // a catchable event on Windows, and this fixture has no product test hook.
+      const source = [
+        `import { createCommandLog, registerCommandLogSignalHandlers, observedSignalExitCode } from ${JSON.stringify(commandLogModule)};`,
+        'const log = createCommandLog(["ui"], { environment: { CANONFIG_LOG: "off" } });',
+        "registerCommandLogSignalHandlers(log);",
+        `process.on(${JSON.stringify(signal)}, () => {`,
+        '  setImmediate(() => { console.log("cleanup completed"); process.exit(observedSignalExitCode()); });',
+        "});",
+        `process.emit(${JSON.stringify(signal)}, ${JSON.stringify(signal)});`,
+      ].join("\n");
+      const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", source], {
+        cwd: projectRoot, env: process.env, encoding: "utf8", timeout: 10_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.signal).toBeNull();
+      expect(result.status, result.stderr).toBe(exitCode);
+      expect(result.stdout.trim()).toBe("cleanup completed");
+    });
   }
 
   it.runIf(process.platform !== "win32")(
