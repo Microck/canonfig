@@ -57,6 +57,11 @@ export const profileRoutes = Effect.gen(function*() {
     })),
     Effect.map(asJson),
   );
+  const skillOperation = <A>(run: (location: { root: string; config: string }) => Promise<A>) => target.pipe(
+    // Git and filesystem promises have no cancellation contract. Keep the server
+    // scope and command lease until they settle, including during shutdown.
+    Effect.andThen(operations.start(skillCall(run).pipe(Effect.uninterruptible), () => Effect.succeed(null))),
+  );
   const routes: GuiRoute[] = [
     queryRoute(profileEndpoints.items, snapshot),
     mutationRoute("PUT", profileEndpoints.items, GuiProfileWrite, (input) => target.pipe(Effect.flatMap((location) => writeAuthoringItems(location, changesFrom(input.changes)).pipe(Effect.provideService(MachineState, machine), Effect.mapError(commandFailure))), Effect.as({ saved: true })), 200, { maximumBodyBytes: maximumAuthoringBodyBytes }),
@@ -86,13 +91,13 @@ export const profileRoutes = Effect.gen(function*() {
     queryRoute(profileEndpoints.revisions, () => target.pipe(Effect.andThen(source.listProfiles()), Effect.map(asJson))),
     mutationRoute("POST", profileEndpoints.revision, GuiRevisionSelection, (input) => target.pipe(Effect.andThen(Schema.decodeUnknownEffect(ProfileRevisionId)(input.revision).pipe(Effect.mapError((error) => new CliCommandFailure({ category: "usage-or-configuration", message: error.message })))), Effect.flatMap(source.inspectProfile), Effect.map(asJson))),
     queryRoute(profileEndpoints.skills, () => skillCall(listSkills)),
-    mutationRoute("POST", profileEndpoints.track, GuiSkillTrack, (input) => skillCall((location) => trackSkill(location, { ...input, path: `skills/${input.name}` }))),
-    mutationRoute("POST", profileEndpoints.check, GuiSkillSelection, (input) => skillCall(async (location) => {
+    mutationRoute("POST", profileEndpoints.track, GuiSkillTrack, (input) => skillOperation((location) => trackSkill(location, { ...input, path: `skills/${input.name}` })), 202),
+    mutationRoute("POST", profileEndpoints.check, GuiSkillSelection, (input) => skillOperation(async (location) => {
       const checks = await checkSkills(location, [input.name]);
       if (checks.some((check) => check.status === "local-edits")) throw new CanonfigError("SKILL_LOCAL_EDITED", `Local edits detected in ${input.name}. Reconcile the local files before updating.`);
       return checks;
-    })),
-    mutationRoute("POST", profileEndpoints.update, GuiSkillSelection, (input) => skillCall((location) => updateSkills(location, [input.name]))),
+    }), 202),
+    mutationRoute("POST", profileEndpoints.update, GuiSkillSelection, (input) => skillOperation((location) => updateSkills(location, [input.name])), 202),
   ];
   return routes;
 });
