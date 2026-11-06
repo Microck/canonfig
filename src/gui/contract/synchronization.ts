@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import { TARGET_IDS } from "../../projection/model.ts";
 import { SyncScheduleSchema } from "../../schedule/schedule-manager.types.ts";
+import { GuiBase64 } from "./profile.ts";
 
 export const GuiSynchronizationResult = Schema.Record(Schema.String, Schema.Json);
 export interface GuiSynchronizationResult extends Schema.Schema.Type<typeof GuiSynchronizationResult> {}
@@ -49,7 +50,7 @@ export const GuiLocalChange = Schema.Struct({
   expectedDigest: Schema.NullOr(Schema.String),
   files: Schema.Array(Schema.Struct({
     path: Schema.NonEmptyString,
-    base64: Schema.String.check(Schema.isPattern(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u)),
+    base64: GuiBase64,
     executable: Schema.Boolean,
   })),
 });

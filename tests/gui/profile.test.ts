@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { Schema } from "effect";
-import { GuiProfileSnapshot, GuiRevisions, GuiSkills } from "../../src/gui/contract/profile.ts";
+import { GuiProfileFile, GuiProfileSnapshot, GuiRevisions, GuiSkills } from "../../src/gui/contract/profile.ts";
+import { GuiLocalChange } from "../../src/gui/contract/synchronization.ts";
 import { GuiOperation } from "../../src/gui/contract/operations.ts";
 
 const entry = resolve("src/runtime/main.ts");
@@ -42,6 +43,25 @@ async function server(env: NodeJS.ProcessEnv) {
 afterEach(async () => {
   for (const child of children.splice(0)) if (child.exitCode === null && child.signalCode === null) { const exited = once(child, "exit"); child.kill("SIGTERM"); await exited; }
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
+});
+
+describe("authoring base64 contracts", () => {
+  it.each([4, 64])("accepts a %i MiB file through canonical and local schemas", (size) => {
+    const encoded = Buffer.alloc(size * 1024 * 1024, 0xff).toString("base64");
+    const file = { path: "skills/large/asset.bin", base64: encoded, executable: false };
+    expect(Schema.is(GuiProfileFile)(file)).toBe(true);
+    expect(Schema.is(GuiLocalChange)({ path: "skills/large", expectedDigest: null, files: [file] })).toBe(true);
+  });
+  it.each(["", "Zg==", "Zm8=", "Zm9v", "/+8="])("accepts valid base64 %j", (base64) => {
+    const file = { path: "AGENTS.md", base64, executable: false };
+    expect(Schema.is(GuiProfileFile)(file)).toBe(true);
+    expect(Schema.is(GuiLocalChange)({ path: file.path, expectedDigest: null, files: [file] })).toBe(true);
+  });
+  it.each(["A", "AAA", "A===", "====", "=AAA", "AA=A", "AA==AAAA", "AA-_", "AA A", "AAAA\n"])("refuses malformed base64 %j", (base64) => {
+    const file = { path: "AGENTS.md", base64, executable: false };
+    expect(Schema.is(GuiProfileFile)(file)).toBe(false);
+    expect(Schema.is(GuiLocalChange)({ path: file.path, expectedDigest: null, files: [file] })).toBe(false);
+  });
 });
 
 describe("profile GUI endpoints", () => {
