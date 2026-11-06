@@ -316,6 +316,8 @@ export type OverlayStatus =
 
 export interface LoadedFolder {
   readonly model: CanonicalModel;
+  /** Full authored resources, before this machine's exclusions, for authoring validation. */
+  readonly authoredResources: CanonicalModel["resources"];
   readonly local: LocalPolicy;
   /** Digest of the model, the identity a local run records as its origin. */
   readonly digest: ContentDigest;
@@ -1173,5 +1175,5 @@ const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => 
     claims,
     backups: localConfig.backups ?? true,
   };
-  return { model, local, digest: modelDigest(model, local), ignoredLocal, overlays: overlayStatus };
+  return { model, authoredResources: authored.resources, local, digest: modelDigest(model, local), ignoredLocal, overlays: overlayStatus };
 };

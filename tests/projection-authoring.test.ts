@@ -131,6 +131,25 @@ describe("shared folder authoring", () => {
     }).pipe(Effect.provide(layer)));
     expect(readdirSync(target.folder)).toEqual(["canonfig.jsonc"]);
   });
+  it.each(["file-to-directory", "directory-to-file"])("changes skill topology %s after digest checks", async (direction) => {
+    const { target, layer } = fixture();
+    const skill = file("skills/deploy/SKILL.md", "---\nname: deploy\ndescription: Deploy\n---\nRun checks.\n");
+    const before = file(direction === "file-to-directory" ? "skills/deploy/assets" : "skills/deploy/assets/nested/old.txt", "Old");
+    const after = file(direction === "file-to-directory" ? "skills/deploy/assets/nested/new.txt" : "skills/deploy/assets", "New");
+    await Effect.runPromise(Effect.gen(function*() {
+      yield* writeAuthoringItems(target, [{ path: "skills/deploy", expectedDigest: null, files: [skill, before] }]);
+      const original = yield* readAuthoringItem(target, "skills/deploy");
+      writeFileSync(join(target.folder, before.path), "Hand edit");
+      const stale = yield* writeAuthoringItems(target, [{ path: original.path, expectedDigest: original.digest, files: [skill, after] }]).pipe(Effect.flip);
+      expect(stale._tag).toBe("AuthoringConflict");
+      expect(readFileSync(join(target.folder, before.path), "utf8")).toBe("Hand edit");
+      const current = yield* readAuthoringItem(target, "skills/deploy");
+      yield* writeAuthoringItems(target, [{ path: current.path, expectedDigest: current.digest, files: [skill, after] }]);
+      expect(readFileSync(join(target.folder, after.path), "utf8")).toBe("New");
+      expect((yield* readAuthoringItem(target, current.path)).files.map(({ path }) => path).sort()).toEqual([skill.path, after.path].sort());
+    }).pipe(Effect.provide(layer)));
+  });
+
 
   it("validates resource declarations together with their file content", async () => {
     const { target, layer } = fixture();
@@ -163,6 +182,22 @@ describe("shared folder authoring", () => {
     expect(readFileSync(join(target.folder, "canonfig.jsonc"), "utf8")).toBe(before);
     expect(readdirSync(target.folder)).toEqual(["canonfig.jsonc"]);
   });
+  it("validates every authored resource even when locally excluded", async () => {
+    const { target, layer } = fixture();
+    mkdirSync(join(target.folder, "local"));
+    writeFileSync(join(target.folder, "local/local.jsonc"), '{"excludeResources":["private"]}');
+    const before = readFileSync(join(target.folder, "canonfig.jsonc"), "utf8");
+    await Effect.runPromise(Effect.gen(function*() {
+      const config = yield* readAuthoringItem(target, "canonfig.jsonc");
+      const result = yield* editAuthoringConfig(target, config.digest, [
+        { path: ["resources", "private"], value: { kind: "file", target: "~/.codex/auth.json", source: "files/private.json" } },
+      ], [{ path: "files/private.json", expectedDigest: null, files: [file("files/private.json", "{}")] }]).pipe(Effect.result);
+      expect(result._tag).toBe("Failure");
+    }).pipe(Effect.provide(layer)));
+    expect(readFileSync(join(target.folder, "canonfig.jsonc"), "utf8")).toBe(before);
+    expect(readdirSync(target.folder).sort()).toEqual(["canonfig.jsonc", "local"]);
+  });
+
 
   it("uses the same writer for local items and refuses categories outside local.allow", async () => {
     const fixtureValue = fixture();
@@ -178,6 +213,26 @@ describe("shared folder authoring", () => {
       expect(readFileSync(join(target.folder, "local/AGENTS.md"), "utf8")).toBe("My instructions\n");
     }).pipe(Effect.provide(fixtureValue.layer)));
   });
+  it.each(["mcp", "settings"])("retains unchanged disallowed local %s during permitted saves", async (category) => {
+    const { target: canonical, layer } = fixture('{"version":1,"harnesses":[],"local":{"allow":["instructions"]}}');
+    const target = { ...canonical, scope: "local" as const };
+    const entries = category === "mcp" ? { docs: { transport: "stdio", command: "docs" } } : { codex: { model: "mine" } };
+    mkdirSync(join(target.folder, "local"));
+    writeFileSync(join(target.folder, "local/local.jsonc"), JSON.stringify({ [category]: entries }));
+    await Effect.runPromise(Effect.gen(function*() {
+      yield* writeAuthoringItems(target, [{ path: "AGENTS.md", expectedDigest: null, files: [file("AGENTS.md", "Allowed")] }]);
+      const config = yield* readAuthoringItem(target, "local.jsonc");
+      yield* editAuthoringConfig(target, config.digest, [{ path: ["backups"], value: false }]);
+      const updated = yield* readAuthoringItem(target, "local.jsonc");
+      const refused = yield* editAuthoringConfig(target, updated.digest, [
+        { path: [category, category === "mcp" ? "docs" : "codex", category === "mcp" ? "command" : "model"], value: "changed" },
+      ]).pipe(Effect.flip);
+      expect(refused._tag).toBe("AuthoringInvalid");
+      yield* editAuthoringConfig(target, updated.digest, [{ path: [category], value: undefined }]);
+    }).pipe(Effect.provide(layer)));
+    expect(readFileSync(join(target.folder, "local/AGENTS.md"), "utf8")).toBe("Allowed");
+  });
+
 
   it("refuses traversal and symlinks without reading or changing the target", async () => {
     const { target, layer, home } = fixture();

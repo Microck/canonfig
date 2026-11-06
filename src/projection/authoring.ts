@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { Effect, Schema } from "effect";
 import { applyEdits, modify } from "jsonc-parser";
 import { TaggedError } from "../domain/tagged-error.ts";
@@ -145,9 +146,12 @@ const prepareChanges = (target: AuthoringTarget, files: Map<string, FolderFile>,
     changed.add(change.path);
     const previous = itemFrom(change.path, scoped);
     if (previous.digest !== change.expectedDigest) throw conflict(change.path);
-    if (target.scope === "local" && change.path !== "local.jsonc" && change.files.length > 0) {
+    if (target.scope === "local" && change.path !== "local.jsonc") {
       const category = change.path === "AGENTS.md" ? "instructions" : change.path.split("/")[0];
-      if (!LOCAL_CATEGORIES.some((known) => known === category && allow.includes(known))) {
+      if (!LOCAL_CATEGORIES.some((known) => known === category && allow.includes(known)) && change.files.some((file) => {
+        const prior = scoped.get(file.path);
+        return prior === undefined || prior.executable !== file.executable || digest(prior.content) !== digest(file.content);
+      })) {
         throw invalid(change.path, `The Source does not allow local ${category}. Change local.allow on the Source first.`);
       }
     }
@@ -165,10 +169,15 @@ const prepareChanges = (target: AuthoringTarget, files: Map<string, FolderFile>,
   if (target.scope === "local") {
     const local = candidate.get("local/local.jsonc");
     if (local !== undefined) {
-      // The full loader validates keys and collisions below. Refuse disallowed additions instead of silently ignoring them.
-      const { mcp, settings } = decodeLocalConfig("local/local.jsonc", new TextDecoder().decode(local.content));
-      for (const [category, entries] of [["mcp", mcp], ["settings", settings]] as const) {
-        if (!allow.includes(category) && Object.keys(entries ?? {}).length > 0) throw invalid("local/local.jsonc", `The Source does not allow local ${category}.`);
+      // Retained entries may be ignored by a narrowed Source policy; only new or changed entries need permission.
+      const next = decodeLocalConfig("local/local.jsonc", new TextDecoder().decode(local.content));
+      const previousBytes = files.get("local/local.jsonc")?.content;
+      const previous = previousBytes === undefined ? {} : decodeLocalConfig("local/local.jsonc", new TextDecoder().decode(previousBytes));
+      for (const category of ["mcp", "settings"] as const) {
+        if (!allow.includes(category) && Object.entries(next[category] ?? {}).some(([name, entry]) =>
+          !isDeepStrictEqual(entry, previous[category]?.[name]))) {
+          throw invalid("local/local.jsonc", `The Source does not allow local ${category}.`);
+        }
       }
     }
   }
@@ -189,10 +198,10 @@ export const writeAuthoringItems = Effect.fn("Authoring.writeItems")(function*(t
     catch: (error) => error instanceof AuthoringConflict || error instanceof AuthoringInvalid ? error : invalid(target.folder, String(error)),
   });
   const loaded = yield* Effect.tryPromise({ try: () => loadCanonicalFiles(root, candidate), catch: (error) => invalid(target.folder, String(error)) });
-  if (target.scope === "canonical" && loaded.model.resources.length > 0) {
-    // Reuse projection's adapter-derived exclusions before publishing any candidate bytes.
+  if (target.scope === "canonical" && loaded.authoredResources.length > 0) {
+    // Local exclusions affect projection, never the validity of authored resources.
     const context = yield* rootContext((name) => process.env[name]);
-    yield* projectResources(loaded.model, context, join(root, "canonfig.jsonc"));
+    yield* projectResources({ ...loaded.model, resources: loaded.authoredResources }, context, join(root, "canonfig.jsonc"));
   }
   // Re-read after validation: hand edits and changed policy during validation must not be overwritten.
   const current = yield* readFiles(root);
@@ -201,6 +210,19 @@ export const writeAuthoringItems = Effect.fn("Authoring.writeItems")(function*(t
     return now === undefined || file.executable !== now.executable || digest(file.content) !== digest(now.content);
   })) return yield* Effect.fail(conflict(target.folder));
   const anchor = yield* machine.normalizePath({ path: root });
+  const directories = new Set<string>();
+  for (const name of files.keys()) {
+    if (candidate.has(name)) continue;
+    const path = yield* machine.normalizePath({ path: join(root, name) });
+    yield* machine.mutateWithinRoot({ root: anchor, path, mutation: { kind: "remove" } });
+    let parent = dirname(name);
+    while (parent !== "." && parent !== "local") { directories.add(parent); parent = dirname(parent); }
+  }
+  for (const name of [...directories].sort((a, b) => b.length - a.length)) {
+    if ([...candidate.keys()].some((path) => path.startsWith(`${name}/`))) continue;
+    const path = yield* machine.normalizePath({ path: join(root, name) });
+    yield* machine.removeEmptyDirectory({ path });
+  }
   for (const [name, file] of candidate) {
     const prior = files.get(name);
     if (prior !== undefined && prior.executable === file.executable && digest(prior.content) === digest(file.content)) continue;
@@ -219,19 +241,6 @@ export const writeAuthoringItems = Effect.fn("Authoring.writeItems")(function*(t
       if (exists === undefined) yield* machine.ensureDirectory({ path: parent, mode: 0o700 });
     }
     yield* machine.atomicWrite({ path, anchor, content: file.content, mode: file.executable ? 0o700 : 0o600, noReplace: prior === undefined });
-  }
-  const directories = new Set<string>();
-  for (const name of files.keys()) {
-    if (candidate.has(name)) continue;
-    const path = yield* machine.normalizePath({ path: join(root, name) });
-    yield* machine.mutateWithinRoot({ root: anchor, path, mutation: { kind: "remove" } });
-    let parent = dirname(name);
-    while (parent !== "." && parent !== "local") { directories.add(parent); parent = dirname(parent); }
-  }
-  for (const name of [...directories].sort((a, b) => b.length - a.length)) {
-    if ([...candidate.keys()].some((path) => path.startsWith(`${name}/`))) continue;
-    const path = yield* machine.normalizePath({ path: join(root, name) });
-    yield* machine.removeEmptyDirectory({ path });
   }
   const scoped = scopedFiles(target, candidate);
   return changes.map(({ path }) => itemFrom(path, scoped));
