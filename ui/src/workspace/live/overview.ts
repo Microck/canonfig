@@ -6,9 +6,9 @@ import type { OverviewSlice } from "../workspace-types";
 import { notImplemented, useLiveResource } from "./resource";
 
 /** Overview has no pending adapters. Status is local evidence, never fleet telemetry. */
-export function useLiveOverview(backend: WorkspaceBackend, session: GuiSession, route: WorkspaceRoute, revision: number, reload: () => void): OverviewSlice {
+export function useLiveOverview(backend: WorkspaceBackend, session: GuiSession, route: WorkspaceRoute, reload: () => void): OverviewSlice {
   const navigation = useWorkspaceNavigation(route, navigate);
-  const status = useLiveResource(backend, "/api/status", GuiStatus, true, revision);
+  const status = useLiveResource(backend, "/api/status", GuiStatus, true);
   const roleChanged = status.data !== null && status.data.machineRole.role !== session.role;
   const error = roleChanged ? new GuiRequestError({ category: "conflict-or-drift", exitCode: 4, message: "This machine's role changed while loading. Reload to read its current role and status." }) : status.error;
   return {

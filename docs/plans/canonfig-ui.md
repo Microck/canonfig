@@ -195,7 +195,7 @@ The integration acceptance below completes recovery, abandonment, restore, secre
 | Screen/action | CLI/service mapping | Proposed endpoint | Owner |
 | --- | --- | --- | --- |
 | Source service status, Install, Remove | **Live.** `source service status/install/remove` through SourceCommands, with Source-role enforcement and native status evidence. Restart is **hidden** because no CLI counterpart exists. | `GET`/`POST`/`DELETE /api/source-service` | E |
-| Agent policy mode, built-in/custom harness, model, executable/args, writable paths, evidence limit, Save | **Live.** FollowerCommands get/setAgentPolicy and get/setAgentHarness. Save reports policy success separately if harness save fails. The Source shows the CLI's harness refusal, not a fabricated harness configuration. | `GET`/`PUT /api/agent/policy`, `/api/agent/harness` | E |
+| Agent policy mode, built-in/custom harness, model, executable/args, writable paths, evidence limit, Save | **Live.** Reads distinguish missing configuration from failures. The unchanged CLI setters create policy or enrolled-Follower harness configuration. Save reports policy success separately if harness save fails; Source harness writes retain the CLI refusal. | `GET`/`PUT /api/agent/policy`, `/api/agent/harness` | E |
 | Installers list and Check | **Live.** The same installer binding list, Windows suggestions and bounded check as `installer list/check`. Bind/remove remain terminal operations, not extra GUI buttons. | `GET /api/installers`; `POST /api/installers/:method/check` | E |
 | Machine setup journal, Approve plan, Apply | **Live:** E uses C's integrated handlers. Explicit human approval and the displayed plan digest precede approve/apply. Apply polls its real operation journal. Mark linger done is **hidden** because a checkbox cannot verify readiness. | `GET /api/setup`; `POST /api/setup/approve`, `/apply` | E frontend, C backend |
 | Health check Run checks, result detail, fix command copy | **Live.** `doctor --no-input` through FollowerCommands. Failed checks retain the report and CLI category/exit code; copying evidence or a recovery command does not execute it. | `POST /api/doctor` | E |
@@ -212,7 +212,56 @@ Area E now uses the shared workspace settings screens through the administration
 4. **Decided:** unenrollment matches the CLI's actual cleanup boundaries. Setup uses plan, explicit human approval and apply through its existing journal. A checkbox cannot certify credentials, host keys, linger or convergence.
 5. **Decided:** self-update status/check may become live now. Enable, disable and apply from the GUI remain phase 3, tracked by issue #260, with no command-lease exemption.
 
+### Fresh-machine reads and page loading
+
+Missing setup is a successful read, not a CLI failure presented as HTTP 400:
+
+| Read | Missing state | Configured state |
+| --- | --- | --- |
+| `GET /api/agent/policy` | `{ configured: false, default: "deterministic-only" }` | `{ configured: true, value: policy }` |
+| `GET /api/agent/harness` | `{ configured: false }` | `{ configured: true, value: harness }` |
+| `GET /api/local/overlays` | `{ configured: false, overlays: [], pending: localDeclarations }` before the Follower has a canonical mirror | Existing resolved overlay report |
+
+A freshly enrolled Follower already has a stored deterministic-only policy. Its policy read correctly reports `configured: true`. The Agent policy form offers CLI defaults and says "Not configured yet" when there is no saved policy. Saving the untouched deterministic-only default creates the policy without attempting a Source-forbidden harness write. Missing harness defaults use codex, the CLI's 1 MiB evidence limit, and empty permission lists. Neither default is presented as saved evidence. Source harness bounds remain read-only because the CLI configures harnesses only on enrolled Followers; changing a Source policy does not attempt that forbidden write.
+
+The GET audit retained existing successful empty states for schedule, tunnel, Source service, installers, secrets, enrollment inventory, backups, setup, profile items, revisions and skills. Wrong-role requests, malformed records and filesystem/native-service failures remain errors. Policy presence uses the runtime's actual policy path and recognizes only `ENOENT` as absence.
+
+`livePageResources` lists each route's reads. Session and status are shared; Overview reads nothing else. Source-only and Follower-only pages never fetch for the wrong role. The session cache deduplicates shared reads, preserves loaded data across navigation, and exposes pending/error state to the existing skeletons. Reload invalidates the current page's resources; mutations invalidate affected cached evidence before it is next used. Settings reads and Setup journal reads also survive page revisits. Backend data stays in memory, never localStorage.
+
+### Fresh-machine verification
+
+Playwright ran from `/tmp/pw` against a locally rebuilt package, an init-only Source and a joined, unsynchronized Follower, each with isolated HOME/XDG state. It visited all 30 allowed routes, including profile and machine tabs, waited for no `[aria-busy=true]` before screenshots, revisited every route and checked cold entries. All 95 recorded page checks passed with zero console errors and zero HTTP 4xx/5xx responses. All 30 cached revisits made zero API requests. Saving the untouched Source policy persisted deterministic-only without a harness write. The run stopped its three disposable server processes.
+
+Final screenshots and machine-readable results are under `/tmp/canonfig-ui/lazy/run-R8OL64/`; the pristine `d6f85ae` baseline is `/tmp/canonfig-ui/lazy/run-sbv4xN/report.json`. Baseline navigation recorded 64 HTTP errors and 64 corresponding console errors, confined to policy, harness and local-overlay reads.
+
+Cold-entry API GET counts include one session and one status request. A dash means the role has no such live page; grouped paths have the same count individually.
+
+| Route suffix | Source before → after | Follower before → after |
+| --- | --- | --- |
+| `overview` | 13 → 2 | 16 → 2 |
+| `profile` | 13 → 5 | - |
+| `profile/harnesses` | 13 → 5 | - |
+| `profile/groups`, `profile/defaults` | 13 → 4 | - |
+| `machines`, `machines/list` | 13 → 5 | 16 → 3 |
+| `revisions` | 13 → 3 | - |
+| `secrets` | 13 → 3 | 16 → 4 |
+| `sync`, `schedule` | - | 16 → 3 |
+| `local-settings` | - | 16 → 5 |
+| `backups` | - | 16 → 4 |
+| `settings/service` | 13 → 3 | - |
+| `settings/agent` | 13 → 4 | 16 → 4 |
+| `settings/installers` | 13 → 3 | 16 → 3 |
+| `settings/setup` | 14 → 3 | 17 → 3 |
+| `settings/health` | 13 → 2 | 16 → 2 |
+| `settings/tunnel` | - | 16 → 3 |
+| `settings/enrollment` | - | 16 → 5 |
+| `settings/version` | 13 → 3 | 16 → 3 |
+
+The disposable Paris Raft run passed UI typechecking, production and demo builds with the production import guard, root TypeScript checking, root lint, the 20 GUI acceptance/route tests, all 66 UI navigation/resource/authoring tests, and release validation. The mounted resource tests count actual HTTP requests, cover both roles, scoped Reload, cached Setup plan application and exactly one post-apply refresh. API tests distinguish absence from malformed/unreadable records and preserve CLI absence errors and runtime policy-path overrides.
+
 ## Remaining follow-ups
+
+Fresh-machine absence handling and route-scoped loading are complete, with the evidence above. They are no longer follow-ups; the remaining boundaries are:
 
 - Setup mutations serialize within the GUI, and journal writes use their IO lock. The plan-digest check and subsequent domain command are not one cross-process transaction. Another CLI process can replace the journal between those steps; a future domain-level operation must own that complete boundary.
 - Native schedule installation requires a running systemd user manager on Linux. Acceptance uses task-owned users and managers inside the disposable Raft guest, never the operator's manager.
@@ -229,7 +278,7 @@ The earlier area evidence below records focused authoring and administration exe
 
 `store.tsx` owns only the React context and browser-local UI state. `SimulatedWorkspaceProvider` in `simulated-store.tsx` retains the demo's fixtures and actions. `LiveWorkspaceProvider` in `live-provider.tsx` composes the hooks in `workspace/live/{overview,profile,machines,follower,administration}.ts`. The providers use the same navigation state, `workspace.tsx` screen tree, `frame.tsx`, sidebar groups, icons, route tabs and mobile navigation. The production bundle guard rejects simulated providers, the demo application and `shared/data.ts`.
 
-Each live resource exposes loading and its decoded CLI error. `LiveWorkspaceProvider` selects the active page's resource state, so the existing skeletons and `ErrorNotice` show pending or failed reads without replacing them with fixture data. `live/resource.ts` owns abortable reads and real operation-ticket polling. Backend state is never persisted in browser storage. Map appearance, dismissed guidance and unfinished UI drafts remain browser-local.
+Each live resource exposes loading and its decoded CLI error. `LiveWorkspaceProvider` selects and loads only the active page's resources, so the existing skeletons and `ErrorNotice` show pending or failed reads without replacing them with fixture data. `live/resource.ts` owns the session cache, abortable reads and real operation-ticket polling. Backend state is never persisted in browser storage. Map appearance, dismissed guidance and unfinished UI drafts remain browser-local.
 
 `capabilities` separates unavailable CLI operations from the demo: invitation cancellation, selective scan writes, service restart, private-review deletion and self-update mutations are false in production. `simulatedTelemetry` is false too. Profile, enrollment and follower write capabilities are true; their completed hooks supply the shared forms.
 
@@ -237,7 +286,7 @@ Production session/token bootstrap remains in `live-app.tsx`. Its session determ
 
 ### Worked example
 
-Overview reads the actual session and CLI status without treating unreachable follower lifecycle stages as Source failures. Source service, Agent policy, Installers, Health check and Canonfig version all use the shared settings screens. Source service exposes real status/install/remove, not restart. Policy save preserves the separate Source harness refusal. Doctor retains failed reports and their CLI diagnostics. Version exposes status/check and terminal instructions for mutations. `ui/src/live/administration.tsx` and the old live Overview have been removed.
+Overview reads the actual session and CLI status without treating unreachable follower lifecycle stages as Source failures. Source service, Agent policy, Installers, Health check and Canonfig version all use the shared settings screens. Source service exposes real status/install/remove, not restart. Source policy saves do not attempt forbidden harness writes; direct Source harness writes still preserve the CLI refusal. Doctor retains failed reports and their CLI diagnostics. Version exposes status/check and terminal instructions for mutations. `ui/src/live/administration.tsx` and the old live Overview have been removed.
 
 ### Completed area ownership
 
@@ -267,7 +316,7 @@ Profile area evidence: GUI acceptance/profile tests passed 8 cases; navigation a
 
 In the disposable Paris Raft workspace, UI typechecking, production/demo builds, packaged CLI compilation, root TypeScript checking and root lint passed. The production module-graph guard passed. The targeted GUI acceptance/routes suite passed all 18 tests across five files, and shared navigation tests passed all 37 cases. UI lint reported 73 warnings and no errors; root and website lint reported no warnings or errors.
 
-Packaged-browser checks used a disposable Source home and named `agent-browser` sessions. They exercised Overview, role-invalid navigation, the mobile navigation sheet, Source service reload, initial Agent policy creation and reload, a real npm installer binding and successful Check, doctor with retained failed-probe evidence, and the real self-update installation refusal. The missing-policy case starts with no radio selected; choosing and saving a policy writes through the API rather than inventing a saved default. Native service install/remove and self-update mutations were not run on the controller.
+Packaged-browser checks used a disposable Source home and named `agent-browser` sessions. They exercised Overview, role-invalid navigation, the mobile navigation sheet, Source service reload, initial Agent policy creation and reload, a real npm installer binding and successful Check, doctor with retained failed-probe evidence, and the real self-update installation refusal. The later fresh-machine read update replaces the original missing-policy error with an explicit unconfigured response and an unsaved CLI-default form. Native service install/remove and self-update mutations were not run on the controller.
 
 All six worked-example pages were captured at 1920×1080 and 390×844 for both providers. The 24 originals are `/tmp/canonfig-ui/unify/admin-{demo,live}-{overview,service,agent,installers,health,version}-{1920,390}.png`. Twelve `admin-compare-<page>-<width>.png` images place the demo on the left and live on the right. The shared spacing, navigation and controls match; only real evidence and supported operations differ. Demo Source, Follower Overview/Sync and New machine setup also loaded without browser errors, with four extra `demo-*.png` captures in that directory.
 

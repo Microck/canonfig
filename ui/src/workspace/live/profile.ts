@@ -16,12 +16,12 @@ function scheduleOf(value: Schema.Json | undefined): Schedule | null {
   return cadence === "daily" ? { cadence: "daily", days: [], time } : { cadence: "days", days: WEEK.filter((day) => cadence?.slice(7).split(",").includes(day)), time };
 }
 
-export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, revision: number, reload: () => void): Omit<ProfileSlice, "profileTab"> {
+export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, reload: () => void, refresh: () => void): Omit<ProfileSlice, "profileTab"> {
   const source = session.role === "source";
-  const items = useLiveResource(backend, profileEndpoints.items, GuiProfileSnapshot, source, revision);
-  const revisions = useLiveResource(backend, profileEndpoints.revisions, GuiRevisions, source, revision);
-  const skills = useLiveResource(backend, profileEndpoints.skills, GuiSkills, source, revision);
-  const secrets = useLiveResource(backend, "/api/secrets", GuiSecrets, session.role !== "unconfigured", revision);
+  const items = useLiveResource(backend, profileEndpoints.items, GuiProfileSnapshot, source);
+  const revisions = useLiveResource(backend, profileEndpoints.revisions, GuiRevisions, source);
+  const skills = useLiveResource(backend, profileEndpoints.skills, GuiSkills, source);
+  const secrets = useLiveResource(backend, "/api/secrets", GuiSecrets, source);
   const operations = useLiveActions(backend, reload);
   const active = useRef<AbortController | null>(null);
   const [actionState, setActionState] = useState({ loading: false, error: null as GuiRequestError | null });
@@ -78,7 +78,7 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
   }
   const profileLive: NonNullable<ProfileSlice["profileLive"]> = {
     snapshot: items.data, busy: actionState.loading, error: actionState.error, validation, archive, skillChecks, skillBusy, scanDone, revisionDetail,
-    reload: () => { setActionState({ loading: false, error: null }); setValidation(null); reload(); }, saveItem, saveConfig,
+    reload: () => { setActionState({ loading: false, error: null }); setValidation(null); refresh(); }, saveItem, saveConfig,
     setSecret: (name, value) => run((signal) => backend.request("/api/secrets", GuiSecretSummary, signal, { method: "PUT", body: { name, value } })),
     removeSecret: (name) => run((signal) => backend.request("/api/secrets", GuiSecretRemoval, signal, { method: "DELETE", body: { name } })),
     validate: () => run(async (signal) => { setValidation(null); setValidation(await backend.request(profileEndpoints.validate, GuiProfileValidation, signal, { method: "POST", body: {} })); }, false),

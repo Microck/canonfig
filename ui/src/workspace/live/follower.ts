@@ -37,16 +37,16 @@ export function localItems(snapshot: GuiLocalItems | null): LocalItem[] {
   return files;
 }
 
-export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, status: GuiStatus | undefined, revision: number, reload: () => void): FollowerSlice {
+export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, status: GuiStatus | undefined, reload: () => void): FollowerSlice {
   const follower = session.role === "follower";
-  const harnesses = useLiveResource(backend, "/api/harnesses", GuiHarnessReport, session.role !== "unconfigured", revision);
-  const local = useLiveResource(backend, "/api/local/items", GuiLocalItems, follower, revision);
-  const schedule = useLiveResource(backend, "/api/schedule", GuiSynchronizationResult, follower, revision);
-  const backups = useLiveResource(backend, "/api/backups", GuiBackups, follower, revision);
-  const overlays = useLiveResource(backend, "/api/local/overlays", GuiSynchronizationResult, follower, revision);
-  const tunnel = useLiveResource(backend, "/api/tunnel", GuiSynchronizationResult, follower, revision);
-  const enrollment = useLiveResource(backend, "/api/enrollment", GuiEnrollment, follower, revision);
-  const secrets = useLiveResource(backend, "/api/secrets", GuiSecrets, follower, revision);
+  const harnesses = useLiveResource(backend, "/api/harnesses", GuiHarnessReport, session.role !== "unconfigured");
+  const local = useLiveResource(backend, "/api/local/items", GuiLocalItems, follower);
+  const schedule = useLiveResource(backend, "/api/schedule", GuiSynchronizationResult, follower);
+  const backups = useLiveResource(backend, "/api/backups", GuiBackups, follower);
+  const overlays = useLiveResource(backend, "/api/local/overlays", GuiSynchronizationResult, follower);
+  const tunnel = useLiveResource(backend, "/api/tunnel", GuiSynchronizationResult, follower);
+  const enrollment = useLiveResource(backend, "/api/enrollment", GuiEnrollment, follower);
+  const secrets = useLiveResource(backend, "/api/secrets", GuiSecrets, follower);
   const actions = useLiveActions(backend, reload);
   const [operation, setOperation] = useState<GuiOperation | null>(null);
   const [operationName, setOperationName] = useState("");

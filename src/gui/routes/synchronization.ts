@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
+import { realpath, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { Effect, Schema } from "effect";
 import { FollowerCommands } from "../../cli/follower-commands.ts";
@@ -8,7 +8,7 @@ import { CliCommandFailure, type CliPayload } from "../../cli/source-commands.ts
 import { RunId } from "../../domain/brand.ts";
 import { MachineState } from "../../machine/machine-state.service.ts";
 import { sha256BytesHex } from "../../profile/profile-codec.ts";
-import { readAuthoringItem, readAuthoringItems, writeAuthoringItems, editAuthoringConfig, type AuthoringItem } from "../../projection/authoring.ts";
+import { maximumAuthoringBytes, readAuthoringItem, readAuthoringItems, writeAuthoringItems, editAuthoringConfig, type AuthoringItem } from "../../projection/authoring.ts";
 import { decodeFolderConfig, decodeLocalConfig, parseOverlay } from "../../projection/folder.ts";
 import { listSnapshots } from "../../projection/takeover.ts";
 import { synchronizeSharedSecrets } from "../../secrets/secret-client.ts";
@@ -124,7 +124,33 @@ export const synchronizationRoutes = Effect.gen(function*() {
     mutationRoute("PUT", "/api/schedule", GuiScheduleRequest, (input) => follower(commands.setSchedule(input))),
     queryRoute("/api/harnesses", () => both(commands.harnesses({}))),
     mutationRoute("PUT", "/api/harnesses", GuiHarnessRequest, (change) => follower(commands.harnesses({ change }))),
-    queryRoute("/api/local/overlays", () => follower(commands.overlays({}))),
+    queryRoute("/api/local/overlays", () => localTarget.pipe(
+      Effect.flatMap((target) => Effect.gen(function*() {
+        const root = yield* Effect.tryPromise({
+          try: () => realpath(target.folder),
+          catch: (cause) => invalid(String(cause)),
+        });
+        const anchor = yield* machine.normalizePath({ path: root });
+        const readConfig = (relativePath: string, prefixBytes?: number) => Effect.gen(function*() {
+          const path = yield* machine.normalizePath({ path: join(root, relativePath) });
+          return yield* machine.readFile({ path, anchor, maximumBytes: maximumAuthoringBytes, prefixBytes }).pipe(
+            Effect.catchTag("MachineFilesystemError", (error) => error.message.startsWith("ENOENT:")
+              ? Effect.succeed(undefined) : Effect.fail(error)),
+          );
+        });
+        // Check only the canonical file's identity and size; the command reads its contents.
+        if ((yield* readConfig("canonfig.jsonc", 0)) !== undefined) return yield* commands.overlays({});
+        const local = yield* readConfig("local/local.jsonc");
+        const config = yield* Effect.try({
+          try: () => local === undefined ? undefined :
+            decodeLocalConfig("local.jsonc", new TextDecoder("utf-8", { fatal: true }).decode(local)),
+          catch: (cause) => invalid(String(cause)),
+        });
+        // Local choices cannot resolve until a published profile has been mirrored.
+        return { configured: false, overlays: [], pending: config?.overlays ?? [] };
+      })),
+      Effect.mapError(commandFailure), Effect.map(printable),
+    )),
     mutationRoute("PUT", "/api/local/overlays", GuiOverlayRequest, ({ item }) => changeOverlay("set", item)),
     mutationRoute("DELETE", "/api/local/overlays", GuiOverlayRequest, ({ item }) => changeOverlay("remove", item)),
     queryRoute("/api/local/items", localItems),

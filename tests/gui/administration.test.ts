@@ -4,8 +4,13 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createServer, type AddressInfo } from "node:net";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it } from "vitest";
-import type { Schema } from "effect";
+import { Effect, Schema } from "effect";
+import { FollowerCommands } from "../../src/cli/follower-commands.ts";
+import { GuiAgentHarnessRead, GuiAgentPolicyRead } from "../../src/gui/contract/administration.ts";
+import { GuiQueries } from "../../src/gui/queries.ts";
+import { runtimeLayer } from "../../src/runtime/layers.ts";
 
 const entry = resolve(import.meta.dirname, "../../src/runtime/main.ts");
 const children: ChildProcess[] = [];
@@ -67,20 +72,69 @@ afterEach(async () => {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
 
-it("persists policy, preserves harness refusal, and rejects malformed requests", async () => {
+it("reads absent Source agent settings normally and preserves save refusals and policy roundtrips", async () => {
   const machine = fixture();
+  const initialized = machine.invoke(["source", "init"]);
+  expect(initialized.status, initialized.stderr).toBe(0);
+  expect(machine.invoke(["agent", "policy"]).status).toBe(2);
   const api = await start(machine.env);
-  expect((await api("/api/agent/policy")).body).toMatchObject({ category: "usage-or-configuration", exitCode: 2, message: "agent policy is not configured" });
+  const policy = await api("/api/agent/policy");
+  expect(policy).toEqual({ status: 200, body: { configured: false, default: "deterministic-only" } });
+  expect(Schema.decodeUnknownSync(GuiAgentPolicyRead)(policy.body)).toEqual(policy.body);
   expect(await api("/api/agent/policy", "PUT", "agent-propose")).toEqual({ status: 200, body: "agent-propose" });
-  expect((await api("/api/agent/policy")).body).toBe("agent-propose");
+  expect(await api("/api/agent/policy")).toEqual({ status: 200, body: { configured: true, value: "agent-propose" } });
   expect((await api("/api/agent/policy", "PUT", "unknown")).body).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
-  expect((await api("/api/agent/harness")).body).toMatchObject({ category: "usage-or-configuration", exitCode: 2, message: "agent harness is not configured" });
+  const absentHarness = await api("/api/agent/harness");
+  expect(absentHarness).toEqual({ status: 200, body: { configured: false } });
+  expect(Schema.decodeUnknownSync(GuiAgentHarnessRead)(absentHarness.body)).toEqual(absentHarness.body);
   const harness = { kind: "codex", executable: "codex", maximumInputBytes: 1024,
     allowedPaths: [], allowedExecutables: [], allowedOrigins: [], allowedCapabilities: [] };
   expect((await api("/api/agent/harness", "PUT", harness)).body).toMatchObject({ category: "usage-or-configuration", exitCode: 2, message: "follower synchronization configuration is not enrolled" });
   expect((await api("/api/agent/harness", "PUT", { ...harness, maximumInputBytes: 0 })).body).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
-  expect((await api("/api/agent/policy")).body).toBe("agent-propose");
+  expect((await api("/api/agent/policy")).body).toEqual({ configured: true, value: "agent-propose" });
 }, 60_000);
+
+it("keeps malformed and unreadable Source policy failures distinct from missing setup", async () => {
+  const machine = fixture();
+  expect(machine.invoke(["source", "init"]).status).toBe(0);
+  const api = await start(machine.env);
+  const path = join(machine.home, ".canonfig", "policy.json");
+  for (const [content, message] of [
+    ["{", "agent policy configuration is malformed"],
+    [JSON.stringify({ policy: "unknown" }), "agent policy configuration is invalid"],
+  ] as const) {
+    writeFileSync(path, content);
+    const response = await api("/api/agent/policy");
+    expect(response.status).not.toBe(200);
+    expect(response.body).toMatchObject({ category: "usage-or-configuration", exitCode: 2, message });
+    expect(response.body).not.toHaveProperty("configured");
+  }
+  rmSync(path);
+  // A directory is a real read failure even under privileged test runners.
+  mkdirSync(path);
+  const unreadable = await api("/api/agent/policy");
+  expect(unreadable.status).not.toBe(200);
+  expect(unreadable.body).toMatchObject({
+    category: "usage-or-configuration", exitCode: 2, message: "agent policy configuration could not be read",
+  });
+}, 60_000);
+
+it("reads agent policy from the configured runtime path without changing CLI absence semantics", async () => {
+  const machine = fixture();
+  const policyPath = join(machine.home, "custom-policy.json");
+  await Effect.runPromise(Effect.scoped(Effect.gen(function*() {
+    const queries = yield* GuiQueries;
+    const commands = yield* FollowerCommands;
+    expect(yield* queries.agentPolicy()).toBeUndefined();
+    expect(yield* commands.getAgentPolicy().pipe(Effect.flip)).toMatchObject({
+      category: "usage-or-configuration", message: "agent policy is not configured",
+    });
+    yield* commands.setAgentPolicy("agent-apply");
+    expect(yield* queries.agentPolicy()).toBe("agent-apply");
+    expect(yield* commands.getAgentPolicy()).toBe("agent-apply");
+  }).pipe(Effect.provide(runtimeLayer({ statePath: join(machine.home, "state.sqlite"), policyPath })))));
+  expect(JSON.parse(readFileSync(policyPath, "utf8"))).toEqual({ policy: "agent-apply" });
+}, 30_000);
 
 it("enforces Source role and keeps unsupported operations absent", async () => {
   const machine = fixture();
@@ -141,7 +195,7 @@ it.runIf(process.platform === "linux")("reads real Source service evidence and p
   else expect(removed.body.exitCode).not.toBe(0);
 }, 90_000);
 
-it("saves the actual enrolled Follower harness and rejects Source-only settings", async () => {
+it("reads fresh enrolled Follower settings, saves them, and preserves malformed state failures", async () => {
   const source = fixture();
   expect(source.invoke(["source", "init"]).status).toBe(0);
   writeFileSync(join(source.home, ".canonfig", "canonfig.jsonc"), JSON.stringify({
@@ -171,12 +225,60 @@ it("saves the actual enrolled Follower harness and rejects Source-only settings"
   const enrolled = follower.invoke(["follower", "enroll", "--stdin", "--name", "admin-follower"], readFileSync(invitation, "utf8"));
   expect(enrolled.status, enrolled.stderr).toBe(0);
   const api = await start(follower.env);
+  expect(await api("/api/local/overlays")).toEqual({
+    status: 200, body: { configured: false, overlays: [], pending: [] },
+  });
+  expect(await api("/api/local/items")).toEqual({
+    status: 200, body: { items: [], config: {}, canonicalConfig: {} },
+  });
+  const localDirectory = join(follower.home, ".canonfig", "local");
+  mkdirSync(localDirectory, { recursive: true });
+  const localConfig = join(localDirectory, "local.jsonc");
+  writeFileSync(localConfig, JSON.stringify({ overlays: ["rules/pending"] }));
+  expect(await api("/api/local/overlays")).toEqual({
+    status: 200, body: { configured: false, overlays: [], pending: ["rules/pending"] },
+  });
+  writeFileSync(localConfig, "{");
+  expect((await api("/api/local/overlays")).status).not.toBe(200);
+  rmSync(localConfig);
+  const mirror = join(follower.home, ".canonfig", "canonfig.jsonc");
+  writeFileSync(mirror, "{");
+  for (const path of ["/api/local/overlays", "/api/local/items"]) {
+    const failed = await api(path);
+    expect(failed.status).not.toBe(200);
+    expect(failed.body).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  }
+  writeFileSync(mirror, JSON.stringify({ version: 1, harnesses: [] }));
+  expect(await api("/api/local/overlays")).toEqual({ status: 200, body: { overlays: [] } });
+  const initialPolicy = await api("/api/agent/policy");
+  expect(initialPolicy).toEqual({ status: 200, body: { configured: true, value: "deterministic-only" } });
+  expect(Schema.decodeUnknownSync(GuiAgentPolicyRead)(initialPolicy.body)).toEqual(initialPolicy.body);
+  const initialHarness = await api("/api/agent/harness");
+  expect(initialHarness).toEqual({ status: 200, body: { configured: false } });
+  expect(Schema.decodeUnknownSync(GuiAgentHarnessRead)(initialHarness.body)).toEqual(initialHarness.body);
+  expect(await api("/api/agent/policy", "PUT", "agent-propose")).toEqual({ status: 200, body: "agent-propose" });
+  expect(await api("/api/agent/policy")).toEqual({ status: 200, body: { configured: true, value: "agent-propose" } });
   const harness = { kind: "custom", executable: process.execPath, arguments: ["--version"], maximumInputBytes: 4096,
     allowedPaths: [follower.home], allowedExecutables: [], allowedOrigins: [], allowedCapabilities: [] };
   expect(await api("/api/agent/harness", "PUT", harness)).toEqual({ status: 200, body: harness });
-  expect((await api("/api/agent/harness")).body).toEqual(harness);
+  const configuredHarness = await api("/api/agent/harness");
+  expect(configuredHarness).toEqual({ status: 200, body: { configured: true, value: harness } });
+  expect(Schema.decodeUnknownSync(GuiAgentHarnessRead)(configuredHarness.body)).toEqual(configuredHarness.body);
   expect((await api("/api/agent/harness", "PUT", { ...harness, model: "invalid-for-custom" })).body)
     .toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
-  expect((await api("/api/agent/harness")).body).toEqual(harness);
+  expect((await api("/api/agent/harness")).body).toEqual({ configured: true, value: harness });
   expect((await api("/api/source-service")).body).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  const database = new DatabaseSync(join(follower.home, ".canonfig", "state.sqlite"));
+  try {
+    database.prepare("UPDATE follower_sync_configuration SET configuration_json = ? WHERE singleton = 1").run("{");
+  } finally {
+    database.close();
+  }
+  for (const path of ["/api/agent/policy", "/api/agent/harness"]) {
+    const response = await api(path);
+    expect(response.status).not.toBe(200);
+    expect(response.body).toHaveProperty("category");
+    expect(response.body.exitCode).not.toBe(0);
+    expect(response.body).not.toHaveProperty("configured");
+  }
 }, 120_000);

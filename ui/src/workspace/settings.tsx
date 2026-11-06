@@ -248,7 +248,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
     paths.some((path, i) => path !== initial.paths[i]);
   // Errors show only after a Save attempt, then follow the fields as they change.
   const [tried, setTried] = useState(false);
-  const off = mode === "deterministic-only" || harness === null;
+  const off = mode === "deterministic-only" || harness === null || !agent.harnessWritable;
   const bytes = Number(maximumInputBytes);
   const maxInvalid = !Number.isInteger(bytes) || bytes < 1 || bytes > MAX_EVIDENCE_BYTES;
   const typedPath = newPath.trim();
@@ -318,7 +318,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
           <>
             <Button size="sm" variant="outline" disabled={agent.busy || hasChanges} onClick={agent.reload}>Reload settings</Button>
             {hasChanges && <Button size="sm" variant="ghost" disabled={agent.busy} onClick={discard}>Discard</Button>}
-            <Button size="sm" variant="primary" disabled={!hasChanges || agent.busy} onClick={() => void save()}>{agent.busy ? "Saving…" : "Save policy"}</Button>
+            <Button size="sm" variant="primary" disabled={(!hasChanges && agent.configured && (off || agent.harnessConfigured)) || mode === null || agent.busy} onClick={() => void save()}>{agent.busy ? "Saving…" : "Save policy"}</Button>
           </>
         }
       />
@@ -327,6 +327,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
           <Lede>
             Choose whether an <Term term="Configuration Agent">AI agent</Term> may help when Canonfig has no exact recipe.
           </Lede>
+          {!agent.configured && saved && <p role="status" className="mb-4 text-sm text-muted-foreground">Not configured yet. These are the CLI defaults. Save policy to create the configuration.</p>}
           {agent.error && <ErrorNotice error={agent.error} />}
           {agent.harnessError && <ErrorNotice title="Harness unavailable" error={agent.harnessError} />}
           {agent.savedMessage && <p role="status" className="mb-4 text-sm">{agent.savedMessage}</p>}
@@ -346,6 +347,8 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
             ))}
           </RadioGroup>
 
+          {!agent.harnessWritable && <p className="mt-4 text-sm text-muted-foreground">Harness settings apply only to enrolled Followers. Saving here changes the Source policy.</p>}
+          {agent.harnessWritable && !agent.harnessConfigured && !agent.harnessError && <p className="mt-4 text-sm text-muted-foreground">Harness not configured yet. The fields below show defaults, not saved settings.</p>}
           {/* inert keeps the disabled bounds out of the tab order, not just greyed out. */}
           {harness !== null && <div className={cn("mt-8 grid gap-4", off && "opacity-40")} inert={off || agent.busy}>
             <SectionLabel>Harness bounds</SectionLabel>

@@ -12,16 +12,17 @@ import { installerMethods } from "../../domain/installer-binding.ts";
 import { update } from "../../runtime/self-update/core.ts";
 import { updateDirectory } from "../../runtime/self-update/coordination.ts";
 import { readSettings } from "../../runtime/self-update/settings.ts";
+import { StateRepository } from "../../state/state-repository.service.ts";
 import {
   checkInstallerBinding, listInstallerBindings, loadInstallerState,
   unboundInstallerRecovery, windowsNodeBinding,
 } from "../../synchronization/installer-bindings.ts";
 import {
-  GuiAgentHarness, GuiAgentPolicy,
+  GuiAgentHarness, GuiAgentPolicy, type GuiAgentHarnessRead, type GuiAgentPolicyRead,
   GuiSourceServiceInput,
 } from "../contract/administration.ts";
 import { GuiQueries } from "../queries.ts";
-import { EmptyBody, failureBody, mutationRoute, queryRoute, type GuiRoute } from "../routing.ts";
+import { EmptyBody, commandFailure, failureBody, mutationRoute, queryRoute, type GuiRoute } from "../routing.ts";
 
 const report = (operation: Effect.Effect<CliPayload, CliCommandFailure>) => operation.pipe(
   Effect.map((value) => ({ report: toJson(value), error: null })),
@@ -42,6 +43,7 @@ export const administrationRoutes = Effect.gen(function*() {
   const follower = yield* FollowerCommands;
   const queries = yield* GuiQueries;
   const machine = yield* MachineState;
+  const repository = yield* StateRepository;
   const sourceOnly = <A>(operation: Effect.Effect<A, CliCommandFailure>) => Effect.gen(function*() {
     if ((yield* queries.session()).role !== "source") return yield* new CliCommandFailure({
       category: "usage-or-configuration", message: "Source service settings require a Source Machine.",
@@ -55,9 +57,18 @@ export const administrationRoutes = Effect.gen(function*() {
       (input) => sourceOnly(source.installService(input)).pipe(Effect.map(toJson))),
     mutationRoute("DELETE", "/api/source-service", EmptyBody,
       () => sourceOnly(source.removeService()).pipe(Effect.map(toJson))),
-    queryRoute("/api/agent/policy", () => follower.getAgentPolicy().pipe(Effect.map(toJson))),
+    queryRoute("/api/agent/policy", () => queries.agentPolicy().pipe(
+      Effect.map((policy): GuiAgentPolicyRead => policy === undefined
+        ? { configured: false, default: "deterministic-only" } : { configured: true, value: policy }),
+      Effect.map(toJson),
+    )),
     mutationRoute("PUT", "/api/agent/policy", GuiAgentPolicy, (input) => follower.setAgentPolicy(input).pipe(Effect.map(toJson))),
-    queryRoute("/api/agent/harness", () => follower.getAgentHarness().pipe(Effect.map(toJson))),
+    queryRoute("/api/agent/harness", () => repository.getFollowerSynchronizationConfiguration().pipe(
+      Effect.mapError(commandFailure),
+      Effect.map((configuration): GuiAgentHarnessRead => configuration?.agentHarness === undefined
+        ? { configured: false } : { configured: true, value: configuration.agentHarness }),
+      Effect.map(toJson),
+    )),
     mutationRoute("PUT", "/api/agent/harness", GuiAgentHarness, (input) => Effect.gen(function*() {
       let message: string | undefined;
       if (input.kind === "custom" && input.model !== undefined) {

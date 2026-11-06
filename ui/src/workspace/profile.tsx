@@ -413,7 +413,7 @@ export function ProfileView() {
   return (
     <>
       <PageHeader
-        crumbs={["Profile", ws.profileLive ? ws.profileName : defaults.name]}
+        crumbs={(ws.profileLive ? ws.profileName : defaults.name) ? ["Profile", ws.profileLive ? ws.profileName : defaults.name] : ["Profile"]}
         actions={
           <>
             {/* `canonfig export`: the whole folder, not just the profile items listed here, signed with the Source key. */}

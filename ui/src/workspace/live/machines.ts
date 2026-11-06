@@ -5,11 +5,11 @@ import type { GuiSession, WorkspaceBackend } from "../../gui-client";
 import type { ChangeGroupsRequest, MachinesSlice } from "../workspace-types";
 import { resourceState, useLiveResource } from "./resource";
 
-export function useLiveMachines(backend: WorkspaceBackend, session: GuiSession, revision: number, reload: () => void): Omit<MachinesSlice, "machinesMode"> {
+export function useLiveMachines(backend: WorkspaceBackend, session: GuiSession, reload: () => void): Omit<MachinesSlice, "machinesMode"> {
   const source = session.role === "source";
-  const inventory = useLiveResource(backend, "/api/machines", GuiMachines, source, revision);
-  const enrollment = useLiveResource(backend, "/api/enrollment", GuiEnrollment, session.role === "follower", revision);
-  const setup = useLiveResource(backend, "/api/setup", GuiSetupStatus, false, revision);
+  const inventory = useLiveResource(backend, "/api/machines", GuiMachines, source);
+  const enrollment = useLiveResource(backend, "/api/enrollment", GuiEnrollment, session.role === "follower");
+  const setup = useLiveResource(backend, "/api/setup", GuiSetupStatus, session.role !== "unconfigured");
   const controller = useRef(new AbortController());
   useEffect(() => {
     controller.current = new AbortController();

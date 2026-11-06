@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useContext, useState } from "react";
 import { Schema } from "effect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,7 +6,7 @@ import { HARNESS_NAMES, type HarnessId } from "@/shared/metadata";
 import { Mono } from "@/shared/shared";
 import { ErrorNotice } from "@/live/session";
 import type { GuiSession, WorkspaceBackend } from "@/gui-client";
-import { useLiveActions } from "@/workspace/live/resource";
+import { LiveResourcesContext, useLiveActions, useLiveResource } from "@/workspace/live/resource";
 import { GuiInvitationInspection, GuiSetupJournal, GuiSetupStatus } from "../../../src/gui/contract/enrollment";
 import { GuiHarnessReport } from "../../../src/gui/contract/synchronization";
 import { TARGET_IDS } from "../../../src/projection/model";
@@ -32,7 +32,7 @@ export interface EnrollmentController {
   planSetup: (harnesses: HarnessId[] | undefined, imports: string[] | undefined, next: () => void) => Promise<void>;
   approveSetup: () => Promise<void>;
   applySetup: () => Promise<void>;
-  reloadStatus: () => Promise<void>;
+  reloadStatus: () => void;
   inspectInvitation: (contents: string, next: (inspection: GuiInvitationInspection) => void) => Promise<void>;
   clearInvitation: () => void;
   join: (input: { name: string; replace: boolean; tunnel: boolean; sshHost: string; sshUser: string; sshPort: number; hostKey: string; localPort: number }) => Promise<void>;
@@ -50,11 +50,14 @@ const FIELD_LABELS: Record<string, string> = {
   id: "Identifier", dir: "Directory", fromEnv: "Environment reference", detected: "Detected harnesses", target: "Destination", secrets: "Credential references",
 };
 
-export function useEnrollmentController(backend: WorkspaceBackend, session: GuiSession): EnrollmentController {
+export function useEnrollmentController(backend: WorkspaceBackend, session: GuiSession, statusState?: readonly [
+  GuiSetupStatus | null, (status: GuiSetupStatus | null) => void,
+]): EnrollmentController {
   const actions = useLiveActions(backend, () => {});
   const [plan, setPlan] = useState<GuiSetupJournal | null>(null);
   const [importReview, setImportReview] = useState<GuiSetupJournal | null>(null);
-  const [status, setStatus] = useState<GuiSetupStatus | null>(null);
+  const localStatus = useState<GuiSetupStatus | null>(null);
+  const [status, setStatus] = statusState ?? localStatus;
   const [selectedHarnesses, setSelectedHarnesses] = useState<HarnessId[]>([]);
   const [approver, setApprover] = useState("");
   const [applied, setApplied] = useState(false);
@@ -196,11 +199,16 @@ function SetupFields({ value }: { value: unknown }) {
 }
 
 export function SetupJournal({ backend, session }: { backend: WorkspaceBackend; session: GuiSession }) {
-  const controller = useEnrollmentController(backend, session);
-  useEffect(() => { void controller.reloadStatus(); }, [backend]);
-  return <div className="space-y-4">
-    {controller.state.error && <ErrorNotice error={controller.state.error} />}
-    <Button variant="outline" disabled={controller.state.loading} onClick={() => void controller.reloadStatus()}>Reload setup status</Button>
+  const resources = useContext(LiveResourcesContext);
+  if (!resources) throw new Error("Setup settings require a live workspace.");
+  const status = useLiveResource(backend, "/api/setup", GuiSetupStatus, true);
+  const controller = useEnrollmentController(backend, session, [
+    status.data, (value) => resources.cache.set("/api/setup", value),
+  ]);
+  const error = status.error ?? controller.state.error;
+  return <div className="space-y-4" aria-busy={status.loading || controller.state.loading}>
+    {error && <ErrorNotice error={error} />}
+    <Button variant="outline" disabled={status.loading || controller.state.loading} onClick={controller.reloadStatus}>Reload setup status</Button>
     {controller.status?.planDigest ? <>
       <SetupEvidence controller={controller} approval={!controller.status.approved} />
       {controller.status.approved && <Button disabled={controller.state.loading} onClick={() => void controller.applySetup()}>Apply approved setup</Button>}

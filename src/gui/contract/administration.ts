@@ -21,6 +21,18 @@ export const GuiAgentHarness = Schema.Struct({
   allowedOrigins: Schema.Array(Schema.NonEmptyString),
   allowedCapabilities: Schema.Array(Schema.Literals(["elevation", "login", "restart", "reboot"])),
 }) satisfies Schema.Codec<FollowerAgentHarnessConfiguration>;
+
+/** Absence is a normal read result, not a saved default or a CLI failure. */
+export const GuiAgentPolicyRead = Schema.Union([
+  Schema.Struct({ configured: Schema.Literal(false), default: Schema.Literal("deterministic-only") }),
+  Schema.Struct({ configured: Schema.Literal(true), value: GuiAgentPolicy }),
+]);
+export type GuiAgentPolicyRead = typeof GuiAgentPolicyRead.Type;
+export const GuiAgentHarnessRead = Schema.Union([
+  Schema.Struct({ configured: Schema.Literal(false) }),
+  Schema.Struct({ configured: Schema.Literal(true), value: GuiAgentHarness }),
+]);
+export type GuiAgentHarnessRead = typeof GuiAgentHarnessRead.Type;
 export const GuiSourceServiceInput = Schema.Struct({
   hostname: Schema.Literals(["127.0.0.1", "::1"]),
   port: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(65535)),

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  GuiAgentHarness, GuiAgentPolicy, GuiDoctorResult, GuiInstallerCheck, GuiInstallers,
+  GuiAgentHarness, GuiAgentHarnessRead, GuiAgentPolicy, GuiAgentPolicyRead, GuiDoctorResult, GuiInstallerCheck, GuiInstallers,
   GuiSelfUpdateCheck, GuiSelfUpdateStatus, GuiSourceServiceChange, GuiSourceServiceRemoval, GuiSourceServiceReport,
 } from "../../../../src/gui/contract/administration";
 import type { GuiSession } from "../../../../src/gui/contract/session";
@@ -14,9 +14,10 @@ function requestError(cause: unknown): GuiRequestError {
 }
 
 /** Each resource owns its request and error so an unavailable harness cannot hide policy. */
-function useAdministrationResource<T>(load: ((signal: AbortSignal) => Promise<T>) | null) {
+function useAdministrationResource<T>(load: ((signal: AbortSignal) => Promise<T>) | null, enabled = false) {
   const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(load !== null);
+  const [loading, setLoading] = useState(false);
+  const attempted = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<GuiRequestError | null>(null);
   const controller = useRef<AbortController | null>(null);
@@ -40,30 +41,33 @@ function useAdministrationResource<T>(load: ((signal: AbortSignal) => Promise<T>
   }, []);
   const reload = useCallback(() => {
     if (load) void run(async (signal) => {
+      attempted.current = true;
       const value = await load(signal);
       if (!signal.aborted) setData(value);
     }, true);
   }, [load, run]);
   useEffect(() => {
-    reload();
-    return () => { controller.current?.abort(); controller.current = null; };
-  }, [reload]);
-  return { data, setData, loading, busy, error, setError, run, reload };
+    if (enabled && !attempted.current) reload();
+  }, [enabled, reload]);
+  useEffect(() => () => {
+    controller.current?.abort(); controller.current = null; attempted.current = false;
+  }, []);
+  return { data, setData, loading: enabled && (!attempted.current || loading), busy, error, setError, run, reload };
 }
 
-export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSession): AdministrationSlice {
+export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSession, paths: readonly string[]): AdministrationSlice {
   const configured = session.role !== "unconfigured";
   const sourceLoad = useCallback((signal: AbortSignal) => backend.request("/api/source-service", GuiSourceServiceReport, signal), [backend]);
-  const service = useAdministrationResource(session.role === "source" ? sourceLoad : null);
-  const policyLoad = useCallback((signal: AbortSignal) => backend.request("/api/agent/policy", GuiAgentPolicy, signal), [backend]);
-  const harnessLoad = useCallback((signal: AbortSignal) => backend.request("/api/agent/harness", GuiAgentHarness, signal), [backend]);
-  const policy = useAdministrationResource(configured ? policyLoad : null);
-  const harness = useAdministrationResource(configured ? harnessLoad : null);
+  const service = useAdministrationResource(session.role === "source" ? sourceLoad : null, paths.includes("/api/source-service"));
+  const policyLoad = useCallback((signal: AbortSignal) => backend.request("/api/agent/policy", GuiAgentPolicyRead, signal), [backend]);
+  const harnessLoad = useCallback((signal: AbortSignal) => backend.request("/api/agent/harness", GuiAgentHarnessRead, signal), [backend]);
+  const policy = useAdministrationResource(configured ? policyLoad : null, paths.includes("/api/agent/policy"));
+  const harness = useAdministrationResource(configured ? harnessLoad : null, paths.includes("/api/agent/harness"));
   const installersLoad = useCallback((signal: AbortSignal) => backend.request("/api/installers", GuiInstallers, signal), [backend]);
-  const installers = useAdministrationResource(configured ? installersLoad : null);
+  const installers = useAdministrationResource(configured ? installersLoad : null, paths.includes("/api/installers"));
   const doctor = useAdministrationResource<typeof GuiDoctorResult.Type>(null);
   const versionLoad = useCallback((signal: AbortSignal) => backend.request("/api/self-update", GuiSelfUpdateStatus, signal), [backend]);
-  const version = useAdministrationResource(configured ? versionLoad : null);
+  const version = useAdministrationResource(configured ? versionLoad : null, paths.includes("/api/self-update"));
   const [serviceAction, setServiceAction] = useState<"install" | "remove" | null>(null);
   const [checkingInstaller, setCheckingInstaller] = useState<string | null>(null);
   const [checkedInstaller, setCheckedInstaller] = useState<string | null>(null);
@@ -87,11 +91,13 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
     });
   };
 
+  const savedHarness = harness.data?.configured ? harness.data.value : null;
   const savedPolicy: SavedPolicy | null = policy.data === null ? null : {
-    mode: policy.data, harness: harness.data?.kind ?? null, model: harness.data?.model ?? "",
-    executable: harness.data?.executable === harness.data?.kind ? "" : harness.data?.executable ?? "", args: [...(harness.data?.arguments ?? [])],
-    paths: [...(harness.data?.allowedPaths ?? [])], maximumInputBytes: harness.data?.maximumInputBytes ?? 0,
-    origins: harness.data?.allowedOrigins ?? [],
+    mode: policy.data.configured ? policy.data.value : policy.data.default,
+    harness: savedHarness?.kind ?? "codex", model: savedHarness?.model ?? "",
+    executable: savedHarness?.executable === savedHarness?.kind ? "" : savedHarness?.executable ?? "", args: [...(savedHarness?.arguments ?? [])],
+    paths: [...(savedHarness?.allowedPaths ?? [])], maximumInputBytes: savedHarness?.maximumInputBytes ?? 1024 * 1024,
+    origins: savedHarness?.allowedOrigins ?? [],
   };
   const savePolicy = async (next: SavedPolicy) => {
     if (policy.busy || harness.busy) return false;
@@ -99,15 +105,17 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
     const policySaved = await policy.run(async (signal) => {
       const saved = await backend.request("/api/agent/policy", GuiAgentPolicy, signal, { method: "PUT", body: next.mode });
       if (!signal.aborted) {
-        policy.setData(saved);
+        policy.setData({ configured: true, value: saved });
         setSavedMessage("Policy saved.");
       }
     });
     if (!policySaved) return false;
     // A Source can change its policy, but the CLI refuses its follower-only harness configuration.
-    if (next.mode === "deterministic-only" || next.harness === null || harness.data === null) return true;
+    if (session.role !== "follower" || next.mode === "deterministic-only" || next.harness === null) return true;
     const kind = next.harness;
-    const { model: _model, arguments: _arguments, ...bounds } = harness.data;
+    const { model: _model, arguments: _arguments, ...bounds } = savedHarness ?? {
+      model: undefined, arguments: undefined, allowedExecutables: [], allowedOrigins: [], allowedCapabilities: [],
+    };
     setSavedMessage("Policy saved. Harness has not been saved.");
     return harness.run(async (signal) => {
       const body = {
@@ -117,7 +125,7 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
       };
       const savedHarness = await backend.request("/api/agent/harness", GuiAgentHarness, signal, { method: "PUT", body });
       if (!signal.aborted) {
-        harness.setData(savedHarness);
+        harness.setData({ configured: true, value: savedHarness });
         setSavedMessage("Policy and harness saved.");
       }
     });
@@ -140,6 +148,9 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
       install: (hostname, port) => changeService("install", hostname, port), remove: () => changeService("remove"),
     },
     agent: {
+      configured: policy.data?.configured ?? false,
+      harnessWritable: session.role === "follower",
+      harnessConfigured: harness.data?.configured ?? false,
       data: savedPolicy, loading: policy.loading, busy: policy.busy || harness.busy, error: policy.error,
       harnessLoading: harness.loading, harnessError: harness.error, savedMessage, save: savePolicy,
       reload: () => { policy.reload(); harness.reload(); }, harnessLabels: { codex: "codex", claude: "claude" },
