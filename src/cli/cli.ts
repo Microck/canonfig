@@ -1182,7 +1182,6 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
 export const runCli = Effect.fn("runCli")(function*(
   arguments_: ReadonlyArray<string>,
   io: CliIo,
-  afterSuccessfulApply: Effect.Effect<void, CliCommandFailure> = Effect.void,
   lease?: ManagedCommandLease,
 ): Effect.fn.Return<
   CliExitCodeValue,
@@ -1210,15 +1209,8 @@ export const runCli = Effect.fn("runCli")(function*(
   const showsTransferProgress = outcome.format === "human"
     && (outcome.command._tag === "Recover"
       || (outcome.command._tag === "Synchronize" && outcome.command.scheduled !== true));
-  // Automatic shared-secret sync is part of the apply result. Complete it
-  // before rendering so stdout never promises success before a later failure.
-  const operation: Effect.Effect<CliPayload, CliCommandFailure, SourceCommands | FollowerCommands | SetupCommands | GuiQueries | MachineState | StateRepository> =
+  const execution: Effect.Effect<CliPayload, CliCommandFailure, SourceCommands | FollowerCommands | SetupCommands | GuiQueries | MachineState | StateRepository> =
     outcome.command._tag === "Ui" ? runGui(outcome.command, io, lease) : executeCommand(outcome.command);
-  const execution = operation.pipe(
-    Effect.tap(() => outcome.command._tag === "Synchronize" && outcome.command.mode === "apply"
-      ? afterSuccessfulApply
-      : Effect.void),
-  );
   const result = yield* (showsTransferProgress
     ? execution.pipe(
       Effect.provideService(BlobTransferProgress, humanTransferProgress(io.writeStderr)),
