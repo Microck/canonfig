@@ -67,10 +67,13 @@ the server runs in your terminal on `127.0.0.1` with a free port. use
 single-use URL yourself. stop it with Ctrl-C.
 
 on a Source, author the profile, choose harnesses and groups, validate and publish
-revisions, manage secrets, and invite followers. on a Follower, inspect and apply
-sync plans, edit allowed local items and overlays, manage harness exclusions,
-restore backups, and set the schedule. both roles show real status and settings.
+revisions, manage secrets, export the profile, and invite followers. on a Follower,
+inspect and apply sync plans, recover or abandon interrupted runs, edit allowed
+local items and overlays, manage harness exclusions, restore backups, refresh
+secrets, and set the schedule. both roles show real status and settings.
 errors keep the CLI's diagnostics. map names and appearance stay in this browser.
+the Source card on a Follower shows "Source" and its endpoint because enrollment
+does not store the Source machine's name.
 
 self-update status and checks are available, but stop the GUI before enabling,
 disabling or applying updates in a terminal. unenrollment leaves applied files,

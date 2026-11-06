@@ -37,7 +37,6 @@ export function LiveWorkspaceProvider({ backend, session, route, children }: {
   const resource = resources[route.view];
   const workspace: Workspace = {
     ...overview, ...profile, ...machines, ...follower, admin,
-    capabilities: { ...overview.capabilities, enrollmentWrite: true, followerWrite: true },
     profileTab: route.profileTab, machinesMode: route.machinesMode,
     endpoint: session.role === "source" ? service?.endpoint ?? "" : machines.endpoint,
     sourceMachine: { ...machines.sourceMachine, ...(session.role === "source" && service ? { endpoint: service.endpoint, platform: service.platform, service: service.state } : {}) },

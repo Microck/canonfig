@@ -860,9 +860,9 @@ export function GroupChips({ groups, empty = "All machines" }: { groups: string[
 /** A key/value line inside the detail panel. */
 export function Prop({ label, children }: { label: ReactNode; children: ReactNode }) {
   return (
-    <div className="grid grid-cols-[112px_1fr] items-baseline gap-3 py-1 text-base">
+    <div className="grid grid-cols-[112px_minmax(0,1fr)] items-baseline gap-3 py-1 text-base">
       <span className="text-sm text-muted-foreground">{label}</span>
-      <span className="min-w-0 break-words text-foreground">{children}</span>
+      <span className="min-w-0 text-foreground [overflow-wrap:anywhere]">{children}</span>
     </div>
   );
 }
@@ -927,7 +927,7 @@ export function SettingRow({
           </p>
         )}
       </div>
-      {children && <div className="flex shrink-0 items-center gap-2">{children}</div>}
+      {children && <div className="flex min-w-0 max-w-[60%] items-center gap-2 [overflow-wrap:anywhere]">{children}</div>}
     </div>
   );
 }

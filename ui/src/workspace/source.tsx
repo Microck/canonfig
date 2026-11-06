@@ -399,9 +399,9 @@ export function SourceOverview() {
 
 /** Only recorded session and status evidence belongs on a live Overview. */
 export function WorkspaceEvidence() {
-  const { session, status } = useWorkspace();
+  const { session, status, setView } = useWorkspace();
   if (!session || !status) return null;
-  const { machineRole, lifecycle, tunnel, ...synchronization } = status;
+  const { machineRole, lifecycle, tunnel } = status;
   return (
     <>
       <section>
@@ -419,16 +419,15 @@ export function WorkspaceEvidence() {
         <SectionLabel>Follower lifecycle</SectionLabel>
         {session.role !== "follower" && <p className="py-2 text-sm text-muted-foreground">These checks describe follower enrollment, not Source service health.</p>}
         <div className="border-t border-border">
-          {Object.entries(lifecycle).map(([name, { reached, detail, ...evidence }]) => (
+          {Object.entries(lifecycle).map(([name, { reached, detail }]) => (
             <div key={name} className="border-b border-border/70 py-2">
               <div className="flex gap-3 text-base"><span className="font-medium">{name}</span><span className="text-muted-foreground">{reached ? "Reached" : "Not reached"}</span></div>
               <p className="text-sm text-muted-foreground">{detail}</p>
-              {Object.keys(evidence).length > 0 && <pre className="mt-2 overflow-auto text-xs">{JSON.stringify(evidence, null, 2)}</pre>}
             </div>
           ))}
         </div>
       </section>
-      {Object.keys(synchronization).length > 0 && <section><SectionLabel>Synchronization state</SectionLabel><pre className="overflow-auto border-t border-border py-3 text-sm">{JSON.stringify(synchronization, null, 2)}</pre></section>}
+      {session.role === "follower" && <Button variant="outline" size="sm" onClick={() => setView("sync")}>Open synchronization details</Button>}
       <section><SectionLabel>SSH tunnel</SectionLabel><TunnelEvidence report={tunnel} /></section>
     </>
   );
@@ -579,7 +578,7 @@ function PublishForm() {
                 Cancel
               </Button>
               <Button type="submit" variant="primary" disabled={!checked || ws.publishing}>
-                {ws.publishing ? "Publishing…" : !checked ? "Checking files…" : `Publish revision ${ws.nextSequence}`}
+                {ws.publishing ? "Publishing…" : !checked ? "Checking files…" : <>Publish revision {ws.nextSequence}</>}
               </Button>
             </div>
           </DialogFooter>

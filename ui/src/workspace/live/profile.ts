@@ -9,8 +9,6 @@ import { authoredItems, itemWrite, object, strings } from "../profile-authoring"
 import { WEEK, type Schedule } from "../schedule";
 import { requestError, resourceState, useLiveActions, useLiveResource } from "./resource";
 
-export const PROFILE_NOT_IMPLEMENTED = [] as const;
-
 function scheduleOf(value: Schema.Json | undefined): Schedule | null {
   if (typeof value !== "string") return null;
   const [cadence, time] = value.split("@");

@@ -618,9 +618,11 @@ function newInvitationId(taken: Invitation[]) {
 /** One checkbox row per group; the secrets group shows what it does, with its real name in mono. */
 function GroupChecks({ idPrefix, value, onChange, disabled }: { idPrefix: string; value: string[]; onChange: (groups: string[]) => void; disabled?: boolean }) {
   const [groups] = useGroups();
+  // Secret sharing is an enrollment permission, even when no authored group uses it.
+  const choices = [{ name: SECRETS_GROUP, description: "" }, ...groups.filter((group) => group.name !== SECRETS_GROUP)];
   return (
     <div className="grid gap-0.5">
-      {groups.map((g) => (
+      {choices.map((g) => (
         <Label key={g.name} htmlFor={`${idPrefix}-${g.name}`} className="flex min-h-11 cursor-pointer items-center gap-2 text-base font-normal sm:min-h-8">
           <Checkbox
             id={`${idPrefix}-${g.name}`}

@@ -66,6 +66,11 @@ function applicationEntrypoint(): Plugin {
   let demo = false;
   return {
     name: "canonfig-application-entrypoint",
+    config(_config, env) {
+      // npm pack also runs under Vitest. Its inherited NODE_ENV=test must not
+      // select demo screens or disable the production module-graph guard.
+      if (env.command === "build") process.env.NODE_ENV = "production";
+    },
     configResolved(config) {
       demo = !config.isProduction || config.mode === "demo";
       entrypoint = path.resolve(import.meta.dirname, demo ? "./src/App.tsx" : "./src/live-app.tsx");

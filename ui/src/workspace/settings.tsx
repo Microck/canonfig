@@ -147,7 +147,12 @@ export function ServiceView() {
             {capabilities.serviceRestart && service.restart && <Button variant="outline" size="sm" disabled={service.busy} onClick={service.restart}>{service.action === "restart" ? "Restarting…" : "Restart"}</Button>}
             <Button variant="destructive" size="sm" disabled={service.busy} onClick={() => setConfirm(true)}>Remove service…</Button>
           </div>}
-          {report && !service.restart && <details className="mt-5 text-sm"><summary>Native service details</summary><CommandBox>{JSON.stringify(report, null, 2)}</CommandBox></details>}
+          {report && !service.restart && <div className={cn("mt-5", settingsGroup)}>
+            {report.definitionPath && <SettingRow title="Service definition"><Mono>{report.definitionPath}</Mono></SettingRow>}
+            <SettingRow title="Serving revisions">{report.serving ? "Yes" : "No"}</SettingRow>
+            <SettingRow title="Supported modes">{report.supportedModes}</SettingRow>
+            <SettingRow title="Logs"><Mono>{report.logs}</Mono></SettingRow>
+          </div>}
         </Column>
       </Body>
       <ConfirmDialog open={confirm} onOpenChange={setConfirm} title="Remove the source service?"
@@ -518,7 +523,7 @@ export function InstallersView() {
           <ListRow key={r.name} cols={cols} data-tour="installers-list">
             <span className="font-medium">{r.name}</span>
             <div className="min-w-0"><Mono className={r.path === "-" ? "text-faint" : "text-foreground"}>{r.path === "-" ? "None" : r.path}</Mono>
-              {r.arguments.length > 0 && <p className="break-all font-mono text-xs text-muted-foreground">{JSON.stringify(r.arguments)}</p>}
+              {r.arguments.length > 0 && <p className="break-all font-mono text-xs text-muted-foreground">{r.arguments.map(shq).join(" ")}</p>}
             </div>
             <span className={cn("text-sm", r.status === "bound" ? "text-ok" : "text-faint")}>{installers.checked === r.name ? "Verified this session" : r.status === "bound" ? "Bound" : "Not on this platform"}</span>
             {r.status === "bound" ? (
@@ -697,7 +702,6 @@ export function DoctorView() {
                     </div>
                   )}
                   {shown && d.commands?.map((command, index) => <div className="mt-2 ml-6.5" key={index}><CommandBox>{command}</CommandBox></div>)}
-                  {shown && d.evidence !== undefined && <details className="mt-2 ml-6.5 text-sm"><summary>Full check details</summary><CommandBox>{JSON.stringify(d.evidence, null, 2)}</CommandBox></details>}
                 </div>
               );
             })}
@@ -768,7 +772,6 @@ export function VersionView() {
           <CommandBox>canonfig self-update disable --apply</CommandBox>
           {!available && <CommandBox>{APPLY_COMMAND}</CommandBox>}
         </section>}
-        {version.data?.settings !== null && version.data?.settings !== undefined && <details className="mt-5 text-sm"><summary>Update settings</summary><CommandBox>{JSON.stringify(version.data.settings, null, 2)}</CommandBox></details>}
       </Column>
     </Body>
     {ws.capabilities.selfUpdateMutations && version.enable && <Dialog open={enabling} onOpenChange={setEnabling}>

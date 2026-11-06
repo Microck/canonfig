@@ -191,11 +191,11 @@ const validatePackageContents = (
   if (artifact.name !== "@microck/canonfig" || artifact.version !== "6.0.0") {
     fail(`unexpected packed identity: ${artifact.name}@${artifact.version}`);
   }
-  // The shipped live GUI adds authoring, enrollment, synchronization, administration,
-  // the machine map and toast/skeleton providers. The complete package measured
-  // 1,106,655 packed / 3,829,326 unpacked bytes, including the subset fonts.
+  // The shared live screens include full authoring, enrollment, synchronization,
+  // administration and the machine map. The integrated production package measured
+  // 1,237,671 packed / 4,277,427 unpacked bytes, including the subset fonts.
   // Keep about 4% packed and 3% unpacked headroom for build identity and small changes.
-  if (artifact.size > 1_150_000 || artifact.unpackedSize > 3_950_000) {
+  if (artifact.size > 1_290_000 || artifact.unpackedSize > 4_410_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );

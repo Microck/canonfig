@@ -7,7 +7,7 @@ import { cn, SNAP } from "@/lib/utils";
 import { DitherShader, fillStyle, usePrefersReducedMotion } from "@/lib/dither";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
-import { StateLabel, Term } from "@/shared/shared";
+import { Mono, StateLabel, Term } from "@/shared/shared";
 import type { Follower, FollowerState } from "@/shared/metadata";
 import { ADD_W, DEVICE_ICONS, ICON_TILE_TINT, MapActionsContext, NODE_H, NODE_W, type ResolvedLook } from "./model";
 
@@ -18,6 +18,7 @@ const PLATFORM: Record<NonNullable<Follower["platform"]>, string> = { macos: "ma
 export type MachineNodeData = {
   kind: "source" | "follower";
   hostname: string;
+  endpoint?: string;
   platform: Follower["platform"] | undefined;
   look: ResolvedLook;
   revision: number | null | undefined;
@@ -166,8 +167,8 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
               <span className="truncate text-lg leading-[18px] font-semibold text-foreground">{look.name}</span>
               {look.name !== data.hostname && <span className="truncate font-mono text-xs text-faint">{data.hostname}</span>}
             </div>
-            <div className="truncate text-sm text-muted-foreground">
-              {data.platform && <>{PLATFORM[data.platform]} · </>}{look.purpose || <span className="text-faint">No purpose set</span>}
+            <div className="truncate text-sm text-muted-foreground" title={data.endpoint}>
+              {data.endpoint ? <Mono>{data.endpoint}</Mono> : <>{data.platform && <>{PLATFORM[data.platform]} · </>}{look.purpose || <span className="text-faint">No purpose set</span>}</>}
             </div>
           </div>
         </div>

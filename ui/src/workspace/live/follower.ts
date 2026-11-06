@@ -39,7 +39,7 @@ export function localItems(snapshot: GuiLocalItems | null): LocalItem[] {
 
 export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, status: GuiStatus | undefined, revision: number, reload: () => void): FollowerSlice {
   const follower = session.role === "follower";
-  const harnesses = useLiveResource(backend, "/api/harnesses", GuiHarnessReport, follower, revision);
+  const harnesses = useLiveResource(backend, "/api/harnesses", GuiHarnessReport, session.role !== "unconfigured", revision);
   const local = useLiveResource(backend, "/api/local/items", GuiLocalItems, follower, revision);
   const schedule = useLiveResource(backend, "/api/schedule", GuiSynchronizationResult, follower, revision);
   const backups = useLiveResource(backend, "/api/backups", GuiBackups, follower, revision);

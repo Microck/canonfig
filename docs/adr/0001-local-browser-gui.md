@@ -1,6 +1,6 @@
 # Local browser GUI served by `canonfig ui`
 
-Status: live backend implemented; shared-screen cutover in Phase 2d, with Overview and administration complete and three area form checklists remaining.
+Status: live backend and shared-screen cutover implemented. Production and demo use one screen tree.
 
 ## Frontend paths
 
@@ -21,11 +21,13 @@ The backend calls existing Effect services in-process rather than spawning the C
 
 `src/gui/contract.ts` re-exports Effect Schemas and same-named types from per-area modules in `src/gui/contract/`. The frontend imports these contracts directly; no generated or copied contract is maintained in `ui/`. Session carries role, machine name, version, and folder path. Status validates its machine role, lifecycle and tunnel fields while retaining the CLI's additional status properties. Errors reuse the CLI's `category`, `exitCode`, and `message`. Area route factories live in `src/gui/routes/`; mutations require the session cookie, a custom request header and JSON decoded by Effect Schema.
 
-The API supports Source authoring/publication, enrollment, synchronization, local settings and administration. Shared-screen completion is tracked separately in [Phase 2d of the integration plan](../plans/canonfig-ui.md#phase-2d-one-screen-tree-two-data-sources). Overview and administration use real data; unfinished area forms expose explicit unavailable states, never simulated success. Setup retains its real import offers and explicit plan-digest approval while its shared onboarding adapter is completed. Missing CLI operations remain hidden. Map appearance is browser-local; it never changes an enrollment record.
+The API supports Source authoring/publication, enrollment, synchronization, local settings and administration through the shared workspace screens. Setup uses the shared onboarding flow with real import offers and explicit plan-digest approval. Missing CLI operations remain hidden. Map appearance is browser-local; it never changes an enrollment record. A follower's stored Source identity contains no machine name, so the map labels it "Source" and shows its endpoint separately. Named evidence replaces raw status JSON in the interface. Verification and platform limits are recorded in [the integration plan](../plans/canonfig-ui.md#phase-2d-one-screen-tree-two-data-sources).
 
-The Canonical Folder defined by ADR 0003 is the authoring source of truth. `src/projection/authoring.ts` provides shared file and skill-tree editing for canonical and local folders, with comment-preserving JSONC key edits, digest preconditions and full candidate validation before atomic file publication through MachineState. The GUI does not maintain a second profile store. The typed slice interface, injected `WorkspaceBackend`, capabilities and remaining per-area ownership are documented in the integration plan.
+The Canonical Folder defined by ADR 0003 is the authoring source of truth. `src/projection/authoring.ts` provides shared file and skill-tree editing for canonical and local folders, with comment-preserving JSONC key edits, digest preconditions and full candidate validation before atomic file publication through MachineState. The GUI does not maintain a second profile store. The typed slice interface, injected `WorkspaceBackend`, capabilities and completed area ownership are documented in the integration plan.
 
 The frontend is a static React 19 single-page app built with Vite and shipped in `dist/ui` in the npm package. The public demo remains a separate build with simulated operations. Package validation must measure the combined CLI and production UI rather than excluding the browser assets.
+
+Build commands force Vite's production environment before it selects the entrypoint. This also applies when `npm pack` inherits `NODE_ENV=test` from the packaged-executable suite. Only an explicit demo build selects simulated screens; the packaged-assets regression checks the live session client and absence of the demo skill repository.
 
 ### Self-update from the GUI
 

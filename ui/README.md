@@ -2,7 +2,7 @@
 
 The browser frontend lives in `ui/`. Production and demo share the screens in `src/workspace/`, including the frame, sidebar and mobile navigation. Production enters through `src/live-app.tsx` and `LiveWorkspaceProvider`; the demo uses `SimulatedWorkspaceProvider`. See [the architecture decision](../docs/adr/0001-local-browser-gui.md).
 
-The packaged `canonfig ui` reads the real machine through the same services as the CLI. Overview and administration are fully connected to the shared screens. Profile, machines and Follower workflows have typed live slices and explicit unfinished-operation notices while their shared forms are connected. The [Phase 2d checklist](../docs/plans/canonfig-ui.md#phase-2d-one-screen-tree-two-data-sources) records those boundaries. Production never mounts the simulated provider or simulates success.
+The packaged `canonfig ui` reads the real machine through the same services as the CLI. Overview, Profile, machines, onboarding, Follower workflows and administration use the shared screens with live reads and mutations. The [Phase 2d inventory](../docs/plans/canonfig-ui.md#phase-2d-one-screen-tree-two-data-sources) records the supported operations and verification evidence. Production never mounts the simulated provider or simulates success.
 
 Run `canonfig ui` to open the packaged interface, or `canonfig ui --port 5317 --no-open` to choose a loopback port and open the printed single-use URL yourself. Keep the terminal running; Ctrl-C or SIGTERM stops the server. Bare `canonfig` still prints help.
 
@@ -34,7 +34,7 @@ The production build checks its module graph and fails if it imports `src/shared
 - the simulated first-visit page load (`SIMULATED_LOAD_MS`), which imitates a fetch;
 - the `?star=1` preview.
 
-Demo screens use simulated data in `src/shared/data.ts` and `src/workspace/simulated-store.tsx`, including short waits for actions such as Check for updates. They are not a second backend for production. See [the screen/action inventory and Phase 2d ownership](../docs/plans/canonfig-ui.md) for the CLI mappings and remaining live form integration.
+Demo screens use simulated data in `src/shared/data.ts` and `src/workspace/simulated-store.tsx`, including short waits for actions such as Check for updates. They are not a second backend for production. See [the screen/action inventory](../docs/plans/canonfig-ui.md) for the CLI mappings and hidden operations.
 
 The demo build also replaces the page title and adds a description, canonical URL, and Open Graph and Twitter card tags to `index.html`, and writes `404.html` as a copy of it, so GitHub Pages boots the app on deep links such as `/follower/sync`. `vite.config.ts` holds this in its `demoSite` plugin. The theme colour and viewport tags sit in `index.html` itself, so both builds have them. The site assembly (`scripts/build-pages.mjs`) adds the docs and `robots.txt`.
 
@@ -84,6 +84,8 @@ First-run setup is `/setup`. Retired role and variant query parameters are not r
 Live routes use the shared `src/workspace/nav.ts` and `routes.ts`. Unlike the demo table, Source backups are not offered, while installers and machine setup are available for both configured roles. Map customization is browser-local and does not rename an enrollment identity. Machine inventory reports enrollment records, not remote health, schedules or synchronization progress.
 
 Self-update status and checks are live. Enable, disable and apply remain terminal operations after stopping the GUI; the GUI does not bypass its command lease. Invitation cancellation, selective scan writes, Source service restart and protected adoption-review reads/deletion are hidden because the CLI has no matching operation. Unenrollment leaves applied files, schedule and tunnel configuration intact.
+
+The follower's stored Source identity does not include a machine name. Its map card uses "Source" as the title and shows the enrollment endpoint below it. Long revision identifiers, fingerprints and paths wrap inside setting rows and detail panels instead of widening the page. Status pages show named evidence, not raw JSON responses; exact configuration editors still show the authored file contents.
 
 ## Demo guidance and presentation
 

@@ -55,7 +55,7 @@ export interface MachineMapProps {
   /** The dashed "Add machine" node (Source role only). */
   onInvite?: () => void;
   className?: string;
-  source: { hostname: string; platform?: Follower["platform"] };
+  source: { hostname: string; platform?: Follower["platform"]; endpoint?: string };
   followers: readonly MapFollower[];
   /** Newest Profile Revision sequence. Followers below it show packets on their way. */
   latestRevision?: number;
@@ -256,6 +256,7 @@ function MapCanvas({
       data: {
         kind: "source",
         hostname: machine.hostname,
+        endpoint: role === "follower" ? machine.endpoint : undefined,
         platform: machine.platform,
         look: looks[SOURCE_ID],
         revision: latest,
@@ -293,7 +294,7 @@ function MapCanvas({
       out.push({ id: ADD_ID, type: "add", position: layout[ADD_ID], draggable: false, selectable: false, focusable: false, data: {} });
     }
     return out;
-  }, [role, visible, looks, latest, layout, sourceActive, publishing, syncingIds, machine.hostname, machine.platform]);
+  }, [role, visible, looks, latest, layout, sourceActive, publishing, syncingIds, machine.hostname, machine.platform, machine.endpoint]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<MapNode>(built);
   const selectedId = nodes.find((n) => n.selected && n.type === "machine")?.id ?? null;
