@@ -16,6 +16,7 @@ describe("shared live workspace navigation", () => {
       const paths = entries.map((entry) => workspaceHref(role, entry.view));
       assert.equal(new Set(paths).size, entries.length);
       for (const entry of entries) assert.equal(navItem(role, entry.view)?.label, entry.label);
+      assert.equal(navItem(role, "version")?.label, "Version");
       for (const href of paths) {
         assert.equal(isRouteForRole(parseRoute(href), role), true);
         assert.equal(isRouteForRole(parseRoute(href), role === "source" ? "follower" : "source"), false);

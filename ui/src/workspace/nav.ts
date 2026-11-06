@@ -45,7 +45,7 @@ const SOURCE_SETTINGS: NavItem[] = [
   { view: "installers", label: "Installers", icon: Package },
   { view: "setup", label: "Setup", icon: ListChecks },
   { view: "doctor", label: "Health check", icon: Stethoscope },
-  { view: "version", label: "Canonfig version", icon: CloudDownload },
+  { view: "version", label: "Version", icon: CloudDownload },
 ];
 
 const FOLLOWER_NAV: NavItem[] = [
@@ -63,7 +63,7 @@ const FOLLOWER_SETTINGS: NavItem[] = [
   { view: "agent", label: "Agent policy", icon: Robot },
   { view: "doctor", label: "Health check", icon: Stethoscope },
   { view: "machine", label: "Enrollment", icon: Monitor },
-  { view: "version", label: "Canonfig version", icon: CloudDownload },
+  { view: "version", label: "Version", icon: CloudDownload },
 ];
 
 export const NAV: Record<WorkspaceRole, { main: NavItem[]; settings: NavItem[] }> = {

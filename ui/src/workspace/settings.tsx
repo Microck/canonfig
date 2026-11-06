@@ -735,7 +735,7 @@ export function VersionView() {
   const available = version.checked?.status === "available";
   const updated = version.checked?.status === "updated";
   return <>
-    <PageHeader crumbs={["Settings", "Canonfig version"]} actions={<>
+    <PageHeader crumbs={["Settings", "Version"]} actions={<>
       <Button size="sm" variant="outline" disabled={version.busy || updated} onClick={version.reload}>Reload status</Button>
       {!on ? <Button size="sm" variant="primary" disabled={version.busy || updated || !version.data} onClick={() => setEnabling(true)}>Turn on updates…</Button>
         : <Button size="sm" variant="primary" disabled={version.busy || updated} onClick={version.check}>{version.checking ? "Checking…" : "Check for updates"}</Button>}

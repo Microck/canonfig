@@ -204,7 +204,7 @@ The integration acceptance below completes recovery, abandonment, restore, secre
 | Installers list and Check | **Live.** The same installer binding list, Windows suggestions and bounded check as `installer list/check`. Bind/remove remain terminal operations, not extra GUI buttons. | `GET /api/installers`; `POST /api/installers/:method/check` | E |
 | Machine setup journal, Approve plan, Apply | **Live:** E uses C's integrated handlers. Explicit human approval and the displayed plan digest precede approve/apply. Apply polls its real operation journal. Mark linger done is **hidden** because a checkbox cannot verify readiness. | `GET /api/setup`; `POST /api/setup/approve`, `/apply` | E frontend, C backend |
 | Health check Run checks, result detail, fix command copy | **Live.** `doctor --no-input` through FollowerCommands. Failed checks retain the report and CLI category/exit code; copying evidence or a recovery command does not execute it. | `POST /api/doctor` | E |
-| Canonfig version status, Check, Enable, Disable, Apply | **Live.** Uses the CLI updater with an own-lease handoff. Apply polls persisted progress and delivers the final result before clean server shutdown. Other processes still block activation and disable. | `GET /api/self-update`; `POST /api/self-update/check`, `/enable`, `/disable`, `/apply`; `GET /api/operations/:id` | E |
+| Version status, Check, Enable, Disable, Apply | **Live.** Uses the CLI updater with an own-lease handoff. Apply polls persisted progress and delivers the final result before clean server shutdown. Other processes still block activation and disable. | `GET /api/self-update`; `POST /api/self-update/check`, `/enable`, `/disable`, `/apply`; `GET /api/operations/:id` | E |
 | Source Secrets list, Set, Replace value, Remove, sharing membership | **Live:** `listSecrets/storeSecret/removeSecret` use the CLI failure mapping. Membership changes require replacement enrollment. Values remain write-only and absent from logs, URLs, status and browser persistence. | `GET`/`PUT`/`DELETE /api/secrets` | B frontend, D backend |
 
 Area E now uses the shared workspace settings screens through the administration slice described in Phase 2d. Its separate live administration components have been removed. Setup remains owned by area C.
@@ -291,7 +291,7 @@ Production session/token bootstrap remains in `live-app.tsx`. Its session determ
 
 ### Worked example
 
-Overview reads the actual session and CLI status without treating unreachable follower lifecycle stages as Source failures. Source service, Agent policy, Installers, Health check and Canonfig version all use the shared settings screens. Source service exposes real status/install/remove, not restart. Source policy saves do not attempt forbidden harness writes; direct Source harness writes still preserve the CLI refusal. Doctor retains failed reports and their CLI diagnostics. Version exposes status/check and terminal instructions for mutations. `ui/src/live/administration.tsx` and the old live Overview have been removed.
+Overview reads the actual session and CLI status without treating unreachable follower lifecycle stages as Source failures. Source service, Agent policy, Installers, Health check and Version all use the shared settings screens. Source service exposes real status/install/remove, not restart. Source policy saves do not attempt forbidden harness writes; direct Source harness writes still preserve the CLI refusal. Doctor retains failed reports and their CLI diagnostics. Version exposes status/check and terminal instructions for mutations. `ui/src/live/administration.tsx` and the old live Overview have been removed.
 
 ### Completed area ownership
 
@@ -393,7 +393,7 @@ The old release ceilings rejected the measured package, so they were raised only
 
 ## Issue #260: GUI self-update implementation
 
-The version page now uses the existing CLI updater for enable, disable, check and apply. Enable requires an npm CLI path and confirmation that every other process and schedule is idle. A managed lease releases only the current GUI's reader file during mutations and reacquires through normal coordination if the server continues. A second GUI or command still defers apply and prevents disable.
+The Version page now uses the existing CLI updater for enable, disable, check and apply. Enable requires an npm CLI path and confirmation that every other process and schedule is idle. A managed lease releases only the current GUI's reader file during mutations and reacquires through normal coordination if the server continues. A second GUI or command still defers apply and prevents disable.
 
 Apply returns an operation ticket and polls persisted `{ phase, candidate }` progress through checking, staging, verifying, activating and complete. Its result preserves the CLI's current, deferred or updated outcome. Deferred is successful with the CLI detail and exit code 0; failures preserve the CLI message, category and exit code. Activation delivers the completed operation response before the server closes and the page asks for `canonfig ui` to be restarted. The exact endpoints and lifecycle are in [ADR 0001](../adr/0001-local-browser-gui.md#self-update-from-the-gui).
 

@@ -70,7 +70,7 @@ wrong Host or Origin are rejected.
 
 Keep the terminal open while using the interface. Ctrl-C stops it with
 exit 130; SIGTERM stops it with exit 143. The command holds a self-update
-lease. The Canonfig version page can enable, disable and apply updates by
+lease. The Version page in Settings can enable, disable and apply updates by
 releasing only its own lease. Other running Canonfig processes still block
 activation and disable. After a successful update, the server exits cleanly;
 run `canonfig ui` again and open its new launch URL. Stop the interface first
@@ -108,7 +108,7 @@ Minor and major upgrades stay manual.
 | `auto` | Without `--apply`, previews once. `--apply` keeps running in the foreground and checks every `--interval <seconds>` (default 86400, from 60 to 604800). `--once` runs one pass, for an external scheduler. |
 
 A running command or an unfinished sync blocks activation. The browser's
-Canonfig version page supports the same operations, with the npm CLI path
+Version page in Settings supports the same operations, with the npm CLI path
 and an explicit idle confirmation for first enable. Leave only that GUI
 running when you confirm. A deferred apply shows the CLI detail with exit
 code 0 and leaves the GUI open; updater failures retain Human Action Required
