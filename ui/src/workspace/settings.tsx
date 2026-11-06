@@ -721,23 +721,24 @@ export function useSelfUpdate() {
   return [{ npmCli: version.npmCli, latest: version.latest }] as const;
 }
 
-const APPLY_COMMAND = "canonfig self-update apply --apply";
+const RESTART_COMMAND = "canonfig ui";
 
 export function VersionView() {
   const ws = useWorkspace();
   const version = ws.admin.version;
   const [enabling, setEnabling] = useState(false);
   const [disabling, setDisabling] = useState(false);
-  const [npmPath, setNpmPath] = useState("");
+  const [installing, setInstalling] = useState(false);
   const enableFocus = useDialogReturnFocus(focusPageHeading);
   const on = version.data?.enabled;
   const releaseLine = version.current.split(".").slice(0, 2).join(".");
   const available = version.checked?.status === "available";
+  const updated = version.checked?.status === "updated";
   return <>
     <PageHeader crumbs={["Settings", "Canonfig version"]} actions={<>
-      <Button size="sm" variant="outline" disabled={version.busy} onClick={version.reload}>Reload status</Button>
-      {!on && ws.capabilities.selfUpdateMutations && version.enable ? <Button size="sm" variant="primary" onClick={() => setEnabling(true)}>Turn on updates…</Button>
-        : <Button size="sm" variant="primary" disabled={version.busy} onClick={version.check}>{version.checking ? "Checking…" : "Check for updates"}</Button>}
+      <Button size="sm" variant="outline" disabled={version.busy || updated} onClick={version.reload}>Reload status</Button>
+      {!on ? <Button size="sm" variant="primary" disabled={version.busy || updated || !version.data} onClick={() => setEnabling(true)}>Turn on updates…</Button>
+        : <Button size="sm" variant="primary" disabled={version.busy || updated} onClick={version.check}>{version.checking ? "Checking…" : "Check for updates"}</Button>}
     </>} />
     <Body reloading={version.loading}>
       <Column>
@@ -757,52 +758,48 @@ export function VersionView() {
             </span>
           </SettingRow>}
         </div>
-        {version.checked && <p role="status" className="mt-4 text-sm text-pretty">{version.checked.detail}</p>}
-        {available && <div className="mt-5 grid max-w-[68ch] grid-cols-[minmax(0,1fr)] gap-2">
-          <p className="text-base text-pretty">To install {version.latest}, stop this GUI and run this in a terminal on this machine. It installs only while no other Canonfig command runs, and restarts nothing.</p>
-          <CommandBox>{APPLY_COMMAND}</CommandBox>
-        </div>}
+        {version.progress && <p role="status" className="mt-4 text-base capitalize">{version.progress.phase}{version.progress.candidate ? ` ${version.progress.candidate}` : ""}</p>}
+        {version.checked && <p role="status" className="mt-4 text-sm text-pretty">{updated ? `Canonfig ${version.checked.candidate} is installed. Start \`canonfig ui\` again.` : version.checked.detail}</p>}
+        {updated && DEMO && <p className="mt-2 text-sm">{version.checked?.detail}</p>}
+        {version.checked?.status === "deferred" && <p className="mt-2 text-sm">Exit code 0</p>}
+        {updated && <CommandBox>{RESTART_COMMAND}</CommandBox>}
+        {available && <Button size="sm" variant="primary" className="mt-5" disabled={version.busy} onClick={() => setInstalling(true)}>Install {version.latest}…</Button>}
         {version.unfinished && <p className="mt-5 text-base text-warn">An interrupted operation needs attention before updates can proceed.</p>}
-        {!on && version.unfinished && ws.capabilities.selfUpdateMutations && <Button size="sm" variant="outline" className="mt-2" onClick={() => ws.setView("sync")}>Open Sync</Button>}
-        {on && ws.capabilities.selfUpdateMutations && version.disable && <Button variant="destructive" size="sm" className="mt-6" onClick={() => setDisabling(true)}>Turn off updates…</Button>}
-        {!ws.capabilities.selfUpdateMutations && <section className="mt-6 grid gap-4 border-t border-border pt-4">
-          <SectionLabel>Update from a terminal</SectionLabel>
-          <p className="text-base text-pretty">Stop this GUI and all Canonfig processes and schedules before enabling, disabling or applying updates. Only a user-private npm installation under your home is supported.</p>
-          <Field label={`Absolute npm-cli.js path (${version.data?.platform === "win32" ? "PowerShell" : "POSIX shell"})`} htmlFor="update-npm-path">
-            <Input id="update-npm-path" className="font-mono text-sm" value={npmPath} onChange={(event) => setNpmPath(event.target.value)} />
-          </Field>
-          {npmPath && version.data && <CommandBox>{`canonfig self-update enable --apply --confirm-idle --npm-cli ${version.data.platform === "win32" ? `'${npmPath.replaceAll("'", "''")}'` : shq(npmPath)}`}</CommandBox>}
-          <CommandBox>canonfig self-update disable --apply</CommandBox>
-          {!available && <CommandBox>{APPLY_COMMAND}</CommandBox>}
-        </section>}
+        {!on && version.unfinished && <Button size="sm" variant="outline" className="mt-2" disabled={version.busy || updated} onClick={() => ws.setView("sync")}>Open Sync</Button>}
+        {on && <Button variant="destructive" size="sm" className="mt-6" disabled={version.busy || updated} onClick={() => setDisabling(true)}>Turn off updates…</Button>}
       </Column>
     </Body>
-    {ws.capabilities.selfUpdateMutations && version.enable && <Dialog open={enabling} onOpenChange={setEnabling}>
+    <Dialog open={enabling} onOpenChange={setEnabling}>
       <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md" {...enableFocus}>
-        <EnableUpdatesForm unfinished={version.unfinished} onCancel={() => setEnabling(false)} onEnable={(npmCli) => { version.enable?.(npmCli); setEnabling(false); }} />
+        <EnableUpdatesForm unfinished={version.unfinished} onCancel={() => setEnabling(false)} onEnable={(npmCli, confirmIdle) => { version.enable(npmCli, confirmIdle); setEnabling(false); }} />
       </DialogContent>
-    </Dialog>}
-    {ws.capabilities.selfUpdateMutations && version.disable && <ConfirmDialog open={disabling} onOpenChange={setDisabling} title="Turn off Canonfig updates?"
+    </Dialog>
+    <ConfirmDialog open={disabling} onOpenChange={setDisabling} title="Turn off Canonfig updates?"
       body="Canonfig stops checking for and installing patches on this machine. The backups of earlier versions and the update records stay."
-      confirm="Turn off updates" onConfirm={version.disable} />}
+      confirm="Turn off updates" onConfirm={version.disable} />
+    <ConfirmDialog open={installing} onOpenChange={setInstalling} title={`Install Canonfig ${version.latest}?`}
+      body="Stop every other Canonfig process and pause its schedules first. After installation, this GUI stops. Start canonfig ui again to use the installed version. Canonfig restarts nothing."
+      confirm="Install update" onConfirm={version.apply} />
   </>;
 }
 
 /** An npm-cli.js path, as `self-update enable --npm-cli` takes it: absolute, ending in npm's bin/npm-cli.js. */
-const NPM_CLI_SHAPE = /^\/.*\/npm-cli\.js$/;
+const NPM_CLI_SHAPE = /^(?:\/|[A-Za-z]:[\\/]|\\\\)[\s\S]*[\\/]npm-cli\.js$/;
 
 /**
  * The opt-in form (`self-update enable --apply --confirm-idle --npm-cli <path>`). It lives inside the dialog's content,
  * so closing the dialog resets it. Canonfig can't see processes started before opting in, so the person confirms
  * they're stopped; an interrupted sync refuses the opt-in, as the CLI does.
  */
-function EnableUpdatesForm({ unfinished, onCancel, onEnable }: { unfinished: boolean; onCancel: () => void; onEnable: (npmCli: string) => void }) {
+function EnableUpdatesForm({ unfinished, onCancel, onEnable }: { unfinished: boolean; onCancel: () => void; onEnable: (npmCli: string, confirmIdle: boolean) => void }) {
   const ws = useWorkspace();
   const [path, setPath] = useState("");
   const [idle, setIdle] = useState(false);
   const [tried, setTried] = useState(false);
-  const example = `${ws.role === "source" ? "/home/you" : "/Users/you"}/.npm-global/lib/node_modules/npm/bin/npm-cli.js`;
-  const pathError = tried && !NPM_CLI_SHAPE.test(path.trim()) ? "Enter the full path to npm's bin/npm-cli.js, starting with /." : null;
+  const example = ws.admin.version.data?.platform === "win32"
+    ? "C:\\Users\\you\\npm\\node_modules\\npm\\bin\\npm-cli.js"
+    : `${ws.role === "source" ? "/home/you" : "/Users/you"}/.npm-global/lib/node_modules/npm/bin/npm-cli.js`;
+  const pathError = tried && !NPM_CLI_SHAPE.test(path.trim()) ? "Enter the absolute path to npm's npm-cli.js file." : null;
   const idleError = tried && !idle ? "Tick this once every other Canonfig process is stopped and its schedules are paused." : null;
   const refusal = tried && !pathError && !idleError && unfinished ? "A sync was interrupted. Recover or abandon it on Sync first, then turn updates on." : null;
   return (
@@ -814,7 +811,7 @@ function EnableUpdatesForm({ unfinished, onCancel, onEnable }: { unfinished: boo
         setTried(true);
         if (!NPM_CLI_SHAPE.test(path.trim())) return e.currentTarget.querySelector<HTMLElement>("#npm-cli")?.focus();
         if (!idle) return e.currentTarget.querySelector<HTMLElement>("#npm-idle")?.focus();
-        if (!unfinished) onEnable(path.trim());
+        if (!unfinished) onEnable(path.trim(), idle);
       }}
     >
       <DialogHeader>

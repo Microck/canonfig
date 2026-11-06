@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { Effect, Schema } from "effect";
+import { Deferred, Effect, Schema } from "effect";
 
 import type { CliIo } from "../cli/cli.ts";
 import { CliCommandFailure } from "../cli/source-commands.ts";
@@ -17,6 +17,7 @@ import { profileRoutes } from "./routes/profile.ts";
 import { enrollmentRoutes } from "./routes/enrollment.ts";
 import { synchronizationRoutes } from "./routes/synchronization.ts";
 import { administrationRoutes } from "./routes/administration.ts";
+import { managedCommandLease, type ManagedCommandLease } from "../runtime/self-update/coordination.ts";
 
 export interface GuiOptions {
   readonly port: number;
@@ -103,7 +104,12 @@ const serveAsset = async (root: string, pathname: string, response: ServerRespon
 };
 
 /** The HTTP scope owns sockets and requests; interruption finishes them before the command lease exits. */
-export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: CliIo) {
+export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: CliIo, commandLease?: ManagedCommandLease) {
+  const lease = commandLease ?? managedCommandLease(fileURLToPath(new URL("../../", import.meta.url)));
+  yield* Effect.addFinalizer(() => Effect.sync(lease.close));
+  const stopped = yield* Deferred.make<void>();
+  let updating = false;
+  const updateSettled = () => { if (!lease.suspended) updating = false; };
   const operations = yield* makeGuiOperations;
   // Area registration is complete here. Area owners only fill their own modules.
   const routes = (yield* Effect.all([
@@ -111,7 +117,7 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
     profileRoutes,
     enrollmentRoutes,
     synchronizationRoutes,
-    administrationRoutes,
+    administrationRoutes(lease, () => { Effect.runSync(Deferred.succeed(stopped, undefined)); }, updateSettled),
   ]).pipe(Effect.provideService(GuiOperations, operations))).flat();
   routes.push(operations.route);
   const root = yield* Effect.tryPromise({
@@ -174,12 +180,35 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
         return;
       }
     }
+    const operationPoll = request.method === "GET" && /^\/api\/operations\/[^/]+$/u.test(url.pathname);
+    if (updating && !operationPoll) {
+      json(response, 409, failureBody("human-action-required", "A self-update operation is in progress. Wait for its result before running another GUI operation."));
+      return;
+    }
+    const selfUpdateMutation = request.method === "POST"
+      && ["/api/self-update/enable", "/api/self-update/disable", "/api/self-update/apply"].includes(url.pathname);
+    if (selfUpdateMutation) {
+      if (operations.running() || pending.size > 1) {
+        json(response, 409, failureBody("human-action-required", "Another GUI operation is active. Wait for it to finish before changing self-updates."));
+        return;
+      }
+      updating = true;
+    }
     const route = routes.find((candidate) => candidate.method === request.method && candidate.matches(url.pathname));
     if (route !== undefined) {
-      await Effect.runPromise(route.handle(request, url).pipe(Effect.match({
-        onFailure: (failure) => json(response, failure.category === "internal" ? 500 : failure.category === "conflict-or-drift" ? 409 : 400, failureBody(failure.category, failure.message)),
-        onSuccess: (body) => json(response, route.status ?? 200, body),
-      })), { signal });
+      try {
+        await Effect.runPromise(route.handle(request, url).pipe(Effect.match({
+          onFailure: (failure) => json(response, failure.category === "internal" ? 500 : failure.category === "conflict-or-drift" ? 409 : 400, failureBody(failure.category, failure.message)),
+          onSuccess: (body) => {
+            if (route.afterResponse !== undefined) response.once("finish", () => route.afterResponse?.(body));
+            json(response, route.status ?? 200, body);
+          },
+        })), { signal });
+      } finally {
+        // Body parsing owns the reservation too. A detached apply releases it
+        // through its own finalizer, not when its ticket response is sent.
+        if (selfUpdateMutation && !operations.running()) updateSettled();
+      }
       return;
     }
     if (url.pathname.startsWith("/api/")) {
@@ -230,5 +259,6 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
   io.writeStdout(`${url}\n`);
   io.writeStderr("Canonfig browser interface is running. Press Ctrl-C to stop.\n");
   if (options.open) openBrowser(url, io);
-  return yield* Effect.never;
+  yield* Deferred.await(stopped);
+  return { stopped: true };
 }, Effect.scoped);

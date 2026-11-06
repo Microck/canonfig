@@ -38,25 +38,27 @@ export function livePageResources(session: GuiSession, route: WorkspaceRoute): r
 }
 
 /** Each area owns its reads and mutations; only browser navigation and preferences are shared. */
-export function LiveWorkspaceProvider({ backend, session, route, children }: {
+export function LiveWorkspaceProvider({ backend, session, route, onInstalled, children }: {
   backend: WorkspaceBackend;
   session: GuiSession;
   route: WorkspaceRoute;
   children: ReactNode;
+  onInstalled: (version: string) => void;
 }) {
   const [cache] = useState(() => new LiveResourceCache());
   const paths = livePageResources(session, route);
   useEffect(() => () => cache.dispose(), [cache]);
   return <LiveResourcesContext value={{ cache, paths }}>
-    <LiveWorkspace backend={backend} session={session} route={route} cache={cache} paths={paths}>{children}</LiveWorkspace>
+    <LiveWorkspace backend={backend} session={session} route={route} cache={cache} paths={paths} onInstalled={onInstalled}>{children}</LiveWorkspace>
   </LiveResourcesContext>;
 }
 
-function LiveWorkspace({ backend, session, route, cache, paths, children }: {
+function LiveWorkspace({ backend, session, route, cache, paths, onInstalled, children }: {
   backend: WorkspaceBackend; session: GuiSession; route: WorkspaceRoute;
   cache: LiveResourceCache; paths: readonly string[]; children: ReactNode;
+  onInstalled: (version: string) => void;
 }) {
-  const admin = useLiveAdministration(backend, session, paths);
+  const admin = useLiveAdministration(backend, session, paths, onInstalled);
   const reload = useCallback(() => {
     cache.invalidate(paths);
     if (paths.includes("/api/source-service")) admin.service.reload();

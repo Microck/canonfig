@@ -9,8 +9,8 @@ import { HumanActionRequiredError, type MachineStateError } from "../../machine/
 import { MachineState } from "../../machine/machine-state.service.ts";
 import { asJson as toJson } from "../../profile/profile-codec.ts";
 import { installerMethods } from "../../domain/installer-binding.ts";
-import { update } from "../../runtime/self-update/core.ts";
-import { updateDirectory } from "../../runtime/self-update/coordination.ts";
+import { disable, enable, update, type UpdateProgress } from "../../runtime/self-update/core.ts";
+import { updateDirectory, type ManagedCommandLease } from "../../runtime/self-update/coordination.ts";
 import { readSettings } from "../../runtime/self-update/settings.ts";
 import { StateRepository } from "../../state/state-repository.service.ts";
 import {
@@ -19,10 +19,11 @@ import {
 } from "../../synchronization/installer-bindings.ts";
 import {
   GuiAgentHarness, GuiAgentPolicy, type GuiAgentHarnessRead, type GuiAgentPolicyRead,
-  GuiSourceServiceInput,
+  GuiSelfUpdateEnable, GuiSourceServiceInput,
 } from "../contract/administration.ts";
 import { GuiQueries } from "../queries.ts";
 import { EmptyBody, commandFailure, failureBody, mutationRoute, queryRoute, type GuiRoute } from "../routing.ts";
+import { GuiOperations } from "../operations.ts";
 
 const report = (operation: Effect.Effect<CliPayload, CliCommandFailure>) => operation.pipe(
   Effect.map((value) => ({ report: toJson(value), error: null })),
@@ -38,12 +39,13 @@ const installerFailure = (error: MachineStateError) => new CliCommandFailure({
     ? error.recovery : "Installer binding operation failed; inspect local executable and Canonfig directory access.",
 });
 
-export const administrationRoutes = Effect.gen(function*() {
+export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () => void, onSettled: () => void) => Effect.gen(function*() {
   const source = yield* SourceCommands;
   const follower = yield* FollowerCommands;
   const queries = yield* GuiQueries;
   const machine = yield* MachineState;
   const repository = yield* StateRepository;
+  const operations = yield* GuiOperations;
   const sourceOnly = <A>(operation: Effect.Effect<A, CliCommandFailure>) => Effect.gen(function*() {
     if ((yield* queries.session()).role !== "source") return yield* new CliCommandFailure({
       category: "usage-or-configuration", message: "Source service settings require a Source Machine.",
@@ -51,6 +53,17 @@ export const administrationRoutes = Effect.gen(function*() {
     return yield* operation;
   });
   const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const updateFailure = (cause: unknown) => new CliCommandFailure({
+    category: "human-action-required", message: cause instanceof Error ? cause.message : String(cause),
+  });
+  const status = () => {
+    const directory = updateDirectory(root);
+    const enabled = existsSync(join(directory, "settings.json"));
+    return toJson({
+      platform: process.platform, enabled, pending: existsSync(join(directory, "pending.json")),
+      settings: enabled ? readSettings(directory) : null,
+    });
+  };
   const routes: GuiRoute[] = [
     queryRoute("/api/source-service", () => sourceOnly(report(source.serviceStatus()))),
     mutationRoute("POST", "/api/source-service", GuiSourceServiceInput,
@@ -103,27 +116,41 @@ export const administrationRoutes = Effect.gen(function*() {
       )).filter((suggestion) => suggestion !== undefined);
       return toJson({ bindings, suggestions });
     }).pipe(Effect.provideService(MachineState, machine), Effect.mapError(installerFailure))),
-    queryRoute("/api/self-update", () => Effect.try({
-      try: () => {
-        const directory = updateDirectory(root);
-        const enabled = existsSync(join(directory, "settings.json"));
-        return toJson({
-          platform: process.platform,
-          enabled, pending: existsSync(join(directory, "pending.json")),
-          settings: enabled ? readSettings(directory) : null,
-        });
-      },
-      catch: (error) => new CliCommandFailure({
-        category: "human-action-required", message: error instanceof Error ? error.message : String(error),
-      }),
-    })),
+    queryRoute("/api/self-update", () => Effect.try({ try: status, catch: updateFailure })),
     mutationRoute("POST", "/api/self-update/check", EmptyBody,
       () => Effect.tryPromise({
         try: (signal) => update(root, false, undefined, signal),
-        catch: (error) => new CliCommandFailure({
-          category: "human-action-required", message: error instanceof Error ? error.message : String(error),
-        }),
+        catch: updateFailure,
       }).pipe(Effect.map(toJson))),
+    mutationRoute("POST", "/api/self-update/enable", GuiSelfUpdateEnable,
+      (input) => Effect.tryPromise({
+        try: (signal) => lease.selfUpdate(
+          () => enable(root, input.npmCli, input.confirmIdle, undefined, undefined, signal),
+          () => true,
+        ).finally(onSettled),
+        catch: updateFailure,
+      }).pipe(Effect.flatMap(() => Effect.try({ try: status, catch: updateFailure })))),
+    mutationRoute("POST", "/api/self-update/disable", EmptyBody,
+      () => Effect.tryPromise({
+        try: () => lease.selfUpdate(async () => disable(root), () => true).finally(onSettled),
+        catch: updateFailure,
+      }).pipe(Effect.flatMap(() => Effect.try({ try: status, catch: updateFailure })))),
+    mutationRoute("POST", "/api/self-update/apply", EmptyBody, () => {
+      let journal: UpdateProgress | null = null;
+      let installed = false;
+      return operations.start(Effect.tryPromise({
+        try: (signal) => lease.selfUpdate(
+          () => update(root, true, undefined, signal, undefined, (progress) => { journal = progress; }),
+          (result) => {
+            installed = result.status === "updated";
+            return !installed;
+          },
+        ).finally(onSettled),
+        catch: updateFailure,
+      }).pipe(Effect.map(toJson)),
+      () => Effect.succeed(toJson(journal)),
+      () => { if (installed) onUpdated(); });
+    }, 202),
   ];
   for (const method of installerMethods) {
     routes.push(mutationRoute("POST", `/api/installers/${method}/check`, EmptyBody,

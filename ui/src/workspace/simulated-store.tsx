@@ -413,7 +413,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     profileStates: { items: READY, revisions: READY, skills: READY, secrets: READY },
     machineStates: { inventory: READY, enrollment: READY, setup: READY },
     followerStates: { harnesses: READY, local: READY, schedule: READY, backups: READY, overlays: READY, tunnel: READY },
-    capabilities: { invitationCancel: true, selectiveScanWrite: true, serviceRestart: true, privateReviewDelete: true, simulatedTelemetry: true, selfUpdateMutations: true, profileWrite: true, enrollmentWrite: true, followerWrite: true },
+    capabilities: { invitationCancel: true, selectiveScanWrite: true, serviceRestart: true, privateReviewDelete: true, simulatedTelemetry: true, profileWrite: true, enrollmentWrite: true, followerWrite: true },
     sourceMachine: machine,
     followerSelf,
     selfFollower: { ...seedFollowers[0], name: machineName, revision: appliedRevision === 0 ? null : appliedRevision, state: humanAction ? "human-action" : plan.some((item) => item.action === "skip-drift") ? "drift" : appliedRevision === 0 ? "never-synced" : "converged" },

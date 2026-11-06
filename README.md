@@ -75,8 +75,9 @@ errors keep the CLI's diagnostics. map names and appearance stay in this browser
 the Source card on a Follower shows "Source" and its endpoint because enrollment
 does not store the Source machine's name.
 
-self-update status and checks are available, but stop the GUI before enabling,
-disabling or applying updates in a terminal. unenrollment leaves applied files,
+self-update status, checks, enable, disable and apply are available on the
+Canonfig version page. stop other Canonfig processes before updating; after
+activation, restart with `canonfig ui`. unenrollment leaves applied files,
 the native schedule and tunnel configuration in place, as the CLI does.
 
 the [interactive demo](https://canonfig.micr.dev) and images below use made-up

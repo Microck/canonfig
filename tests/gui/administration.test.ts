@@ -143,8 +143,9 @@ it("enforces Source role and keeps unsupported operations absent", async () => {
     const response = await api("/api/source-service", method, method === "POST" ? { hostname: "127.0.0.1", port: 17342 } : {});
     expect(response.body).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   }
-  for (const path of ["/api/source-service/restart", "/api/self-update/enable", "/api/self-update/disable", "/api/self-update/apply"]) {
-    expect((await api(path, "POST")).status).toBe(404);
+  expect((await api("/api/source-service/restart", "POST")).status).toBe(404);
+  for (const path of ["/api/self-update/enable", "/api/self-update/disable", "/api/self-update/apply"]) {
+    expect((await api(path, "POST", { extra: true })).body).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   }
 }, 60_000);
 

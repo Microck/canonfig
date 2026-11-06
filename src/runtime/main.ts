@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { fileURLToPath } from "node:url";
-import { commandLease } from "./self-update/coordination.ts";
+import { managedCommandLease, type ManagedCommandLease } from "./self-update/coordination.ts";
 
 import type * as EffectModule from "effect";
 
@@ -65,12 +65,13 @@ process.on("SIGTERM", exitBeforeRuntime);
 const arguments_ = process.argv.slice(2);
 const selfUpdateCommand = arguments_.filter((arg) => arg !== "--json")[0] === "self-update";
 const installedRoot = fileURLToPath(new URL("../../", import.meta.url));
+let lease: ManagedCommandLease | undefined;
 // Once opted in, every ordinary command holds a lease before loading a command
 // graph. Long-lived sources/watchers defer activation instead of losing code.
 if (!selfUpdateCommand) {
   try {
-    const release = commandLease(installedRoot);
-    if (release) process.once("exit", release);
+    lease = managedCommandLease(installedRoot);
+    process.once("exit", lease.close);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const {renderCliResult}=await import("../cli/render.ts");
@@ -315,7 +316,7 @@ if (early !== undefined) {
     await runMain((effect) =>
       effect.Effect.promise(() => import("./layers.ts")).pipe(
         effect.Effect.flatMap(({ runtimeLayer }) =>
-          runCli(arguments_, nodeCliIo, synchronizeSecretsAfterApply(effect)).pipe(
+          runCli(arguments_, nodeCliIo, synchronizeSecretsAfterApply(effect), lease).pipe(
             // `source serve` is the one command that outlives its own effect:
             // it returns once the loopback server is listening and the process
             // must then stay up to serve. Waiting on the exit code rather than

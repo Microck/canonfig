@@ -48,3 +48,49 @@ export function readersActive(directory: string): boolean {
   if (!lstatSync(readers).isDirectory() || lstatSync(readers).isSymbolicLink()) throw new Error("Invalid self-update readers directory");
   return readdirSync(readers).length > 0;
 }
+
+export interface ManagedCommandLease {
+  readonly suspended: boolean;
+  readonly close: () => void;
+  readonly selfUpdate: <A>(operation: () => Promise<A>, keepsRunning: (result: A) => boolean) => Promise<A>;
+}
+
+/** A capability for this command's lease, never for another process's reader files. */
+export function managedCommandLease(root: string): ManagedCommandLease {
+  let release = commandLease(root);
+  let suspended = false;
+  let closed = false;
+  return {
+    get suspended() { return suspended; },
+    close() {
+      closed = true;
+      release?.();
+      release = undefined;
+    },
+    async selfUpdate<A>(operation: () => Promise<A>, keepsRunning: (result: A) => boolean): Promise<A> {
+      if (closed || suspended) throw new Error("This command is already stopping or performing a self-update operation");
+      suspended = true;
+      release?.();
+      release = undefined;
+      let resume: boolean;
+      let result: A;
+      try {
+        result = await operation();
+        resume = keepsRunning(result);
+      } catch (error) {
+        try {
+          if (!closed) release = commandLease(root);
+          suspended = false;
+        } catch {
+          // Preserve the operation's CLI error if its pending journal prevents
+          // re-entry. Stay suspended so the GUI cannot start more commands.
+        }
+        throw error;
+      }
+      // Re-enter through the ordinary gate, never bypassing a pending transaction.
+      if (resume && !closed) release = commandLease(root);
+      suspended = !resume;
+      return result;
+    },
+  };
+}

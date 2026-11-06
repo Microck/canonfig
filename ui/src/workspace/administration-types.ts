@@ -1,5 +1,5 @@
 import type { Schema } from "effect";
-import type { GuiAgentPolicy, GuiSourceServiceStatus, GuiSelfUpdateCheck, GuiSelfUpdateStatus } from "../../../src/gui/contract/administration";
+import type { GuiAgentPolicy, GuiSourceServiceStatus, GuiSelfUpdateCheck, GuiSelfUpdateStatus, GuiSelfUpdateProgress } from "../../../src/gui/contract/administration";
 import type { GuiRequestError } from "../gui-client";
 
 export interface AdministrationResource<T> {
@@ -76,9 +76,10 @@ export interface AdministrationSlice {
     checked: typeof GuiSelfUpdateCheck.Type | null;
     checking: boolean;
     check: () => void;
-    /** Absent in live workspaces: these mutations require stopping the GUI. */
-    enable?: (npmCli: string) => void;
-    disable?: () => void;
+    enable: (npmCli: string, confirmIdle: boolean) => void;
+    disable: () => void;
+    apply: () => void;
+    progress: typeof GuiSelfUpdateProgress.Type | null;
     unfinished: boolean;
   };
   /** Demo setup presentation only; the live setup workflow belongs to enrollment. */

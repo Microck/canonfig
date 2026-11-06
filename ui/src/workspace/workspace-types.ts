@@ -141,7 +141,6 @@ export interface WorkspaceCapabilities {
   serviceRestart: boolean;
   privateReviewDelete: boolean;
   simulatedTelemetry: boolean;
-  selfUpdateMutations: boolean;
   profileWrite: boolean;
   enrollmentWrite: boolean;
   followerWrite: boolean;

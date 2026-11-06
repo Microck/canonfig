@@ -31,9 +31,23 @@ Build commands force Vite's production environment before it selects the entrypo
 
 ### Self-update from the GUI
 
-Once a person opts in to self-updates, every ordinary command holds an update lease while it runs (`commandLease` in `src/runtime/self-update/coordination.ts`), and an update installs only while no lease is held. `canonfig ui` holds that same lease. Applying an update in-process would therefore defer on its own lease. Disabling updates also refuses active commands, and enabling requires an idle installation.
+The live Canonfig version page supports status, checks, enable, disable and apply through the same updater as the CLI. First enable requires the absolute npm CLI path and explicit confirmation that every other Canonfig process and schedule has stopped. Unsupported installations and updater failures preserve the CLI's `human-action-required` category, exit code 3 and exact message.
 
-The live Canonfig version page exposes status and checks. It directs users to stop the GUI before running self-update mutations in a terminal, including enabling, disabling and `canonfig self-update apply --apply`. In-GUI activation and the server's lease handoff remain deferred to issue #260. The GUI has no exemption from the normal lease.
+The GUI holds a managed command lease. A self-update mutation suspends only that server's own lease, never another process's reader file. Other GUI requests cannot start domain work during the handoff. Enable registers the server's lease after opt-in; disable removes coordination settings only while other commands are idle. Check leaves the lease intact. A second GUI, Source, watcher or other command still blocks activation and disable. Deferred activation is a successful result with the CLI detail and exit code 0, not an update failure.
+
+The authenticated JSON endpoints are:
+
+| Endpoint | Body | Response |
+| --- | --- | --- |
+| `GET /api/self-update` | None | `GuiSelfUpdateStatus` |
+| `POST /api/self-update/check` | `{}` | `GuiSelfUpdateCheck` |
+| `POST /api/self-update/enable` | `{ "npmCli": "/absolute/path/to/npm-cli.js", "confirmIdle": true }` | `GuiSelfUpdateStatus` |
+| `POST /api/self-update/disable` | `{}` | `GuiSelfUpdateStatus` |
+| `POST /api/self-update/apply` | `{}` | HTTP 202 with `GuiOperationTicket` |
+
+Apply uses the existing `GET /api/operations/:id` polling contract. Its journal is `GuiSelfUpdateProgress`, `{ phase, candidate }`, read from persisted updater progress. `phase` is `checking`, `staging`, `verifying`, `activating` or `complete`; `candidate` is a version string or `null` before selection. The successful result is `GuiSelfUpdateCheck` with status `updated`, `current` or `deferred`. Progress reports actual updater work, not a timer.
+
+After activation, the server waits for the final successful operation response to finish before closing its HTTP server, releasing its scope and exiting cleanly. The page retains the update result and tells the person to run `canonfig ui` again for a new authenticated session. It does not restart services or continue using the old process against the new package. A current or deferred result keeps the server running and reacquires its ordinary lease. Failures also re-enter normal coordination rather than bypassing a pending transaction or another updater's gate.
 
 ## Considered options
 

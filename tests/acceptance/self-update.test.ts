@@ -3,8 +3,8 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { enable, installation, latestPatch, parseVersion, update, assertNoUnfinishedRun, run, type Runner } from "../../src/runtime/self-update/core.ts";
-import { commandLease, updateDirectory, acquireGate } from "../../src/runtime/self-update/coordination.ts";
+import { disable, enable, installation, latestPatch, parseVersion, update, assertNoUnfinishedRun, run, type Runner, type UpdateProgress } from "../../src/runtime/self-update/core.ts";
+import { commandLease, managedCommandLease, updateDirectory, acquireGate } from "../../src/runtime/self-update/coordination.ts";
 import { runSelfUpdateCli } from "../../src/runtime/self-update/cli.ts";
 import { Effect, Fiber } from "effect";
 import { runCancellablePromise } from "../../src/runtime/cancellable-promise.ts";
@@ -79,6 +79,78 @@ describe("self-update policy and package activation",()=>{
   expect((await update(f.root,true,f.runner,undefined,f.home)).status).toBe("deferred");release();
   const gate=acquireGate(updateDirectory(f.root));expect(()=>commandLease(f.root)).toThrow("busy");gate();
   expect((await update(f.root,true,f.runner,undefined,f.home)).status).toBe("updated");
+ });
+ it("registers its own lease after enabling and removes it when disabling",async()=>{
+  const f=fixture();const lease=managedCommandLease(f.root);const readers=join(updateDirectory(f.root),"readers");
+  try {
+   await lease.selfUpdate(()=>enable(f.root,f.npmCli,true,f.runner,f.home),()=>true);
+   expect(readdirSync(readers)).toHaveLength(1);
+   await lease.selfUpdate(async()=>disable(f.root),()=>true);
+   expect(readdirSync(readers)).toEqual([]);
+   expect(existsSync(join(updateDirectory(f.root),"settings.json"))).toBe(false);
+   expect(lease.suspended).toBe(false);
+  } finally {lease.close();}
+ });
+ it("suspends only its own reader and reacquires after a deferred update or failure",async()=>{
+  const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
+  const lease=managedCommandLease(f.root);const readers=join(updateDirectory(f.root),"readers");
+  const own=readdirSync(readers)[0];const releaseOther=commandLease(f.root)!;
+  const other=readdirSync(readers).find(name=>name!==own);
+  try {
+   const result=await lease.selfUpdate(async()=>{
+    expect(lease.suspended).toBe(true);
+    expect(readdirSync(readers)).toEqual([other]);
+    return update(f.root,true,f.runner,undefined,f.home);
+   },result=>result.status!=="updated");
+   expect(result.status).toBe("deferred");expect(lease.suspended).toBe(false);
+   expect(readdirSync(readers)).toContain(other);expect(readdirSync(readers)).toHaveLength(2);
+   await expect(lease.selfUpdate(async()=>disable(f.root),()=>true)).rejects.toThrow("Cannot disable while commands or an interrupted transaction exist");
+   expect(readdirSync(readers)).toContain(other);expect(readdirSync(readers)).toHaveLength(2);
+   releaseOther();
+   expect((await lease.selfUpdate(()=>update(f.root,true,f.runner,undefined,f.home),result=>result.status!=="updated")).status).toBe("updated");
+   expect(readdirSync(readers)).toEqual([]);
+  } finally {releaseOther();lease.close();}
+ });
+ it("does not bypass a pending transaction when reacquiring after failure",async()=>{
+  const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);const lease=managedCommandLease(f.root);
+  try {
+   await expect(lease.selfUpdate(async()=>{
+    writeFileSync(join(updateDirectory(f.root),"pending.json"),"{}");
+    throw new Error("activation interrupted");
+   },()=>true)).rejects.toThrow("activation interrupted");
+   expect(lease.suspended).toBe(true);
+   await expect(lease.selfUpdate(async()=>undefined,()=>true)).rejects.toThrow("already stopping or performing");
+   expect(readdirSync(join(updateDirectory(f.root),"readers"))).toEqual([]);
+   expect(existsSync(join(updateDirectory(f.root),"pending.json"))).toBe(true);
+  } finally {lease.close();}
+ });
+ it("refuses concurrent handoffs and never reacquires after close during a handoff",async()=>{
+  const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);const lease=managedCommandLease(f.root);
+  const finished=Promise.withResolvers<void>();
+  const operation=lease.selfUpdate(()=>finished.promise,()=>true);
+  try {
+   expect(lease.suspended).toBe(true);
+   await expect(lease.selfUpdate(async()=>undefined,()=>true)).rejects.toThrow("already stopping or performing");
+   lease.close();finished.resolve();await operation;
+   expect(readdirSync(join(updateDirectory(f.root),"readers"))).toEqual([]);
+   await expect(lease.selfUpdate(async()=>undefined,()=>true)).rejects.toThrow("already stopping or performing");
+  } finally {finished.resolve();await operation;lease.close();}
+ });
+ it("reports each update phase only after its progress record is persisted",async()=>{
+  const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
+  const progress:UpdateProgress[]=[];
+  const result=await update(f.root,true,f.runner,undefined,f.home,value=>{
+   expect(JSON.parse(readFileSync(join(updateDirectory(f.root),"progress.json"),"utf8"))).toEqual(value);
+   progress.push(value);
+  });
+  expect(result.status).toBe("updated");
+  expect(progress).toEqual([
+   {phase:"checking",candidate:null},
+   {phase:"staging",candidate:"4.2.1"},
+   {phase:"verifying",candidate:"4.2.1"},
+   {phase:"activating",candidate:"4.2.1"},
+   {phase:"complete",candidate:"4.2.1"},
+  ]);
  });
  it("refuses unfinished and unreadable synchronization state without installing",async()=>{
   const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);

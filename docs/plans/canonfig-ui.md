@@ -199,7 +199,7 @@ The integration acceptance below completes recovery, abandonment, restore, secre
 | Installers list and Check | **Live.** The same installer binding list, Windows suggestions and bounded check as `installer list/check`. Bind/remove remain terminal operations, not extra GUI buttons. | `GET /api/installers`; `POST /api/installers/:method/check` | E |
 | Machine setup journal, Approve plan, Apply | **Live:** E uses C's integrated handlers. Explicit human approval and the displayed plan digest precede approve/apply. Apply polls its real operation journal. Mark linger done is **hidden** because a checkbox cannot verify readiness. | `GET /api/setup`; `POST /api/setup/approve`, `/apply` | E frontend, C backend |
 | Health check Run checks, result detail, fix command copy | **Live.** `doctor --no-input` through FollowerCommands. Failed checks retain the report and CLI category/exit code; copying evidence or a recovery command does not execute it. | `POST /api/doctor` | E |
-| Canonfig version status and Check; enable/disable/apply instructions | Status and Check are **live**. Enable, disable and apply are **terminal-only**, with copyable commands and instructions to stop the GUI first. No write endpoint or command-lease exemption. | `GET /api/self-update`; `POST /api/self-update/check` | E |
+| Canonfig version status, Check, Enable, Disable, Apply | **Live.** Uses the CLI updater with an own-lease handoff. Apply polls persisted progress and delivers the final result before clean server shutdown. Other processes still block activation and disable. | `GET /api/self-update`; `POST /api/self-update/check`, `/enable`, `/disable`, `/apply`; `GET /api/operations/:id` | E |
 | Source Secrets list, Set, Replace value, Remove, sharing membership | **Live:** `listSecrets/storeSecret/removeSecret` use the CLI failure mapping. Membership changes require replacement enrollment. Values remain write-only and absent from logs, URLs, status and browser persistence. | `GET`/`PUT`/`DELETE /api/secrets` | B frontend, D backend |
 
 Area E now uses the shared workspace settings screens through the administration slice described in Phase 2d. Its separate live administration components have been removed. Setup remains owned by area C.
@@ -210,7 +210,7 @@ Area E now uses the shared workspace settings screens through the administration
 2. **Decided:** read contracts expose only real folder data, enrollment records, stored invitations, run journals and takeover snapshots. No invented telemetry, progress, timestamps or remote schedules.
 3. **Decided:** invitation cancellation, selective scan writes, service restart and private-review deletion stay hidden in production until CLI counterparts exist. The demo keeps them. Map appearance customization stays browser-local in localStorage.
 4. **Decided:** unenrollment matches the CLI's actual cleanup boundaries. Setup uses plan, explicit human approval and apply through its existing journal. A checkbox cannot certify credentials, host keys, linger or convergence.
-5. **Decided:** self-update status/check may become live now. Enable, disable and apply from the GUI remain phase 3, tracked by issue #260, with no command-lease exemption.
+5. **Decided:** #260 adds enable, disable and apply from the GUI through the existing updater. Only the requesting server's own lease is suspended. Other processes and unfinished transactions retain their existing protections. See the implementation close-out below and ADR 0001 for the API.
 
 ### Fresh-machine reads and page loading
 
@@ -280,7 +280,7 @@ The earlier area evidence below records focused authoring and administration exe
 
 Each live resource exposes loading and its decoded CLI error. `LiveWorkspaceProvider` selects and loads only the active page's resources, so the existing skeletons and `ErrorNotice` show pending or failed reads without replacing them with fixture data. `live/resource.ts` owns the session cache, abortable reads and real operation-ticket polling. Backend state is never persisted in browser storage. Map appearance, dismissed guidance and unfinished UI drafts remain browser-local.
 
-`capabilities` separates unavailable CLI operations from the demo: invitation cancellation, selective scan writes, service restart, private-review deletion and self-update mutations are false in production. `simulatedTelemetry` is false too. Profile, enrollment and follower write capabilities are true; their completed hooks supply the shared forms.
+`capabilities` separates unavailable CLI operations from the demo: invitation cancellation, selective scan writes, service restart and private-review deletion are false in production. `simulatedTelemetry` is false too. Profile, enrollment, follower writes and self-update mutations are live; their hooks supply the shared forms.
 
 Production session/token bootstrap remains in `live-app.tsx`. Its session determines the allowed role and routes; unconfigured machines redirect to `/setup`. The old screen registry is gone. Both builds now render the shared onboarding flow, with a real enrollment controller in production and fixture injection in the demo. Live tours include the navigation introduction and Agent policy, without claiming remote health or the demo's Source name.
 
@@ -362,7 +362,7 @@ Screenshots are retained in `/tmp/canonfig-ui/final/`. The action evidence below
 
 Fixture corrections did not bypass product safeguards: replacement enrollment first required a fresh apply before restore; a retained recovery journal required the same packaged build and its projected artifacts. The initial local-file credential fixture correctly refused shared secrets, so acceptance used actual native keyrings. Invalid custom native calendar input returned the CLI failure; `Sun *-*-* 11:30:00` installed successfully.
 
-Not exercised in this Linux acceptance: native macOS/Windows behavior and self-update mutations. The latter remain explicitly terminal-only and outside this phase. Native Source service install/remove was exercised only in the disposable guest after the Follower's final unenrollment.
+Not exercised in this Linux acceptance: native macOS/Windows behavior and self-update mutations. The latter were outside this phase; #260's implementation and verification are recorded separately below. Native Source service install/remove was exercised only in the disposable guest after the Follower's final unenrollment.
 
 The final page pass captured 28 supported pages at both 1920×1080 and 390×844, plus the deliberately unavailable Source Backups route. Every page reported document width equal to viewport width, no overflowing monospace evidence and no raw JSON status blocks. Files use `<role>-<page-path-with-hyphens>-<width>.png`; `browser-page-evidence.json` records all 58 observations. Earlier captures made while the old test-environment packaging bug replaced assets with the demo were discarded and replaced after the production fix.
 
@@ -384,4 +384,24 @@ All checks ran in the disposable Paris Raft guest:
 
 The sole final-suite failure is the known root-user permission case in `tests/integration/synchronization-run.test.ts`: root writes the nominally unwritable target, so the outcome is `Converged` rather than `Failed`. No test was skipped or weakened for this result. The initial unrestricted-worker run also timed out the publication metadata-budget case at 60 seconds; it passed alone in 23.75 seconds and in the final complete two-worker run. The final full run took 963.51 seconds.
 
-The old release ceilings rejected the measured package, so they were raised only after measurement, with those bytes recorded beside the new limits. All 100 final screenshots, the signed export, page-width evidence and verification logs are retained under `/tmp/canonfig-ui/final/`. Remaining product follow-ups are the setup cross-process transaction boundary, advisory bundle splitting and GUI self-update lease handoff, not unfinished area cutovers.
+The old release ceilings rejected the measured package, so they were raised only after measurement, with those bytes recorded beside the new limits. All 100 final screenshots, the signed export, page-width evidence and verification logs are retained under `/tmp/canonfig-ui/final/`. Remaining product follow-ups from that acceptance were the setup cross-process transaction boundary, advisory bundle splitting and GUI self-update lease handoff, not unfinished area cutovers.
+
+## Issue #260: GUI self-update implementation
+
+The version page now uses the existing CLI updater for enable, disable, check and apply. Enable requires an npm CLI path and confirmation that every other process and schedule is idle. A managed lease releases only the current GUI's reader file during mutations and reacquires through normal coordination if the server continues. A second GUI or command still defers apply and prevents disable.
+
+Apply returns an operation ticket and polls persisted `{ phase, candidate }` progress through checking, staging, verifying, activating and complete. Its result preserves the CLI's current, deferred or updated outcome. Deferred is successful with the CLI detail and exit code 0; failures preserve the CLI message, category and exit code. Activation delivers the completed operation response before the server closes and the page asks for `canonfig ui` to be restarted. The exact endpoints and lifecycle are in [ADR 0001](../adr/0001-local-browser-gui.md#self-update-from-the-gui).
+
+The added acceptance coverage uses disposable homes, npm prefixes, local package fixtures and real subprocesses. It covers enable/check/apply, another command's lease, exact CLI failure and disable refusal, package activation and process/port cleanup. A slow request-body case verifies that another request cannot clear the server's update reservation. Coordination tests cover own-lease ownership and interrupted-transaction recovery.
+
+Verification completed in a disposable Paris Raft workspace:
+
+- UI typecheck, production build with its module-graph guard, demo build, root TypeScript compilation and `npm run lint` passed. Root and website lint reported no warnings or errors.
+- The GUI acceptance/routes, self-update, command-log and GUI plumbing suites passed 65 tests across nine files, with two platform-specific command-log tests skipped. The self-update suite accounts for 25 tests, and the new real-npm GUI integration accounts for two. A focused rerun passed both GUI update cases after adding exact CLI failure parity.
+- Rendered live resource tests and update-gate tests passed all 11 cases. The installed page retained its restart command and made no further requests after client navigation.
+- Documentation validation checked 438 command examples across 61 files. Skill validation checked three skill structures.
+- Release validation passed metadata, naming, secret-pattern, clean-install and binary checks: 438 packaged files, 1,243,025 packed bytes and 4,292,975 unpacked bytes.
+
+Playwright from `/tmp/pw` then exercised the locally rebuilt package at 1920×1080 and 390×844. Both viewports completed turn-on with idle confirmation, check, a deferred install while a real second GUI held a lease, and installation after that process stopped. Both servers exited with code 0, and both disposable installations reported 6.0.1. No browser page errors occurred. All 12 screenshots waited for no `[aria-busy=true]` and are retained with `results.json` under `/tmp/canonfig-ui/self-update/`, named `<width>-{off,enable,enabled,available,deferred,installed}.png`.
+
+The Raft workspace and all disposable browser processes, homes and npm prefixes were removed. Native macOS/Windows execution and a full future-release package were not exercised: the local candidate is a minimal real npm package with executable version/help checks. No live installation, public registry write, push or issue closure occurred. Vite still reports its advisory large-chunk warning. Issue #260 remains open until merge.

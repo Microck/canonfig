@@ -26,6 +26,8 @@ export interface GuiRoute {
   readonly matches: (pathname: string) => boolean;
   readonly handle: (request: IncomingMessage, url: URL) => Effect.Effect<Schema.Json, CliCommandFailure>;
   readonly status?: number;
+  /** Called only after the successful response has been flushed to its socket. */
+  readonly afterResponse?: (body: Schema.Json) => void;
 }
 
 export const queryRoute = <A extends Schema.Json>(path: string, query: () => Effect.Effect<A, CliCommandFailure>): GuiRoute => ({

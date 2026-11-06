@@ -19,7 +19,7 @@ export function useLiveOverview(backend: WorkspaceBackend, session: GuiSession, 
     pageLoading: status.loading,
     capabilities: {
       invitationCancel: false, selectiveScanWrite: false, serviceRestart: false,
-      privateReviewDelete: false, simulatedTelemetry: false, selfUpdateMutations: false,
+      privateReviewDelete: false, simulatedTelemetry: false,
       profileWrite: true, enrollmentWrite: true, followerWrite: true,
     },
     notImplemented,

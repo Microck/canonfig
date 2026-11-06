@@ -45,6 +45,7 @@ export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): Admini
   const [version, setVersion] = useSharedState<{ npmCli: string | null; latest: string | null }>("self-update", { npmCli: selfUpdateSeed[ws.role].npmCli, latest: null });
   const [checkingVersion, setCheckingVersion] = useSharedState<object | null>("self-update-checking", null);
   const readCheckingVersion = useSharedReader<object | null>("self-update-checking", null);
+  const [appliedVersion, setAppliedVersion] = useSharedState<AdministrationSlice["version"]["checked"]>("self-update-applied", null);
   const [skillBusy] = useSharedState<string | null>("skill-busy", null);
   const [doctorRunning, setDoctorRunning] = useState(false);
   const [doctorProgress, setDoctorProgress] = useState(100);
@@ -148,11 +149,12 @@ export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): Admini
     version: {
       data: { enabled: version.npmCli !== null, pending: false, platform: ws.role === "source" ? "linux" : "darwin", settings: version.npmCli ? { npmCli: version.npmCli } : null },
       current: APP_VERSION, npmCli: version.npmCli, latest: version.latest, loading: false, busy: checkingVersion !== null, error: null,
-      checked: version.latest ? { current: APP_VERSION, candidate: version.latest, status: version.latest === APP_VERSION ? "current" : "available", detail: `Only patches in the ${APP_VERSION.split(".").slice(0, 2).join(".")} line are offered.` } : null,
-      checking: checkingVersion !== null, unfinished: gate.unfinished,
+      checked: appliedVersion ?? (version.latest ? { current: APP_VERSION, candidate: version.latest, status: version.latest === APP_VERSION ? "current" : "available", detail: `Only patches in the ${APP_VERSION.split(".").slice(0, 2).join(".")} line are offered.` } : null),
+      checking: checkingVersion !== null, unfinished: gate.unfinished, progress: null,
       reload: () => toast("Update status refreshed", { description: "This demo uses simulated release data." }),
       check: () => {
         if (readCheckingVersion()) return;
+        setAppliedVersion(null);
         const run = {}; setCheckingVersion(run);
         ws.later(() => {
           if (readCheckingVersion() !== run) return;
@@ -160,8 +162,10 @@ export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): Admini
           toast(LATEST_PATCH === APP_VERSION ? "Canonfig is up to date" : `Canonfig ${LATEST_PATCH} is available`, { description: `This machine has ${APP_VERSION}.` });
         }, 900);
       },
-      enable: (npmCli) => {
+      enable: (npmCli, confirmIdle) => {
+        if (!confirmIdle) return;
         if (gate.unfinished) { toast.error("Recover or abandon the interrupted sync first."); return; }
+        setAppliedVersion(null);
         setVersion((previous) => ({ ...previous, npmCli }));
         toast.success("Updates turned on", { description: `Start the services and schedules you stopped again.${DEMO ? "\nSaved in this demo workspace." : ""}` });
       },
@@ -172,7 +176,17 @@ export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): Admini
           return;
         }
         setCheckingVersion(null); setVersion({ npmCli: null, latest: null });
+        setAppliedVersion(null);
         toast("Updates turned off", { description: "Backups of earlier versions and the update records stay on this machine." });
+      },
+      apply: () => {
+        if (readCheckingVersion()) return;
+        const candidate = version.latest ?? APP_VERSION;
+        setAppliedVersion({
+          current: APP_VERSION, candidate,
+          status: gate.busyWith || gate.unfinished ? "deferred" : candidate === APP_VERSION ? "current" : "updated",
+          detail: gate.busyWith || gate.unfinished ? "Another Canonfig operation needs attention. Stop running commands and recover any interrupted sync before installing." : "The demo simulated this update. No package was installed.",
+        });
       },
     },
     setup: {

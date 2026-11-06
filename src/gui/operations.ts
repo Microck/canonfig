@@ -8,12 +8,14 @@ export class GuiOperations extends Context.Service<GuiOperations, {
   readonly start: (
     operation: Effect.Effect<Schema.Json, CliCommandFailure>,
     journal: () => Effect.Effect<Schema.Json, CliCommandFailure>,
+    onDelivered?: () => void,
   ) => Effect.Effect<GuiOperationTicket, CliCommandFailure>;
 }>()("canonfig/gui/GuiOperations") {}
 
 interface OperationRecord {
   snapshot: GuiOperation;
   readonly journal: () => Effect.Effect<Schema.Json, CliCommandFailure>;
+  readonly onDelivered?: () => void;
 }
 
 /** HTTP disconnection does not cancel an apply. The GUI scope still owns its lifetime. */
@@ -23,13 +25,14 @@ export const makeGuiOperations = Effect.gen(function*() {
   const start = Effect.fn("GuiOperations.start")(function*(
     operation: Effect.Effect<Schema.Json, CliCommandFailure>,
     journal: () => Effect.Effect<Schema.Json, CliCommandFailure>,
+    onDelivered?: () => void,
   ) {
     // Retain completed results until the server closes; never evict a ticket somebody is polling.
     if (operations.size >= 64) return yield* Effect.fail(new CliCommandFailure({
       category: "usage-or-configuration", message: "This GUI session has reached 64 operations. Restart canonfig ui before starting another operation.",
     }));
     const id = randomUUID();
-    const entry: OperationRecord = { snapshot: { id, state: "running", journal: null }, journal };
+    const entry: OperationRecord = { snapshot: { id, state: "running", journal: null }, journal, onDelivered };
     operations.set(id, entry);
     yield* operation.pipe(
       Effect.match({
@@ -55,6 +58,11 @@ export const makeGuiOperations = Effect.gen(function*() {
       const journal = yield* entry.journal();
       return { ...entry.snapshot, journal };
     }),
+    afterResponse: (body) => {
+      if (Schema.is(GuiOperation)(body) && body.state === "succeeded") {
+        operations.get(body.id)?.onDelivered?.();
+      }
+    },
   };
-  return { start, route };
+  return { start, route, running: () => [...operations.values()].some((entry) => entry.snapshot.state === "running") };
 });

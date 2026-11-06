@@ -108,3 +108,11 @@ export const GuiSelfUpdateCheck = Schema.Struct({
   status: Schema.Literals(["current", "available", "deferred", "updated"]),
   detail: Schema.String,
 });
+export const GuiSelfUpdateEnable = Schema.Struct({
+  npmCli: Schema.NonEmptyString,
+  confirmIdle: Schema.Boolean,
+});
+export const GuiSelfUpdateProgress = Schema.Struct({
+  phase: Schema.Literals(["checking", "staging", "verifying", "activating", "complete"]),
+  candidate: Schema.NullOr(Schema.String),
+});

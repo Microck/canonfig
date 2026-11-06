@@ -3,12 +3,12 @@ import { toCliPayload } from "../../cli/command-output.ts";
 import { Predicate } from "effect";
 import { readSettings } from "./settings.ts";
 import type { UpdateResult } from "./core.ts";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { CliIo } from "../../cli/cli.ts";
-import { acquireGate, readersActive, updateDirectory } from "./coordination.ts";
-import { enable, installation, update, syncDirectory } from "./core.ts";
+import { updateDirectory } from "./coordination.ts";
+import { disable, enable, installation, update } from "./core.ts";
 
 export const selfUpdateHelp = `Usage: canonfig self-update <enable|disable|status|check|apply|auto> [options]
 
@@ -65,10 +65,7 @@ export async function runSelfUpdateCli(args: readonly string[],root:string,io:Cl
   }
   if(command==="disable"){
    if(!apply){output("Preview: disable future self-updates. Rerun with --apply.");return;}
-   const release=acquireGate(directory);try{
-    if(existsSync(join(directory,"pending.json"))||readersActive(directory))throw new Error("Cannot disable while commands or an interrupted transaction exist");
-    rmSync(join(directory,"settings.json"));syncDirectory(directory);
-   }finally{release();}output("Self-updating disabled. Backups and receipts retained.");return;
+   disable(root);output("Self-updating disabled. Backups and receipts retained.");return;
   }
   // Checks require explicit opt-in so the npm executable/prefix are established.
   do {

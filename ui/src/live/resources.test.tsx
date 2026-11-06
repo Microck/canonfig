@@ -15,7 +15,7 @@ import { navigate, useAppRoute } from "../workspace/routes";
 function NavigationProbe({ backend, session }: { backend: WorkspaceBackend; session: GuiSession }) {
   const route = useAppRoute();
   if (route.kind !== "workspace") return <p>Page not found</p>;
-  return <LiveWorkspaceProvider backend={backend} session={session} route={route}>
+  return <LiveWorkspaceProvider backend={backend} session={session} route={route} onInstalled={() => assert.fail("Navigation tests must not install updates")}>
     <ResourceProbe />
     {route.view === "setup" && <SetupJournal backend={backend} session={session} />}
   </LiveWorkspaceProvider>;
@@ -42,6 +42,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 // Workspace controls register DOM listeners at import time, after the test window exists.
 const { LiveWorkspaceProvider } = await import("../workspace/live-provider");
 const { SetupJournal } = await import("../onboarding/enrollment-controller");
+const { default: LiveApp } = await import("../live-app");
 after(async () => { await GlobalRegistrator.unregister(); });
 
 for (const role of ["source", "follower"] as const) {
@@ -167,3 +168,92 @@ for (const role of ["source", "follower"] as const) {
     }
   });
 }
+
+it("self-update renders persisted progress and stops requests after installation", async () => {
+  const requests: string[] = [];
+  let operationReads = 0;
+  const responses: Record<string, unknown> = {
+    "/api/session": { role: "source", machineName: "Update fixture", folderPath: "/tmp/update-fixture", version: "6.0.0" },
+    "/api/status": { machineRole: { role: "source" }, lifecycle: {}, tunnel: null },
+    "/api/self-update": { enabled: true, pending: false, platform: "linux", settings: { npmCli: "/tmp/update-fixture/npm/bin/npm-cli.js" } },
+    "/api/self-update/check": { current: "6.0.0", candidate: "6.0.1", status: "available", detail: "Patch available." },
+    "/api/self-update/apply": { id: "update-operation" },
+  };
+  // This disposable HTTP fixture exercises the real browser transport and schemas,
+  // but never invokes an installer or shuts down an operator's GUI.
+  const server = createServer((incoming, outgoing) => {
+    const path = incoming.url ?? "/";
+    outgoing.setHeader("Content-Type", "application/json");
+    outgoing.setHeader("Access-Control-Allow-Origin", "http://localhost");
+    outgoing.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    outgoing.setHeader("Access-Control-Allow-Headers", "content-type, x-canonfig-request, cache-control");
+    if (incoming.method === "OPTIONS") { outgoing.end(); return; }
+    requests.push(`${incoming.method} ${path}`);
+    if (path === "/api/operations/update-operation") {
+      operationReads += 1;
+      outgoing.end(JSON.stringify(operationReads === 1
+        ? { id: "update-operation", state: "running", journal: { phase: "staging", candidate: "6.0.1" } }
+        : { id: "update-operation", state: "succeeded", journal: { phase: "complete", candidate: "6.0.1" }, result: { current: "6.0.0", candidate: "6.0.1", status: "updated", detail: "Installed 6.0.1." } }));
+      return;
+    }
+    outgoing.statusCode = path in responses ? path === "/api/self-update/apply" ? 202 : 200 : 404;
+    incoming.resume();
+    outgoing.end(JSON.stringify(responses[path] ?? { message: `Unexpected request ${path}` }));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const origin = `http://127.0.0.1:${address.port}`;
+  const backend: WorkspaceBackend = {
+    request: (path, schema, signal, mutation) => request(`${origin}${path}`, schema, signal, mutation),
+    session: (signal) => request(`${origin}/api/session`, GuiSession, signal),
+    status: (signal) => request(`${origin}/api/status`, GuiStatus, signal),
+    operation: (id, signal) => request(`${origin}/api/operations/${id}`, GuiOperation, signal),
+  };
+  window.history.replaceState(null, "", "/source/settings/version");
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  async function settle(text: string) {
+    for (let attempt = 0; attempt < 200; attempt++) {
+      await act(async () => { await delay(10); });
+      if (container.textContent?.includes(text)) return;
+    }
+    assert.fail(`Missing ${text}: ${container.textContent}`);
+  }
+  async function click(label: string) {
+    const button = [...document.querySelectorAll("button")].find((candidate) => candidate.textContent === label);
+    assert.ok(button, `Missing button ${label}`);
+    assert.equal(button.disabled, false);
+    await act(async () => { button.click(); });
+  }
+  try {
+    await act(async () => { root.render(<LiveApp backend={backend} />); });
+    await settle("/tmp/update-fixture/npm/bin/npm-cli.js");
+    await click("Check for updates");
+    await settle("Patch available.");
+    await click("Install 6.0.1…");
+    assert.ok(document.body.textContent?.includes("After installation, this GUI stops."));
+    await click("Install update");
+    await settle("staging 6.0.1");
+    await settle("Canonfig 6.0.1 is installed. Start `canonfig ui` again.");
+    assert.equal(operationReads, 2);
+    assert.equal(container.querySelector('[title="canonfig ui"]')?.textContent, "canonfig ui");
+    assert.ok(container.querySelector('button[aria-label="Copy"]'));
+    const completedRequests = [...requests];
+    await act(async () => { navigate("/not-a-workspace"); });
+    await act(async () => { navigate("/source/settings/version"); });
+    await act(async () => { await delay(550); });
+    assert.deepEqual(requests, completedRequests, "completion must unmount resource reads and stop operation polling");
+    assert.ok(container.textContent?.includes("Canonfig 6.0.1 is installed."));
+    assert.equal(container.querySelectorAll("button").length, 1, "only the copy command control remains");
+  } finally {
+    await act(async () => { root.unmount(); });
+    container.remove();
+    server.closeAllConnections();
+    const stopped = once(server, "close");
+    server.close();
+    await stopped;
+  }
+});
