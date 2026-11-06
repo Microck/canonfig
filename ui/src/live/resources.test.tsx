@@ -237,7 +237,9 @@ it("self-update renders persisted progress and stops requests after installation
     assert.ok(document.body.textContent?.includes("After installation, this GUI stops."));
     await click("Install update");
     await settle("staging 6.0.1");
-    await settle("Canonfig 6.0.1 is installed. Start `canonfig ui` again.");
+    await settle("Canonfig 6.0.1 is installed. Start canonfig ui again.");
+    assert.equal(container.querySelector('[role="status"] .font-mono')?.textContent, "canonfig ui");
+    assert.ok(!container.querySelector('[role="status"]')?.textContent?.includes("`"));
     assert.equal(operationReads, 2);
     assert.equal(container.querySelector('[title="canonfig ui"]')?.textContent, "canonfig ui");
     assert.ok(container.querySelector('button[aria-label="Copy"]'));

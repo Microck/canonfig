@@ -15,6 +15,7 @@ import { ScreenContext } from "./workspace/screen-context";
 import { requestError } from "./workspace/live/resource";
 import type { GuiRequestError } from "./gui-client";
 import { CommandBox } from "./workspace/kit";
+import { Mono } from "./shared/shared";
 
 const SKELETON_THEME: SkulletTheme = {
   dark: { base: "var(--muted)", highlight: "color-mix(in oklab, var(--foreground) 7%, transparent)" },
@@ -50,7 +51,7 @@ export default function LiveApp({ backend = httpBackend }: { backend?: Workspace
   if (installedVersion !== null) {
     content = <main className="mx-auto max-w-[880px] px-4 py-12 sm:px-8">
       <h1 className="text-xl font-medium">Canonfig updated</h1>
-      <p role="status" className="my-6">{`Canonfig ${installedVersion} is installed. Start \`canonfig ui\` again.`}</p>
+      <p role="status" className="my-6">Canonfig {installedVersion} is installed. Start <Mono>canonfig ui</Mono> again.</p>
       <CommandBox>canonfig ui</CommandBox>
     </main>;
   } else if (state.kind === "loading") {

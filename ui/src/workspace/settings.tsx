@@ -759,7 +759,7 @@ export function VersionView() {
           </SettingRow>}
         </div>
         {version.progress && <p role="status" className="mt-4 text-base capitalize">{version.progress.phase}{version.progress.candidate ? ` ${version.progress.candidate}` : ""}</p>}
-        {version.checked && <p role="status" className="mt-4 text-sm text-pretty">{updated ? `Canonfig ${version.checked.candidate} is installed. Start \`canonfig ui\` again.` : version.checked.detail}</p>}
+        {version.checked && <p role="status" className="mt-4 text-sm text-pretty">{updated ? <>Canonfig {version.checked.candidate} is installed. Start <Mono>{RESTART_COMMAND}</Mono> again.</> : version.checked.detail}</p>}
         {updated && DEMO && <p className="mt-2 text-sm">{version.checked?.detail}</p>}
         {version.checked?.status === "deferred" && <p className="mt-2 text-sm">Exit code 0</p>}
         {updated && <CommandBox>{RESTART_COMMAND}</CommandBox>}
