@@ -28,6 +28,7 @@ export interface SetupPlanCommandInput {
 
 export interface SetupApproveCommandInput {
   readonly approver: string;
+  readonly planDigest?: string | undefined;
 }
 
 export interface SetupCommandsService {
@@ -37,7 +38,7 @@ export interface SetupCommandsService {
   readonly approve: (
     input: SetupApproveCommandInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
-  readonly apply: () => Effect.Effect<CliPayload, CliCommandFailure>;
+  readonly apply: (input?: { readonly planDigest: string }) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly status: () => Effect.Effect<CliPayload, CliCommandFailure>;
 }
 

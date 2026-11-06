@@ -21,6 +21,7 @@ import {
 } from "../runtime/build-identity.ts";
 import type { SetupImportRequest } from "../cli/setup-commands.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
+import { withRunLock } from "../synchronization/run-lock.ts";
 import { SetupError } from "./setup.errors.ts";
 import {
   executeFolderScaffold,
@@ -73,6 +74,19 @@ const fail = (
 ): SetupError => new SetupError({ operation, message, category, recovery });
 const asJson = <Value>(value: Value): JsonValue =>
   Schema.decodeUnknownSync(Schema.MutableJson)(JSON.parse(JSON.stringify(value)));
+
+/** All setup writers share one journal lease, including separate CLI processes. */
+const withSetupJournalLock = <A, R>(journalPath: string, operation: string, effect: Effect.Effect<A, SetupError, R>) =>
+  withRunLock(journalPath, operation, effect).pipe(Effect.mapError((cause) =>
+    cause instanceof SetupError ? cause
+      : cause._tag === "RunLockHeldError"
+        ? fail(operation, "Another process is changing the setup journal. Retry after it finishes.", "conflict")
+        : fail(operation, cause.message, "state"),
+  ));
+
+const checkPlanDigest = (journal: SetupJournal, expectedDigest: string | undefined, operation: string) =>
+  expectedDigest === undefined || journal.planDigest === expectedDigest ? Effect.void
+    : Effect.fail(fail(operation, "The setup plan changed. Reload and review the current plan before approving or applying it.", "conflict"));
 
 /** Establish the requested role before running role-specific inspection. */
 export const establishSetupRole = (value: string): Effect.Effect<SetupRole, SetupError> =>
@@ -848,7 +862,7 @@ export const planSetup = (
   input: SetupPlanInput,
   journalPath: string,
 ): Effect.Effect<SetupJournal, SetupError, MachineState | Enrollment | StateRepository> =>
-  Effect.gen(function*() {
+  withSetupJournalLock(journalPath, "setup plan", Effect.gen(function*() {
     const machine = yield* MachineState;
     // The role is established before any role-specific inspection runs.
     const role = yield* establishSetupRole(input.roleText);
@@ -964,13 +978,14 @@ export const planSetup = (
     };
     yield* writeJournal(machine, journalPath, journal);
     return journal;
-  });
+  }));
 
 export const approveSetup = (
   approver: string,
   journalPath: string,
+  expectedDigest?: string,
 ): Effect.Effect<SetupJournal, SetupError, MachineState> =>
-  Effect.gen(function*() {
+  withSetupJournalLock(journalPath, "setup approve", Effect.gen(function*() {
     const machine = yield* MachineState;
     if (approver.trim().length === 0) {
       return yield* fail(
@@ -984,6 +999,7 @@ export const approveSetup = (
     if (journal === undefined) {
       return yield* fail("setup approve", "no setup plan exists", "usage", "Run setup plan first.");
     }
+    yield* checkPlanDigest(journal, expectedDigest, "setup approve");
     if (isSetupApproved(journal)) return journal;
     const timestamp = new Date().toISOString();
     const updated: SetupJournal = {
@@ -993,7 +1009,7 @@ export const approveSetup = (
     };
     yield* writeJournal(machine, journalPath, updated);
     return updated;
-  });
+  }));
 
 /**
  * Execute one plan item through the typed Canonfig controller. Every command
@@ -1263,13 +1279,15 @@ const recordItem = (
 export const applySetup = (
   journalPath: string,
   environment: (name: string) => string | undefined,
+  expectedDigest?: string,
 ): Effect.Effect<SetupJournal, SetupError, MachineState | Enrollment | StateRepository> =>
-  Effect.gen(function*() {
+  withSetupJournalLock(journalPath, "setup apply", Effect.gen(function*() {
     const machine = yield* MachineState;
     const stored = yield* readJournal(machine, journalPath);
     if (stored === undefined) {
       return yield* fail("setup apply", "no setup plan exists", "usage", "Run setup plan first.");
     }
+    yield* checkPlanDigest(stored, expectedDigest, "setup apply");
     // The machine may have taken the other role since the plan was made (a
     // Follower plan on a machine that ran `source init`, a Source plan on one
     // that enrolled). Refuse before anything runs or the journal changes.
@@ -1360,7 +1378,7 @@ export const applySetup = (
     };
     yield* writeJournal(machine, journalPath, journal);
     return journal;
-  });
+  }));
 
 /**
  * The setup decision record: what was chosen (role, scope, mode, intent,

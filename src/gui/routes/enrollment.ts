@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Effect, Schema, Semaphore } from "effect";
+import { Effect, Schema } from "effect";
 import { FollowerCommands } from "../../cli/follower-commands.ts";
 import { SetupCommands } from "../../cli/setup-commands.ts";
 import { CliCommandFailure, SourceCommands, type CliPayload } from "../../cli/source-commands.ts";
@@ -43,8 +43,6 @@ export const enrollmentRoutes = Effect.gen(function*() {
   const repository = yield* StateRepository;
   const queries = yield* GuiQueries;
   const operations = yield* GuiOperations;
-  // Serialize journal mutations so approval cannot race a re-plan in this GUI.
-  const setupLock = yield* Semaphore.make(1);
   const requireRole = (roles: ReadonlyArray<string>) => queries.session().pipe(Effect.flatMap((session) =>
     roles.includes(session.role) ? Effect.void : Effect.fail(new CliCommandFailure({
       category: "usage-or-configuration", message: `This operation is not available on a ${session.role} machine.`,
@@ -54,11 +52,6 @@ export const enrollmentRoutes = Effect.gen(function*() {
     Schema.decodeUnknownEffect(GuiSetupStatus)(value).pipe(Effect.mapError(() => new CliCommandFailure({
       category: "internal", message: "The setup service returned an invalid status.",
     }))),
-  ));
-  const checkPlan = (digest: string) => setupStatus().pipe(Effect.flatMap((status) =>
-    status.planDigest === digest ? Effect.succeed(status) : Effect.fail(new CliCommandFailure({
-      category: "conflict-or-drift", message: "The setup plan changed. Reload and review the current plan before approving or applying it.",
-    })),
   ));
   const enrollment = () => Effect.gen(function*() {
     yield* requireRole(["follower"]);
@@ -106,15 +99,11 @@ export const enrollmentRoutes = Effect.gen(function*() {
       )), () => Effect.succeed(null));
     }), 202),
     queryRoute("/api/setup", () => setupStatus().pipe(Effect.flatMap(json))),
-    mutationRoute("POST", "/api/setup/plan", GuiSetupPlanInput, (input) => setup.plan(input).pipe(Effect.flatMap(json), setupLock.withPermits(1))),
-    mutationRoute("POST", "/api/setup/approve", GuiSetupApproveInput, (input) => checkPlan(input.planDigest).pipe(
-      Effect.andThen(setup.approve({ approver: input.approver })), Effect.flatMap(json), setupLock.withPermits(1),
-    )),
-    mutationRoute("POST", "/api/setup/apply", GuiSetupApplyInput, (input) => Effect.gen(function*() {
-      yield* checkPlan(input.planDigest);
-      return yield* operations.start(checkPlan(input.planDigest).pipe(Effect.andThen(setup.apply()), Effect.flatMap(json), setupLock.withPermits(1)), () => setupStatus().pipe(
-        Effect.flatMap((status) => json(status.planDigest === input.planDigest ? status : null)),
-      ));
-    }), 202),
+    mutationRoute("POST", "/api/setup/plan", GuiSetupPlanInput, (input) => setup.plan(input).pipe(Effect.flatMap(json))),
+    mutationRoute("POST", "/api/setup/approve", GuiSetupApproveInput, (input) => setup.approve(input).pipe(Effect.flatMap(json))),
+    mutationRoute("POST", "/api/setup/apply", GuiSetupApplyInput, (input) => operations.start(
+      setup.apply(input).pipe(Effect.flatMap(json)),
+      () => setupStatus().pipe(Effect.flatMap((status) => json(status.planDigest === input.planDigest ? status : null))),
+    ), 202),
   ];
 });

@@ -87,8 +87,8 @@ export const setupCommandsLayer = (
           imports: input.imports,
           environment,
         }, journalPath)),
-        approve: (input) => run(approveSetup(input.approver, journalPath)),
-        apply: () => run(applySetup(journalPath, environment)),
+        approve: (input) => run(approveSetup(input.approver, journalPath, input.planDigest)),
+        apply: (input) => run(applySetup(journalPath, environment, input?.planDigest)),
         status: () =>
           setupStatus(journalPath).pipe(
             Effect.provideService(MachineState, journalMachine),

@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
+import { withRunLock } from "../../src/synchronization/run-lock.ts";
 import { GuiOperation } from "../../src/gui/contract/operations.ts";
 import { GuiSetupStatus } from "../../src/gui/contract/enrollment.ts";
 
@@ -74,6 +75,25 @@ afterEach(async () => {
 });
 
 describe("real enrollment and setup endpoints", () => {
+  it("refuses CLI setup writers while another process owns the setup journal lock", async () => {
+    const machine = fixture();
+    const planned = machine.invoke(["setup", "plan", "--role", "follower", "--scope", "cli-only"]);
+    expect(planned.status, planned.stdout + planned.stderr).toBe(0);
+    const journalPath = join(machine.home, ".canonfig", "setup.json");
+    const original = readFileSync(journalPath, "utf8");
+    await Effect.runPromise(withRunLock(journalPath, "test setup journal owner", Effect.sync(() => {
+      for (const args of [
+        ["setup", "approve", "--approver", "reviewer"],
+        ["setup", "apply"],
+        ["setup", "plan", "--role", "follower", "--scope", "cli-only", "--intent", "different"],
+      ]) {
+        const result = machine.invoke(args);
+        expect(result.status, result.stdout + result.stderr).toBe(4);
+        expect(readFileSync(journalPath, "utf8")).toBe(original);
+      }
+    })));
+  }, 60_000);
+
   it("rejects role-invalid and malformed requests with CLI categories and exit codes", async () => {
     const machine = fixture();
     const server = await gui(machine.env);
@@ -109,6 +129,11 @@ describe("real enrollment and setup endpoints", () => {
     const revised = await server.request("/api/setup/plan", { ...input, imports: { kind: "some", requested: selected } });
     expect(revised.body.planDigest).not.toBe(plan.body.planDigest);
     expect((await server.request("/api/setup/approve", { approver: "reviewer", planDigest: plan.body.planDigest })).body).toMatchObject({ category: "conflict-or-drift", exitCode: 4 });
+    const staleApply = await server.request("/api/setup/apply", { planDigest: plan.body.planDigest });
+    expect(staleApply.status).toBe(202);
+    expect(await finish(server, staleApply.body)).toMatchObject({
+      state: "failed", failure: { category: "conflict-or-drift", exitCode: 4 },
+    });
     expect((await server.request("/api/setup/approve", { approver: "reviewer", planDigest: revised.body.planDigest })).body.approvals).toEqual(expect.arrayContaining([expect.objectContaining({ approver: "reviewer", digest: revised.body.planDigest })]));
     const apply = await server.request("/api/setup/apply", { planDigest: revised.body.planDigest });
     expect(apply.status).toBe(202);

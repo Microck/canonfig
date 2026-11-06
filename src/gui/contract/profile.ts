@@ -1,9 +1,23 @@
 import { Schema } from "effect";
 
+/** Scan without regex backtracking or decoded copies, including multi-megabyte files. */
+export const GuiBase64 = Schema.String.check(Schema.makeFilter((value) => {
+  if (value.length % 4 !== 0) return "Expected padded base64.";
+  let end = value.length;
+  if (value.endsWith("==")) end -= 2;
+  else if (value.endsWith("=")) end--;
+  for (let index = 0; index < end; index++) {
+    const code = value.charCodeAt(index);
+    if (!((code >= 65 && code <= 90) || (code >= 97 && code <= 122) ||
+      (code >= 48 && code <= 57) || code === 43 || code === 47)) return "Expected padded base64.";
+  }
+  return undefined;
+}));
+
 /** Bytes use base64 so authored binary files round-trip without text conversion. */
 export const GuiProfileFile = Schema.Struct({
   path: Schema.String,
-  base64: Schema.String.check(Schema.isPattern(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u)),
+  base64: GuiBase64,
   executable: Schema.Boolean,
 });
 export const GuiProfileItem = Schema.Struct({ path: Schema.String, digest: Schema.NullOr(Schema.String), files: Schema.Array(GuiProfileFile) });

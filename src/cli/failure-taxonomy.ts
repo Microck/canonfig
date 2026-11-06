@@ -544,6 +544,8 @@ export const failureTaxonomy = {
           return "usage-or-configuration";
         case "prerequisite":
           return "human-action-required";
+        case "conflict":
+          return "conflict-or-drift";
         case "state":
         default:
           return "internal";
