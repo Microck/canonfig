@@ -205,7 +205,7 @@ export function Sidebar({ className, onNavigate, onOpenTours }: { className?: st
               </DropdownMenuItem>
             </>
           )}
-          <DropdownMenuItem onSelect={() => navigateFromMenu("version")}>{newer ? `Canonfig ${newer} is available` : "Canonfig version"}</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => navigateFromMenu("version")}>{newer ? `Canonfig ${newer} is available` : "Version"}</DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => toast("Open Canonfig on that machine to manage it")}>Manage another machine…</DropdownMenuItem>
         </DropdownMenuContent>

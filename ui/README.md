@@ -77,7 +77,7 @@ The table below lists demo routes. In the demo, the URL selects the role, screen
 | Health check | `/source/settings/health` | `/follower/settings/health` |
 | SSH tunnel | | `/follower/settings/tunnel` |
 | Enrollment | | `/follower/settings/enrollment` |
-| Canonfig version (self-update) | `/source/settings/version` | `/follower/settings/version` |
+| Version (self-update) | `/source/settings/version` | `/follower/settings/version` |
 
 First-run setup is `/setup`. Retired role and variant query parameters are not routing aliases.
 
@@ -118,7 +118,7 @@ A skill's detail panel on the Source has an Upstream section for `canonfig skill
 
 While a skill update runs, the item editor is locked, and the update compares the folder's copy once more right before replacing it. An editor whose draft is untouched follows its saved item when that changes, so a panel opened mid-update shows the updated skill and stays clean. Renaming a tracked skill keeps its source record and last check under the new name; removing it drops them.
 
-Settings, Canonfig version shows the running version for both roles. Turn on updates by entering the absolute path to npm's `npm-cli.js` and confirming that every other Canonfig process is stopped and its schedules are paused. Windows paths are supported. Only a user-private npm installation under your home is supported, and an interrupted sync blocks opt-in.
+Settings, Version shows the running version for both roles. Turn on updates by entering the absolute path to npm's `npm-cli.js` and confirming that every other Canonfig process is stopped and its schedules are paused. Windows paths are supported. Only a user-private npm installation under your home is supported, and an interrupted sync blocks opt-in.
 
 Check for updates finds the newest patch in the current major.minor line. Install asks for confirmation, then shows actual updater phases while polling the operation. Another Canonfig command can defer installation; the page keeps the CLI detail and exit code 0 visible. Errors preserve the CLI message and exit code. Turning updates off also refuses while another command holds an update lease.
 

@@ -69,7 +69,7 @@ explicitly disable/re-enable the configuration rather than reusing stale intent.
 
 ## Update from the browser
 
-Open the Canonfig version page in `canonfig ui`. The same installation limits,
+Open the Version page in Settings in `canonfig ui`. The same installation limits,
 patch-only policy and recovery rules apply as in the terminal.
 
 1. Stop all other Canonfig processes and pause schedules before first enable.
@@ -83,7 +83,7 @@ patch-only policy and recovery rules apply as in the terminal.
    frees its port. It does not restart itself or other services.
 
 You do not need to stop this GUI to enable, disable or apply updates from its
-version page. It temporarily releases only its own command lease. Another GUI,
+Version page. It temporarily releases only its own command lease. Another GUI,
 Source, watcher or command still defers apply and prevents disable. Finish or
 stop those processes, then retry. Deferred apply leaves the server running and
 shows the CLI's detail as a successful deferred result, with exit code 0.

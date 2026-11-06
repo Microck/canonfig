@@ -39,7 +39,7 @@ Build commands force Vite's production environment before it selects the entrypo
 
 ### Self-update from the GUI
 
-The live Canonfig version page supports status, checks, enable, disable and apply through the same updater as the CLI. First enable requires the absolute npm CLI path and explicit confirmation that every other Canonfig process and schedule has stopped. Unsupported installations and updater failures preserve the CLI's `human-action-required` category, exit code 3 and exact message.
+The live Version page in Settings supports status, checks, enable, disable and apply through the same updater as the CLI. First enable requires the absolute npm CLI path and explicit confirmation that every other Canonfig process and schedule has stopped. Unsupported installations and updater failures preserve the CLI's `human-action-required` category, exit code 3 and exact message.
 
 The GUI holds a managed command lease. A self-update mutation suspends only that server's own lease, never another process's reader file. Other GUI requests cannot start domain work during the handoff. Enable registers the server's lease after opt-in; disable removes coordination settings only while other commands are idle. Check leaves the lease intact. A second GUI, Source, watcher or other command still blocks activation and disable. Deferred activation is a successful result with the CLI detail and exit code 0, not an update failure.
 
