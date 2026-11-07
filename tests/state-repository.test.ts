@@ -186,6 +186,26 @@ describe("StateRepository SQLite adapter", () => {
     }));
   });
 
+  it("refuses applying a reservation before its backup choice is durable", async () => {
+    const path = databasePath();
+    await runWithRepository(path, Effect.gen(function*() {
+      yield* seed();
+      const repository = yield* StateRepository;
+      const run = asRunId("preparing-takeover");
+      yield* repository.startRun({ id: run, follower: follower().id, revision: revision().id,
+        plan: plan(), startedAt: "2026-08-15T12:01:00Z", preparing: true });
+      const reservation = { _tag: "Reserved" as const, harness: "codex", surface: "instructions",
+        root: "/disposable/home/.codex", run, takenOverAt: "2026-08-15T12:01:00Z" };
+      yield* repository.recordHarnessTakeovers([{ ...reservation, backup: { _tag: "Pending" } }]);
+      expect(yield* Effect.flip(repository.beginRun(run))).toBeInstanceOf(InvalidRunTransitionError);
+      expect((yield* repository.loadRecovery(follower().id))?.run.lifecycle._tag).toBe("Preparing");
+      yield* repository.recordHarnessTakeovers([{ ...reservation, backup: { _tag: "Snapshot", id: "captured" } }]);
+      expect(yield* Effect.flip(repository.recordHarnessTakeovers([{ ...reservation, backup: { _tag: "Disabled" } }]))).toBeInstanceOf(InvalidRunTransitionError);
+      yield* repository.beginRun(run);
+      expect((yield* repository.loadRecovery(follower().id))?.run.lifecycle._tag).toBe("Applying");
+    }));
+  });
+
   it("runs idempotent migrations and persists identities as references", async () => {
     const path = databasePath();
     const program = Effect.gen(function*() {

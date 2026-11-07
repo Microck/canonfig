@@ -448,9 +448,11 @@ export const stateMigrations = SqliteMigrator.fromRecord({
             WHERE key.value = substr(harness_takeovers.surface, instr(harness_takeovers.surface, '#') + 1)))) THEN 'Owned'
       WHEN EXISTS (SELECT 1 FROM synchronization_runs r WHERE r.id = harness_takeovers.run_id AND r.phase IN ('Applying', 'Interrupted')) THEN 'Reserved'
       ELSE 'Uncertain' END`;
-    const orphaned = yield* sql`SELECT harness, surface FROM harness_takeovers t WHERE t.phase = 'Uncertain'
-      AND NOT EXISTS (SELECT 1 FROM synchronization_runs r WHERE r.id = t.run_id AND r.phase = 'Finalizing'
-        AND json_extract(r.outcome_json, '$.outcome') = 'Failed' AND json_extract(r.outcome_json, '$.rollbackIncomplete') = 1)`;
+    const orphaned = yield* sql`SELECT harness, surface FROM harness_takeovers t
+      WHERE NOT EXISTS (SELECT 1 FROM synchronization_runs r WHERE r.id = t.run_id)
+        OR t.phase = 'Uncertain' AND NOT EXISTS (
+          SELECT 1 FROM synchronization_runs r WHERE r.id = t.run_id AND r.phase = 'Finalizing'
+            AND json_extract(r.outcome_json, '$.outcome') = 'Failed' AND json_extract(r.outcome_json, '$.rollbackIncomplete') = 1)`;
     const orphan = Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ harness: Schema.String, surface: Schema.String })))(orphaned)[0];
     if (orphan !== undefined) return yield* new RepositoryDecodeError({
       entity: "6.1 takeover migration", id: `${orphan.harness}:${orphan.surface}`,
@@ -516,7 +518,7 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       WHERE j.state != 'skipped' OR EXISTS (
         SELECT 1 FROM synchronization_runs r, json_each(r.plan_json, '$.actions') a
         WHERE r.id = j.run_id AND json_extract(a.value, '$.id') = j.action_id
-          AND json_extract(a.value, '$.detail.kind') IN ('human-action', 'agent-task', 'drift-conflict', 'install-tool'))`;
+          AND json_extract(a.value, '$.detail.kind') IN ('human-action', 'agent-task', 'drift-conflict'))`;
     yield* sql`DROP TABLE action_journal`;
     yield* sql`ALTER TABLE action_journal_v3 RENAME TO action_journal`;
     // Old action intent is upgraded only where the plan itself proves it.

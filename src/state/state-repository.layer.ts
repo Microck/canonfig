@@ -344,8 +344,12 @@ const makeRepository = Effect.gen(function*() {
   }
 
   yield* SqliteMigrator.run({ loader: stateMigrations }).pipe(
+    Effect.catchDefect((defect) =>
+      defect instanceof SqliteMigrator.MigrationError && defect.cause instanceof RepositoryDecodeError
+        ? Effect.fail(new RepositorySqlError({ operation: "migrate state schema", message: defect.cause.message }))
+        : Effect.die(defect)),
     Effect.mapError((error) =>
-      new RepositorySqlError({
+      error instanceof RepositorySqlError ? error : new RepositorySqlError({
         operation: "migrate state schema",
         message: String(error),
       })
@@ -2023,6 +2027,10 @@ const makeRepository = Effect.gen(function*() {
   const beginRun = Effect.fn("StateRepository.beginRun")(function*(id: RunIdType): Effect.fn.Return<void, StateRepositoryError> {
     yield* sql.withTransaction(Effect.gen(function*() {
       const run = yield* loadRunStatus(id);
+      const pending = yield* sql`SELECT harness FROM harness_takeovers WHERE run_id = ${id} AND backup_mode = 'Pending' LIMIT 1`;
+      if (pending.length > 0) return yield* new InvalidRunTransitionError({
+        run: id, message: "takeover snapshot capture must finish before applying",
+      });
       if (run.phase !== "Preparing" && run.phase !== "Finalizing") return yield* new InvalidRunTransitionError({ run: id, message: `cannot begin a ${run.phase} run` });
       if (run.phase === "Finalizing") {
         const rows = yield* sql`SELECT outcome_json FROM synchronization_runs WHERE id = ${id}`;
