@@ -23,6 +23,21 @@ import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
 import type { CompiledResourceBlob } from "../profile/compiler.ts";
 
+const ScheduledInvocationFields = {
+  id: Schema.NonEmptyString,
+  generation: Schema.optional(Schema.NonEmptyString),
+  startedAt: Schema.NonEmptyString,
+};
+
+export const ScheduledInvocation = Schema.Union([
+  Schema.TaggedStruct("Running", ScheduledInvocationFields),
+  Schema.TaggedStruct("Completed", { ...ScheduledInvocationFields, at: Schema.NonEmptyString }),
+  Schema.TaggedStruct("Failed", {
+    ...ScheduledInvocationFields, at: Schema.NonEmptyString, reason: Schema.NonEmptyString,
+  }),
+]);
+export type ScheduledInvocation = typeof ScheduledInvocation.Type;
+
 /**
  * Bytes held in memory, or a regular file the repository streams into
  * fixed-size chunks, checking it against `id` and `bytes` as it writes.

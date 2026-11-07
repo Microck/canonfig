@@ -2,22 +2,23 @@ import { createServer } from "node:net";
 import { once } from "node:events";
 // Real-fire acceptance for the native scheduler: installs the follower job,
 // triggers one fire through the scheduler's own run-now mechanism, and waits
-// for the fire marker the scheduled invocation writes. Exit 0 only when the
+// for the invocation receipt the scheduled command writes. Exit 0 only when the
 // evidence landed.
 //
 // The scheduled apply itself is expected to fail fast on this scratch machine
-// (its fixture Source is deliberately stopped after enrollment); the marker records that outcome, and
+// (its fixture Source is deliberately stopped after enrollment); the receipt records that outcome, and
 // the recorded failure still proves the scheduler fired the job with the
 // minimal environment the unit pins.
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 const repoRoot = process.cwd();
 const main = join(repoRoot, "dist", "runtime", "main.js");
 const stateDir = join(homedir(), ".canonfig");
-const markerPath = join(stateDir, "schedule-fires.json");
+const statePath = join(stateDir, "state.sqlite");
 const jobName = "canonfig-sync";
 const platform = process.platform;
 const followerCredentials = mkdtempSync(join(tmpdir(), "canonfig-fire-credentials-"));
@@ -114,9 +115,6 @@ if (process.argv.includes("--prepare-only")) {
   process.exit(0);
 }
 
-// Remove stale evidence so this run's marker is the one being asserted.
-rmSync(markerPath, { force: true });
-
 const setSchedule = run(process.execPath, [main, "schedule", "set", "daily@00:00", "--json"]);
 if (setSchedule.status !== 0) {
   console.error(`schedule set failed: ${setSchedule.stderr}`);
@@ -140,26 +138,26 @@ if (platform === "linux") {
 }
 // A nonzero trigger exit does not mean the scheduler failed to start the
 // job: the scheduled invocation itself is expected to fail fast on this
-// scratch machine (fixture Source stopped), and the fire marker below is the evidence.
+// scratch machine (fixture Source stopped), and the receipt below is the evidence.
 if (trigger.status !== 0) {
   console.error(`scheduler trigger exited ${trigger.status}: ${String(trigger.stderr).trim().slice(0, 300)}`);
 }
 
-const fired = await waitUntil(() => existsSync(markerPath));
+const readInvocation = () => {
+  const database = new DatabaseSync(statePath, { readOnly: true });
+  try {
+    return database.prepare("SELECT invocation_json FROM scheduled_invocations WHERE started_at > ? ORDER BY started_at DESC")
+      .all(installed.installedAt)
+      .map((row) => JSON.parse(row.invocation_json))
+      .find((invocation) => invocation.generation === installed.generation);
+  } finally { database.close(); }
+};
+const fired = await waitUntil(() => readInvocation() !== undefined);
 if (!fired) {
-  console.error("the native scheduler never wrote the fire marker");
+  console.error("the native scheduler never recorded an invocation");
   process.exit(1);
 }
-
-const marker = JSON.parse(readFileSync(markerPath, "utf8"));
-const fires = Array.isArray(marker.fires) ? marker.fires : [];
-const started = fires.find((fire) => fire.outcome === "started");
-if (started === undefined) {
-  console.error(`fire marker has no started entry: ${markerPath}`);
-  process.exit(1);
-}
-if (started.generation !== installed.generation || !(Date.parse(started.startedAt) > Date.parse(installed.installedAt))) {
-  throw new Error("fire evidence does not belong to this native installation");
-}
-console.log(`scheduler fire recorded at ${started.at}; evidence: ${markerPath}`);
+const started = readInvocation();
+if (started === undefined) throw new Error("the invocation receipt disappeared");
+console.log(`scheduler fire recorded at ${started.startedAt}; evidence: ${statePath}, invocation ${started.id}`);
 console.log("SCHEDULER_FIRE_OK");

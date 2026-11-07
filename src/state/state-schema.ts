@@ -400,8 +400,21 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       INSERT OR IGNORE INTO enrollment_credential_retirements (reference, state)
       SELECT credential_reference, 'Retiring' FROM followers WHERE revoked = 1
     `;
+    yield* sql`
+      CREATE TABLE scheduled_invocations (
+        id TEXT PRIMARY KEY NOT NULL,
+        started_at TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('Running', 'Completed', 'Failed')),
+        invocation_json TEXT NOT NULL
+      )
+    `;
+    yield* sql`
+      CREATE TABLE scheduled_invocation_imports (
+        path TEXT PRIMARY KEY NOT NULL,
+        digest TEXT NOT NULL
+      )
+    `;
   }),
-
 });
 
 /** Bumped by every change to what stored state means. */

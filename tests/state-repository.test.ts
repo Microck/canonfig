@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -58,6 +58,8 @@ import {
   defaultScheduledInvocation,
   FollowerSynchronizationConfiguration,
 } from "../src/synchronization/follower-sync-config.ts";
+import { describeUnattendedRuns } from "../src/runtime/readiness.ts";
+import { loadScheduledInvocations } from "../src/runtime/scheduled-invocations.ts";
 
 const temporaryDirectories: Array<string> = [];
 
@@ -383,6 +385,8 @@ describe("StateRepository SQLite adapter", () => {
     database.exec(`
       DELETE FROM effect_sql_migrations WHERE migration_id = 4;
       DROP TABLE enrollment_credential_retirements;
+      DROP TABLE scheduled_invocations;
+      DROP TABLE scheduled_invocation_imports;
       UPDATE follower_sync_configuration SET configuration_json = json_set(
         json_remove(configuration_json, '$.lifecycle'), '$.enrollmentPending', json('${pending}')
       );
@@ -397,6 +401,88 @@ describe("StateRepository SQLite adapter", () => {
       expect(loaded).toMatchObject({ _tag: "Success", success: { lifecycle: { _tag: "Active" } } });
     }
   });
+
+  it("imports released receipts once across a failed post-commit archive", async () => {
+    const path = databasePath();
+    const legacy = join(dirname(path), "schedule-fires.json");
+    writeFileSync(legacy, JSON.stringify({ schema: "canonfig.schedule-fire/v1", fires: [
+      { startedAt: "2026-11-07T00:00:01Z", at: "2026-11-07T00:00:01Z", outcome: "started", generation: "installed" },
+      { startedAt: "2026-11-07T00:00:02Z", at: "2026-11-07T00:00:03Z", outcome: "failed", reason: "run lock held", generation: "installed" },
+      { startedAt: "2026-11-07T00:00:01Z", at: "2026-11-07T00:00:04Z", outcome: "completed", generation: "installed" },
+    ] }));
+    mkdirSync(`${legacy}.imported`);
+    const refused = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      Effect.result(loadScheduledInvocations(repository, path))));
+    expect(refused._tag).toBe("Failure");
+    const committed = new DatabaseSync(path, { readOnly: true });
+    expect(committed.prepare("SELECT count(*) AS count FROM scheduled_invocations").get()?.count).toBe(2);
+    expect(committed.prepare("SELECT count(*) AS count FROM scheduled_invocation_imports").get()?.count).toBe(1);
+    committed.close();
+    rmSync(`${legacy}.imported`, { recursive: true });
+    const imported = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      loadScheduledInvocations(repository, path)));
+    expect(imported.map((invocation) => invocation._tag)).toEqual(["Completed", "Failed"]);
+    expect(existsSync(legacy)).toBe(false);
+    expect(existsSync(`${legacy}.imported`)).toBe(true);
+    const repeated = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      loadScheduledInvocations(repository, path)));
+    expect(repeated).toEqual(imported);
+  });
+
+  it("rolls back a failed legacy import together with its acknowledgement", async () => {
+    const path = databasePath();
+    await runWithRepository(path, Effect.flatMap(StateRepository, (repository) => repository.databaseFile()));
+    const legacy = join(dirname(path), "schedule-fires.json");
+    writeFileSync(legacy, JSON.stringify({ schema: "canonfig.schedule-fire/v1", fires: [
+      { startedAt: "2026-11-07T00:00:01Z", at: "2026-11-07T00:00:02Z", outcome: "completed" },
+      { startedAt: "2026-11-07T00:00:03Z", at: "2026-11-07T00:00:04Z", outcome: "completed" },
+    ] }));
+    const database = new DatabaseSync(path);
+    database.exec(`CREATE TRIGGER fail_second_import BEFORE INSERT ON scheduled_invocations
+      WHEN NEW.id LIKE '%:1' BEGIN SELECT RAISE(FAIL, 'import interrupted'); END`);
+    const refused = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      Effect.result(loadScheduledInvocations(repository, path))));
+    expect(refused._tag).toBe("Failure");
+    expect(database.prepare("SELECT count(*) AS count FROM scheduled_invocations").get()?.count).toBe(0);
+    expect(database.prepare("SELECT count(*) AS count FROM scheduled_invocation_imports").get()?.count).toBe(0);
+    expect(existsSync(legacy)).toBe(true);
+    database.exec("DROP TRIGGER fail_second_import");
+    database.close();
+    const imported = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      loadScheduledInvocations(repository, path)));
+    expect(imported).toHaveLength(2);
+  });
+
+  it("keeps concurrent invocations and reports the latest start, not the latest completion", async () => {
+    const path = databasePath();
+    const earlier = { id: "earlier", generation: "installed", startedAt: "2026-08-15T12:00:01Z" };
+    const later = { id: "later", generation: "installed", startedAt: "2026-08-15T12:00:02Z" };
+    await runWithRepository(path, Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* Effect.all([
+        repository.transitionScheduledInvocation({ ...earlier, _tag: "Running" }),
+        repository.transitionScheduledInvocation({ ...later, _tag: "Running" }),
+      ], { concurrency: 2 });
+      yield* repository.transitionScheduledInvocation({
+        ...later, _tag: "Failed", at: "2026-08-15T12:00:03Z", reason: "run lock held",
+      });
+      yield* repository.transitionScheduledInvocation({ ...earlier, _tag: "Completed", at: "2026-08-15T12:00:04Z" });
+      const duplicate = yield* Effect.result(repository.transitionScheduledInvocation({
+        ...earlier, _tag: "Completed", at: "2026-08-15T12:00:05Z",
+      }));
+      expect(duplicate._tag).toBe("Failure");
+    }));
+    const invocations = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      repository.listScheduledInvocations()));
+    expect(invocations.map((invocation) => invocation.id)).toEqual(["earlier", "later"]);
+    const summary = describeUnattendedRuns(invocations.map((invocation) => ({
+      ...invocation, at: invocation._tag === "Running" ? invocation.startedAt : invocation.at,
+      outcome: invocation._tag === "Completed" ? "completed" : invocation._tag === "Failed" ? "failed" : "started",
+    })));
+    expect(summary.completed).toBe(false);
+    expect(summary.text).toContain("run lock held");
+  });
+
 
   it("refuses state an earlier release created and asks to reinitialize", async () => {
     // A release before state format 6 recorded a different migration history.

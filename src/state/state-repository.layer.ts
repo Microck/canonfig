@@ -93,6 +93,7 @@ import type {
   VerificationEvidence,
 } from "./state-repository.types.ts";
 import { stateFormatVersion, stateMigrations, stateSchemaMigrations } from "./state-schema.ts";
+import { ScheduledInvocation } from "./state-repository.types.ts";
 import { buildIdentity } from "../runtime/build-identity.ts";
 import type {
   PlanningLocalRevision,
@@ -3000,8 +3001,74 @@ const makeRepository = Effect.gen(function*() {
     },
   );
 
+  const transitionScheduledInvocation = Effect.fn("StateRepository.transitionScheduledInvocation")(function*(
+    input: ScheduledInvocation,
+  ): Effect.fn.Return<void, StateRepositoryError> {
+    const invocation = yield* Schema.decodeUnknownEffect(ScheduledInvocation)(input)
+      .pipe(Effect.mapError(decodeError("scheduled invocation", input.id)));
+    yield* sql.withTransaction(Effect.gen(function*() {
+      const rows = yield* sql`SELECT invocation_json FROM scheduled_invocations WHERE id = ${invocation.id}`;
+      const decoded = yield* decodeRows(Schema.Struct({ invocation_json: Schema.String }), rows, "scheduled invocation", invocation.id);
+      const existing = decoded[0] === undefined ? undefined
+        : yield* parseJson(ScheduledInvocation, decoded[0].invocation_json, "scheduled invocation", invocation.id);
+      if (invocation._tag === "Running" ? existing !== undefined
+        : existing?._tag !== "Running" || existing.startedAt !== invocation.startedAt
+          || existing.generation !== invocation.generation) {
+        return yield* new InvalidRunTransitionError({
+          run: invocation.id, message: "a scheduled invocation must start once and finish that same running invocation once",
+        });
+      }
+      yield* sql`
+        INSERT INTO scheduled_invocations (id, started_at, state, invocation_json)
+        VALUES (${invocation.id}, ${invocation.startedAt}, ${invocation._tag}, ${JSON.stringify(invocation)})
+        ON CONFLICT(id) DO UPDATE SET state = excluded.state, invocation_json = excluded.invocation_json
+      `;
+    })).pipe(Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("transition scheduled invocation")(error))));
+  });
+
+  const importScheduledInvocations = Effect.fn("StateRepository.importScheduledInvocations")(function*(
+    input: Parameters<StateRepository["Service"]["importScheduledInvocations"]>[0],
+  ): Effect.fn.Return<void, StateRepositoryError> {
+    yield* sql.withTransaction(Effect.gen(function*() {
+      const rows = yield* sql`SELECT digest FROM scheduled_invocation_imports WHERE path = ${input.path}`;
+      const imported = (yield* decodeRows(Schema.Struct({ digest: ContentDigest }), rows,
+        "scheduled invocation import", input.path))[0];
+      if (imported !== undefined) {
+        if (imported.digest === input.digest) return;
+        return yield* new RepositoryDecodeError({
+          entity: "scheduled invocation import", id: input.path,
+          message: "the receipt changed after it was imported; its events cannot be assigned safely",
+        });
+      }
+      for (const record of input.invocations) {
+        const invocation = yield* Schema.decodeUnknownEffect(ScheduledInvocation)(record)
+          .pipe(Effect.mapError(decodeError("scheduled invocation import", input.path)));
+        yield* sql`
+          INSERT INTO scheduled_invocations (id, started_at, state, invocation_json)
+          VALUES (${invocation.id}, ${invocation.startedAt}, ${invocation._tag}, ${JSON.stringify(invocation)})
+        `;
+      }
+      yield* sql`INSERT INTO scheduled_invocation_imports (path, digest) VALUES (${input.path}, ${input.digest})`;
+    })).pipe(Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("import scheduled invocations")(error))));
+  });
+
+  const listScheduledInvocations = Effect.fn("StateRepository.listScheduledInvocations")(function*() {
+    const rows = yield* sql`
+      SELECT invocation_json FROM (
+        SELECT started_at, rowid AS invocation_order, invocation_json FROM scheduled_invocations
+        ORDER BY started_at DESC, rowid DESC LIMIT 10
+      ) ORDER BY started_at, invocation_order
+    `.pipe(Effect.mapError(sqlError("list scheduled invocations")));
+    const decoded = yield* decodeRows(Schema.Struct({ invocation_json: Schema.String }), rows, "scheduled invocations", "all");
+    return yield* Effect.forEach(decoded, (row) =>
+      parseJson(ScheduledInvocation, row.invocation_json, "scheduled invocation", "all"));
+  });
+
   return StateRepository.of({
     databaseFile,
+    transitionScheduledInvocation,
+    listScheduledInvocations,
+    importScheduledInvocations,
     saveSourceIdentity,
     registerFollower,
     saveFollowerSynchronizationConfiguration,

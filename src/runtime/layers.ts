@@ -2,12 +2,12 @@ import { runtimeCredentialPolicy } from "./credential-policy.ts";
 import { runtimeStateLayer } from "./state-layer.ts";
 import {
   createPrivateKey,
+  randomUUID,
   createPublicKey,
   sign as signPayload,
   verify as verifyPayload,
 } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -131,6 +131,7 @@ import {
   type DoctorAgentConfiguration,
   type DoctorSourceConfiguration,
 } from "./doctor.ts";
+import { loadScheduledInvocations } from "./scheduled-invocations.ts";
 
 export interface RuntimeLayerOptions {
   readonly statePath?: string | undefined;
@@ -216,36 +217,17 @@ const mapFailure = <Success, Failure extends TaggedRuntimeError, Requirements>(
 const rollbackRecoveryDetail = "follower replacement rollback is pending; both credentials are retained. Bring the previous Source online, then retry the same `canonfig follower enroll --stdin --name <name> --replace` command with its invitation";
 
 
-/**
- * The follower's own decision about the native synchronization job, written to
- * its configuration so it outlives a run.
- *
- * A selected job requires a finalized follower configuration. Disabling an
- * existing native job remains possible when no follower is configured.
- */
-export interface ScheduleFireRecord {
-  readonly generation?: string | undefined;
-  readonly startedAt?: string | undefined;
-  readonly at: string;
-  readonly outcome: string;
-  /** For `failed`: the failure category, message, and run reason, bounded. */
-  readonly reason?: string | undefined;
-}
-
-export const scheduleFirePath = (statePath: string): string =>
-  join(dirname(statePath), "schedule-fires.json");
-
-const readScheduleFires = (statePath: string): ReadonlyArray<ScheduleFireRecord> => {
-  try {
-    // SAFETY: only this process family writes the file, with this exact shape.
-    const parsed = JSON.parse(readFileSync(scheduleFirePath(statePath), "utf8")) as {
-      fires?: ReadonlyArray<ScheduleFireRecord>;
-    };
-    return Array.isArray(parsed.fires) ? parsed.fires : [];
-  } catch {
-    return [];
-  }
-};
+/** Keep the existing CLI evidence shape as a view of the canonical SQL records. */
+const readScheduleFires = (repository: StateRepository["Service"], statePath: string) =>
+  Effect.gen(function*() {
+    const invocations = yield* loadScheduledInvocations(repository, statePath);
+    return invocations.map((invocation) => ({
+      id: invocation.id, generation: invocation.generation, startedAt: invocation.startedAt,
+      at: invocation._tag === "Running" ? invocation.startedAt : invocation.at,
+      outcome: invocation._tag === "Running" ? "started" : invocation._tag === "Completed" ? "completed" : "failed",
+      reason: invocation._tag === "Failed" ? invocation.reason : undefined,
+    }));
+  });
 
 /** The part of a failed run's details that names why the run failed. */
 const FailedRunDetails = Schema.Struct({
@@ -267,33 +249,6 @@ const fireFailureReason = (failure: CliCommandFailure): string => {
   );
   return `${failure.category}: ${failure.message}${runReason}`.slice(0, 2048);
 };
-
-const recordScheduleFire = (
-  statePath: string,
-  outcome: string,
-  reason?: string,
-  generation?: string,
-  startedAt?: string,
-): Effect.Effect<void, never> =>
-  Effect.tryPromise({
-    try: async () => {
-      const path = scheduleFirePath(statePath);
-      // JSON.stringify omits `reason` when it is undefined.
-      const fires = [...readScheduleFires(statePath).slice(-9), {
-        at: new Date().toISOString(),
-        outcome,
-        reason,
-        generation,
-        startedAt,
-      }];
-      await mkdir(dirname(path), { recursive: true });
-      await writeFile(
-        path,
-        `${JSON.stringify({ schema: "canonfig.schedule-fire/v1", fires }, null, 2)}\n`,
-      );
-    },
-    catch: () => undefined,
-  }).pipe(Effect.ignore);
 
 /** Why this follower has no native job, and what to run to get one. */
 const unscheduledDetail = (
@@ -868,7 +823,7 @@ const followerCommandsLayer = (
           ...qualifiedClientMethods,
         ];
         const scheduleInput = finalizedScheduleInput(configuration);
-        const fires = readScheduleFires(statePath);
+        const fires = yield* readScheduleFires(repository, statePath);
         const scheduled = scheduleInput === undefined
           ? { status: "not-selected" as const, detail: unscheduledDetail(configuration) }
           : yield* schedules.status(scheduleInput).pipe(
@@ -1267,7 +1222,7 @@ const followerCommandsLayer = (
         // Only the rendered native job passes --scheduled, so the fire
         // record is evidence the real scheduler started this process.
         const scheduled = input.scheduled === true;
-        const startedAt = new Date(Date.now() - process.uptime() * 1000).toISOString();
+        const invocation = { id: randomUUID(), startedAt: new Date().toISOString() };
         const installedGeneration = scheduled ? schedules.status().pipe(
           Effect.map((status) => status.generation),
           Effect.catch(() => Effect.succeed(undefined)),
@@ -1300,12 +1255,15 @@ const followerCommandsLayer = (
           repository.getFollowerSynchronizationConfiguration(),
         ).pipe(Effect.flatMap((configuration) => configuration === undefined ? local : follower));
         return installedGeneration.pipe(Effect.flatMap((generation) => {
-          const record = (outcome: string, reason?: string) => scheduled
-            ? recordScheduleFire(statePath, outcome, reason, generation, startedAt) : Effect.void;
-          return record("started").pipe(
+          const identity = { ...invocation, generation };
+          const start = scheduled
+            ? readScheduleFires(repository, statePath).pipe(Effect.andThen(mapFailure(
+              repository.transitionScheduledInvocation({ ...identity, _tag: "Running" }),
+            ))) : Effect.void;
+          return start.pipe(Effect.andThen(Effect.gen(function*() {
             // A scheduled run restarts a down managed tunnel once, and a
             // transport failure while the tunnel is down reports the tunnel.
-            Effect.andThen(repository.getFollowerSynchronizationConfiguration().pipe(
+            const result = yield* repository.getFollowerSynchronizationConfiguration().pipe(
               Effect.catch(() => Effect.succeed(undefined)),
               Effect.flatMap((configuration) =>
                 withManagedTunnel(
@@ -1320,10 +1278,8 @@ const followerCommandsLayer = (
               ),
               Effect.provideService(Tunnel, tunnel),
               Effect.catchTag("TunnelDownError", (error) => Effect.fail(commandFailure(error))),
-            )),
-            // Apply is one command for every caller, including GUI tickets and schedules.
-            // Retain the completed file run as failure evidence if secret refresh fails.
-            Effect.tap((result) => input.mode === "apply" ? synchronizeSharedSecrets().pipe(
+              // Retain completed file-run evidence if shared-secret refresh fails.
+              Effect.tap((result) => input.mode === "apply" ? synchronizeSharedSecrets().pipe(
               Effect.provideService(MachineState, machine),
               Effect.provideService(StateRepository, repository),
               Effect.mapError((error) => new CliCommandFailure({
@@ -1331,14 +1287,17 @@ const followerCommandsLayer = (
                 message: `File synchronization completed, but shared-secret synchronization failed: ${error.message}`,
                 details: result,
               })),
-            ) : Effect.void),
-            Effect.flatMap((result) =>
-              record("completed").pipe(Effect.as(result))
-            ),
-            Effect.catch((error) =>
-              record("failed", fireFailureReason(error)).pipe(Effect.flatMap(() => Effect.fail(error)))
-            ),
-          );
+            ) : Effect.void), Effect.catch((error) => {
+              const failed = scheduled ? mapFailure(repository.transitionScheduledInvocation({
+                ...identity, _tag: "Failed", at: new Date().toISOString(), reason: fireFailureReason(error),
+              })) : Effect.void;
+              return failed.pipe(Effect.andThen(Effect.fail(error)));
+            }));
+            if (scheduled) yield* mapFailure(repository.transitionScheduledInvocation({
+              ...identity, _tag: "Completed", at: new Date().toISOString(),
+            }));
+            return result;
+          })));
         }));
       },
       // An open local projection run is resolved before any follower run.
@@ -1661,8 +1620,7 @@ const followerCommandsLayer = (
                 ),
               );
             }
-            const fires = readScheduleFires(statePath);
-            return mapFailure(schedules.status(input)).pipe(
+            return readScheduleFires(repository, statePath).pipe(Effect.flatMap((fires) => mapFailure(schedules.status(input)).pipe(
               Effect.map((status) =>
                 payload({
                   ...status,
@@ -1670,7 +1628,7 @@ const followerCommandsLayer = (
                   unattendedRuns: describeUnattendedRuns(currentScheduleFires(status, fires)).text,
                 })
               ),
-            );
+            )));
           }),
         ),
       removeSchedule: () =>
@@ -1747,11 +1705,12 @@ const followerCommandsLayer = (
         Effect.all([
           mapFailure(repository.getFollowerSynchronizationConfiguration()),
           effectiveScheduleInput(repository),
+          readScheduleFires(repository, statePath),
           tunnel.tunnelStatus({ stateDirectory: join(dirname(statePath), "tunnel") }).pipe(
             Effect.catch(() => Effect.succeed(undefined)),
           ),
         ]).pipe(
-          Effect.flatMap(([configuration, schedule, tunnelReport]) => {
+          Effect.flatMap(([configuration, schedule, fires, tunnelReport]) => {
             const source = configuration === undefined
               ? doctorSource
               : {
@@ -1766,7 +1725,7 @@ const followerCommandsLayer = (
               environment: (name) => process.env[name],
               agentPolicy: configuration?.agentPolicy,
               schedule,
-              fires: readScheduleFires(statePath),
+              fires,
               unscheduledDetail: unscheduledDetail(configuration),
               source,
               tunnel: tunnelReport !== undefined

@@ -98,7 +98,8 @@ export const currentScheduleFires = (
   const installedAt = Date.parse(status.installedAt);
   if (!Number.isFinite(installedAt)) return [];
   return fires.filter((fire) => fire.generation === status.generation && fire.startedAt !== undefined
-    && Date.parse(fire.startedAt) > installedAt);
+    && Date.parse(fire.startedAt) > installedAt).sort((left, right) =>
+      (left.startedAt ?? left.at).localeCompare(right.startedAt ?? right.at));
 };
 
 /** The last unattended run in words, and whether it completed. */
@@ -115,14 +116,16 @@ export interface UnattendedRunSummary {
 export const describeUnattendedRuns = (
   fires: ReadonlyArray<ScheduleFireEvidence>,
 ): UnattendedRunSummary => {
-  const latest = fires.at(-1);
+  const ordered = [...fires].sort((left, right) =>
+    (left.startedAt ?? left.at).localeCompare(right.startedAt ?? right.at));
+  const latest = ordered.at(-1);
   if (latest === undefined) {
     return { completed: false, text: "the native scheduler has not been observed starting a run yet" };
   }
   if (latest.outcome === "completed") {
     return { completed: true, text: `the last unattended run completed at ${latest.at}` };
   }
-  const lastCompleted = fires.filter((fire) => fire.outcome === "completed").at(-1);
+  const lastCompleted = ordered.filter((fire) => fire.outcome === "completed").at(-1);
   const previous = lastCompleted === undefined
     ? "no unattended run has completed yet"
     : `the last completed one was at ${lastCompleted.at}`;
