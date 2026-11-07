@@ -13,7 +13,7 @@ GlobalRegistrator.register();
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 after(async () => { await GlobalRegistrator.unregister(); });
 
-const session = { role: "follower" as const, machineName: "Test", folderPath: "/fixture/.canonfig", version: "6.1.1" };
+const session = { role: "follower" as const, machineName: "Test", folderPath: "/fixture/.canonfig", version: "7.0.0" };
 
 function PolicyEditor({ backend }: { backend: WorkspaceBackend }) {
   const { agent } = useLiveAdministration(backend, session, ["/api/agent/policy", "/api/agent/harness"], () => assert.fail("Must not update"));
