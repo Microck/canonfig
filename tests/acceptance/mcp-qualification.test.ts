@@ -125,6 +125,7 @@ describe("MCP qualification", () => {
       revision: Schema.decodeUnknownSync(ProfileRevisionId)("revision-1"),
       digest: provenance.fingerprint,
       appliedAt: "2026-09-12T00:00:00Z",
+      ownership: "QualifiedTool",
       kind: "tool",
       policy: "ensure",
       target: "example-mcp",
@@ -181,6 +182,7 @@ it.skipIf(process.platform === "win32").each([false, true])("observes the same q
     const installed = installerRecipeProvenance({ ...npmRecipe, compatibility: qualification.compatibility, target: qualification.target });
     const applied = { resource: base.resource.id, revision: Schema.decodeUnknownSync(ProfileRevisionId)("revision-1"),
       digest: installed.fingerprint, appliedAt: "2026-09-12T00:00:00Z", kind: "tool" as const,
+      ownership: "QualifiedTool" as const,
       policy: "ensure" as const, target: base.resource.target, installerRecipe: installed };
     expect(planResource({ ...base, desired, observed, applied })[0]?.kind).toBe("no-op");
     await unlink(npmEntry); await writeFile(uvEntry, "fixture", { mode: 0o755 }); await chmod(uvEntry, 0o755);
