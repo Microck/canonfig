@@ -62,7 +62,7 @@ export const openRunReport = (
     };
   });
   const finishedActions = actions.filter((action) =>
-    action.state === "succeeded" || action.state === "skipped"
+    action.state === "succeeded" || action.state === "blocked"
   ).length;
   return {
     run: recovery.run.id,

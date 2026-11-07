@@ -186,6 +186,62 @@ const claudeJson = {
 };
 
 describe("local projection", () => {
+  it("recovers a takeover captured before the engine starts without adopting untouched bytes", async () => {
+    const value = fixture(["codex"], { surfaces: { codex: ["instructions"] } });
+    const target = join(value.home, ".codex", "AGENTS.md");
+    write(target, "original instructions\n");
+    const captured = Effect.runSync(Deferred.make<void>());
+    const pausedMachine = Layer.effect(MachineState, Effect.gen(function*() {
+      const service = yield* MachineState;
+      return MachineState.of({
+        ...service,
+        ensureDirectory: (input) => input.path.absolute.includes("/canonfig/projection/")
+          ? Deferred.succeed(captured, undefined).pipe(Effect.andThen(Effect.never))
+          : service.ensureDirectory(input),
+      });
+    })).pipe(Layer.provide(machineLayer(value)));
+    const fiber = Effect.runFork(synchronizeLocal(value.statePath, "apply", {
+      noBackup: false, environment: environmentOf(value),
+    }).pipe(Effect.provide(layer(value, pausedMachine))));
+    await Effect.runPromise(Deferred.await(captured));
+    await Effect.runPromise(Fiber.interrupt(fiber));
+    const recovery = await Effect.runPromise(Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      const open = yield* repository.loadRecovery(localProjectionFollower);
+      expect((yield* repository.loadHarnessTakeovers()).every((entry) => entry._tag === "Reserved")).toBe(true);
+      return open;
+    }).pipe(Effect.provide(stateRepositoryLayer(value.statePath))));
+    expect(recovery?.run.lifecycle._tag).toBe("Preparing");
+    expect(readFileSync(target, "utf8")).toBe("original instructions\n");
+    expect(snapshots(value)).toHaveLength(1);
+    const recovered = await Effect.runPromise(recoverLocal(value.statePath).pipe(Effect.provide(layer(value))));
+    expect(recovered.outcome.outcome).toBe("Failed");
+    expect(takeoverRows(value)).toEqual([]);
+    expect(snapshots(value)).toEqual([]);
+    expect((await sync(value, "apply")).outcome?.outcome).toBe("Converged");
+  });
+
+  it("recovers restore finalization before allowing another takeover", async () => {
+    const value = fixture(["codex"], { surfaces: { codex: ["instructions"] } });
+    const target = join(value.home, ".codex", "AGENTS.md");
+    write(target, "original instructions\n");
+    expect((await sync(value, "apply")).outcome?.outcome).toBe("Converged");
+    const localConfig = join(value.folder, "local", "local.jsonc");
+    mkdirSync(localConfig, { recursive: true });
+    await expect(restore(value)).rejects.toBeDefined();
+    expect(readFileSync(target, "utf8")).toBe("original instructions\n");
+    const recovery = await Effect.runPromise(Effect.gen(function*() {
+      return yield* (yield* StateRepository).loadRecovery(localProjectionFollower);
+    }).pipe(Effect.provide(stateRepositoryLayer(value.statePath))));
+    expect(recovery).toBeDefined();
+    rmSync(localConfig, { recursive: true });
+    const recovered = await Effect.runPromise(recoverLocal(value.statePath).pipe(Effect.provide(layer(value))));
+    expect(recovered.outcome.outcome).toBe("Converged");
+    expect(JSON.parse(readFileSync(localConfig, "utf8")).excludeHarnesses).toEqual(["codex"]);
+    expect((await sync(value, "apply")).outcome?.outcome).toBe("Converged");
+    expect(readFileSync(target, "utf8")).toBe("original instructions\n");
+  });
+
   it("keeps the old registry usable while a renamed hook's consumer is drifted", async () => {
     const value = fixture(["amp"]);
     write(join(value.folder, "hooks", "format.sh"), '#!/bin/sh\nprintf executed > "$CANONFIG_ROOT/hook-ran"\n', 0o755);
@@ -540,7 +596,9 @@ describe("local projection", () => {
     expect(readFileSync(join(value.folder, ".backups", snapshot, "claude-code", ".claude", "CLAUDE.md"), "utf8"))
       .toBe("original instructions\n");
     expect(takeoverRows(value).some((row) => row.harness === "claude-code" && row.snapshot === snapshot)).toBe(true);
-    expect((await restore(value, snapshot)).outcome).toMatchObject({ outcome: "Converged" });
+    await expect(restore(value, snapshot)).rejects.toMatchObject({ _tag: "ActiveRunExistsError" });
+    const recovered = await Effect.runPromise(recoverLocal(value.statePath).pipe(Effect.provide(layer(value))));
+    expect(recovered.outcome).toMatchObject({ outcome: "Failed", rollbackIncomplete: false });
     expect(readFileSync(instructions, "utf8")).toBe("original instructions\n");
   }, 60_000);
 
@@ -562,9 +620,9 @@ describe("local projection", () => {
     await started;
     await Effect.runPromise(Fiber.interrupt(fiber));
     const database = new DatabaseSync(value.statePath, { readOnly: true });
-    const row = database.prepare("SELECT status FROM synchronization_runs").get();
+    const row = database.prepare("SELECT phase FROM synchronization_runs").get();
     database.close();
-    expect(row?.status).toBe("Interrupted");
+    expect(row?.phase).toBe("Interrupted");
     expect(snapshots(value)).toHaveLength(1);
 
     const blockedRun = await syncFailure(value);
@@ -734,11 +792,11 @@ describe("local projection", () => {
     await started;
     await Effect.runPromise(Fiber.interrupt(fiber));
     const database = new DatabaseSync(value.statePath, { readOnly: true });
-    const run = database.prepare("SELECT status FROM synchronization_runs").get();
+    const run = database.prepare("SELECT phase FROM synchronization_runs").get();
     const lastAction = database.prepare("SELECT state FROM action_journal ORDER BY sequence DESC LIMIT 1").get();
     database.close();
-    expect(run?.status).toBe("Interrupted");
-    expect(lastAction?.state).toBe(landed ? "running" : "failed");
+    expect(run?.phase).toBe("Interrupted");
+    expect(lastAction?.state).toBe(landed ? "running" : "interrupted");
     const interruptedInstructions = readFileSync(instructions, "utf8");
     if (landed) expect(interruptedInstructions).toContain("Prefer small diffs.");
     else expect(interruptedInstructions).toBe("old instructions\n");
@@ -813,7 +871,7 @@ describe("local projection", () => {
       return yield* planFolder(loaded, yield* rootContext(environmentOf(value)), [], []);
     }).pipe(Effect.provide(layer(value))));
     const targets = planned.plan.actions.flatMap((action) =>
-      action.detail.kind === "write-file" && action.detail.retainedLocalDigest !== undefined ? [action.detail.target] : []
+      action.detail.kind === "write-file" && action.detail.textTransition.kind === "adopt-local" ? [action.detail.target] : []
     );
     expect(targets).toHaveLength(2);
     // The first adoption still matches; the second changes before the review reads it.

@@ -124,6 +124,37 @@ The agent cannot directly change the published profile. Discovery or repair sugg
 
 The live adapter uses the matching Effect v4 SQLite package. Tests use a temporary real SQLite database, not a mocked repository.
 
+A run is `Preparing`, `Applying`, `Interrupted`, `Finalizing`, `Abandoning`,
+or `Complete`. Repository transactions own transitions. Projection records
+the preparing run before reserving a surface or capturing its first snapshot.
+Only a reserved surface can await capture; applying requires a durable backup
+choice. Verified writes establish `Owned` surfaces. Incomplete inverses leave
+`Uncertain` ownership and a recoverable run rather than a fresh takeover.
+
+An execution outcome does not close its run. Finalization first finishes
+restore exclusions and ownership release, then deletes run artifacts and
+records completion and the deployment receipt. Recovery resumes that work
+without replaying completed actions. Explicit abandonment records its intent
+before cleanup, so an interrupted cleanup cannot resume execution by mistake.
+Action replay and repository writes share `transitionAction`: unstarted tail
+actions stay `Pending`, semantic blockers stay `Blocked`, and `RolledBack`
+is distinct from execution failure. Verification method strings describe proof,
+not lifecycle.
+Normal execution and recovery also share `reduceActionResult`: each failed,
+human-blocked, or drift-blocked result requires its matching payload and
+stops aggregation. No stopped result can turn into convergence through an
+omitted optional field.
+
+Migration 3, `synchronization_lifecycle`, upgrades released 6.1 rows in place
+using stored ownership and run evidence. The newest terminal run remains open
+for idempotent finalization; older terminal runs never release newer ownership.
+Unclassifiable ownership and orphan takeovers refuse the migration with recovery
+steps and leave it rolled back. Ambiguous append-local plans remain intact and
+refuse recovery with instructions to preserve the database and snapshots, restore
+the affected targets manually, and set up fresh state. Existing takeover and
+rollback snapshot formats remain readable; no migration reads current target
+bytes to invent ownership.
+
 ## Profile contract
 
 The Source Machine authors its Machine Profile as the Canonical Folder:
@@ -165,6 +196,17 @@ Configuration Agent to install it. Those bounds are authored, never inferred
 from the target, and a tool with no usable recipe and no `agentInstall` is
 Human Action Required rather than an Agent Task, because a task with no
 writable path and no origin cannot install anything.
+
+Each Applied Resource Record has one explicit ownership mode: `WholeFile`,
+`Symlink`, `SourceSection`, `DirectoryEntries`, `ConfigKeys`, or `QualifiedTool`.
+The mode requires its own evidence: regular-file permissions, a link target,
+directory entries, config keys and format, or qualified installer provenance.
+Execution and recovery use the same verified-state constructor. A config
+handover records only the keys still owned after the write, with their digest;
+releasing every key remains an explicit empty key set. Retirement interprets
+every mode, while qualified tools release provenance without uninstalling
+software. Incomplete or contradictory persisted ownership is a recovery error,
+not permission to skip retirement or assume file modes.
 
 Apply Policies mean:
 

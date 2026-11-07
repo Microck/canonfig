@@ -50,10 +50,9 @@ import {
   type BuiltResource,
 } from "../projection/plan.ts";
 import {
-  discardRunArtifacts,
   finishProjectionRun,
+  finishAbandonedProjection,
   loadRunArtifacts,
-  releaseUnappliedTakeovers,
   runProjection,
   writeAdoptionReviews,
   type LocalSyncOptions,
@@ -81,9 +80,7 @@ import {
   type FollowerAgentHarnessConfiguration,
 } from "./follower-sync-config.ts";
 import {
-  cleanupRollbackSnapshots,
   preflightPathLengths,
-  removeRunTemporaryEntries,
 } from "./executor.ts";
 import { withRunLock } from "./run-lock.ts";
 import { assertUpgradeGate } from "./upgrade-gate.ts";
@@ -1108,34 +1105,7 @@ export const abandonFollowerRun = Effect.fn(
     );
   }
   yield* assertUpgradeGate(configuration.follower.id);
-  // Canonfig's own temporary files from the killed run go first, so the next
-  // run does not see them as foreign content. A failure here leaves the run
-  // open with its evidence.
-  yield* removeRunTemporaryEntries(recovery.run.plan.actions, recovery.run.id);
-  // Abandon explicitly discards recovery, including credential-bearing
-  // preimages. Keep the run open if cleanup fails so abandon can be retried.
-  yield* cleanupRollbackSnapshots(
-    recovery.run.id,
-    recovery.run.plan.actions.map((action) => action.id),
-    [],
-    recovery.actions.flatMap((action) => action.rollbackReference === undefined ? [] : [action.rollbackReference]),
-  );
-  // Before the run closes, so a failure here leaves it open for another abandon.
-  yield* releaseUnappliedTakeovers(stateLocation, configuration.follower.id, recovery.run.id);
-  const appliedResources = yield* repository.loadAppliedResources(
-    configuration.follower.id,
-  );
-  yield* repository.completeRun({
-    run: recovery.run.id,
-    completedAt: new Date().toISOString(),
-    outcome: {
-      outcome: "Failed",
-      run: recovery.run.id,
-      reason: "the interrupted run was abandoned by the operator",
-    },
-    appliedResources,
-  });
-  yield* discardRunArtifacts(recovery.run.id);
+  yield* finishAbandonedProjection(stateLocation, recovery);
   return {
     run: recovery.run.id,
     revision: recovery.run.revision,
@@ -1167,6 +1137,10 @@ export const recoverFollower = Effect.fn(
     );
   }
   yield* assertUpgradeGate(configuration.follower.id);
+  if (recovery.run.lifecycle._tag === "Abandoning") {
+    yield* finishAbandonedProjection(stateLocation, recovery);
+    return { revision: recovery.run.revision, outcome: recovery.run.lifecycle.outcome };
+  }
   // A run whose revision cannot be read back can only be closed. Saying so
   // ends the loop where recover failed and sync --apply sent the operator
   // back to recover.

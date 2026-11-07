@@ -247,11 +247,12 @@ describe("deployment receipts", () => {
         outcome: {
           outcome: "Converged",
           run: asRunId("run-gate-1"),
-          completedActions: [asActionId("action-1")],
+          verified: [],
         },
         appliedResources: [],
         removedResources: [],
       });
+      yield* repository.finalizeRun(asRunId("run-gate-1"), "2026-08-15T12:05:01Z");
     }));
     const database = new DatabaseSync(path);
     try {

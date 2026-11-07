@@ -204,16 +204,24 @@ export interface FollowerCredentialRecord {
 }
 
 /** One harness surface Canonfig has taken over, with the root pinned at takeover. */
-export interface HarnessTakeover {
+interface TakeoverSurface {
   /** A harness id, or `agents` for the shared `~/.agents/skills/` surface. */
   readonly harness: string;
   readonly surface: string;
   readonly root: string;
-  /** The takeover snapshot holding the surface's prior content; absent without a backup. */
-  readonly snapshot?: string | undefined;
   readonly run: RunId;
   readonly takenOverAt: string;
 }
+export type TakeoverBackup =
+  | { readonly _tag: "Disabled" }
+  | { readonly _tag: "Snapshot"; readonly id: string };
+
+
+export type HarnessTakeover = TakeoverSurface & (
+  | { readonly _tag: "Reserved"; readonly backup: TakeoverBackup | { readonly _tag: "Pending" } }
+  | { readonly _tag: "Owned"; readonly backup: TakeoverBackup }
+  | { readonly _tag: "Uncertain"; readonly backup: TakeoverBackup }
+);
 
 /**
  * One `canonfig export` or `canonfig import` (not `--dry-run`), journaled in
@@ -238,6 +246,8 @@ export interface ArchiveEvent {
 }
 
 export interface StartRunInput {
+  /** Projection prepares its durable reservation before capture and artifact writes. */
+  readonly preparing?: boolean | undefined;
   readonly id: RunId;
   readonly follower: FollowerId;
   readonly revision: ProfileRevisionId;
@@ -252,7 +262,9 @@ export type ActionJournalState =
   | "running"
   | "succeeded"
   | "failed"
-  | "skipped";
+  | "blocked"
+  | "interrupted"
+  | "rolled-back";
 
 /**
  * Persistable verification evidence is deliberately constrained. Raw command
@@ -298,6 +310,16 @@ export interface ActionJournalRecord {
   readonly removedResource?: AppliedResourceRecord | undefined;
 }
 
+/** The current attempt's state, independent of verification method names. */
+export type ActionLifecycle =
+  | { readonly _tag: "Pending"; readonly attempt: 0 }
+  | { readonly _tag: "Running"; readonly attempt: number; readonly rollbackReference?: string | undefined }
+  | { readonly _tag: "Succeeded"; readonly attempt: number; readonly verification: VerificationEvidence }
+  | { readonly _tag: "Blocked"; readonly attempt: number }
+  | { readonly _tag: "Interrupted"; readonly attempt: number; readonly rollbackReference?: string | undefined }
+  | { readonly _tag: "Failed"; readonly attempt: number; readonly verification: VerificationEvidence }
+  | { readonly _tag: "RolledBack"; readonly attempt: number };
+
 export interface CompleteRunInput {
   readonly run: RunId;
   readonly completedAt: string;
@@ -318,12 +340,21 @@ export interface DriftRecord {
   readonly recordedAt: string;
 }
 
+export type RunLifecycle =
+  | { readonly _tag: "Preparing" }
+  | { readonly _tag: "Applying" }
+  | { readonly _tag: "Interrupted"; readonly outcome: Extract<SynchronizationOutcome, { readonly outcome: "Interrupted" }> }
+  | { readonly _tag: "Finalizing"; readonly outcome: Exclude<SynchronizationOutcome, { readonly outcome: "Interrupted" }> }
+  | { readonly _tag: "Abandoning"; readonly outcome: Extract<SynchronizationOutcome, { readonly outcome: "Failed" }> }
+  | { readonly _tag: "Complete"; readonly outcome: Exclude<SynchronizationOutcome, { readonly outcome: "Interrupted" }>; readonly completedAt: string };
+
 export interface RecoveryRun {
   readonly id: RunId;
   readonly follower: FollowerId;
   readonly revision: ProfileRevisionId;
   readonly startedAt: string;
   readonly plan: SynchronizationPlan;
+  readonly lifecycle: Exclude<RunLifecycle, { readonly _tag: "Complete" }>;
 }
 
 export interface RecoveryState {

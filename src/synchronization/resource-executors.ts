@@ -12,7 +12,7 @@ import {
   type RecipeIndexPolicy,
   type RecipeSource,
 } from "../domain/resource.ts";
-import type { PlannedAction } from "../domain/synchronization.ts";
+import { checkTextWriteTransition, type PlannedAction } from "../domain/synchronization.ts";
 import { composeTextFile, parseTextComposition, sourceTextIssue } from "../domain/text-composition.ts";
 import {
   McpQualificationReceipt,
@@ -666,7 +666,10 @@ const restoreStoredFiles = (
  * directory under `append-local` is an ordinary mirror of Canonfig's entries.
  */
 const composesText = (context: ResourceExecutionContext): boolean =>
-  context.resource.policy === "append-local" && context.resource.kind === "file";
+  context.resource.kind === "file"
+  && (context.action.detail.kind === "write-file"
+    ? context.action.detail.textTransition.kind !== "whole-file"
+    : context.resource.policy === "append-local");
 
 const captureRollback = (
   context: ResourceExecutionContext,
@@ -713,8 +716,8 @@ const captureRollback = (
             const maximumBytes = appendLocalTarget ? context.limits.maximumFileBytes : undefined;
             const entry = yield* captureStoredFile(path, maximumBytes);
             const detail = context.action.detail;
-            if (appendLocalTarget && detail.kind === "write-file" && detail.retainedLocalDigest !== undefined
-              && (entry.state !== "regular" || entry.digest !== detail.retainedLocalDigest)) {
+            if (appendLocalTarget && detail.kind === "write-file" && detail.textTransition.kind === "adopt-local"
+              && (entry.state !== "regular" || entry.digest !== detail.textTransition.retainedDigest)) {
               return yield* new InvalidExecutionPlanError({
                 message: `First-adoption local text changed after planning: ${path.absolute}. Replan and review synchronization.`,
               });
@@ -1135,8 +1138,9 @@ const appendLocalOutput = (
 ): Effect.Effect<{ readonly content: Uint8Array | undefined; readonly mode: number }, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const desired = context.desired;
-    if (desired.kind !== "file" || desired.symlinkTo !== undefined || desired.executable
-      || ((desired.mode ?? 0) & 0o111) !== 0) {
+    const leaving = context.action.detail.kind === "write-file" && context.action.detail.textTransition.kind === "leave-section";
+    if (desired.kind !== "file" || desired.symlinkTo !== undefined || (!leaving && (desired.executable
+      || ((desired.mode ?? 0) & 0o111) !== 0))) {
       return yield* new InvalidExecutionPlanError({ message: "append-local requires a non-executable regular text file" });
     }
     const machine = yield* MachineState;
@@ -1168,22 +1172,19 @@ const appendLocalOutput = (
     if (detail.kind !== "write-file") {
       return yield* new InvalidExecutionPlanError({ message: "append-local requires a write-file or removal action" });
     }
-    if (detail.retainedLocalDigest !== undefined
-      && (before.state !== "regular" || before.digest !== detail.retainedLocalDigest
-        || current?.kind !== "unmanaged")) {
-      return yield* new InvalidExecutionPlanError({
-        message: `First-adoption local text changed after planning: ${before.path}. Replan and review synchronization.`,
-      });
+    const transition = detail.textTransition;
+    yield* Effect.try({
+      try: () => checkTextWriteTransition(transition, current === undefined ? { kind: "absent" }
+        : current.kind === "managed"
+        ? { kind: "managed", digest: before.state === "regular" ? before.digest : "", sourceDigest: sha256Hex(current.source), hasLocal: current.local.length > 0 }
+        : { kind: "unmanaged", digest: before.state === "regular" ? before.digest : "" }, desired.digest),
+      catch: (error) => new InvalidExecutionPlanError({ message: `${String(error)}: ${before.path}` }),
+    });
+    if (transition.kind === "whole-file") {
+      return yield* new InvalidExecutionPlanError({ message: "whole-file writes cannot compose a Source section" });
     }
-    // An unmarked file whose whole content is Canonfig's previous output (it
-    // owned the file under another policy) holds no local text to keep.
-    const wholeIsPrevious = current?.kind === "unmanaged" && before.state === "regular"
-      && detail.previousSourceDigest !== undefined && before.digest === detail.previousSourceDigest;
-    const currentSourceDigest = current?.kind === "managed" ? sha256Hex(current.source) : undefined;
-    if (current !== undefined && !wholeIsPrevious && (current.kind === "managed"
-      ? currentSourceDigest !== detail.previousSourceDigest && currentSourceDigest !== desired.digest
-      : detail.previousSourceDigest !== undefined)) {
-      return yield* new InvalidExecutionPlanError({ message: `Source text changed before writing: ${before.path}. Replan synchronization.` });
+    if (transition.kind === "leave-section") {
+      return { content: yield* artifact(context.artifacts, desired.digest), mode };
     }
     const bytes = yield* artifact(context.artifacts, desired.digest);
     const source = yield* Effect.try({
@@ -1195,7 +1196,7 @@ const appendLocalOutput = (
       },
       catch: (error) => new InvalidArtifactError({ digest: desired.digest, message: String(error) }),
     });
-    const content = composeTextFile(source, wholeIsPrevious ? undefined : current);
+    const content = composeTextFile(source, transition.kind === "convert-whole" ? undefined : current);
     if (content.byteLength > context.limits.maximumFileBytes) {
       return yield* new InvalidExecutionPlanError({ message: `composed text exceeds the ${context.limits.maximumFileBytes}-byte file limit: ${before.path}` });
     }
@@ -1283,7 +1284,12 @@ const prepareWrite = (
   detail: WriteFileDetail,
 ): Effect.Effect<PreparedResourceAction, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
   Effect.gen(function*() {
-    if (context.resource.policy === "append-local") return yield* prepareAppendLocal(context, detail.target);
+    const transition = detail.textTransition;
+    const shared = context.resource.policy === "append-local" && context.resource.kind === "file";
+    if (shared !== (transition.kind !== "whole-file" && transition.kind !== "leave-section")) {
+      return yield* new InvalidExecutionPlanError({ message: `Text transition ${transition.kind} does not match ${context.resource.policy} policy` });
+    }
+    if (transition.kind !== "whole-file") return yield* prepareAppendLocal(context, detail.target);
     const path = yield* targetPath(detail.target);
     const rollback = yield* captureRollback(context, [path]);
     const symlinkTo = context.desired.kind === "file" ? context.desired.symlinkTo : undefined;
@@ -2356,11 +2362,14 @@ const verifyDigest = (
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const path = yield* machine.normalizePath({ path: target });
-    const kind = yield* machine.inspectPath(path);
-    if (kind.kind !== "regular") {
+    const kind = yield* machine.inspectPath(path).pipe(
+      Effect.catchTag("MachineFilesystemError", (error) =>
+        /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message) ? Effect.succeed(undefined) : Effect.fail(error)),
+    );
+    if (kind?.kind !== "regular") {
       return {
         passed: false,
-        method: `sha256:non-${kind.kind}`,
+        method: `sha256:non-${kind?.kind ?? "absent"}`,
       };
     }
     const observed = yield* machine.digestFile({ path });
