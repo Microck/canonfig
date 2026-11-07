@@ -1,5 +1,5 @@
 // The side sheet that changes how one machine looks in this app.
-import { useId, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useId, useRef, useState, type ChangeEvent } from "react";
 import { motion } from "motion/react";
 import { RadioGroup } from "radix-ui";
 import { HexColorPicker } from "react-colorful";
@@ -26,6 +26,8 @@ import {
   type Look,
   type ResolvedLook,
 } from "./model";
+import { TransitionError, useStateMachine } from "@/lib/state-machine";
+import { settleIconRead, transitionIconSelection, type IconSelections, type IconSelectionEvent } from "./icon-selection";
 
 const HEX_INPUT = /^#?[0-9a-f]{6}$/i;
 /** What the hex field accepts while typing: a "#" and up to six hex digits. Anything else is flagged at once. */
@@ -116,12 +118,15 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
   // Local state is keyed by machine id: the sheet stays mounted when it switches machines.
   // Choosing Custom with nothing uploaded shows the uploader but saves nothing, so the map keeps the old icon
   // until an upload succeeds.
-  const [pickingFor, setPickingFor] = useState<string | null>(null);
-  const [iconError, setIconError] = useState<{ id: string; message: string } | null>(null);
+  const icons = useStateMachine<IconSelections, IconSelectionEvent>({}, transitionIconSelection);
+  const mounted = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const iconState = icons.state[id];
+  const previousIcon = look.icon === "custom" ? { status: "custom" as const, dataUrl: look.iconSrc } : { status: "preset" as const, icon: look.icon };
   // The colour as last typed or picked, before lifting, so the inputs don't jump while a too-dark colour is lifted.
   const [accentInput, setAccentInput] = useState<{ id: string; hex: string; text: string } | null>(null);
-  const iconValue = look.icon === "custom" || pickingFor === id ? "custom" : look.icon;
-  const error = iconError?.id === id ? iconError.message : null;
+  const iconValue = iconState && (iconState.status === "choosing" || iconState.status === "reading" || iconState.status === "failed") ? "custom" : look.icon;
+  const error = iconState?.status === "failed" ? iconState.error : null;
   const input = accentInput?.id === id ? accentInput : null;
   const lifted = input && look.accent === "custom" && look.customAccent !== input.hex ? look.customAccent : null;
   const hexInvalid = input !== null && !HEX_PARTIAL.test(input.text);
@@ -151,13 +156,12 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
     // Cleared so choosing the same file again (after fixing it, say) still fires change.
     e.target.value = "";
     if (!file) return;
-    try {
-      set({ icon: "custom", customIcon: await readCustomIcon(file) });
-      setIconError(null);
-      setPickingFor(null);
-    } catch (err) {
-      setIconError({ id, message: (err as Error).message });
-    }
+    const reading = icons.send({ type: "read", machineId: id, previous: previousIcon })[id];
+    const customIcon = await settleIconRead({ machineId: id, generation: reading.generation }, readCustomIcon(file), (event) => {
+      if (!mounted.current) throw new TransitionError("Icon selection", "closed", event.type);
+      return icons.send(event);
+    });
+    if (customIcon !== null) mapStore.setLook(id, { icon: "custom", customIcon });
   };
 
   return (
@@ -237,10 +241,12 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
             value={iconValue}
             onValueChange={(v) => {
               if (v !== "custom") {
-                setPickingFor(null);
+                icons.send({ type: "preset", machineId: id, icon: v as DeviceIcon });
                 set({ icon: v as DeviceIcon });
-              } else if (look.iconSrc) set({ icon: "custom" });
-              else setPickingFor(id);
+              } else {
+                icons.send({ type: "custom", machineId: id, previous: previousIcon, dataUrl: look.iconSrc });
+                if (look.iconSrc) set({ icon: "custom" });
+              }
             }}
             className="grid grid-cols-6 gap-1"
           >
@@ -440,7 +446,10 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
           variant="outline"
           size="sm"
           disabled={!saved}
-          onClick={() => mapStore.resetLook(id)}
+          onClick={() => {
+            icons.send({ type: "reset", machineId: id, icon: "desktop" });
+            mapStore.resetLook(id);
+          }}
           className="rounded-md px-1.5"
         >
           <ArrowCounterClockwise />
