@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { request } from "node:http";
 import { createServer as createPortListener } from "node:net";
 import { join } from "node:path";
@@ -179,13 +179,15 @@ describe("GUI self-update with a disposable npm installation", () => {
     const running = Schema.decodeUnknownSync(GuiOperation)((await server.api(`/api/operations/${id}`)).body);
     expect(running.state).toBe("running");
     expect(Schema.decodeUnknownSync(GuiSelfUpdateProgress)(running.journal)).toEqual({ phase: "staging", candidate });
-    expect(JSON.parse(readFileSync(join(updateDirectory(machine.root), "progress.json"), "utf8"))).toEqual(running.journal);
+    const stagedProgress = JSON.parse(readFileSync(join(updateDirectory(machine.root), "progress.json"), "utf8"));
+    expect(stagedProgress).toMatchObject({ version: 2, operationId: expect.any(String), ...running.journal });
     expect(machine.readers()).toHaveLength(0);
     machine.allowDownload();
     const completed = await operation(server, id);
     expect(completed.state).toBe("succeeded");
     expect(Schema.decodeUnknownSync(GuiSelfUpdateProgress)(completed.journal)).toEqual({ phase: "complete", candidate });
-    expect(JSON.parse(readFileSync(join(updateDirectory(machine.root), "progress.json"), "utf8"))).toEqual(completed.journal);
+    expect(JSON.parse(readFileSync(join(updateDirectory(machine.root), "progress.json"), "utf8")))
+      .toEqual({ version: 2, operationId: stagedProgress.operationId, ...completed.journal });
     expect(Schema.decodeUnknownSync(GuiSelfUpdateCheck)(completed.result)).toMatchObject({ current: previous, candidate, status: "updated" });
     expect(await server.exited).toEqual({ code: 0, signal: null });
     expect(machine.version()).toBe(candidate);
@@ -198,6 +200,27 @@ describe("GUI self-update with a disposable npm installation", () => {
     port.listen(Number(new URL(server.origin).port), "127.0.0.1");
     await once(port, "listening");
     const closed = once(port, "close"); port.close(); await closed;
+  }, 120_000);
+
+  it("delivers an installed result and exits when receipt publication fails", async () => {
+    const machine = await fixture();
+    const server = await start(machine);
+    await enable(server, machine.npmCli);
+    const id = await apply(server);
+    await machine.downloadStarted;
+    const directory = updateDirectory(machine.root);
+    mkdirSync(join(directory, "last-transaction.json"));
+    machine.allowDownload();
+    const completed = await operation(server, id);
+    expect(completed.state).toBe("succeeded");
+    expect(Schema.decodeUnknownSync(GuiSelfUpdateCheck)(completed.result)).toMatchObject({
+      status: "updated", candidate, detail: expect.stringContaining("bookkeeping failed"),
+    });
+    expect(await server.exited).toEqual({ code: 0, signal: null });
+    expect(machine.version()).toBe(candidate);
+    expect(machine.readers()).toEqual([]);
+    expect(JSON.parse(readFileSync(join(directory, "pending.json"), "utf8")))
+      .toMatchObject({ _tag: "Committed", version: 2 });
   }, 120_000);
 
   it.each(["SIGINT", "SIGKILL"] as const)("defers for a second command lease and recovers after %s without weakening the CLI disable refusal", async (signal) => {

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, lstatSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { Schema } from "effect";
 
 export const updateDirectory = (root: string) => join(dirname(root), ".canonfig-self-update");
 export function entry(path: string) {
@@ -88,41 +89,59 @@ export interface ManagedCommandLease {
   readonly selfUpdate: <A>(operation: () => Promise<A>, keepsRunning: (result: A) => boolean) => Promise<A>;
 }
 
+type LeaseState =
+  | { readonly _tag: "Active"; readonly release: () => void }
+  | { readonly _tag: "Uncoordinated" }
+  | { readonly _tag: "Suspended" }
+  | { readonly _tag: "Blocked" }
+  | { readonly _tag: "RestartRequired" }
+  | { readonly _tag: "Closed" };
+export class LeaseTransitionError extends Schema.TaggedError<LeaseTransitionError>()(
+  "LeaseTransitionError", { message: Schema.String },
+) {}
 /** A capability for this command's lease, never for another process's reader files. */
 export function managedCommandLease(root: string): ManagedCommandLease {
-  let release = commandLease(root);
-  let suspended = false;
-  let closed = false;
+  const acquire = (): LeaseState => {
+    const release = commandLease(root);
+    return release === undefined ? { _tag: "Uncoordinated" } : { _tag: "Active", release };
+  };
+  let state = acquire();
+  const transition = (next: LeaseState): void => {
+    const legal = next._tag === "Closed"
+      || ((state._tag === "Active" || state._tag === "Uncoordinated") && next._tag === "Suspended")
+      || (state._tag === "Suspended" && ["Active", "Uncoordinated", "Blocked", "RestartRequired"].includes(next._tag));
+    if (!legal) throw new LeaseTransitionError({ message: "This command is already stopping or performing a self-update operation" });
+    state = next;
+  };
+  const closed = () => state._tag === "Closed";
   return {
-    get suspended() { return suspended; },
+    get suspended() { return state._tag !== "Active" && state._tag !== "Uncoordinated"; },
     close() {
-      closed = true;
-      release?.();
-      release = undefined;
+      if (state._tag === "Active") state.release();
+      transition({ _tag: "Closed" });
     },
     async selfUpdate<A>(operation: () => Promise<A>, keepsRunning: (result: A) => boolean): Promise<A> {
-      if (closed || suspended) throw new Error("This command is already stopping or performing a self-update operation");
-      suspended = true;
+      if (state._tag !== "Active" && state._tag !== "Uncoordinated") throw new LeaseTransitionError({ message: "This command is already stopping or performing a self-update operation" });
+      const release = state._tag === "Active" ? state.release : undefined;
+      transition({ _tag: "Suspended" });
       release?.();
-      release = undefined;
-      let resume: boolean;
       let result: A;
       try {
         result = await operation();
-        resume = keepsRunning(result);
       } catch (error) {
-        try {
-          if (!closed) release = commandLease(root);
-          suspended = false;
-        } catch {
-          // Preserve the operation's CLI error if its pending journal prevents
-          // re-entry. Stay suspended so the GUI cannot start more commands.
+        if (!closed()) {
+          try { transition(acquire()); }
+          catch { transition({ _tag: "Blocked" }); }
         }
         throw error;
       }
-      // Re-enter through the ordinary gate, never bypassing a pending transaction.
-      if (resume && !closed) release = commandLease(root);
-      suspended = !resume;
+      if (!closed()) {
+        if (!keepsRunning(result)) transition({ _tag: "RestartRequired" });
+        else {
+          try { transition(acquire()); }
+          catch (error) { transition({ _tag: "Blocked" }); throw error; }
+        }
+      }
       return result;
     },
   };
