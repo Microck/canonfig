@@ -48,6 +48,8 @@ export interface PlanItem {
   reason: string;
   /** Set once a Synchronization Run reaches this step. */
   status?: "pending" | "running" | "done";
+  /** The last applied revision for this held resource, independent of newer successful items. */
+  appliedRevision?: number;
   /**
    * You edited this item's mirror file after Canonfig last applied it. Canonfig keeps the edit, reports it
    * and holds what it projects from the item; a machine that never applied anything has nothing that could have drifted.
@@ -181,11 +183,17 @@ export interface OverviewSlice {
   tour: string | null;
   /** Derived from `tour`, for everything that only needs to know the app is blocked by a tour. */
   tourOpen: boolean;
+  guidanceBlocked: boolean;
   startTour: (id: string) => void;
   /** Ends the running tour; `finished` (reached its end, not skipped) marks it done in the picker. */
   closeTour: (finished: boolean) => void;
   tourPickerOpen: boolean;
   setTourPickerOpen: (open: boolean) => void;
+  pendingTour: boolean;
+  finishTourSelection: () => void;
+  activeTipOrigin: "manual" | "automatic" | null;
+  tipDeferred: { view: View; layoutKey: string } | null;
+  deferTip: (layoutKey: string) => void;
   /**
    * In the demo, the first visit to each page in a page load waits SIMULATED_LOAD_MS for its data, showing a
    * skeleton (Body in kit.tsx). Never while a tour runs or its picker is open: tours spotlight the pages they
@@ -195,10 +203,8 @@ export interface OverviewSlice {
   tourFinished: (id: string) => boolean;
   /** The page whose tip is showing, if any. Leaving that page closes it. */
   activeTip: View | null;
-  openTip: (view: View) => void;
+  openTip: (view: View, origin?: "manual" | "automatic") => void;
   closeTip: () => void;
-  /** Takes down a tip that found no free spot without marking it seen, so its first visit can still show it. */
-  withdrawTip: () => void;
   tipSeen: (view: View) => boolean;
   getStartedHidden: boolean;
   setGetStartedHidden: (hidden: boolean) => void;
@@ -213,16 +219,30 @@ export interface OverviewSlice {
   later: (fn: () => void, ms: number) => void;
 }
 
+export type PublicationState =
+  | { kind: "Unvalidated" }
+  | { kind: "Validating"; snapshot: string }
+  | { kind: "Invalid" | "Validated"; snapshot: string; validation: GuiProfileValidation }
+  | { kind: "Publishing"; snapshot: string }
+  | { kind: "Published" }
+  | { kind: "Failed"; stage: "validation" | "publication"; error: GuiRequestError };
+export type DiscoveryState =
+  | { kind: "Idle" }
+  | { kind: "Scanning"; id: number }
+  | { kind: "Results"; id: number; tools: ScannedTool[] }
+  | { kind: "Failed"; id: number; error: GuiRequestError };
+
 export interface ProfileSlice {
   profileLive?: {
     snapshot: GuiProfileSnapshot | null;
     busy: boolean;
     error: GuiRequestError | null;
     validation: GuiProfileValidation | null;
+    publication: PublicationState;
     archive: GuiArchiveDownload | null;
     skillChecks: Record<string, GuiSkillCheck>;
     skillBusy: string | null;
-    scanDone: boolean;
+    discovery: DiscoveryState;
     revisionDetail: (ResourceState & { sequence: number; data: Schema.Json | null }) | null;
     reload: () => void;
     saveItem: (snapshot: GuiProfileSnapshot, before: Resource | undefined, next: Resource, exact?: ExactDraft, remove?: boolean) => Promise<boolean>;

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { open, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { SqliteClient, SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { Effect, Layer, Schema } from "effect";
@@ -31,6 +32,7 @@ import {
   localProjectionFollower,
   PlanningLocalRevisionSchema,
   SynchronizationPlanSchema,
+  SynchronizationOutcomeSchema,
   type AppliedResourceRecord,
   type DriftConflict,
   type SynchronizationOutcome,
@@ -58,6 +60,7 @@ import {
   type StateRepositoryError,
 } from "./state-repository.errors.ts";
 import { followerRoleConflict, sourceRoleConflict } from "./machine-role.ts";
+import { actionLifecycle, transitionAction } from "./action-lifecycle.ts";
 import { StateRepository } from "./state-repository.service.ts";
 import type {
   ActionJournalRecord,
@@ -79,6 +82,7 @@ import type {
   PublishRevisionInput,
   RecordDriftInput,
   RecoveryState,
+  RunLifecycle,
   RegisterFollowerInput,
   RevisionApprovalRecord,
   RevisionBlobCandidate,
@@ -92,6 +96,7 @@ import type {
   VerificationEvidence,
 } from "./state-repository.types.ts";
 import { stateFormatVersion, stateMigrations, stateSchemaMigrations } from "./state-schema.ts";
+import { ScheduledInvocation } from "./state-repository.types.ts";
 import { buildIdentity } from "../runtime/build-identity.ts";
 import type {
   PlanningLocalRevision,
@@ -103,8 +108,10 @@ const HarnessTakeoverRow = Schema.Struct({
   surface: Schema.String,
   root: Schema.String,
   snapshot: Schema.NullOr(Schema.String),
+  backup_mode: Schema.Literals(["Disabled", "Snapshot", "Pending"]),
   run_id: RunId,
   taken_over_at: Schema.String,
+  phase: Schema.Literals(["Reserved", "Owned", "Uncertain"]),
 });
 const RevisionJsonRow = Schema.Struct({ revision_json: Schema.String });
 const RevisionBlobCandidateRow = Schema.Struct({
@@ -129,7 +136,7 @@ const ResourceBlobChunkRow = Schema.Struct({
 export const resourceBlobChunkBytes = 1024 * 1024;
 const RunStatusRow = Schema.Struct({
   follower_id: Schema.String,
-  status: Schema.String,
+  phase: Schema.Literals(["Preparing", "Applying", "Interrupted", "Finalizing", "Abandoning", "Complete"]),
 });
 const ActiveRunRow = Schema.Struct({
   id: RunId,
@@ -137,6 +144,8 @@ const ActiveRunRow = Schema.Struct({
   revision_id: ProfileRevisionId,
   plan_json: Schema.String,
   started_at: Schema.String,
+  phase: Schema.Literals(["Preparing", "Applying", "Interrupted", "Finalizing", "Abandoning"]),
+  outcome_json: Schema.NullOr(Schema.String),
 });
 const OpenRunIdentityRow = Schema.Struct({
   id: Schema.String,
@@ -175,7 +184,7 @@ const McpQualificationReceiptRow = Schema.Struct({
 const ActionJournalRow = Schema.Struct({
   action_id: ActionId,
   sequence: Schema.Number,
-  state: Schema.Literals(["pending", "running", "succeeded", "failed", "skipped"]),
+  state: Schema.Literals(["pending", "running", "succeeded", "failed", "blocked", "interrupted", "rolled-back"]),
   recorded_at: Schema.String,
   attempt: Schema.Number,
   verification_json: Schema.NullOr(Schema.String),
@@ -189,29 +198,8 @@ const DriftRow = Schema.Struct({
 });
 const AppliedResourceRow = Schema.Struct({
   resource_id: ResourceId,
-  revision_id: ProfileRevisionId,
-  digest: ContentDigest,
-  applied_at: Schema.String,
-  owned_files_json: Schema.NullOr(Schema.String),
-  kind: Schema.NullOr(Schema.String),
-  policy: Schema.NullOr(Schema.String),
-  target: Schema.NullOr(Schema.String),
-  owned_keys_json: Schema.NullOr(Schema.String),
-  config_format: Schema.NullOr(Schema.String),
-  executable: Schema.NullOr(Schema.Number),
-  mode: Schema.NullOr(Schema.Number),
-  symlink_target: Schema.NullOr(Schema.String),
-  installer_recipe_json: Schema.NullOr(Schema.String),
+  record_json: Schema.String,
 });
-const OwnedFilesSchema = Schema.Array(Schema.Struct({
-  path: Schema.NonEmptyString,
-  digest: ContentDigest,
-  executable: Schema.optional(Schema.Boolean),
-  mode: Schema.optional(Schema.Int),
-  objectKind: Schema.optional(Schema.Literals(["regular", "directory", "symlink"])),
-  symlinkTo: Schema.optional(Schema.NonEmptyString),
-}));
-const OwnedKeysSchema = Schema.Array(Schema.NonEmptyString);
 const FollowerRow = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -338,7 +326,7 @@ const statusCount = Effect.fn("StateRepository.statusCount")(function*(
 const makeRepository = Effect.gen(function*() {
   const sql = yield* SqlClient.SqlClient;
 
-  // A database from before state format 6 has a different migration history.
+  // Earlier state formats have a different migration history.
   // Running the current migrations over it would fail halfway or, worse,
   // succeed against tables whose rows this release cannot decode.
   const history = yield* sql`
@@ -357,8 +345,12 @@ const makeRepository = Effect.gen(function*() {
   }
 
   yield* SqliteMigrator.run({ loader: stateMigrations }).pipe(
+    Effect.catchDefect((defect) =>
+      defect instanceof SqliteMigrator.MigrationError && defect.cause instanceof RepositoryDecodeError
+        ? Effect.fail(new RepositorySqlError({ operation: "migrate state schema", message: defect.cause.message }))
+        : Effect.die(defect)),
     Effect.mapError((error) =>
-      new RepositorySqlError({
+      error instanceof RepositorySqlError ? error : new RepositorySqlError({
         operation: "migrate state schema",
         message: String(error),
       })
@@ -458,6 +450,76 @@ const makeRepository = Effect.gen(function*() {
           dirname(configuration.stateLocation),
         );
       }
+      const current = yield* getFollowerSynchronizationConfiguration();
+      if (!isDeepStrictEqual(current, input.expectedConfiguration === undefined
+        ? undefined : JSON.parse(JSON.stringify(input.expectedConfiguration)))) {
+        return yield* new EnrollmentStateConflictError({
+          reason: "credential-conflict",
+          message: "the follower enrollment changed; read its current state and retry",
+        });
+      }
+      const before = current?.lifecycle._tag;
+      const after = configuration.lifecycle._tag;
+      const unchangedEnrollment = current !== undefined
+        && current.credentialReference === configuration.credentialReference
+        && isDeepStrictEqual(current.follower, configuration.follower)
+        && current.profile === configuration.profile
+        && isDeepStrictEqual(current.source, configuration.source);
+      let valid = false;
+      if (current !== undefined && isDeepStrictEqual(current.lifecycle, configuration.lifecycle)) {
+        valid = unchangedEnrollment;
+      } else if (configuration.lifecycle._tag === "Unenrolling") {
+        valid = unchangedEnrollment && isDeepStrictEqual(
+          current !== undefined && "previous" in current.lifecycle ? current.lifecycle.previous : undefined,
+          configuration.lifecycle.previous,
+        );
+      } else {
+        switch (current?.lifecycle._tag) {
+          case undefined:
+            valid = after === "Active" || after === "Finalizing";
+            break;
+          case "Active":
+            if (configuration.lifecycle._tag === "Finalizing" && configuration.lifecycle.previous !== undefined) {
+              const { sourceIdentity, ...previous } = configuration.lifecycle.previous;
+              const state = yield* loadState(current.follower.id);
+              valid = isDeepStrictEqual({ ...previous, lifecycle: current.lifecycle }, current)
+                && isDeepStrictEqual(sourceIdentity, state.sourceIdentity);
+            }
+            break;
+          case "Finalizing":
+            valid = unchangedEnrollment && (current.lifecycle.previous === undefined
+              ? after === "Active"
+              : (configuration.lifecycle._tag === "RetiringPrevious" || configuration.lifecycle._tag === "RollbackPending")
+                && isDeepStrictEqual(current.lifecycle.previous, configuration.lifecycle.previous));
+            break;
+          case "RetiringPrevious":
+            valid = unchangedEnrollment && (current.lifecycle.cleanup._tag === "RemoveLocal"
+              ? after === "Active"
+              : configuration.lifecycle._tag === "RetiringPrevious"
+                && configuration.lifecycle.cleanup._tag === "RemoveLocal"
+                && isDeepStrictEqual(current.lifecycle.previous, configuration.lifecycle.previous));
+            break;
+          case "RollbackPending": {
+            const { sourceIdentity, ...previous } = current.lifecycle.previous;
+            valid = after === "Active"
+              && isDeepStrictEqual(sourceIdentity, input.sourceIdentity)
+              && isDeepStrictEqual({
+                ...previous, updatedAt: configuration.updatedAt, lifecycle: { _tag: "Active" },
+              }, configuration);
+            if (valid) yield* sql`
+              INSERT OR IGNORE INTO enrollment_credential_retirements (reference, state)
+              VALUES (${current.credentialReference}, 'Retiring')
+            `;
+            break;
+          }
+          case "Unenrolling":
+            break;
+        }
+      }
+      if (!valid) return yield* new EnrollmentStateConflictError({
+        reason: "credential-conflict",
+        message: `illegal follower enrollment transition ${before ?? "Unenrolled"} -> ${after}`,
+      });
       yield* sql`
         INSERT INTO followers (
           id,
@@ -509,6 +571,7 @@ const makeRepository = Effect.gen(function*() {
           configuration_json = excluded.configuration_json,
           updated_at = excluded.updated_at
       `;
+      yield* sql`DELETE FROM enrollment_credential_retirements WHERE reference = ${configuration.credentialReference} AND state = 'Staged'`;
     });
     yield* sql.withTransaction(transaction).pipe(
       Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("save follower synchronization configuration")(error))),
@@ -544,27 +607,53 @@ const makeRepository = Effect.gen(function*() {
 
   const removeFollowerSynchronizationConfiguration = Effect.fn(
     "StateRepository.removeFollowerSynchronizationConfiguration",
-  )(function*(): Effect.fn.Return<boolean, StateRepositoryError> {
-    const removed = yield* statusCount(
-      sql,
-      sql`SELECT count(*) AS count FROM follower_sync_configuration WHERE singleton = 1`,
-      "follower synchronization configuration",
-      "1",
-    );
-    yield* sql`DELETE FROM follower_sync_configuration WHERE singleton = 1`.pipe(
-      Effect.mapError(sqlError("remove follower synchronization configuration")),
-    );
-    return removed > 0;
+  )(function*(expected: FollowerSynchronizationConfiguration): Effect.fn.Return<boolean, StateRepositoryError> {
+    return yield* sql.withTransaction(Effect.gen(function*() {
+      const current = yield* getFollowerSynchronizationConfiguration();
+      const discardedPreparation = current?.lifecycle._tag === "Finalizing" && current.lifecycle.previous === undefined;
+      if ((current?.lifecycle._tag !== "Unenrolling" && !discardedPreparation)
+        || !isDeepStrictEqual(current, JSON.parse(JSON.stringify(expected)))) {
+        return yield* new EnrollmentStateConflictError({
+          reason: "credential-conflict", message: "the follower enrollment changed before removal; retry unenrollment",
+        });
+      }
+      if (discardedPreparation) yield* sql`
+        INSERT OR IGNORE INTO enrollment_credential_retirements (reference, state)
+        VALUES (${expected.credentialReference}, 'Retiring')
+      `;
+      yield* sql`DELETE FROM follower_sync_configuration WHERE singleton = 1`;
+      return true;
+    })).pipe(Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("remove follower synchronization configuration")(error))));
   });
 
   const saveEnrollmentSource = Effect.fn("StateRepository.saveEnrollmentSource")(
-    function*(source: EnrollmentSourceRecord): Effect.fn.Return<void, StateRepositoryError> {
+    function*(source: EnrollmentSourceRecord, expected?: EnrollmentSourceRecord): Effect.fn.Return<void, StateRepositoryError> {
       const transaction = Effect.gen(function*() {
         // One role per machine, checked under the write lock: the Source
         // identity is refused while a follower configuration, pending or
         // complete, exists.
         const follower = yield* getFollowerSynchronizationConfiguration();
         if (follower !== undefined) return yield* followerRoleConflict(follower, "be a Source");
+        const stored = yield* getEnrollmentSource();
+        const lifecycle: { readonly _tag: "Absent" } | { readonly _tag: "Initialized"; readonly source: EnrollmentSourceRecord } =
+          stored === undefined ? { _tag: "Absent" } : { _tag: "Initialized", source: stored };
+        // Initialization is create-only. Relocation compares the entire old
+        // record under the write lock and cannot change either pinned identity.
+        if (
+          (lifecycle._tag === "Initialized" && expected === undefined)
+          || (expected !== undefined && (
+            lifecycle._tag !== "Initialized"
+            || !isDeepStrictEqual(lifecycle.source, expected)
+            || source.identity.keyId !== expected.identity.keyId
+            || source.identity.publicKeyFingerprint !== expected.identity.publicKeyFingerprint
+            || source.tlsFingerprint !== expected.tlsFingerprint
+          ))
+        ) {
+          return yield* new EnrollmentStateConflictError({
+            reason: "credential-conflict",
+            message: "the Source identity or credential references changed; retry the operation without replacing the initialized identity",
+          });
+        }
         yield* sql`
           INSERT INTO source_identity (singleton, key_id, public_key_fingerprint)
           VALUES (
@@ -690,6 +779,7 @@ const makeRepository = Effect.gen(function*() {
     "StateRepository.findEnrollmentInvitation",
   )(function*(
     codeDigest: typeof ContentDigest.Type,
+    at = new Date().toISOString(),
   ): Effect.fn.Return<StoredEnrollmentInvitation | undefined, StateRepositoryError> {
     const rows = yield* sql`
       SELECT
@@ -716,17 +806,22 @@ const makeRepository = Effect.gen(function*() {
       "enrollment invitation groups",
       codeDigest,
     );
-    const storedInvitation: StoredEnrollmentInvitation = {
+    const pendingRows = yield* sql`
+      SELECT follower_id, credential_digest FROM pending_enrollments WHERE code_digest = ${codeDigest}
+    `.pipe(Effect.mapError(sqlError("load prepared invitation")));
+    const pending = (yield* decodeRows(Schema.Struct({
+      follower_id: FollowerId, credential_digest: ContentDigest,
+    }), pendingRows, "prepared invitation", codeDigest))[0];
+    const lifecycle: StoredEnrollmentInvitation["lifecycle"] = row.used_at !== null
+      ? { _tag: "Consumed", usedAt: row.used_at }
+      : Date.parse(row.expires_at) <= Date.parse(at) ? { _tag: "Expired" }
+      : pending !== undefined ? { _tag: "Prepared", follower: pending.follower_id, credentialDigest: pending.credential_digest }
+      : { _tag: "Available" };
+    return {
       intendedSourceFingerprint: row.intended_source_fingerprint,
       tlsFingerprint: row.tls_fingerprint,
-      endpoint: row.endpoint,
-      groups,
-      expiresAt: row.expires_at,
+      endpoint: row.endpoint, groups, expiresAt: row.expires_at, lifecycle,
     };
-    if (row.used_at !== null) {
-      return { ...storedInvitation, usedAt: row.used_at };
-    }
-    return storedInvitation;
   });
 
   const listEnrollmentInvitations = Effect.fn("StateRepository.listEnrollmentInvitations")(
@@ -751,19 +846,25 @@ const makeRepository = Effect.gen(function*() {
     function*(): Effect.fn.Return<ReadonlyArray<EnrollmentFollowerSummary>, StateRepositoryError> {
       const rows = yield* sql`
         SELECT f.id, f.name, f.groups_json, f.enrolled_at, f.revoked,
-          EXISTS(SELECT 1 FROM follower_credentials c WHERE c.follower_id = f.id) AS credential_present
+          EXISTS(SELECT 1 FROM follower_credentials c WHERE c.follower_id = f.id)
+            AND NOT EXISTS(SELECT 1 FROM enrollment_credential_retirements r WHERE r.reference = f.credential_reference)
+            AND f.revoked = 0 AS credential_present,
+          EXISTS(SELECT 1 FROM enrollment_credential_retirements r
+            WHERE r.reference = f.credential_reference AND r.state = 'Retiring') AS retiring
         FROM followers f WHERE f.id != ${localProjectionFollower}
         ORDER BY f.enrolled_at, f.id
       `.pipe(Effect.mapError(sqlError("list enrollment followers")));
       const decoded = yield* decodeRows(Schema.Struct({
         id: FollowerId, name: Schema.String, groups_json: Schema.String,
-        enrolled_at: Schema.String, revoked: Schema.Number, credential_present: Schema.Number,
+        enrolled_at: Schema.String, revoked: Schema.Number, credential_present: Schema.Number, retiring: Schema.Number,
       }), rows, "enrollment followers", "all");
       const followers = yield* Effect.forEach(decoded, (row) => parseJson(
         Schema.Array(GroupName), row.groups_json, "follower groups", row.id,
       ).pipe(Effect.map((groups) => ({
         id: row.id, name: row.name, groups, enrolledAt: row.enrolled_at,
         revoked: row.revoked !== 0, credentialPresent: row.credential_present !== 0, pending: false,
+        credentialLifecycle: row.revoked === 0 ? { _tag: "Active" as const }
+          : row.retiring !== 0 ? { _tag: "Retiring" as const } : { _tag: "Retired" as const },
       }))));
       const pendingRows = yield* sql`
         SELECT follower_json FROM pending_enrollments ORDER BY created_at, follower_id
@@ -774,6 +875,7 @@ const makeRepository = Effect.gen(function*() {
         FollowerIdentity, row.follower_json, "pending follower", "inventory",
       ).pipe(Effect.map(({ id, name, groups, enrolledAt, revoked }) => ({
         id, name, groups, enrolledAt, revoked, credentialPresent: true, pending: true,
+        credentialLifecycle: { _tag: "Prepared" as const },
       }))));
       return [...followers, ...summaries];
     },
@@ -785,51 +887,40 @@ const makeRepository = Effect.gen(function*() {
     input: ConsumeEnrollmentInvitationInput,
   ): Effect.fn.Return<void, StateRepositoryError> {
     const transaction = Effect.gen(function*() {
-      const rows = yield* sql`
-        SELECT
-          intended_source_fingerprint,
-          tls_fingerprint,
-          endpoint,
-          groups_json,
-          expires_at,
-          used_at
-        FROM enrollment_invitations
-        WHERE code_digest = ${input.codeDigest}
-      `;
-      const invitations = yield* decodeRows(
-        EnrollmentInvitationRow,
-        rows,
-        "enrollment invitation",
-        input.codeDigest,
-      );
-      const invitation = invitations[0];
+      const invitation = yield* findEnrollmentInvitation(input.codeDigest, input.consumedAt);
       if (invitation === undefined) {
         return yield* new EnrollmentStateConflictError({
           reason: "invitation-not-found",
           message: "the invitation is unknown",
         });
       }
-      if (invitation.used_at !== null) {
+      if (invitation.lifecycle._tag === "Consumed") {
         return yield* new EnrollmentStateConflictError({
           reason: "invitation-used",
           message: "the invitation was already consumed",
         });
       }
-      if (Date.parse(invitation.expires_at) <= Date.parse(input.consumedAt)) {
+      if (invitation.lifecycle._tag === "Expired") {
         return yield* new EnrollmentStateConflictError({
           reason: "invitation-expired",
           message: "the invitation has expired",
         });
       }
       if (
-        invitation.intended_source_fingerprint !== input.intendedSourceFingerprint
-        || invitation.tls_fingerprint !== input.tlsFingerprint
+        invitation.intendedSourceFingerprint !== input.intendedSourceFingerprint
+        || invitation.tlsFingerprint !== input.tlsFingerprint
       ) {
         return yield* new EnrollmentStateConflictError({
           reason: "invitation-mismatch",
           message: "the invitation is not valid for this source",
         });
       }
+      if (invitation.lifecycle._tag === "Prepared" && (
+        invitation.lifecycle.credentialDigest !== input.replacingCredentialDigest
+        || invitation.lifecycle.follower !== input.follower.id
+      )) return yield* new EnrollmentStateConflictError({
+        reason: "credential-conflict", message: "the prepared invitation changed; retry with its current state",
+      });
       const nonceRows = yield* sql`
         SELECT count(*) AS count
         FROM enrollment_invitations
@@ -850,6 +941,18 @@ const makeRepository = Effect.gen(function*() {
       }
       // Enforce identity exclusivity in the transaction as well as at the
       // service boundary, including concurrent invitations for the same name.
+      if (input.replacingCredentialDigest !== undefined) {
+        if (invitation.lifecycle._tag !== "Prepared") return yield* new EnrollmentStateConflictError({
+          reason: "credential-conflict",
+          message: "the prepared enrollment changed before replacement; retry with the current invitation state",
+        });
+        yield* sql`
+          INSERT OR IGNORE INTO enrollment_credential_retirements (reference, state)
+          SELECT credential_reference, 'Retiring' FROM pending_enrollments
+          WHERE credential_digest = ${input.replacingCredentialDigest}
+        `;
+        yield* sql`DELETE FROM pending_enrollments WHERE credential_digest = ${input.replacingCredentialDigest}`;
+      }
       const activeIdentityCount = yield* statusCount(sql, sql`
         SELECT count(*) AS count FROM followers
         WHERE id = ${input.follower.id} AND revoked = 0
@@ -881,12 +984,7 @@ const makeRepository = Effect.gen(function*() {
           message: "the invitation is already pending finalization",
         });
       }
-      const invitationGroups = yield* parseJson(
-        Schema.Array(GroupName),
-        invitation.groups_json,
-        "enrollment invitation groups",
-        input.codeDigest,
-      );
+      const invitationGroups = invitation.groups;
       const requestedGroups = [...input.follower.groups];
       if (
         requestedGroups.length !== invitationGroups.length
@@ -932,17 +1030,10 @@ const makeRepository = Effect.gen(function*() {
           ${input.consumedAt}
         )
       `;
+      yield* sql`DELETE FROM enrollment_credential_retirements WHERE reference = ${input.credentialReference} AND state = 'Staged'`;
     });
     yield* sql.withTransaction(transaction).pipe(
-      Effect.mapError((error) =>
-        error instanceof EnrollmentStateConflictError
-          ? error
-          : error instanceof RepositoryDecodeError
-          ? error
-          : error instanceof RepositorySqlError
-          ? error
-          : sqlError("consume enrollment invitation")(error)
-      ),
+      Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("consume enrollment invitation")(error))),
     );
   });
 
@@ -1075,6 +1166,11 @@ const makeRepository = Effect.gen(function*() {
           `;
         } else {
           yield* sql`
+            INSERT OR IGNORE INTO enrollment_credential_retirements (reference, state)
+            SELECT credential_reference, 'Retiring' FROM follower_credentials
+            WHERE follower_id = ${follower.id} AND credential_reference != ${input.credentialReference}
+          `;
+          yield* sql`
             UPDATE followers
             SET
               name = ${follower.name},
@@ -1149,10 +1245,39 @@ const makeRepository = Effect.gen(function*() {
   const cancelPendingEnrollment = Effect.fn(
     "StateRepository.cancelPendingEnrollment",
   )(function*(input: CancelPendingEnrollmentInput): Effect.fn.Return<void, StateRepositoryError> {
-    yield* sql`
-      DELETE FROM pending_enrollments
-      WHERE credential_digest = ${input.credentialDigest}
-    `.pipe(Effect.mapError(sqlError("cancel pending enrollment")));
+    yield* sql.withTransaction(Effect.gen(function*() {
+      yield* sql`
+        INSERT OR IGNORE INTO enrollment_credential_retirements (reference, state)
+        SELECT credential_reference, 'Retiring' FROM pending_enrollments
+        WHERE credential_digest = ${input.credentialDigest}
+      `;
+      yield* sql`DELETE FROM pending_enrollments WHERE credential_digest = ${input.credentialDigest}`;
+    })).pipe(Effect.mapError(sqlError("cancel pending enrollment")));
+  });
+
+  const stageEnrollmentCredential = Effect.fn("StateRepository.stageEnrollmentCredential")(function*(reference: typeof CredentialReference.Type) {
+    yield* sql`INSERT INTO enrollment_credential_retirements (reference, state) VALUES (${reference}, 'Staged')`
+      .pipe(Effect.mapError(sqlError("stage enrollment credential")));
+  });
+
+  const recoverEnrollmentCredentialStaging = Effect.fn("StateRepository.recoverEnrollmentCredentialStaging")(function*() {
+    yield* sql`UPDATE enrollment_credential_retirements SET state = 'Retiring' WHERE state = 'Staged'`
+      .pipe(Effect.mapError(sqlError("recover enrollment credential staging")));
+  });
+
+  const listEnrollmentCredentialRetirements = Effect.fn("StateRepository.listEnrollmentCredentialRetirements")(function*() {
+    const rows = yield* sql`
+      SELECT state AS _tag, reference AS credentialReference FROM enrollment_credential_retirements WHERE state = 'Retiring' ORDER BY reference
+    `.pipe(Effect.mapError(sqlError("list retiring enrollment credentials")));
+    return yield* decodeRows(Schema.TaggedStruct("Retiring", { credentialReference: CredentialReference }),
+      rows, "retiring enrollment credentials", "all");
+  });
+
+  const completeEnrollmentCredentialRetirement = Effect.fn("StateRepository.completeEnrollmentCredentialRetirement")(function*(
+    reference: typeof CredentialReference.Type,
+  ) {
+    yield* sql`DELETE FROM enrollment_credential_retirements WHERE reference = ${reference} AND state = 'Retiring'`
+      .pipe(Effect.mapError(sqlError("complete enrollment credential retirement")));
   });
 
   const listPendingEnrollments = Effect.fn(
@@ -1202,7 +1327,13 @@ const makeRepository = Effect.gen(function*() {
       credentialReference: row.credential_reference,
       enrolledAt: row.enrolled_at,
     }).pipe(Effect.mapError(decodeError("follower", row.id)));
+    const retiring = row.revoked === 0 ? false : (yield* statusCount(sql, sql`
+      SELECT count(*) AS count FROM enrollment_credential_retirements
+      WHERE reference = ${row.credential_reference} AND state = 'Retiring'
+    `, "follower credential retirement", row.id)) > 0;
     return {
+      lifecycle: row.revoked === 0 ? { _tag: "Active" } : retiring
+        ? { _tag: "Retiring", credentialReference: row.credential_reference } : { _tag: "Retired" },
       follower,
       credentialDigest: row.credential_digest,
       credentialReference: row.credential_reference,
@@ -1268,16 +1399,16 @@ const makeRepository = Effect.gen(function*() {
 
   const revokeFollower = Effect.fn("StateRepository.revokeFollower")(
     function*(follower: FollowerIdType): Effect.fn.Return<void, StateRepositoryError> {
-      const count = yield* statusCount(
-        sql,
-        sql`SELECT count(*) AS count FROM followers WHERE id = ${follower}`,
-        "follower",
-        follower,
-      );
-      if (count === 0) return yield* new FollowerNotFoundError({ follower });
-      yield* sql`UPDATE followers SET revoked = 1 WHERE id = ${follower}`.pipe(
-        Effect.mapError(sqlError("revoke follower")),
-      );
+      yield* sql.withTransaction(Effect.gen(function*() {
+        const count = yield* statusCount(sql,
+          sql`SELECT count(*) AS count FROM followers WHERE id = ${follower}`, "follower", follower);
+        if (count === 0) return yield* new FollowerNotFoundError({ follower });
+        yield* sql`
+          INSERT OR IGNORE INTO enrollment_credential_retirements (reference, state)
+          SELECT credential_reference, 'Retiring' FROM followers WHERE id = ${follower} AND revoked = 0
+        `;
+        yield* sql`UPDATE followers SET revoked = 1 WHERE id = ${follower}`;
+      })).pipe(Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("revoke follower")(error))));
     },
   );
 
@@ -1712,67 +1843,12 @@ const makeRepository = Effect.gen(function*() {
     StateRepositoryError
   > {
     const rows = yield* sql`
-      SELECT resource_id, revision_id, digest, applied_at, owned_files_json,
-        kind, policy, target, owned_keys_json, config_format,
-        executable, mode, symlink_target, installer_recipe_json
-      FROM applied_resources
-      WHERE follower_id = ${follower}
-      ORDER BY resource_id
+      SELECT resource_id, record_json FROM applied_resources
+      WHERE follower_id = ${follower} ORDER BY resource_id
     `.pipe(Effect.mapError(sqlError("load applied resources")));
-    const stored = yield* decodeRows(
-      AppliedResourceRow,
-      rows,
-      "applied resources",
-      follower,
-    );
+    const stored = yield* decodeRows(AppliedResourceRow, rows, "applied resources", follower);
     return yield* Effect.forEach(stored, (row) =>
-      Effect.gen(function*() {
-        const ownedFiles = row.owned_files_json === null
-          ? undefined
-          : yield* parseJson(
-            OwnedFilesSchema,
-            row.owned_files_json,
-            "applied resource owned files",
-            row.resource_id,
-          );
-        const ownedKeys = row.owned_keys_json === null
-          ? undefined
-          : yield* parseJson(
-            OwnedKeysSchema,
-            row.owned_keys_json,
-            "applied resource owned keys",
-            row.resource_id,
-          );
-        const installerRecipe = row.installer_recipe_json === null
-          ? undefined
-          : yield* parseJson(
-            InstallerRecipeProvenance,
-            row.installer_recipe_json,
-            "applied resource installer recipe",
-            row.resource_id,
-          );
-        return yield* Schema.decodeUnknownEffect(AppliedResourceRecordSchema)({
-          resource: row.resource_id,
-          revision: row.revision_id,
-          digest: row.digest,
-          appliedAt: row.applied_at,
-          kind: row.kind ?? undefined,
-          policy: row.policy ?? undefined,
-          target: row.target ?? undefined,
-          executable: row.executable === null
-            ? undefined
-            : row.executable === 1,
-          mode: row.mode ?? undefined,
-          symlinkTo: row.symlink_target ?? undefined,
-          ownedFiles,
-          ownedKeys,
-          installerRecipe,
-          configFormat: row.config_format ?? undefined,
-        }).pipe(
-          Effect.mapError(decodeError("applied resource", row.resource_id)),
-        );
-      })
-    );
+      parseJson(AppliedResourceRecordSchema, row.record_json, "applied resource", row.resource_id));
   });
 
   const recordLocalRevision = Effect.fn("StateRepository.recordLocalRevision")(
@@ -1821,33 +1897,56 @@ const makeRepository = Effect.gen(function*() {
   const loadHarnessTakeovers = Effect.fn("StateRepository.loadHarnessTakeovers")(
     function*(): Effect.fn.Return<ReadonlyArray<HarnessTakeover>, StateRepositoryError> {
       const rows = yield* sql`
-        SELECT harness, surface, root, snapshot, run_id, taken_over_at
+        SELECT harness, surface, root, snapshot, backup_mode, run_id, taken_over_at, phase
         FROM harness_takeovers
         ORDER BY harness, surface
       `.pipe(Effect.mapError(sqlError("load harness takeovers")));
       const decoded = yield* decodeRows(HarnessTakeoverRow, rows, "harness takeover", "*");
-      return decoded.map((row) => ({
-        harness: row.harness,
-        surface: row.surface,
-        root: row.root,
-        snapshot: row.snapshot ?? undefined,
-        run: row.run_id,
-        takenOverAt: row.taken_over_at,
-      }));
+      return yield* Effect.forEach(decoded, (row): Effect.Effect<HarnessTakeover, RepositoryDecodeError> => {
+        const surface = { harness: row.harness, surface: row.surface, root: row.root,
+          run: row.run_id, takenOverAt: row.taken_over_at };
+        if (row.backup_mode === "Pending") {
+          if (row.phase !== "Reserved") return Effect.fail(new RepositoryDecodeError({
+            entity: "harness takeover", id: `${row.harness}:${row.surface}`, message: "only a reservation can await snapshot capture",
+          }));
+          return Effect.succeed({ ...surface, _tag: "Reserved", backup: { _tag: "Pending" } });
+        }
+        if (row.backup_mode === "Snapshot" && row.snapshot === null) return Effect.fail(new RepositoryDecodeError({
+          entity: "harness takeover", id: `${row.harness}:${row.surface}`, message: "snapshot backup lacks its snapshot id",
+        }));
+        const backup = row.snapshot === null ? { _tag: "Disabled" as const } : { _tag: "Snapshot" as const, id: row.snapshot };
+        return Effect.succeed({ ...surface, _tag: row.phase, backup });
+      });
     },
   );
 
   const recordHarnessTakeovers = Effect.fn("StateRepository.recordHarnessTakeovers")(
     function*(takeovers: ReadonlyArray<HarnessTakeover>): Effect.fn.Return<void, StateRepositoryError> {
-      const transaction = Effect.forEach(takeovers, (takeover) => sql`
-        INSERT INTO harness_takeovers (harness, surface, root, snapshot, run_id, taken_over_at)
-        VALUES (
-          ${takeover.harness}, ${takeover.surface}, ${takeover.root},
-          ${takeover.snapshot ?? null}, ${takeover.run}, ${takeover.takenOverAt}
-        )
-      `, { discard: true });
+      const transaction = Effect.gen(function*() {
+        for (const takeover of takeovers) {
+          const run = yield* loadRunStatus(takeover.run);
+          if (run.phase !== "Preparing" || takeover._tag !== "Reserved") return yield* new InvalidRunTransitionError({
+            run: takeover.run, message: "takeover reservation requires a preparing run",
+          });
+          const written = yield* sql`
+            INSERT INTO harness_takeovers (harness, surface, root, snapshot, backup_mode, run_id, taken_over_at, phase)
+            VALUES (${takeover.harness}, ${takeover.surface}, ${takeover.root},
+              ${takeover.backup._tag === "Snapshot" ? takeover.backup.id : null}, ${takeover.backup._tag},
+              ${takeover.run}, ${takeover.takenOverAt}, 'Reserved')
+            ON CONFLICT(harness, surface) DO UPDATE SET snapshot = excluded.snapshot, backup_mode = excluded.backup_mode
+              WHERE harness_takeovers.phase = 'Reserved' AND harness_takeovers.run_id = excluded.run_id
+                AND harness_takeovers.root = excluded.root
+                AND (harness_takeovers.backup_mode = 'Pending'
+                  OR (harness_takeovers.backup_mode = excluded.backup_mode AND harness_takeovers.snapshot IS excluded.snapshot))
+            RETURNING harness
+          `;
+          if (written.length !== 1) return yield* new InvalidRunTransitionError({
+            run: takeover.run, message: `cannot reserve ${takeover.harness}:${takeover.surface} over existing ownership or different snapshot evidence`,
+          });
+        }
+      });
       yield* sql.withTransaction(transaction).pipe(
-        Effect.mapError(sqlError("record harness takeovers")),
+        Effect.mapError((error) => error._tag === "SqlError" ? sqlError("record harness takeovers")(error) : error),
       );
     },
   );
@@ -1912,7 +2011,7 @@ const makeRepository = Effect.gen(function*() {
           sql,
           sql`
             SELECT COUNT(*) AS count FROM synchronization_runs
-            WHERE follower_id = ${localProjectionFollower} AND status IN ('applying', 'Interrupted')
+            WHERE follower_id = ${localProjectionFollower} AND phase != 'Complete'
           `,
           "open local runs",
           localProjectionFollower,
@@ -1974,7 +2073,7 @@ const makeRepository = Effect.gen(function*() {
             SELECT COUNT(*) AS count
             FROM synchronization_runs
             WHERE follower_id = ${input.follower}
-              AND status IN ('applying', 'Interrupted')
+              AND phase != 'Complete'
           `,
           "recoverable synchronization run",
           input.follower,
@@ -1987,7 +2086,7 @@ const makeRepository = Effect.gen(function*() {
             id,
             follower_id,
             revision_id,
-            status,
+            phase,
             plan_json,
             started_at,
             creating_version,
@@ -1997,7 +2096,7 @@ const makeRepository = Effect.gen(function*() {
             ${input.id},
             ${input.follower},
             ${input.revision},
-            'applying',
+            ${input.preparing === true ? "Preparing" : "Applying"},
             ${encodeJson(input.plan)},
             ${input.startedAt},
             ${buildIdentity.packageVersion},
@@ -2055,7 +2154,7 @@ const makeRepository = Effect.gen(function*() {
   const loadRunStatus = Effect.fn("StateRepository.loadRunStatus")(
     function*(run: RunIdType): Effect.fn.Return<Schema.Schema.Type<typeof RunStatusRow>, StateRepositoryError> {
       const rows = yield* sql`
-        SELECT follower_id, status
+        SELECT follower_id, phase
         FROM synchronization_runs
         WHERE id = ${run}
       `.pipe(Effect.mapError(sqlError("load synchronization run")));
@@ -2065,15 +2164,72 @@ const makeRepository = Effect.gen(function*() {
       return row;
     },
   );
+  const beginRun = Effect.fn("StateRepository.beginRun")(function*(id: RunIdType): Effect.fn.Return<void, StateRepositoryError> {
+    yield* sql.withTransaction(Effect.gen(function*() {
+      const run = yield* loadRunStatus(id);
+      const pending = yield* sql`SELECT harness FROM harness_takeovers WHERE run_id = ${id} AND backup_mode = 'Pending' LIMIT 1`;
+      if (pending.length > 0) return yield* new InvalidRunTransitionError({
+        run: id, message: "takeover snapshot capture must finish before applying",
+      });
+      if (run.phase !== "Preparing" && run.phase !== "Finalizing") return yield* new InvalidRunTransitionError({ run: id, message: `cannot begin a ${run.phase} run` });
+      if (run.phase === "Finalizing") {
+        const rows = yield* sql`SELECT outcome_json FROM synchronization_runs WHERE id = ${id}`;
+        const row = Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ outcome_json: Schema.String })))(rows)[0];
+        const outcome = yield* parseJson(SynchronizationOutcomeSchema, row?.outcome_json ?? "null", "run outcome", id);
+        if (outcome.outcome !== "Failed" || outcome.rollbackIncomplete !== true) return yield* new InvalidRunTransitionError({ run: id, message: "only incomplete rollback can resume execution" });
+      }
+      yield* sql`UPDATE synchronization_runs SET phase = 'Applying' WHERE id = ${id} AND phase = ${run.phase}`;
+    })).pipe(Effect.mapError((error) => error._tag === "SqlError" ? sqlError("begin synchronization run")(error) : error));
+  });
+
+  const abandonRun = Effect.fn("StateRepository.abandonRun")(function*(id: RunIdType): Effect.fn.Return<void, StateRepositoryError> {
+    yield* sql.withTransaction(Effect.gen(function*() {
+      const run = yield* loadRunStatus(id);
+      if (run.phase === "Abandoning") return;
+      if (run.phase === "Complete") return yield* new InvalidRunTransitionError({ run: id, message: "cannot abandon a complete run" });
+      if (run.phase === "Finalizing") {
+        const rows = yield* sql`SELECT outcome_json FROM synchronization_runs WHERE id = ${id}`;
+        const row = (yield* decodeRows(Schema.Struct({ outcome_json: Schema.String }), rows, "run outcome", id))[0];
+        const outcome = yield* parseJson(SynchronizationOutcomeSchema, row?.outcome_json ?? "null", "run outcome", id);
+        if (outcome.outcome !== "Failed" || outcome.rollbackIncomplete !== true) return yield* new InvalidRunTransitionError({
+          run: id, message: "this run must finish finalization; run 'canonfig recover' instead",
+        });
+      }
+      yield* sql`UPDATE synchronization_runs SET phase = 'Abandoning',
+        outcome_json = ${encodeJson({ outcome: "Failed", run: id, reason: "the interrupted run was abandoned by the operator" })}, completed_at = NULL
+        WHERE id = ${id} AND phase = ${run.phase}`;
+    })).pipe(Effect.mapError((error) => error._tag === "SqlError" ? sqlError("abandon synchronization run")(error) : error));
+  });
+
+  const finalizeRun = Effect.fn("StateRepository.finalizeRun")(function*(id: RunIdType, completedAt: string): Effect.fn.Return<void, StateRepositoryError> {
+    yield* sql.withTransaction(Effect.gen(function*() {
+      const run = yield* loadRunStatus(id);
+      if (run.phase !== "Finalizing" && run.phase !== "Abandoning") return yield* new InvalidRunTransitionError({ run: id, message: `cannot finalize a ${run.phase} run` });
+      const rows = yield* sql`SELECT outcome_json FROM synchronization_runs WHERE id = ${id}`;
+      const row = (yield* decodeRows(Schema.Struct({ outcome_json: Schema.String }), rows, "run outcome", id))[0];
+      const outcome = yield* parseJson(SynchronizationOutcomeSchema, row?.outcome_json ?? "null", "run outcome", id);
+      if (outcome.outcome === "Interrupted" || outcome.outcome === "Failed" && outcome.rollbackIncomplete === true) return yield* new InvalidRunTransitionError({
+        run: id, message: "incomplete execution or rollback cannot be finalized; recover or abandon it first",
+      });
+      yield* sql`UPDATE synchronization_runs SET phase = 'Complete', completed_at = ${completedAt}
+        WHERE id = ${id} AND phase = ${run.phase}`;
+      yield* sql`INSERT INTO deployment_receipts
+        (run_id, follower_id, package_version, build_identity, state_format, outcome, recorded_at)
+        SELECT id, follower_id, ${buildIdentity.packageVersion}, ${buildIdentity.sourceDigest}, ${stateFormatVersion},
+          json_extract(outcome_json, '$.outcome'), ${completedAt}
+        FROM synchronization_runs WHERE id = ${id}`;
+    })).pipe(Effect.mapError((error) => error._tag === "SqlError" ? sqlError("finalize synchronization run")(error) : error));
+  });
+
 
   const journalAction = Effect.fn("StateRepository.journalAction")(
     function*(input: JournalActionInput): Effect.fn.Return<void, StateRepositoryError> {
       const transaction = Effect.gen(function*() {
         const run = yield* loadRunStatus(input.run);
-        if (run.status !== "applying" && run.status !== "Interrupted") {
+        if (run.phase !== "Applying" && run.phase !== "Interrupted") {
           return yield* new InvalidRunTransitionError({
             run: input.run,
-            message: `cannot journal an action while run status is ${run.status}`,
+            message: `cannot journal an action while run phase is ${run.phase}`,
           });
         }
         const actionCount = yield* statusCount(
@@ -2091,6 +2247,18 @@ const makeRepository = Effect.gen(function*() {
             run: input.run,
             action: input.action,
           });
+        }
+        const priorRows = yield* sql`SELECT action_id, sequence, state, recorded_at, attempt, verification_json, rollback_reference, removed_resource_json
+          FROM action_journal WHERE run_id = ${input.run} AND action_id = ${input.action} ORDER BY sequence DESC LIMIT 1`;
+        const prior = (yield* decodeRows(ActionJournalRow, priorRows, "previous action event", input.action))[0];
+        const previous = prior === undefined ? undefined : yield* actionLifecycle(input.run, {
+          action: prior.action_id, state: prior.state, attempt: prior.attempt, rollbackReference: prior.rollback_reference ?? undefined,
+          verification: prior.verification_json === null ? undefined : yield* parseJson(VerificationEvidenceSchema, prior.verification_json, "action evidence", input.action),
+        });
+        yield* transitionAction(input.run, previous, input);
+        if ((input.appliedResource !== undefined || input.removedResource !== undefined || input.removedResourceRecord !== undefined)
+          && input.state !== "succeeded" && input.state !== "rolled-back") {
+          return yield* new InvalidRunTransitionError({ run: input.run, message: "ownership changes require verified success or completed rollback" });
         }
         const sequenceRows = yield* sql`
           SELECT COALESCE(MAX(sequence), -1) + 1 AS count
@@ -2155,62 +2323,15 @@ const makeRepository = Effect.gen(function*() {
         if (input.appliedResource !== undefined) {
           const record = input.appliedResource;
           yield* sql`
-            INSERT INTO applied_resources (
-              follower_id,
-              resource_id,
-              revision_id,
-              digest,
-              applied_at,
-              owned_files_json,
-              kind,
-              policy,
-              target,
-              owned_keys_json,
-              config_format,
-              executable,
-              mode,
-              symlink_target,
-              installer_recipe_json
-            ) VALUES (
-              ${run.follower_id},
-              ${record.resource},
-              ${record.revision},
-              ${record.digest},
-              ${record.appliedAt},
-              ${record.ownedFiles === undefined
-                ? null
-                : encodeJson(JSON.parse(JSON.stringify(record.ownedFiles)))}
-              , ${record.kind ?? null}
-              , ${record.policy ?? null}
-              , ${record.target ?? null}
-              , ${record.ownedKeys === undefined
-                ? null
-                : encodeJson(JSON.parse(JSON.stringify(record.ownedKeys)))}
-              , ${record.configFormat ?? null}
-              , ${record.executable === undefined
-                ? null
-                : record.executable ? 1 : 0}
-              , ${record.mode ?? null}
-              , ${record.symlinkTo ?? null}
-              , ${record.installerRecipe === undefined
-                ? null
-                : encodeJson(record.installerRecipe)}
-            )
+            INSERT INTO applied_resources (follower_id, resource_id, revision_id, digest, applied_at, record_json)
+            VALUES (${run.follower_id}, ${record.resource}, ${record.revision}, ${record.digest}, ${record.appliedAt}, ${encodeJson(record)})
             ON CONFLICT(follower_id, resource_id) DO UPDATE SET
-              revision_id = excluded.revision_id,
-              digest = excluded.digest,
-              applied_at = excluded.applied_at,
-              owned_files_json = excluded.owned_files_json
-              , kind = excluded.kind
-              , policy = excluded.policy
-              , target = excluded.target
-              , owned_keys_json = excluded.owned_keys_json
-              , config_format = excluded.config_format
-              , executable = excluded.executable
-              , mode = excluded.mode
-              , symlink_target = excluded.symlink_target
-              , installer_recipe_json = excluded.installer_recipe_json
+              revision_id = excluded.revision_id, digest = excluded.digest,
+              applied_at = excluded.applied_at, record_json = excluded.record_json
           `;
+          yield* sql`UPDATE harness_takeovers SET phase = ${input.state === "rolled-back" ? "Reserved" : "Owned"}
+            WHERE run_id = ${input.run} AND 'harness:' || harness || ':' ||
+              CASE WHEN instr(surface, '#') > 0 THEN substr(surface, 1, instr(surface, '#') - 1) ELSE surface END = ${record.resource}`;
         }
       });
       yield* sql.withTransaction(transaction).pipe(
@@ -2266,10 +2387,10 @@ const makeRepository = Effect.gen(function*() {
     function*(input: CompleteRunInput): Effect.fn.Return<void, StateRepositoryError> {
       const transaction = Effect.gen(function*() {
         const run = yield* loadRunStatus(input.run);
-        if (run.status !== "applying" && run.status !== "Interrupted") {
+        if (run.phase !== "Preparing" && run.phase !== "Applying" && run.phase !== "Interrupted") {
           return yield* new InvalidRunTransitionError({
             run: input.run,
-            message: `run is already ${run.status}`,
+            message: `run is already ${run.phase}`,
           });
         }
         if (input.outcome.run !== input.run) {
@@ -2281,8 +2402,8 @@ const makeRepository = Effect.gen(function*() {
         yield* sql`
           UPDATE synchronization_runs
           SET
-            status = ${input.outcome.outcome},
-            completed_at = ${input.completedAt},
+            phase = ${input.outcome.outcome === "Interrupted" ? "Interrupted" : "Finalizing"},
+            completed_at = NULL,
             outcome_json = ${encodeJson(input.outcome)}
           WHERE id = ${input.run}
         `;
@@ -2295,92 +2416,23 @@ const makeRepository = Effect.gen(function*() {
         }
         for (const record of input.appliedResources) {
           yield* sql`
-            INSERT INTO applied_resources (
-              follower_id,
-              resource_id,
-              revision_id,
-              digest,
-              applied_at,
-              owned_files_json,
-              kind,
-              policy,
-              target,
-              owned_keys_json,
-              config_format,
-              executable,
-              mode,
-              symlink_target,
-              installer_recipe_json
-            ) VALUES (
-              ${run.follower_id},
-              ${record.resource},
-              ${record.revision},
-              ${record.digest},
-              ${record.appliedAt},
-              ${record.ownedFiles === undefined
-                ? null
-                : encodeJson(JSON.parse(JSON.stringify(record.ownedFiles)))}
-              , ${record.kind ?? null}
-              , ${record.policy ?? null}
-              , ${record.target ?? null}
-              , ${record.ownedKeys === undefined
-                ? null
-                : encodeJson(JSON.parse(JSON.stringify(record.ownedKeys)))}
-              , ${record.configFormat ?? null}
-              , ${record.executable === undefined
-                ? null
-                : record.executable ? 1 : 0}
-              , ${record.mode ?? null}
-              , ${record.symlinkTo ?? null}
-              , ${record.installerRecipe === undefined
-                ? null
-                : encodeJson(record.installerRecipe)}
-            )
+            INSERT INTO applied_resources (follower_id, resource_id, revision_id, digest, applied_at, record_json)
+            VALUES (${run.follower_id}, ${record.resource}, ${record.revision}, ${record.digest}, ${record.appliedAt}, ${encodeJson(record)})
             ON CONFLICT(follower_id, resource_id) DO UPDATE SET
-              revision_id = excluded.revision_id,
-              digest = excluded.digest,
-              applied_at = excluded.applied_at,
-              owned_files_json = excluded.owned_files_json
-              , kind = excluded.kind
-              , policy = excluded.policy
-              , target = excluded.target
-              , owned_keys_json = excluded.owned_keys_json
-              , config_format = excluded.config_format
-              , executable = excluded.executable
-              , mode = excluded.mode
-              , symlink_target = excluded.symlink_target
-              , installer_recipe_json = excluded.installer_recipe_json
+              revision_id = excluded.revision_id, digest = excluded.digest,
+              applied_at = excluded.applied_at, record_json = excluded.record_json
           `;
         }
-        // Every completed run leaves a receipt naming the build that applied
-        // it, so audits and upgrade decisions can say which sources produced
-        // the deployed state. A run can complete more than once (interruption
-        // then abandonment); the receipt keeps its final outcome.
-        yield* sql`
-          INSERT INTO deployment_receipts (
-            run_id,
-            follower_id,
-            package_version,
-            build_identity,
-            state_format,
-            outcome,
-            recorded_at
-          ) VALUES (
-            ${input.run},
-            ${run.follower_id},
-            ${buildIdentity.packageVersion},
-            ${buildIdentity.sourceDigest},
-            ${stateFormatVersion},
-            ${input.outcome.outcome},
-            ${input.completedAt}
-          )
-          ON CONFLICT(run_id) DO UPDATE SET
-            package_version = excluded.package_version,
-            build_identity = excluded.build_identity,
-            state_format = excluded.state_format,
-            outcome = excluded.outcome,
-            recorded_at = excluded.recorded_at
-        `;
+        if (input.outcome.outcome === "Failed" && input.outcome.rollbackIncomplete === true) {
+          for (const takeover of yield* loadHarnessTakeovers()) {
+            if (takeover.run !== input.run) continue;
+            const resource = `harness:${takeover.harness}:${takeover.surface.split("#")[0]}`;
+            if (input.outcome.failedRollbackResources === undefined || input.outcome.failedRollbackResources.includes(Schema.decodeUnknownSync(ResourceId)(resource))) {
+              yield* sql`UPDATE harness_takeovers SET phase = 'Uncertain'
+                WHERE harness = ${takeover.harness} AND surface = ${takeover.surface}`;
+            }
+          }
+        }
       });
       yield* sql.withTransaction(transaction).pipe(
         Effect.mapError((error) =>
@@ -2501,10 +2553,10 @@ const makeRepository = Effect.gen(function*() {
   const loadRunEvidence = Effect.fn("StateRepository.loadRunEvidence")(
     function*(run: RunIdType): Effect.fn.Return<RunEvidenceSummary | undefined, StateRepositoryError> {
       const rows = yield* sql`
-        SELECT id, revision_id, status, completed_at, plan_json
+        SELECT id, revision_id, json_extract(outcome_json, '$.outcome') AS status, completed_at, plan_json
         FROM synchronization_runs
         WHERE id = ${run}
-          AND status NOT IN ('applying', 'Interrupted')
+          AND phase = 'Complete'
           AND completed_at IS NOT NULL
       `.pipe(Effect.mapError(sqlError("load completed synchronization run")));
       const decoded = yield* decodeRows(CompletedRunRow, rows, "completed synchronization run", run);
@@ -2603,10 +2655,10 @@ const makeRepository = Effect.gen(function*() {
   const loadRecovery = Effect.fn("StateRepository.loadRecovery")(
     function*(follower: FollowerIdType): Effect.fn.Return<RecoveryState | undefined, StateRepositoryError> {
       const runRows = yield* sql`
-        SELECT id, follower_id, revision_id, plan_json, started_at
+        SELECT id, follower_id, revision_id, plan_json, started_at, phase, outcome_json
         FROM synchronization_runs
         WHERE follower_id = ${follower}
-          AND status IN ('applying', 'Interrupted')
+          AND phase != 'Complete'
         ORDER BY started_at DESC
         LIMIT 1
       `.pipe(Effect.mapError(sqlError("load active synchronization run")));
@@ -2746,6 +2798,16 @@ const makeRepository = Effect.gen(function*() {
           revision: row.revision_id,
           startedAt: row.started_at,
           plan,
+          lifecycle: row.phase === "Preparing" || row.phase === "Applying"
+            ? { _tag: row.phase }
+            : yield* parseJson(SynchronizationOutcomeSchema, row.outcome_json ?? "null", "run lifecycle", row.id).pipe(
+              Effect.flatMap((outcome): Effect.Effect<Exclude<RunLifecycle, { readonly _tag: "Complete" }>, RepositoryDecodeError> => {
+                if (row.phase === "Interrupted" && outcome.outcome === "Interrupted") return Effect.succeed({ _tag: "Interrupted" as const, outcome });
+                if (row.phase === "Finalizing" && outcome.outcome !== "Interrupted") return Effect.succeed({ _tag: "Finalizing" as const, outcome });
+                if (row.phase === "Abandoning" && outcome.outcome === "Failed") return Effect.succeed({ _tag: "Abandoning" as const, outcome });
+                return Effect.fail(new RepositoryDecodeError({ entity: "run lifecycle", id: row.id, message: "phase and outcome disagree; keep recovery evidence and repair this run before applying" }));
+              }),
+            ),
         },
         actions,
         drift,
@@ -2777,7 +2839,7 @@ const makeRepository = Effect.gen(function*() {
           state_format
         FROM synchronization_runs
         WHERE follower_id = ${follower}
-          AND status IN ('applying', 'Interrupted')
+          AND phase != 'Complete'
         ORDER BY started_at DESC
         LIMIT 1
       `.pipe(Effect.mapError(sqlError("load open run identity")));
@@ -2863,8 +2925,50 @@ const makeRepository = Effect.gen(function*() {
     },
   );
 
+  const transitionScheduledInvocation = Effect.fn("StateRepository.transitionScheduledInvocation")(function*(
+    input: ScheduledInvocation,
+  ): Effect.fn.Return<void, StateRepositoryError> {
+    const invocation = yield* Schema.decodeUnknownEffect(ScheduledInvocation)(input)
+      .pipe(Effect.mapError(decodeError("scheduled invocation", input.id)));
+    yield* sql.withTransaction(Effect.gen(function*() {
+      const rows = yield* sql`SELECT invocation_json FROM scheduled_invocations WHERE id = ${invocation.id}`;
+      const decoded = yield* decodeRows(Schema.Struct({ invocation_json: Schema.String }), rows, "scheduled invocation", invocation.id);
+      const existing = decoded[0] === undefined ? undefined
+        : yield* parseJson(ScheduledInvocation, decoded[0].invocation_json, "scheduled invocation", invocation.id);
+      if (invocation._tag === "Running" ? existing !== undefined
+        : existing?._tag !== "Running" || existing.startedAt !== invocation.startedAt
+          || existing.generation !== invocation.generation) {
+        return yield* new InvalidRunTransitionError({
+          run: invocation.id, message: "a scheduled invocation must start once and finish that same running invocation once",
+        });
+      }
+      yield* sql`
+        INSERT INTO scheduled_invocations (id, started_at, state, invocation_json)
+        VALUES (${invocation.id}, ${invocation.startedAt}, ${invocation._tag}, ${JSON.stringify(invocation)})
+        ON CONFLICT(id) DO UPDATE SET state = excluded.state, invocation_json = excluded.invocation_json
+      `;
+    })).pipe(Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("transition scheduled invocation")(error))));
+  });
+
+  const listScheduledInvocations = Effect.fn("StateRepository.listScheduledInvocations")(function*() {
+    const rows = yield* sql`
+      SELECT invocation_json FROM (
+        SELECT started_at, rowid AS invocation_order, invocation_json FROM scheduled_invocations
+        ORDER BY started_at DESC, rowid DESC LIMIT 10
+      ) ORDER BY started_at, invocation_order
+    `.pipe(Effect.mapError(sqlError("list scheduled invocations")));
+    const decoded = yield* decodeRows(Schema.Struct({ invocation_json: Schema.String }), rows, "scheduled invocations", "all");
+    return yield* Effect.forEach(decoded, (row) =>
+      parseJson(ScheduledInvocation, row.invocation_json, "scheduled invocation", "all"));
+  });
+
   return StateRepository.of({
+    beginRun,
+    abandonRun,
+    finalizeRun,
     databaseFile,
+    transitionScheduledInvocation,
+    listScheduledInvocations,
     saveSourceIdentity,
     registerFollower,
     saveFollowerSynchronizationConfiguration,
@@ -2881,6 +2985,10 @@ const makeRepository = Effect.gen(function*() {
     finalizeEnrollment,
     cancelPendingEnrollment,
     listPendingEnrollments,
+    stageEnrollmentCredential,
+    recoverEnrollmentCredentialStaging,
+    listEnrollmentCredentialRetirements,
+    completeEnrollmentCredentialRetirement,
     findFollowerCredential,
     getFollowerCredential,
     revokeFollower,

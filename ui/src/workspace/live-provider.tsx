@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
+import type { InstalledUpdate } from "./live/self-update";
 import type { GuiSession, WorkspaceBackend } from "../gui-client";
 import { ScreenContext } from "./screen-context";
 import { SharedStateProvider, WorkspaceContext } from "./store";
@@ -43,7 +44,7 @@ export function LiveWorkspaceProvider({ backend, session, route, onInstalled, ch
   session: GuiSession;
   route: WorkspaceRoute;
   children: ReactNode;
-  onInstalled: (version: string) => void;
+  onInstalled: (result: InstalledUpdate) => void;
 }) {
   const [cache] = useState(() => new LiveResourceCache());
   const paths = livePageResources(session, route);
@@ -56,7 +57,7 @@ export function LiveWorkspaceProvider({ backend, session, route, onInstalled, ch
 function LiveWorkspace({ backend, session, route, cache, paths, onInstalled, children }: {
   backend: WorkspaceBackend; session: GuiSession; route: WorkspaceRoute;
   cache: LiveResourceCache; paths: readonly string[]; children: ReactNode;
-  onInstalled: (version: string) => void;
+  onInstalled: (result: InstalledUpdate) => void;
 }) {
   const admin = useLiveAdministration(backend, session, paths, onInstalled);
   const reload = useCallback(() => {

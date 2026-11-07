@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Schema } from "effect";
-import { GuiOperationTicket } from "../../../../src/gui/contract/operations";
 import {
   GuiAgentHarness, GuiAgentHarnessRead, GuiAgentPolicy, GuiAgentPolicyRead, GuiDoctorResult, GuiInstallerCheck, GuiInstallers,
-  GuiSelfUpdateCheck, GuiSelfUpdateProgress, GuiSelfUpdateStatus, GuiSourceServiceChange, GuiSourceServiceRemoval, GuiSourceServiceReport,
+  GuiSourceServiceChange, GuiSourceServiceRemoval, GuiSourceServiceReport,
 } from "../../../../src/gui/contract/administration";
 import type { GuiSession } from "../../../../src/gui/contract/session";
 import { GuiRequestError, type WorkspaceBackend } from "../../gui-client";
-import type { AdministrationSlice, SavedPolicy } from "../administration-types";
+import type { AdministrationSlice, HarnessDraft, PolicySave, SavedPolicy } from "../administration-types";
+import { useLiveSelfUpdate, type InstalledUpdate } from "./self-update";
 
 function requestError(cause: unknown): GuiRequestError {
   return cause instanceof GuiRequestError ? cause : new GuiRequestError({
@@ -57,7 +56,25 @@ function useAdministrationResource<T>(load: ((signal: AbortSignal) => Promise<T>
   return { data, setData, loading: enabled && (!attempted.current || loading), busy, error, setError, run, reload };
 }
 
-export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSession, paths: readonly string[], onInstalled: (version: string) => void): AdministrationSlice {
+type PolicyEvent =
+  | { kind: "Save"; draft: SavedPolicy }
+  | { kind: "PolicyCommitted"; harness: HarnessDraft | null }
+  | { kind: "HarnessCommitted" }
+  | { kind: "Failed"; error: GuiRequestError };
+function policyTransition(state: PolicySave, event: PolicyEvent): PolicySave {
+  if (event.kind === "Save" && state.kind !== "SavingPolicy" && state.kind !== "SavingHarness") return { kind: "SavingPolicy", submitted: event.draft };
+  if (state.kind === "SavingPolicy") {
+    if (event.kind === "PolicyCommitted") return event.harness ? { kind: "SavingHarness", committedPolicy: state.submitted.mode, draftHarness: event.harness } : { kind: "Saved", policy: state.submitted.mode, harness: null };
+    if (event.kind === "Failed") return { kind: "PolicyFailed", draft: state.submitted, error: event.error };
+  }
+  if (state.kind === "SavingHarness") {
+    if (event.kind === "HarnessCommitted") return { kind: "Saved", policy: state.committedPolicy, harness: state.draftHarness };
+    if (event.kind === "Failed") return { kind: "HarnessFailed", committedPolicy: state.committedPolicy, draftHarness: state.draftHarness, error: event.error };
+  }
+  throw new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: `Cannot ${event.kind.toLowerCase()} the agent policy while it is ${state.kind}.` });
+}
+
+export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSession, paths: readonly string[], onInstalled: (result: InstalledUpdate) => void): AdministrationSlice {
   const configured = session.role !== "unconfigured";
   const sourceLoad = useCallback((signal: AbortSignal) => backend.request("/api/source-service", GuiSourceServiceReport, signal), [backend]);
   const service = useAdministrationResource(session.role === "source" ? sourceLoad : null, paths.includes("/api/source-service"));
@@ -68,15 +85,15 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
   const installersLoad = useCallback((signal: AbortSignal) => backend.request("/api/installers", GuiInstallers, signal), [backend]);
   const installers = useAdministrationResource(configured ? installersLoad : null, paths.includes("/api/installers"));
   const doctor = useAdministrationResource<typeof GuiDoctorResult.Type>(null);
-  const versionLoad = useCallback((signal: AbortSignal) => backend.request("/api/self-update", GuiSelfUpdateStatus, signal), [backend]);
-  const version = useAdministrationResource(configured ? versionLoad : null, paths.includes("/api/self-update"));
+  const version = useLiveSelfUpdate(backend, configured && paths.includes("/api/self-update"), onInstalled);
   const [serviceAction, setServiceAction] = useState<"install" | "remove" | null>(null);
   const [checkingInstaller, setCheckingInstaller] = useState<string | null>(null);
   const [checkedInstaller, setCheckedInstaller] = useState<string | null>(null);
-  const [checkedVersion, setCheckedVersion] = useState<typeof GuiSelfUpdateCheck.Type | null>(null);
-  const [updateAction, setUpdateAction] = useState<"check" | "enable" | "disable" | "apply" | null>(null);
-  const [updateProgress, setUpdateProgress] = useState<typeof GuiSelfUpdateProgress.Type | null>(null);
-  const [savedMessage, setSavedMessage] = useState("");
+  const [saveState, setSaveState] = useState<PolicySave>({ kind: "Idle" });
+  const saveStateRef = useRef(saveState);
+  const policyEvent = (event: PolicyEvent) => { const next = policyTransition(saveStateRef.current, event); saveStateRef.current = next; setSaveState(next); };
+  const savedMessage = saveState.kind === "SavingHarness" || saveState.kind === "HarnessFailed" ? "Policy saved. Harness has not been saved."
+    : saveState.kind === "Saved" ? saveState.harness ? "Policy and harness saved." : "Policy saved." : "";
 
   const changeService = (action: "install" | "remove", hostname?: "127.0.0.1" | "::1", port?: number) => {
     if (service.busy) return;
@@ -98,42 +115,43 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
   const savedHarness = harness.data?.configured ? harness.data.value : null;
   const savedPolicy: SavedPolicy | null = policy.data === null ? null : {
     mode: policy.data.configured ? policy.data.value : policy.data.default,
-    harness: savedHarness?.kind ?? "codex", model: savedHarness?.model ?? "",
-    executable: savedHarness?.executable === savedHarness?.kind ? "" : savedHarness?.executable ?? "", args: [...(savedHarness?.arguments ?? [])],
-    paths: [...(savedHarness?.allowedPaths ?? [])], maximumInputBytes: savedHarness?.maximumInputBytes ?? 1024 * 1024,
-    origins: savedHarness?.allowedOrigins ?? [],
+    harness: {
+      executable: savedHarness?.executable === savedHarness?.kind ? "" : savedHarness?.executable ?? "",
+      paths: [...(savedHarness?.allowedPaths ?? [])], maximumInputBytes: savedHarness?.maximumInputBytes ?? 1024 * 1024,
+      origins: savedHarness?.allowedOrigins ?? [],
+      ...(savedHarness?.kind === "custom" ? { kind: "custom", args: [...(savedHarness.arguments ?? [])] } : { kind: savedHarness?.kind ?? "codex", model: savedHarness?.model ?? "" }),
+    },
   };
   const savePolicy = async (next: SavedPolicy) => {
-    if (policy.busy || harness.busy) return false;
-    setSavedMessage("");
+    if (policy.busy || harness.busy || saveStateRef.current.kind === "SavingPolicy" || saveStateRef.current.kind === "SavingHarness") {
+      policy.setError(new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: "An agent policy save is already running." }));
+      return false;
+    }
+    policyEvent({ kind: "Save", draft: next });
+    const draftHarness = session.role === "follower" && next.mode !== "deterministic-only" ? next.harness : null;
     const policySaved = await policy.run(async (signal) => {
-      const saved = await backend.request("/api/agent/policy", GuiAgentPolicy, signal, { method: "PUT", body: next.mode });
-      if (!signal.aborted) {
-        policy.setData({ configured: true, value: saved });
-        setSavedMessage("Policy saved.");
-      }
+      try {
+        const saved = await backend.request("/api/agent/policy", GuiAgentPolicy, signal, { method: "PUT", body: next.mode });
+        if (!signal.aborted) { policy.setData({ configured: true, value: saved }); policyEvent({ kind: "PolicyCommitted", harness: draftHarness }); }
+      } catch (cause) { policyEvent({ kind: "Failed", error: requestError(cause) }); throw cause; }
     });
-    if (!policySaved) return false;
-    // A Source can change its policy, but the CLI refuses its follower-only harness configuration.
-    if (session.role !== "follower" || next.mode === "deterministic-only" || next.harness === null) return true;
-    const kind = next.harness;
+    if (!policySaved || !draftHarness) return policySaved;
+    // Preserve undisclosed credential-bearing collections unless the person replaces them.
     const { model: _model, arguments: _arguments, ...bounds } = savedHarness ?? {
       model: undefined, arguments: undefined, allowedExecutables: [], allowedOrigins: [], allowedCapabilities: [],
     };
-    setSavedMessage("Policy saved. Harness has not been saved.");
     return harness.run(async (signal) => {
-      const body = {
-        ...bounds, kind, executable: next.executable || kind,
-        ...(kind === "custom"
-          ? savedHarness?.arguments === undefined && next.args.length === 0 ? {} : { arguments: next.args }
-          : next.model ? { model: next.model } : {}),
-        allowedPaths: next.paths, maximumInputBytes: next.maximumInputBytes,
-      };
-      const updatedHarness = await backend.request("/api/agent/harness", GuiAgentHarness, signal, { method: "PUT", body });
-      if (!signal.aborted) {
-        harness.setData({ configured: true, value: updatedHarness });
-        setSavedMessage("Policy and harness saved.");
-      }
+      try {
+        const body = {
+          ...bounds, kind: draftHarness.kind, executable: draftHarness.executable || draftHarness.kind,
+          ...(draftHarness.kind === "custom"
+            ? savedHarness?.arguments === undefined && draftHarness.args.length === 0 ? {} : { arguments: draftHarness.args }
+            : draftHarness.model ? { model: draftHarness.model } : {}),
+          allowedPaths: draftHarness.paths, maximumInputBytes: draftHarness.maximumInputBytes,
+        };
+        const updatedHarness = await backend.request("/api/agent/harness", GuiAgentHarness, signal, { method: "PUT", body });
+        if (!signal.aborted) { harness.setData({ configured: true, value: updatedHarness }); policyEvent({ kind: "HarnessCommitted" }); }
+      } catch (cause) { policyEvent({ kind: "Failed", error: requestError(cause) }); throw cause; }
     });
   };
   const runDoctor = () => { void doctor.run(async (signal) => {
@@ -146,45 +164,6 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
     : null;
   const npmCli = typeof updateSettings?.npmCli === "string" ? updateSettings.npmCli : null;
 
-  const changeVersion = (action: "check" | "enable" | "disable" | "apply", body: unknown = {}) => {
-    if (version.busy || checkedVersion?.status === "updated") return;
-    void version.run(async (signal) => {
-      setUpdateAction(action);
-      setUpdateProgress(null);
-      setCheckedVersion(null);
-      try {
-        const path = `/api/self-update/${action}`;
-        if (action === "apply") {
-          const ticket = await backend.request(path, GuiOperationTicket, signal, { method: "POST", body });
-          let operation = await backend.operation(ticket.id, signal);
-          while (true) {
-            signal.throwIfAborted();
-            if (operation.journal !== null) {
-              const progress = Schema.decodeUnknownSync(GuiSelfUpdateProgress)(operation.journal);
-              setUpdateProgress((previous) => previous?.phase === progress.phase && previous.candidate === progress.candidate ? previous : progress);
-            }
-            if (operation.state !== "running") break;
-            await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
-            signal.throwIfAborted();
-            operation = await backend.operation(ticket.id, signal);
-          }
-          if (operation.state === "failed") throw operation.failure ? new GuiRequestError(operation.failure) : new Error("The operation failed without a diagnostic.");
-          const checked = Schema.decodeUnknownSync(GuiSelfUpdateCheck)(operation.result);
-          setCheckedVersion(checked);
-          if (checked.status === "updated") onInstalled(checked.candidate);
-          // The server closes after an updated result. Do not reload status here.
-        } else if (action === "check") {
-          const checked = await backend.request(path, GuiSelfUpdateCheck, signal, { method: "POST", body });
-          if (!signal.aborted) setCheckedVersion(checked);
-        } else {
-          const status = await backend.request(path, GuiSelfUpdateStatus, signal, { method: "POST", body });
-          if (!signal.aborted) version.setData(status);
-        }
-      } finally {
-        if (!signal.aborted) setUpdateAction(null);
-      }
-    });
-  };
 
   return {
     service: {
@@ -197,8 +176,8 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
       configured: policy.data?.configured ?? false,
       harnessWritable: session.role === "follower",
       harnessConfigured: harness.data?.configured ?? false,
-      data: savedPolicy, loading: policy.loading, busy: policy.busy || harness.busy, error: policy.error,
-      harnessLoading: harness.loading, harnessError: harness.error, savedMessage, save: savePolicy,
+      data: savedPolicy, loading: policy.loading, busy: policy.busy || harness.busy || saveState.kind === "SavingPolicy" || saveState.kind === "SavingHarness", error: policy.error,
+      harnessLoading: harness.loading, harnessError: harness.error, savedMessage, saveState, save: savePolicy,
       reload: () => { policy.reload(); harness.reload(); }, harnessLabels: { codex: "codex", claude: "claude" },
     },
     installers: {
@@ -225,14 +204,9 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
       reload: runDoctor, status: doctor.data?.report.status ?? null, run: runDoctor,
     },
     version: {
-      data: version.data, loading: version.loading, busy: version.busy, error: version.error, reload: version.reload,
-      current: session.version, npmCli, latest: checkedVersion?.candidate ?? null, checked: checkedVersion,
-      checking: updateAction === "check", unfinished: version.data?.pending ?? false,
-      progress: updateProgress,
-      check: () => changeVersion("check"),
-      enable: (npmCli, confirmIdle) => changeVersion("enable", { npmCli, confirmIdle }),
-      disable: () => changeVersion("disable"),
-      apply: () => changeVersion("apply"),
+      ...version,
+      current: session.version, npmCli, latest: version.checked?.candidate ?? null,
+      unfinished: version.data?.pending ?? false,
     },
     setup: null,
   };

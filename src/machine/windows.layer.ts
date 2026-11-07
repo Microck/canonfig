@@ -1801,6 +1801,7 @@ export const windowsMachineStateLayer = (
             const path = win32.join(localCredentialRoot, `${name}.credential`);
             // Credential storage owns this directory; ordinary file writes do not.
             return secureDirectory(localCredentialRoot, { mode: 0o700 }).pipe(
+              Effect.andThen(input.beforeStore?.(decode(CredentialReference)(`local-file:${path}`)) ?? Effect.void),
               Effect.andThen(secureAtomicWrite(
                 path,
                 new TextEncoder().encode(Redacted.value(input.value)),
@@ -1818,6 +1819,7 @@ export const windowsMachineStateLayer = (
           }
           const key = createHash("sha256").update(input.name).digest("hex");
           return requirePowerShell.pipe(
+            Effect.andThen(input.beforeStore?.(decode(CredentialReference)(`credential-manager:${key}`)) ?? Effect.void),
             Effect.flatMap(() =>
               runCredentialScript(windowsCredentialScript("store"), [
                 { name: "CANONFIG_TARGET", value: `dev.canonfig.${key}` },
@@ -1882,7 +1884,9 @@ export const windowsMachineStateLayer = (
             return localCredentialPath(reference, localCredentialRoot).pipe(
               Effect.flatMap((path) =>
                 Effect.tryPromise({
-                  try: () => rm(path, { force: true }),
+                  try: () => unlink(path).catch((cause: unknown) => {
+                    if (!(cause instanceof Error && "code" in cause && cause.code === "ENOENT")) throw cause;
+                  }),
                   catch: (cause) =>
                     filesystemFailure("remove local credential", path, cause),
                 })

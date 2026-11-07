@@ -58,7 +58,8 @@ const planning = (
   desired: { kind: "config", format: "json", digest, keys: desiredKeys },
   observed: { state: "present", digest, executable: false },
   platform: "linux",
-  applied: { resource: resourceId, revision: "previous", digest, appliedAt: "2026-01-01T00:00:00Z", ownedKeys: oldKeys },
+  applied: { resource: resourceId, revision: "previous", digest, appliedAt: "2026-01-01T00:00:00Z",
+    ownership: "ConfigKeys", kind: "config", policy: "merge", target: "~/.example/settings.json", configFormat: "json", ownedKeys: oldKeys },
 });
 
 const mcp = { command: "example-tool", args: ["--stdio"], env: { EXAMPLE_MODE: "read-only" }, enabled: true };

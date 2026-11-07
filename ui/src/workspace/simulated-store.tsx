@@ -31,7 +31,6 @@ import {
   type ItemCategory,
   type LocalItem,
   type Resource,
-  type Revision,
   type SurfaceCategory,
 } from "@/shared/data";
 import type { Setup } from "@/onboarding/onboarding";
@@ -39,10 +38,12 @@ import type { Navigate, WorkspaceRoute } from "./routes";
 import { ScreenContext, type ScreenGroup } from "./screen-context";
 import { PAGE_TIPS } from "./page-tips";
 import { SharedStateProvider, WorkspaceContext, useSharedState, useWorkspace } from "./store";
-import type { Workspace, ChangeGroupsRequest, Invitation, ScannedTool, Secret, PendingChange, ProfileEdit, PlanItem, Run, FollowerPhase } from "./workspace-types";
+import type { Workspace, ChangeGroupsRequest, Invitation, ScannedTool, Secret, PlanItem, ProfileEdit, Run } from "./workspace-types";
 import { useSimulatedAdministration } from "./simulated-administration";
 import { useWorkspaceNavigation } from "./navigation-state";
 import type { Schedule } from "./schedule";
+import { TransitionError, useStateMachine } from "@/lib/state-machine";
+import { pendingChanges, simulatedPlan, transitionPublication, transitionSimulatedFollower, type PublicationEvent, type SimulatedPublication, type SimulatedFollowerEvent, type SimulatedFollowerState } from "./simulated-state";
 
 const READY = { loading: false, error: null };
 
@@ -178,77 +179,54 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
 
   // Source state. A new Source has no revisions, followers or secrets yet; its folder holds only what
   // onboarding imported from its harnesses and the tools the scan proposed.
-  const [resources, setResources] = useState<Resource[]>(() =>
-    newSource ? [...importedItems(newSource.imported), ...(newSource.scan ? ONBOARDING_PROPOSED : [])] : seedResources,
-  );
+  const [initialPublication] = useState<SimulatedPublication>(() => ({
+    kind: "idle", resources: newSource ? [...importedItems(newSource.imported), ...(newSource.scan ? ONBOARDING_PROPOSED : [])] : seedResources,
+    edits: [], revisions: newSource ? [] : seedRevisions, deliveries: {},
+  }));
+  const publication = useStateMachine<SimulatedPublication, PublicationEvent>(initialPublication, transitionPublication);
+  const { send: sendPublication, current: publicationCurrent } = publication;
+  const { resources, revisions } = publication.state;
+  const setResources = useCallback((update: Resource[] | ((items: Resource[]) => Resource[])) => { sendPublication({ kind: "resources", update }); }, [sendPublication]);
   const [proposed, setProposed] = useState<string[]>(newSource?.scan ? ONBOARDING_PROPOSED.map((r) => r.id) : []);
-  const [revisions, setRevisions] = useState<Revision[]>(newSource ? [] : seedRevisions);
   const [followers, setFollowers] = useState<Follower[]>(newSource ? [] : seedFollowers);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [secrets, setSecrets] = useState<Secret[]>(newSource ? [] : seedSecrets);
-  const [publishing, setPublishing] = useState(false);
-  const [syncing, setSyncing] = useState<string[]>([]);
-  const [profileEdits, setProfileEdits] = useState<ProfileEdit[]>([]);
-  const markProfileEdit = useCallback(
-    (edit: ProfileEdit) => setProfileEdits((prev) => (prev.some((e) => e.area === edit.area && e.id === edit.id) ? prev : [...prev, edit])),
-    [],
-  );
-  const removeProfileEdit = useCallback(
-    (edit: ProfileEdit) => setProfileEdits((prev) => prev.filter((e) => !(e.area === edit.area && e.id === edit.id))),
-    [],
-  );
-  // Items carry their own change marker; group and defaults edits are recorded when Profile saves them.
-  const pending = useMemo<PendingChange[]>(
-    () => [...resources.flatMap((r) => (r.change ? [{ area: "item" as const, id: r.id, change: r.change, resource: r }] : [])), ...profileEdits],
-    [resources, profileEdits],
-  );
+  const publishing = publication.state.kind === "publishing";
+  const syncing = Object.entries(publication.state.deliveries).flatMap(([id, delivery]) => delivery.kind === "delivering" ? [id] : []);
+  const markProfileEdit = useCallback((edit: ProfileEdit) => { sendPublication({ kind: "edit", edit }); }, [sendPublication]);
+  const removeProfileEdit = useCallback((edit: ProfileEdit) => { sendPublication({ kind: "withdraw-edit", edit }); }, [sendPublication]);
+  const pending = useMemo(() => pendingChanges(publication.state), [publication.state]);
   const latest = revisions[0]?.sequence ?? 0;
   const nextSequence = latest + 1;
   const timers = useRef<number[]>([]);
   useEffect(() => () => timers.current.forEach((t) => window.clearTimeout(t)), []);
   const later = useCallback((fn: () => void, ms: number) => void timers.current.push(window.setTimeout(fn, ms)), []);
-  // Delayed callbacks close over the render that started them; readResources goes through this instead. Synced after
-  // each commit, which lands long before any ws.later callback runs.
-  const latestResources = useRef(resources);
-  const latestQueue = useRef({ pending, nextSequence });
-  useEffect(() => {
-    latestResources.current = resources;
-    latestQueue.current = { pending, nextSequence };
-  }, [resources, pending, nextSequence]);
-  const readResources = useCallback(() => latestResources.current, []);
-  const readQueue = useCallback(() => latestQueue.current, []);
-
-  const publish = useCallback(
-    (reviewer: string, onDone: () => void) => {
-      setPublishing(true);
-      later(() => {
-        const seq = nextSequence;
-        const mark = { added: "+", modified: "~", removed: "−" } as const;
-        const summary = pending.map((c) => `${mark[c.change]}${c.area === "group" ? `group ${c.id}` : c.id}`).join(", ");
-        setRevisions((prev) => [{ sequence: seq, digest: demoDigest(seq, summary), publishedAt: "Just now", reviewer, changes: summary }, ...prev]);
-        setResources((prev) => prev.filter((r) => r.change !== "removed").map((r) => ({ ...r, change: undefined })));
-        // Groups, the harness list and defaults went out with this revision too, so they are no longer unpublished.
-        setProfileEdits([]);
-        setProposed([]);
-        setPublishing(false);
-        onDone();
-        toast.success(`Published revision ${seq}`, {
-          description: `Reachable machines receive it next and apply it on their next check.${DEMO ? "\nSaved in this demo workspace." : ""}`,
-        });
-        // Every reachable machine fetches the revision, simulated here one after another.
-        // Items paused by a local edit or waiting for a person stay that way; the revision still arrives.
-        const reachable = followers.filter((f) => f.state !== "offline").map((f) => f.id);
-        setSyncing(reachable);
-        reachable.forEach((id, i) =>
-          later(() => {
-            setFollowers((prev) => prev.map((f) => (f.id === id ? { ...f, revision: seq, lastRun: "Just now" } : f)));
-            setSyncing((prev) => prev.filter((x) => x !== id));
-          }, 1400 + i * 1100),
-        );
-      }, 1600);
-    },
-    [nextSequence, pending, followers, later],
-  );
+  const readResources = useCallback(() => publicationCurrent.current.resources, [publicationCurrent]);
+  const readQueue = useCallback(() => ({ pending: pendingChanges(publicationCurrent.current), nextSequence: (publicationCurrent.current.revisions[0]?.sequence ?? 0) + 1 }), [publicationCurrent]);
+  const generation = useRef(0);
+  const publish = useCallback((reviewer: string, onDone: () => void) => {
+    const started = sendPublication({ kind: "publish", reviewer, generation: ++generation.current });
+    if (started.kind !== "publishing") throw new TransitionError("Demo publication", started.kind, "publish");
+    later(() => {
+      const seq = started.sequence;
+      const mark = { added: "+", modified: "~", removed: "−" } as const;
+      const summary = started.frozen.map((change) => `${mark[change.change]}${change.area === "group" ? `group ${change.id}` : change.id}`).join(", ");
+      const reachable = followers.filter((follower) => follower.state !== "offline").map((follower) => follower.id);
+      sendPublication({ kind: "published", generation: started.generation, revision: { sequence: seq, digest: demoDigest(seq, summary), publishedAt: "Just now", reviewer, changes: summary }, followers: reachable });
+      setProposed((previous) => previous.filter((id) => !started.frozen.some((change) => change.area === "item" && change.id === id)));
+      onDone();
+      toast.success(`Published revision ${seq}`, { description: `Reachable machines receive it next and apply it on their next check.${DEMO ? "\nSaved in this demo workspace." : ""}` });
+      reachable.forEach((id, index) => later(() => {
+        try { sendPublication({ kind: "delivered", follower: id, sequence: seq, requestId: started.generation }); }
+        catch (cause) {
+          // A later publication owns this delivery now. Its typed refusal leaves the newer ticket intact.
+          if (cause instanceof TransitionError) return;
+          throw cause;
+        }
+        setFollowers((previous) => previous.map((follower) => follower.id === id ? { ...follower, revision: seq, lastRun: "Just now" } : follower));
+      }, 1400 + index * 1100));
+    }, 1600);
+  }, [sendPublication, followers, later]);
 
   // Harness state on this machine. A machine fresh out of onboarding hasn't taken over any harness yet,
   // so it has no pinned roots and no takeover snapshots.
@@ -274,17 +252,30 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
   // nothing interrupted, nothing in its local folder, and the revision's first plan.
   const machineName = joined?.name ?? (role === "source" ? machine.hostname : followerSelf.name);
   const targetRevision = joined ? JOINED_REVISION : DEMO_TARGET_REVISION;
-  const [plan, setPlan] = useState<PlanItem[]>(() => (joined ? JOINED_PLAN : FOLLOWER_PLAN));
-  const [phase, setPhase] = useState<FollowerPhase>("plan");
-  const [progress, setProgress] = useState(0);
-  const [interrupted, setInterrupted] = useState(!joined);
-  const [runs, setRuns] = useState<Run[]>(joined ? [] : SEED_RUNS);
+  const [initialFollower] = useState<SimulatedFollowerState>(() => ({
+    kind: "enrolled",
+    run: joined ? { kind: "planned", plan: JOINED_PLAN } : { kind: "recovery-required", run: SEED_RUNS[0], plan: FOLLOWER_PLAN.map((item) => item.action === "skip-drift" ? { ...item, appliedRevision: followerSelf.revision } : item) },
+    evidence: { appliedRevision: joined ? 0 : followerSelf.revision, humanAction: false, runs: joined ? [] : SEED_RUNS },
+  }));
+  const followerFlow = useStateMachine<SimulatedFollowerState, SimulatedFollowerEvent>(initialFollower, transitionSimulatedFollower);
+  const { send: sendFollower, current: followerCurrent } = followerFlow;
+  const follower = followerFlow.state;
+  const evidence = follower.kind === "enrolled" ? follower.evidence : follower.lastEvidence;
+  const plan = simulatedPlan(follower);
+  const phase = follower.kind !== "enrolled" ? "plan" : follower.run.kind === "applying" ? "running" : follower.run.kind === "applied" ? "done" : "plan";
+  const progress = follower.kind === "enrolled" && follower.run.kind === "applying" ? follower.run.progress : phase === "done" ? 100 : 0;
+  const interrupted = follower.kind === "enrolled" && follower.run.kind === "recovery-required";
+  const { appliedRevision, humanAction, runs } = evidence;
   const [unenrollOpen, setUnenrollOpen] = useState(false);
-  const [unenrolled, setUnenrolled] = useState(false);
-  const stoppedRef = useRef(false);
-  const isStopped = useCallback(() => stoppedRef.current, []);
-  const [humanAction, setHumanAction] = useState(false);
-  const [appliedRevision, setAppliedRevision] = useState(joined ? 0 : followerSelf.revision);
+  const unenrolled = follower.kind === "unenrolled";
+  const isStopped = useCallback(() => followerCurrent.current.kind === "unenrolled", [followerCurrent]);
+  const setHumanAction: Workspace["setHumanAction"] = (next) => {
+    const current = followerCurrent.current;
+    const previous = current.kind === "enrolled" ? current.evidence.humanAction : current.lastEvidence.humanAction;
+    const value = typeof next === "function" ? next(previous) : next;
+    if (value) throw new TransitionError("Demo follower", current.kind, "create human action");
+    sendFollower({ kind: "acknowledge" });
+  };
   const [local, setLocal] = useState<LocalItem[]>(() => (joined ? [] : followerSelf.local));
   const [overlays, setOverlays] = useState<string[]>(() => (joined ? [] : followerSelf.overlays));
   const kept = joined ? [] : followerSelf.kept;
@@ -296,14 +287,14 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
       const snapshot = seedSnapshots.find((s) => s.id === id);
       if (!snapshot) return;
       const names = snapshot.harnesses.map((h) => HARNESS_NAMES[h]).join(", ");
-      setExcluded((prev) => [...new Set([...prev, ...snapshot.harnesses])]);
       // `restore` runs as a journaled Synchronization Run, so it shows with the others.
-      setRuns((prev) => [{ n: (prev[0]?.n ?? 0) + 1, what: `Restored snapshot ${id}`, when: "Just now", tone: "ok" }, ...prev]);
+      sendFollower({ kind: "restore", snapshot: id });
+      setExcluded((prev) => [...new Set([...prev, ...snapshot.harnesses])]);
       toast.success(`Restored ${names}`, {
         description: `Put back ${snapshot.files} files from ${id}.\nExcluded ${names} on this machine in ~/.canonfig/local/local.jsonc.${DEMO ? "\nSimulated in this demo; no files changed." : ""}`,
       });
     },
-    [],
+    [sendFollower],
   );
 
   // Export changes nothing Canonfig manages, so unlike restore it adds no run.
@@ -327,73 +318,45 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
   }, [role]);
 
   const recover = useCallback(() => {
-    setInterrupted(false);
-    setRuns((prev) => prev.map((r) => (r.n === 41 ? { ...r, what: "Recovered: all 5 steps done", when: "Just now", tone: "ok" } : r)));
-    toast.success("Run #41 recovered", { description: "Finished the 2 remaining steps from the journal." });
-  }, []);
-
+    const current = followerCurrent.current;
+    const number = current.kind === "enrolled" && current.run.kind === "recovery-required" ? current.run.run.n : null;
+    sendFollower({ kind: "recover" });
+    toast.success(`Run #${number} recovered`, { description: "Finished the 2 remaining steps from the journal." });
+  }, [sendFollower, followerCurrent]);
   const abandon = useCallback(() => {
-    setInterrupted(false);
-    setRuns((prev) => prev.map((r) => (r.n === 41 ? { ...r, what: "Abandoned, 3 of 5 done", tone: "muted" } : r)));
-    toast("Run #41 abandoned", { description: "Its 3 finished steps stay in place.\nNothing was rolled back." });
-  }, []);
-
+    const current = followerCurrent.current;
+    const number = current.kind === "enrolled" && current.run.kind === "recovery-required" ? current.run.run.n : null;
+    sendFollower({ kind: "abandon" });
+    toast(`Run #${number} abandoned`, { description: "Its 3 finished steps stay in place.\nNothing was rolled back." });
+  }, [sendFollower, followerCurrent]);
   const unenroll = useCallback(() => {
-    // A run in progress stops with it: no further steps run on a machine that stopped syncing.
-    if (phase === "running") {
-      window.clearInterval(timer.current);
-      const doneSteps = Math.floor((progress / 100) * plan.length);
-      setPlan((prev) => prev.map(({ status: _status, ...p }) => p));
-      setPhase("plan");
-      setProgress(0);
-      setRuns((prev) => [{ n: (prev[0]?.n ?? 0) + 1, what: `Stopped, ${doneSteps} of ${plan.length} done`, when: "Just now", tone: "muted" }, ...prev]);
-    }
-    stoppedRef.current = true;
-    setUnenrolled(true);
-    toast(`${machineName} stopped syncing`, { description: "In the real app this screen would return to setup." });
-  }, [machineName, phase, progress, plan.length]);
-
-  const applyPlan = useCallback(() => {
-    setPhase("running");
-    setProgress(0);
-    setPlan((prev) => prev.map((p) => ({ ...p, status: "pending" })));
-    const steps = plan.length;
-    // Installing gh leaves one step for a person: signing in to it. A later run that doesn't touch gh
-    // leaves an earlier sign-in still waiting; only checking again clears it.
-    const signInWaiting = humanAction || plan.some((p) => p.resource === "tools/gh" && p.action === "install");
-    let tick = 0;
+    sendFollower({ kind: "unenroll" });
     window.clearInterval(timer.current);
+    toast(`${machineName} stopped syncing`, { description: "In the real app this screen would return to setup." });
+  }, [machineName, sendFollower]);
+  const applyPlan = useCallback(() => {
+    const started = sendFollower({ kind: "apply", target: targetRevision });
+    if (started.kind !== "enrolled" || started.run.kind !== "applying") throw new TransitionError("Demo follower", started.kind, "apply");
+    const id = started.run.id;
+    let tick = 0;
     timer.current = window.setInterval(() => {
-      tick += 1;
-      const value = Math.min(100, tick * 4);
-      setProgress(value);
-      const doneSteps = Math.floor((value / 100) * steps);
-      setPlan((prev) =>
-        prev.map((p, i) => ({ ...p, status: i < doneSteps ? "done" : i === doneSteps ? "running" : "pending" })),
-      );
-      if (value >= 100) {
+      const value = Math.min(100, ++tick * 4);
+      let next: SimulatedFollowerState;
+      try { next = sendFollower({ kind: "advance", id, progress: value }); }
+      catch (cause) {
+        if (!(cause instanceof TransitionError)) throw cause;
         window.clearInterval(timer.current);
-        // The run leaves drifted items as they are, so count them as it ends: completion must not call a partial run up to date.
-        const paused = plan.filter((p) => p.action === "skip-drift").length;
-        const pausedText = `${paused} ${paused === 1 ? "item" : "items"} held`;
-        setPhase("done");
-        setAppliedRevision(targetRevision);
-        setHumanAction((prev) => prev || signInWaiting);
-        setRuns((prev) => [
-          { n: (prev[0]?.n ?? 0) + 1, what: paused > 0 ? `Applied revision ${targetRevision}, ${pausedText}` : `Applied revision ${targetRevision}`, when: "Just now", tone: "ok" },
-          ...prev,
-        ]);
-        if (paused > 0)
-          toast(`Revision ${targetRevision} applied, ${pausedText}`, {
-            description: `${paused === 1 ? "It keeps" : "They keep"} your local edit.\nSee Sync for how to settle ${paused === 1 ? "it" : "them"}.${signInWaiting ? "\nAlso sign in to the GitHub CLI." : ""}`,
-          });
-        else
-          toast.success(`Revision ${targetRevision} applied`, {
-            description: signInWaiting ? "One step needs you: sign in to the GitHub CLI." : "This machine is up to date.",
-          });
+        return;
       }
+      if (value < 100) return;
+      window.clearInterval(timer.current);
+      if (next.kind !== "enrolled" || next.run.kind !== "applied") return;
+      const held = next.run.held;
+      const heldText = `${held} ${held === 1 ? "item" : "items"} held`;
+      if (held) toast(`Revision ${targetRevision} applied, ${heldText}`, { description: `${held === 1 ? "It keeps" : "They keep"} your local edit.\nSee Sync for how to settle ${held === 1 ? "it" : "them"}.${next.evidence.humanAction ? "\nAlso sign in to the GitHub CLI." : ""}` });
+      else toast.success(`Revision ${targetRevision} applied`, { description: next.evidence.humanAction ? "One step needs you: sign in to the GitHub CLI." : "This machine is up to date." });
     }, 140);
-  }, [plan, targetRevision, humanAction]);
+  }, [targetRevision, sendFollower]);
   const [profileSchedule] = useSharedState<Schedule>("profile-schedule", { cadence: "daily", days: [], time: "09:00" });
   const [followerSchedule] = useSharedState<Schedule | null>("follower-schedule", { cadence: "default", days: [], time: "09:00" });
   const [tunnelUp] = useSharedState("tunnel-up", true);
@@ -519,14 +482,14 @@ function sharedSeed(setup: Setup | null): Record<string, unknown> {
       "service-since": `today ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`,
       // A new Source tracks no skill upstreams and hasn't turned on Canonfig updates.
       "skill-sources": [],
-      "self-update": { npmCli: null, latest: null },
+      "self-update": { kind: "ready", status: { enabled: false, pending: false, platform: "linux", settings: null }, checked: null },
     };
   if (setup?.role === "follower")
     return {
       "tunnel-up": setup.tunnel,
       // null: no schedule was ever set. With one, the readers' initial (`schedule set --default`) is what onboarding ran.
       ...(setup.schedule ? {} : { "follower-schedule": null }),
-      "self-update": { npmCli: null, latest: null },
+      "self-update": { kind: "ready", status: { enabled: false, pending: false, platform: "darwin", settings: null }, checked: null },
     };
   return {};
 }

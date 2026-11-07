@@ -1,5 +1,5 @@
 import { createHash, X509Certificate } from "node:crypto";
-import { access, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer as createHttpsServer, type Server } from "node:https";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -239,6 +239,12 @@ describe.skipIf(process.platform === "win32")("systemd Source service lifecycle"
       manager: { installed: true, matches: true, enabled: true, active: true, pid: 4242 },
       logs: "journalctl --user -u canonfig-source.service",
     });
+    const confirmed = await run(Effect.flatMap(SourceService, (service) =>
+      service.install({ hostname: "127.0.0.1", port }, identity)
+    ));
+    expect(confirmed.change).toBe("unchanged");
+    expect(JSON.parse(await readFile(join(root, ".canonfig/source-service.json"), "utf8")))
+      .toMatchObject({ version: 2, registration: { _tag: "Installed", requested: { port } } });
 
     const removed = await run(Effect.flatMap(SourceService, (service) => service.remove()));
     expect(removed.change).toBe("removed");
@@ -248,6 +254,77 @@ describe.skipIf(process.platform === "win32")("systemd Source service lifecycle"
       .rejects.toMatchObject({ code: "ENOENT" });
   });
 
+
+  it("retains the requested endpoint when native installation fails after writing its definition", async () => {
+    const { root, run } = await setup(
+      "case \"$2\" in restart) echo 'restart failed' >&2; exit 1;; show) printf 'LoadState=loaded\\nActiveState=inactive\\nSubState=dead\\nUnitFileState=enabled\\n';; esac\nexit 0",
+    );
+    const port = await freePort();
+    const error = await run(Effect.flip(Effect.flatMap(SourceService, (service) =>
+      service.install({ hostname: "127.0.0.1", port }, {
+        tlsFingerprint: decode(CertificateFingerprint)("a".repeat(64)),
+        sourceFingerprint,
+      })
+    )));
+    expect(error._tag).toBe("SourceServiceManagerError");
+    const status = await run(Effect.flatMap(SourceService, (service) => service.status(undefined)));
+    expect(status).toMatchObject({
+      endpoint: `https://127.0.0.1:${port}`,
+      manager: { installed: true, matches: true },
+    });
+    const record = JSON.parse(await readFile(join(root, ".canonfig/source-service.json"), "utf8"));
+    expect(record).toMatchObject({ version: 2, registration: { _tag: "Installing", requested: { port } } });
+  });
+
+  it("refuses a malformed registration rather than probing the default endpoint", async () => {
+    const { root, run } = await setup("exit 0");
+    await mkdir(join(root, ".canonfig"), { recursive: true });
+    await writeFile(join(root, ".canonfig/source-service.json"), "{ broken");
+    const error = await run(Effect.flip(Effect.flatMap(SourceService, (service) => service.status(undefined))));
+    expect(error).toMatchObject({ _tag: "SourceServiceConfigurationError" });
+    expect(error.message).toContain("source-service.json");
+  });
+
+  it("refuses install and remove while another registration operation owns the lock", async () => {
+    const { root, run } = await setup("exit 0");
+    await mkdir(join(root, ".canonfig"), { recursive: true });
+    await writeFile(join(root, ".canonfig/source-service.json.lock"), "other operation");
+    const removed = await run(Effect.flip(Effect.flatMap(SourceService, (service) => service.remove())));
+    expect(removed).toMatchObject({ _tag: "SourceServiceConfigurationError" });
+    const installed = await run(Effect.flip(Effect.flatMap(SourceService, (service) =>
+      service.install({ hostname: "127.0.0.1", port: 23456 }, {
+        tlsFingerprint: decode(CertificateFingerprint)("a".repeat(64)), sourceFingerprint,
+      })
+    )));
+    expect(installed).toMatchObject({ _tag: "SourceServiceConfigurationError" });
+    await expect(access(join(root, "systemctl.calls"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("retains interrupted removal intent and refuses reinstall until removal finishes", async () => {
+    const { root, run } = await setup(
+      "case \"$2\" in disable) echo 'stop failed' >&2; exit 1;; show) printf 'LoadState=loaded\\nActiveState=inactive\\nSubState=dead\\n';; esac\nexit 0",
+    );
+    const requested = { hostname: "127.0.0.1", port: 23456 };
+    await mkdir(join(root, ".canonfig"), { recursive: true });
+    await writeFile(join(root, ".canonfig/source-service.json"), JSON.stringify({
+      version: 2, registration: { _tag: "Installed", requested },
+    }));
+    await mkdir(join(root, ".config/systemd/user"), { recursive: true });
+    await writeFile(join(root, ".config/systemd/user/canonfig-source.service"), "installed definition");
+    const removed = await run(Effect.flip(Effect.flatMap(SourceService, (service) => service.remove())));
+    expect(removed._tag).toBe("SourceServiceManagerError");
+    expect(JSON.parse(await readFile(join(root, ".canonfig/source-service.json"), "utf8")))
+      .toMatchObject({ version: 2, registration: { _tag: "Removing", requested } });
+    const installed = await run(Effect.flip(Effect.flatMap(SourceService, (service) =>
+      service.install(requested, {
+        tlsFingerprint: decode(CertificateFingerprint)("a".repeat(64)), sourceFingerprint,
+      })
+    )));
+    expect(installed).toMatchObject({ _tag: "SourceServiceConfigurationError" });
+    expect(installed.message).toContain("finish");
+    const status = await run(Effect.flatMap(SourceService, (service) => service.status(undefined)));
+    expect(status.endpoint).toBe("https://127.0.0.1:23456");
+    expect(status.detail).toContain("removing");
+  });
   it("names the missing session bus and the supported modes", async () => {
     const { run } = await setup(
       "echo 'Failed to connect to bus: No medium found' >&2\nexit 1",

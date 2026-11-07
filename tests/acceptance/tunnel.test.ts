@@ -1,9 +1,11 @@
+import { spawn } from "node:child_process";
 import { createHash, X509Certificate } from "node:crypto";
 import { access, chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer as createHttpsServer, type Server } from "node:https";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { Effect, Schema } from "effect";
 import { generate } from "selfsigned";
@@ -28,13 +30,14 @@ import { Tunnel } from "../../src/enrollment/tunnel.service.ts";
 import type { EnrollmentInvitationGrant } from
   "../../src/enrollment/enrollment.types.ts";
 import {
-  TunnelStateFileSchema,
+  TunnelJournalSchema,
+  sshHostKeyFingerprint,
+  type TunnelProcess,
   type TunnelStartInput,
-  type TunnelStateFile,
 } from "../../src/enrollment/tunnel.types.ts";
 
 const decode = Schema.decodeUnknownSync;
-const decodeTunnelState = decode(Schema.fromJsonString(TunnelStateFileSchema));
+const decodeTunnelJournal = decode(Schema.fromJsonString(TunnelJournalSchema));
 const roots: Array<string> = [];
 const cleanups: Array<() => Promise<void> | void> = [];
 const fingerprint = decode(CertificateFingerprint)("a".repeat(64));
@@ -103,7 +106,7 @@ process.on("SIGTERM", () => process.exit(0));
 };
 
 /** A loopback Source that answers the unauthenticated descriptor probe. */
-const fakeSource = async (): Promise<{
+const fakeSource = async (gate: Promise<void> = Promise.resolve()): Promise<{
   readonly port: number;
   readonly tlsFingerprint: typeof CertificateFingerprint.Type;
 }> => {
@@ -119,11 +122,13 @@ const fakeSource = async (): Promise<{
     { key: certificate.private, cert: certificate.cert },
     (request, response) => {
       request.resume();
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({
-        source: { keyId: "source-key", publicKeyFingerprint: sourceFingerprint },
-        tlsFingerprint,
-      }));
+      void gate.then(() => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({
+          source: { keyId: "source-key", publicKeyFingerprint: sourceFingerprint },
+          tlsFingerprint,
+        }));
+      });
     },
   );
   await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
@@ -138,11 +143,29 @@ const fakeSource = async (): Promise<{
   };
 };
 
+const recordedProcess = async (root: string): Promise<TunnelProcess> => {
+  const { state } = decodeTunnelJournal(await readFile(join(root, "tunnel.json"), "utf8"));
+  const process = state._tag === "Starting" ? state.ownedProcess
+    : state._tag === "Running" || state._tag === "Stopping" || state._tag === "RecoveryRequired"
+    ? state.process : state._tag === "Down" ? state.previous : undefined;
+  if (process === undefined) throw new Error("the test tunnel has no recorded process");
+  return process;
+};
+
 /** Kill the recorded SSH process, as a network drop or a reboot would. */
 const killRecordedTunnel = async (root: string): Promise<number> => {
-  const state = decodeTunnelState(await readFile(join(root, "tunnel.json"), "utf8"));
+  const state = await recordedProcess(root);
   process.kill(state.pid, "SIGKILL");
-  return state.pid;
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(state.pid, 0);
+    } catch {
+      return state.pid;
+    }
+    await delay(10);
+  }
+  throw new Error(`disposable tunnel ${state.pid} did not exit`);
 };
 
 const runTunnel = <Success, Failure>(
@@ -172,8 +195,8 @@ const startManagedTunnel = async (
   };
   cleanups.push(async () => {
     try {
-      const state = decodeTunnelState(await readFile(join(root, "tunnel.json"), "utf8"));
-      process.kill(state.pid, "SIGKILL");
+      const pid = Number(await readFile(join(root, "ssh.pid"), "utf8"));
+      process.kill(pid, "SIGKILL");
     } catch {
       // No live recorded tunnel.
     }
@@ -254,38 +277,89 @@ describe("managed enrollment tunnel", () => {
     const root = await temporaryRoot();
     const knownHostsPath = join(root, "tunnel-known_hosts");
     await writeFile(knownHostsPath, "pinned\n", { mode: 0o600 });
-    const state: TunnelStateFile = {
-      version: 1,
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    cleanups.push(() => { child.kill("SIGKILL"); });
+    const pid = child.pid;
+    if (pid === undefined) throw new Error("disposable child has no PID");
+    const state: TunnelProcess = {
       ssh: {
         host: "source.example",
         port: 22,
         user: "operator",
         hostKeyType: "ssh-ed25519",
-        hostKeyFingerprint: "SHA256:not-current",
+        hostKeyFingerprint: sshHostKeyFingerprint(hostKey),
       },
       local: { host: "127.0.0.1", port: 17342 },
       remote: { host: "127.0.0.1", port: 17342 },
       tlsFingerprint: fingerprint,
       sourceFingerprint,
-      pid: process.pid,
+      pid,
       processArgumentFingerprint: "not-the-current-process",
       startedAt: new Date().toISOString(),
       logPath: join(root, "tunnel.log"),
       knownHostsPath,
     };
-    await writeFile(join(root, "tunnel.json"), `${JSON.stringify(state)}\n`, { mode: 0o600 });
+    await writeFile(join(root, "tunnel.json"), JSON.stringify({
+      version: 2,
+      state: {
+        _tag: "Running",
+        config: {
+          sshHost: "source.example", sshPort: 22, sshUser: "operator", sshHostKey: hostKey,
+          localHost: "127.0.0.1", localPort: 17342, remoteHost: "127.0.0.1", remotePort: 17342,
+          tlsFingerprint: fingerprint, sourceFingerprint,
+        },
+        process: state,
+      },
+    }), { mode: 0o600 });
 
-    const result = await Effect.runPromise(
-      Effect.flatMap(Tunnel, (tunnel) => tunnel.stopTunnel({ stateDirectory: root })).pipe(
-        Effect.provide(TunnelLive),
-      ),
-    );
-
-    expect(result).toEqual({ stopped: false, pid: process.pid, restartable: false });
-    expect(() => process.kill(process.pid, 0)).not.toThrow();
+    const failure = await runTunnel(Effect.flip(
+      Effect.flatMap(Tunnel, (tunnel) => tunnel.stopTunnel({ stateDirectory: root })),
+    ));
+    expect(failure._tag).toBe("TunnelProcessError");
+    expect((decodeTunnelJournal(await readFile(join(root, "tunnel.json"), "utf8"))).state)
+      .toMatchObject({ _tag: "RecoveryRequired", intent: "stopped", process: { pid } });
+    expect(() => process.kill(pid, 0)).not.toThrow();
+    expect(await readFile(knownHostsPath, "utf8")).toBe("pinned\n");
   });
 
   describe.skipIf(process.platform === "win32")("lifecycle without the invitation", () => {
+    it("refuses a concurrent stop while start owns the lifecycle journal", async () => {
+      const root = await temporaryRoot();
+      const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+      const source = await fakeSource(gate);
+      const input = await startManagedTunnel(root, source.port, source.tlsFingerprint);
+      const starting = runTunnel(Effect.flatMap(Tunnel, (tunnel) => tunnel.startTunnel(input)));
+      try {
+        const deadline = Date.now() + 5_000;
+        for (;;) {
+          try { await access(join(root, "ssh.pid")); break; }
+          catch { if (Date.now() >= deadline) throw new Error("disposable start did not record ownership"); }
+          await delay(10);
+        }
+        const failure = await runTunnel(Effect.flip(
+          Effect.flatMap(Tunnel, (tunnel) => tunnel.stopTunnel({ stateDirectory: root })),
+        ));
+        expect(failure).toMatchObject({
+          _tag: "TunnelConfigurationError", message: expect.stringContaining("another tunnel operation"),
+        });
+      } finally { release(); await starting; }
+    });
+
+    it("rechecks stopped intent before a stale unattended restart", async () => {
+      const root = await temporaryRoot();
+      const source = await fakeSource();
+      const input = await startManagedTunnel(root, source.port, source.tlsFingerprint);
+      await runTunnel(Effect.flatMap(Tunnel, (tunnel) => tunnel.startTunnel(input)));
+      await killRecordedTunnel(root);
+      await runTunnel(Effect.flatMap(Tunnel, (tunnel) => tunnel.stopTunnel({ stateDirectory: root })));
+      const failure = await runTunnel(Effect.flip(
+        Effect.flatMap(Tunnel, (tunnel) => tunnel.restartTunnel({ stateDirectory: root, onlyIfDown: true })),
+      ));
+      expect(failure.message).toContain("operator's latest intent");
+      expect(await runTunnel(Effect.flatMap(Tunnel, (tunnel) => tunnel.tunnelStatus({ stateDirectory: root }))))
+        .toMatchObject({ lifecycle: "stopped" });
+    });
+
     it("restarts a dead tunnel from its recorded configuration, with no invitation (CF-55)", async () => {
       const root = await temporaryRoot();
       const source = await fakeSource();
@@ -313,19 +387,43 @@ describe("managed enrollment tunnel", () => {
       expect(restarted.identity).toMatchObject({ tlsMatch: true, sourceMatch: true });
     });
 
-    it("stops a newly established route if its restart configuration cannot be persisted", async () => {
+    it("keeps stopped intent when teardown cannot remove pinned material", async () => {
       const root = await temporaryRoot();
       const source = await fakeSource();
       const input = await startManagedTunnel(root, source.port, source.tlsFingerprint);
-      await mkdir(join(root, "tunnel-config.json"));
+      await runTunnel(Effect.flatMap(Tunnel, (tunnel) => tunnel.startTunnel(input)));
+      await killRecordedTunnel(root);
+      const pins = (await recordedProcess(root)).knownHostsPath;
+      await rm(pins);
+      await mkdir(pins);
+
+      const failure = await runTunnel(Effect.flip(
+        Effect.flatMap(Tunnel, (tunnel) => tunnel.stopTunnel({ stateDirectory: root })),
+      ));
+      expect(failure._tag).toBe("TunnelConfigurationError");
+      expect(await runTunnel(
+        Effect.flatMap(Tunnel, (tunnel) => tunnel.tunnelStatus({ stateDirectory: root })),
+      )).toMatchObject({ lifecycle: "stopped", restartable: false });
+      expect((decodeTunnelJournal(await readFile(join(root, "tunnel.json"), "utf8"))).state)
+        .toMatchObject({ _tag: "RecoveryRequired", intent: "stopped", process: { knownHostsPath: pins } });
+      await rm(pins, { recursive: true });
+      await runTunnel(Effect.flatMap(Tunnel, (tunnel) => tunnel.stopTunnel({ stateDirectory: root })));
+      expect(await runTunnel(
+        Effect.flatMap(Tunnel, (tunnel) => tunnel.tunnelStatus({ stateDirectory: root })),
+      )).toMatchObject({ lifecycle: "stopped", restartable: true });
+    });
+
+    it("does not spawn when the canonical journal cannot be read or published", async () => {
+      const root = await temporaryRoot();
+      const source = await fakeSource();
+      const input = await startManagedTunnel(root, source.port, source.tlsFingerprint);
+      await mkdir(join(root, "tunnel.json"));
 
       const error = await runTunnel(Effect.flip(
         Effect.flatMap(Tunnel, (tunnel) => tunnel.startTunnel(input)),
       ));
       expect(error._tag).toBe("TunnelConfigurationError");
-      const pid = Number(await readFile(join(root, "ssh.pid"), "utf8"));
-      expect(() => process.kill(pid, 0)).toThrow();
-      await expect(access(join(root, "tunnel.json"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(join(root, "ssh.pid"))).rejects.toMatchObject({ code: "ENOENT" });
     });
 
     it.skipIf(process.platform !== "linux")("never detaches a route when native service ownership fails", async () => {
@@ -341,7 +439,8 @@ describe("managed enrollment tunnel", () => {
       ));
       expect(error._tag).toBe("TunnelProcessError");
       await expect(access(join(root, "ssh.pid"))).rejects.toMatchObject({ code: "ENOENT" });
-      await expect(access(join(root, "tunnel.json"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect((decodeTunnelJournal(await readFile(join(root, "tunnel.json"), "utf8"))).state)
+        .toMatchObject({ _tag: "Down" });
     });
 
     it("keeps a stopped tunnel restartable but reports it as stopped", async () => {

@@ -44,10 +44,12 @@ export function TunnelEvidence({ report: value }: { report: Schema.Json }) {
 export function FollowerOperationEvidence() {
   const ws = useWorkspace();
   const live = ws.followerLive;
-  const operation = live?.operation;
-  if (!operation) return null;
+  if (!live) return null;
+  const observationLost = live.command.kind === "ObservationLost" && <div className="mt-2 grid gap-2"><p className="text-sm">Observation lost. The command may still be running on this machine.</p><Button variant="outline" size="sm" onClick={live.resumeObservation}>Resume observation</Button></div>;
+  const operation = live.operation;
+  if (!operation) return observationLost ? <section aria-live="polite" className="px-[18px] py-4">{observationLost}</section> : null;
   const journal = record(operation.journal);
-  const report = operation.result === undefined ? record(journal.details ?? operation.journal) : record(operation.result);
+  const report = operation.state === "succeeded" ? record(operation.result) : record(journal.details ?? operation.journal);
   const outcome = record(report.outcome);
   const plan = record(report.plan);
   const actions = Array.isArray(plan.actions) ? plan.actions.map(record) : [];
@@ -61,8 +63,9 @@ export function FollowerOperationEvidence() {
     <div className="relative isolate overflow-hidden border-b border-border px-[18px] py-4">
       <StateBand tone={status === "ok" ? "ok" : "warn"} mode={operation.state === "running" ? "running" : "idle"} className="-z-10 opacity-70" />
       <h2 className="flex items-center gap-2 font-medium"><StatusMark kind={status} />{live.operationName}: {outcomeName ? stateLabels[outcomeName] ?? "Result received" : stateLabels[operation.state]}</h2>
+      {observationLost}
       {text(outcome.reason) && <p className="mt-2 text-sm text-muted-foreground">{text(outcome.reason)}</p>}
-      {operation.failure && <p className="mt-2 text-sm text-bad">{operation.failure.message}</p>}
+      {operation.state === "failed" && <p className="mt-2 text-sm text-bad">{operation.failure.message}</p>}
     </div>
     <div className="px-[18px] py-4">
       <div className={settingsGroup}>

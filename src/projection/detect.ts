@@ -167,7 +167,7 @@ export const harnessReport = (input: {
     const excluded = new Set(selection.excluded);
     const rows = detection.map((entry): HarnessReportRow => {
       const takeover = latestTakeover(input.takeovers, entry.harness);
-      const snapshot = latestTakeover(input.takeovers.filter((row) => row.snapshot !== undefined), entry.harness);
+      const snapshot = latestTakeover(input.takeovers.filter((row) => row.backup._tag === "Snapshot"), entry.harness);
       return {
         ...entry,
         name: adapterFor(entry.harness).descriptor.name,
@@ -175,7 +175,7 @@ export const harnessReport = (input: {
         listed: listed.has(entry.harness),
         excluded: excluded.has(entry.harness),
         pinnedRoot: takeover?.root,
-        snapshot: snapshot?.snapshot,
+        snapshot: snapshot?.backup._tag === "Snapshot" ? snapshot.backup.id : undefined,
       };
     });
     return {

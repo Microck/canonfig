@@ -81,6 +81,18 @@ lingering is on.
 To stop supervising the Source Machine, run `canonfig source service remove`.
 It stops the service and deletes its definition.
 
+If installation or removal stops partway through, `status` keeps using the
+host and port you requested and names the unfinished operation. Read the native
+service logs, fix the cause, then retry `install` with the same host and port,
+or finish `remove`. Finish an interrupted removal before reinstalling.
+
+Concurrent install and remove commands refuse to change the same service.
+After a killed command, preserve `~/.canonfig/source-service.json` and inspect
+the native definition before deleting a stale
+`~/.canonfig/source-service.json.lock`. A malformed registration stops the
+command instead of silently using the default port. Preserve that file and
+repair it against the native definition before retrying.
+
 ## Schedule each Follower Machine
 
 On each Follower Machine:

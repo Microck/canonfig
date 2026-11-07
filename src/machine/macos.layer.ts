@@ -756,6 +756,7 @@ export const macosMachineStateLayer = (
           }
           const key = createHash("sha256").update(input.name).digest("hex");
           return requireSecurity.pipe(
+            Effect.andThen(input.beforeStore?.(decode(CredentialReference)(`keychain:${key}`)) ?? Effect.void),
             Effect.flatMap(() =>
               runSecurity([
                 "add-generic-password",

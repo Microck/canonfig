@@ -84,8 +84,8 @@ const observeFile = (
         objectKind: "regular",
       } as const;
       return composition.kind === "managed"
-        ? { ...observation, managedSourceDigest: sha256Hex(composition.source), managedLocalText: composition.local.length > 0 }
-        : observation;
+        ? { ...observation, textComposition: { kind: "managed" as const, sourceDigest: sha256Hex(composition.source), hasLocal: composition.local.length > 0 } }
+        : { ...observation, textComposition: { kind: "unmanaged" as const } };
     }
     return yield* machine.digestFile({ path }).pipe(
       Effect.flatMap((digest) =>
@@ -150,7 +150,7 @@ const observeConfig = (
         const current = parseConfigDocument(desired.format, decoder.decode(bytes));
         // The owned values go through the exact rendering the desired digest
         // used, key ordering included, so an unchanged file observes equal.
-        const appliedKeysDigest = applied?.ownedKeys === undefined || applied.configFormat !== desired.format
+        const appliedKeysDigest = applied?.ownership !== "ConfigKeys" || applied.configFormat !== desired.format
           ? undefined
           : configKeysDigest(desired.format, current, applied.ownedKeys);
         return {
@@ -245,7 +245,7 @@ export const observeFollowerResource = (
         // machine's own top-level entries are never read; the planner's
         // append-local view drops them in any case.
         const claimed = decoded.resource.policy === "append-local"
-          ? [...new Set([...desired.files, ...desired.directories, ...applied?.ownedFiles ?? []]
+          ? [...new Set([...desired.files, ...desired.directories, ...(applied?.ownership === "DirectoryEntries" ? applied.ownedFiles : [])]
             .map((entry) => entry.path.split("/", 1)[0]!))].sort()
           : [];
         const listed = listsEverything
@@ -276,12 +276,12 @@ export const observeFollowerResource = (
         const ancestors = [...relativePathAncestors([
           ...desired.files.map((entry) => entry.path),
           ...desired.directories.map((entry) => entry.path),
-          ...(applied?.ownedFiles ?? []).map((entry) => entry.path),
+          ...(applied?.ownership === "DirectoryEntries" ? applied.ownedFiles : []).map((entry) => entry.path),
         ])].sort((left, right) => left.split("/").length - right.split("/").length);
         const candidates = [...new Map([
           ...ancestors.map((path) => ({ path })),
           ...foreign,
-          ...(applied?.ownedFiles ?? []).map((file) => ({
+          ...(applied?.ownership === "DirectoryEntries" ? applied.ownedFiles : []).map((file) => ({
             ...file,
             executable: file.executable ?? false,
           })),
@@ -467,13 +467,6 @@ export const removedResourceState = (
   readonly resource: ProfileRevision["resources"][number];
   readonly desired: DesiredResource;
 } | undefined => {
-  if (
-    applied.kind === undefined
-    || applied.policy === undefined
-    || applied.target === undefined
-  ) {
-    return undefined;
-  }
   const resource = {
     id: applied.resource,
     kind: applied.kind,
@@ -482,35 +475,38 @@ export const removedResourceState = (
     dependsOn: [],
     blobs: [],
   } satisfies ProfileRevision["resources"][number];
-  const digest = Schema.decodeUnknownSync(ContentDigest)(applied.digest);
-  switch (applied.kind) {
-    case "file":
+  const digest = applied.digest;
+  switch (applied.ownership) {
+    case "WholeFile":
+    case "SourceSection":
       return {
         resource,
         desired: {
           kind: "file",
           digest,
-          executable: applied.executable ?? false,
-          mode: applied.mode ?? (applied.executable === true ? 0o700 : 0o600),
-          symlinkTo: applied.symlinkTo,
+          executable: applied.executable,
+          mode: applied.mode,
         },
       };
-    case "directory":
-    case "skill":
-      if (applied.ownedFiles === undefined) return undefined;
+    case "Symlink":
+      return {
+        resource,
+        desired: { kind: "file", digest, executable: false, mode: 0, symlinkTo: applied.symlinkTo },
+      };
+    case "DirectoryEntries":
       const directories = applied.ownedFiles
         .filter((file) => file.objectKind === "directory")
         .map((directory) => ({
           path: directory.path,
-          mode: directory.mode ?? 0o700,
+          mode: directory.mode,
         }));
       const files = applied.ownedFiles
         .filter((file) => file.objectKind !== "directory")
         .map((file) => ({
           path: file.path,
-          digest: Schema.decodeUnknownSync(ContentDigest)(file.digest),
-          executable: file.executable ?? false,
-          mode: file.mode ?? (file.executable === true ? 0o700 : 0o600),
+          digest: file.digest,
+          executable: file.executable,
+          mode: file.mode,
           symlinkTo: file.symlinkTo,
         }));
       return {
@@ -519,24 +515,18 @@ export const removedResourceState = (
           ? {
             kind: "skill",
             digest,
-            mode: applied.mode ?? 0o700,
+            mode: applied.mode,
             directories,
             files,
           }
           : {
             kind: "directory",
-            mode: applied.mode ?? 0o700,
+            mode: applied.mode,
             directories,
             files,
           },
       };
-    case "config":
-      if (
-        applied.ownedKeys === undefined
-        || applied.configFormat === undefined
-      ) {
-        return undefined;
-      }
+    case "ConfigKeys":
       return {
         resource,
         desired: {
@@ -546,9 +536,13 @@ export const removedResourceState = (
           keys: applied.ownedKeys,
         },
       };
-    case "tool":
-    case "credential":
+    case "QualifiedTool":
+      // Qualified provenance pins verification, not permission to uninstall software.
       return undefined;
+    default: {
+      const unexpected: never = applied;
+      throw new Error(`Unknown applied resource ownership: ${String(unexpected)}`);
+    }
   }
 };
 

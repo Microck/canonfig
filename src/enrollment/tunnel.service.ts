@@ -14,6 +14,8 @@ export interface StopTunnelRequest extends StopTunnelInput {
 
 export interface RestartTunnelInput extends StopTunnelInput {
   readonly timeoutMilliseconds?: number | undefined;
+  /** Unattended recovery must recheck intent while holding the lifecycle lock. */
+  readonly onlyIfDown?: boolean | undefined;
 }
 
 export interface StopTunnelResult {
@@ -39,7 +41,7 @@ export class Tunnel extends Context.Service<Tunnel, {
   readonly tunnelStatus: (
     input: StopTunnelInput,
   ) => Effect.Effect<TunnelStatusReport, TunnelError>;
-  /** Stop the process. The restart configuration is kept unless `forget` is set. */
+  /** Persist stopped intent, then stop the process. Forget only after confirmed cleanup. */
   readonly stopTunnel: (
     input: StopTunnelRequest,
   ) => Effect.Effect<StopTunnelResult, TunnelError>;

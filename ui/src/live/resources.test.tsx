@@ -58,7 +58,7 @@ for (const role of ["source", "follower"] as const) {
       "/api/agent/harness": { configured: false },
       "/api/setup": setup,
       "/api/setup/apply": { id: "setup-operation" },
-      "/api/operations/setup-operation": { id: "setup-operation", state: "succeeded", journal: null },
+      "/api/operations/setup-operation": { id: "setup-operation", state: "succeeded", journal: null, result: {} },
     };
     const server = createServer((incoming, outgoing) => {
       const path = incoming.url ?? "/";
@@ -195,7 +195,7 @@ it("self-update renders persisted progress and stops requests after installation
       operationReads += 1;
       outgoing.end(JSON.stringify(operationReads === 1
         ? { id: "update-operation", state: "running", journal: { phase: "staging", candidate: "6.1.2" } }
-        : { id: "update-operation", state: "succeeded", journal: { phase: "complete", candidate: "6.1.2" }, result: { current: "6.1.1", candidate: "6.1.2", status: "updated", detail: "Installed 6.1.2." } }));
+        : { id: "update-operation", state: "succeeded", journal: { phase: "complete", candidate: "6.1.2" }, result: { current: "6.1.1", candidate: "6.1.2", status: "updated", detail: "Installed 6.1.2. Receipt unavailable; keep the update record for recovery." } }));
       return;
     }
     outgoing.statusCode = path in responses ? path === "/api/self-update/apply" ? 202 : 200 : 404;
@@ -240,6 +240,7 @@ it("self-update renders persisted progress and stops requests after installation
     await click("Install update");
     await settle("staging 6.1.2");
     await settle("Canonfig 6.1.2 is installed. Start canonfig ui again.");
+    assert.ok(container.textContent?.includes("Receipt unavailable; keep the update record for recovery."), "Committed-update warnings must survive the terminal screen");
     assert.equal(container.querySelector('[role="status"] .font-mono')?.textContent, "canonfig ui");
     assert.ok(!container.querySelector('[role="status"]')?.textContent?.includes("`"));
     assert.equal(operationReads, 2);

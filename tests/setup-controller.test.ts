@@ -9,20 +9,29 @@ import { describe, expect, it } from "vitest";
 
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
-import { approveSetup, establishSetupScope, probeTools, runSetupPreflight, setupStatus } from "../src/setup/setup.controller.ts";
-import { scaffoldProfile } from "../src/setup/setup.folder.ts";
+import { applySetup, approveSetup, establishSetupScope, planSetup, probeTools, runSetupPreflight, setupStatus } from "../src/setup/setup.controller.ts";
+import { EnrollmentLive } from "../src/enrollment/enrollment.layer.ts";
+import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
+import type { Enrollment } from "../src/enrollment/enrollment.service.ts";
+import type { StateRepository } from "../src/state/state-repository.service.ts";
+import { executeFolderScaffold, scaffoldProfile, verifyFolderSetupItem } from "../src/setup/setup.folder.ts";
 
 import {
   nextEligibleSetupStage,
+  setupItemDetailDigest,
+  transitionSetup,
   setupItemVerdicts,
   setupPlanDigest,
 } from "../src/setup/setup.plan.ts";
 import {
   maxSetupDiscoveryFileBytes,
+  SetupItemSummary,
+  SetupItemRecord,
   type SetupInventory,
   type SetupJournal,
   type SetupPlanItem,
 } from "../src/setup/setup.types.ts";
+import { canonicalJson, sha256Hex } from "../src/profile/profile-codec.ts";
 
 const inventory: SetupInventory = {
   schema: "canonfig.setup-inventory/v1",
@@ -74,35 +83,80 @@ const digest = setupPlanDigest({
   discoveryInputs: [],
   items,
 });
-const journal = (overrides: Partial<SetupJournal> = {}): SetupJournal => ({
-  schema: "canonfig.setup/v1",
-  role: "follower",
-  scope: "full",
-  planDigest: digest,
-  intent: "prepare follower",
-  inventory,
-  items: [...items],
-  decisions: [],
-  exclusions: [],
-  evidence: [],
-  approvals: [{
-    digest,
-    approver: "operator",
-    approvedAt: "2026-08-17T00:00:00.000Z",
-  }],
-  catalog: [],
-  stages: ["role", "preflight", "inventory", "plan"].map((stage) => ({
-    stage,
-    digest,
-    completedAt: "2026-08-17T00:00:00.000Z",
-  })),
-  records: [],
-  createdAt: "2026-08-17T00:00:00.000Z",
-  updatedAt: "2026-08-17T00:00:00.000Z",
-  ...overrides,
-});
+const journal = (overrides: Partial<SetupJournal> = {}): SetupJournal => {
+  const currentItems = overrides.items ?? items;
+  const planDigest = setupPlanDigest({
+    role: "follower", scope: "full", intent: "prepare follower", exclusions: [],
+    inventory, discoveryInputs: [], items: currentItems,
+  });
+  const timestamp = "2026-08-17T00:00:00.000Z";
+  const approvals = overrides.approvals ?? [{ digest: planDigest, approver: "operator", approvedAt: timestamp }];
+  return {
+    schema: "canonfig.setup/v2", role: "follower", scope: "full", planDigest,
+    intent: "prepare follower", inventory, items: [...currentItems], decisions: [],
+    exclusions: [], evidence: [], approvals, catalog: [], discoveryPaths: [], discoveryInputs: [],
+    stages: [
+      { stage: "role", digest: sha256Hex(canonicalJson("follower")), completedAt: timestamp },
+      { stage: "preflight", digest: sha256Hex(canonicalJson(inventory.credentialStorage)), completedAt: timestamp },
+      { stage: "inventory", digest: sha256Hex(canonicalJson(JSON.parse(JSON.stringify(inventory)))), completedAt: timestamp },
+      { stage: "plan", digest: planDigest, completedAt: timestamp },
+      ...approvals.length === 0 ? [] : [{ stage: "approve" as const, digest: planDigest, completedAt: timestamp }],
+    ],
+    records: currentItems.map((item) => ({
+      id: item.id, status: "pending" as const, detailDigest: setupItemDetailDigest(item), updatedAt: timestamp,
+    })),
+    createdAt: timestamp, updatedAt: timestamp, ...overrides,
+  };
+};
 
 describe("setup controller decisions", () => {
+  it("requires outcome evidence at both journal and API boundaries", () => {
+    const summary = Schema.decodeUnknownSync(SetupItemSummary, { onExcessProperty: "error" });
+    const record = Schema.decodeUnknownSync(SetupItemRecord, { onExcessProperty: "error" });
+    const fields = { id: "item", detailDigest: "digest", updatedAt: "now" };
+    for (const status of ["pending", "running"]) {
+      expect(summary({ id: "item", status })).toEqual({ id: "item", status });
+      expect(() => summary({ id: "item", status, evidence: "not an outcome" })).toThrow();
+      const started = status === "running" ? { startedAt: "now" } : {};
+      expect(() => record({ ...fields, ...started, status, evidence: "not an outcome" })).toThrow();
+    }
+    for (const status of ["interrupted", "completed", "failed"]) {
+      expect(() => summary({ id: "item", status })).toThrow();
+      const started = status === "interrupted" ? { startedAt: "now" } : {};
+      expect(() => record({ ...fields, ...started, status })).toThrow();
+      expect(summary({ id: "item", status, evidence: "observed" })).toMatchObject({ evidence: "observed" });
+    }
+    expect(summary({ id: "item", status: "skipped" })).toEqual({ id: "item", status: "skipped" });
+  });
+
+  it.each([
+    "duplicate item ids", "missing records", "stale item digests",
+    "duplicate stages", "stale stage digests", "missing planning stages", "missing terminal evidence",
+  ] as const)("refuses %s at the journal boundary without writing", async (variant) => {
+    const valid = journal();
+    const corruptions = {
+      "duplicate item ids": { items: [...valid.items, ...valid.items] },
+      "missing records": { records: [] },
+      "stale item digests": { records: valid.records.map((record) => ({ ...record, detailDigest: "stale" })) },
+      "duplicate stages": { stages: [...valid.stages, ...valid.stages] },
+      "stale stage digests": { stages: valid.stages.map((stage) => ({ ...stage, digest: "stale" })) },
+      "missing planning stages": { stages: valid.stages.filter((stage) => stage.stage !== "plan") },
+      "missing terminal evidence": { records: valid.records.map((record) => ({ ...record, status: "completed" })) },
+    };
+    const home = mkdtempSync(join(tmpdir(), "canonfig-setup-invalid-"));
+    const path = join(home, "setup.json");
+    const original = JSON.stringify({ ...valid, ...corruptions[variant] });
+    writeFileSync(path, original);
+    try {
+      const failure = await Effect.runPromise(setupStatus(path).pipe(
+        Effect.flip, Effect.provide(linuxMachineStateLayer({ environment: [{ name: "HOME", value: home }] })),
+      ));
+      expect(failure).toMatchObject({ _tag: "SetupError", category: "prerequisite" });
+      expect(failure.recovery).toContain("Do not remove state.sqlite");
+      expect(readFileSync(path, "utf8")).toBe(original);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
   it("refuses approval of a digest other than the journal without writing", async () => {
     const home = mkdtempSync(join(tmpdir(), "canonfig-setup-digest-"));
     const path = join(home, "setup.json");
@@ -114,6 +168,34 @@ describe("setup controller decisions", () => {
       ));
       expect(result._tag).toBe("Failure");
       expect(readFileSync(path, "utf8")).toBe(original);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it("refuses completing pending work or starting an item with a stale digest", async () => {
+    const pending = journal();
+    for (const event of [
+      { type: "complete" as const, id: items[0]!.id, detailDigest: setupItemDetailDigest(items[0]!), evidence: "not run" },
+      { type: "start" as const, id: items[0]!.id, detailDigest: "stale" },
+    ]) {
+      expect(await Effect.runPromise(transitionSetup(pending, event).pipe(Effect.flip)))
+        .toMatchObject({ _tag: "SetupError", category: "conflict" });
+    }
+  });
+
+  it("verifies an interrupted scaffold from its existing files without writing again", async () => {
+    const home = mkdtempSync(join(tmpdir(), "canonfig-setup-scaffold-"));
+    const item: SetupPlanItem = {
+      id: "canonfig-folder", kind: "folder-scaffold", scope: "machine", optional: false, dependsOn: [],
+      detail: { folder: join(home, ".canonfig"), harnesses: ["codex"], profile: { id: "desk", name: "Desk" } },
+    };
+    const layer = linuxMachineStateLayer({ environment: [{ name: "HOME", value: home }] });
+    try {
+      await Effect.runPromise(executeFolderScaffold(item).pipe(Effect.provide(layer)));
+      const file = join(home, ".canonfig", "canonfig.jsonc");
+      const before = readFileSync(file);
+      const verified = await Effect.runPromise(verifyFolderSetupItem(item).pipe(Effect.provide(layer)));
+      expect(verified.evidence).toContain("verified Canonical Folder");
+      expect(readFileSync(file)).toEqual(before);
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
@@ -345,12 +427,14 @@ process.exit(2);
       {
         id: "optional-installer",
         status: "failed" as const,
+        detailDigest: setupItemDetailDigest(items[0]!),
         evidence: "installer unavailable",
         updatedAt: "2026-08-17T00:01:00.000Z",
       },
       {
         id: "required-directory",
         status: "completed" as const,
+        detailDigest: setupItemDetailDigest(items[1]!),
         evidence: "/home/operator/.canonfig",
         updatedAt: "2026-08-17T00:01:00.000Z",
       },
@@ -380,8 +464,8 @@ describe("setup diagnostic evidence", () => {
     try {
       const fixtureItems = [items[0]!, { ...items[1]!, dependsOn: [items[0]!.id] }];
       writeFileSync(path, JSON.stringify(journal({ items: fixtureItems, records: [
-        { id: items[0]!.id, status: "failed", evidence: "pnpm executable is unavailable; configure an installer binding", updatedAt: "2026-08-17T00:01:00.000Z" },
-        { id: items[1]!.id, status: "completed", evidence: "stale success", updatedAt: "2026-08-17T00:01:00.000Z" },
+        { id: items[0]!.id, status: "failed", detailDigest: setupItemDetailDigest(fixtureItems[0]!), evidence: "pnpm executable is unavailable; configure an installer binding", updatedAt: "2026-08-17T00:01:00.000Z" },
+        { id: items[1]!.id, status: "completed", detailDigest: setupItemDetailDigest(fixtureItems[1]!), evidence: "stale success", updatedAt: "2026-08-17T00:01:00.000Z" },
       ] })));
       const status = await Effect.runPromise(setupStatus(path).pipe(Effect.provide(linuxMachineStateLayer())));
       expect(status.items[0]).toMatchObject({ status: "failed", evidence: "pnpm executable is unavailable; configure an installer binding" });
@@ -535,6 +619,71 @@ describe.runIf(process.platform === "linux" && existsSync(join(dirname(process.e
       return { home, bin, file, writeRecipe, invoke, setup, plan };
     };
 
+    it.each([true, false])("re-observes an interrupted installer without rerunning it (verifier present: %s)", async (verifierPresent) => {
+      const test = fixture();
+      const journalPath = join(test.home, ".canonfig", "setup.json");
+      mkdirSync(dirname(journalPath));
+      const run = <A, E>(effect: Effect.Effect<A, E, MachineState | Enrollment | StateRepository>) =>
+        Effect.runPromise(effect.pipe(
+          Effect.provide(EnrollmentLive),
+          Effect.provide(stateRepositoryLayer(join(test.home, ".canonfig", "state.sqlite"))),
+          Effect.provide(linuxMachineStateLayer({ environment: [
+            { name: "HOME", value: test.home }, { name: "PATH", value: test.bin },
+          ] })),
+        ));
+      try {
+        // This disposable executable installs only a local fixture. It prevents
+        // the following journal save, preserving the exact last durable record.
+        rmSync(join(test.bin, "npm"));
+        writeFileSync(join(test.bin, "npm"), `#!${process.execPath}
+const fs = require("node:fs");
+const path = require("node:path");
+const home = process.env.HOME;
+const [command] = process.argv.slice(2);
+if (command === "--version") { console.log("10.0.0"); process.exit(0); }
+if (command === "prefix") { console.log(path.join(home, "packages")); process.exit(0); }
+if (command !== "install") process.exit(2);
+fs.appendFileSync(path.join(home, "installer-calls"), "install\\n");
+const bin = path.join(home, "packages", "bin");
+fs.mkdirSync(bin, { recursive: true });
+fs.writeFileSync(path.join(bin, "cowsay"), "#!${process.execPath}\\nconsole.log('1.6.0');\\n", { mode: 0o755 });
+const journal = path.join(home, ".canonfig", "setup.json");
+const saved = path.join(home, "saved-setup.json");
+if (!fs.existsSync(saved)) {
+  fs.copyFileSync(journal, saved);
+  fs.unlinkSync(journal);
+  fs.mkdirSync(journal);
+  fs.writeFileSync(path.join(journal, "block-save"), "fixture");
+}
+`, { mode: 0o755 });
+        await run(planSetup({
+          roleText: "follower", files: [test.file], imports: { kind: "offer" },
+          environment: () => undefined,
+        }, journalPath));
+        await run(approveSetup("operator", journalPath));
+        const interrupted = await run(applySetup(journalPath, () => undefined).pipe(Effect.result));
+        expect(interrupted._tag).toBe("Failure");
+        expect(readFileSync(join(test.home, "installer-calls"), "utf8")).toBe("install\n");
+        rmSync(journalPath, { recursive: true });
+        writeFileSync(journalPath, readFileSync(join(test.home, "saved-setup.json")));
+        const status = await run(setupStatus(journalPath));
+        expect(status.items.find((item) => item.id === "recipe-install:cowsay")?.status).toBe("interrupted");
+        if (!verifierPresent) rmSync(join(test.home, "packages", "bin", "cowsay"));
+
+        const resumed = await run(applySetup(journalPath, () => undefined).pipe(Effect.result));
+        expect(readFileSync(join(test.home, "installer-calls"), "utf8")).toBe("install\n");
+        expect(resumed._tag, JSON.stringify(resumed)).toBe(verifierPresent ? "Success" : "Failure");
+        if (resumed._tag === "Success") {
+          expect(resumed.success.records.find((record) => record.id === "recipe-install:cowsay"))
+            .toMatchObject({ status: "completed" });
+        } else {
+          expect(resumed.failure).toMatchObject({ message: expect.stringContaining("could not be verified") });
+        }
+      } finally {
+        rmSync(test.home, { recursive: true, force: true });
+      }
+    }, 60_000);
+
     it("plans installation and its verifier for an accepted missing recipe, but not disabled or CLI-only tools", () => {
       const test = fixture();
       try {
@@ -580,7 +729,7 @@ describe.runIf(process.platform === "linux" && existsSync(join(dirname(process.e
       }
     }, 60_000);
 
-    it.each(["changed", "missing", "oversized", "legacy"] as const)(
+    it.each(["changed", "missing", "oversized"] as const)(
       "rejects %s authoring inputs before executing an approved recipe",
       (change) => {
         const test = fixture();
@@ -591,11 +740,6 @@ describe.runIf(process.platform === "linux" && existsSync(join(dirname(process.e
           if (change === "changed") test.writeRecipe("1.5.0");
           else if (change === "missing") rmSync(test.file);
           else if (change === "oversized") writeFileSync(test.file, " ".repeat(maxSetupDiscoveryFileBytes + 1));
-          else {
-            const legacy = test.setup(["approve", "--approver", "operator"]);
-            delete legacy.discoveryInputs;
-            writeFileSync(join(test.home, ".canonfig", "setup.json"), JSON.stringify(legacy));
-          }
           const rejected = test.invoke(["apply"]);
           expect(rejected.status, rejected.stderr || rejected.stdout).toBe(3);
           const status = test.setup(["status"]);

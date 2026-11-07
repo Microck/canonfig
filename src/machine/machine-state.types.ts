@@ -261,6 +261,8 @@ export type CredentialPolicy =
 export interface StoreCredentialInput {
   readonly name: string;
   readonly value: Redacted.Redacted<string>;
+  /** Persist ownership of this exact reference before native bytes can appear. */
+  readonly beforeStore?: (reference: CredentialReference) => Effect.Effect<void, MachineStateError>;
 }
 
 export interface LoadCredentialInput {

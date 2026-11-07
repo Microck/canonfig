@@ -212,6 +212,7 @@ describe("absent retired target handover", () => {
     const input = plannerInput([old, next], { applied: [{
       resource: old.id, revision: "previous", digest: digestA,
       appliedAt: "2026-08-15T00:00:00Z", kind, policy, target: old.target,
+      ownership: "DirectoryEntries", mode: 0o700, ownedFiles: [],
     }] });
     const plan = runPlan({ ...input, revision: { ...input.revision, removedResources: [old.id] } });
     expect(plan.actions.some((action) => action.kind === "human-action")).toBe(false);
@@ -230,6 +231,7 @@ describe("retirement order", () => {
     const present = { state: "present", digest: digestA, executable: false, mode: 0o600, objectKind: "regular" } as const;
     const record = (subject: PublishedResource): AppliedResourceRecord => ({
       resource: subject.id, revision: "previous", digest: digestA, appliedAt: "2026-08-15T00:00:00Z",
+      ownership: "WholeFile",
       kind: "file", policy: "replace", target: subject.target, executable: false, mode: 0o600,
     });
     const input = plannerInput([oldMirror, mirror, output, projected], {
@@ -348,7 +350,7 @@ describe("resource and Apply Policy coverage", () => {
 
   it("does not remove an already-missing previously owned member", () => {
     const subject = resource("missing-owned", "directory", "mirror-owned");
-    const previous = { path: "owned.txt", digest: digestA, executable: false };
+    const previous = { path: "owned.txt", digest: digestA, executable: false, mode: 0o600, objectKind: "regular" as const };
     const plan = runPlan(plannerInput([subject], {
       desired: [{ kind: "directory", mode: 0o700, directories: [], files: [] }],
       observed: [{
@@ -361,6 +363,7 @@ describe("resource and Apply Policy coverage", () => {
         revision: "revision-previous",
         digest: digestA,
         appliedAt: "2026-08-15T00:00:00Z",
+        ownership: "DirectoryEntries", kind: "directory", policy: "mirror-owned", target: subject.target, mode: 0o700,
         ownedFiles: [previous],
       }],
     }));
@@ -611,6 +614,7 @@ describe("resource and Apply Policy coverage", () => {
       kind: "file" as const,
       digest: digestA,
       executable: desiredExecutable,
+      mode: desiredExecutable ? 0o700 : 0o600,
     };
     const planned = runPlan(plannerInput([subject], {
       desired: [desired],
@@ -618,16 +622,19 @@ describe("resource and Apply Policy coverage", () => {
         state: "present",
         digest: digestA,
         executable: observedExecutable,
+        mode: observedExecutable ? 0o700 : 0o600,
       }],
       applied: [{
         resource: subject.id,
         revision: "previous",
         digest: digestA,
         appliedAt: "2026-08-15T00:00:00Z",
+        ownership: "WholeFile",
         kind: "file",
         policy: "replace-if-unmodified",
         target: subject.target,
         executable: appliedExecutable,
+        mode: appliedExecutable ? 0o700 : 0o600,
       }],
     }));
     expect(planned.actions[0]?.kind).toBe(action);
@@ -676,6 +683,7 @@ describe("resource and Apply Policy coverage", () => {
         revision: "previous",
         digest: digestA,
         appliedAt: "2026-08-15T00:00:00Z",
+        ownership: "WholeFile",
         kind: "file",
         policy: "replace",
         target: subject.target,
@@ -707,11 +715,10 @@ describe("resource and Apply Policy coverage", () => {
       revision: "previous",
       digest: digestA,
       appliedAt: "2026-08-15T00:00:00Z",
+      ownership: "Symlink" as const,
       kind: "file" as const,
       policy: "replace-if-unmodified" as const,
       target: subject.target,
-      executable: false,
-      mode: 0o600,
       symlinkTo: "../target",
     };
     const input = plannerInput([subject], {
@@ -768,10 +775,12 @@ describe("resource and Apply Policy coverage", () => {
         revision: "previous",
         digest: treeDigest,
         appliedAt: "2026-08-15T00:00:00Z",
+        ownership: "DirectoryEntries",
         kind: "skill",
         policy: "replace-if-unmodified",
         target: subject.target,
         mode: 0o700,
+        ownedFiles: [{ path: "SKILL.md", digest: digestA, executable: false, mode: 0o600, objectKind: "regular" }],
       }],
     }));
 
@@ -796,6 +805,8 @@ describe("resource and Apply Policy coverage", () => {
           revision: "previous",
           digest: digestA,
           appliedAt: "2026-08-15T00:00:00Z",
+          ...(kind === "file" ? { ownership: "WholeFile" as const, executable: false, mode: 0o600 }
+            : { ownership: "DirectoryEntries" as const, mode: 0o700, ownedFiles: [{ path: "SKILL.md", digest: digestA, executable: false, mode: 0o600, objectKind: "regular" as const }] }),
           kind,
           policy: "replace-if-unmodified",
           target: subject.target,
@@ -827,6 +838,8 @@ describe("resource and Apply Policy coverage", () => {
           revision: "previous",
           digest: digestA,
           appliedAt: "2026-08-15T00:00:00Z",
+          ...(kind === "file" ? { ownership: "WholeFile" as const, executable: false, mode: 0o600 }
+            : { ownership: "DirectoryEntries" as const, mode: 0o700, ownedFiles: [{ path: "SKILL.md", digest: digestA, executable: false, mode: 0o600, objectKind: "regular" as const }] }),
           kind,
           policy: "replace-if-unmodified",
           target: subject.target,
@@ -860,10 +873,11 @@ describe("resource and Apply Policy coverage", () => {
         revision: "previous",
         digest: desired.digest,
         appliedAt: "2026-08-15T00:00:00Z",
+        ownership: "DirectoryEntries", mode: 0o700,
         kind: "skill",
         policy: "replace-if-unmodified",
         target: subject.target,
-        ownedFiles: desired.files,
+        ownedFiles: desired.files.map((file) => ({ ...file, objectKind: "regular" as const })),
       }],
     }));
     expect(plan.actions.map((action) => action.kind)).toEqual(["drift-conflict"]);
@@ -893,6 +907,7 @@ describe("resource and Apply Policy coverage", () => {
             revision: "previous",
             digest: digestA,
             appliedAt: "2026-08-15T00:00:00Z",
+            ownership: "WholeFile", mode: 0o600,
             kind: "file",
             policy,
             target: subject.target,
@@ -932,10 +947,12 @@ describe("resource and Apply Policy coverage", () => {
         revision: "revision-previous",
         digest: previousDigest,
         appliedAt: "2026-08-15T00:00:00Z",
+        ownership: "DirectoryEntries", kind: "directory", policy: "mirror-owned", target: subject.target, mode: 0o700,
         ownedFiles: previouslyOwned.map(({ path, digest, mode }) => ({
           path,
           digest,
           mode,
+          executable: false, objectKind: "regular",
         })),
       }],
     });
@@ -991,7 +1008,8 @@ describe("resource and Apply Policy coverage", () => {
         revision: "revision-previous",
         digest: digestA,
         appliedAt: "2026-08-15T00:00:00Z",
-        ownedFiles: previouslyOwned,
+        ownership: "DirectoryEntries", kind: "directory", policy: "mirror-owned", target: subject.target, mode: 0o700,
+        ownedFiles: previouslyOwned.map((file) => ({ ...file, objectKind: file.path === "locked" ? "directory" as const : "regular" as const })),
       }],
     });
 
@@ -1031,6 +1049,7 @@ describe("resource and Apply Policy coverage", () => {
         revision: "revision-previous",
         digest: digestB,
         appliedAt: "2026-08-15T00:00:00Z",
+        ownership: "DirectoryEntries", kind: "directory", policy: "mirror-owned", target: subject.target, mode: 0o700,
         ownedFiles: [blockingFile],
       }],
     });
@@ -1065,10 +1084,11 @@ describe("resource and Apply Policy coverage", () => {
         revision: "revision-previous",
         digest: digestA,
         appliedAt: "2026-08-15T00:00:00Z",
+        ownership: "DirectoryEntries", kind: "directory", policy: "mirror-owned", target: subject.target, mode: 0o700,
         ownedFiles: [
-          { path: "kept.txt", digest: digestA, mode: 0o600 },
-          { path: "clean.txt", digest: digestB, mode: 0o600 },
-          { path: "modified.txt", digest: digestB, mode: 0o600 },
+          { path: "kept.txt", digest: digestA, mode: 0o600, executable: false, objectKind: "regular" },
+          { path: "clean.txt", digest: digestB, mode: 0o600, executable: false, objectKind: "regular" },
+          { path: "modified.txt", digest: digestB, mode: 0o600, executable: false, objectKind: "regular" },
         ],
       }],
     });
@@ -1112,6 +1132,7 @@ describe("transfer and apply separation", () => {
         revision: "previous",
         digest: digestB,
         appliedAt: "2026-08-15T00:00:00Z",
+        ownership: "ConfigKeys", configFormat: "json",
         kind: "config",
         policy: "merge",
         target: subject.target,
@@ -1338,6 +1359,7 @@ describe("three-way skill drift", () => {
         resource: subject.id,
         revision: "previous",
         digest: directoryEntriesDigest(ownedFiles),
+        ownership: "DirectoryEntries", kind: "skill", policy: "replace-if-unmodified", target: subject.target,
         ownedFiles,
         mode: 0o700,
         appliedAt: "2026-08-14T00:00:00Z",
@@ -1441,6 +1463,7 @@ describe("three-way skill drift", () => {
             resource: subject.id,
             revision: "previous",
             digest: treeDigest(entry.applied),
+            ownership: "DirectoryEntries", kind: "skill", policy: "replace-if-unmodified", target: subject.target, mode: 0o700,
             ownedFiles: [{ path, digest: entry.applied, executable: false, mode: 0o600, objectKind: "regular" }],
             appliedAt: "2026-08-14T00:00:00Z",
           }],

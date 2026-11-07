@@ -3,16 +3,11 @@ import { SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { SqlClient } from "effect/unstable/sql";
 
 /**
- * The migrations of the state database, in order.
- *
- * State format 6 started a new schema history: this release cannot read a
- * database an earlier release created, so it carries no upgrade path for one.
- * The repository refuses any database whose migration history is not a
- * prefix of this list, and the operator reinitializes the machine instead.
+ * One canonical schema for current state. Older migration histories are refused
+ * before any schema or data writes, rather than converted at startup.
  */
 export const stateSchemaMigrations = [
-  { id: 1, name: "state_format_6" },
-  { id: 2, name: "archive_events" },
+  { id: 1, name: "state_format_7" },
 ] as const;
 
 /**
@@ -20,7 +15,7 @@ export const stateSchemaMigrations = [
  * to the schema adds a migration after the last one, and to the list above.
  */
 export const stateMigrations = SqliteMigrator.fromRecord({
-  "0001_state_format_6": Effect.gen(function*() {
+  "0001_state_format_7": Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient;
 
     yield* sql`PRAGMA foreign_keys = ON`;
@@ -91,7 +86,7 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         action_id TEXT NOT NULL,
         sequence INTEGER NOT NULL,
         state TEXT NOT NULL CHECK (
-          state IN ('pending', 'running', 'succeeded', 'failed', 'skipped')
+          state IN ('pending', 'running', 'succeeded', 'failed', 'blocked', 'interrupted', 'rolled-back')
         ),
         recorded_at TEXT NOT NULL,
         attempt INTEGER NOT NULL CHECK (attempt >= 0),
@@ -236,15 +231,8 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         id TEXT PRIMARY KEY,
         follower_id TEXT NOT NULL,
         revision_id TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (
-          status IN (
-            'applying',
-            'Converged',
-            'HumanActionRequired',
-            'FollowerDrift',
-            'Failed',
-            'Interrupted'
-          )
+        phase TEXT NOT NULL CHECK (
+          phase IN ('Preparing', 'Applying', 'Interrupted', 'Finalizing', 'Abandoning', 'Complete')
         ),
         plan_json TEXT NOT NULL,
         started_at TEXT NOT NULL,
@@ -257,30 +245,17 @@ export const stateMigrations = SqliteMigrator.fromRecord({
     `;
 
     yield* sql`
-      CREATE UNIQUE INDEX one_active_applying_run_per_follower
+      CREATE UNIQUE INDEX one_open_run_per_follower
       ON synchronization_runs(follower_id)
-      WHERE status = 'applying'
+      WHERE phase != 'Complete'
     `;
 
     yield* sql`
       CREATE INDEX recoverable_runs_by_follower
-      ON synchronization_runs(follower_id, status)
-      WHERE status IN ('applying', 'Interrupted')
+      ON synchronization_runs(follower_id, phase)
+      WHERE phase != 'Complete'
     `;
 
-    yield* sql`
-      CREATE TRIGGER block_run_while_recoverable
-      BEFORE INSERT ON synchronization_runs
-      WHEN EXISTS (
-        SELECT 1
-        FROM synchronization_runs
-        WHERE follower_id = NEW.follower_id
-          AND status IN ('applying', 'Interrupted')
-      )
-      BEGIN
-        SELECT RAISE(ABORT, 'recoverable synchronization run exists');
-      END
-    `;
 
     yield* sql`
       CREATE TABLE applied_resources (
@@ -289,16 +264,7 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         revision_id TEXT NOT NULL,
         digest TEXT NOT NULL,
         applied_at TEXT NOT NULL,
-        owned_files_json TEXT,
-        kind TEXT,
-        policy TEXT,
-        target TEXT,
-        owned_keys_json TEXT,
-        config_format TEXT,
-        executable INTEGER,
-        symlink_target TEXT,
-        mode INTEGER,
-        installer_recipe_json TEXT,
+        record_json TEXT NOT NULL,
         PRIMARY KEY (follower_id, resource_id)
       )
     `;
@@ -326,18 +292,32 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         surface TEXT NOT NULL,
         root TEXT NOT NULL,
         snapshot TEXT,
-        run_id TEXT NOT NULL,
+        run_id TEXT NOT NULL REFERENCES synchronization_runs(id),
         taken_over_at TEXT NOT NULL,
+        phase TEXT NOT NULL CHECK (phase IN ('Reserved', 'Owned', 'Uncertain')),
+        backup_mode TEXT NOT NULL CHECK (backup_mode IN ('Disabled', 'Snapshot', 'Pending')),
+        CHECK ((backup_mode = 'Snapshot' AND snapshot IS NOT NULL)
+          OR (backup_mode IN ('Disabled', 'Pending') AND snapshot IS NULL)),
+        CHECK (backup_mode != 'Pending' OR phase = 'Reserved'),
         PRIMARY KEY (harness, surface)
       )
     `;
-  }),
-  // `canonfig export` and `canonfig import`, apart from synchronization_runs:
-  // an export changes nothing Canonfig manages, and a row there would become
-  // the last sync outcome `status` reports. Append-only, like an audit log.
-  "0002_archive_events": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      CREATE TABLE enrollment_credential_retirements (
+        reference TEXT PRIMARY KEY NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('Staged', 'Retiring'))
+      )
+    `;
+    yield* sql`
+      CREATE TABLE scheduled_invocations (
+        id TEXT PRIMARY KEY NOT NULL,
+        started_at TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('Running', 'Completed', 'Failed')),
+        invocation_json TEXT NOT NULL
+      )
+    `;
 
+    // Archives are append-only events, not synchronization outcomes.
     yield* sql`
       CREATE TABLE archive_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -379,4 +359,4 @@ export const stateMigrations = SqliteMigrator.fromRecord({
 });
 
 /** Bumped by every change to what stored state means. */
-export const stateFormatVersion = 6;
+export const stateFormatVersion = 7;

@@ -473,6 +473,7 @@ export const enrollFollower = (
     const credentialReference = yield* machine.storeCredential({
       name: `canonfig-follower-${enrolled.follower.id}-${enrolled.source.publicKeyFingerprint}-${randomUUID()}`,
       value: Redacted.make(enrolled.credential),
+      beforeStore: input.beforeStoreCredential,
     }).pipe(
       Effect.mapError((error) =>
         new CredentialStorageError({
@@ -526,7 +527,6 @@ const mutateEnrollment = (
       | "/v1/enrollment/cancel"
       | "/v1/enrollment/finalize"
       | "/v1/enrollment/revoke";
-    readonly removeLocal: boolean;
   },
 ): Effect.Effect<void, EnrollmentError, MachineState> =>
   Effect.gen(function*() {
@@ -550,12 +550,6 @@ const mutateEnrollment = (
       certificate,
       undefined,
       credential,
-    ).pipe(
-      Effect.ensuring(
-        input.removeLocal
-          ? machine.removeCredential(input.credentialReference).pipe(Effect.ignore)
-          : Effect.void,
-      ),
     );
     if (response.status !== 200) return yield* wireError(response);
   });
@@ -567,7 +561,7 @@ export const cancelFollowerEnrollment = (
     readonly credentialReference: typeof CredentialReference.Type;
   },
 ): Effect.Effect<void, EnrollmentError, MachineState> =>
-  mutateEnrollment({ ...input, path: "/v1/enrollment/cancel", removeLocal: true });
+  mutateEnrollment({ ...input, path: "/v1/enrollment/cancel" });
 
 export const finalizeFollowerEnrollment = (
   input: {
@@ -576,7 +570,7 @@ export const finalizeFollowerEnrollment = (
     readonly credentialReference: typeof CredentialReference.Type;
   },
 ): Effect.Effect<void, EnrollmentError, MachineState> =>
-  mutateEnrollment({ ...input, path: "/v1/enrollment/finalize", removeLocal: false });
+  mutateEnrollment({ ...input, path: "/v1/enrollment/finalize" });
 
 export const revokeFollowerEnrollment = (
   input: {
@@ -585,7 +579,7 @@ export const revokeFollowerEnrollment = (
     readonly credentialReference: typeof CredentialReference.Type;
   },
 ): Effect.Effect<void, EnrollmentError, MachineState> =>
-  mutateEnrollment({ ...input, path: "/v1/enrollment/revoke", removeLocal: true });
+  mutateEnrollment({ ...input, path: "/v1/enrollment/revoke" });
 
 export const authenticateFollower = (
   input: FollowerAuthenticationInput,

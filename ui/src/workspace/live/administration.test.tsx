@@ -19,11 +19,13 @@ function PolicyEditor({ backend }: { backend: WorkspaceBackend }) {
   const { agent } = useLiveAdministration(backend, session, ["/api/agent/policy", "/api/agent/harness"], () => assert.fail("Must not update"));
   if (!agent.data || agent.loading || agent.harnessLoading) return <p>Loading</p>;
   const saved = agent.data;
+  const harness = saved.harness;
+  assert.ok(harness?.kind === "custom");
   return <>
-    <output>{JSON.stringify(saved.args)}</output>
-    <button onClick={() => { void agent.save({ ...saved, maximumInputBytes: 8192 }); }}>Save bounds</button>
-    <button onClick={() => { void agent.save({ ...saved, args: ["--version"] }); }}>Replace arguments</button>
-    <button onClick={() => { void agent.save({ ...saved, args: [] }); }}>Clear arguments</button>
+    <output>{JSON.stringify(harness.args)}</output>
+    <button onClick={() => { void agent.save({ ...saved, harness: { ...harness, maximumInputBytes: 8192 } }); }}>Save bounds</button>
+    <button onClick={() => { void agent.save({ ...saved, harness: { ...harness, args: ["--version"] } }); }}>Replace arguments</button>
+    <button onClick={() => { void agent.save({ ...saved, harness: { ...harness, args: [] } }); }}>Clear arguments</button>
     <p>{agent.savedMessage}</p>
   </>;
 }

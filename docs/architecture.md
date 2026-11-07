@@ -124,6 +124,32 @@ The agent cannot directly change the published profile. Discovery or repair sugg
 
 The live adapter uses the matching Effect v4 SQLite package. Tests use a temporary real SQLite database, not a mocked repository.
 
+A run is `Preparing`, `Applying`, `Interrupted`, `Finalizing`, `Abandoning`,
+or `Complete`. Repository transactions own transitions. Projection records
+the preparing run before reserving a surface or capturing its first snapshot.
+Only a reserved surface can await capture; applying requires a durable backup
+choice. Verified writes establish `Owned` surfaces. Incomplete inverses leave
+`Uncertain` ownership and a recoverable run rather than a fresh takeover.
+
+An execution outcome does not close its run. Finalization first finishes
+restore exclusions and ownership release, then deletes run artifacts and
+records completion and the deployment receipt. Recovery resumes that work
+without replaying completed actions. Explicit abandonment records its intent
+before cleanup, so an interrupted cleanup cannot resume execution by mistake.
+Action replay and repository writes share `transitionAction`: unstarted tail
+actions stay `Pending`, semantic blockers stay `Blocked`, and `RolledBack`
+is distinct from execution failure. Verification method strings describe proof,
+not lifecycle.
+Normal execution and recovery also share `reduceActionResult`: each failed,
+human-blocked, or drift-blocked result requires its matching payload and
+stops aggregation. No stopped result can turn into convergence through an
+omitted optional field.
+
+State format 7 creates the current schema directly. Any earlier migration
+history is refused before schema or data writes. Move `~/.canonfig/state.sqlite`
+aside and set the machine up again. There is no in-place state upgrade or
+conversion of older on-disk journal shapes.
+
 ## Profile contract
 
 The Source Machine authors its Machine Profile as the Canonical Folder:
@@ -165,6 +191,17 @@ Configuration Agent to install it. Those bounds are authored, never inferred
 from the target, and a tool with no usable recipe and no `agentInstall` is
 Human Action Required rather than an Agent Task, because a task with no
 writable path and no origin cannot install anything.
+
+Each Applied Resource Record has one explicit ownership mode: `WholeFile`,
+`Symlink`, `SourceSection`, `DirectoryEntries`, `ConfigKeys`, or `QualifiedTool`.
+The mode requires its own evidence: regular-file permissions, a link target,
+directory entries, config keys and format, or qualified installer provenance.
+Execution and recovery use the same verified-state constructor. A config
+handover records only the keys still owned after the write, with their digest;
+releasing every key remains an explicit empty key set. Retirement interprets
+every mode, while qualified tools release provenance without uninstalling
+software. Incomplete or contradictory persisted ownership is a recovery error,
+not permission to skip retirement or assume file modes.
 
 Apply Policies mean:
 
@@ -347,6 +384,14 @@ verification commands.
 
 The executor captures stdout, stderr, exit status, changed paths, and verification evidence. It redacts known credentials before persistence. An agent statement is never proof of completion by itself.
 
+Controlled subprocesses move through `Starting`, `Running`, `Stopping`,
+`Closing`, and `Settled` under one transition owner. The first stop cause wins:
+a later timeout or cancellation cannot replace an output-limit or input-write
+failure that already started termination. Settlement waits for native close
+and owned process-tree termination, then removes the timer and abort listeners.
+Cancellation is checked after asynchronous input authorization and again after
+the listeners are attached.
+
 ## Skill drift rule
 
 For each managed skill file, the Applied Resource Record stores the digest Canonfig last wrote.
@@ -358,6 +403,22 @@ otherwise                 -> Follower Drift; preserve follower content
 ```
 
 Canonfig does not merge modified canonical skills. The user can move the changes into `~/.canonfig/local/skills/` under a different name, or discard them so the next sync replaces the skill. This keeps the automatic rule deterministic.
+
+Upstream skill replacement has a separate version 2 `.pending` journal beside
+`skills-sources.json`. It records staging ownership before any stage tree is
+created, then each skill's rename intent, installed state, and rollback result.
+The transaction moves through `Preparing`, `Swapping`, `PublishingConfig`,
+`ConfigCommitted`, `RollingBack`, and `Finished`. Configuration publication
+requires every selected swap to be installed. A committed configuration never
+enters rollback. A blocked rollback records the affected skill and keeps its
+backup and journal; newer local edits are not removed.
+
+Recovery stays manual when interruption leaves a rename or configuration
+publication ambiguous. Invalid journals fail the same decoder as any other
+malformed record.
+Preserve the journal and backups, compare trees and configuration against their
+recorded digests, and finish or restore the interrupted update before removing
+the journal and any stale lock.
 
 The Local folder (`~/.canonfig/local/`) holds machine-owned rules, skills, agents and commands as files, and MCP servers and settings in `local/local.jsonc`. Projection adds them within the categories the Source's `local.allow` names. They are never published and never replaced; a local item named like a published one is Human Action Required.
 

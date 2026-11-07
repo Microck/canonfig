@@ -1,6 +1,6 @@
 // Machines: the map or list, the machine detail panel,
 // adding a machine (invite), changing a machine's groups (new invitation + `enroll --replace`), and revoke.
-import { lazy, Suspense, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useReducer, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { toast } from "sonner";
 import { CaretRight, ListBullets, TreeStructure } from "@/components/icons";
 import { cn, isCoarsePointer } from "@/lib/utils";
@@ -428,22 +428,64 @@ function SourceDetail({ onClose, onCustomize }: { onClose: () => void; onCustomi
   );
 }
 
+class DialogTransitionError extends Error {
+  readonly name = "DialogTransitionError";
+  constructor(phase: string, event: string) {
+    super(`Cannot ${event} while dialog is ${phase}.`);
+  }
+}
+
+type RevokeState =
+  | { phase: "viewing" }
+  | { phase: "confirming"; follower: Pick<Follower, "id" | "name"> }
+  | { phase: "revoking"; follower: Pick<Follower, "id" | "name">; requestId: symbol }
+  | { phase: "failed"; follower: Pick<Follower, "id" | "name">; error: GuiRequestError }
+  | { phase: "revoked"; follower: Pick<Follower, "id" | "name"> };
+type RevokeEvent =
+  | { type: "open"; follower: Pick<Follower, "id" | "name"> }
+  | { type: "close" }
+  | { type: "submit"; requestId: symbol }
+  | { type: "succeeded"; requestId: symbol }
+  | { type: "failed"; requestId: symbol; error: GuiRequestError };
+function revokeTransition(state: RevokeState, event: RevokeEvent): RevokeState {
+  switch (event.type) {
+    case "open":
+      if (state.phase === "viewing") return { phase: "confirming", follower: event.follower };
+      break;
+    case "close":
+      if (state.phase === "confirming" || state.phase === "failed") return { phase: "viewing" };
+      break;
+    case "submit":
+      if (state.phase === "confirming" || state.phase === "failed") return { phase: "revoking", follower: state.follower, requestId: event.requestId };
+      break;
+    case "succeeded":
+      if (state.phase === "revoking" && state.requestId === event.requestId) return { phase: "revoked", follower: state.follower };
+      break;
+    case "failed":
+      if (state.phase === "revoking" && state.requestId === event.requestId) return { phase: "failed", follower: state.follower, error: event.error };
+      break;
+  }
+  throw new DialogTransitionError(state.phase, event.type);
+}
+
 function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follower; onClose: () => void; onCustomize: () => void }) {
   const ws = useWorkspace();
-  const [revokeOpen, setRevokeOpen] = useState(false);
+  const [revoke, dispatchRevoke] = useReducer(revokeTransition, { phase: "viewing" });
   const returnFocus = useRef<HTMLElement | null>(null);
   const step = nextStep(f);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<GuiRequestError | null>(null);
+  const busy = revoke.phase === "revoking";
+  const revokeOpen = revoke.phase === "confirming" || busy || revoke.phase === "failed";
+  const revokeFollower = revoke.phase === "viewing" ? f : revoke.follower;
+  const closeRevoke = () => { if (!busy) dispatchRevoke({ type: "close" }); };
   const why = whyBehind(f, ws.latest, ws.syncing.includes(f.id));
   return (
     <DetailPanel
       title={f.name}
       subtitle={f.state ? <StateLabel state={f.state} /> : <span className="text-sm text-muted-foreground">{f.note}</span>}
-      onClose={onClose}
+      onClose={() => { if (!busy) onClose(); }}
       footer={
         <>
-          <Button variant="destructive" size="sm" disabled={f.note === "Revoked"} onClick={() => setRevokeOpen(true)}>
+          <Button variant="destructive" size="sm" disabled={f.note === "Revoked" || revoke.phase === "revoked"} onClick={() => dispatchRevoke({ type: "open", follower: { id: f.id, name: f.name } })}>
             Revoke…
           </Button>
           <Button variant="ghost" size="sm" className="ml-auto" onClick={onCustomize}>
@@ -515,8 +557,9 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
           })}
       </div>
 
-      <Dialog open={revokeOpen} onOpenChange={setRevokeOpen}>
+      <Dialog open={revokeOpen} onOpenChange={(open) => { if (!open) closeRevoke(); }}>
         <DialogContent
+          showCloseButton={!busy}
           className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] overflow-y-auto sm:max-w-md"
           onOpenAutoFocus={() => {
             const active = document.activeElement;
@@ -533,37 +576,39 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
           }}
         >
           <DialogHeader>
-            <DialogTitle>Revoke {f.name}?</DialogTitle>
+            <DialogTitle>Revoke {revokeFollower.name}?</DialogTitle>
             <DialogDescription className="text-base text-pretty">
-              {f.name} stops getting revisions right away and can't reconnect with its current identity. Files already on it stay as they are. Adding it again needs a new invitation.
-              {ws.capabilities.invitationCancel && ws.invitations.some((inv) => inv.replaces === f.id) && " Its waiting group-change invitation is cancelled too."}
+              {revokeFollower.name} stops getting revisions right away and can't reconnect with its current identity. Files already on it stay as they are. Adding it again needs a new invitation.
+              {ws.capabilities.invitationCancel && ws.invitations.some((inv) => inv.replaces === revokeFollower.id) && " Its waiting group-change invitation is cancelled too."}
             </DialogDescription>
           </DialogHeader>
-          {error && <ErrorNotice error={error} />}
+          {revoke.phase === "failed" && <ErrorNotice error={revoke.error} />}
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setRevokeOpen(false)}>
+            <Button variant="ghost" disabled={busy} onClick={closeRevoke}>
               Cancel
             </Button>
             <Button
               variant="destructive"
               disabled={busy}
               onClick={async () => {
-                setBusy(true);
-                setError(null);
+                const requestId = Symbol("revoke");
+                dispatchRevoke({ type: "submit", requestId });
                 try {
-                  if (ws.revokeFollower) await ws.revokeFollower(f.id);
+                  if (ws.revokeFollower) await ws.revokeFollower(revokeFollower.id);
                   else {
-                    ws.setFollowers!((prev) => prev.filter((x) => x.id !== f.id));
-                    ws.setInvitations!((prev) => prev.filter((inv) => inv.replaces !== f.id));
+                    ws.setFollowers!((prev) => prev.filter((x) => x.id !== revokeFollower.id));
+                    ws.setInvitations!((prev) => prev.filter((inv) => inv.replaces !== revokeFollower.id));
                   }
-                  setRevokeOpen(false);
-                  onClose();
-                  toast(`Revoked ${f.name}`, { description: `Identity ${f.id} no longer works.` });
-                } catch (cause) { setError(requestError(cause)); }
-                finally { setBusy(false); }
+                } catch (cause) {
+                  dispatchRevoke({ type: "failed", requestId, error: requestError(cause) });
+                  return;
+                }
+                dispatchRevoke({ type: "succeeded", requestId });
+                onClose();
+                toast(`Revoked ${revokeFollower.name}`, { description: `Identity ${revokeFollower.id} no longer works.` });
               }}
             >
-              Revoke {f.name}
+              Revoke {revokeFollower.name}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -602,7 +647,66 @@ interface SubmittedInvitation {
   endpoint: string;
   url: URL;
   expiry: keyof typeof EXPIRY;
-  download?: GuiInvitationDownload;
+}
+
+type InvitationFile =
+  | { mode: "demo"; file: string }
+  | { mode: "live"; download: GuiInvitationDownload };
+type InvitationDialogState<Draft, Submitted> =
+  | { phase: "closed"; draft: Draft }
+  | { phase: "editing"; draft: Draft }
+  | { phase: "submitting"; draft: Draft; submitted: Submitted; requestId: symbol; cancellable: boolean }
+  | { phase: "failed"; draft: Draft; error: GuiRequestError }
+  | { phase: "created"; draft: Draft; submitted: Submitted; invitation: InvitationFile };
+type InvitationDialogEvent<Draft, Submitted> =
+  | { type: "open"; draft: Draft }
+  | { type: "edit"; patch: Partial<Draft> }
+  | { type: "close" }
+  | { type: "submit"; submitted: Submitted; requestId: symbol; cancellable: boolean }
+  | { type: "created"; requestId: symbol; invitation: InvitationFile }
+  | { type: "failed"; requestId: symbol; error: GuiRequestError };
+function invitationTransition<Draft, Submitted>(state: InvitationDialogState<Draft, Submitted>, event: InvitationDialogEvent<Draft, Submitted>): InvitationDialogState<Draft, Submitted> {
+  switch (event.type) {
+    case "open":
+      if (state.phase === "closed" || state.phase === "created") return { phase: "editing", draft: event.draft };
+      break;
+    case "edit":
+      if (state.phase === "editing" || state.phase === "failed") return { ...state, draft: { ...state.draft, ...event.patch } };
+      break;
+    case "close":
+      if (state.phase !== "closed" && (state.phase !== "submitting" || state.cancellable)) return { phase: "closed", draft: state.draft };
+      break;
+    case "submit":
+      if (state.phase === "editing" || state.phase === "failed") return { phase: "submitting", draft: state.draft, submitted: event.submitted, requestId: event.requestId, cancellable: event.cancellable };
+      break;
+    case "created":
+      if (state.phase === "submitting" && state.requestId === event.requestId) return { phase: "created", draft: state.draft, submitted: state.submitted, invitation: event.invitation };
+      break;
+    case "failed":
+      if (state.phase === "submitting" && state.requestId === event.requestId) return { phase: "failed", draft: state.draft, error: event.error };
+      break;
+  }
+  throw new DialogTransitionError(state.phase, event.type);
+}
+
+interface InviteDraft {
+  name: string;
+  endpoint: string;
+  expiry: keyof typeof EXPIRY;
+  groups: string[];
+  outDir: string;
+  inviteId: string;
+  tried: boolean;
+}
+interface GroupInvitationDraft {
+  followerId: string;
+  groups: string[];
+  endpoint: string;
+}
+interface SubmittedGroupInvitation {
+  follower: Pick<Follower, "id" | "name" | "groups">;
+  groups: string[];
+  endpoint: string;
 }
 
 const ID_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
@@ -679,80 +783,72 @@ function downloadInvitation(invitation: GuiInvitationDownload) {
 
 function InviteForm() {
   const ws = useWorkspace();
-  const [name, setName] = useState("");
-  const [endpoint, setEndpoint] = useState(ws.endpoint);
-  const [expiry, setExpiry] = useState<keyof typeof EXPIRY>("1h");
-  const [groups, setGroups] = useState<string[]>([]);
-  const [outDir, setOutDir] = useState("~");
-  const [inviteId, setInviteId] = useState(() => newInvitationId(ws.invitations));
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<SubmittedInvitation | null>(null);
-  const [error, setError] = useState<GuiRequestError | null>(null);
-  const [tried, setTried] = useState(false);
+  const freshDraft = (endpoint: string, outDir: string): InviteDraft => ({
+    name: "", endpoint, expiry: "1h", groups: [], outDir, inviteId: newInvitationId(ws.invitations), tried: false,
+  });
+  const [state, dispatch] = useReducer(invitationTransition<InviteDraft, SubmittedInvitation>, undefined, (): InvitationDialogState<InviteDraft, SubmittedInvitation> => ({
+    phase: ws.inviteOpen ? "editing" : "closed", draft: freshDraft(ws.endpoint, "~"),
+  }));
   const creating = useRef<number | undefined>(undefined);
   const returnFocus = useRef<HTMLElement | null>(null);
-
-  const reset = () => {
-    setName("");
-    setGroups([]);
-    setExpiry("1h");
-    setInviteId(newInvitationId(ws.invitations));
-    setResult(null);
-    setBusy(false);
-    setTried(false);
-    setError(null);
-  };
-
-  // Each opening starts fresh. Resetting on open, not on a timer after closing, means a quick reopen can't
-  // cancel the reset and show the previous result. Adjusting state during render avoids a frame of old content.
-  const [wasOpen, setWasOpen] = useState(ws.inviteOpen);
-  if (ws.inviteOpen !== wasOpen) {
-    setWasOpen(ws.inviteOpen);
-    if (ws.inviteOpen) reset();
+  useEffect(() => () => window.clearTimeout(creating.current), []);
+  const { name, endpoint, expiry, groups, outDir, inviteId, tried } = state.draft;
+  const edit = (patch: Partial<InviteDraft>) => dispatch({ type: "edit", patch });
+  const reset = () => dispatch({ type: "open", draft: freshDraft(endpoint, outDir) });
+  const busy = state.phase === "submitting";
+  const error = state.phase === "failed" ? state.error : null;
+  const result = state.phase === "created" ? {
+    ...state.submitted, file: state.invitation.mode === "live" ? state.invitation.download.filename : state.invitation.file,
+    download: state.invitation.mode === "live" ? state.invitation.download : undefined,
+  } : null;
+  // The reducer owns open/reset/close as well as request completion. A demo timer can be abandoned;
+  // a live server request cannot, so every live close control stays locked until it settles.
+  if (ws.inviteOpen && state.phase === "closed") { reset(); return null; }
+  if (!ws.inviteOpen && state.phase !== "closed") {
+    window.clearTimeout(creating.current);
+    dispatch({ type: "close" });
+    return null;
   }
-
-  useEffect(() => {
-    // However the dialog closes, a creation still running is abandoned, so a reopened dialog never receives its result.
-    if (!ws.inviteOpen) window.clearTimeout(creating.current);
-  }, [ws.inviteOpen]);
-
   const url = parseEndpoint(endpoint);
   const endpointError = tried && !url ? "Use an https:// address the other machine can reach." : null;
   const file = `${outDir.replace(/\/+$/, "")}/canonfig-invite-${inviteId}.json`;
-  // Normalized once: the pending record and every command use the same name, or none.
-  const trimmedName = name.trim();
-  // Everything below for the ready screen comes from `result`, the submitted invitation.
   const host = result?.name || "<other-machine>";
   const resultFileName = result?.file.split("/").pop();
   const resultLocal = !!result && LOOPBACK.includes(result.url.hostname);
   const sshHost = `${ws.machineName}.local`;
-
+  const close = () => {
+    if (busy && ws.createInvitation) return;
+    window.clearTimeout(creating.current);
+    ws.setInviteOpen(false);
+  };
   const create = async () => {
-    setTried(true);
+    edit({ tried: true });
     if (!url) {
       document.getElementById("inv-ep")?.focus();
       return;
     }
-    const submitted: SubmittedInvitation = { file, name: trimmedName, groups, endpoint: endpoint.trim(), url, expiry };
-    setBusy(true);
-    setError(null);
+    const submitted: SubmittedInvitation = { file, name: name.trim(), groups, endpoint: endpoint.trim(), url, expiry };
+    const requestId = Symbol("invitation");
+    dispatch({ type: "submit", submitted, requestId, cancellable: !ws.createInvitation });
     if (ws.createInvitation) {
+      let download: GuiInvitationDownload;
       try {
-        const download = await ws.createInvitation({ endpoint: submitted.endpoint, groups, expiresInMilliseconds: { "15m": 900_000, "1h": 3_600_000, "24h": 86_400_000 }[expiry] });
-        setResult({ ...submitted, file: download.filename, download });
-      } catch (cause) { setError(requestError(cause)); }
-      finally { setBusy(false); }
+        download = await ws.createInvitation({ endpoint: submitted.endpoint, groups: submitted.groups, expiresInMilliseconds: { "15m": 900_000, "1h": 3_600_000, "24h": 86_400_000 }[submitted.expiry] });
+      } catch (cause) {
+        dispatch({ type: "failed", requestId, error: requestError(cause) });
+        return;
+      }
+      dispatch({ type: "created", requestId, invitation: { mode: "live", download } });
     } else {
       creating.current = window.setTimeout(() => {
         ws.setInvitations!((p) => [...p, { id: inviteId, file: submitted.file, name: submitted.name, groups: submitted.groups, expires: EXPIRY[submitted.expiry].at }]);
-        setResult(submitted);
-        setBusy(false);
+        dispatch({ type: "created", requestId, invitation: { mode: "demo", file: submitted.file } });
       }, 700);
     }
   };
 
   return (
-    <Dialog open={ws.inviteOpen} onOpenChange={(open) => { if (!busy || !ws.createInvitation) ws.setInviteOpen(open); }}>
+    <Dialog open={ws.inviteOpen} onOpenChange={(open) => { if (!open) close(); }}>
       <DialogContent
         className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] gap-5 overflow-y-auto sm:max-w-[540px]"
         onOpenAutoFocus={(event) => {
@@ -787,7 +883,7 @@ function InviteForm() {
             {/* While Creating, the invitation was already submitted from these values, so the fields lock until the result shows. */}
             <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
               {!ws.createInvitation && <Field label="Machine name" htmlFor="inv-name" description="Optional. Fills in the commands below; the machine can pick another name.">
-                <Input id="inv-name" value={name} onChange={(e) => setName(e.target.value)} disabled={busy} placeholder="work-laptop" aria-describedby="inv-name-note" autoComplete="off" spellCheck={false} />
+                <Input id="inv-name" value={name} onChange={(e) => edit({ name: e.target.value })} disabled={busy} placeholder="work-laptop" aria-describedby="inv-name-note" autoComplete="off" spellCheck={false} />
               </Field>}
               <Field
                 label="Address it connects to"
@@ -799,7 +895,7 @@ function InviteForm() {
                   id="inv-ep"
                   type="url"
                   value={endpoint}
-                  onChange={(e) => setEndpoint(e.target.value)}
+                  onChange={(e) => edit({ endpoint: e.target.value })}
                   disabled={busy}
                   aria-invalid={!!endpointError}
                   aria-describedby="inv-ep-note"
@@ -809,7 +905,7 @@ function InviteForm() {
                 />
               </Field>
               <Field label="Expires after" htmlFor="inv-exp">
-                <Select value={expiry} onValueChange={(v: keyof typeof EXPIRY) => setExpiry(v)} disabled={busy}>
+                <Select value={expiry} onValueChange={(expiry: keyof typeof EXPIRY) => edit({ expiry })} disabled={busy}>
                   <SelectTrigger id="inv-exp" className="w-40">
                     <SelectValue />
                   </SelectTrigger>
@@ -823,7 +919,7 @@ function InviteForm() {
                 </Select>
               </Field>
               <Field label={<Term term="Follower Group">{PLAIN.groups}</Term>} description="Groups add items on top of the base profile. Leave empty for the base profile only.">
-                <GroupChecks idPrefix="inv" value={groups} onChange={setGroups} disabled={busy} />
+                <GroupChecks idPrefix="inv" value={groups} onChange={(groups) => edit({ groups })} disabled={busy} />
               </Field>
               {!ws.createInvitation && <Collapsible>
                 <CollapsibleTrigger className="group flex min-h-11 items-center gap-1 rounded text-sm font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 sm:min-h-8">
@@ -832,7 +928,7 @@ function InviteForm() {
                 </CollapsibleTrigger>
                 <CollapsibleContent className="pt-2 pl-4">
                   <Field label="Save the file in" htmlFor="inv-out">
-                    <Input id="inv-out" value={outDir} onChange={(e) => setOutDir(e.target.value)} disabled={busy} autoComplete="off" spellCheck={false} className="font-mono text-sm" />
+                    <Input id="inv-out" value={outDir} onChange={(e) => edit({ outDir: e.target.value })} disabled={busy} autoComplete="off" spellCheck={false} className="font-mono text-sm" />
                   </Field>
                 </CollapsibleContent>
               </Collapsible>}
@@ -840,7 +936,7 @@ function InviteForm() {
             {error && <ErrorNotice error={error} />}
             <DialogFooter className="flex-col items-stretch gap-3 sm:flex-col">
               <div className="flex justify-end gap-2">
-                <Button type="button" variant="ghost" disabled={busy && !!ws.createInvitation} onClick={() => ws.setInviteOpen(false)}>
+                <Button type="button" variant="ghost" disabled={busy && !!ws.createInvitation} onClick={close}>
                   Cancel
                 </Button>
                 <Button type="submit" variant="primary" disabled={busy}>
@@ -899,7 +995,7 @@ function InviteForm() {
               <Button variant="ghost" onClick={reset}>
                 Invite another
               </Button>
-              <Button variant="secondary" onClick={() => ws.setInviteOpen(false)}>
+              <Button variant="secondary" onClick={close}>
                 Done
               </Button>
             </DialogFooter>
@@ -923,39 +1019,41 @@ function ChangeGroupsForm() {
   const ws = useWorkspace();
   const req = ws.changeGroups;
   const open = req !== null;
-  const [followerId, setFollowerId] = useState<string>("");
-  const [groups, setGroups] = useState<string[]>([]);
-  const [file, setFile] = useState<string | null>(null);
-  const [download, setDownload] = useState<GuiInvitationDownload | null>(null);
-  const [endpoint, setEndpoint] = useState(ws.endpoint);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<GuiRequestError | null>(null);
+  const [state, dispatch] = useReducer(invitationTransition<GroupInvitationDraft, SubmittedGroupInvitation>, {
+    phase: "closed", draft: { followerId: "", groups: [], endpoint: ws.endpoint },
+  });
   const returnFocus = useRef<HTMLElement | null>(null);
-
+  const { followerId, groups, endpoint } = state.draft;
+  const busy = state.phase === "submitting";
+  const error = state.phase === "failed" ? state.error : null;
+  const result = state.phase === "created" ? state : null;
+  const f = state.phase === "created" || state.phase === "submitting"
+    ? state.submitted.follower
+    : ws.followers.find((x) => x.id === followerId);
+  const file = result ? (result.invitation.mode === "live" ? result.invitation.download.filename : result.invitation.file) : "";
+  const download = result?.invitation.mode === "live" ? result.invitation.download : null;
   const pickFollower = (id: string) => {
     const next = ws.followers.find((x) => x.id === id);
-    setFollowerId(id);
-    setGroups(next ? [...new Set([...next.groups, ...(req?.addGroup ? [req.addGroup] : [])])] : []);
+    dispatch({ type: "edit", patch: { followerId: id, groups: next ? [...new Set([...next.groups, ...(req?.addGroup ? [req.addGroup] : [])])] : [] } });
   };
-
-  // Each opening starts from the request: a given machine, or "add a machine to this group".
-  useEffect(() => {
-    if (!req) return;
-    pickFollower(req.followerId ?? ws.followers.find((x) => !req.addGroup || !x.groups.includes(req.addGroup))?.id ?? ws.followers[0]?.id ?? "");
-    setFile(null);
-    setDownload(null);
-    setEndpoint(ws.endpoint);
-    setError(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [req]);
-
-  const f = ws.followers.find((x) => x.id === followerId);
+  // Opening captures a fresh draft; inventory refreshes never change the submitted result's identity.
+  if (req && state.phase === "closed") {
+    const follower = req.followerId
+      ? ws.followers.find((x) => x.id === req.followerId)
+      : ws.followers.find((x) => !req.addGroup || !x.groups.includes(req.addGroup)) ?? ws.followers[0];
+    dispatch({ type: "open", draft: {
+      followerId: req.followerId ?? follower?.id ?? "", endpoint: ws.endpoint,
+      groups: follower ? [...new Set([...follower.groups, ...(req.addGroup ? [req.addGroup] : [])])] : [],
+    } });
+    return null;
+  }
+  if (!req && state.phase !== "closed") { dispatch({ type: "close" }); return null; }
   const before = f?.groups ?? [];
   const added = groups.filter((g) => !before.includes(g));
   const removed = before.filter((g) => !groups.includes(g));
   const unchanged = added.length === 0 && removed.length === 0;
   const out = `~/canonfig-invite-${f?.name ?? "machine"}-groups.json`;
-  const fileName = file?.split("/").pop() ?? out.split("/").pop()!;
+  const fileName = file.split("/").pop() ?? out.split("/").pop()!;
   const close = () => { if (!busy) ws.setChangeGroups(null); };
 
   return (
@@ -979,25 +1077,29 @@ function ChangeGroupsForm() {
           returnFocus.current?.focus();
         }}
       >
-        {!file || !f ? (
+        {!result ? (
           <form
             className="contents"
             onSubmit={async (e) => {
               e.preventDefault();
               if (!f || unchanged || busy) return;
-              setBusy(true);
-              setError(null);
+              const submitted: SubmittedGroupInvitation = { follower: { id: f.id, name: f.name, groups: [...f.groups] }, groups: [...groups], endpoint };
+              const requestId = Symbol("group-invitation");
+              dispatch({ type: "submit", submitted, requestId, cancellable: false });
+              let invitation: InvitationFile;
               try {
                 if (ws.createInvitation) {
-                  const invitation = await ws.createInvitation({ endpoint, groups, expiresInMilliseconds: 3_600_000 });
-                  setDownload(invitation);
-                  setFile(invitation.filename);
+                  const download = await ws.createInvitation({ endpoint: submitted.endpoint, groups: submitted.groups, expiresInMilliseconds: 3_600_000 });
+                  invitation = { mode: "live", download };
                 } else {
-                  ws.setInvitations!((p) => [...p.filter((x) => x.replaces !== f.id), { id: `G-${f.id}`, file: out, name: f.name, groups, expires: "in 1 hour", replaces: f.id }]);
-                  setFile(out);
+                  ws.setInvitations!((p) => [...p.filter((x) => x.replaces !== submitted.follower.id), { id: `G-${submitted.follower.id}`, file: out, name: submitted.follower.name, groups: submitted.groups, expires: "in 1 hour", replaces: submitted.follower.id }]);
+                  invitation = { mode: "demo", file: out };
                 }
-              } catch (cause) { setError(requestError(cause)); }
-              finally { setBusy(false); }
+              } catch (cause) {
+                dispatch({ type: "failed", requestId, error: requestError(cause) });
+                return;
+              }
+              dispatch({ type: "created", requestId, invitation });
             }}
           >
             <DialogHeader>
@@ -1025,10 +1127,10 @@ function ChangeGroupsForm() {
               </Field>
             )}
             <Field label={<Term term="Follower Group">{PLAIN.groups}</Term>}>
-              <GroupChecks idPrefix="cg" value={groups} onChange={setGroups} disabled={busy} />
+              <GroupChecks idPrefix="cg" value={groups} onChange={(groups) => dispatch({ type: "edit", patch: { groups } })} disabled={busy} />
             </Field>
             {ws.createInvitation && <Field label="Address it connects to" htmlFor="cg-endpoint">
-              <Input id="cg-endpoint" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} disabled={busy} />
+              <Input id="cg-endpoint" value={endpoint} onChange={(event) => dispatch({ type: "edit", patch: { endpoint: event.target.value } })} disabled={busy} />
             </Field>}
             {error && <ErrorNotice error={error} />}
             <p className="text-sm text-pretty text-muted-foreground" aria-live="polite">
@@ -1051,19 +1153,19 @@ function ChangeGroupsForm() {
         ) : (
           <>
             <DialogHeader>
-              <DialogTitle>Re-join {f.name} with its new groups</DialogTitle>
+              <DialogTitle>Re-join {result.submitted.follower.name} with its new groups</DialogTitle>
               <DialogDescription className="text-base text-pretty">
                 {download ? "Download " : `Saved ${DEMO ? "in this demo workspace " : ""}as `}<Mono className="break-all text-sm text-foreground">{file}</Mono>
-                {download ? `. It works once and expires ${download.expiresAt}.` : `${DEMO ? "; no file was written. A real invitation works" : ". It works"} once and expires in 1 hour.`} Until {f.name} re-joins, it keeps its old groups.
+                {download ? `. It works once and expires ${download.expiresAt}.` : `${DEMO ? "; no file was written. A real invitation works" : ". It works"} once and expires in 1 hour.`} Until {result.submitted.follower.name} re-joins, it keeps its old groups.
               </DialogDescription>
             </DialogHeader>
             {download && <Button variant="primary" onClick={() => downloadInvitation(download)}>Download invitation</Button>}
             <Steps>
-              <Step title={<>Copy the file to {f.name}, for example with scp:</>} command={`scp ${shq(file)} ${shq(f.name)}:~/`} />
+              <Step title={<>Copy the file to {result.submitted.follower.name}, for example with scp:</>} command={`scp ${shq(file)} ${shq(result.submitted.follower.name)}:~/`} />
               <Step
-                title={<>On {f.name}, re-join with the new invitation:</>}
-                command={`cat ${shq(`~/${fileName}`)} | canonfig follower enroll --stdin --name ${shq(f.name)} --replace`}
-                note={<>--replace swaps {f.name}'s current enrollment for this one. It already reaches {ws.machineName} through its tunnel, so 127.0.0.1 works there.</>}
+                title={<>On {result.submitted.follower.name}, re-join with the new invitation:</>}
+                command={`cat ${shq(`~/${fileName}`)} | canonfig follower enroll --stdin --name ${shq(result.submitted.follower.name)} --replace`}
+                note={<>--replace swaps {result.submitted.follower.name}'s current enrollment for this one. It already reaches {ws.machineName} through its tunnel, so 127.0.0.1 works there.</>}
               />
             </Steps>
             <DialogFooter>

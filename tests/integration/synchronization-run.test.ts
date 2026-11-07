@@ -148,6 +148,7 @@ const fileFixture = (
     kind: "file",
     digest,
     executable: false,
+    mode: 0o600,
   };
   const revision: PlanningProfileRevision = {
     ...baseRevision,
@@ -172,6 +173,7 @@ const fileFixture = (
             state: "present",
             digest: decode(ContentDigest)(observedDigest),
             executable: false,
+            mode: 0o600,
           },
       }],
       availableBlobs: [],
@@ -954,10 +956,10 @@ process.exit(1);
 
     const interruptedDatabase = new DatabaseSync(fixture.database, { readOnly: true });
     const interruptedRow = interruptedDatabase.prepare(
-      "SELECT status FROM synchronization_runs WHERE id = ?",
+      "SELECT phase FROM synchronization_runs WHERE id = ?",
     ).get(fixture.input.id);
     interruptedDatabase.close();
-    expect(interruptedRow?.status).toBe("Interrupted");
+    expect(interruptedRow?.phase).toBe("Interrupted");
     expect(await readFile(fixture.target).catch(() => undefined)).toBeUndefined();
 
     const recovered = await Effect.runPromise(
@@ -981,7 +983,7 @@ process.exit(1);
     expect(actionRows(fixture.database).map((row) => row.state)).toEqual([
       "pending",
       "running",
-      "failed",
+      "interrupted",
       "running",
       "succeeded",
     ]);
@@ -2201,6 +2203,7 @@ process.exit(1);
     const first = fileFixture(root);
     mkdirSync(dirname(first.target), { recursive: true });
     writeFileSync(first.target, first.artifact.content);
+    chmodSync(first.target, 0o600);
     const fixture = fileFixture(root, "run-no-op", first.artifact.digest);
 
     const outcome = await seedAndRun(fixture);
@@ -2218,6 +2221,7 @@ process.exit(1);
     const fixture = fileFixture(root, "run-no-op-later-failure");
     mkdirSync(dirname(fixture.target), { recursive: true });
     writeFileSync(fixture.target, fixture.artifact.content);
+    chmodSync(fixture.target, 0o600);
     const noOp = fileFixture(root, "unused", fixture.artifact.digest)
       .input.plan.actions[0]!;
     const input = {
@@ -2245,7 +2249,7 @@ process.exit(1);
     expect(applied).toEqual([]);
     expect(actionRows(fixture.database)).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        state: "failed",
+        state: "rolled-back",
         verification_json: expect.stringContaining("run-rolled-back"),
       }),
     ]));
@@ -2282,6 +2286,7 @@ process.exit(1);
             state: "present",
             digest: fixture.artifact.digest,
             executable: false,
+            mode: 0o600,
           },
         }],
         availableBlobs: [],
@@ -2347,7 +2352,7 @@ process.exit(1);
     expect(await readFile(unowned, "utf8")).toBe("keep me\n");
   });
 
-  it("rolls back successful work when a later action fails", async () => {
+  it.each([false, true])("rolls back successful work when a later action fails (ownership journal blocked: %s)", async (blockOwnership) => {
     const base = fileFixture(temporaryDirectory(), "run-partial");
     const secondTarget = join(base.root, "home", "other-settings.json");
     const secondContent = new TextEncoder().encode("second canonical content");
@@ -2369,6 +2374,7 @@ process.exit(1);
             kind: "file",
             digest: decode(ContentDigest)(secondDigest),
             executable: false,
+            mode: 0o600,
           },
           verification: {
             method: "digest",
@@ -2392,15 +2398,19 @@ process.exit(1);
     }));
     const failingMachine = decorateMachine(base.root, (service) => ({
       ...service,
-      atomicWrite: (input) =>
-        input.path.absolute === secondTarget
-          ? Effect.fail({
-            _tag: "MachineFilesystemError",
-            operation: "test write",
-            path: input.path.absolute,
-            message: "injected later-action failure",
-          })
-          : service.atomicWrite(input),
+      atomicWrite: (input) => {
+        if (input.path.absolute !== secondTarget) return service.atomicWrite(input);
+        if (blockOwnership) {
+          const database = new DatabaseSync(base.database);
+          database.exec(`CREATE TRIGGER refuse_ownership_inverse BEFORE INSERT ON action_journal
+            WHEN NEW.state = 'rolled-back' OR NEW.state = 'failed' AND json_extract(NEW.verification_json, '$.method') = 'run-rolled-back'
+            BEGIN SELECT RAISE(ABORT, 'ownership inverse denied'); END`);
+          database.close();
+        }
+        return Effect.fail(new MachineFilesystemError({
+          operation: "test write", path: input.path.absolute, message: "injected later-action failure",
+        }));
+      },
     }));
     const failed = await seedAndRun({
       ...base,
@@ -2425,6 +2435,25 @@ process.exit(1);
         repository.loadAppliedResources(follower.id)
       ).pipe(Effect.provide(stateRepositoryLayer(base.database))),
     );
+    if (blockOwnership) {
+      expect(failed).toMatchObject({ rollbackIncomplete: true, failedRollbackResources: [firstResource.id] });
+      const reference = actionRows(base.database).find((row) => row.state === "succeeded")?.rollback_reference;
+      expect(reference).toEqual(expect.any(String));
+      expect(existsSync(String(reference))).toBe(true);
+      expect(appliedAfterFailure.map((record) => record.resource)).toEqual([firstResource.id]);
+      const database = new DatabaseSync(base.database);
+      database.exec("DROP TRIGGER refuse_ownership_inverse");
+      database.close();
+      const recovered = await Effect.runPromise(Effect.flatMap(Synchronization, (synchronization) =>
+        synchronization.recover({
+          follower: follower.id, revision,
+          artifacts: [base.artifact, { digest: secondDigest, content: secondContent }],
+        })).pipe(Effect.provide(applicationLayer(base))));
+      expect(recovered.outcome).toBe("Converged");
+      expect(readFileSync(base.target, "utf8")).toBe("canonical content");
+      expect(existsSync(String(reference))).toBe(false);
+      return;
+    }
     expect(appliedAfterFailure).toEqual([]);
 
     const nextPlan = Effect.runSync(planSynchronization({
@@ -2491,6 +2520,7 @@ process.exit(1);
       kind: "file",
       digest: base.artifact.digest,
       executable: true,
+      mode: 0o700,
     };
     const revision: PlanningProfileRevision = {
       ...base.revision,
@@ -2542,6 +2572,7 @@ process.exit(1);
         kind: "file",
         digest: base.artifact.digest,
         executable: toExecutable,
+        mode: toExecutable ? 0o700 : 0o600,
       };
       const revision: PlanningProfileRevision = {
         ...base.revision,
@@ -2565,6 +2596,7 @@ process.exit(1);
               state: "present",
               digest: decode(ContentDigest)(base.artifact.digest),
               executable: fromExecutable,
+              mode: fromExecutable ? 0o700 : 0o600,
             },
           }],
           availableBlobs: [],
@@ -2596,6 +2628,7 @@ process.exit(1);
               state: "present",
               digest: decode(ContentDigest)(base.artifact.digest),
               executable: toExecutable,
+              mode: toExecutable ? 0o700 : 0o600,
             },
           }],
           availableBlobs: [],
@@ -2734,6 +2767,7 @@ process.exit(1);
       digest: desired.digest,
       appliedAt: "2026-08-15T00:00:00Z",
       kind: "file" as const,
+      ownership: "WholeFile" as const,
       policy: "replace-if-unmodified" as const,
       target: resource.target,
       executable: desired.executable,
@@ -2965,6 +2999,7 @@ process.exit(1);
           digest: sha256BytesHex(new TextEncoder().encode(current)),
           appliedAt: "2026-08-15T00:00:00Z",
           kind: "config",
+          ownership: "ConfigKeys",
           policy: "merge",
           target: resource.target,
           ownedKeys: ["mcpServers.a", "mcpServers.ab"],
@@ -3367,10 +3402,10 @@ process.exit(1);
 
     const database = new DatabaseSync(fixture.database, { readOnly: true });
     const row = database.prepare(
-      "SELECT status FROM synchronization_runs WHERE id = ?",
+      "SELECT phase FROM synchronization_runs WHERE id = ?",
     ).get("run-cancelled");
     database.close();
-    expect(row?.status).toBe("Interrupted");
+    expect(row?.phase).toBe("Interrupted");
   });
 
   it("serializes mutations that share a target", async () => {
@@ -3512,12 +3547,12 @@ process.exit(1);
 
     await expect(seedAndRun(fixture, machine)).rejects.toBeInstanceOf(RollbackCleanupError);
     const database = new DatabaseSync(fixture.database, { readOnly: true });
-    // SAFETY: The query selects the one scalar status column for this run.
+    // Cleanup failure keeps the outcome durable but the run open for retry.
     const row = database.prepare(
-      "SELECT status FROM synchronization_runs WHERE id = ?",
-    ).get("run-rollback-cleanup-failure") as { status?: string } | undefined;
+      "SELECT phase FROM synchronization_runs WHERE id = ?",
+    ).get("run-rollback-cleanup-failure");
     database.close();
-    expect(row?.status).toBe("Converged");
+    expect(row?.phase).toBe("Finalizing");
   });
 
   it("cleans rollback snapshots for absent, executable, and symlink states", async () => {

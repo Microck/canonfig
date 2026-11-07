@@ -14,7 +14,7 @@ import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
 import { HumanActionRequiredError } from "../src/machine/machine-state.errors.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
 import { doctorProbeNames, runDoctorProbes, schedulerProbe } from "../src/runtime/doctor.ts";
-import { credentialReadiness, scheduledDefinitionReadiness } from "../src/runtime/readiness.ts";
+import { credentialReadiness, describeUnattendedRuns, scheduledDefinitionReadiness } from "../src/runtime/readiness.ts";
 import { scheduleManagerLayer } from "../src/schedule/schedule-manager.layer.ts";
 import type { ScheduleStatus } from "../src/schedule/schedule-manager.types.ts";
 import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
@@ -39,6 +39,15 @@ const executeDoctor = (
   );
 
 describe("doctor probes", () => {
+  it("does not let an earlier invocation's late completion hide the latest-started failure", () => {
+    const summary = describeUnattendedRuns([
+      { startedAt: "2026-11-07T00:00:02Z", at: "2026-11-07T00:00:03Z", outcome: "failed", reason: "run lock held" },
+      { startedAt: "2026-11-07T00:00:01Z", at: "2026-11-07T00:00:04Z", outcome: "completed" },
+    ]);
+    expect(summary.completed).toBe(false);
+    expect(summary.text).toContain("run lock held");
+  });
+
   it("reports every typed probe deterministically without prompting", () => {
     const home = mkdtempSync(resolve(tmpdir(), "canonfig-doctor-"));
     const result = executeDoctor(

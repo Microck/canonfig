@@ -5,6 +5,7 @@ import type {
 } from "../domain/synchronization.ts";
 import type {
   ContentDigest,
+  CredentialReference,
   FollowerId,
   GroupName,
   ProfileId,
@@ -17,6 +18,7 @@ import type { ProfileRevision } from "../domain/profile.ts";
 import type { StateRepositoryError } from "./state-repository.errors.ts";
 import type {
   ArchiveEvent,
+  ScheduledInvocation,
   CompleteRunInput,
   CancelPendingEnrollmentInput,
   ConsumeEnrollmentInvitationInput,
@@ -24,6 +26,7 @@ import type {
   DeploymentReceipt,
   HarnessTakeover,
   EnrollmentSourceRecord,
+  EnrollmentCredentialRetirement,
   EnrollmentFollowerSummary,
   EnrollmentInvitationSummary,
   FollowerCredentialRecord,
@@ -52,6 +55,8 @@ import type { PlanningLocalRevision } from
 export class StateRepository extends Context.Service<StateRepository, {
   /** Canonical SQLite filename, for cross-process lifecycle exclusion. */
   readonly databaseFile: () => Effect.Effect<string, StateRepositoryError>;
+  readonly transitionScheduledInvocation: (invocation: ScheduledInvocation) => Effect.Effect<void, StateRepositoryError>;
+  readonly listScheduledInvocations: () => Effect.Effect<ReadonlyArray<ScheduledInvocation>, StateRepositoryError>;
   readonly saveSourceIdentity: (
     identity: SourceIdentity,
   ) => Effect.Effect<void, StateRepositoryError>;
@@ -72,9 +77,11 @@ export class StateRepository extends Context.Service<StateRepository, {
    * Returns whether an enrollment was recorded.
    */
   readonly removeFollowerSynchronizationConfiguration: (
+    expected: FollowerSynchronizationConfiguration,
   ) => Effect.Effect<boolean, StateRepositoryError>;
   readonly saveEnrollmentSource: (
     source: EnrollmentSourceRecord,
+    expected?: EnrollmentSourceRecord,
   ) => Effect.Effect<void, StateRepositoryError>;
   readonly getEnrollmentSource: (
   ) => Effect.Effect<EnrollmentSourceRecord | undefined, StateRepositoryError>;
@@ -100,6 +107,11 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly cancelPendingEnrollment: (
     input: CancelPendingEnrollmentInput,
   ) => Effect.Effect<void, StateRepositoryError>;
+  readonly stageEnrollmentCredential: (reference: CredentialReference) => Effect.Effect<void, StateRepositoryError>;
+  /** Only the exclusive enrollment or Source-server owner may abandon staging. */
+  readonly recoverEnrollmentCredentialStaging: () => Effect.Effect<void, StateRepositoryError>;
+  readonly listEnrollmentCredentialRetirements: () => Effect.Effect<ReadonlyArray<EnrollmentCredentialRetirement>, StateRepositoryError>;
+  readonly completeEnrollmentCredentialRetirement: (reference: CredentialReference) => Effect.Effect<void, StateRepositoryError>;
   readonly listPendingEnrollments: (
   ) => Effect.Effect<ReadonlyArray<PendingEnrollmentRecord>, StateRepositoryError>;
   readonly findFollowerCredential: (
@@ -184,6 +196,10 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly startRun: (
     input: StartRunInput,
   ) => Effect.Effect<void, StateRepositoryError>;
+  readonly beginRun: (run: RunId) => Effect.Effect<void, StateRepositoryError>;
+  readonly abandonRun: (run: RunId) => Effect.Effect<void, StateRepositoryError>;
+  /** Acknowledge idempotent finalization effects, then publish the receipt. */
+  readonly finalizeRun: (run: RunId, completedAt: string) => Effect.Effect<void, StateRepositoryError>;
   readonly journalAction: (
     input: JournalActionInput,
   ) => Effect.Effect<void, StateRepositoryError>;

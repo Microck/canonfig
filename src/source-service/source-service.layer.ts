@@ -1,5 +1,5 @@
-import { randomBytes } from "node:crypto";
-import { access, mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { randomBytes, randomUUID } from "node:crypto";
+import { access, mkdir, open, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, join, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,11 +54,54 @@ export interface SourceServiceLayerOptions {
 const recordFileName = "source-service.json";
 const defaultInput: SourceServiceInput = { hostname: "127.0.0.1", port: 17342 };
 
-const ServiceRecordSchema = Schema.Struct({
-  version: Schema.Literal(1),
+const RequestedService = Schema.Struct({
   hostname: Schema.Literals(["127.0.0.1", "::1"]),
-  port: Schema.Int,
+  port: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 })),
 });
+const ServiceRegistration = Schema.Union([
+  Schema.TaggedStruct("Absent", {}),
+  Schema.TaggedStruct("Installing", { operationId: Schema.String, requested: RequestedService }),
+  Schema.TaggedStruct("Verifying", { operationId: Schema.String, requested: RequestedService }),
+  Schema.TaggedStruct("Installed", { requested: RequestedService }),
+  Schema.TaggedStruct("Removing", { operationId: Schema.String, requested: RequestedService }),
+]);
+type ServiceRegistration = typeof ServiceRegistration.Type;
+const ServiceRecordSchema = Schema.Struct({ version: Schema.Literal(2), registration: ServiceRegistration });
+
+type RegistrationEvent =
+  | { readonly _tag: "Install"; readonly requested: SourceServiceInput }
+  | { readonly _tag: "Verify" }
+  | { readonly _tag: "Confirm" }
+  | { readonly _tag: "Remove"; readonly requested: SourceServiceInput }
+  | { readonly _tag: "Removed" };
+
+const transitionRegistration = (
+  registration: ServiceRegistration,
+  event: RegistrationEvent,
+): Effect.Effect<ServiceRegistration, SourceServiceConfigurationError> => {
+  switch (event._tag) {
+    case "Install":
+      if (registration._tag !== "Removing") {
+        return Effect.succeed({ _tag: "Installing", operationId: randomUUID(), requested: event.requested });
+      }
+      break;
+    case "Verify":
+      if (registration._tag === "Installing") return Effect.succeed({ ...registration, _tag: "Verifying" });
+      break;
+    case "Confirm":
+      if (registration._tag === "Verifying") return Effect.succeed({ _tag: "Installed", requested: registration.requested });
+      break;
+    case "Remove":
+      return Effect.succeed({ _tag: "Removing", operationId: randomUUID(), requested: event.requested });
+    case "Removed":
+      if (registration._tag === "Removing") return Effect.succeed({ _tag: "Absent" });
+      break;
+  }
+  return Effect.fail(new SourceServiceConfigurationError({
+    operation: "transition Source service registration",
+    message: `cannot ${event._tag} from ${registration._tag}; finish \`canonfig source service remove\` before reinstalling`,
+  }));
+};
 
 const platformOf = (): MachinePlatform =>
   process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : "linux";
@@ -499,15 +542,47 @@ export const sourceServiceLayer = (
       });
 
       const readRecord = readOptional(recordPath).pipe(
-        Effect.map((text) => {
-          if (text === undefined) return undefined;
-          try {
-            return Schema.decodeUnknownSync(ServiceRecordSchema)(JSON.parse(text));
-          } catch {
-            return undefined;
-          }
+        Effect.flatMap((text): Effect.Effect<ServiceRegistration, SourceServiceError> => {
+          if (text === undefined) return Effect.succeed({ _tag: "Absent" });
+          return Effect.try({
+            try: () => {
+              const record: unknown = JSON.parse(text);
+              return Schema.decodeUnknownSync(ServiceRecordSchema)(record).registration;
+            },
+            catch: () => new SourceServiceConfigurationError({
+              operation: "read Source service registration",
+              message: `${recordPath} is malformed or unsupported. Preserve it and inspect the native Source service definition before repairing the registration; no default endpoint was assumed`,
+            }),
+          });
         }),
       );
+      const transition = Effect.fn("SourceService.transition")(function*(
+        registration: ServiceRegistration,
+        event: RegistrationEvent,
+      ) {
+        const next = yield* transitionRegistration(registration, event);
+        if (next._tag === "Absent") yield* removeOptional(recordPath);
+        else yield* writeAtomically(recordPath, `${JSON.stringify({ version: 2, registration: next })}\n`);
+        return next;
+      });
+      const withRegistrationLock = <A>(action: Effect.Effect<A, SourceServiceError>) =>
+        Effect.acquireUseRelease(
+          Effect.tryPromise({
+            try: async () => {
+              await mkdir(options.stateDirectory, { recursive: true });
+              return open(`${recordPath}.lock`, "wx", 0o600);
+            },
+            catch: () => new SourceServiceConfigurationError({
+              operation: "lock Source service registration",
+              message: `cannot acquire ${recordPath}.lock. Another install/remove may be running. After an interrupted command, inspect the registration and native service before removing the stale lock`,
+            }),
+          }),
+          () => action,
+          (handle) => Effect.promise(async () => {
+            await handle.close();
+            await unlink(`${recordPath}.lock`);
+          }),
+        );
 
       const serving = (
         input: SourceServiceInput,
@@ -594,20 +669,30 @@ export const sourceServiceLayer = (
       const status = Effect.fn("SourceService.status")(function*(
         identity: SourceServiceIdentity | undefined,
       ): Effect.fn.Return<SourceServiceStatus, SourceServiceError> {
-        const input = (yield* readRecord) ?? defaultInput;
-        return yield* statusFor(input, yield* render(input), identity);
+        const registration = yield* readRecord;
+        const input = registration._tag === "Absent" ? defaultInput : registration.requested;
+        const observed = yield* statusFor(input, yield* render(input), identity);
+        return registration._tag === "Installing" || registration._tag === "Verifying" || registration._tag === "Removing"
+          ? { ...observed, detail: `Source service registration is ${registration._tag.toLowerCase()} (${registration.operationId}); inspect the native service and retry that operation. ${observed.detail}` }
+          : observed;
       });
 
-      const install = Effect.fn("SourceService.install")(function*(
+      const installOperation = Effect.fn("SourceService.install")(function*(
         input: SourceServiceInput,
         identity: SourceServiceIdentity,
       ): Effect.fn.Return<
         { readonly change: "installed" | "updated" | "unchanged"; readonly status: SourceServiceStatus },
         SourceServiceError
       > {
+        let registration = yield* readRecord;
         const rendered = yield* render(input, true);
         const before = yield* statusFor(input, rendered, identity);
-        if (before.state === "running") return { change: "unchanged", status: before };
+        if (before.state === "running") {
+          registration = yield* transition(registration, { _tag: "Install", requested: input });
+          registration = yield* transition(registration, { _tag: "Verify" });
+          yield* transition(registration, { _tag: "Confirm" });
+          return { change: "unchanged", status: before };
+        }
         if (before.serving && !before.manager.active) {
           return yield* new SourceServiceConfigurationError({
             operation: "install the Source service",
@@ -615,11 +700,9 @@ export const sourceServiceLayer = (
               `a Source is already answering at ${before.endpoint} outside the service manager; stop that \`canonfig source serve\` first so the service can bind the port, then retry`,
           });
         }
+        registration = yield* transition(registration, { _tag: "Install", requested: input });
         yield* manager.install(rendered);
-        yield* writeAtomically(
-          recordPath,
-          `${JSON.stringify({ version: 1, hostname: input.hostname, port: input.port })}\n`,
-        );
+        registration = yield* transition(registration, { _tag: "Verify" });
         const deadline = Date.now() + readinessTimeout;
         let after = yield* statusFor(input, rendered, identity);
         while (after.state !== "running" && Date.now() < deadline) {
@@ -634,19 +717,25 @@ export const sourceServiceLayer = (
               `the Source service was installed but is not serving after ${readinessTimeout} ms: ${after.detail}. Inspect it with \`canonfig source service status\`, or remove it with \`canonfig source service remove\``,
           });
         }
+        yield* transition(registration, { _tag: "Confirm" });
         return { change: before.manager.installed ? "updated" : "installed", status: after };
       });
 
-      const remove = Effect.fn("SourceService.remove")(function*() {
-        const input = (yield* readRecord) ?? defaultInput;
+      const install = (input: SourceServiceInput, identity: SourceServiceIdentity) =>
+        withRegistrationLock(installOperation(input, identity));
+      const removeOperation = Effect.fn("SourceService.remove")(function*() {
+        let registration = yield* readRecord;
+        const input = registration._tag === "Absent" ? defaultInput : registration.requested;
         const rendered = yield* render(input);
+        registration = yield* transition(registration, { _tag: "Remove", requested: input });
         const removed = yield* manager.remove(rendered);
-        yield* removeOptional(recordPath);
+        yield* transition(registration, { _tag: "Removed" });
         return {
           change: removed ? "removed" as const : "unchanged" as const,
           serviceName: rendered.serviceName,
         };
       });
+      const remove = () => withRegistrationLock(removeOperation());
 
       return SourceService.of({ install, status, remove });
     }),

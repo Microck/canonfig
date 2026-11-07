@@ -25,7 +25,7 @@ export const followerRoleConflict = (
   configuration: FollowerSynchronizationConfiguration,
   action: string,
 ): MachineRoleConflictError => {
-  const relation = configuration.enrollmentPending === true ? "is enrolling with" : "follows";
+  const relation = configuration.lifecycle._tag !== "Active" ? "is enrolling with" : "follows";
   return new MachineRoleConflictError({
     message: `this machine ${relation} the Source at ${configuration.source.endpoint} `
       + `(signing key ${configuration.source.signingFingerprint}) as ${configuration.follower.name} `

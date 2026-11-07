@@ -153,7 +153,7 @@ describe("self-update policy and package activation",()=>{
   const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
   const progress:UpdateProgress[]=[];
   const result=await update(f.root,true,f.runner,undefined,f.home,value=>{
-   expect(JSON.parse(readFileSync(join(updateDirectory(f.root),"progress.json"),"utf8"))).toEqual(value);
+   expect(JSON.parse(readFileSync(join(updateDirectory(f.root),"progress.json"),"utf8"))).toMatchObject({version:2,operationId:expect.any(String),...value});
    progress.push(value);
   });
   expect(result.status).toBe("updated");
@@ -164,14 +164,47 @@ describe("self-update policy and package activation",()=>{
    {phase:"activating",candidate:"4.2.1"},
    {phase:"complete",candidate:"4.2.1"},
   ]);
+  const receipt=JSON.parse(readFileSync(join(updateDirectory(f.root),"last-transaction.json"),"utf8"));
+  const persisted=JSON.parse(readFileSync(join(updateDirectory(f.root),"progress.json"),"utf8"));
+  expect(receipt).toMatchObject({_tag:"Committed",version:2,operationId:persisted.operationId});
+ });
+ it.each(["receipt", "progress", "progress-file"] as const)("keeps restart-required semantics after a committed %s failure",async(failure)=>{
+  const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
+  const lease=managedCommandLease(f.root);const directory=updateDirectory(f.root);
+  try {
+   const result=await lease.selfUpdate(()=>update(f.root,true,f.runner,undefined,f.home,value=>{
+    if(failure==="receipt"&&value.phase==="activating")mkdirSync(join(directory,"last-transaction.json"));
+    if(failure==="progress-file"&&value.phase==="activating") {
+     rmSync(join(directory,"progress.json"));mkdirSync(join(directory,"progress.json"));
+    }
+    if(failure==="progress"&&value.phase==="complete")throw new Error("progress delivery failed");
+   }),value=>value.status!=="updated");
+   expect(result.status).toBe("updated");
+   expect(result.detail).toContain("bookkeeping");
+   expect(installation(f.root,f.home).version).toBe("4.2.1");
+   expect(lease.suspended).toBe(true);
+   expect(readdirSync(join(directory,"readers"))).toEqual([]);
+   expect(readdirSync(directory).some(name=>name.startsWith("backup-"))).toBe(true);
+   await expect(lease.selfUpdate(async()=>undefined,()=>true)).rejects.toThrow("already stopping");
+  } finally {lease.close();}
  });
  it("refuses unfinished and unreadable synchronization state without installing",async()=>{
   const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
   const state=join(f.home,".canonfig","state.sqlite");mkdirSync(dirname(state),{recursive:true});
-  const db=new DatabaseSync(state);db.exec("CREATE TABLE synchronization_runs (id TEXT,status TEXT); INSERT INTO synchronization_runs VALUES ('old','Interrupted')");db.close();
+  const db=new DatabaseSync(state);db.exec("CREATE TABLE synchronization_runs (id TEXT,phase TEXT); INSERT INTO synchronization_runs VALUES ('open','Interrupted')");db.close();
   await expect(update(f.root,true,f.runner,undefined,f.home)).rejects.toThrow("unfinished");
   expect(f.calls.some(args=>args[1]==="install")).toBe(false);
   rmSync(state);writeFileSync(state,"not sqlite");expect(()=>assertNoUnfinishedRun(state)).toThrow();
+ });
+ it.each(["Preparing","Applying","Interrupted","Finalizing","Complete"])("reads canonical synchronization phase %s before updating",(phase)=>{
+  const f=fixture();const state=join(f.home,"state.sqlite");
+  const db=new DatabaseSync(state);
+  try {
+   db.exec("CREATE TABLE synchronization_runs (id TEXT, phase TEXT)");
+   db.prepare("INSERT INTO synchronization_runs VALUES (?, ?)").run("run",phase);
+  } finally {db.close();}
+  if(phase==="Complete")expect(()=>assertNoUnfinishedRun(state)).not.toThrow();
+  else expect(()=>assertNoUnfinishedRun(state)).toThrow("unfinished");
  });
  it("honors disable while a registry query is in flight",async()=>{
   const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);

@@ -526,7 +526,7 @@ function SyncForm() {
               <Button
                 size="sm"
                 variant="primary"
-                disabled={running || ws.interrupted || blocks.blocked !== null || collisions.length > 0 || (live !== undefined && live.operation?.state !== "succeeded")}
+                disabled={running || ws.interrupted || blocks.blocked !== null || collisions.length > 0 || (live !== undefined && !live.canApply)}
                 onClick={ws.applyPlan}
                 data-tour="sync-apply"
               >
@@ -674,7 +674,7 @@ function SyncForm() {
  */
 function DriftPanel({ item, onClose }: { item: PlanItem; onClose: () => void }) {
   const ws = useWorkspace();
-  const applied = ws.appliedRevision;
+  const applied = item.appliedRevision ?? ws.appliedRevision;
   return (
     <DetailPanel
       title={item.resource}

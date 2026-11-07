@@ -1,3 +1,4 @@
+import { Schema } from "effect";
 import type {
   ActionId,
   CertificateFingerprint,
@@ -21,6 +22,21 @@ import type { McpQualificationReceipt } from "../domain/mcp-qualification.ts";
 import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
 import type { CompiledResourceBlob } from "../profile/compiler.ts";
+
+const ScheduledInvocationFields = {
+  id: Schema.NonEmptyString,
+  generation: Schema.optional(Schema.NonEmptyString),
+  startedAt: Schema.NonEmptyString,
+};
+
+export const ScheduledInvocation = Schema.Union([
+  Schema.TaggedStruct("Running", ScheduledInvocationFields),
+  Schema.TaggedStruct("Completed", { ...ScheduledInvocationFields, at: Schema.NonEmptyString }),
+  Schema.TaggedStruct("Failed", {
+    ...ScheduledInvocationFields, at: Schema.NonEmptyString, reason: Schema.NonEmptyString,
+  }),
+]);
+export type ScheduledInvocation = typeof ScheduledInvocation.Type;
 
 /**
  * Bytes held in memory, or a regular file the repository streams into
@@ -115,6 +131,8 @@ export interface RegisterFollowerInput {
 
 export interface SaveFollowerSynchronizationConfigurationInput {
   readonly configuration: FollowerSynchronizationConfiguration;
+  /** Absent means create-only; settings and lifecycle changes compare the read snapshot. */
+  readonly expectedConfiguration?: FollowerSynchronizationConfiguration;
   readonly sourceIdentity: SourceIdentity;
 }
 
@@ -151,6 +169,8 @@ export interface ConsumeEnrollmentInvitationInput {
   readonly credentialDigest: ContentDigest;
   readonly credentialReference: CredentialReference;
   readonly consumedAt: string;
+  /** Atomic re-prepare may replace only this still-prepared credential. */
+  readonly replacingCredentialDigest?: ContentDigest;
 }
 
 export interface FinalizeEnrollmentInput {
@@ -170,14 +190,30 @@ export interface PendingEnrollmentRecord {
   readonly credentialReference: CredentialReference;
 }
 
+export type EnrollmentCredentialRetirement = {
+  readonly _tag: "Retiring";
+  readonly credentialReference: CredentialReference;
+};
+
 export interface StoredEnrollmentInvitation {
   readonly intendedSourceFingerprint: CertificateFingerprint;
   readonly tlsFingerprint: CertificateFingerprint;
   readonly endpoint: string;
   readonly groups: ReadonlyArray<GroupName>;
   readonly expiresAt: string;
-  readonly usedAt?: string | undefined;
+  readonly lifecycle:
+    | { readonly _tag: "Available" }
+    | { readonly _tag: "Expired" }
+    | { readonly _tag: "Prepared"; readonly follower: FollowerId; readonly credentialDigest: ContentDigest }
+    | { readonly _tag: "Consumed"; readonly usedAt: string };
 }
+
+export const EnrollmentCredentialLifecycle = Schema.Union([
+  Schema.TaggedStruct("Prepared", {}),
+  Schema.TaggedStruct("Active", {}),
+  Schema.TaggedStruct("Retiring", {}),
+  Schema.TaggedStruct("Retired", {}),
+]);
 
 /** Enrollment inventory without credentials or invitation bearer material. */
 export interface EnrollmentFollowerSummary {
@@ -188,6 +224,7 @@ export interface EnrollmentFollowerSummary {
   readonly revoked: boolean;
   readonly pending: boolean;
   readonly credentialPresent: boolean;
+  readonly credentialLifecycle: typeof EnrollmentCredentialLifecycle.Type;
 }
 
 export interface EnrollmentInvitationSummary {
@@ -198,22 +235,34 @@ export interface EnrollmentInvitationSummary {
 }
 
 export interface FollowerCredentialRecord {
+  readonly lifecycle:
+    | { readonly _tag: "Active" }
+    | { readonly _tag: "Retiring"; readonly credentialReference: CredentialReference }
+    | { readonly _tag: "Retired" };
   readonly follower: FollowerIdentity;
   readonly credentialDigest: ContentDigest;
   readonly credentialReference: CredentialReference;
 }
 
 /** One harness surface Canonfig has taken over, with the root pinned at takeover. */
-export interface HarnessTakeover {
+interface TakeoverSurface {
   /** A harness id, or `agents` for the shared `~/.agents/skills/` surface. */
   readonly harness: string;
   readonly surface: string;
   readonly root: string;
-  /** The takeover snapshot holding the surface's prior content; absent without a backup. */
-  readonly snapshot?: string | undefined;
   readonly run: RunId;
   readonly takenOverAt: string;
 }
+export type TakeoverBackup =
+  | { readonly _tag: "Disabled" }
+  | { readonly _tag: "Snapshot"; readonly id: string };
+
+
+export type HarnessTakeover = TakeoverSurface & (
+  | { readonly _tag: "Reserved"; readonly backup: TakeoverBackup | { readonly _tag: "Pending" } }
+  | { readonly _tag: "Owned"; readonly backup: TakeoverBackup }
+  | { readonly _tag: "Uncertain"; readonly backup: TakeoverBackup }
+);
 
 /**
  * One `canonfig export` or `canonfig import` (not `--dry-run`), journaled in
@@ -238,6 +287,8 @@ export interface ArchiveEvent {
 }
 
 export interface StartRunInput {
+  /** Projection prepares its durable reservation before capture and artifact writes. */
+  readonly preparing?: boolean | undefined;
   readonly id: RunId;
   readonly follower: FollowerId;
   readonly revision: ProfileRevisionId;
@@ -252,7 +303,9 @@ export type ActionJournalState =
   | "running"
   | "succeeded"
   | "failed"
-  | "skipped";
+  | "blocked"
+  | "interrupted"
+  | "rolled-back";
 
 /**
  * Persistable verification evidence is deliberately constrained. Raw command
@@ -298,6 +351,16 @@ export interface ActionJournalRecord {
   readonly removedResource?: AppliedResourceRecord | undefined;
 }
 
+/** The current attempt's state, independent of verification method names. */
+export type ActionLifecycle =
+  | { readonly _tag: "Pending"; readonly attempt: 0 }
+  | { readonly _tag: "Running"; readonly attempt: number; readonly rollbackReference?: string | undefined }
+  | { readonly _tag: "Succeeded"; readonly attempt: number; readonly verification: VerificationEvidence }
+  | { readonly _tag: "Blocked"; readonly attempt: number }
+  | { readonly _tag: "Interrupted"; readonly attempt: number; readonly rollbackReference?: string | undefined }
+  | { readonly _tag: "Failed"; readonly attempt: number; readonly verification: VerificationEvidence }
+  | { readonly _tag: "RolledBack"; readonly attempt: number };
+
 export interface CompleteRunInput {
   readonly run: RunId;
   readonly completedAt: string;
@@ -318,12 +381,21 @@ export interface DriftRecord {
   readonly recordedAt: string;
 }
 
+export type RunLifecycle =
+  | { readonly _tag: "Preparing" }
+  | { readonly _tag: "Applying" }
+  | { readonly _tag: "Interrupted"; readonly outcome: Extract<SynchronizationOutcome, { readonly outcome: "Interrupted" }> }
+  | { readonly _tag: "Finalizing"; readonly outcome: Exclude<SynchronizationOutcome, { readonly outcome: "Interrupted" }> }
+  | { readonly _tag: "Abandoning"; readonly outcome: Extract<SynchronizationOutcome, { readonly outcome: "Failed" }> }
+  | { readonly _tag: "Complete"; readonly outcome: Exclude<SynchronizationOutcome, { readonly outcome: "Interrupted" }>; readonly completedAt: string };
+
 export interface RecoveryRun {
   readonly id: RunId;
   readonly follower: FollowerId;
   readonly revision: ProfileRevisionId;
   readonly startedAt: string;
   readonly plan: SynchronizationPlan;
+  readonly lifecycle: Exclude<RunLifecycle, { readonly _tag: "Complete" }>;
 }
 
 export interface RecoveryState {

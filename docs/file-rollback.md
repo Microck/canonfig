@@ -56,8 +56,16 @@ rollback.
   permission handling and managed-directory confinement apply to both.
   If an adapter isolates a directory by moving it, file sources inside that
   directory remain readable at their isolated location.
-- Completed actions remove their journal and raw backups. Failed restoration
-  retains both. Cleanup must not remove another action's or run's files.
+- An inverse is complete only after both filesystem restoration and the
+  ownership-journal transaction succeed. A blocked inverse records whether
+  the physical or ownership phase failed. The public rollback flags are
+  computed from that state, never maintained separately.
+- An incomplete rollback keeps all of the run's journals and preimages,
+  including already-restored actions that recovery must inspect. Cleanup
+  removes that per-run material only after recovery completes, or explicit
+  abandonment. Every takeover reservation and original takeover snapshot also
+  stays intact while recovery can replay its actions without taking over those
+  surfaces again. Cleanup must not remove another action's or run's files.
 
 Recovery covers process interruption. Flush guarantees remain those of the
 platform adapter and filesystem; this does not promise identical power-loss

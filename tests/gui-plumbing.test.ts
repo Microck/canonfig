@@ -97,3 +97,31 @@ it("polls actual journal bytes and retains the CLI failure without invented prog
     }).pipe(Effect.scoped));
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+it("requires the payload belonging to each operation state", () => {
+  for (const value of [
+    { state: "succeeded" },
+    { state: "failed" },
+  ]) {
+    expect(Schema.is(GuiOperation)({ id: "ticket", journal: null, ...value })).toBe(false);
+  }
+});
+
+it("delivers a successful operation only once across repeated polls", async () => {
+  let delivered = 0;
+  await Effect.runPromise(Effect.gen(function*() {
+    const manager = yield* makeGuiOperations;
+    const ticket = yield* manager.start(Effect.succeed({ saved: true }), () => Effect.succeed(null), () => { delivered++; });
+    const incoming = new IncomingMessage(new Socket());
+    const url = new URL(`http://127.0.0.1/api/operations/${ticket.id}`);
+    let body = yield* manager.route.handle(incoming, url);
+    while (Schema.is(GuiOperation)(body) && body.state === "running") {
+      yield* Effect.yieldNow;
+      body = yield* manager.route.handle(incoming, url);
+    }
+    manager.route.afterResponse?.(body);
+    manager.route.afterResponse?.(body);
+    expect(delivered).toBe(1);
+    incoming.destroy();
+  }).pipe(Effect.scoped));
+});

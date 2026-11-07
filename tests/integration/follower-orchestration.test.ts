@@ -227,6 +227,7 @@ const enroll = async (root: string, source: SourceMachine, options: FollowerOpti
   const follower = { ...enrolled.follower, credentialReference: enrolled.credentialReference };
   const configuration: FollowerSynchronizationConfiguration = {
     schemaVersion: 1,
+    lifecycle: { _tag: "Active" },
     follower,
     profile: profileId,
     source: {
@@ -244,10 +245,15 @@ const enroll = async (root: string, source: SourceMachine, options: FollowerOpti
   };
   /** Save the enrolled configuration with `overrides` (an undefined field is cleared). */
   const configure = (overrides: Partial<FollowerSynchronizationConfiguration> = {}) =>
-    withRepository(Effect.flatMap(StateRepository, (stored) => stored.saveFollowerSynchronizationConfiguration({
-      sourceIdentity: enrolled.source,
-      configuration: { ...configuration, ...overrides },
-    })));
+    withRepository(Effect.gen(function*() {
+      const stored = yield* StateRepository;
+      const expectedConfiguration = yield* stored.getFollowerSynchronizationConfiguration();
+      yield* stored.saveFollowerSynchronizationConfiguration({
+        sourceIdentity: enrolled.source,
+        expectedConfiguration,
+        configuration: { ...configuration, ...overrides },
+      });
+    }));
   await configure();
   const application = Layer.mergeAll(
     repository,
@@ -689,6 +695,7 @@ process.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringi
     };
     const baseConfiguration = decode(FollowerSynchronizationConfiguration)({
       schemaVersion: 1,
+      lifecycle: { _tag: "Active" },
       follower: {
         id: "follower-agent",
         name: "Agent follower",

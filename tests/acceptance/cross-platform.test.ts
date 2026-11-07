@@ -253,7 +253,7 @@ const latestRun = (databasePath: string) => {
   const database = new DatabaseSync(databasePath, { readOnly: true });
   try {
     return decode(LatestRun)(database.prepare(`
-      SELECT status, plan_json AS plan
+      SELECT json_extract(outcome_json, '$.outcome') AS status, plan_json AS plan
       FROM synchronization_runs
       ORDER BY rowid DESC
       LIMIT 1
@@ -429,6 +429,7 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
           sourceIdentity: enrollment.source,
           configuration: decode(FollowerSynchronizationConfiguration)({
             schemaVersion: 1,
+            lifecycle: { _tag: "Active" },
             follower,
             profile: revision.profileId,
             source: {

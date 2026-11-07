@@ -64,8 +64,8 @@ export const withManagedTunnel = <Success, Failure, Requirements>(
       );
     const before = yield* status;
     if (before === undefined) return yield* operation;
-    if (before.lifecycle === "down" && input.restart) {
-      yield* tunnel.restartTunnel({ stateDirectory: input.stateDirectory }).pipe(
+    if (before.lifecycle === "down" && before.restartable && input.restart) {
+      yield* tunnel.restartTunnel({ stateDirectory: input.stateDirectory, onlyIfDown: true }).pipe(
         Effect.mapError((error) =>
           new TunnelDownError({
             endpoint: before.endpoint ?? "",

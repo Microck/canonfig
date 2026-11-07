@@ -85,6 +85,16 @@ anywhere. Read them locally, do not paste them anywhere, and delete the
 `adoption-review-<id>` directory when you are done. If the file changes before
 the review is written, the command stops and asks you to plan again.
 
+The plan records first adoption separately from creating a new section,
+updating an owned section, or converting a file Canonfig already owns whole.
+Apply checks that recorded transition again. Changed local bytes or a file
+that appeared after planning require a new plan, not an inferred adoption.
+
+A file that already has valid Canonfig markers but no Applied Resource Record
+is not a first unmanaged adoption. Canonfig accepts its section only when it
+already matches the desired Source text; a different section is Follower Drift.
+Its local suffix stays untouched, and it does not produce a first-adoption review.
+
 `--review-local` works only with an interactive `--plan`; with `--apply`,
 `--scheduled`, or `--no-input` it exits 2.
 

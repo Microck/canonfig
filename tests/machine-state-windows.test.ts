@@ -1,16 +1,20 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { dirname, join } from "node:path";
 import { win32 } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { describe, expect, it } from "vitest";
-import { Cause, Effect, Redacted } from "effect";
+import { Cause, Effect, Layer, Redacted } from "effect";
 import { MachineState } from "../src/machine/machine-state.service.ts";
 import { ActionId, ResourceId, RunId } from "../src/domain/brand.ts";
+import { CredentialStorageError } from "../src/machine/machine-state.errors.ts";
+import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
+import { StateRepository } from "../src/state/state-repository.service.ts";
 import { sha256BytesHex } from "../src/profile/profile-codec.ts";
 import { defaultSynchronizationExecutionLimits } from "../src/synchronization/executor.ts";
 import {
@@ -79,6 +83,105 @@ const environment = (root: string) => {
   ];
 };
 
+describe.skipIf(process.platform !== "win32")("Windows credential staging ownership", () => {
+  it("does not write credential bytes when beforeStore fails", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-windows-hook-failure-"));
+    const store = join(root, "credentials");
+    try {
+      const error = await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        return yield* Effect.flip(machine.storeCredential({
+          name: "not-written", value: Redacted.make("private fixture value"),
+          beforeStore: () => Effect.fail(new CredentialStorageError({
+            operation: "stage", reference: "fixture", message: "ownership write failed",
+          })),
+        }));
+      }).pipe(Effect.provide(windowsMachineStateLayer({
+        credentialPolicy: { kind: "local-file", path: store }, environment: environment(root),
+      }))));
+      expect(error.message).toBe("ownership write failed");
+      expect(existsSync(store) ? readdirSync(store) : []).toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(["before-write", "after-write"])("recovers staged ownership after a disposable child exits %s", async (phase) => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-windows-hook-interruption-"));
+    const store = join(root, "credentials");
+    const path = join(root, "state.sqlite");
+    const moduleUrl = (relative: string) => JSON.stringify(pathToFileURL(
+      join(import.meta.dirname, "../src", relative),
+    ).href);
+    const child = `
+      import { Effect, Layer, Redacted } from "effect";
+      import { windowsMachineStateLayer } from ${moduleUrl("machine/windows.layer.ts")};
+      import { MachineState } from ${moduleUrl("machine/machine-state.service.ts")};
+      import { stateRepositoryLayer } from ${moduleUrl("state/state-repository.layer.ts")};
+      import { StateRepository } from ${moduleUrl("state/state-repository.service.ts")};
+      await Effect.runPromise(Effect.gen(function*() {
+        const repository = yield* StateRepository;
+        const machine = yield* MachineState;
+        yield* machine.storeCredential({
+          name: "interrupted", value: Redacted.make("private fixture value"),
+          beforeStore: (reference) => repository.stageEnrollmentCredential(reference).pipe(
+            Effect.orDie,
+            Effect.tap(() => Effect.sync(() => {
+              if (${JSON.stringify(phase)} === "before-write") process.exit(73);
+            }))
+          ),
+        });
+        process.exit(73);
+      }).pipe(Effect.provide(Layer.merge(
+        stateRepositoryLayer(${JSON.stringify(path)}),
+        windowsMachineStateLayer({
+          credentialPolicy: { kind: "local-file", path: ${JSON.stringify(store)} }
+        })
+      ))));
+    `;
+    try {
+      const exited = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", child], {
+        encoding: "utf8", timeout: 30_000,
+        env: { ...process.env, HOME: root, USERPROFILE: root,
+          APPDATA: join(root, "config"), LOCALAPPDATA: join(root, "data") },
+      });
+      expect(exited.status, exited.stderr).toBe(73);
+      expect(existsSync(store) ? readdirSync(store).length : 0).toBe(phase === "after-write" ? 1 : 0);
+      await Effect.runPromise(Effect.gen(function*() {
+        const repository = yield* StateRepository;
+        const machine = yield* MachineState;
+        yield* repository.recoverEnrollmentCredentialStaging();
+        const owned = yield* repository.listEnrollmentCredentialRetirements();
+        expect(owned).toHaveLength(1);
+        for (const entry of owned) {
+          yield* machine.removeCredential(entry.credentialReference);
+          yield* repository.completeEnrollmentCredentialRetirement(entry.credentialReference);
+        }
+        expect(yield* repository.listEnrollmentCredentialRetirements()).toEqual([]);
+      }).pipe(Effect.provide(Layer.merge(
+        stateRepositoryLayer(path),
+        windowsMachineStateLayer({ credentialPolicy: { kind: "local-file", path: store }, environment: environment(root) }),
+      ))));
+      expect(existsSync(store) ? readdirSync(store) : []).toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("keeps local deletion failures visible and ignores only missing files", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-windows-remove-"));
+    const store = join(root, "credentials");
+    try {
+      await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const reference = yield* machine.storeCredential({ name: "remove", value: Redacted.make("private fixture value") });
+        yield* machine.removeCredential(reference);
+        yield* machine.removeCredential(reference);
+        mkdirSync(String(reference).slice("local-file:".length));
+        expect((yield* Effect.result(machine.removeCredential(reference)))._tag).toBe("Failure");
+      }).pipe(Effect.provide(windowsMachineStateLayer({
+        credentialPolicy: { kind: "local-file", path: store }, environment: environment(root),
+      }))));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 describe.skipIf(process.platform !== "win32")("Windows file permission ownership", () => {
   const powershell = join(process.env.SystemRoot ?? "C:\\Windows",
     "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
@@ -121,7 +224,7 @@ describe.skipIf(process.platform !== "win32")("Windows file permission ownership
       const resourceTarget = kind === "directory" ? managed : target;
       const detail = kind === "directory"
         ? { kind: "mirror-directory" as const, target: managed, adds: [relative], removes: [] }
-        : { kind: "write-file" as const, target, digest, executable: false, mode: 0o600 };
+        : { kind: "write-file" as const, target, digest, executable: false, mode: 0o600, textTransition: { kind: "whole-file" as const } };
       const context: ResourceExecutionContext = {
         run: RunId.make("run-native-permissions"),
         action: { id: ActionId.make("action:native-permissions:0:write"), resource, kind: detail.kind, detail, before: [] },

@@ -83,3 +83,10 @@ that identity once at start and retains it on completion/failure. Reinstallation
 (including identical POSIX content), definition changes, records without a bound identity,
 and processes started before registration do not prove the current job fired.
 Historical records remain stored but do not count as current readiness.
+
+Each unattended invocation is stored in SQLite as `Running`, `Completed` or
+`Failed`, with an invocation id and its start time.
+Only that running invocation can accept its terminal result. Overlapping starts
+cannot overwrite each other, and readiness uses the latest start, not whichever
+completion arrived last. A `Running` receipt without a terminal result remains
+unverified, whether its process is still running or was interrupted.

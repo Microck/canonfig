@@ -21,11 +21,12 @@ import {
 } from "../runtime/build-identity.ts";
 import type { SetupImportRequest } from "../cli/setup-commands.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
-import { withRunLock } from "../synchronization/run-lock.ts";
+import { runLockHolder, withRunLock } from "../synchronization/run-lock.ts";
 import { SetupError } from "./setup.errors.ts";
 import {
   executeFolderScaffold,
   executeHarnessImport,
+  verifyFolderSetupItem,
   planSourceFolder,
   type SourceFolderPlan,
 } from "./setup.folder.ts";
@@ -35,6 +36,9 @@ import {
   nextEligibleSetupStage,
   setupItemVerdicts,
   setupPlanDigest,
+  setupItemDetailDigest,
+  transitionSetup,
+  validateSetupJournal,
 } from "./setup.plan.ts";
 import {
   decodeSetupJournal,
@@ -49,6 +53,7 @@ import {
   setupRecipeTimeoutMilliseconds,
   setupToolMethodsFor,
   type SetupInventory,
+  type SetupItemSummary,
   type SetupJournal,
   SetupMode,
   type SetupPlanItem,
@@ -157,15 +162,18 @@ const readJournal = (
       try: () => new TextDecoder("utf-8", { fatal: true }).decode(bytes),
       catch: () => fail("setup journal", "the setup journal is not valid UTF-8", "state"),
     });
-    return yield* Effect.try({
+    const journal = yield* Effect.try({
       try: () => decodeSetupJournal(JSON.parse(text)),
       catch: () =>
         fail(
           "setup journal",
-          "the setup journal does not match its contract; back it up and remove it before re-running setup",
-          "state",
+          `The setup journal is invalid. Inspect any setup side effects first, then back up and remove ${journalPath} and run setup plan again. Do not remove state.sqlite.`,
+          "prerequisite",
+          `Inspect any setup side effects first, then back up and remove ${journalPath} and run setup plan again. Do not remove state.sqlite.`,
         ),
     });
+    yield* validateSetupJournal(journal);
+    return journal;
   });
 
 const writeJournal = (
@@ -575,10 +583,9 @@ const setupRecipeFor = (
 
 const setupDiscoveryInputsUnchanged = (
   machine: MachineState["Service"],
-  inputs: ReadonlyArray<SetupDiscoveryInput> | undefined,
+  inputs: ReadonlyArray<SetupDiscoveryInput>,
 ): Effect.Effect<boolean> =>
   Effect.gen(function*() {
-    if (inputs === undefined) return false;
     for (const input of inputs) {
       const unchanged = yield* machine.normalizePath({ path: input.path }).pipe(
         Effect.flatMap((path) => machine.readFile({ path, maximumBytes: maxSetupDiscoveryFileBytes })),
@@ -779,7 +786,7 @@ const recordSetupDecisions = (
   journal: SetupJournal,
   decision: SetupDecisionRecord,
 ): Effect.Effect<SetupJournal, SetupError> => {
-  const recordedPaths = journal.discoveryPaths ?? [];
+  const recordedPaths = journal.discoveryPaths;
   const unchanged = journal.mode === decision.mode
     && recordedPaths.length === decision.discoveryPaths.length
     && recordedPaths.every((path, index) => path === decision.discoveryPaths[index])
@@ -897,10 +904,10 @@ export const planSetup = (
         `Remove ${journalPath} to start over with --role ${role}.`,
       );
     }
-    if (previous !== undefined && (previous.scope ?? "full") !== requestScope) {
+    if (previous !== undefined && previous.scope !== requestScope) {
       return yield* fail(
         "setup plan",
-        `a setup journal already exists for scope ${previous.scope ?? "full"}; remove ${journalPath} to switch scopes`,
+        `a setup journal already exists for scope ${previous.scope}; remove ${journalPath} to switch scopes`,
         "usage",
         `Remove ${journalPath} to start over with --scope ${requestScope}.`,
       );
@@ -923,13 +930,17 @@ export const planSetup = (
       items,
       discoveryInputs: discovery.inputs,
     });
+    if (previous?.records.some((record) => record.status === "running" || record.status === "interrupted")) {
+      return yield* fail("setup plan", "An interrupted setup item still owns possible machine changes. Run setup apply to verify its result first. If verification cannot resolve it, inspect the named side effects, back up and remove setup.json, then plan again.", "prerequisite",
+        "Run setup apply to verify its result first. If verification cannot resolve it, inspect the named side effects, back up and remove setup.json, then plan again.");
+    }
     if (previous !== undefined && previous.planDigest === planDigest) {
       // Unchanged discovery and approvals survive a re-plan.
       return yield* recordSetupDecisions(machine, journalPath, previous, decision);
     }
     const timestamp = new Date().toISOString();
     const journal: SetupJournal = {
-      schema: "canonfig.setup/v1",
+      schema: "canonfig.setup/v2",
       role,
       scope: requestScope,
       mode: decision.mode,
@@ -972,7 +983,9 @@ export const planSetup = (
         ...folder === undefined ? [] : [{ ...folder.stage, completedAt: timestamp }],
         { stage: "plan", digest: planDigest, completedAt: timestamp },
       ],
-      records: items.map((item) => ({ id: item.id, status: "pending" as const, updatedAt: timestamp })),
+      records: items.map((item) => ({
+        id: item.id, status: "pending" as const, detailDigest: setupItemDetailDigest(item), updatedAt: timestamp,
+      })),
       createdAt: previous?.createdAt ?? timestamp,
       updatedAt: timestamp,
     };
@@ -1001,12 +1014,7 @@ export const approveSetup = (
     }
     yield* checkPlanDigest(journal, expectedDigest, "setup approve");
     if (isSetupApproved(journal)) return journal;
-    const timestamp = new Date().toISOString();
-    const updated: SetupJournal = {
-      ...journal,
-      approvals: [...journal.approvals, { digest: journal.planDigest, approver, approvedAt: timestamp }],
-      stages: [...journal.stages, { stage: "approve", digest: journal.planDigest, completedAt: timestamp }],
-    };
+    const updated = yield* transitionSetup(journal, { type: "approve", approver });
     yield* writeJournal(machine, journalPath, updated);
     return updated;
   }));
@@ -1024,6 +1032,87 @@ type SetupItemOutcome =
   }
   | { readonly ok: false; readonly cause: SetupError };
 
+/** Re-observe the recipe's approved verifier without invoking its installer. */
+const verifySetupRecipe = (recipe: SetupRecipe, installer: MachinePath) =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    let searchPath: ReadonlyArray<MachinePath> | undefined;
+    if (recipe.installerMethod === "npm") {
+      // Setup inherits npm configuration, unlike synchronized recipes.
+      // Ask the reviewed installer where this actual global install went.
+      const prefixResult = yield* machine.runProcess({
+        executable: installer,
+        arguments: ["prefix", "--global"],
+        timeoutMilliseconds: setupProcessTimeoutMilliseconds,
+        maximumOutputBytes: maxSetupProcessBytes,
+      }).pipe(
+        Effect.mapError(() =>
+          fail("setup apply", "npm installation prefix could not be inspected", "prerequisite")),
+      );
+      const prefix = new TextDecoder().decode(prefixResult.standardOutput).trim();
+      const paths = installer.platform === "windows" ? win32 : posix;
+      if (prefixResult.exitCode !== 0 || !paths.isAbsolute(prefix)) {
+        return yield* fail(
+          "setup apply", "npm did not report an absolute global installation prefix", "prerequisite",
+        );
+      }
+      const directory = yield* machine.normalizePath({
+        path: installer.platform === "windows" ? prefix : paths.join(prefix, "bin"),
+      }).pipe(
+        Effect.mapError(() =>
+          fail("setup apply", "npm installation prefix is invalid", "prerequisite")),
+      );
+      searchPath = [directory];
+    }
+    const target = yield* machine.findExecutable({
+      name: recipe.verifyExecutable,
+      searchPath,
+      installMethods: searchPath === undefined
+        ? [{ method: recipe.installerMethod, installer }]
+        : undefined,
+    }).pipe(
+      Effect.mapError((cause) =>
+        fail(
+          "setup apply",
+          `recipe ${recipe.resource} did not install its verifier: ${cause.message}`,
+          "prerequisite",
+        )),
+    );
+    // A presence-only verifier is satisfied by the lookup above.
+    if (recipe.verifyArguments !== undefined) {
+      const verified = yield* machine.runProcess({
+        executable: target.path,
+        arguments: recipe.verifyArguments,
+        timeoutMilliseconds: setupProcessTimeoutMilliseconds,
+        maximumOutputBytes: maxSetupProcessBytes,
+      }).pipe(
+        Effect.mapError((cause) =>
+          fail("setup apply", `recipe ${recipe.resource} verification failed: ${cause.message}`, "state")),
+      );
+      if (verified.exitCode !== 0) {
+        return yield* fail(
+          "setup apply",
+          `recipe ${recipe.resource} verifier exited ${String(verified.exitCode)}`,
+          "prerequisite",
+        );
+      }
+    }
+    return {
+      evidence: `installed and verified ${recipe.resource} ${recipe.version}`,
+      catalog: {
+        resource: recipe.resource,
+        method: recipe.installerMethod,
+        platform: target.path.platform,
+        executable: target.path.absolute,
+        version: recipe.version,
+        source: recipe.source,
+        upstream: recipe.upstream,
+        integrity: recipe.integrity,
+        verifiedAt: new Date().toISOString(),
+      },
+    };
+  });
+
 const executeSetupItem = (
   item: SetupPlanItem,
   journal: SetupJournal,
@@ -1039,9 +1128,8 @@ const executeSetupItem = (
       case "source-init": {
         const enrollment = yield* Enrollment;
         const material = yield* enrollment.initializeSource().pipe(
-          // A Follower enrollment that landed after apply's own role check
-          // passes through as the role conflict, which apply refuses without
-          // recording the item: a refusal changes nothing, setup.json included.
+          // A concurrent role change is still a refusal, but the durable
+          // Running record must retain this attempt's outcome.
           Effect.mapError((cause) =>
             cause instanceof MachineRoleConflictError
               ? cause
@@ -1151,81 +1239,7 @@ const executeSetupItem = (
             "prerequisite",
           );
         }
-        let searchPath: ReadonlyArray<MachinePath> | undefined;
-        if (recipe.installerMethod === "npm") {
-          // Setup inherits npm configuration, unlike synchronized recipes.
-          // Ask the reviewed installer where this actual global install went.
-          const prefixResult = yield* machine.runProcess({
-            executable: installer,
-            arguments: ["prefix", "--global"],
-            timeoutMilliseconds: setupProcessTimeoutMilliseconds,
-            maximumOutputBytes: maxSetupProcessBytes,
-          }).pipe(
-            Effect.mapError(() =>
-              fail("setup apply", "npm installation prefix could not be inspected", "prerequisite")),
-          );
-          const prefix = new TextDecoder().decode(prefixResult.standardOutput).trim();
-          const paths = installer.platform === "windows" ? win32 : posix;
-          if (prefixResult.exitCode !== 0 || !paths.isAbsolute(prefix)) {
-            return yield* fail(
-              "setup apply", "npm did not report an absolute global installation prefix", "prerequisite",
-            );
-          }
-          const directory = yield* machine.normalizePath({
-            path: installer.platform === "windows" ? prefix : paths.join(prefix, "bin"),
-          }).pipe(
-            Effect.mapError(() =>
-              fail("setup apply", "npm installation prefix is invalid", "prerequisite")),
-          );
-          searchPath = [directory];
-        }
-        const target = yield* machine.findExecutable({
-          name: recipe.verifyExecutable,
-          searchPath,
-          installMethods: searchPath === undefined
-            ? [{ method: recipe.installerMethod, installer }]
-            : undefined,
-        }).pipe(
-          Effect.mapError((cause) =>
-            fail(
-              "setup apply",
-              `recipe ${recipe.resource} did not install its verifier: ${cause.message}`,
-              "prerequisite",
-            )),
-        );
-        // A presence-only verifier is satisfied by the lookup above.
-        if (recipe.verifyArguments !== undefined) {
-          const verified = yield* machine.runProcess({
-            executable: target.path,
-            arguments: recipe.verifyArguments,
-            timeoutMilliseconds: setupProcessTimeoutMilliseconds,
-            maximumOutputBytes: maxSetupProcessBytes,
-          }).pipe(
-            Effect.mapError((cause) =>
-              fail("setup apply", `recipe ${recipe.resource} verification failed: ${cause.message}`, "state")),
-          );
-          if (verified.exitCode !== 0) {
-            return yield* fail(
-              "setup apply",
-              `recipe ${recipe.resource} verifier exited ${String(verified.exitCode)}`,
-              "prerequisite",
-            );
-          }
-        }
-        return {
-          evidence: `installed and verified ${recipe.resource} ${recipe.version}`,
-          catalog: {
-            resource: recipe.resource,
-            method: recipe.installerMethod,
-            platform: target.path.platform,
-            executable: target.path.absolute,
-            version: recipe.version,
-            source: recipe.source,
-            upstream: recipe.upstream,
-            integrity: recipe.integrity,
-            verifiedAt: new Date().toISOString(),
-          },
-        };
+        return yield* verifySetupRecipe(recipe, installer);
       }
       case "toolchain-verify": {
         const verified = journal.records
@@ -1241,37 +1255,62 @@ const executeSetupItem = (
     }
   });
 
-const recordItem = (
+/** Observe an uncertain item's postcondition without repeating its mutation. */
+const verifySetupItem = (
+  item: SetupPlanItem,
+  journal: SetupJournal,
+  environment: (name: string) => string | undefined,
+): Effect.Effect<
+  { readonly evidence: string; readonly catalog?: SetupProvenance | undefined },
+  SetupError | MachineRoleConflictError,
+  MachineState | Enrollment
+> => Effect.gen(function*() {
+  const machine = yield* MachineState;
+  switch (item.kind) {
+    case "recipe-install": {
+      const recipe = yield* Schema.decodeUnknownEffect(SetupRecipe)(item.detail).pipe(
+        Effect.mapError(() => fail("setup verify", `recipe ${item.id} is invalid`, "state")),
+      );
+      const installer = yield* machine.normalizePath({ path: recipe.installerExecutable }).pipe(
+        Effect.mapError((cause) => fail("setup verify", cause.message, "state")),
+      );
+      return yield* verifySetupRecipe(recipe, installer);
+    }
+    case "source-init": {
+      const enrollment = yield* Enrollment;
+      const material = yield* enrollment.source().pipe(
+        Effect.mapError((cause) => fail("setup verify", cause.message, "state")),
+      );
+      return { evidence: `source initialized as ${material.source.keyId}` };
+    }
+    case "ensure-directory": {
+      const directories = yield* machine.userDirectories().pipe(
+        Effect.mapError((cause) => fail("setup verify", cause.message, "state")),
+      );
+      const path = yield* machine.normalizePath({ path: ".canonfig", base: directories.home }).pipe(
+        Effect.mapError((cause) => fail("setup verify", cause.message, "state")),
+      );
+      const observed = yield* machine.inspectPath(path).pipe(
+        Effect.mapError((cause) => fail("setup verify", cause.message, "state")),
+      );
+      if (observed.kind !== "directory") return yield* fail("setup verify", `${path.absolute} is not a directory`, "state");
+      return { evidence: `verified directory ${path.absolute}` };
+    }
+    case "folder-scaffold":
+    case "harness-import": return yield* verifyFolderSetupItem(item);
+    case "tool-verify":
+    case "toolchain-verify": return yield* executeSetupItem(item, journal, environment);
+  }
+});
+
+const persistSetupTransition = (
   machine: MachineState["Service"],
   journalPath: string,
   journal: SetupJournal,
-  id: string,
-  status: "completed" | "skipped" | "failed",
-  evidence?: string,
-  catalog?: SetupProvenance | undefined,
+  event: Parameters<typeof transitionSetup>[1],
 ): Effect.Effect<SetupJournal, SetupError> =>
   Effect.gen(function*() {
-    const updated: SetupJournal = {
-      ...journal,
-      evidence: evidence === undefined ? journal.evidence : [...journal.evidence, evidence],
-      catalog: catalog === undefined
-        ? journal.catalog
-        : [...journal.catalog.filter((entry) => entry.resource !== catalog.resource), catalog],
-      records: journal.records.map((record) => {
-        if (record.id !== id) return record;
-        const item = journal.items.find((candidate) => candidate.id === id);
-        const detailDigest = item === undefined
-          ? undefined
-          : sha256Hex(canonicalJson(asJson(item.detail)));
-        return {
-          ...record,
-          status,
-          evidence,
-          detailDigest,
-          updatedAt: new Date().toISOString(),
-        };
-      }),
-    };
+    const updated = yield* transitionSetup(journal, event);
     yield* writeJournal(machine, journalPath, updated);
     return updated;
   });
@@ -1302,81 +1341,66 @@ export const applySetup = (
       );
     }
     if (!(yield* setupDiscoveryInputsUnchanged(machine, journal.discoveryInputs))) {
-      yield* writeJournal(machine, journalPath, {
-        ...journal,
-        approvals: [],
-        stages: journal.stages.filter((stage) => stage.stage !== "approve" && stage.stage !== "apply"),
-      });
+      yield* persistSetupTransition(machine, journalPath, journal, { type: "invalidate" });
       return yield* fail(
         "setup apply",
-        journal.discoveryInputs === undefined
-          ? "the setup plan has no authoring-file fingerprints and must be planned again"
-          : "the setup discovery files changed or cannot be read since approval",
+        "the setup discovery files changed or cannot be read since approval",
         "prerequisite",
         "Run setup plan with the selected role, scope and files, then review and approve the new plan.",
       );
     }
-    for (const item of journal.items) {
+    // Resolve the one uncertain effect before retrying earlier optional failures.
+    const uncertain = journal.records.find((record) => record.status === "running" || record.status === "interrupted");
+    const applyOrder = uncertain === undefined ? journal.items
+      : [...journal.items.filter((item) => item.id === uncertain.id),
+        ...journal.items.filter((item) => item.id !== uncertain.id)];
+    for (const item of applyOrder) {
       const prior = journal.records.find((record) => record.id === item.id);
       if (prior?.status === "completed") continue;
-      if (prior?.status === "skipped") {
-        const blocked = item.dependsOn.some((dependency) =>
-          journal.records.find((candidate) => candidate.id === dependency)?.status !== "completed"
+      const detailDigest = setupItemDetailDigest(item);
+      if (prior?.status === "running" || prior?.status === "interrupted") {
+        if (prior.status === "running") {
+          journal = yield* persistSetupTransition(machine, journalPath, journal, {
+            type: "interrupt", id: item.id, detailDigest,
+            evidence: `${item.id} was started but has no confirmed outcome`,
+          });
+        }
+        const verified = yield* verifySetupItem(item, journal, environment).pipe(
+          Effect.mapError((cause) => fail("setup apply",
+            `Interrupted item ${item.id} could not be verified: ${cause.message}. Its side effects may already exist. Inspect them, then back up and remove setup.json and review a new plan. The item was not rerun.`, "prerequisite",
+            "Its side effects may already exist. Inspect them, then back up and remove setup.json and review a new plan. The item was not rerun.")),
         );
-        if (blocked) continue;
+        journal = yield* persistSetupTransition(machine, journalPath, journal, {
+          type: "complete", id: item.id, detailDigest, ...verified,
+        });
+        continue;
       }
       const blocked = item.dependsOn.filter((dependency) =>
-        journal.records.find((candidate) => candidate.id === dependency)?.status !== "completed"
-      );
+        journal.records.find((candidate) => candidate.id === dependency)?.status !== "completed");
       if (blocked.length > 0) {
-        journal = yield* recordItem(
-          machine,
-          journalPath,
-          journal,
-          item.id,
-          "skipped",
-          `skipped ${item.id}: dependency ${blocked.join(", ")} did not complete`,
-        );
+        journal = yield* persistSetupTransition(machine, journalPath, journal, {
+          type: "skip", id: item.id, detailDigest,
+          evidence: `skipped ${item.id}: dependency ${blocked.join(", ")} did not complete`,
+        });
         continue;
       }
+      journal = yield* persistSetupTransition(machine, journalPath, journal, {
+        type: "start", id: item.id, detailDigest,
+      });
       const outcome: SetupItemOutcome = yield* executeSetupItem(item, journal, environment).pipe(
         Effect.map((result) => ({ ok: true as const, ...result })),
-        Effect.catch((cause) =>
-          cause instanceof MachineRoleConflictError
-            ? Effect.fail(fail("setup apply", cause.message, "usage"))
-            : Effect.succeed({ ok: false as const, cause })
-        ),
+        Effect.catch((cause) => Effect.succeed({
+          ok: false as const,
+          cause: cause instanceof MachineRoleConflictError
+            ? fail("setup apply", cause.message, "usage") : cause,
+        })),
       );
-      if (outcome.ok) {
-        journal = yield* recordItem(
-          machine,
-          journalPath,
-          journal,
-          item.id,
-          "completed",
-          outcome.evidence,
-          outcome.catalog,
-        );
-        continue;
-      }
-      journal = yield* recordItem(
-        machine,
-        journalPath,
-        journal,
-        item.id,
-        "failed",
-        `${item.id} failed: ${outcome.cause.message}`,
-      );
-      if (!item.optional) return yield* outcome.cause;
+      journal = yield* persistSetupTransition(machine, journalPath, journal, outcome.ok
+        ? { type: "complete", id: item.id, detailDigest, evidence: outcome.evidence, catalog: outcome.catalog }
+        : { type: "fail", id: item.id, detailDigest, evidence: `${item.id} failed: ${outcome.cause.message}` });
+      if (!outcome.ok && !item.optional) return yield* outcome.cause;
     }
-    const timestamp = new Date().toISOString();
-    journal = {
-      ...journal,
-      stages: journal.stages.some((stage) => stage.stage === "apply")
-        ? journal.stages
-        : [...journal.stages, { stage: "apply", digest: journal.planDigest, completedAt: timestamp }],
-    };
-    yield* writeJournal(machine, journalPath, journal);
+    journal = yield* persistSetupTransition(machine, journalPath, journal, { type: "finish-apply" });
     return journal;
   }));
 
@@ -1398,7 +1422,7 @@ export interface SetupStatus {
   /** Approvals of the current plan digest only. */
   readonly approvals: ReadonlyArray<SetupApproval>;
   readonly stages: ReadonlyArray<SetupStageRecord>;
-  readonly items: ReadonlyArray<{ readonly id: string; readonly status: string; readonly evidence?: string | undefined }>;
+  readonly items: ReadonlyArray<SetupItemSummary>;
   readonly catalog: ReadonlyArray<SetupProvenance>;
 }
 
@@ -1420,22 +1444,37 @@ export const setupStatus = (
       };
     }
     const verdicts = setupItemVerdicts(journal.items, journal.records);
+    const holder = yield* runLockHolder(journalPath);
     return {
       role: journal.role,
-      scope: journal.scope ?? "full",
+      scope: journal.scope,
       mode: journal.mode,
       intent: journal.intent,
-      discoveryPaths: [...(journal.discoveryPaths ?? [])],
+      discoveryPaths: [...journal.discoveryPaths],
       discoveryInputs: journal.discoveryInputs,
       planDigest: journal.planDigest,
       stage: nextEligibleSetupStage(journal),
       approved: isSetupApproved(journal),
       approvals: journal.approvals.filter((approval) => approval.digest === journal.planDigest),
       stages: [...journal.stages],
-      items: journal.items.map((item) => {
-        const status = verdicts.get(item.id) ?? "pending";
+      items: journal.items.map((item): SetupItemSummary => {
         const record = journal.records.find((entry) => entry.id === item.id);
-        return { id: item.id, status, evidence: record?.status === status ? record.evidence : undefined };
+        if (verdicts.get(item.id) === "skipped" && record?.status !== "skipped") {
+          return { id: item.id, status: "skipped" };
+        }
+        if (record === undefined) return { id: item.id, status: "pending" };
+        switch (record.status) {
+          case "running": return holder === undefined
+            ? { id: item.id, status: "interrupted", evidence: `${item.id} was started but has no confirmed outcome` }
+            : { id: item.id, status: "running" };
+          case "pending": return { id: item.id, status: "pending" };
+          case "skipped": return record.evidence === undefined
+            ? { id: item.id, status: "skipped" }
+            : { id: item.id, status: "skipped", evidence: record.evidence };
+          case "interrupted":
+          case "completed":
+          case "failed": return { id: item.id, status: record.status, evidence: record.evidence };
+        }
       }),
       catalog: [...journal.catalog],
     };

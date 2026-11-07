@@ -41,6 +41,7 @@ import {
 import {
   ActiveRunExistsError,
   EarlierStateFormatError,
+  InvalidRunTransitionError,
   MachineRoleConflictError,
   RepositoryDecodeError,
   RepositorySqlError,
@@ -56,7 +57,9 @@ import { runtimeStateLayer } from "../src/runtime/state-layer.ts";
 import { StateInitializationError } from "../src/runtime/state-initialization.errors.ts";
 import {
   defaultScheduledInvocation,
+  FollowerSynchronizationConfiguration,
 } from "../src/synchronization/follower-sync-config.ts";
+import { describeUnattendedRuns } from "../src/runtime/readiness.ts";
 
 const temporaryDirectories: Array<string> = [];
 
@@ -159,7 +162,62 @@ const start = (
     startedAt: "2026-08-15T12:01:00Z",
   });
 
+const followerConfigurationFixture = (path: string) => decode(FollowerSynchronizationConfiguration)({
+  schemaVersion: 1, lifecycle: { _tag: "Active" },
+  follower: follower(), profile: "profile-1",
+  source: { endpoint: "https://127.0.0.1:17342", tlsFingerprint: "tls-source", signingFingerprint: "source" },
+  credentialReference: follower().credentialReference,
+  cacheDirectory: join(dirname(path), "cache"), stateLocation: path,
+  agentPolicy: "deterministic-only", scheduledInvocation: defaultScheduledInvocation,
+  updatedAt: "2026-08-15T12:00:00Z",
+});
+
 describe("StateRepository SQLite adapter", () => {
+  it("refuses illegal action transitions before appending durable evidence", async () => {
+    const path = databasePath();
+    await runWithRepository(path, Effect.gen(function*() {
+      yield* seed();
+      const repository = yield* StateRepository;
+      yield* start(repository, "run-transitions", follower().id, revision().id);
+      const event = {
+        run: asRunId("run-transitions"), action: asActionId("action-1"),
+        attempt: 1, recordedAt: "2026-08-15T12:01:01Z",
+      };
+      expect(yield* Effect.flip(repository.journalAction({
+        ...event, state: "succeeded", verification: { status: "passed", method: "digest" },
+      }))).toBeInstanceOf(InvalidRunTransitionError);
+      yield* repository.journalAction({ ...event, state: "running" });
+      expect(yield* Effect.flip(repository.journalAction({
+        ...event, state: "succeeded", verification: { status: "failed", method: "digest" },
+      }))).toBeInstanceOf(InvalidRunTransitionError);
+      yield* repository.journalAction({ ...event, state: "succeeded", verification: { status: "passed", method: "digest" } });
+      expect(yield* Effect.flip(repository.journalAction({ ...event, state: "running" }))).toBeInstanceOf(InvalidRunTransitionError);
+      const recovery = yield* repository.loadRecovery(follower().id);
+      expect(recovery?.actions.filter((entry) => entry.action === event.action).map((entry) => entry.state))
+        .toEqual(["pending", "running", "succeeded"]);
+    }));
+  });
+
+  it("refuses applying a reservation before its backup choice is durable", async () => {
+    const path = databasePath();
+    await runWithRepository(path, Effect.gen(function*() {
+      yield* seed();
+      const repository = yield* StateRepository;
+      const run = asRunId("preparing-takeover");
+      yield* repository.startRun({ id: run, follower: follower().id, revision: revision().id,
+        plan: plan(), startedAt: "2026-08-15T12:01:00Z", preparing: true });
+      const reservation = { _tag: "Reserved" as const, harness: "codex", surface: "instructions",
+        root: "/disposable/home/.codex", run, takenOverAt: "2026-08-15T12:01:00Z" };
+      yield* repository.recordHarnessTakeovers([{ ...reservation, backup: { _tag: "Pending" } }]);
+      expect(yield* Effect.flip(repository.beginRun(run))).toBeInstanceOf(InvalidRunTransitionError);
+      expect((yield* repository.loadRecovery(follower().id))?.run.lifecycle._tag).toBe("Preparing");
+      yield* repository.recordHarnessTakeovers([{ ...reservation, backup: { _tag: "Snapshot", id: "captured" } }]);
+      expect(yield* Effect.flip(repository.recordHarnessTakeovers([{ ...reservation, backup: { _tag: "Disabled" } }]))).toBeInstanceOf(InvalidRunTransitionError);
+      yield* repository.beginRun(run);
+      expect((yield* repository.loadRecovery(follower().id))?.run.lifecycle._tag).toBe("Applying");
+    }));
+  });
+
   it("runs idempotent migrations and persists identities as references", async () => {
     const path = databasePath();
     const program = Effect.gen(function*() {
@@ -208,6 +266,7 @@ describe("StateRepository SQLite adapter", () => {
         sourceIdentity,
         configuration: {
           schemaVersion: 1,
+          lifecycle: { _tag: "Active" },
           follower: configuredFollower,
           profile: decode(ProfileId)("profile-1"),
           source: {
@@ -265,7 +324,7 @@ describe("StateRepository SQLite adapter", () => {
         cacheDirectory: join(dirname(path), "cache"),
         stateLocation: path,
         agentPolicy: "deterministic-only" as const,
-        enrollmentPending: true as const,
+        lifecycle: { _tag: "Finalizing" as const },
         scheduledInvocation: defaultScheduledInvocation,
         updatedAt: "2026-08-15T12:00:00Z",
       },
@@ -322,8 +381,156 @@ describe("StateRepository SQLite adapter", () => {
     expect(rows(sourcePath)).toEqual({ source: 1, follower: 0, followers: 0, signingKey: "own" });
   });
 
+  it("refuses replacing an initialized Source identity", async () => {
+    const path = databasePath();
+    const first = {
+      identity: decode(SourceIdentity)({ keyId: "first", publicKeyFingerprint: "first" }),
+      signingKeyReference: decode(CredentialReference)("secure-store://first/signing"),
+      tlsKeyReference: decode(CredentialReference)("secure-store://first/tls"),
+      tlsCertificateReference: decode(CredentialReference)("secure-store://first/cert"),
+      tlsFingerprint: decode(CertificateFingerprint)("first-tls"),
+    };
+    const second = { ...first, identity: decode(SourceIdentity)({ keyId: "second", publicKeyFingerprint: "second" }) };
+    const result = await runWithRepository(path, Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.saveEnrollmentSource(first);
+      const refused = yield* Effect.result(repository.saveEnrollmentSource(second));
+      return { refused, stored: yield* repository.getEnrollmentSource() };
+    }));
+    expect(result.refused._tag).toBe("Failure");
+    expect(result.stored).toEqual(first);
+  });
+  it("refuses a stale settings write after unenrollment instead of recreating the enrollment", async () => {
+    const path = databasePath();
+    const sourceIdentity = decode(SourceIdentity)({ keyId: "source", publicKeyFingerprint: "source" });
+    const stale = followerConfigurationFixture(path);
+    const result = await runWithRepository(path, Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.saveFollowerSynchronizationConfiguration({ sourceIdentity, configuration: stale });
+      const retiring = { ...stale, lifecycle: { _tag: "Unenrolling" as const } };
+      yield* repository.saveFollowerSynchronizationConfiguration({
+        sourceIdentity, configuration: retiring, expectedConfiguration: stale,
+      });
+      yield* repository.removeFollowerSynchronizationConfiguration(retiring);
+      const refused = yield* Effect.result(repository.saveFollowerSynchronizationConfiguration({
+        sourceIdentity, configuration: { ...stale, agentPolicy: "agent-apply" }, expectedConfiguration: stale,
+      }));
+      return { refused, configuration: yield* repository.getFollowerSynchronizationConfiguration() };
+    }));
+    expect(result.refused._tag).toBe("Failure");
+    expect(result.configuration).toBeUndefined();
+  });
+
+  it("updates schedule settings without changing a pending enrollment lifecycle", async () => {
+    const path = databasePath();
+    const sourceIdentity = decode(SourceIdentity)({ keyId: "source", publicKeyFingerprint: "source" });
+    const pending = { ...followerConfigurationFixture(path), lifecycle: { _tag: "Finalizing" as const } };
+    const stored = await runWithRepository(path, Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.saveFollowerSynchronizationConfiguration({ sourceIdentity, configuration: pending });
+      yield* repository.saveFollowerSynchronizationConfiguration({
+        sourceIdentity, expectedConfiguration: pending,
+        configuration: { ...pending, scheduleOverride: { kind: "disabled" } },
+      });
+      return yield* repository.getFollowerSynchronizationConfiguration();
+    }));
+    expect(stored?.lifecycle).toEqual({ _tag: "Finalizing" });
+    expect(stored?.scheduleOverride).toEqual({ kind: "disabled" });
+  });
+
+  it("refuses to drop previous credential ownership when unenrollment starts", async () => {
+    const path = databasePath();
+    const sourceIdentity = decode(SourceIdentity)({ keyId: "source", publicKeyFingerprint: "source" });
+    const previous = followerConfigurationFixture(path);
+    const candidateReference = decode(CredentialReference)("secure-store://candidate");
+    await runWithRepository(path, Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.saveFollowerSynchronizationConfiguration({
+        sourceIdentity,
+        configuration: {
+          ...previous, credentialReference: candidateReference,
+          follower: { ...previous.follower, credentialReference: candidateReference },
+          lifecycle: { _tag: "Finalizing", previous: { ...previous, sourceIdentity } },
+        },
+      });
+      const current = yield* repository.getFollowerSynchronizationConfiguration();
+      if (current === undefined) throw new Error("the pending fixture was not stored");
+      const refused = yield* Effect.result(repository.saveFollowerSynchronizationConfiguration({
+        sourceIdentity, expectedConfiguration: current,
+        configuration: { ...current, lifecycle: { _tag: "Unenrolling" } },
+      }));
+      expect(refused._tag).toBe("Failure");
+      expect((yield* repository.getFollowerSynchronizationConfiguration())?.lifecycle).toEqual(current.lifecycle);
+    }));
+  });
+
+  it("keeps concurrent invocations and reports the latest start, not the latest completion", async () => {
+    const path = databasePath();
+    const earlier = { id: "earlier", generation: "installed", startedAt: "2026-08-15T12:00:01Z" };
+    const later = { id: "later", generation: "installed", startedAt: "2026-08-15T12:00:02Z" };
+    await runWithRepository(path, Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* Effect.all([
+        repository.transitionScheduledInvocation({ ...earlier, _tag: "Running" }),
+        repository.transitionScheduledInvocation({ ...later, _tag: "Running" }),
+      ], { concurrency: 2 });
+      yield* repository.transitionScheduledInvocation({
+        ...later, _tag: "Failed", at: "2026-08-15T12:00:03Z", reason: "run lock held",
+      });
+      yield* repository.transitionScheduledInvocation({ ...earlier, _tag: "Completed", at: "2026-08-15T12:00:04Z" });
+      const duplicate = yield* Effect.result(repository.transitionScheduledInvocation({
+        ...earlier, _tag: "Completed", at: "2026-08-15T12:00:05Z",
+      }));
+      expect(duplicate._tag).toBe("Failure");
+    }));
+    const invocations = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      repository.listScheduledInvocations()));
+    expect(invocations.map((invocation) => invocation.id)).toEqual(["earlier", "later"]);
+    const summary = describeUnattendedRuns(invocations.map((invocation) => ({
+      ...invocation, at: invocation._tag === "Running" ? invocation.startedAt : invocation.at,
+      outcome: invocation._tag === "Completed" ? "completed" : invocation._tag === "Failed" ? "failed" : "started",
+    })));
+    expect(summary.completed).toBe(false);
+    expect(summary.text).toContain("run lock held");
+  });
+
+
+  it("refuses 6.1 migration history without changing its state", async () => {
+    const path = databasePath();
+    const database = new DatabaseSync(path);
+    database.exec(`
+      CREATE TABLE effect_sql_migrations (
+        migration_id integer PRIMARY KEY NOT NULL,
+        created_at datetime NOT NULL DEFAULT current_timestamp,
+        name VARCHAR(255) NOT NULL
+      );
+      INSERT INTO effect_sql_migrations (migration_id, name)
+        VALUES (1, 'state_format_6'), (2, 'archive_events');
+      CREATE TABLE retained_evidence (content TEXT NOT NULL);
+      INSERT INTO retained_evidence VALUES ('preserve this state');
+    `);
+    const schema = database.prepare("SELECT sql FROM sqlite_master ORDER BY name").all();
+    const history = database.prepare("SELECT * FROM effect_sql_migrations ORDER BY migration_id").all();
+    database.close();
+    const refused = await Effect.runPromise(Effect.flip(
+      Effect.flatMap(StateRepository, () => Effect.void).pipe(Effect.provide(stateRepositoryLayer(path))),
+    ));
+    expect(refused).toBeInstanceOf(EarlierStateFormatError);
+    const runtime = await Effect.runPromise(Effect.flip(
+      Effect.flatMap(StateRepository, () => Effect.void).pipe(Effect.provide(runtimeStateLayer(path))),
+    ));
+    expect(runtime).toBeInstanceOf(StateInitializationError);
+    expect(runtime.message).toContain("created by an earlier Canonfig version");
+    expect(runtime.message).toContain(`move ${path} aside`);
+    const retained = new DatabaseSync(path, { readOnly: true });
+    expect(retained.prepare("SELECT sql FROM sqlite_master ORDER BY name").all()).toEqual(schema);
+    expect(retained.prepare("SELECT * FROM effect_sql_migrations ORDER BY migration_id").all()).toEqual(history);
+    expect(retained.prepare("SELECT * FROM retained_evidence").all()).toEqual([{ content: "preserve this state" }]);
+    retained.close();
+  });
+
   it("refuses state an earlier release created and asks to reinitialize", async () => {
-    // A release before state format 6 recorded a different migration history.
+    // A different migration history is never applied to the current schema.
     const path = databasePath();
     const database = new DatabaseSync(path);
     database.exec(`
@@ -362,6 +569,7 @@ describe("StateRepository SQLite adapter", () => {
         outcome: decode(SynchronizationOutcomeSchema)({ outcome: "Converged", run: "run-sync", verified: [] }),
         appliedResources: [],
       });
+      yield* repository.finalizeRun(asRunId("run-sync"), "2026-08-15T12:03:01Z");
       yield* repository.recordArchiveEvent({
         occurredAt: "2026-08-15T12:04:00Z",
         command: "export",
@@ -661,6 +869,7 @@ describe("StateRepository SQLite adapter", () => {
           },
           appliedResources: [],
         });
+        yield* repository.finalizeRun(asRunId("run-active"), "2026-08-15T12:03:01Z");
         yield* start(
           repository,
           "run-after-completion",
@@ -677,9 +886,9 @@ describe("StateRepository SQLite adapter", () => {
     const database = new DatabaseSync(path, { readOnly: true });
     const indexes = database.prepare(
       "SELECT sql FROM sqlite_master WHERE name = ?",
-    ).get("one_active_applying_run_per_follower");
+    ).get("one_open_run_per_follower");
     database.close();
-    expect(String(indexes?.sql)).toContain("WHERE status = 'applying'");
+    expect(String(indexes?.sql)).toContain("WHERE phase != 'Complete'");
   });
 
   it("blocks a new run after restart until interrupted recovery is terminal", async () => {
@@ -833,9 +1042,11 @@ describe("StateRepository SQLite adapter", () => {
       digest: digestA,
       appliedAt: "2026-08-15T12:00:59Z",
       kind: "file" as const,
+      ownership: "WholeFile" as const,
       policy: "replace" as const,
       target: "~/.canonfig/removed",
       executable: false,
+      mode: 0o600,
     };
     const recovery = await runWithRepository(
       path,
@@ -849,23 +1060,12 @@ describe("StateRepository SQLite adapter", () => {
           revision().id,
         );
         const database = new DatabaseSync(path);
-        database.prepare(`
-          INSERT INTO applied_resources (
-            follower_id, resource_id, revision_id, digest, applied_at,
-            kind, policy, target, executable
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          follower().id,
-          removed.resource,
-          removed.revision,
-          removed.digest,
-          removed.appliedAt,
-          removed.kind,
-          removed.policy,
-          removed.target,
-          0,
-        );
+        database.prepare("INSERT INTO applied_resources (follower_id, resource_id, revision_id, digest, applied_at, record_json) VALUES (?, ?, ?, ?, ?, ?)").run(follower().id, removed.resource, removed.revision, removed.digest, removed.appliedAt, JSON.stringify(removed));
         database.close();
+        yield* repository.journalAction({
+          run: asRunId("run-removed-resource"), action: asActionId("action-1"),
+          state: "running", attempt: 1, recordedAt: "2026-08-15T12:01:00Z",
+        });
         yield* repository.journalAction({
           run: asRunId("run-removed-resource"),
           action: asActionId("action-1"),
@@ -927,15 +1127,25 @@ describe("StateRepository SQLite adapter", () => {
             revision: revision().id,
             digest: digestA,
             appliedAt: "2026-08-15T12:03:00Z",
+            ownership: "DirectoryEntries",
+            kind: "directory",
+            policy: "replace",
+            target: "~/.canonfig/owned",
             mode: 0o644,
             ownedFiles: [{
               path: "nested/file",
               digest: digestB,
               executable: false,
               mode: 0o640,
+              objectKind: "regular",
             }],
           }],
         });
+        const finalizing = yield* repository.loadRecovery(follower().id);
+        expect(finalizing?.run.lifecycle._tag).toBe("Finalizing");
+        expect(yield* repository.loadDeploymentReceipt(asRunId("run-complete"))).toBeUndefined();
+        expect(yield* Effect.flip(start(repository, "blocked", follower().id, revision().id))).toBeInstanceOf(ActiveRunExistsError);
+        yield* repository.finalizeRun(asRunId("run-complete"), "2026-08-15T12:03:01Z");
         const completedRecovery = yield* repository.loadRecovery(follower().id);
         yield* start(
           repository,
@@ -954,12 +1164,17 @@ describe("StateRepository SQLite adapter", () => {
       revision: "revision-1",
       digest: digestA,
       appliedAt: "2026-08-15T12:03:00Z",
+      ownership: "DirectoryEntries",
+      kind: "directory",
+      policy: "replace",
+      target: "~/.canonfig/owned",
       mode: 0o644,
       ownedFiles: [{
         path: "nested/file",
         digest: digestB,
         executable: false,
         mode: 0o640,
+        objectKind: "regular",
       }],
     }]);
   });
@@ -984,6 +1199,7 @@ describe("StateRepository SQLite adapter", () => {
                 kind: "write-file",
                 target: "~/.config/client",
                 digest: digestA,
+                textTransition: { kind: "whole-file" },
               },
               before: [],
             },
@@ -1053,6 +1269,10 @@ describe("StateRepository SQLite adapter", () => {
           ["transfer", "sha256-and-size"],
         ] as const) {
           yield* repository.journalAction({
+            run: asRunId("run-evidence"), action: asActionId(action),
+            state: "running", attempt: 1, recordedAt: "2026-08-15T12:01:59Z",
+          });
+          yield* repository.journalAction({
             run: asRunId("run-evidence"),
             action: asActionId(action),
             state: "succeeded",
@@ -1072,6 +1292,7 @@ describe("StateRepository SQLite adapter", () => {
           }),
           appliedResources: [],
         });
+        yield* repository.finalizeRun(asRunId("run-evidence"), "2026-08-15T12:03:01Z");
         const firstReceipt = yield* repository.loadDeploymentReceipt(
           asRunId("run-evidence"),
         );
@@ -1099,6 +1320,10 @@ describe("StateRepository SQLite adapter", () => {
           secondPlan,
         );
         yield* repository.journalAction({
+          run: asRunId("run-noop"), action: asActionId("noop"),
+          state: "running", attempt: 1, recordedAt: "2026-08-15T12:03:59Z",
+        });
+        yield* repository.journalAction({
           run: asRunId("run-noop"),
           action: asActionId("noop"),
           state: "succeeded",
@@ -1116,6 +1341,7 @@ describe("StateRepository SQLite adapter", () => {
           }),
           appliedResources: [],
         });
+        yield* repository.finalizeRun(asRunId("run-noop"), "2026-08-15T12:05:01Z");
         const latestReceipt = yield* repository.latestDeploymentReceipt(
           follower().id,
         );
@@ -1184,6 +1410,7 @@ describe("StateRepository SQLite adapter", () => {
       id: "follower-1", name: "Follower follower-1", groups: ["base"],
       enrolledAt: "2026-08-15T12:00:00Z", revoked: true,
       pending: false, credentialPresent: false,
+      credentialLifecycle: { _tag: "Retiring" },
     }]);
     expect(rows.invitations).toEqual([{
       endpoint: "https://127.0.0.1:7341", groups: [],

@@ -95,8 +95,12 @@ backups and stops for manual recovery.
 
 A crash can leave a sibling `.canonfig-backup-<id>` directory, a staged directory,
 a `<config>.pending` journal and/or a `<config>.lock`. Do not delete them blindly.
-The journal records previous configuration, expected updated digests and
-backup/staging paths relative to the selected root. Stop any active updater and
+The version 2 journal records staging ownership before creating staged trees,
+previous configuration, old and updated digests, and backup/staging paths
+relative to the selected root. Transaction and per-skill phases record rename
+intent before each rename, completed installation, and individual rollback
+outcomes. A committed configuration never enters rollback. An invalid journal
+stops the command without changing installed skills. Stop any active updater and
 inspect the installed trees and configuration together. A journal can remain
 after a completed commit if its cleanup failed: verify the updated digests and
 configuration before clearing that journal. For a partial update, preserve any

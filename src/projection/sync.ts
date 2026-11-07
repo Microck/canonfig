@@ -6,11 +6,13 @@ import { Effect, Schema } from "effect";
 
 import { RunId } from "../domain/brand.ts";
 import type { FollowerId, RunId as RunIdType } from "../domain/brand.ts";
-import { localProjectionFollower, type SynchronizationOutcome } from "../domain/synchronization.ts";
+import { checkTextWriteTransition, localProjectionFollower, type SynchronizationOutcome } from "../domain/synchronization.ts";
 import { composeTextFile, parseTextComposition } from "../domain/text-composition.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { sha256BytesHex } from "../profile/profile-codec.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
+import { ActiveRunExistsError } from "../state/state-repository.errors.ts";
+import type { RecoveryState } from "../state/state-repository.types.ts";
 import { editConfigText, getConfigPath, parseConfigDocument } from "../synchronization/config-codec.ts";
 import {
   cleanupRollbackSnapshots,
@@ -121,10 +123,10 @@ export const discardRunArtifacts = (run: RunIdType) =>
 
 /**
  * Finish a run the shared engine completed or recovered. A failed run forgets
- * its takeovers only after rollback completed. Incomplete rollback keeps the
- * original snapshot and ownership available for restore. A run stopped early
- * keeps takeovers only for surfaces it applied. An interrupted run keeps
- * everything for `canonfig recover`.
+ * its takeovers only after rollback completed. Incomplete rollback keeps every
+ * takeover and its original snapshot, including restored surfaces recovery can
+ * replay. A run stopped early keeps takeovers only for surfaces it applied.
+ * An interrupted run keeps everything for `canonfig recover`.
  */
 export const finishProjectionRun = (
   statePath: string,
@@ -134,33 +136,27 @@ export const finishProjectionRun = (
   revision: PlanningLocalRevision,
 ) =>
   Effect.gen(function*() {
-    if (outcome.outcome === "Interrupted") return { snapshotDeleted: false, pruned: [] };
-    const repository = yield* StateRepository;
-    const backups = backupsOf(statePath);
-    if (outcome.outcome === "Failed" && outcome.rollbackIncomplete) {
-      if (outcome.failedRollbackResources !== undefined) {
-        const retained = new Set(outcome.failedRollbackResources);
-        const restored = (yield* repository.loadHarnessTakeovers()).filter((takeover) =>
-          takeover.run === run && !retained.has(surfaceResourceId(takeover.harness, takeover.surface.split("#")[0]!))
-        );
-        yield* repository.releaseTakeovers(restored);
-        const snapshot = yield* snapshotOfRun(backups, run);
-        if (snapshot !== undefined) yield* dropSnapshotEntries(backups, snapshot, restored);
-      }
+    if (outcome.outcome === "Interrupted" || outcome.outcome === "Failed" && outcome.rollbackIncomplete === true) {
       return { snapshotDeleted: false, pruned: [] };
     }
-    yield* discardRunArtifacts(run);
+    const repository = yield* StateRepository;
+    const backups = backupsOf(statePath);
     if (outcome.outcome === "Failed") {
       yield* repository.removeRunTakeovers(run);
       const snapshot = yield* snapshotOfRun(backups, run);
       if (snapshot !== undefined) yield* deleteSnapshot(backups, snapshot);
+      yield* discardRunArtifacts(run);
+      yield* repository.finalizeRun(run, new Date().toISOString());
       return { snapshotDeleted: snapshot !== undefined, pruned: [] };
     }
     const snapshotDeleted = outcome.outcome === "Converged"
       ? false
       : yield* releaseUnappliedTakeovers(statePath, follower, run);
     if (revision.origin === "snapshot" && outcome.outcome === "Converged") yield* finishRestore(statePath, revision);
-    return { snapshotDeleted, pruned: yield* pruneSnapshots(backups) };
+    const pruned = yield* pruneSnapshots(backups);
+    yield* discardRunArtifacts(run);
+    yield* repository.finalizeRun(run, new Date().toISOString());
+    return { snapshotDeleted, pruned };
   });
 
 /**
@@ -187,7 +183,7 @@ export const releaseUnappliedTakeovers = (statePath: string, follower: FollowerI
       const hash = takeover.surface.indexOf("#");
       const resource = surfaceResourceId(takeover.harness, hash < 0 ? takeover.surface : takeover.surface.slice(0, hash));
       const record = applied.get(resource);
-      const owned = record !== undefined && (hash < 0 || (record.ownedKeys ?? []).includes(takeover.surface.slice(hash + 1)));
+      const owned = record !== undefined && (hash < 0 || (record.ownership === "ConfigKeys" && record.ownedKeys.includes(takeover.surface.slice(hash + 1))));
       return owned ? [] : [{ harness: takeover.harness, surface: takeover.surface, resource }];
     });
     if (unapplied.length === 0) return false;
@@ -229,13 +225,6 @@ const finishRestore = (statePath: string, revision: PlanningLocalRevision) =>
       for (const key of entry.desired.releases) keys.add(`${parsed.harness}\0${parsed.surface}#${key}`);
       owner(parsed);
     }
-    const takeovers = yield* repository.loadHarnessTakeovers();
-    yield* repository.releaseTakeovers(takeovers
-      .filter((takeover) =>
-        surfaces.has(`${takeover.harness}\0${takeover.surface.split("#")[0]!}`)
-        || keys.has(`${takeover.harness}\0${takeover.surface}`)
-      )
-      .map((takeover) => ({ harness: takeover.harness, surface: takeover.surface })));
     if (harnesses.has(sharedSkillsOwner)) {
       const loaded = yield* loadFolder(statePath);
       const context = yield* rootContext((name) => process.env[name]);
@@ -245,8 +234,14 @@ const finishRestore = (statePath: string, revision: PlanningLocalRevision) =>
     }
     if (resources.size > 0) yield* editLocalList(folderOf(statePath), "excludeResources", (previous) => [...previous, ...resources]);
     const excluded = [...harnesses].filter((harness) => harness !== sharedSkillsOwner).sort();
-    if (excluded.length === 0) return [];
-    yield* editLocalList(folderOf(statePath), "excludeHarnesses", (previous) => [...previous, ...excluded]);
+    if (excluded.length > 0) yield* editLocalList(folderOf(statePath), "excludeHarnesses", (previous) => [...previous, ...excluded]);
+    const takeovers = yield* repository.loadHarnessTakeovers();
+    yield* repository.releaseTakeovers(takeovers
+      .filter((takeover) =>
+        surfaces.has(`${takeover.harness}\0${takeover.surface.split("#")[0]!}`)
+        || keys.has(`${takeover.harness}\0${takeover.surface}`)
+      )
+      .map((takeover) => ({ harness: takeover.harness, surface: takeover.surface })));
     return excluded;
   });
 
@@ -377,26 +372,23 @@ export const runProjection = (input: ProjectionRunInput) =>
     const run = newRunId();
     const now = new Date().toISOString();
     const backups = backupsOf(input.statePath);
+    yield* repository.recordLocalRevision(planned.revision, now);
+    yield* repository.startRun({
+      id: run, follower: input.follower, revision: planned.revision.id,
+      plan: planned.plan, startedAt: now, preparing: true,
+    });
+    const reservations = planned.takeovers.map((unit) => ({
+      _tag: "Reserved" as const, harness: unit.harness, surface: unit.surface,
+      root: unit.root, run, takenOverAt: now,
+      backup: input.backup ? { _tag: "Pending" as const } : { _tag: "Disabled" as const },
+    }));
+    yield* repository.recordHarnessTakeovers(reservations);
     const snapshot = planned.takeovers.length > 0 && input.backup
       ? yield* writeTakeoverSnapshot(backups, input.home, run, planned.takeovers)
       : undefined;
-    // Anything that stops the run before the engine records it leaves no
-    // takeover behind: the snapshot and rows are this run's alone.
-    const undo = Effect.gen(function*() {
-      if (yield* runRecorded(input.follower, run)) return;
-      yield* repository.removeRunTakeovers(run);
-      if (snapshot !== undefined) yield* deleteSnapshot(backups, snapshot);
-      yield* discardRunArtifacts(run);
-    }).pipe(Effect.ignore);
     const outcome = yield* Effect.gen(function*() {
-      yield* repository.recordLocalRevision(planned.revision, now);
-      yield* repository.recordHarnessTakeovers(planned.takeovers.map((unit) => ({
-        harness: unit.harness,
-        surface: unit.surface,
-        root: unit.root,
-        snapshot,
-        run,
-        takenOverAt: now,
+      yield* repository.recordHarnessTakeovers(reservations.map((reservation) => ({
+        ...reservation, backup: snapshot === undefined ? { _tag: "Disabled" as const } : { _tag: "Snapshot" as const, id: snapshot },
       })));
       yield* storeArtifacts(run, planned.artifacts);
       return yield* synchronization.run({
@@ -409,7 +401,7 @@ export const runProjection = (input: ProjectionRunInput) =>
         agentResolution: input.agentResolution,
         limits: input.limits,
       });
-    }).pipe(Effect.tapError(() => undo));
+    });
     const finished = yield* finishProjectionRun(input.statePath, input.follower, run, outcome, planned.revision);
     return { outcome, snapshot: finished.snapshotDeleted ? undefined : snapshot };
   });
@@ -433,7 +425,7 @@ export const writeAdoptionReviews = (
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const adoptions = plan.actions.filter((action) =>
-      action.detail.kind === "write-file" && action.detail.retainedLocalDigest !== undefined
+      action.detail.kind === "write-file" && action.detail.textTransition.kind === "adopt-local"
     );
     if (adoptions.length === 0) return [];
     const stale = (message: string) =>
@@ -443,16 +435,19 @@ export const writeAdoptionReviews = (
     const prepared: Array<{ resource: string; target: string; review: object }> = [];
     for (const action of adoptions) {
       const detail = action.detail;
-      if (detail.kind !== "write-file") continue;
+      if (detail.kind !== "write-file" || detail.textTransition.kind !== "adopt-local") continue;
       const target = yield* machine.normalizePath({ path: detail.target });
       if ((yield* machine.inspectPath(target)).kind !== "regular") return yield* stale(`${detail.target} is no longer a regular file`);
       const bytes = yield* machine.readFile({ path: target, maximumBytes: defaultSynchronizationExecutionLimits.maximumFileBytes });
-      if (sha256BytesHex(bytes) !== detail.retainedLocalDigest) return yield* stale(`${detail.target} changed after planning`);
       const current = yield* Effect.try({
         try: () => parseTextComposition(bytes),
         catch: () => stale(`${detail.target} is no longer valid text without Canonfig markers`),
       });
       if (current.kind !== "unmanaged") return yield* stale(`${detail.target} already holds a Canonfig section`);
+      yield* Effect.try({
+        try: () => checkTextWriteTransition(detail.textTransition, { kind: "unmanaged", digest: sha256BytesHex(bytes) }, detail.digest),
+        catch: () => stale(`${detail.target} changed after planning`),
+      });
       const sourceBytes = artifacts.find((artifact) => artifact.digest === detail.digest)?.content;
       if (sourceBytes === undefined) return yield* stale(`the Source text for ${detail.target} is unavailable`);
       const source = decoder.decode(sourceBytes);
@@ -466,7 +461,7 @@ export const writeAdoptionReviews = (
           resource: action.resource,
           target: detail.target,
           sourceDigest: detail.digest,
-          retainedLocalDigest: detail.retainedLocalDigest,
+          retainedLocalDigest: detail.textTransition.retainedDigest,
           sourceAddition: source,
           retainedLocal: current.local,
           proposedText: decoder.decode(composeTextFile(source, current)),
@@ -499,6 +494,9 @@ export const synchronizeLocal = Effect.fn("LocalProjection.synchronize")(functio
 ) {
   const repository = yield* StateRepository;
   if (mode === "apply") yield* assertUpgradeGate(localProjectionFollower);
+  if (mode === "apply" && (yield* repository.loadRecovery(localProjectionFollower)) !== undefined) {
+    return yield* new ActiveRunExistsError({ follower: localProjectionFollower });
+  }
   const loaded = yield* loadFolder(statePath);
   const context = yield* rootContext(options.environment);
   const takeovers = yield* repository.loadHarnessTakeovers();
@@ -551,6 +549,10 @@ export const restoreLocal = Effect.fn("LocalProjection.restore")(function*(
   const repository = yield* StateRepository;
   const synchronization = yield* Synchronization;
   yield* assertUpgradeGate(follower);
+  // A retained partial-rollback snapshot is not ready for restore planning.
+  if ((yield* repository.loadOpenRunIdentity(follower)) !== undefined) {
+    return yield* new ActiveRunExistsError({ follower });
+  }
   const snapshot = yield* readSnapshot(backupsOf(statePath), requested);
   const applied = yield* repository.loadAppliedResources(follower);
   const planned = yield* planRestore(snapshot, applied, follower);
@@ -762,6 +764,19 @@ export const hasOpenLocalRun = Effect.gen(function*() {
   return (yield* repository.loadRecovery(localProjectionFollower)) !== undefined;
 });
 
+/** Abandonment has its own durable intent, so retry never replays run actions. */
+export const finishAbandonedProjection = (statePath: string, recovery: RecoveryState) =>
+  Effect.gen(function*() {
+    const repository = yield* StateRepository;
+    yield* repository.abandonRun(recovery.run.id);
+    yield* removeRunTemporaryEntries(recovery.run.plan.actions, recovery.run.id);
+    yield* cleanupRollbackSnapshots(recovery.run.id, recovery.run.plan.actions.map((action) => action.id), [],
+      recovery.actions.flatMap((action) => action.rollbackReference === undefined ? [] : [action.rollbackReference]));
+    yield* releaseUnappliedTakeovers(statePath, recovery.run.follower, recovery.run.id);
+    yield* discardRunArtifacts(recovery.run.id);
+    yield* repository.finalizeRun(recovery.run.id, new Date().toISOString());
+  });
+
 /** `canonfig recover` for an interrupted local run. */
 export const recoverLocal = Effect.fn("LocalProjection.recover")(function*(statePath: string) {
   const repository = yield* StateRepository;
@@ -771,8 +786,14 @@ export const recoverLocal = Effect.fn("LocalProjection.recover")(function*(state
     return yield* new CanonicalFolderError({ path: statePath, message: "no interrupted local run is waiting for recovery" });
   }
   yield* assertUpgradeGate(localProjectionFollower);
+  if (recovery.run.lifecycle._tag === "Abandoning") {
+    yield* finishAbandonedProjection(statePath, recovery);
+    return { run: recovery.run.id, origin: "abandonment", outcome: recovery.run.lifecycle.outcome };
+  }
   const revision = yield* repository.getLocalRevision(recovery.run.revision);
-  const artifacts = yield* loadRunArtifacts(recovery.run.id, revision);
+  const artifacts = recovery.run.lifecycle._tag === "Preparing"
+      || recovery.run.lifecycle._tag === "Finalizing" && !(recovery.run.lifecycle.outcome.outcome === "Failed" && recovery.run.lifecycle.outcome.rollbackIncomplete === true)
+    ? [] : yield* loadRunArtifacts(recovery.run.id, revision);
   const outcome = yield* synchronization.recover({ follower: localProjectionFollower, revision, artifacts });
   yield* finishProjectionRun(statePath, localProjectionFollower, recovery.run.id, outcome, revision);
   return { run: recovery.run.id, origin: revision.origin, outcome };
@@ -790,21 +811,6 @@ export const abandonLocal = Effect.fn("LocalProjection.abandon")(function*(state
     return yield* new CanonicalFolderError({ path: statePath, message: "no interrupted local run is open" });
   }
   yield* assertUpgradeGate(localProjectionFollower);
-  yield* removeRunTemporaryEntries(recovery.run.plan.actions, recovery.run.id);
-  yield* cleanupRollbackSnapshots(
-    recovery.run.id,
-    recovery.run.plan.actions.map((action) => action.id),
-    [],
-    recovery.actions.flatMap((action) => action.rollbackReference === undefined ? [] : [action.rollbackReference]),
-  );
-  // Before the run closes, so a failure here leaves it open for another abandon.
-  yield* releaseUnappliedTakeovers(statePath, localProjectionFollower, recovery.run.id);
-  yield* repository.completeRun({
-    run: recovery.run.id,
-    completedAt: new Date().toISOString(),
-    outcome: { outcome: "Failed", run: recovery.run.id, reason: "the interrupted run was abandoned by the operator" },
-    appliedResources: yield* repository.loadAppliedResources(localProjectionFollower),
-  });
-  yield* discardRunArtifacts(recovery.run.id);
+  yield* finishAbandonedProjection(statePath, recovery);
   return { run: recovery.run.id, revision: recovery.run.revision, abandoned: true as const };
 }, (effect, statePath) => withRunLock(statePath, "abandon", effect));

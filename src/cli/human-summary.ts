@@ -332,7 +332,7 @@ const summarizeSync = (data: PayloadRecord, outline: Outline): boolean => {
         );
         // An adoption notice ends with the review command, so it is never shortened.
         for (const notice of actionNotices(detail)) {
-          if (detail?.retainedLocalDigest !== undefined) outline.lines.push(`      ${notice}`);
+          if (objectOf(detail?.textTransition)?.kind === "adopt-local") outline.lines.push(`      ${notice}`);
           else pushText(outline, "      ", "", notice);
         }
       }

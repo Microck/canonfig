@@ -1,4 +1,5 @@
 import { type Redacted, Schema } from "effect";
+import type { StoreCredentialInput } from "../machine/machine-state.types.ts";
 
 import {
   BlobId,
@@ -184,6 +185,7 @@ export interface FetchedRevision {
 export interface FollowerEnrollmentInput {
   readonly invitation: EnrollmentInvitationGrant;
   readonly followerName: string;
+  readonly beforeStoreCredential?: StoreCredentialInput["beforeStore"];
   /**
    * Runtime enrollment sets this to false while it durably writes the local
    * configuration. The source only exposes the identity after finalization.

@@ -31,7 +31,23 @@ Skill track, check and update return operation tickets too. Their Git and filesy
 
 The API supports Source authoring/publication, enrollment, synchronization, local settings and administration through the shared workspace screens. Setup uses the shared onboarding flow with real import offers and explicit plan-digest approval. Missing CLI operations remain hidden. Map appearance is browser-local; it never changes an enrollment record. A follower's stored Source identity contains no machine name, so the map labels it "Source" and shows its endpoint separately. Named evidence replaces raw status JSON in the interface. Verification and platform limits are recorded in [the integration plan](../plans/canonfig-ui.md#phase-2d-one-screen-tree-two-data-sources).
 
+Onboarding owns role discovery, Source setup and Follower enrollment through tagged lifecycle transitions. Source discovery locks the role choice until it settles. Setup records approval or apply separately from its follow-up status read; reloading the journal can certify completion without repeating the mutation. Enrollment keeps a successful join when the local-preferences read fails. Preference-save failures retain the draft and completed harness changes, and a retry re-reads local preferences.
+
+Guidance has one active mode for the tour picker, tour or page tip. Other dialogs suspend it through a shared dialog-availability observation. Each tour measurement belongs to its current step; moving to another step hides the previous geometry immediately. Map-icon reads carry a machine and generation, so a later preset or reset refuses a stale upload without changing the stored appearance format. Demo synchronization keeps held resources outside its execution cursor. Demo publication freezes its edit generation and tracks delivery per follower and revision, so later edits and deliveries cannot be settled by older timers.
+
 The Canonical Folder defined by ADR 0003 is the authoring source of truth. `src/projection/authoring.ts` provides shared file and skill-tree editing for canonical and local folders, with comment-preserving JSONC key edits, digest preconditions and full candidate validation before atomic file publication through MachineState. The GUI does not maintain a second profile store. The typed slice interface, injected `WorkspaceBackend`, capabilities and completed area ownership are documented in the integration plan.
+
+### Browser workflow ownership
+
+Operation tickets are a schema union: running carries a journal, succeeded requires a result, and failed requires a CLI diagnostic. The server owns terminal transitions and invokes a successful result's delivery callback once, after the response finishes.
+
+The live Follower keeps command submission, ticket observation, lost observation and terminal results in one command lifecycle. A failed poll retains the ticket and blocks further mutations until observation resumes. Only a successful plan enables Apply; a completed restore, review or recovery does not. Local configuration changes invalidate that readiness.
+
+Profile editors own their baseline, draft mode and submitted revision. A save refresh accepts only the submitted generation as clean, preserving any newer edits against the refreshed digests. Local-item and secret forms freeze their submitted drafts until the write settles. Local file reads belong to file identities and upload generations, so removing a file, changing its mode or choosing a newer upload cannot accept an older read.
+
+Publication review belongs to the observed folder snapshot and is invalidated by a write or changed observation. Discovery distinguishes scanning, results and failure, with an explicit retry. Agent policy save records policy commitment separately from harness commitment, retaining the partial-success state if the second write fails. Built-in harness drafts carry a model; custom drafts carry arguments.
+
+Invitation dialogs retain immutable submitted values, including the selected follower, after creation even if inventory refresh removes that follower. Revocation cannot be dismissed while its server request is running; reopening a failed confirmation starts without the earlier error.
 
 The frontend is a static React 19 single-page app built with Vite and shipped in `dist/ui` in the npm package. The public demo remains a separate build with simulated operations. Package validation must measure the combined CLI and production UI rather than excluding the browser assets.
 
@@ -55,7 +71,9 @@ The authenticated JSON endpoints are:
 
 Apply uses the existing `GET /api/operations/:id` polling contract. Its journal is `GuiSelfUpdateProgress`, `{ phase, candidate }`, read from persisted updater progress. `phase` is `checking`, `staging`, `verifying`, `activating` or `complete`; `candidate` is a version string or `null` before selection. The successful result is `GuiSelfUpdateCheck` with status `updated`, `current` or `deferred`. Progress reports actual updater work, not a timer.
 
-After activation, the server waits for the final successful operation response to finish before closing its HTTP server, releasing its scope and exiting cleanly. The page retains the update result and tells the person to run `canonfig ui` again for a new authenticated session. It does not restart services or continue using the old process against the new package. A current or deferred result keeps the server running and reacquires its ordinary lease. Failures also re-enter normal coordination rather than bypassing a pending transaction or another updater's gate.
+The browser updater distinguishes applying from lost observation. A failed poll retains the operation ticket and offers Resume update observation; it does not claim the last progress phase is still running. Status reloads invalidate earlier check results, including when updates become disabled. Enable, disable and install confirmations share one mode.
+
+After activation, the server waits for the final successful operation response to finish before closing its HTTP server, releasing its scope and exiting cleanly. The page retains the update result and tells the person to run `canonfig ui` again for a new authenticated session. It does not restart services or continue using the old process against the new package. A current or deferred result keeps the server running and reacquires its ordinary lease. Pre-activation failures also re-enter normal coordination rather than bypassing a pending transaction or another updater's gate. Once the candidate rename succeeds, receipt or progress failures return `updated` with a bookkeeping warning and retain restart-required semantics, never normal command admission.
 
 ## Considered options
 

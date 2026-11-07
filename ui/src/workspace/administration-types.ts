@@ -1,4 +1,5 @@
 import type { Schema } from "effect";
+import type { UpdateLifecycle } from "./live/self-update";
 import type { GuiAgentPolicy, GuiSourceServiceStatus, GuiSelfUpdateCheck, GuiSelfUpdateStatus, GuiSelfUpdateProgress } from "../../../src/gui/contract/administration";
 import type { GuiRequestError } from "../gui-client";
 
@@ -10,18 +11,29 @@ export interface AdministrationResource<T> {
   reload: () => void;
 }
 
-export interface SavedPolicy {
-  mode: typeof GuiAgentPolicy.Type;
-  /** Null when the CLI refuses access to harness configuration. */
-  harness: "codex" | "claude" | "custom" | null;
-  model: string;
+interface HarnessBounds {
   executable: string;
-  args: string[];
   paths: string[];
   /** Bytes, without rounding the CLI's exact evidence limit. */
   maximumInputBytes: number;
   origins: readonly string[];
 }
+export type HarnessDraft = HarnessBounds & (
+  | { kind: "codex" | "claude"; model: string }
+  | { kind: "custom"; args: string[] }
+);
+export interface SavedPolicy {
+  mode: typeof GuiAgentPolicy.Type;
+  /** Null when no harness draft is available. */
+  harness: HarnessDraft | null;
+}
+export type PolicySave =
+  | { kind: "Idle" }
+  | { kind: "SavingPolicy"; submitted: SavedPolicy }
+  | { kind: "SavingHarness"; committedPolicy: SavedPolicy["mode"]; draftHarness: HarnessDraft }
+  | { kind: "Saved"; policy: SavedPolicy["mode"]; harness: HarnessDraft | null }
+  | { kind: "PolicyFailed"; draft: SavedPolicy; error: GuiRequestError }
+  | { kind: "HarnessFailed"; committedPolicy: SavedPolicy["mode"]; draftHarness: HarnessDraft; error: GuiRequestError };
 
 export interface DoctorCheck {
   check: string;
@@ -53,6 +65,7 @@ export interface AdministrationSlice {
     harnessLoading: boolean;
     harnessError: GuiRequestError | null;
     savedMessage: string;
+    saveState: PolicySave;
     save: (policy: SavedPolicy) => Promise<boolean>;
     harnessLabels: Readonly<Record<string, string>>;
   };
@@ -70,6 +83,8 @@ export interface AdministrationSlice {
     run: () => void;
   };
   version: AdministrationResource<typeof GuiSelfUpdateStatus.Type> & {
+    lifecycle: UpdateLifecycle;
+    resume: () => void;
     current: string;
     npmCli: string | null;
     latest: string | null;

@@ -224,28 +224,29 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
   const ws = useWorkspace();
   const agent = ws.admin.agent;
   // No policy is selected until the CLI reports one or the person chooses one.
-  const initial = saved ?? { mode: null, harness: null, model: "", executable: "", args: [], paths: [], maximumInputBytes: 0, origins: [] };
+  const initial = saved ?? { mode: null, harness: null };
+  const initialHarness = initial.harness;
   const [mode, setMode] = useState<SavedPolicy["mode"] | null>(initial.mode);
-  const [harness, setHarness] = useState(initial.harness);
-  const [model, setModel] = useState(initial.model);
-  const [executable, setExecutable] = useState(initial.executable);
-  // JSON keeps the CLI's exact argv entries on a round trip.
-  const [argsText, setArgsText] = useState(joinArguments(initial.args));
-  const [paths, setPaths] = useState<string[]>(initial.paths);
+  const [harness, setHarness] = useState(initialHarness?.kind ?? null);
+  const [model, setModel] = useState(initialHarness && initialHarness.kind !== "custom" ? initialHarness.model : "");
+  const [executable, setExecutable] = useState(initialHarness?.executable ?? "");
+  // Per-mode field drafts intentionally survive switching the selected harness.
+  const [argsText, setArgsText] = useState(joinArguments(initialHarness?.kind === "custom" ? initialHarness.args : []));
+  const [paths, setPaths] = useState<string[]>(initialHarness?.paths ?? []);
   const [newPath, setNewPath] = useState("");
   // A digits-only string while editing; Save stores it as a number.
-  const [maximumInputBytes, setMaximumInputBytes] = useState(String(initial.maximumInputBytes));
+  const [maximumInputBytes, setMaximumInputBytes] = useState(String(initialHarness?.maximumInputBytes ?? 0));
   const custom = harness === "custom";
   const args = splitArguments(argsText);
   const dirty =
     mode !== initial.mode ||
-    harness !== initial.harness ||
-    model.trim() !== initial.model ||
-    executable.trim() !== initial.executable ||
-    (custom && JSON.stringify(args) !== JSON.stringify(initial.args)) ||
-    maximumInputBytes !== String(initial.maximumInputBytes) ||
-    paths.length !== initial.paths.length ||
-    paths.some((path, i) => path !== initial.paths[i]);
+    harness !== (initialHarness?.kind ?? null) ||
+    model.trim() !== (initialHarness && initialHarness.kind !== "custom" ? initialHarness.model : "") ||
+    executable.trim() !== (initialHarness?.executable ?? "") ||
+    (custom && JSON.stringify(args) !== JSON.stringify(initialHarness?.kind === "custom" ? initialHarness.args : [])) ||
+    maximumInputBytes !== String(initialHarness?.maximumInputBytes ?? 0) ||
+    paths.length !== (initialHarness?.paths.length ?? 0) ||
+    paths.some((path, i) => path !== initialHarness?.paths[i]);
   // Errors show only after a Save attempt, then follow the fields as they change.
   const [tried, setTried] = useState(false);
   const off = mode === "deterministic-only" || harness === null || !agent.harnessWritable;
@@ -268,12 +269,12 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
   const { dialog: leaveDialog } = useLeaveGuard(hasChanges, "the agent policy");
   const discard = () => {
     setMode(initial.mode);
-    setHarness(initial.harness);
-    setModel(initial.model);
-    setExecutable(initial.executable);
-    setArgsText(joinArguments(initial.args));
-    setPaths(initial.paths);
-    setMaximumInputBytes(String(initial.maximumInputBytes));
+    setHarness(initialHarness?.kind ?? null);
+    setModel(initialHarness && initialHarness.kind !== "custom" ? initialHarness.model : "");
+    setExecutable(initialHarness?.executable ?? "");
+    setArgsText(joinArguments(initialHarness?.kind === "custom" ? initialHarness.args : []));
+    setPaths(initialHarness?.paths ?? []);
+    setMaximumInputBytes(String(initialHarness?.maximumInputBytes ?? 0));
     setNewPath("");
     setTried(false);
   };
@@ -296,12 +297,12 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
       document.getElementById(firstInvalid[1])?.focus();
       return;
     }
-    const next = { mode, harness, model: custom ? "" : modelTyped, executable: executable.trim(), args: custom ? (args ?? []) : [], paths, maximumInputBytes: bytes, origins: initial.origins };
+    const next: SavedPolicy = { mode, harness: harness === null ? null : {
+      executable: executable.trim(), paths, maximumInputBytes: bytes, origins: initialHarness?.origins ?? [],
+      ...(harness === "custom" ? { kind: "custom", args: args ?? [] } : { kind: harness, model: modelTyped }),
+    } };
     if (await agent.save(next)) {
       setMaximumInputBytes(String(bytes));
-      setModel(next.model);
-      setExecutable(next.executable);
-      setArgsText(joinArguments(next.args));
       setTried(false);
     }
   };
@@ -487,7 +488,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
             </Field>
             <Field label="Allowed network origins" description="Requests anywhere else are blocked.">
               <div className="flex flex-wrap gap-1">
-                {initial.origins.map((o) => (
+                {(initialHarness?.origins ?? []).map((o) => (
                   <span key={o} className="rounded border border-border px-2 py-0.5 font-mono text-xs text-muted-foreground">
                     {o}
                   </span>
@@ -726,24 +727,24 @@ const RESTART_COMMAND = "canonfig ui";
 export function VersionView() {
   const ws = useWorkspace();
   const version = ws.admin.version;
-  const [enabling, setEnabling] = useState(false);
-  const [disabling, setDisabling] = useState(false);
-  const [installing, setInstalling] = useState(false);
+  const [confirmation, setConfirmation] = useState<{ kind: "none" | "enable" | "disable" } | { kind: "install"; candidate: string }>({ kind: "none" });
+  const closeConfirmation = (open: boolean) => { if (!open) setConfirmation({ kind: "none" }); };
   const enableFocus = useDialogReturnFocus(focusPageHeading);
   const on = version.data?.enabled;
   const releaseLine = version.current.split(".").slice(0, 2).join(".");
-  const available = version.checked?.status === "available";
+  const available = !!on && version.checked?.status === "available";
   const updated = version.checked?.status === "updated";
   return <>
     <PageHeader crumbs={["Settings", "Version"]} actions={<>
-      <Button size="sm" variant="outline" disabled={version.busy || updated} onClick={version.reload}>Reload status</Button>
-      {!on ? <Button size="sm" variant="primary" disabled={version.busy || updated || !version.data} onClick={() => setEnabling(true)}>Turn on updates…</Button>
-        : <Button size="sm" variant="primary" disabled={version.busy || updated} onClick={version.check}>{version.checking ? "Checking…" : "Check for updates"}</Button>}
+      <Button size="sm" variant="outline" disabled={version.busy || updated || version.lifecycle.kind === "observation-lost"} onClick={version.reload}>Reload status</Button>
+      {!on ? <Button size="sm" variant="primary" disabled={version.busy || updated || !version.data} onClick={() => setConfirmation({ kind: "enable" })}>Turn on updates…</Button>
+        : <Button size="sm" variant="primary" disabled={version.busy || updated || version.lifecycle.kind === "observation-lost"} onClick={version.check}>{version.checking ? "Checking…" : "Check for updates"}</Button>}
     </>} />
     <Body reloading={version.loading}>
       <Column>
         <Lede>Canonfig can update itself to new patch releases from npm. It stays in the {releaseLine} line: moving to a newer minor or major version is a step you take on every machine together, by hand.</Lede>
         {version.error && <ErrorNotice error={version.error} />}
+        {version.lifecycle.kind === "observation-lost" && <div className="mt-3"><p>The update may still be running. Resume observing it before starting another command.</p><Button variant="outline" size="sm" onClick={version.resume}>Resume update observation</Button></div>}
         <SectionLabel>This machine</SectionLabel>
         <div className={cn("mt-1", settingsGroup)}>
           <SettingRow title="Version"><Mono className="text-foreground">{version.current}</Mono></SettingRow>
@@ -753,31 +754,31 @@ export function VersionView() {
           {version.npmCli && <SettingRow title="npm" description={<><Mono className="break-all">{version.npmCli}</Mono><br />Canonfig fetches only its own package from registry.npmjs.org, with install scripts off.</>} />}
           {(on || version.checked) && <SettingRow title="Newest patch">
             <span className="inline-flex items-center gap-1.5 text-base" aria-live="polite">
-              <StatusMark kind={available ? "warn" : version.checked?.status === "current" ? "ok" : "off"} />
+              <StatusMark kind={available ? "warn" : version.checked?.status === "current" || updated ? "ok" : "off"} />
               {version.checking ? "Checking…" : version.checked ? `${version.checked.candidate}: ${version.checked.status}` : "Not checked yet"}
             </span>
           </SettingRow>}
         </div>
         {version.progress && <p role="status" className="mt-4 text-base capitalize">{version.progress.phase}{version.progress.candidate ? ` ${version.progress.candidate}` : ""}</p>}
         {version.checked && <p role="status" className="mt-4 text-sm text-pretty">{updated ? <>Canonfig {version.checked.candidate} is installed. Start <Mono>{RESTART_COMMAND}</Mono> again.</> : version.checked.detail}</p>}
-        {updated && DEMO && <p className="mt-2 text-sm">{version.checked?.detail}</p>}
+        {updated && <p className="mt-2 text-sm">{version.checked?.detail}</p>}
         {version.checked?.status === "deferred" && <p className="mt-2 text-sm">Exit code 0</p>}
         {updated && <CommandBox>{RESTART_COMMAND}</CommandBox>}
-        {available && <Button size="sm" variant="primary" className="mt-5" disabled={version.busy} onClick={() => setInstalling(true)}>Install {version.latest}…</Button>}
+        {available && <Button size="sm" variant="primary" className="mt-5" disabled={version.busy} onClick={() => setConfirmation({ kind: "install", candidate: version.latest! })}>Install {version.latest}…</Button>}
         {version.unfinished && <p className="mt-5 text-base text-warn">An interrupted operation needs attention before updates can proceed.</p>}
         {!on && version.unfinished && <Button size="sm" variant="outline" className="mt-2" disabled={version.busy || updated} onClick={() => ws.setView("sync")}>Open Sync</Button>}
-        {on && <Button variant="destructive" size="sm" className="mt-6" disabled={version.busy || updated} onClick={() => setDisabling(true)}>Turn off updates…</Button>}
+        {on && <Button variant="destructive" size="sm" className="mt-6" disabled={version.busy || updated || version.lifecycle.kind === "observation-lost"} onClick={() => setConfirmation({ kind: "disable" })}>Turn off updates…</Button>}
       </Column>
     </Body>
-    <Dialog open={enabling} onOpenChange={setEnabling}>
+    <Dialog open={confirmation.kind === "enable"} onOpenChange={closeConfirmation}>
       <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md" {...enableFocus}>
-        <EnableUpdatesForm unfinished={version.unfinished} onCancel={() => setEnabling(false)} onEnable={(npmCli, confirmIdle) => { version.enable(npmCli, confirmIdle); setEnabling(false); }} />
+        <EnableUpdatesForm unfinished={version.unfinished} onCancel={() => setConfirmation({ kind: "none" })} onEnable={(npmCli, confirmIdle) => { version.enable(npmCli, confirmIdle); setConfirmation({ kind: "none" }); }} />
       </DialogContent>
     </Dialog>
-    <ConfirmDialog open={disabling} onOpenChange={setDisabling} title="Turn off Canonfig updates?"
+    <ConfirmDialog open={confirmation.kind === "disable"} onOpenChange={closeConfirmation} title="Turn off Canonfig updates?"
       body="Canonfig stops checking for and installing patches on this machine. The backups of earlier versions and the update records stay."
       confirm="Turn off updates" onConfirm={version.disable} />
-    <ConfirmDialog open={installing} onOpenChange={setInstalling} title={`Install Canonfig ${version.latest}?`}
+    <ConfirmDialog open={confirmation.kind === "install"} onOpenChange={closeConfirmation} title={`Install Canonfig ${confirmation.kind === "install" ? confirmation.candidate : ""}?`}
       body="Stop every other Canonfig process and pause its schedules first. After installation, this GUI stops. Start canonfig ui again to use the installed version. Canonfig restarts nothing."
       confirm="Install update" onConfirm={version.apply} />
   </>;

@@ -592,6 +592,18 @@ export const controlledEnvironment = (
 const cancelled = (input: ControlledProcessInput): AgentExecutionCancelledError =>
   new AgentExecutionCancelledError({ executable: input.executable });
 
+type ProcessLifecycle =
+  | { readonly _tag: "Starting" }
+  | { readonly _tag: "Running" }
+  | { readonly _tag: "Stopping"; readonly cause: AgentResolutionError; readonly termination: Promise<void> }
+  | { readonly _tag: "Closing"; readonly result: CapturedProcess | AgentResolutionError }
+  | { readonly _tag: "Settled" };
+
+type ProcessEvent =
+  | { readonly _tag: "Start" }
+  | { readonly _tag: "Stop"; readonly cause: AgentResolutionError }
+  | { readonly _tag: "Close"; readonly result: CapturedProcess | AgentResolutionError }
+  | { readonly _tag: "Settle" };
 export const executeControlledProcess = (
   input: ControlledProcessInput,
 ): Effect.Effect<CapturedProcess, AgentResolutionError> => {
@@ -680,16 +692,15 @@ export const executeControlledProcess = (
           message: "pip requirement or constraint input changed after authorization",
         });
       }
+      // Authorization may await filesystem reads, and Effects can start long after
+      // construction. Recheck cancellation before owning a subprocess.
+      if (effectSignal.aborted || input.signal?.aborted) throw cancelled(input);
       return new Promise<CapturedProcess>((resolve, reject) => {
       const output: Array<Buffer> = [];
       const errors: Array<Buffer> = [];
       let capturedBytes = 0;
-      let settled = false;
-      let limitExceeded = false;
-      let timedOut = false;
-      let wasCancelled = false;
+      let lifecycle: ProcessLifecycle = { _tag: "Starting" };
       let inputError: NodeJS.ErrnoException | undefined;
-      let termination: Promise<void> | undefined;
       const child = spawn(input.executable, [...input.arguments], {
         cwd: input.workingDirectory,
         detached: process.platform !== "win32",
@@ -725,19 +736,50 @@ export const executeControlledProcess = (
         shell: false,
         stdio: ["pipe", "pipe", "pipe"],
       });
-      const finishWith = (cause: AgentResolutionError): void => {
-        if (settled) return;
-        settled = true;
-        reject(cause);
-      };
-      const terminate = (): void => {
-        termination ??= terminateProcessTree(child);
+      // First stop cause wins. Later timeout/abort observations cannot replace
+      // the reason that actually initiated process-tree termination.
+      const transition = (event: ProcessEvent): ProcessLifecycle => {
+        switch (event._tag) {
+          case "Start":
+            if (lifecycle._tag !== "Starting") {
+              throw new AgentProcessError({ executable: input.executable, message: `invalid process start from ${lifecycle._tag}` });
+            }
+            lifecycle = { _tag: "Running" };
+            return lifecycle;
+          case "Stop":
+            if (lifecycle._tag === "Starting") {
+              throw new AgentProcessError({ executable: input.executable, message: "cannot stop a process before start" });
+            }
+            // Stop observations during termination or close are legal. Only
+            // the first one changes state and owns process-tree termination.
+            if (lifecycle._tag === "Running") {
+              lifecycle = { _tag: "Stopping", cause: event.cause, termination: terminateProcessTree(child) };
+            }
+            return lifecycle;
+          case "Close": {
+            if (lifecycle._tag !== "Running" && lifecycle._tag !== "Stopping") {
+              throw new AgentProcessError({ executable: input.executable, message: `invalid process close from ${lifecycle._tag}` });
+            }
+            const stopping = lifecycle._tag === "Stopping" ? lifecycle : undefined;
+            lifecycle = { _tag: "Closing", result: stopping?.cause ?? event.result };
+            if (stopping === undefined) complete();
+            else void stopping.termination.then(complete);
+            return lifecycle;
+          }
+          case "Settle":
+            if (lifecycle._tag !== "Closing") {
+              throw new AgentProcessError({ executable: input.executable, message: `invalid process settlement from ${lifecycle._tag}` });
+            }
+            lifecycle = { _tag: "Settled" };
+            return lifecycle;
+        }
       };
       const capture = (target: Array<Buffer>) => (chunk: Buffer): void => {
         capturedBytes += chunk.byteLength;
         if (capturedBytes > input.maximumOutputBytes) {
-          limitExceeded = true;
-          terminate();
+          transition({ _tag: "Stop", cause: new AgentOutputLimitError({
+            executable: input.executable, maximumBytes: input.maximumOutputBytes,
+          }) });
           return;
         }
         target.push(chunk);
@@ -747,60 +789,51 @@ export const executeControlledProcess = (
         // Early process exit commonly closes the pipe before the task is sent.
         // Preserve that exit status and stderr; other write failures terminate
         // the process and are reported after close so timers are cleaned up.
-        if (cause.code !== "EPIPE" && cause.code !== "ERR_STREAM_DESTROYED") terminate();
+        if (cause.code !== "EPIPE" && cause.code !== "ERR_STREAM_DESTROYED") {
+          transition({ _tag: "Stop", cause: new AgentProcessError({
+            executable: input.executable,
+            message: `standard input write failed: ${redactText(String(cause), input.secrets)}`,
+          }) });
+        }
       });
       child.stdout.on("data", capture(output));
       child.stderr.on("data", capture(errors));
       child.once("error", (cause) => {
-        finishWith(new AgentProcessError({
+        transition({ _tag: "Stop", cause: new AgentProcessError({
           executable: input.executable,
           message: redactText(String(cause), input.secrets),
-        }));
+        }) });
       });
       const timer = setTimeout(() => {
-        timedOut = true;
-        terminate();
+        transition({ _tag: "Stop", cause: new AgentExecutionTimeoutError({
+          executable: input.executable, timeoutMilliseconds: input.timeoutMilliseconds,
+        }) });
       }, input.timeoutMilliseconds);
       const abort = (): void => {
-        wasCancelled = true;
-        terminate();
+        transition({ _tag: "Stop", cause: cancelled(input) });
       };
       effectSignal.addEventListener("abort", abort, { once: true });
       input.signal?.addEventListener("abort", abort, { once: true });
+      const complete = (): void => {
+        clearTimeout(timer);
+        effectSignal.removeEventListener("abort", abort);
+        input.signal?.removeEventListener("abort", abort);
+        if (lifecycle._tag !== "Closing") {
+          throw new AgentProcessError({ executable: input.executable, message: `cannot complete a process from ${lifecycle._tag}` });
+        }
+        const result = lifecycle.result;
+        transition({ _tag: "Settle" });
+        if ("_tag" in result) reject(result);
+        else resolve(result);
+      };
       child.once("close", (exitCode, signal) => {
-        const complete = (): void => {
-          clearTimeout(timer);
-          effectSignal.removeEventListener("abort", abort);
-          input.signal?.removeEventListener("abort", abort);
-          if (settled) return;
-          if (wasCancelled) {
-            finishWith(cancelled(input));
-            return;
-          }
-          if (timedOut) {
-            finishWith(new AgentExecutionTimeoutError({
-              executable: input.executable,
-              timeoutMilliseconds: input.timeoutMilliseconds,
-            }));
-            return;
-          }
-          if (limitExceeded) {
-            finishWith(new AgentOutputLimitError({
-              executable: input.executable,
-              maximumBytes: input.maximumOutputBytes,
-            }));
-            return;
-          }
-          if (inputError !== undefined && (exitCode === 0 || inputError.code !== "EPIPE"
-            && inputError.code !== "ERR_STREAM_DESTROYED")) {
-            finishWith(new AgentProcessError({
-              executable: input.executable,
-              message: `standard input write failed: ${redactText(String(inputError), input.secrets)}`,
-            }));
-            return;
-          }
-          settled = true;
-          resolve({
+        const result = inputError !== undefined && (exitCode === 0 || inputError.code !== "EPIPE"
+          && inputError.code !== "ERR_STREAM_DESTROYED")
+          ? new AgentProcessError({
+            executable: input.executable,
+            message: `standard input write failed: ${redactText(String(inputError), input.secrets)}`,
+          })
+          : {
             executable: input.executable,
             arguments: input.arguments,
             exitCode,
@@ -808,11 +841,12 @@ export const executeControlledProcess = (
             outputBytes: capturedBytes,
             stdout: redactText(decoder.decode(Buffer.concat(output)), input.secrets),
             stderr: redactText(decoder.decode(Buffer.concat(errors)), input.secrets),
-          });
-        };
-        if (termination === undefined) complete();
-        else void termination.then(complete);
+          };
+        transition({ _tag: "Close", result });
       });
+      transition({ _tag: "Start" });
+      // AbortSignal does not replay an event that fired before subscription.
+      if (effectSignal.aborted || input.signal?.aborted) abort();
       if (input.standardInput === undefined) child.stdin.end();
       else child.stdin.end(input.standardInput);
       });

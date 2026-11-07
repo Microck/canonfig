@@ -467,3 +467,36 @@ export const executeHarnessImport = (item: SetupPlanItem, environment: Environme
         + (secrets.length > 0 ? `; literal credentials replaced with fromEnv references: ${[...new Set(secrets)].join(", ")}` : ""),
     };
   }).pipe(Effect.mapError((cause) => cause instanceof SetupError ? cause : applyFailure(`the harness import failed: ${cause.message}`)));
+
+/** Interrupted work is complete only when its approved postcondition is present. */
+export const verifyFolderSetupItem = (item: SetupPlanItem) =>
+  Effect.gen(function*() {
+    if (item.kind === "harness-import") {
+      const detail = yield* decodeDetail(ImportDetail, item);
+      const current = yield* Effect.tryPromise({
+        try: () => existingFolderItems(detail.folder),
+        catch: (cause) => applyFailure(`imported items could not be inspected: ${String(cause)}`),
+      });
+      const uncertain = detail.items.filter((candidate) => current.get(candidate.target) !== candidate.digest);
+      if (uncertain.length > 0) {
+        return yield* applyFailure(`import postconditions do not match for ${uncertain.map((candidate) => candidate.id).join(", ")}`);
+      }
+      return { evidence: `verified ${detail.items.length} imported item(s) in ${detail.folder}` };
+    }
+    const detail = yield* decodeDetail(FolderDetail, item);
+    const config = yield* Effect.tryPromise({
+      try: () => readFolderConfig(detail.folder),
+      catch: (cause) => applyFailure(`the scaffold could not be inspected: ${String(cause)}`),
+    });
+    if (config === undefined || JSON.stringify(config.harnesses) !== JSON.stringify(detail.harnesses)
+      || (detail.profile !== undefined && config.profile === undefined)) {
+      return yield* applyFailure("the approved Canonical Folder scaffold is not present");
+    }
+    const machine = yield* MachineState;
+    for (const [name, kind] of [["AGENTS.md", "regular"], ["skills", "directory"]] as const) {
+      const path = yield* machine.normalizePath({ path: join(detail.folder, name) });
+      const observed = yield* machine.inspectPath(path);
+      if (observed.kind !== kind) return yield* applyFailure(`the scaffold's ${name} is not a ${kind}`);
+    }
+    return { evidence: `verified Canonical Folder scaffold in ${detail.folder}` };
+  }).pipe(Effect.mapError((cause) => cause instanceof SetupError ? cause : applyFailure(cause.message)));

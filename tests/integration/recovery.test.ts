@@ -56,6 +56,7 @@ import {
 } from "../../src/synchronization/run-status.ts";
 import { RecoveryIntegrityError } from "../../src/synchronization/synchronization.errors.ts";
 import { SynchronizationLive } from "../../src/synchronization/synchronization.layer.ts";
+import { executeSynchronizationPlan } from "../../src/synchronization/executor.ts";
 import { Synchronization } from "../../src/synchronization/synchronization.service.ts";
 import type {
   DesiredResource,
@@ -148,7 +149,7 @@ const fixture = (
     groups: [],
   };
   const desired: DesiredResource = kind === "file"
-    ? { kind: "file", digest, executable: false }
+    ? { kind: "file", digest, executable: false, mode: 0o600 }
     : {
       kind: "tool",
       toolId: "rg",
@@ -256,7 +257,7 @@ const seed = (
 const journal = (
   value: Fixture,
   action: string,
-  state: "running" | "succeeded" | "failed" | "skipped",
+  state: "running" | "succeeded" | "failed" | "blocked" | "interrupted" | "rolled-back",
   rollbackReference?: string,
   ownership: Pick<
     JournalActionInput,
@@ -275,7 +276,7 @@ const journal = (
         attempt,
         verification: state === "succeeded"
           ? { status: "passed" as const, method: "sha256" }
-          : undefined,
+          : state === "failed" ? { status: "not-run" as const, method: "fixture-failure" } : undefined,
         rollbackReference,
         ...ownership,
       });
@@ -382,16 +383,16 @@ describe("interrupted ownership handover", () => {
     const oldDigest = sha256Hex("previous content");
     const oldResource = { ...base.revision.resources[0]!, id: oldId };
     const previous = { resource: oldId, revision: "old", digest: oldDigest, appliedAt: "2026-08-14T00:00:00Z",
-      kind: "file" as const, policy: "replace" as const, target: base.target, executable: false };
+      ownership: "WholeFile" as const, kind: "file" as const, policy: "replace" as const, target: base.target, executable: false, mode: 0o600 };
     const revision: PlanningProfileRevision = { ...base.revision,
       resources: [...base.revision.resources, oldResource], removedResources: [oldId],
       desired: [...base.revision.desired, { resource: oldId,
-        desired: { kind: "file", digest: oldDigest, executable: false }, verification: { method: "digest", digest: oldDigest } }],
+        desired: { kind: "file", digest: oldDigest, executable: false, mode: 0o600 }, verification: { method: "digest", digest: oldDigest } }],
     };
     const value: Fixture = { ...base, revision, recovery: { ...base.recovery, revision } };
     const plan = Effect.runSync(planSynchronization({ revision, follower: follower.id,
       observedState: { platform: "linux", availableBlobs: [], resources: revision.resources.map((resource) => ({
-        resource: resource.id, observed: { state: "present" as const, digest: oldDigest, executable: false },
+        resource: resource.id, observed: { state: "present" as const, digest: oldDigest, executable: false, mode: 0o600 },
       })) }, appliedResources: [previous],
     }));
     await Effect.runPromise(Effect.gen(function*() {
@@ -407,12 +408,13 @@ describe("interrupted ownership handover", () => {
     const newReference = writeRollbackPayload(value, successor.id, { path: value.target, state: "absent" });
     mkdirSync(dirname(value.target), { recursive: true });
     writeFileSync(value.target, state.includes("local edit") ? "later local edit" : state.startsWith("rollback") ? "previous content" : "canonical content");
+    chmodSync(value.target, 0o600);
     await journal(value, removal.id, "running", oldReference);
     await journal(value, removal.id, "succeeded", oldReference, { removedResource: oldId, removedResourceRecord: previous });
     await journal(value, successor.id, "running", newReference);
     if (state === "succeeded" || state.startsWith("rollback")) await journal(value, successor.id, "succeeded", newReference);
     if (state.startsWith("rollback")) await Effect.runPromise(Effect.flatMap(StateRepository, (repository) => repository.journalAction({
-      run: decode(RunId)("run-recovery"), action: successor.id, state: "failed", attempt: 1,
+      run: decode(RunId)("run-recovery"), action: successor.id, state: "rolled-back", attempt: 1,
       recordedAt: "2026-08-15T00:02:30Z", rollbackReference: newReference,
       verification: { status: "not-run", method: "run-rolled-back" },
     })).pipe(Effect.provide(stateRepositoryLayer(value.database))));
@@ -443,6 +445,7 @@ describe("synchronization crash recovery", () => {
       const action = plan.actions[0]!;
       mkdirSync(dirname(value.target), { recursive: true });
       writeFileSync(value.target, onDisk);
+      chmodSync(value.target, 0o600);
       // A killed write leaves its partial temporary sibling behind.
       const orphan = join(dirname(value.target), ".cf-0123456789ab.tmp");
       if (label === "during write/replace") writeFileSync(orphan, "canonical con");
@@ -480,6 +483,30 @@ describe("synchronization crash recovery", () => {
     },
   );
 
+  it("resumes an unstarted write tail after execution stopped before run completion", async () => {
+    const value = fixture(temporaryDirectory());
+    const base = persistedPlan(value);
+    const first = base.actions[0]!;
+    const tail = { ...first, id: decode(ActionId)("action:settings:tail:write-file"), before: [first.id] };
+    const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)({
+      revision: base.revision, follower: base.follower, requiredBlobs: base.requiredBlobs,
+      actions: [first, tail], agentTasks: base.agentTasks,
+    }));
+    const plan = { ...base, actions: [first, tail], encoded, digest: sha256Hex(encoded) };
+    await seed(value, plan);
+    // Stop after execution has journaled its result, before completeRun. This
+    // is the crash window that previously labelled the unstarted tail skipped.
+    const execution = await Effect.runPromise(executeSynchronizationPlan({
+      id: decode(RunId)("run-recovery"), plan, revision: value.revision, artifacts: [],
+    }).pipe(Effect.provide(applicationLayer(value))));
+    expect(execution.outcome.outcome).toBe("Failed");
+    expect(runRows(value).filter((row) => row.action_id === tail.id).map((row) => row.state)).toEqual(["pending"]);
+    expect((await recover(value)).outcome).toBe("Converged");
+    expect(readFileSync(value.target, "utf8")).toBe("canonical content");
+    expect(runRows(value).at(-1)?.action_id).toBe(tail.id);
+    expect(runRows(value).at(-1)?.state).toBe("succeeded");
+  });
+
   it("resumes actions in stable order without repeating verified terminals", async () => {
     const value = fixture(temporaryDirectory());
     const base = persistedPlan(value);
@@ -508,6 +535,7 @@ describe("synchronization crash recovery", () => {
     await seed(value, plan);
     mkdirSync(dirname(value.target), { recursive: true });
     writeFileSync(value.target, value.artifact.content);
+    chmodSync(value.target, 0o600);
     await journal(value, first.id, "running");
     await journal(value, first.id, "succeeded");
 
@@ -559,6 +587,7 @@ describe("synchronization crash recovery", () => {
       digest: decode(ContentDigest)(sha256Hex("previous")),
       appliedAt: "2026-08-15T00:00:59Z",
       kind: "file" as const,
+      ownership: "WholeFile" as const,
       policy: "replace" as const,
       target: value.target,
       executable: false,
@@ -611,7 +640,7 @@ describe("synchronization crash recovery", () => {
     expect(applied).toEqual([previousApplied]);
   });
 
-  it("rolls back ownership for a completed no-op without rollback material", async () => {
+  it.each([false, true])("rolls back ownership for a completed no-op without rollback material (ownership blocked: %s)", async (blockOwnership) => {
     const value = fixture(temporaryDirectory());
     const base = persistedPlan(value);
     const first = base.actions[0]!;
@@ -637,6 +666,7 @@ describe("synchronization crash recovery", () => {
     await seed(value, plan);
     mkdirSync(dirname(value.target), { recursive: true });
     writeFileSync(value.target, value.artifact.content);
+    chmodSync(value.target, 0o600);
     const resource = value.revision.resources[0]!;
     const currentApplied = {
       resource: resource.id,
@@ -644,25 +674,37 @@ describe("synchronization crash recovery", () => {
       digest: decode(ContentDigest)(value.artifact.digest),
       appliedAt: "2026-08-15T00:02:00Z",
       kind: "file" as const,
+      ownership: "WholeFile" as const,
       policy: "replace" as const,
       target: value.target,
       executable: false,
+      mode: 0o600,
     };
     await journal(value, first.id, "running");
     await journal(value, first.id, "succeeded", undefined, {
       appliedResource: currentApplied,
     });
+    if (blockOwnership) {
+      const database = new DatabaseSync(value.database);
+      database.exec(`CREATE TRIGGER refuse_ownership_inverse BEFORE INSERT ON action_journal
+        WHEN NEW.state = 'rolled-back'
+        BEGIN SELECT RAISE(ABORT, 'ownership inverse denied'); END`);
+      database.close();
+    }
 
+    let refused = false;
     const machine = decorateMachine(value.root, (service) => ({
       ...service,
-      atomicWrite: (input) => input.path.absolute === value.target
-        ? Effect.fail({
+      atomicWrite: (input) => {
+        if (input.path.absolute !== value.target || refused) return service.atomicWrite(input);
+        refused = true;
+        return Effect.fail({
           _tag: "MachineFilesystemError",
           operation: "test later recovery action",
           path: input.path.absolute,
           message: "injected later-action failure",
-        })
-        : service.atomicWrite(input),
+        });
+      },
     }));
 
     const outcome = await recover(value, machine);
@@ -673,7 +715,17 @@ describe("synchronization crash recovery", () => {
         repository.loadAppliedResources(follower.id)
       ).pipe(Effect.provide(stateRepositoryLayer(value.database))),
     );
-    expect(applied).toEqual([]);
+    if (blockOwnership) {
+      expect(outcome).toMatchObject({ rollbackIncomplete: true, failedRollbackResources: [resource.id] });
+      expect(applied).toEqual([currentApplied]);
+      const database = new DatabaseSync(value.database);
+      database.exec("DROP TRIGGER refuse_ownership_inverse");
+      database.close();
+      expect((await recover(value)).outcome).toBe("Converged");
+    } else {
+      expect(outcome).toMatchObject({ rollbackIncomplete: false, failedRollbackResources: [] });
+      expect(applied).toEqual([]);
+    }
   });
 
   it("preserves ownership that a completed agent action did not change", async () => {
@@ -735,27 +787,15 @@ describe("synchronization crash recovery", () => {
       digest: decode(ContentDigest)(value.artifact.digest),
       appliedAt: "2026-08-15T00:00:59Z",
       kind: "file" as const,
+      ownership: "WholeFile" as const,
       policy: "replace" as const,
       target: value.target,
       executable: false,
+      mode: 0o600,
     };
     const database = new DatabaseSync(value.database);
-    database.prepare(`
-      INSERT INTO applied_resources (
-        follower_id, resource_id, revision_id, digest, applied_at,
-        kind, policy, target, executable
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      follower.id,
-      previousApplied.resource,
-      previousApplied.revision,
-      previousApplied.digest,
-      previousApplied.appliedAt,
-      previousApplied.kind,
-      previousApplied.policy,
-      previousApplied.target,
-      0,
-    );
+    database.prepare("INSERT INTO applied_resources (follower_id, resource_id, revision_id, digest, applied_at, record_json) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(follower.id, previousApplied.resource, previousApplied.revision, previousApplied.digest, previousApplied.appliedAt, JSON.stringify(previousApplied));
     database.close();
     await journal(value, agentAction.id, "running");
     await journal(value, agentAction.id, "succeeded");
@@ -794,6 +834,7 @@ describe("synchronization crash recovery", () => {
       digest: decode(ContentDigest)(sha256Hex("previous")),
       appliedAt: "2026-08-15T00:00:59Z",
       kind: "file" as const,
+      ownership: "WholeFile" as const,
       policy: "replace" as const,
       target: value.target,
       executable: false,
@@ -921,7 +962,7 @@ describe("synchronization crash recovery", () => {
         repository.journalAction({
           run: decode(RunId)("run-recovery"),
           action: action.id,
-          state: "failed",
+          state: "rolled-back",
           recordedAt: "2026-08-15T00:02:01Z",
           attempt: 1,
           verification: { status: "not-run", method: "run-rolled-back" },
@@ -951,7 +992,7 @@ describe("synchronization crash recovery", () => {
         repository.journalAction({
           run: decode(RunId)("run-recovery"),
           action: action.id,
-          state: "failed",
+          state: "rolled-back",
           recordedAt: "2026-08-15T00:02:01Z",
           attempt: 2,
           verification: { status: "not-run", method: "run-rolled-back" },
@@ -1105,11 +1146,12 @@ describe("synchronization crash recovery", () => {
     expect(runRows(value).at(-1)?.rollback_reference).toBeNull();
   });
 
-  it("requires human action when uncertain installer evidence stays ambiguous", async () => {
+  it.each(["running", "blocked"] as const)("requires human action when uncertain installer evidence stays ambiguous after %s", async (state) => {
     const value = fixture(temporaryDirectory(), { kind: "tool" });
     const plan = persistedPlan(value);
     await seed(value, plan);
     await journal(value, plan.actions[0]!.id, "running");
+    if (state === "blocked") await journal(value, plan.actions[0]!.id, "blocked");
     const bin = join(value.root, "bin");
     mkdirSync(bin, { recursive: true });
     const installer = join(bin, "apt-get");
@@ -1127,7 +1169,7 @@ describe("synchronization crash recovery", () => {
     const outcome = await recover(value, machine);
     expect(outcome.outcome).toBe("HumanActionRequired");
     expect(processes).toBe(0);
-    expect(runRows(value).at(-1)?.state).toBe("skipped");
+    expect(runRows(value).at(-1)?.state).toBe("blocked");
     expect(runRows(value).at(-1)?.rollback_reference).toBeNull();
   });
 
@@ -1221,9 +1263,11 @@ describe("synchronization crash recovery", () => {
         digest: decode(ContentDigest)(value.artifact.digest),
         appliedAt: "2026-08-15T00:00:59Z",
         kind: "file",
+        ownership: "WholeFile",
         policy: "replace",
         target: value.target,
         executable: false,
+        mode: 0o600,
       }],
     }));
     mkdirSync(dirname(value.target), { recursive: true });
@@ -1250,27 +1294,15 @@ describe("synchronization crash recovery", () => {
           digest: decode(ContentDigest)(value.artifact.digest),
           appliedAt: "2026-08-15T00:00:59Z",
           kind: "file" as const,
+          ownership: "WholeFile" as const,
           policy: "replace" as const,
           target: value.target,
           executable: false,
+          mode: 0o600,
         };
         const database = new DatabaseSync(value.database);
-        database.prepare(`
-          INSERT INTO applied_resources (
-            follower_id, resource_id, revision_id, digest, applied_at,
-            kind, policy, target, executable
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          follower.id,
-          applied.resource,
-          applied.revision,
-          applied.digest,
-          applied.appliedAt,
-          applied.kind,
-          applied.policy,
-          applied.target,
-          0,
-        );
+        database.prepare("INSERT INTO applied_resources (follower_id, resource_id, revision_id, digest, applied_at, record_json) VALUES (?, ?, ?, ?, ?, ?)")
+          .run(follower.id, applied.resource, applied.revision, applied.digest, applied.appliedAt, JSON.stringify(applied));
         database.close();
         yield* repository.startRun({
           id: decode(RunId)("run-recovery"),
@@ -1338,6 +1370,7 @@ describe("synchronization crash recovery", () => {
       digest: decode(ContentDigest)(value.artifact.digest),
       appliedAt: "2026-08-15T00:00:59Z",
       kind: "file" as const,
+      ownership: "WholeFile" as const,
       policy: "replace" as const,
       target: value.target,
       executable: false,
@@ -1409,23 +1442,8 @@ describe("synchronization crash recovery", () => {
           revision: { ...removedRevision, resources: [] },
         });
         const database = new DatabaseSync(value.database);
-        database.prepare(`
-          INSERT INTO applied_resources (
-            follower_id, resource_id, revision_id, digest, applied_at,
-            kind, policy, target, executable, mode
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          follower.id,
-          applied.resource,
-          applied.revision,
-          applied.digest,
-          applied.appliedAt,
-          applied.kind,
-          applied.policy,
-          applied.target,
-          0,
-          applied.mode,
-        );
+        database.prepare("INSERT INTO applied_resources (follower_id, resource_id, revision_id, digest, applied_at, record_json) VALUES (?, ?, ?, ?, ?, ?)")
+          .run(follower.id, applied.resource, applied.revision, applied.digest, applied.appliedAt, JSON.stringify(applied));
         database.close();
         yield* repository.startRun({
           id: decode(RunId)("run-recovery"),
@@ -1596,10 +1614,10 @@ describe("synchronization crash recovery", () => {
 
     const database = new DatabaseSync(value.database, { readOnly: true });
     const row = database.prepare(
-      "SELECT status FROM synchronization_runs WHERE id = ?",
+      "SELECT phase FROM synchronization_runs WHERE id = ?",
     ).get("run-recovery");
     database.close();
-    expect(row?.status).toBe("Interrupted");
+    expect(row?.phase).toBe("Interrupted");
   });
 });
 
@@ -1749,7 +1767,7 @@ describe("open run ownership and status", () => {
             }],
           },
           appliedResources: [],
-        })
+        }).pipe(Effect.andThen(repository.finalizeRun(decode(RunId)("run-recovery"), "2026-08-15T00:04:01Z")))
       ).pipe(Effect.provide(stateRepositoryLayer(value.database))),
     );
     const drifted = await Effect.runPromise(load);

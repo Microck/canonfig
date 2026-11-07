@@ -700,7 +700,7 @@ describe("CLI rendering and exit semantics", () => {
   // Converged means client files were written, not loaded by Codex or Antigravity.
   it("names client checks only for changed hooks and MCP servers", () => {
     const actions = Schema.decodeUnknownSync(Schema.Array(PlannedAction))([
-      { kind: "write-file", target: "/home/u/.codex/hooks.json", digest: "d".repeat(64) },
+      { kind: "write-file", target: "/home/u/.codex/hooks.json", digest: "d".repeat(64), textTransition: { kind: "whole-file" } },
       { kind: "write-config", target: "/home/u/.agents/mcp_config.json", keys: ["mcpServers.docs"] },
       { kind: "write-config", target: "/home/u/.agents/mcp_config.json", keys: ["mcpServers.more"] },
       { kind: "write-config", target: "/home/u/.agents/mcp_config.json", keys: ["theme"] },

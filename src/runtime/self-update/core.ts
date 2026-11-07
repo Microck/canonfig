@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { TaggedError } from "../../domain/tagged-error.ts";
 import { readSettings } from "./settings.ts";
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
@@ -7,7 +8,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { acquireGate, assertPrivateDirectory, entry, readersActive, regular, updateDirectory } from "./coordination.ts";
+import { acquireGate, assertPrivateDirectory, readersActive, regular, updateDirectory } from "./coordination.ts";
 
 export const parseVersion = (value: string): readonly [number, number, number] => {
   if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.test(value)) throw new Error(`Unsupported stable version: ${value}`);
@@ -66,7 +67,7 @@ export function assertNoUnfinishedRun(state: string): void {
   regular(state);
   const db=new DatabaseSync(state,{readOnly:true});
   try {
-    const row=db.prepare("SELECT id FROM synchronization_runs WHERE status IN ('applying', 'Interrupted') LIMIT 1").get();
+    const row=db.prepare("SELECT id FROM synchronization_runs WHERE phase != 'Complete' LIMIT 1").get();
     if(row)throw new Error("An unfinished sync exists. Finish or recover it with the current build before updating.");
   } finally {db.close();}
 }
@@ -104,10 +105,40 @@ export function disable(root: string): void {
   } finally { release(); }
 }
 
-export interface UpdateProgress {
-  readonly phase: "checking" | "staging" | "verifying" | "activating" | "complete";
-  readonly candidate: string | null;
-}
+export type UpdateProgress =
+  | { readonly phase: "checking"; readonly candidate: null }
+  | { readonly phase: "staging" | "verifying" | "activating" | "complete"; readonly candidate: string };
+
+const transactionFields = {
+  version: Schema.Literal(2), operationId: Schema.String,
+  root: Schema.String, backup: Schema.String, staged: Schema.String,
+  previous: Schema.String, candidate: Schema.String,
+};
+const UpdateTransaction = Schema.Union([
+  Schema.TaggedStruct("Staging", transactionFields),
+  Schema.TaggedStruct("Verified", transactionFields),
+  Schema.TaggedStruct("Prepared", transactionFields),
+  Schema.TaggedStruct("OldMoved", transactionFields),
+  Schema.TaggedStruct("Installed", transactionFields),
+  Schema.TaggedStruct("Committed", transactionFields),
+]);
+type UpdateTransaction = typeof UpdateTransaction.Type;
+export class UpdateTransitionError extends TaggedError<UpdateTransitionError>()(
+  "UpdateTransitionError", { from: Schema.String, to: Schema.String },
+) {}
+const updateTransitions = {
+  Staging: "Verified", Verified: "Prepared", Prepared: "OldMoved",
+  OldMoved: "Installed", Installed: "Committed", Committed: undefined,
+} satisfies Record<UpdateTransaction["_tag"], UpdateTransaction["_tag"] | undefined>;
+const advanceUpdate = (state: UpdateTransaction, to: UpdateTransaction["_tag"]): UpdateTransaction => {
+  if (updateTransitions[state._tag] !== to) throw new UpdateTransitionError({ from: state._tag, to });
+  return { ...state, _tag: to };
+};
+const writeTransaction = (path: string, state: UpdateTransaction): void => {
+  const temporary = `${path}.${state.operationId}.tmp`;
+  writeFileSync(temporary, JSON.stringify(state, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+  syncFile(temporary); renameSync(temporary, path); syncDirectory(dirname(path));
+};
 export interface UpdateResult {current:string;candidate:string;status:"current"|"available"|"deferred"|"updated";detail:string}
 export async function update(root:string,apply:boolean,runner:Runner=run,signal?:AbortSignal, home=homedir(), onProgress?: (progress: UpdateProgress) => void):Promise<UpdateResult>{
   if(signal?.aborted)throw new Error("Self-update cancelled");
@@ -115,16 +146,27 @@ export async function update(root:string,apply:boolean,runner:Runner=run,signal?
   const [major,minor]=parseVersion(location.version);
   if(settings.root!==location.root||settings.prefix!==location.prefix||settings.line!==`${major}.${minor}`||settings.node!==process.execPath||settings.state!==join(home,".canonfig","state.sqlite"))throw new Error("Installation, Node runtime or release line changed; disable and explicitly re-enable self-updating after review");
   if(existsSync(join(directory,"pending.json")))throw new Error("Interrupted self-update: preserve and inspect the pending journal and retained backup. No automatic takeover.");
-  const progress = (phase: UpdateProgress["phase"], candidate: string | null) => {
+  const operationId = randomUUID();
+  const progress = (value: UpdateProgress) => {
     if (!apply) return;
-    const value: UpdateProgress = { phase, candidate };
     const path = join(directory, "progress.json");
     regular(path);
-    writeFileSync(path, JSON.stringify(value) + "\n", { mode: 0o600 });
-    syncFile(path);
+    const temporary = `${path}.${operationId}.tmp`;
+    writeFileSync(temporary, JSON.stringify({ version: 2, operationId, ...value }) + "\n", { flag: "wx", mode: 0o600 });
+    syncFile(temporary); renameSync(temporary, path); syncDirectory(directory);
     onProgress?.(value);
   };
-  progress("checking", null);
+  const release = apply ? acquireGate(directory) : () => {};
+  let committed: UpdateResult | undefined;
+  const releaseGate = () => {
+    try { release(); }
+    catch(error) {
+      if(!committed)throw error;
+      committed.detail+=` Coordination cleanup also failed: ${error instanceof Error ? error.message : String(error)}. Preserve the updater gate for inspection.`;
+    }
+  };
+  try {
+  progress({phase:"checking", candidate:null});
   // Global mode ignores project .npmrc; isolated empty files ignore user/global
   // scope registries and credentials. The explicit scope override also wins
   // against npm defaults. The runner strips npm config/auth environment values.
@@ -140,25 +182,26 @@ export async function update(root:string,apply:boolean,runner:Runner=run,signal?
   const candidate=latestPatch(location.version,versions);
   const result:UpdateResult={current:location.version,candidate,status:candidate===location.version?"current":"available",detail:"Only stable patches within the enabled major.minor line are eligible."};
   if(!apply||candidate===location.version) {
-    progress("complete", candidate);
+    progress({phase:"complete", candidate});
     return result;
   }
-  const release=acquireGate(directory);
-  try {
+    if(existsSync(join(directory,"pending.json")))throw new Error("Interrupted self-update: preserve and inspect the pending journal and retained backup. No automatic takeover.");
     if(JSON.stringify(readSettings(directory))!==JSON.stringify(settings))throw new Error("Self-update settings changed while checking; no update applied");
     if(readersActive(directory)) {
-      progress("complete", candidate);
+      progress({phase:"complete", candidate});
       return {...result,status:"deferred",detail:"Canonfig commands are active (or left a stale lease). Retry after they finish; do not remove live leases."};
     }
     assertNoUnfinishedRun(settings.state);
     if(installation(root,home).version!==location.version)throw new Error("Installation changed during check");
-    const token=randomUUID();const stage=join(directory,`stage-${token}`);const backup=join(directory,`backup-${location.version}-${token}`);
+    const token=operationId;const stage=join(directory,`stage-${token}`);const backup=join(directory,`backup-${location.version}-${token}`);
     mkdirSync(stage,{mode:0o700});
-    try {
-    progress("staging", candidate);
-    await runner({executable:settings.node,args:[settings.npmCli,"install","--global","--prefix",stage,"--install-strategy=nested","--ignore-scripts","--no-audit","--no-fund",`@microck/canonfig@${candidate}`,...common],timeout:900_000},signal);
-    progress("verifying", candidate);
     const staged=join(stage,...(process.platform==="win32"?[]:["lib"]),"node_modules","@microck","canonfig");
+    let transaction: UpdateTransaction = { _tag: "Staging", version: 2, operationId: token,
+      root: location.root, backup, staged, previous: location.version, candidate };
+    try {
+    progress({phase:"staging", candidate});
+    await runner({executable:settings.node,args:[settings.npmCli,"install","--global","--prefix",stage,"--install-strategy=nested","--ignore-scripts","--no-audit","--no-fund",`@microck/canonfig@${candidate}`,...common],timeout:900_000},signal);
+    progress({phase:"verifying", candidate});
     const metadata=Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({name:Schema.Literal("@microck/canonfig"),version:Schema.String,dependencies:Schema.Record(Schema.String,Schema.String)})))(readFileSync(join(staged,"package.json"),"utf8"));
     if(metadata.name!=="@microck/canonfig"||metadata.version!==candidate||lstatSync(staged).isSymbolicLink())throw new Error("Staged package identity mismatch");
     const entry=join(staged,"dist","runtime","main.js");
@@ -173,21 +216,32 @@ export async function update(root:string,apply:boolean,runner:Runner=run,signal?
     if(signal?.aborted)throw new Error("Self-update cancelled before activation");
     assertNoUnfinishedRun(settings.state);
     if(readersActive(directory)||installation(root,home).version!==location.version)throw new Error("Installation became busy or changed before activation");
+    transaction = advanceUpdate(transaction, "Verified");
     const journal=join(directory,"pending.json");
-    writeFileSync(journal,JSON.stringify({version:1,root:location.root,backup,staged,previous:location.version,candidate},null,2)+"\n",{flag:"wx",mode:0o600});syncFile(journal);syncDirectory(directory);
-    progress("activating", candidate);
-    renameSync(location.root,backup);syncDirectory(dirname(location.root));syncDirectory(directory);
+    transaction = advanceUpdate(transaction, "Prepared"); writeTransaction(journal, transaction);
+    progress({phase:"activating", candidate});
+    renameSync(location.root,backup); transaction = advanceUpdate(transaction, "OldMoved"); writeTransaction(journal, transaction);
+    syncDirectory(dirname(location.root));syncDirectory(directory);
     // A failed second rename deliberately retains the gate/journal evidence for
     // operator recovery; never delete the old package or pretend it succeeded.
-    renameSync(staged,location.root);syncDirectory(dirname(location.root));
+    renameSync(staged,location.root); transaction = advanceUpdate(transaction, "Installed");
+    writeTransaction(journal, transaction);syncDirectory(dirname(location.root));
+    transaction = advanceUpdate(transaction, "Committed");writeTransaction(journal, transaction);
     renameSync(journal,join(directory,"last-transaction.json"));syncDirectory(directory);
-    progress("complete", candidate);
-    return {...result,status:"updated",detail:`Retained previous package at ${backup}. Restart this updater under the new build; refresh managed follower bindings with sync --apply. No service was restarted.`};
+    committed={...result,status:"updated",detail:`Retained previous package at ${backup}. Restart this updater under the new build; refresh managed follower bindings with sync --apply. No service was restarted.`};
+    progress({phase:"complete", candidate});
+    return committed;
     } catch(error) {
+      // Installation is irreversible here, even if its receipt is not durable.
+      // Never turn a bookkeeping error into permission for the old process to resume.
+      if(transaction._tag==="Installed"||transaction._tag==="Committed") {
+        committed={...result,status:"updated",detail:`The candidate is installed, but update bookkeeping failed: ${error instanceof Error ? error.message : String(error)}. Restart under the new build. Preserve ${directory} and inspect any pending journal before running commands. Retained previous package at ${backup}. No service was restarted.`};
+        return committed;
+      }
       // A pending journal (even partial) owns recovery evidence. Only discard
       // staging when no transaction could have moved the installed package.
-      if(!entry(join(directory,"pending.json")))rmSync(stage,{recursive:true,force:true});
+      if(transaction._tag==="Staging"||transaction._tag==="Verified")rmSync(stage,{recursive:true,force:true});
       throw error;
     }
-  }finally{release();}
+  }finally{releaseGate();}
 }

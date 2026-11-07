@@ -229,6 +229,18 @@ export const failureTaxonomy = {
     "internal",
     (error) => `run ${text(error.run)} cannot make that state transition`,
   ),
+  InvalidTextTransitionError: declared(
+    "conflict-or-drift",
+    () => "text ownership changed; replan and review synchronization",
+  ),
+  LeaseTransitionError: declared(
+    "conflict-or-drift",
+    () => "this command is already stopping or performing a self-update operation",
+  ),
+  UpdateTransitionError: declared(
+    "internal",
+    () => "the self-update transaction cannot make that state transition",
+  ),
 
   // Authored profile validation. The operator wrote something Canonfig cannot
   // apply, so the profile, not the machine, is what needs changing.

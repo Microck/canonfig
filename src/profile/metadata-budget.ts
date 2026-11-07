@@ -4,8 +4,10 @@ import type { PublishedResource, ScheduleDefault } from "../domain/profile.ts";
 
 export class ProfileMetadataBudgetError extends Error {
   readonly name = "ProfileMetadataBudgetError";
-  constructor(readonly bytes: number) {
+  readonly bytes: number;
+  constructor(bytes: number) {
     super(`Revision metadata requires ${bytes} bytes including signing-envelope reserve, exceeding the ${defaultMaximumMetadataBytes}-byte transport limit. Split large resources across separate profiles before publishing.`);
+    this.bytes = bytes;
   }
 }
 

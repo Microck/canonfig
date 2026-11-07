@@ -1,9 +1,10 @@
 import { Schema } from "effect";
 import { FollowerId, GroupName } from "../../domain/brand.ts";
 import {
-  SetupApproval, SetupDiscoveryInput, SetupJournal, SetupMode,
+  SetupApproval, SetupDiscoveryInput, SetupItemSummary, SetupJournal, SetupMode,
   SetupProvenance, SetupRequestScope, SetupRole, SetupStageRecord,
 } from "../../setup/setup.types.ts";
+import { EnrollmentCredentialLifecycle } from "../../state/state-repository.types.ts";
 
 export const GuiSetupJournal = SetupJournal;
 export type GuiSetupJournal = typeof GuiSetupJournal.Type;
@@ -19,9 +20,7 @@ export const GuiSetupStatus = Schema.Struct({
   approved: Schema.Boolean,
   approvals: Schema.Array(SetupApproval),
   stages: Schema.Array(SetupStageRecord),
-  items: Schema.Array(Schema.Struct({
-    id: Schema.String, status: Schema.String, evidence: Schema.optionalKey(Schema.String),
-  })),
+  items: Schema.Array(SetupItemSummary),
   catalog: Schema.Array(SetupProvenance),
 });
 export type GuiSetupStatus = typeof GuiSetupStatus.Type;
@@ -46,6 +45,7 @@ export const GuiEnrollmentFollower = Schema.Struct({
   id: FollowerId, name: Schema.String, groups: Schema.Array(GroupName),
   enrolledAt: Schema.String, revoked: Schema.Boolean,
   pending: Schema.Boolean, credentialPresent: Schema.Boolean,
+  credentialLifecycle: EnrollmentCredentialLifecycle,
 });
 export type GuiEnrollmentFollower = typeof GuiEnrollmentFollower.Type;
 export const GuiStoredInvitation = Schema.Struct({

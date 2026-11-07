@@ -58,7 +58,7 @@ export const enrollmentRoutes = Effect.gen(function*() {
     const configuration = yield* repository.getFollowerSynchronizationConfiguration().pipe(Effect.mapError(commandFailure));
     if (configuration === undefined) return yield* new CliCommandFailure({ category: "usage-or-configuration", message: "This machine has no follower enrollment." });
     const { id, name, groups, enrolledAt, revoked } = configuration.follower;
-    return { follower: { id, name, groups, enrolledAt, revoked }, source: configuration.source, pending: configuration.enrollmentPending === true };
+    return { follower: { id, name, groups, enrolledAt, revoked }, source: configuration.source, pending: configuration.lifecycle._tag !== "Active" };
   });
   return [
     queryRoute("/api/machines", () => Effect.gen(function*() {
