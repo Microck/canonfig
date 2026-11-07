@@ -753,7 +753,7 @@ export function VersionView() {
           {version.npmCli && <SettingRow title="npm" description={<><Mono className="break-all">{version.npmCli}</Mono><br />Canonfig fetches only its own package from registry.npmjs.org, with install scripts off.</>} />}
           {(on || version.checked) && <SettingRow title="Newest patch">
             <span className="inline-flex items-center gap-1.5 text-base" aria-live="polite">
-              <StatusMark kind={available ? "warn" : version.checked?.status === "current" ? "ok" : "off"} />
+              <StatusMark kind={available ? "warn" : version.checked?.status === "current" || updated ? "ok" : "off"} />
               {version.checking ? "Checking…" : version.checked ? `${version.checked.candidate}: ${version.checked.status}` : "Not checked yet"}
             </span>
           </SettingRow>}
