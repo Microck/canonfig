@@ -359,6 +359,22 @@ otherwise                 -> Follower Drift; preserve follower content
 
 Canonfig does not merge modified canonical skills. The user can move the changes into `~/.canonfig/local/skills/` under a different name, or discard them so the next sync replaces the skill. This keeps the automatic rule deterministic.
 
+Upstream skill replacement has a separate version 2 `.pending` journal beside
+`skills-sources.json`. It records staging ownership before any stage tree is
+created, then each skill's rename intent, installed state, and rollback result.
+The transaction moves through `Preparing`, `Swapping`, `PublishingConfig`,
+`ConfigCommitted`, `RollingBack`, and `Finished`. Configuration publication
+requires every selected swap to be installed. A committed configuration never
+enters rollback. A blocked rollback records the affected skill and keeps its
+backup and journal; newer local edits are not removed.
+
+Recovery stays manual when interruption leaves a rename or configuration
+publication ambiguous. Released version 1 journals contain no phases and are
+refused with recovery instructions rather than interpreted as a fresh update.
+Preserve the journal and backups, compare trees and configuration against their
+recorded digests, and finish or restore the interrupted update before removing
+the journal and any stale lock.
+
 The Local folder (`~/.canonfig/local/`) holds machine-owned rules, skills, agents and commands as files, and MCP servers and settings in `local/local.jsonc`. Projection adds them within the categories the Source's `local.allow` names. They are never published and never replaced; a local item named like a published one is Human Action Required.
 
 ## Synchronization flow
