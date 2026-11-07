@@ -202,7 +202,7 @@ function useDetailPanelOpen() {
 export function TourOffer() {
   const ws = useWorkspace();
   const reduce = useReducedMotion();
-  const busy = ws.tourOpen || ws.tourPickerOpen || ws.paletteOpen || ws.publishOpen || ws.inviteOpen;
+  const busy = ws.guidanceBlocked || ws.tourOpen || ws.tourPickerOpen || ws.activeTip !== null || ws.paletteOpen || ws.publishOpen || ws.inviteOpen || ws.changeGroups !== null;
   // A short delay so the offer arrives after the page has settled, not with it.
   const [ready, setReady] = useState(false);
   useEffect(() => {
@@ -327,7 +327,7 @@ function starTimeSoFar(): number | null {
  */
 export function StarPrompt() {
   const ws = useWorkspace();
-  const busy = ws.tourOpen || ws.tourPickerOpen || ws.tourOffered || ws.activeTip !== null || ws.paletteOpen || ws.publishOpen || ws.inviteOpen;
+  const busy = ws.guidanceBlocked || ws.tourOpen || ws.tourPickerOpen || ws.tourOffered || ws.activeTip !== null || ws.paletteOpen || ws.publishOpen || ws.inviteOpen || ws.changeGroups !== null;
   // "off": dismissed, or storage unusable. "counting": still adding up visible time. "due": ask.
   const [stage, setStage] = useState<"off" | "counting" | "due">(() => {
     if (DEMO && new URLSearchParams(location.search).get("star") === "1") return "due";
@@ -437,7 +437,7 @@ export function TourHost() {
     // through Overview, so put them back where they were headed (unless the last stop moved them).
     if (chapter.id === "quick" && ws.proposed.length > 0 && live.current.view === "overview") ws.setView("profile");
   };
-  return <Tour steps={chapter.steps} onClose={close} onFocusFallback={focusPageHeading} />;
+  return ws.guidanceBlocked ? null : <Tour steps={chapter.steps} onClose={close} onFocusFallback={focusPageHeading} />;
 }
 
 /**
@@ -447,7 +447,6 @@ export function TourHost() {
  */
 export function TourPicker() {
   const ws = useWorkspace();
-  const chosen = useRef<string | null>(null);
   return (
     <Dialog open={ws.tourPickerOpen} onOpenChange={ws.setTourPickerOpen}>
       {/*
@@ -456,13 +455,12 @@ export function TourPicker() {
         dialog hangs from the top there: centred, it would re-centre and slide the list under the pointer.
       */}
       <DialogContent
+        data-guidance
         className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] overflow-y-auto sm:max-w-md md:max-w-4xl max-md:top-4 max-md:translate-y-0"
         onCloseAutoFocus={() => {
           // Start only after the dialog is gone and Radix has handed focus back to the opener,
           // so the tour returns focus there when it ends and never fights this dialog's focus trap.
-          const id = chosen.current;
-          chosen.current = null;
-          if (id) requestAnimationFrame(() => ws.startTour(id));
+          if (ws.pendingTour) requestAnimationFrame(ws.finishTourSelection);
         }}
       >
         <DialogHeader>
@@ -470,10 +468,7 @@ export function TourPicker() {
           <DialogDescription className="text-base text-pretty">Choose a chapter to see where it goes, then start it.</DialogDescription>
         </DialogHeader>
         <ChapterPicker
-          onChoose={(id) => {
-            chosen.current = id;
-            ws.setTourPickerOpen(false);
-          }}
+          onChoose={ws.startTour}
         />
       </DialogContent>
     </Dialog>
@@ -718,34 +713,22 @@ export function TipHost() {
   const tip = PAGE_TIPS[role][ws.view];
   // A loading page is busy too: the tip measures its targets, so it waits for the content, and its own
   // delay below then covers skullet's reveal.
-  const busy = ws.pageLoading || ws.tourOpen || ws.tourPickerOpen || ws.tourOffered || ws.paletteOpen || ws.publishOpen || ws.inviteOpen || ws.changeGroups !== null;
-  const { openTip, withdrawTip, activeTip, view } = ws;
+  const busy = ws.guidanceBlocked || ws.pageLoading || ws.tourOpen || ws.tourPickerOpen || ws.tourOffered || ws.paletteOpen || ws.publishOpen || ws.inviteOpen || ws.changeGroups !== null;
+  const { openTip, activeTip, view } = ws;
   const seen = ws.tipSeen(view);
   const detailOpen = useDetailPanelOpen();
-  // The tip this host opened, as opposed to one asked for from "?"; cleared once it closes.
-  const [autoTip, setAutoTip] = useState<View | null>(null);
-  if (autoTip !== null && autoTip !== activeTip) setAutoTip(null);
-  const [deferred, setDeferred] = useState<{ view: View; detailOpen: boolean } | null>(null);
-  const waiting = deferred?.view === view && deferred.detailOpen === detailOpen;
+  const layoutKey = String(detailOpen);
+  const waiting = ws.tipDeferred?.view === view && ws.tipDeferred.layoutKey === layoutKey;
 
   useEffect(() => {
     if (!tip || busy || activeTip || seen || waiting) return;
     // Let the page render and the eye land before pointing at part of it.
-    const t = window.setTimeout(() => {
-      setAutoTip(view);
-      openTip(view);
-    }, 700);
+    const t = window.setTimeout(() => openTip(view, "automatic"), 700);
     return () => window.clearTimeout(t);
   }, [tip, busy, activeTip, view, seen, waiting, openTip]);
 
   const active = activeTip ? PAGE_TIPS[role][activeTip] : undefined;
-  if (!active || ws.tourOpen) return null;
-  const onNoRoom =
-    autoTip === activeTip
-      ? () => {
-          setDeferred({ view, detailOpen });
-          withdrawTip();
-        }
-      : undefined;
+  if (!active || ws.tourOpen || ws.guidanceBlocked) return null;
+  const onNoRoom = ws.activeTipOrigin === "automatic" ? () => ws.deferTip(layoutKey) : undefined;
   return <Tour key={activeTip} steps={[active]} onClose={ws.closeTip} modal={false} onNoRoom={onNoRoom} />;
 }

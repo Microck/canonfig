@@ -13,6 +13,7 @@ import { ArrowLeft, ArrowRight, X } from "@/components/icons";
 import { cn, SNAP } from "@/lib/utils";
 import { fillStyle, usePrefersReducedMotion } from "@/lib/dither";
 import { Button } from "@/components/ui/button";
+import { TransitionError, useStateMachine } from "@/lib/state-machine";
 
 export interface TourStep {
   /** `data-tour` ids to spotlight. Omit (and `selector`) for a centered card with nothing cut out. */
@@ -242,6 +243,22 @@ function placeTip(r: Rect, cardH: number, vw: number, vh: number, { hard, soft }
  * (see placeTip); when nothing on screen is free, `onNoRoom` lets an unrequested tip step back
  * unseen, and without it (opened from "?") the card takes the usual spot beside its target.
  */
+type TourState =
+  | { kind: "searching"; index: number; direction: 1 | -1; startedAt: number }
+  | { kind: "showing"; index: number; direction: 1 | -1; rect: Rect | null; avoid: Avoid }
+  | { kind: "finished"; index: number };
+type TourEvent =
+  | { kind: "enter"; index: number; direction: 1 | -1 }
+  | { kind: "measured"; index: number; rect: Rect | null; avoid: Avoid }
+  | { kind: "finish" };
+function transitionTour(state: TourState, event: TourEvent): TourState {
+  if (event.kind === "finish") return { kind: "finished", index: state.index };
+  if (state.kind === "finished") throw new TransitionError("Tour", state.kind, event.kind);
+  if (event.kind === "enter") return { kind: "searching", index: event.index, direction: event.direction, startedAt: performance.now() };
+  if (state.index !== event.index) throw new TransitionError("Tour", state.kind, "measure superseded step");
+  return { kind: "showing", index: state.index, direction: state.direction, rect: event.rect, avoid: event.avoid };
+}
+
 export function Tour({
   steps,
   onClose,
@@ -256,21 +273,19 @@ export function Tour({
   onNoRoom?: () => void;
 }) {
   const titleId = useId();
-  const [index, setIndex] = useState(0);
-  const [rect, setRect] = useState<Rect | null>(null);
-  const [avoid, setAvoid] = useState<Avoid>({ hard: [], soft: [] });
+  const flow = useStateMachine<TourState, TourEvent>({ kind: "searching", index: 0, direction: 1, startedAt: performance.now() }, transitionTour);
+  const { send: sendFlow, current: flowCurrent } = flow;
+  const { index } = flow.state;
+  const rect = flow.state.kind === "showing" ? flow.state.rect : null;
+  const avoid = flow.state.kind === "showing" ? flow.state.avoid : { hard: [], soft: [] };
   const [viewport, setViewport] = useState({ w: window.innerWidth, h: window.innerHeight });
   const [cardH, setCardH] = useState(180);
   const reduce = usePrefersReducedMotion();
   // The card stays hidden until the first step is measured, so it never flies in from the
   // centre; `ready` turns gliding on one frame later, after that first placement has painted.
-  const [measured, setMeasured] = useState(false);
+  const measured = flow.state.kind === "showing";
   const [ready, setReady] = useState(false);
-  // True while a step's target hasn't appeared yet (see FIND_MS); the card hides rather than show
-  // the new step's text beside the previous step's spotlight.
-  const [searching, setSearching] = useState(false);
   const spot = useGlidingSpotlight(rect, reduce, viewport.w, viewport.h);
-  const dir = useRef<1 | -1>(1);
   const cardRef = useRef<HTMLDivElement>(null);
   const nextRef = useRef<HTMLButtonElement>(null);
   const returnFocus = useRef<Element | null>(document.activeElement);
@@ -281,13 +296,14 @@ export function Tour({
   // then isn't on screen, the measuring effect keeps going the same way.
   const go = useCallback(
     (to: number, direction: 1 | -1) => {
-      if (to < 0) return;
-      if (to >= steps.length) return onClose(true);
-      dir.current = direction;
+      if (to < 0 || to >= steps.length) {
+        sendFlow({ kind: "finish" });
+        return onClose(to >= steps.length);
+      }
+      sendFlow({ kind: "enter", index: to, direction });
       steps[to].before?.();
-      setIndex(to);
     },
-    [steps, onClose],
+    [steps, onClose, sendFlow],
   );
 
   useEffect(() => {
@@ -296,18 +312,16 @@ export function Tour({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // When the current step started looking for its target. A ref, not effect-local, because the
-  // effect below reruns whenever `go` changes identity (the host re-renders with a new onClose),
-  // and a restart must not move the deadline or a step could search forever.
-  const searchFrom = useRef({ index: -1, at: 0 });
 
   // Measure after `before` has rendered. Card, cutout and blur change together;
   // moving a full-screen blur adds paint work without helping explain the step.
   useLayoutEffect(() => {
     let raf = 0;
     let frames = 0;
-    if (searchFrom.current.index !== index) searchFrom.current = { index, at: performance.now() };
-    const start = searchFrom.current.at;
+    const entering = flowCurrent.current;
+    if (entering.kind === "finished") return;
+    if (entering.kind === "showing") return;
+    const start = entering.kind === "searching" ? entering.startedAt : performance.now();
     const attempt = () => {
       // Two frames, so the page `before` switched to has rendered.
       if (++frames < 2) return void (raf = requestAnimationFrame(attempt));
@@ -319,21 +333,17 @@ export function Tour({
       const target = selectors ? measure(selectors) : null;
       if (selectors && !target) {
         if (performance.now() - start < FIND_MS) {
-          setSearching(true);
+          if (flowCurrent.current.kind === "showing") sendFlow({ kind: "enter", index, direction: entering.direction });
           raf = requestAnimationFrame(attempt);
           return;
         }
-        setSearching(false);
-        return go(index + dir.current, dir.current);
+        return go(index + entering.direction, entering.direction);
       }
-      setSearching(false);
-      setRect(target);
-      setAvoid(measureAvoid());
-      setMeasured(true);
+      sendFlow({ kind: "measured", index, rect: target, avoid: measureAvoid() });
     };
     raf = requestAnimationFrame(attempt);
     return () => cancelAnimationFrame(raf);
-  }, [index, step, go]);
+  }, [index, step, go, flow.state.kind, sendFlow, flowCurrent]);
 
   // Glide only after the first placement has painted; otherwise the card would slide in from 0,0.
   useEffect(() => {
@@ -347,16 +357,16 @@ export function Tour({
       setViewport({ w: window.innerWidth, h: window.innerHeight });
       const selectors = selectorsOf(step);
       const target = selectors ? measure(selectors) : null;
-      setRect(target);
-      setAvoid(measureAvoid());
+      if (selectors && !target) sendFlow({ kind: "enter", index, direction: flowCurrent.current.kind === "finished" ? 1 : flowCurrent.current.direction });
+      else sendFlow({ kind: "measured", index, rect: target, avoid: measureAvoid() });
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-  }, [step]);
+  }, [step, index, sendFlow, flowCurrent]);
 
   const tipPos = !modal && rect ? placeTip(rect, cardH, viewport.w, viewport.h, avoid) : undefined;
   const noRoom = tipPos === null && onNoRoom !== undefined;
-  const visible = measured && !searching && !noRoom;
+  const visible = measured && !noRoom;
   useEffect(() => {
     if (noRoom) onNoRoom?.();
   }, [noRoom, onNoRoom]);
@@ -434,7 +444,7 @@ export function Tour({
   const glide = ready && !reduce;
 
   return (
-    <div className={cn("fixed inset-0 z-[90]", !modal && "pointer-events-none", modal && "tour-in")} onKeyDown={onKeyDown}>
+    <div data-guidance className={cn("fixed inset-0 z-[90]", !modal && "pointer-events-none", modal && "tour-in")} onKeyDown={onKeyDown}>
       {/* Swallows clicks so nothing behind the tour changes while it's explained. */}
       {modal && <div className="absolute inset-0" aria-hidden onClick={() => nextRef.current?.focus()} />}
 
