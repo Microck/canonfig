@@ -6,9 +6,12 @@
 ## Reach the browser interface over Tailscale
 
 - `canonfig ui --host <address>` listens on this machine's Tailscale address
-  instead of `127.0.0.1`. It accepts loopback and Tailscale addresses only
+  instead of `127.0.0.1`. It accepts loopback and Tailscale ranges only
   (`::1`, `100.64.0.0/10`, `fd7a:115c:a1e0::/48`) and refuses any other
-  address, because the interface is served over plain HTTP.
+  address, because the interface is served over plain HTTP. `100.64.0.0/10`
+  is also used for carrier-grade NAT, so pass the address `tailscale ip`
+  prints; on any other network the sign-in link and session cookie would
+  travel unencrypted.
 - `canonfig ui --port <n> --origin <https-url>` works behind an HTTPS proxy
   such as `tailscale serve`. The printed sign-in link uses that address, and
   the browser session cookie is marked `Secure`.
@@ -43,6 +46,11 @@ origin are still refused. Without these options `canonfig ui` listens on
   machine's connection.
 
 ## Upgrading
+
+Stop running Canonfig commands, including `canonfig ui`, before installing. A
+Source's background service keeps running the old code until it restarts, so
+run `canonfig source service remove` before installing and
+`canonfig source service install` afterwards.
 
 Install with `npm install --global @microck/canonfig@7.1.0` on every machine.
 Machines on 7.0.x run the earlier updater, which installs patches only, so
