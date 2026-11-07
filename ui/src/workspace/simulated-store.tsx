@@ -38,7 +38,7 @@ import type { Navigate, WorkspaceRoute } from "./routes";
 import { ScreenContext, type ScreenGroup } from "./screen-context";
 import { PAGE_TIPS } from "./page-tips";
 import { SharedStateProvider, WorkspaceContext, useSharedState, useWorkspace } from "./store";
-import type { Workspace, ChangeGroupsRequest, Invitation, ScannedTool, Secret, PlanItem, Run } from "./workspace-types";
+import type { Workspace, ChangeGroupsRequest, Invitation, ScannedTool, Secret, PlanItem, ProfileEdit, Run } from "./workspace-types";
 import { useSimulatedAdministration } from "./simulated-administration";
 import { useWorkspaceNavigation } from "./navigation-state";
 import type { Schedule } from "./schedule";
@@ -193,8 +193,8 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
   const [secrets, setSecrets] = useState<Secret[]>(newSource ? [] : seedSecrets);
   const publishing = publication.state.kind === "publishing";
   const syncing = Object.entries(publication.state.deliveries).flatMap(([id, delivery]) => delivery.kind === "delivering" ? [id] : []);
-  const markProfileEdit = useCallback((edit: import("./workspace-types").ProfileEdit) => { sendPublication({ kind: "edit", edit }); }, [sendPublication]);
-  const removeProfileEdit = useCallback((edit: import("./workspace-types").ProfileEdit) => { sendPublication({ kind: "withdraw-edit", edit }); }, [sendPublication]);
+  const markProfileEdit = useCallback((edit: ProfileEdit) => { sendPublication({ kind: "edit", edit }); }, [sendPublication]);
+  const removeProfileEdit = useCallback((edit: ProfileEdit) => { sendPublication({ kind: "withdraw-edit", edit }); }, [sendPublication]);
   const pending = useMemo(() => pendingChanges(publication.state), [publication.state]);
   const latest = revisions[0]?.sequence ?? 0;
   const nextSequence = latest + 1;
@@ -294,7 +294,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
         description: `Put back ${snapshot.files} files from ${id}.\nExcluded ${names} on this machine in ~/.canonfig/local/local.jsonc.${DEMO ? "\nSimulated in this demo; no files changed." : ""}`,
       });
     },
-    [],
+    [sendFollower],
   );
 
   // Export changes nothing Canonfig manages, so unlike restore it adds no run.
