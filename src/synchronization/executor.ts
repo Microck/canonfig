@@ -69,7 +69,7 @@ export interface SynchronizationExecutionResult {
   readonly outcome: SynchronizationOutcome;
   readonly appliedResources: ReadonlyArray<AppliedResourceRecord>;
   readonly removedResources: ReadonlyArray<ResourceId>;
-  readonly failedRollbacks: ReadonlyArray<ActionId>;
+  readonly rollback: RunRollback;
 }
 
 export interface ActionState {
@@ -486,6 +486,33 @@ export type RollbackState =
   | { readonly _tag: "NotRequired" }
   | { readonly _tag: "Restored" }
   | { readonly _tag: "Blocked"; readonly phase: "physical" | "ownership"; readonly reference?: string | undefined };
+
+interface BlockedRollback {
+  readonly action: ActionId;
+  readonly resource?: ResourceId | undefined;
+  readonly state: Extract<RollbackState, { readonly _tag: "Blocked" }>;
+}
+
+export type RunRollback =
+  | { readonly _tag: "Complete" }
+  | { readonly _tag: "Incomplete"; readonly failures: ReadonlyArray<BlockedRollback> };
+
+/** Accumulate blocked inverses without keeping a second cleanup flag or ID list. */
+export const blockRunRollback = (current: RunRollback, failure: BlockedRollback): RunRollback => ({
+  _tag: "Incomplete",
+  failures: current._tag === "Complete" ? [failure] : [...current.failures, failure],
+});
+
+/** Keep the released public protocol as a projection of the rollback state. */
+export const withRollbackOutcome = (
+  outcome: SynchronizationOutcome,
+  rollback: RunRollback,
+): SynchronizationOutcome => outcome.outcome !== "Failed" ? outcome : {
+  ...outcome,
+  rollbackIncomplete: rollback._tag === "Incomplete",
+  failedRollbackResources: rollback._tag === "Complete" ? []
+    : [...new Set(rollback.failures.flatMap((failure) => failure.resource === undefined ? [] : [failure.resource]))],
+};
 
 type RollbackCompletion =
   | { readonly _tag: "Restored" }
@@ -1155,7 +1182,7 @@ export const executeSynchronizationPlan = (
     const verified = new Set<ResourceId>();
     const applied: Array<AppliedResourceRecord> = [];
     const removedResources = new Set<ResourceId>();
-    const failedRollbacks: Array<ActionId> = [];
+    let runRollback: RunRollback = { _tag: "Complete" };
     const completedRollbacks: Array<{
       readonly action: ActionId;
       readonly resource?: ResourceId | undefined;
@@ -1170,7 +1197,9 @@ export const executeSynchronizationPlan = (
       for (let index = 0; index < states.length; index += 1) {
         const state = states[index]!;
         const result = yield* executeSynchronizationAction(input, state);
-        if (result.kind === "failed" && result.rollbackState._tag === "Blocked") failedRollbacks.push(state.action.id);
+        if (result.kind === "failed" && result.rollbackState._tag === "Blocked") {
+          runRollback = blockRunRollback(runRollback, { action: state.action.id, resource: state.action.resource, state: result.rollbackState });
+        }
         completedActions.push(state.action.id);
         if (result.kind === "verified" && result.rollback !== undefined) {
           completedRollbacks.push({
@@ -1200,7 +1229,8 @@ export const executeSynchronizationPlan = (
                 completed.resource !== undefined && previousApplied === undefined ? completed.resource : undefined,
               ));
               if (rollback._tag === "Blocked") {
-                failedRollbacks.push(completed.action);
+                runRollback = blockRunRollback(runRollback, { action: completed.action, resource: completed.resource,
+                  state: { _tag: "Blocked", phase: rollback.phase, reference: completed.reference } });
                 failedReason = `${failedReason ?? "synchronization failed"}; ${rollback.phase} rollback failed for ${completed.action}: ${redact(new Error(rollback.reason), input.knownSecrets ?? [])}`;
               }
             }
@@ -1242,14 +1272,8 @@ export const executeSynchronizationPlan = (
       }
     }
     return {
-      outcome: outcome.outcome === "Failed" ? {
-        ...outcome,
-        rollbackIncomplete: failedRollbacks.length > 0,
-        failedRollbackResources: input.plan.actions.flatMap((action) =>
-          failedRollbacks.includes(action.id) && action.resource !== undefined ? [action.resource] : []
-        ),
-      } : outcome,
-      failedRollbacks,
+      outcome: withRollbackOutcome(outcome, runRollback),
+      rollback: runRollback,
       appliedResources: applied,
       removedResources: outcome.outcome === "Converged"
         ? [...removedResources].sort()

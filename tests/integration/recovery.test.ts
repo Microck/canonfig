@@ -640,7 +640,7 @@ describe("synchronization crash recovery", () => {
     expect(applied).toEqual([previousApplied]);
   });
 
-  it("rolls back ownership for a completed no-op without rollback material", async () => {
+  it.each([false, true])("rolls back ownership for a completed no-op without rollback material (ownership blocked: %s)", async (blockOwnership) => {
     const value = fixture(temporaryDirectory());
     const base = persistedPlan(value);
     const first = base.actions[0]!;
@@ -684,17 +684,27 @@ describe("synchronization crash recovery", () => {
     await journal(value, first.id, "succeeded", undefined, {
       appliedResource: currentApplied,
     });
+    if (blockOwnership) {
+      const database = new DatabaseSync(value.database);
+      database.exec(`CREATE TRIGGER refuse_ownership_inverse BEFORE INSERT ON action_journal
+        WHEN NEW.state = 'rolled-back'
+        BEGIN SELECT RAISE(ABORT, 'ownership inverse denied'); END`);
+      database.close();
+    }
 
+    let refused = false;
     const machine = decorateMachine(value.root, (service) => ({
       ...service,
-      atomicWrite: (input) => input.path.absolute === value.target
-        ? Effect.fail({
+      atomicWrite: (input) => {
+        if (input.path.absolute !== value.target || refused) return service.atomicWrite(input);
+        refused = true;
+        return Effect.fail({
           _tag: "MachineFilesystemError",
           operation: "test later recovery action",
           path: input.path.absolute,
           message: "injected later-action failure",
-        })
-        : service.atomicWrite(input),
+        });
+      },
     }));
 
     const outcome = await recover(value, machine);
@@ -705,7 +715,17 @@ describe("synchronization crash recovery", () => {
         repository.loadAppliedResources(follower.id)
       ).pipe(Effect.provide(stateRepositoryLayer(value.database))),
     );
-    expect(applied).toEqual([]);
+    if (blockOwnership) {
+      expect(outcome).toMatchObject({ rollbackIncomplete: true, failedRollbackResources: [resource.id] });
+      expect(applied).toEqual([currentApplied]);
+      const database = new DatabaseSync(value.database);
+      database.exec("DROP TRIGGER refuse_ownership_inverse");
+      database.close();
+      expect((await recover(value)).outcome).toBe("Converged");
+    } else {
+      expect(outcome).toMatchObject({ rollbackIncomplete: false, failedRollbackResources: [] });
+      expect(applied).toEqual([]);
+    }
   });
 
   it("preserves ownership that a completed agent action did not change", async () => {

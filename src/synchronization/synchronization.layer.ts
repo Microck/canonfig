@@ -12,6 +12,7 @@ import {
   executionRevision,
   preflightDisk,
   preflightPathLengths,
+  withRollbackOutcome,
 } from "./executor.ts";
 import { recoverSynchronizationPlan } from "./recovery.ts";
 import { RollbackCleanupError } from "./synchronization.errors.ts";
@@ -78,15 +79,14 @@ const makeSynchronization = Effect.gen(function*() {
           Effect.provideService(MachineState, machine),
           Effect.catch((error) =>
             Effect.succeed({
-              outcome: {
+              outcome: withRollbackOutcome({
                 outcome: "Failed",
                 run: input.id,
                 reason: String(error).slice(0, 2048),
-                rollbackIncomplete: false,
-              } as const,
+              }, { _tag: "Complete" }),
               appliedResources: [],
               removedResources: [],
-              failedRollbacks: [],
+              rollback: { _tag: "Complete" as const },
             })
           ),
         );
@@ -101,7 +101,7 @@ const makeSynchronization = Effect.gen(function*() {
         if (result.outcome.outcome !== "Interrupted") {
           yield* cleanupRollbackSnapshots(
             input.id, input.plan.actions.map((action) => action.id),
-            result.failedRollbacks.length > 0 ? input.plan.actions.map((action) => action.id) : [],
+            result.rollback._tag === "Incomplete" ? input.plan.actions.map((action) => action.id) : [],
             [...pendingRollbackReferences.values()],
           ).pipe(
             Effect.provideService(MachineState, machine),
@@ -111,7 +111,7 @@ const makeSynchronization = Effect.gen(function*() {
               message: String(error),
             })),
           );
-          if (!("origin" in input.revision) && result.failedRollbacks.length === 0) yield* repository.finalizeRun(input.id, new Date(yield* Clock.currentTimeMillis).toISOString());
+          if (!("origin" in input.revision) && result.rollback._tag === "Complete") yield* repository.finalizeRun(input.id, new Date(yield* Clock.currentTimeMillis).toISOString());
         }
         return result.outcome;
       }).pipe(
@@ -162,7 +162,7 @@ const makeSynchronization = Effect.gen(function*() {
           yield* cleanupRollbackSnapshots(
             result.outcome.run,
             recovery?.run.plan.actions.map((action) => action.id) ?? [],
-            result.failedRollbacks.length > 0 ? recovery?.run.plan.actions.map((action) => action.id) ?? [] : [],
+            result.rollback._tag === "Incomplete" ? recovery?.run.plan.actions.map((action) => action.id) ?? [] : [],
             recovery?.actions.flatMap((action) => action.rollbackReference === undefined ? [] : [action.rollbackReference]) ?? [],
           ).pipe(
             Effect.provideService(MachineState, machine),
@@ -172,7 +172,7 @@ const makeSynchronization = Effect.gen(function*() {
               message: String(error),
             })),
           );
-          if (!("origin" in input.revision) && result.failedRollbacks.length === 0) yield* repository.finalizeRun(result.outcome.run, new Date(yield* Clock.currentTimeMillis).toISOString());
+          if (!("origin" in input.revision) && result.rollback._tag === "Complete") yield* repository.finalizeRun(result.outcome.run, new Date(yield* Clock.currentTimeMillis).toISOString());
         }
         return result.outcome;
       }).pipe(

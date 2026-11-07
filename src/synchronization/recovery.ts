@@ -34,6 +34,9 @@ import {
   restoreAction,
   reduceActionResult,
   actionProgressOutcome,
+  blockRunRollback,
+  withRollbackOutcome,
+  type RunRollback,
   type ActionProgress,
   executionContexts,
   executionLimits,
@@ -468,7 +471,7 @@ export const recoverSynchronizationPlan = (
     );
     const verified = new Set<ResourceId>();
     const removedResources = new Set<ResourceId>();
-    const failedRollbacks: Array<ActionId> = [];
+    let runRollback: RunRollback = { _tag: "Complete" };
     let progress: ActionProgress = { _tag: "Running", verified };
     const completedRollbacks: Array<{
       readonly action: PlannedAction;
@@ -605,7 +608,9 @@ export const recoverSynchronizationPlan = (
         }
         result = yield* executeSynchronizationAction(input, state, attempt);
       }
-      if (result.kind === "failed" && result.rollbackState._tag === "Blocked") failedRollbacks.push(state.action.id);
+      if (result.kind === "failed" && result.rollbackState._tag === "Blocked") {
+        runRollback = blockRunRollback(runRollback, { action: state.action.id, resource: state.action.resource, state: result.rollbackState });
+      }
       if (result.kind === "verified" && result.rollback !== undefined) {
         if (result.resource !== undefined && rollbackOwnership === undefined) {
           rollbackOwnership = {
@@ -650,7 +655,8 @@ export const recoverSynchronizationPlan = (
               completed.previousApplied === undefined ? completed.resource : undefined,
             ));
             if (rollback._tag === "Blocked") {
-              failedRollbacks.push(completed.action.id);
+              runRollback = blockRunRollback(runRollback, { action: completed.action.id, resource: completed.resource,
+                state: { _tag: "Blocked", phase: rollback.phase, reference: completed.reference } });
               failedReason = `${failedReason ?? "synchronization recovery failed"}; ${rollback.phase} rollback failed for ${completed.action.id}: ${rollback.reason}`;
             }
           }
@@ -672,14 +678,8 @@ export const recoverSynchronizationPlan = (
       }
     }
     return {
-      outcome: outcome.outcome === "Failed" ? {
-        ...outcome,
-        rollbackIncomplete: failedRollbacks.length > 0,
-        failedRollbackResources: recovery.run.plan.actions.flatMap((action) =>
-          failedRollbacks.includes(action.id) && action.resource !== undefined ? [action.resource] : []
-        ),
-      } : outcome,
-      failedRollbacks,
+      outcome: withRollbackOutcome(outcome, runRollback),
+      rollback: runRollback,
       appliedResources,
       removedResources: outcome.outcome === "Converged"
         ? [...removedResources].sort()

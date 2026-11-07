@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { ContentDigest, ResourceId, RunId } from "../../src/domain/brand.ts";
+import { ActionId, ContentDigest, ResourceId, RunId } from "../../src/domain/brand.ts";
 import type { PublishedResource } from "../../src/domain/profile.ts";
 import {
   AppliedResourceRecordSchema,
@@ -10,7 +10,7 @@ import {
 import { removedResourceState, removedResourceVerification } from "../../src/synchronization/observation.ts";
 import { planRemoved } from "../../src/synchronization/resource-plans.ts";
 import type { DesiredResource } from "../../src/synchronization/synchronization.types.ts";
-import { actionProgressOutcome, reduceActionResult, type ActionResult } from "../../src/synchronization/executor.ts";
+import { actionProgressOutcome, blockRunRollback, reduceActionResult, restoreAction, withRollbackOutcome, type ActionResult } from "../../src/synchronization/executor.ts";
 
 describe("Action result transitions", () => {
   const run = Schema.decodeUnknownSync(RunId)("action-result-contract");
@@ -31,6 +31,30 @@ describe("Action result transitions", () => {
     let progress = Effect.runSync(reduceActionResult({ _tag: "Running", verified: new Set() }, { kind: "verified" }));
     progress = Effect.runSync(reduceActionResult(progress, { kind: "verified", resource }));
     expect(actionProgressOutcome(run, progress)).toEqual({ outcome: "Converged", run, verified: [resource] });
+  });
+});
+
+describe("rollback completion", () => {
+  const run = Schema.decodeUnknownSync(RunId)("rollback-contract");
+  const action = Schema.decodeUnknownSync(ActionId)("inverse");
+  const resource = Schema.decodeUnknownSync(ResourceId)("owned-resource");
+  it.each(["physical", "ownership"] as const)("keeps %s failures incomplete at the public boundary", (phase) => {
+    const blocked = Effect.runSync(restoreAction(
+      phase === "physical" ? Effect.fail("inverse refused") : Effect.void,
+      phase === "ownership" ? Effect.fail("journal refused") : Effect.die("ownership must not run before the inverse"),
+    ));
+    expect(blocked).toMatchObject({ _tag: "Blocked", phase });
+    const rollback = blockRunRollback({ _tag: "Complete" }, {
+      action, resource,
+      state: { _tag: "Blocked", phase, reference: "/disposable/inverse" },
+    });
+    expect(withRollbackOutcome({ outcome: "Failed", run, reason: "stopped" }, rollback))
+      .toMatchObject({ rollbackIncomplete: true, failedRollbackResources: [resource] });
+  });
+  it("reports a completed inverse only after ownership commits", () => {
+    expect(Effect.runSync(restoreAction(Effect.void, Effect.void))).toEqual({ _tag: "Restored" });
+    expect(withRollbackOutcome({ outcome: "Failed", run, reason: "stopped" }, { _tag: "Complete" }))
+      .toMatchObject({ rollbackIncomplete: false, failedRollbackResources: [] });
   });
 });
 
