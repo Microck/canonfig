@@ -51,6 +51,8 @@ tell a refusal from a crash.
 ```bash
 canonfig ui
 canonfig ui --port 5317 --no-open
+canonfig ui --host 100.101.102.103
+canonfig ui --port 5317 --origin https://atlas.tailnet.ts.net
 ```
 
 Starts the browser interface in the foreground on this machine. It uses the
@@ -60,13 +62,31 @@ The public interactive demo uses made-up machines instead.
 
 | Option | Effect |
 | --- | --- |
-| `--port <n>` | Choose the loopback server's port. Without it, the operating system selects a free port. |
+| `--port <n>` | Choose the server's port. Without it, the operating system selects a free port. |
+| `--host <address>` | Listen on a loopback or Tailscale address instead of `127.0.0.1`: `::1`, `100.64.0.0/10` or `fd7a:115c:a1e0::/48`. Other addresses are refused. |
+| `--origin <https-url>` | Also accept an HTTPS proxy in front of the server, such as `tailscale serve`, and print the sign-in URL on it. Needs `--port`. |
 | `--no-open` | Print the launch URL without opening the browser. |
 
-The server binds only to `127.0.0.1`. Open the printed URL on the same
-machine. Its token can establish a browser session only once; the browser
-then uses a session cookie. Keep the launch URL private. Requests with the
-wrong Host or Origin are rejected.
+By default the server binds only to `127.0.0.1`; open the printed URL on the
+same machine. Its token can establish a browser session only once; the
+browser then uses a session cookie. Keep the launch URL private. Requests
+with the wrong Host or Origin are rejected.
+
+To use the interface from another device on your tailnet, either bind this
+machine's Tailscale address with `--host` (find it with `tailscale ip`) and
+open the printed `http://` URL, or keep the default address and put
+`tailscale serve` in front of it:
+
+```bash
+tailscale serve --bg 5317
+canonfig ui --port 5317 --no-open --origin https://atlas.tailnet.ts.net
+```
+
+`tailscale serve` prints this machine's `https://` address; pass it as
+`--origin`, then open the sign-in URL `canonfig ui` prints on the other
+device. Everyone on the tailnet can reach the port, so the single-use link
+is still what admits a browser. Remove the proxy with
+`tailscale serve --https=443 off` when you are done.
 
 Keep the terminal open while using the interface. Ctrl-C stops it with
 exit 130; SIGTERM stops it with exit 143. The command holds a self-update

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { BlockList, isIP } from "node:net";
 import { extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,7 +23,39 @@ import { managedCommandLease, type ManagedCommandLease } from "../runtime/self-u
 export interface GuiOptions {
   readonly port: number;
   readonly open: boolean;
+  /** Address the server binds; a loopback or Tailscale address (guiHostProblem). */
+  readonly host: string;
+  /** An extra https origin that reaches this server through a TLS proxy such as `tailscale serve`, if any. */
+  readonly origin: string | undefined;
 }
+
+// Addresses the GUI may bind: loopback, and Tailscale's ranges (CGNAT IPv4 and its ULA IPv6 prefix). Traffic to
+// the latter stays inside the tailnet's WireGuard tunnels, so the sign-in token and session cookie never cross a
+// LAN in clear text. A BlockList matches any spelling of an address, such as 0:0:0:0:0:0:0:1 for ::1.
+const bindable = new BlockList();
+bindable.addAddress("127.0.0.1", "ipv4");
+bindable.addAddress("::1", "ipv6");
+bindable.addSubnet("100.64.0.0", 10, "ipv4");
+bindable.addSubnet("fd7a:115c:a1e0::", 48, "ipv6");
+
+/** Why `host` cannot carry the GUI, or undefined when it can: loopback or a Tailscale address only. */
+export const guiHostProblem = (host: string): string | undefined => {
+  const family = isIP(host);
+  if (family === 0) return `--host needs an IP address, not ${host}`;
+  if (bindable.check(host, family === 4 ? "ipv4" : "ipv6")) return undefined;
+  return `--host ${host} is not a loopback or Tailscale address; the browser interface only listens on 127.0.0.1, ::1, 100.64.0.0/10 or fd7a:115c:a1e0::/48`;
+};
+
+/** The normalized https origin for `--origin`, or a problem: an origin only, without path, query or credentials. */
+export const guiOrigin = (value: string): { readonly origin: string } | { readonly problem: string } => {
+  if (!URL.canParse(value)) return { problem: `--origin ${value} is not a URL` };
+  const url = new URL(value);
+  if (url.protocol !== "https:") return { problem: "--origin must be an https URL, such as the address tailscale serve prints" };
+  if (url.username !== "" || url.password !== "" || url.pathname !== "/" || url.search !== "" || url.hash !== "") {
+    return { problem: "--origin must be an origin only, such as https://machine.tailnet.ts.net" };
+  }
+  return { origin: url.origin };
+};
 
 interface AssetContentTypes {
   readonly [extension: string]: string | undefined;
@@ -56,6 +89,18 @@ const sessionCookie = (request: IncomingMessage, cookieName: string): string | u
   const cookies = (request.headers.cookie ?? "").split(";").map((entry) => entry.trim());
   const matches = cookies.filter((entry) => entry.startsWith(`${cookieName}=`));
   return matches.length === 1 ? matches[0]?.slice(cookieName.length + 1) : undefined;
+};
+
+/**
+ * Whether a request's Host names the same authority as `origin`, compared the way URLs compare them: host case
+ * and the scheme's default port do not matter (`ATLAS.tailnet.ts.net:443` matches `https://atlas.tailnet.ts.net`).
+ * A Host carrying anything beyond host and port, such as `x@atlas.tailnet.ts.net`, never matches.
+ */
+const sameAuthority = (origin: string, host: string | undefined): boolean => {
+  if (host === undefined || /[@/?#\\]/u.test(host)) return false;
+  const expected = new URL(origin);
+  const candidate = `${expected.protocol}//${host}`;
+  return URL.canParse(candidate) && new URL(candidate).host === expected.host;
 };
 
 /** No shell interpolation: the URL is passed as one argument on every platform. */
@@ -136,20 +181,24 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
   // Cookies are host-scoped, not port-scoped. Concurrent GUIs need distinct names.
   const cookieName = `canonfig_session_${randomBytes(16).toString("hex")}`;
   let tokenUsed = false;
-  let origin = "";
+  // The bound address's own http origin, plus the optional https proxy origin. Known once listening.
+  let origins: ReadonlyArray<string> = [];
 
   const handle = async (request: IncomingMessage, response: ServerResponse, signal: AbortSignal) => {
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("Referrer-Policy", "no-referrer");
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
-    if (`http://${request.headers.host}` !== origin || (request.headers.origin !== undefined && request.headers.origin !== origin)) {
-      json(response, 403, failureBody("authentication-or-revocation", "This request must come from the Canonfig loopback origin."));
+    // Host picks the origin (a proxy such as tailscale serve passes the public Host through). Anything
+    // else, a rebound DNS name included, is refused, as is a request whose Origin names another site.
+    const origin = origins.find((candidate) => sameAuthority(candidate, request.headers.host));
+    if (origin === undefined || (request.headers.origin !== undefined && request.headers.origin !== origin)) {
+      json(response, 403, failureBody("authentication-or-revocation", "This request must come from a Canonfig browser origin."));
       return;
     }
     const url = new URL(request.url ?? "/", origin);
     if (url.origin !== origin) {
-      json(response, 403, failureBody("authentication-or-revocation", "This request must use the Canonfig loopback origin."));
+      json(response, 403, failureBody("authentication-or-revocation", "This request must use a Canonfig browser origin."));
       return;
     }
     if (url.searchParams.has("token")) {
@@ -159,7 +208,9 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
       }
       // Consume synchronously before any await so concurrent exchanges cannot both win.
       tokenUsed = true;
-      response.writeHead(303, { Location: "/", "Set-Cookie": `${cookieName}=${session}; HttpOnly; SameSite=Strict; Path=/` });
+      // Secure keeps a cookie set over the https proxy origin from ever being sent in clear text.
+      const secure = url.protocol === "https:" ? "; Secure" : "";
+      response.writeHead(303, { Location: "/", "Set-Cookie": `${cookieName}=${session}; HttpOnly; SameSite=Strict; Path=/${secure}` });
       response.end();
       return;
     }
@@ -237,14 +288,14 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
     Effect.tryPromise({
       try: () => new Promise<void>((accept, reject) => {
         server.once("error", reject);
-        server.listen(options.port, "127.0.0.1", () => {
+        server.listen(options.port, options.host, () => {
           server.removeListener("error", reject);
           accept();
         });
       }),
       catch: (error) => new CliCommandFailure({
         category: "transport",
-        message: `Could not start the browser server on 127.0.0.1${options.port === 0 ? "" : `:${options.port}`}: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Could not start the browser server on ${options.host}${options.port === 0 ? "" : ` port ${options.port}`}: ${error instanceof Error ? error.message : String(error)}`,
       }),
     }),
     () => Effect.promise(() => new Promise<void>((accept) => {
@@ -255,8 +306,11 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
   );
   const address = server.address();
   if (address === null || Schema.is(Schema.String)(address)) return yield* Effect.die("The browser server has no TCP address");
-  origin = `http://127.0.0.1:${address.port}`;
-  const url = `${origin}/?token=${token}`;
+  // URL normalizes the spelling (IPv6 case and zero groups), so it matches the origin of every parsed request.
+  const bound = new URL(`http://${isIP(options.host) === 6 ? `[${options.host}]` : options.host}:${address.port}`).origin;
+  origins = options.origin === undefined ? [bound] : [bound, options.origin];
+  // The token works once, so it is printed for one origin: the proxy's when one is configured.
+  const url = `${options.origin ?? bound}/?token=${token}`;
   io.writeStdout(`${url}\n`);
   io.writeStderr("Canonfig browser interface is running. Press Ctrl-C to stop.\n");
   if (options.open) openBrowser(url, io);
