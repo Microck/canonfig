@@ -1,11 +1,13 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { SqliteClient, SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
-import { FollowerId } from "../../src/domain/brand.ts";
+import { FollowerId, RunId } from "../../src/domain/brand.ts";
+import { composeTextFile } from "../../src/domain/text-composition.ts";
 import { canonicalJson, sha256Hex } from "../../src/profile/profile-codec.ts";
 import { RepositorySqlError } from "../../src/state/state-repository.errors.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
@@ -22,7 +24,8 @@ const at = "2026-08-15T00:00:00Z";
 const releasedDatabase = async () => {
   const root = mkdtempSync(join(tmpdir(), "canonfig-61-migration-"));
   roots.push(root);
-  const path = join(root, "state.sqlite");
+  const path = join(root, "home", ".canonfig", "state.sqlite");
+  mkdirSync(join(root, "home", ".canonfig"), { recursive: true });
   // Run the unchanged, released migrations, not a hand-built approximation.
   await Effect.runPromise(SqliteMigrator.run({
     loader: stateMigrations.pipe(Effect.map((migrations) => migrations.filter(([id]) => id <= 2))),
@@ -30,9 +33,9 @@ const releasedDatabase = async () => {
   return { root, path };
 };
 
-const oldPlan = (details: ReadonlyArray<Record<string, unknown>>) => {
+const oldPlan = (details: ReadonlyArray<Record<string, unknown>>, resourceId = resource) => {
   const body = { revision: "old-revision", follower, requiredBlobs: [], agentTasks: [],
-    actions: details.map((detail, index) => ({ id: `action-${index}`, resource,
+    actions: details.map((detail, index) => ({ id: `action-${index}`, resource: resourceId,
       kind: detail.kind, detail, before: index === 0 ? [] : [`action-${index - 1}`] })) };
   const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)(body));
   return { ...body, encoded, digest: sha256Hex(encoded) };
@@ -82,7 +85,7 @@ describe("released 6.1 synchronization migration", () => {
     expect(loaded.owned).toMatchObject([{ ownership: "WholeFile", mode: 0o600 }]);
     expect(loaded.takeovers).toMatchObject([{ _tag: "Owned", backup: { _tag: "Snapshot", id: "snapshot-61" } }]);
     expect(loaded.recovery?.run).toMatchObject({ id: "latest", lifecycle: { _tag: "Finalizing" } });
-    expect(loaded.recovery?.run.plan.actions[0]?.detail).toMatchObject({ textTransition: { kind: "whole-file" } });
+    expect(loaded.recovery?.run.plan.actions[0]?.detail).toMatchObject({ textTransition: { kind: "completed" } });
     const migrated = new DatabaseSync(value.path);
     expect(migrated.prepare("SELECT phase FROM synchronization_runs WHERE id = 'older'").get()?.phase).toBe("Complete");
     expect(migrated.prepare("SELECT completed_at FROM synchronization_runs WHERE id = 'latest'").get()?.completed_at).toBeNull();
@@ -133,6 +136,77 @@ describe("released 6.1 synchronization migration", () => {
     expect(unchanged.prepare("PRAGMA table_info(synchronization_runs)").all().some((column) => column.name === "phase")).toBe(false);
     unchanged.close();
   });
+
+  it("preserves local edits when completed append-local history is finalized and synchronized", async () => {
+    const value = await releasedDatabase();
+    const home = join(value.root, "home");
+    const folder = join(home, ".canonfig");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "canonfig.jsonc"), JSON.stringify({
+      version: 1, harnesses: [],
+      resources: { team: { kind: "file", target: "~/TEAM.md", source: "files/TEAM.md", policy: "append-local" } },
+    }));
+    mkdirSync(join(folder, "files"));
+    writeFileSync(join(folder, "files/TEAM.md"), "Updated Source instructions.\n");
+    const target = join(home, "TEAM.md");
+    writeFileSync(target, composeTextFile("Released Source instructions.\n"), { mode: 0o600 });
+    // A local edit made after the released run completed must survive upgrade.
+    appendFileSync(target, "A local line added after synchronization.\n");
+    const db = new DatabaseSync(value.path);
+    const team = "harness:resources:team";
+    const previousDigest = sha256Hex("Released Source instructions.\n");
+    const plan = oldPlan([{ ...oldWrite, target, digest: previousDigest, previousSourceDigest: digest }], team);
+    db.prepare("INSERT INTO local_revisions VALUES ('old-revision', ?, ?, ?)").run(previousDigest,
+      JSON.stringify({ origin: "folder", id: "old-revision", originDigest: previousDigest,
+        resources: [{ id: team, kind: "file", policy: "append-local", target, dependsOn: [], blobs: [] }],
+        desired: [{ resource: team, desired: { kind: "file", digest: previousDigest, executable: false, mode: 0o600 },
+          verification: { method: "digest", digest: previousDigest } }], blobs: [], removedResources: [] }), at);
+    insertRun(db, "older-append", "Converged", plan);
+    insertRun(db, "latest-append", "Converged", plan, "2026-08-16T00:00:00Z");
+    db.prepare(`INSERT INTO applied_resources
+      (follower_id, resource_id, revision_id, digest, applied_at, kind, policy, target, executable, mode)
+      VALUES (?, ?, 'old-revision', ?, ?, 'file', 'append-local', ?, 0, 384)`)
+      .run(follower, team, previousDigest, at, target);
+    db.close();
+    const recovery = await open(value.path, Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      expect(yield* repository.loadRunEvidence(RunId.make("older-append"))).toMatchObject({ mutatingActions: 1 });
+      return yield* repository.loadRecovery(follower);
+    }));
+    expect(recovery?.run.lifecycle._tag).toBe("Finalizing");
+    expect(recovery?.run.plan.actions[0]?.detail).toMatchObject({ textTransition: { kind: "completed" } });
+    if (recovery === undefined) throw new Error("migrated terminal run is missing");
+    expect(JSON.parse(recovery.run.plan.encoded).actions).toEqual(recovery.run.plan.actions);
+    expect(recovery.run.plan.digest).toBe(sha256Hex(recovery.run.plan.encoded));
+    const environment = {
+      ...process.env, HOME: home, USERPROFILE: home, PATH: join(value.root, "empty-bin"),
+      XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local/share"),
+      XDG_CACHE_HOME: join(home, ".cache"),
+      CANONFIG_LOCAL_CREDENTIAL_ROOT: join(value.root, "credentials"), CANONFIG_LOG: "off",
+      CANONFIG_ACCEPT_FOREIGN_BUILD: "1",
+    };
+    const run = (args: ReadonlyArray<string>) => spawnSync(process.execPath,
+      ["--import", "tsx", "src/runtime/main.ts", ...args, "--json"], {
+        cwd: resolve(import.meta.dirname, "../.."), env: environment, encoding: "utf8", timeout: 30_000,
+      });
+    // Normal lifecycle guidance replaces the former irrecoverable migration error.
+    const blockedSync = run(["sync", "--apply"]);
+    expect(blockedSync.status, blockedSync.stdout + blockedSync.stderr).toBe(4);
+    expect(blockedSync.stdout + blockedSync.stderr).toContain("canonfig recover");
+    const abandonment = run(["abandon"]);
+    expect(abandonment.status, abandonment.stdout + abandonment.stderr).toBe(1);
+    expect(abandonment.stdout + abandonment.stderr).toContain("must finish finalization");
+    for (const args of [["status"], ["recover"], ["sync", "--apply"], ["status"]]) {
+      const result = run(args);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+    }
+    expect(readFileSync(target, "utf8")).toContain("Updated Source instructions.\n");
+    expect(readFileSync(target, "utf8")).toContain("A local line added after synchronization.\n");
+    expect(readFileSync(target, "utf8")).not.toContain("Released Source instructions.\n");
+    const migrated = new DatabaseSync(value.path);
+    expect(migrated.prepare("SELECT count(*) AS count FROM synchronization_runs WHERE recovery_error IS NOT NULL").get()?.count).toBe(0);
+    migrated.close();
+  }, 60_000);
 
   it("retains ambiguous append-local intent and refuses recovery without inventing current evidence", async () => {
     const value = await releasedDatabase();

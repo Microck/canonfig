@@ -522,9 +522,12 @@ export const stateMigrations = SqliteMigrator.fromRecord({
           AND json_extract(a.value, '$.detail.kind') IN ('human-action', 'agent-task', 'drift-conflict'))`;
     yield* sql`DROP TABLE action_journal`;
     yield* sql`ALTER TABLE action_journal_v3 RENAME TO action_journal`;
-    // Old action intent is upgraded only where the plan itself proves it.
-    const rows = yield* sql`SELECT id, plan_json FROM synchronization_runs`;
-    for (const row of Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ id: Schema.String, plan_json: Schema.String })))(rows)) {
+    // Terminal writes need only historical evidence, never reconstructed intent.
+    // Only Applying/Interrupted can replay writes or their inverses.
+    const rows = yield* sql`SELECT id, phase, plan_json FROM synchronization_runs`;
+    for (const row of Schema.decodeUnknownSync(Schema.Array(Schema.Struct({
+      id: Schema.String, phase: Schema.String, plan_json: Schema.String,
+    })))(rows)) {
       const plan = Schema.decodeUnknownSync(Schema.MutableJson)(JSON.parse(row.plan_json));
       if (!isJsonObject(plan) || !Array.isArray(plan.actions)) continue;
       let ambiguous = false;
@@ -532,6 +535,12 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         if (!isJsonObject(action)) continue;
         const detail = action.detail;
         if (!isJsonObject(detail) || detail.kind !== "write-file") continue;
+        if (row.phase === "Finalizing" || row.phase === "Complete") {
+          detail.textTransition = { kind: "completed" };
+          delete detail.retainedLocalDigest;
+          delete detail.previousSourceDigest;
+          continue;
+        }
         const policies = yield* sql`SELECT json_extract(resource.value, '$.policy') AS policy
           FROM synchronization_runs run
           JOIN local_revisions revision ON revision.id = run.revision_id,

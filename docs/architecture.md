@@ -148,11 +148,13 @@ omitted optional field.
 Migration 3, `synchronization_lifecycle`, upgrades released 6.1 rows in place
 using stored ownership and run evidence. The newest terminal run remains open
 for idempotent finalization; older terminal runs never release newer ownership.
-Unclassifiable ownership and orphan takeovers refuse the migration with recovery
-steps and leave it rolled back. Ambiguous append-local plans remain intact and
-refuse recovery with instructions to preserve the database and snapshots, restore
-the affected targets manually, and set up fresh state. Existing takeover and
-rollback snapshot formats remain readable; no migration reads current target
+Terminal writes retain a non-executable `completed` text transition; finalization
+does not reconstruct or replay their write intent. Unclassifiable ownership and
+orphan takeovers refuse the migration with recovery steps and leave it rolled
+back. Ambiguous append-local plans in `Applying` or `Interrupted` remain intact
+and refuse recovery with instructions to preserve the database and snapshots,
+restore the affected targets manually, and set up fresh state. Existing takeover
+and rollback snapshot formats remain readable; no migration reads current target
 bytes to invent ownership.
 
 ## Profile contract
