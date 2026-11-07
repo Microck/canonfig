@@ -8,8 +8,9 @@ instead of guessing.
 ## Breaking change: set machines up again
 
 Canonfig 7.0.0 uses a new state format and does not read state written by 6.x.
-On a machine that ran 6.x, the first 7.0.0 command refuses the old state and
-tells you to move `state.sqlite` aside and set the machine up again. Nothing is
+On a machine that ran 6.x, the first 7.0.0 command that opens Canonfig state
+(such as `canonfig status` or `canonfig sync`) refuses the old state and tells
+you to move `state.sqlite` aside and set the machine up again. Nothing is
 changed before that refusal.
 
 Install with `npm install --global @microck/canonfig@7.0.0` on every machine,
