@@ -632,7 +632,7 @@ describe("authenticated content-addressed transport", () => {
     expect(invalidated).toBeInstanceOf(TransportIntegrityError);
   });
 
-  it("invalidates signing-key and authorization caches after source key rotation", async () => {
+  it("invalidates signing-key and authorization caches after out-of-band source key rotation", async () => {
     const setup = fixture();
     const published = await publishFixtureRevision(setup);
     const server = await start(setup);
@@ -646,10 +646,7 @@ describe("authenticated content-addressed transport", () => {
     }));
 
     await setup.runtime.runPromise(Effect.gen(function*() {
-      const enrollment = yield* Enrollment;
       const machine = yield* MachineState;
-      const repository = yield* StateRepository;
-      const current = yield* enrollment.source();
       const generated = generateKeyPairSync("ed25519");
       const privateKey = generated.privateKey.export({
         type: "pkcs8",
@@ -666,16 +663,17 @@ describe("authenticated content-addressed transport", () => {
         name: "canonfig-rotated-source-signing-key",
         value: Redacted.make(privateKey),
       });
-      yield* repository.saveEnrollmentSource({
-        identity: {
-          keyId: `ed25519:${fingerprint}`,
-          publicKeyFingerprint: fingerprint,
-        },
-        signingKeyReference,
-        tlsKeyReference: current.tlsKeyReference,
-        tlsCertificateReference: current.tlsCertificateReference,
-        tlsFingerprint: current.tlsFingerprint,
-      });
+      // Source initialization is create-only. Simulate an external state change,
+      // not a supported identity replacement, to exercise both transport caches.
+      const database = new DatabaseSync(setup.database);
+      try {
+        database.exec("BEGIN");
+        database.prepare("UPDATE source_identity SET key_id = ?, public_key_fingerprint = ? WHERE singleton = 1")
+          .run(`ed25519:${fingerprint}`, fingerprint);
+        database.prepare("UPDATE enrollment_source SET signing_key_reference = ? WHERE singleton = 1")
+          .run(signingKeyReference);
+        database.exec("COMMIT");
+      } finally { database.close(); }
     }));
 
     const rotated = await Effect.runPromise(Effect.flip(
