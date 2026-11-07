@@ -34,6 +34,8 @@ import {
 } from "@/shared/metadata";
 import { useSharedState, useWorkspace } from "./store";
 import { authoredItems, draftFiles, type ExactDraft } from "./profile-authoring";
+import type { GuiProfileSnapshot } from "../../../src/gui/contract/profile";
+import { GuiRequestError } from "../gui-client";
 import { ExactItemFields, ProfileActionNotice } from "./profile-authoring-controls";
 import { ScheduleFields, WEEK, scheduleError, scheduleSummary, type Schedule } from "./schedule";
 import { HarnessTable } from "./harnesses";
@@ -576,6 +578,64 @@ function keyRowsOf(r: Resource): KeyRow[] {
   return Object.entries(r.keys ?? {}).map(([name, value], i) => ({ id: i, name, value }));
 }
 
+type AuthoringContent =
+  | { kind: "Structured"; rows: KeyRow[]; supporting?: ExactDraft["files"] }
+  | { kind: "ExactConfig"; json: string; files: ExactDraft["files"] }
+  | { kind: "ExactFiles"; files: ExactDraft["files"] };
+interface EditorDraft { resource: Resource; name: string; content: AuthoringContent }
+interface EditorBaseline { resource: Resource; snapshot: GuiProfileSnapshot | null | undefined; exact: ExactDraft | undefined }
+interface EditorFields { baseline: EditorBaseline; draft: EditorDraft; revision: number; observed: EditorBaseline }
+type EditorState =
+  | (EditorFields & { kind: "Clean" | "Editing" | "Conflict" })
+  | (EditorFields & { kind: "Saving" | "AwaitingSnapshot"; submittedRevision: number });
+type EditorEvent =
+  | { kind: "Change"; update: (draft: EditorDraft) => EditorDraft }
+  | { kind: "Refresh" | "Discard" | "Rebase"; baseline: EditorBaseline }
+  | { kind: "Save" }
+  | { kind: "Saved" | "SaveFailed" };
+function authoringContent(resource: Resource, exact?: ExactDraft): AuthoringContent {
+  return exact?.json !== undefined ? { kind: "ExactConfig", json: exact.json, files: exact.files }
+    : exact ? { kind: "ExactFiles", files: exact.files } : { kind: "Structured", rows: keyRowsOf(resource) };
+}
+function exactContentOf(content: AuthoringContent): ExactDraft | undefined {
+  return content.kind === "ExactConfig" ? { json: content.json, files: content.files }
+    : content.kind === "ExactFiles" ? { files: content.files }
+    : content.supporting ? { files: content.supporting } : undefined;
+}
+function cleanEditor(baseline: EditorBaseline, revision = 0): EditorState {
+  return { kind: "Clean", baseline, observed: baseline, revision, draft: { resource: baseline.resource, name: nameOf(baseline.resource), content: authoringContent(baseline.resource, baseline.exact) } };
+}
+function editorTransition(state: EditorState, event: EditorEvent): EditorState {
+  switch (event.kind) {
+    case "Change": {
+      if (state.kind === "Saving") break;
+      const next = { ...state, draft: event.update(state.draft), revision: state.revision + 1 };
+      return state.kind === "AwaitingSnapshot" ? next : { ...next, kind: state.kind === "Conflict" ? "Conflict" : "Editing" };
+    }
+    case "Save":
+      if (state.kind === "Saving" || state.kind === "Conflict") break;
+      return { ...state, kind: "Saving", submittedRevision: state.revision };
+    case "Saved":
+      if (state.kind !== "Saving") break;
+      return { ...state, kind: "AwaitingSnapshot" };
+    case "SaveFailed":
+      if (state.kind !== "Saving") break;
+      return { ...state, kind: "Editing" };
+    case "Discard": return cleanEditor(event.baseline, state.revision + 1);
+    case "Rebase": return { ...state, kind: "Editing", baseline: event.baseline, observed: event.baseline };
+    case "Refresh":
+      if (state.kind === "Clean") return cleanEditor(event.baseline, state.revision);
+      if (state.kind === "AwaitingSnapshot") {
+        // Only the submitted generation becomes clean. Later keystrokes use the new digests.
+        return state.revision === state.submittedRevision ? cleanEditor(event.baseline, state.revision)
+          : { ...state, kind: "Editing", baseline: event.baseline, observed: event.baseline };
+      }
+      return state.kind === "Saving" ? { ...state, observed: event.baseline }
+        : { ...state, kind: "Conflict", observed: event.baseline };
+  }
+  throw new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: `Cannot ${event.kind.toLowerCase()} an editor while it is ${state.kind}.` });
+}
+
 /** A home-relative or files/-relative path: segments with no `/`, `\` or NUL, none empty (folder.ts relativeSegments). */
 const RESOURCE_TARGET = /^~\/(?:[^/\\\0]+\/)*[^/\\\0]+$/;
 const RESOURCE_SOURCE = /^files\/(?:[^/\\\0]+\/)*[^/\\\0]+$/;
@@ -610,14 +670,18 @@ function resourcePathError(field: "Target" | "Source", value: string, name: stri
 
 function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource; isNew: boolean; onClose: () => void; onSaved: (id: string) => void }) {
   const ws = useWorkspace();
-  const [draft, setDraft] = useState<Resource>(resource);
-  const [snapshot, setSnapshot] = useState(ws.profileLive?.snapshot);
-  const [saved, setSaved] = useState(false);
   const latestSnapshot = ws.profileLive?.snapshot;
   const diskItem = useMemo(() => latestSnapshot ? authoredItems(latestSnapshot).find((entry) => entry.resource.id === resource.id) : undefined, [latestSnapshot, resource.id]);
+  const [editor, setEditor] = useState<EditorState>(() => cleanEditor({ resource, snapshot: latestSnapshot, exact: diskItem?.exact }));
+  const send = (event: EditorEvent) => setEditor((state) => editorTransition(state, event));
+  const { resource: draft, name } = editor.draft;
+  const { snapshot, resource: shown } = editor.baseline;
+  const exact = exactContentOf(editor.draft.content);
+  const rows = editor.draft.content.kind === "Structured" ? editor.draft.content.rows : [];
   const authored = useMemo(() => snapshot ? authoredItems(snapshot).find((entry) => entry.resource.id === resource.id) : undefined, [snapshot, resource.id]);
-  const [exact, setExact] = useState<ExactDraft | undefined>(authored?.exact);
-  const [name, setName] = useState(nameOf(resource));
+  const setDraft = (update: Resource | ((current: Resource) => Resource)) => send({ kind: "Change", update: (draft) => ({ ...draft, resource: typeof update === "function" ? update(draft.resource) : update }) });
+  const setName = (name: string) => send({ kind: "Change", update: (draft) => ({ ...draft, name }) });
+  const setExact = (exact: ExactDraft) => send({ kind: "Change", update: (draft) => ({ ...draft, content: exact.json !== undefined ? { kind: "ExactConfig", json: exact.json, files: exact.files } : draft.resource.category === "hooks" ? { kind: "Structured", rows: [], supporting: exact.files } : { kind: "ExactFiles", files: exact.files } }) });
   const [confirmRemove, setConfirmRemove] = useState(false);
   const returnFocus = useRef<HTMLElement | null>(null);
   const [tried, setTried] = useState(false);
@@ -635,7 +699,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
   const freeHarnesses = (Object.keys(HARNESS_NAMES) as HarnessId[]).filter((h) => !others.some((r) => r.id === `settings/${h}`));
 
   // Settings keys are edited as rows so a key can be renamed, including a new one that has no name yet.
-  const [rows, setRows] = useState<KeyRow[]>(() => keyRowsOf(resource));
+  // Key rows belong to the structured variant, including unnamed unsaved rows.
   const [focusRow, setFocusRow] = useState<number | null>(null);
   // Unnamed rows are still edits even though they cannot enter the saved key map yet. The change marker is
   // publication state, not an edit: publishing clears it on the saved item while this editor is open, and
@@ -643,37 +707,23 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
   const content = (r: Resource) => JSON.stringify({ ...r, change: undefined });
   const matches = (r: Resource) =>
     content(draft) === content(r) && name === nameOf(r) && JSON.stringify(rows.map(({ name: k, value }) => [k, value])) === JSON.stringify(Object.entries(r.keys ?? {}));
-  const [shown, setShown] = useState(resource);
-  const dirty = !matches(shown) || JSON.stringify(exact) !== JSON.stringify(authored?.exact) || (!!snapshot && !isNew && !authored);
+  const dirty = !matches(shown) || JSON.stringify(exact) !== JSON.stringify(editor.baseline.exact) || (!!snapshot && !isNew && !authored);
   const diskChanged = useMemo(() => !!snapshot && !!latestSnapshot && JSON.stringify(snapshot.items.map(({ path, digest }) => [path, digest])) !== JSON.stringify(latestSnapshot.items.map(({ path, digest }) => [path, digest])), [snapshot, latestSnapshot]);
-  // Refresh clean or just-saved editors. An unsaved draft keeps its captured digests
-  // until the person explicitly discards it or accepts the new disk version.
-  if ((shown !== resource || latestSnapshot !== snapshot) && (!dirty || saved) && (!ws.profileLive || diskItem || isNew)) {
-    setShown(resource);
-    setSnapshot(latestSnapshot);
-    setDraft(resource);
-    setExact(diskItem?.exact);
-    setName(nameOf(resource));
-    setRows(keyRowsOf(resource));
-    setSaved(false);
+  const currentBaseline = { resource, snapshot: latestSnapshot, exact: diskItem?.exact };
+  if (editor.observed.resource !== resource || editor.observed.snapshot !== latestSnapshot) {
+    send({ kind: !dirty && editor.kind !== "AwaitingSnapshot" && editor.kind !== "Saving" ? "Discard" : "Refresh", baseline: currentBaseline });
   }
   const discard = () => {
     if (!diskItem && ws.profileLive) { leaveWithoutAsking(onClose); return; }
-    setSnapshot(latestSnapshot);
-    setShown(resource);
-    setDraft(resource);
-    setExact(diskItem?.exact);
-    setName(nameOf(resource));
-    setRows(keyRowsOf(resource));
+    send({ kind: "Discard", baseline: currentBaseline });
     setTried(false);
   };
   // A running skill check or update locks the editor, so no edit or rename can land under it.
   const skillLocked = useSkillLocked(resource.id);
-  const updating = skillLocked || ws.profileLive?.busy === true;
+  const updating = editor.kind === "Saving" || skillLocked || ws.profileLive?.busy === true;
   const moveTracking = useMoveSkillTracking();
   const updateRows = (next: KeyRow[]) => {
-    setRows(next);
-    setDraft((d) => ({ ...d, keys: Object.fromEntries(next.filter((r) => r.name.trim()).map((r) => [r.name.trim(), r.value])) }));
+    send({ kind: "Change", update: (draft) => ({ ...draft, content: { kind: "Structured", rows: next }, resource: { ...draft.resource, keys: Object.fromEntries(next.filter((r) => r.name.trim()).map((r) => [r.name.trim(), r.value])) } }) });
   };
   const rowError = (r: KeyRow) => {
     const key = r.name.trim();
@@ -722,11 +772,13 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
     const base: Resource = { ...draft, id, path: itemPath(category, trimmed), change: isNew ? "added" : resource.change ?? "modified" };
     const next = { ...base, summary: summaryOf(base) };
     if (ws.profileLive && snapshot) {
+      send({ kind: "Save" });
       if (await ws.profileLive.saveItem(snapshot, isNew ? undefined : resource, next, exact)) {
-        setSaved(true);
+        send({ kind: "Saved" });
         toast.success(isNew ? `Added ${id}` : `Saved ${id}`, { description: "Written to the Canonical Folder. Publish to send it to followers." });
         leaveWithoutAsking(() => onSaved(id));
       }
+      else send({ kind: "SaveFailed" });
       return;
     }
     ws.setResources((prev) => (isNew ? [...prev, next] : prev.map((r) => (r.id === resource.id ? next : r))));
@@ -735,9 +787,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
     toast.success(isNew ? `Added ${id}` : `Saved ${id}`, {
       description: `Written to ${next.path}.\nGoes out with revision ${ws.nextSequence}: ${unpublished} unpublished ${unpublished === 1 ? "change" : "changes"}.${DEMO ? "\nSaved in this demo workspace." : ""}`,
     });
-    setDraft(next);
-    setShown(next);
-    setRows(keyRowsOf(next));
+    send({ kind: "Discard", baseline: { resource: next, snapshot, exact } });
     setTried(false);
     leaveWithoutAsking(() => onSaved(id));
   };
@@ -785,7 +835,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
         </>}
         <div className="flex flex-wrap gap-2">
           <Button type="button" variant="outline" size="sm" onClick={discard}>Discard my edits</Button>
-          <Button type="button" variant="outline" size="sm" onClick={() => { setSnapshot(latestSnapshot); setShown(resource); }}>Re-apply my edits</Button>
+          <Button type="button" variant="outline" size="sm" onClick={() => send({ kind: "Rebase", baseline: currentBaseline })}>Re-apply my edits</Button>
         </div>
         <SectionLabel>Your draft</SectionLabel>
       </section>}
@@ -803,10 +853,8 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
           <Select
             value={category}
             onValueChange={(c: ItemCategory) => {
-              setDraft(blankItem(c));
-              setName("");
-              setRows([]);
-              setExact(ws.profileLive && (c === "tools" || c === "resources") ? { json: "{}", files: [] } : undefined);
+              const resource = blankItem(c);
+              send({ kind: "Change", update: () => ({ resource, name: "", content: authoringContent(resource, ws.profileLive && (c === "tools" || c === "resources") ? { json: "{}", files: [] } : undefined) }) });
             }}
             disabled={!isNew}
           >
@@ -1487,7 +1535,7 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
     return () => window.clearInterval(t);
   }, [open, ws.capabilities.simulatedTelemetry]);
 
-  const done = ws.profileLive ? ws.profileLive.scanDone : progress >= 100;
+  const done = ws.profileLive ? ws.profileLive.discovery.kind === "Results" : progress >= 100;
   const inFolder = (id: string) => ws.resources.some((r) => r.id === `tools/${id}`);
   // Picked tools the folder already has stay as they are, so the button counts and adds only the new ones.
   const pickedTools = ws.scannedTools.filter((f) => picked.includes(f.id));
@@ -1517,7 +1565,7 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
           </DialogDescription>
         </DialogHeader>
         <ProfileActionNotice />
-        {!done ? (
+        {ws.profileLive?.discovery.kind === "Failed" ? <div className="grid gap-3"><p role="alert" className="text-sm text-bad">{ws.profileLive.discovery.error.message}</p><Button variant="outline" onClick={() => void ws.profileLive?.scan()}>Retry discovery</Button></div> : !done ? (
           <div className="grid h-[132px] content-center gap-2" aria-live="polite">
             {ws.capabilities.simulatedTelemetry && <DitherProgress value={progress} label="Finding tools" />}
             <span className="text-sm text-muted-foreground">Finding tools…</span>

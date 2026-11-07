@@ -33,6 +33,18 @@ The API supports Source authoring/publication, enrollment, synchronization, loca
 
 The Canonical Folder defined by ADR 0003 is the authoring source of truth. `src/projection/authoring.ts` provides shared file and skill-tree editing for canonical and local folders, with comment-preserving JSONC key edits, digest preconditions and full candidate validation before atomic file publication through MachineState. The GUI does not maintain a second profile store. The typed slice interface, injected `WorkspaceBackend`, capabilities and completed area ownership are documented in the integration plan.
 
+### Browser workflow ownership
+
+Operation tickets are a schema union: running carries a journal, succeeded requires a result, and failed requires a CLI diagnostic. The server owns terminal transitions and invokes a successful result's delivery callback once, after the response finishes.
+
+The live Follower keeps command submission, ticket observation, lost observation and terminal results in one command lifecycle. A failed poll retains the ticket and blocks further mutations until observation resumes. Only a successful plan enables Apply; a completed restore, review or recovery does not. Local configuration changes invalidate that readiness.
+
+Profile editors own their baseline, draft mode and submitted revision. A save refresh accepts only the submitted generation as clean, preserving any newer edits against the refreshed digests. Local-item and secret forms freeze their submitted drafts until the write settles. Local file reads belong to file identities and upload generations, so removing a file, changing its mode or choosing a newer upload cannot accept an older read.
+
+Publication review belongs to the observed folder snapshot and is invalidated by a write or changed observation. Discovery distinguishes scanning, results and failure, with an explicit retry. Agent policy save records policy commitment separately from harness commitment, retaining the partial-success state if the second write fails. Built-in harness drafts carry a model; custom drafts carry arguments.
+
+Invitation dialogs retain immutable submitted values, including the selected follower, after creation even if inventory refresh removes that follower. Revocation cannot be dismissed while its server request is running; reopening a failed confirmation starts without the earlier error.
+
 The frontend is a static React 19 single-page app built with Vite and shipped in `dist/ui` in the npm package. The public demo remains a separate build with simulated operations. Package validation must measure the combined CLI and production UI rather than excluding the browser assets.
 
 Build commands force Vite's production environment before it selects the entrypoint. This also applies when `npm pack` inherits `NODE_ENV=test` from the packaged-executable suite. Only an explicit demo build selects simulated screens; the packaged-assets regression checks the live session client and absence of the demo skill repository.

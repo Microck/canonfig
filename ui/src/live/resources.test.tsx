@@ -58,7 +58,7 @@ for (const role of ["source", "follower"] as const) {
       "/api/agent/harness": { configured: false },
       "/api/setup": setup,
       "/api/setup/apply": { id: "setup-operation" },
-      "/api/operations/setup-operation": { id: "setup-operation", state: "succeeded", journal: null },
+      "/api/operations/setup-operation": { id: "setup-operation", state: "succeeded", journal: null, result: {} },
     };
     const server = createServer((incoming, outgoing) => {
       const path = incoming.url ?? "/";

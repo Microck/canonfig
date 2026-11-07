@@ -92,7 +92,10 @@ export function useLiveActions(backend: WorkspaceBackend, reload: () => void) {
   const controller = useRef<AbortController | null>(null);
   useEffect(() => () => controller.current?.abort(), []);
   async function run(action: (signal: AbortSignal) => Promise<unknown>) {
-    if (controller.current !== null) return;
+    if (controller.current !== null) {
+      setState((state) => ({ ...state, error: new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: "Another action is running. Wait for it to finish, then retry." }) }));
+      return;
+    }
     const active = new AbortController();
     controller.current = active;
     setState({ loading: true, error: null });
@@ -113,7 +116,7 @@ export function useLiveActions(backend: WorkspaceBackend, reload: () => void) {
       signal.throwIfAborted();
       operation = await backend.operation(operation.id, signal);
     }
-    if (operation.state === "failed") throw operation.failure ? new GuiRequestError(operation.failure) : new Error("The operation failed without a diagnostic.");
+    if (operation.state === "failed") throw new GuiRequestError(operation.failure);
     return operation;
   }
   return { state, run, operation };

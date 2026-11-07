@@ -213,16 +213,30 @@ export interface OverviewSlice {
   later: (fn: () => void, ms: number) => void;
 }
 
+export type PublicationState =
+  | { kind: "Unvalidated" }
+  | { kind: "Validating"; snapshot: string }
+  | { kind: "Invalid" | "Validated"; snapshot: string; validation: GuiProfileValidation }
+  | { kind: "Publishing"; snapshot: string }
+  | { kind: "Published" }
+  | { kind: "Failed"; stage: "validation" | "publication"; error: GuiRequestError };
+export type DiscoveryState =
+  | { kind: "Idle" }
+  | { kind: "Scanning"; id: number }
+  | { kind: "Results"; id: number; tools: ScannedTool[] }
+  | { kind: "Failed"; id: number; error: GuiRequestError };
+
 export interface ProfileSlice {
   profileLive?: {
     snapshot: GuiProfileSnapshot | null;
     busy: boolean;
     error: GuiRequestError | null;
     validation: GuiProfileValidation | null;
+    publication: PublicationState;
     archive: GuiArchiveDownload | null;
     skillChecks: Record<string, GuiSkillCheck>;
     skillBusy: string | null;
-    scanDone: boolean;
+    discovery: DiscoveryState;
     revisionDetail: (ResourceState & { sequence: number; data: Schema.Json | null }) | null;
     reload: () => void;
     saveItem: (snapshot: GuiProfileSnapshot, before: Resource | undefined, next: Resource, exact?: ExactDraft, remove?: boolean) => Promise<boolean>;

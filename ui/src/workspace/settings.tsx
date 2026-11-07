@@ -224,28 +224,29 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
   const ws = useWorkspace();
   const agent = ws.admin.agent;
   // No policy is selected until the CLI reports one or the person chooses one.
-  const initial = saved ?? { mode: null, harness: null, model: "", executable: "", args: [], paths: [], maximumInputBytes: 0, origins: [] };
+  const initial = saved ?? { mode: null, harness: null };
+  const initialHarness = initial.harness;
   const [mode, setMode] = useState<SavedPolicy["mode"] | null>(initial.mode);
-  const [harness, setHarness] = useState(initial.harness);
-  const [model, setModel] = useState(initial.model);
-  const [executable, setExecutable] = useState(initial.executable);
-  // JSON keeps the CLI's exact argv entries on a round trip.
-  const [argsText, setArgsText] = useState(joinArguments(initial.args));
-  const [paths, setPaths] = useState<string[]>(initial.paths);
+  const [harness, setHarness] = useState(initialHarness?.kind ?? null);
+  const [model, setModel] = useState(initialHarness && initialHarness.kind !== "custom" ? initialHarness.model : "");
+  const [executable, setExecutable] = useState(initialHarness?.executable ?? "");
+  // Per-mode field drafts intentionally survive switching the selected harness.
+  const [argsText, setArgsText] = useState(joinArguments(initialHarness?.kind === "custom" ? initialHarness.args : []));
+  const [paths, setPaths] = useState<string[]>(initialHarness?.paths ?? []);
   const [newPath, setNewPath] = useState("");
   // A digits-only string while editing; Save stores it as a number.
-  const [maximumInputBytes, setMaximumInputBytes] = useState(String(initial.maximumInputBytes));
+  const [maximumInputBytes, setMaximumInputBytes] = useState(String(initialHarness?.maximumInputBytes ?? 0));
   const custom = harness === "custom";
   const args = splitArguments(argsText);
   const dirty =
     mode !== initial.mode ||
-    harness !== initial.harness ||
-    model.trim() !== initial.model ||
-    executable.trim() !== initial.executable ||
-    (custom && JSON.stringify(args) !== JSON.stringify(initial.args)) ||
-    maximumInputBytes !== String(initial.maximumInputBytes) ||
-    paths.length !== initial.paths.length ||
-    paths.some((path, i) => path !== initial.paths[i]);
+    harness !== (initialHarness?.kind ?? null) ||
+    model.trim() !== (initialHarness && initialHarness.kind !== "custom" ? initialHarness.model : "") ||
+    executable.trim() !== (initialHarness?.executable ?? "") ||
+    (custom && JSON.stringify(args) !== JSON.stringify(initialHarness?.kind === "custom" ? initialHarness.args : [])) ||
+    maximumInputBytes !== String(initialHarness?.maximumInputBytes ?? 0) ||
+    paths.length !== (initialHarness?.paths.length ?? 0) ||
+    paths.some((path, i) => path !== initialHarness?.paths[i]);
   // Errors show only after a Save attempt, then follow the fields as they change.
   const [tried, setTried] = useState(false);
   const off = mode === "deterministic-only" || harness === null || !agent.harnessWritable;
@@ -268,12 +269,12 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
   const { dialog: leaveDialog } = useLeaveGuard(hasChanges, "the agent policy");
   const discard = () => {
     setMode(initial.mode);
-    setHarness(initial.harness);
-    setModel(initial.model);
-    setExecutable(initial.executable);
-    setArgsText(joinArguments(initial.args));
-    setPaths(initial.paths);
-    setMaximumInputBytes(String(initial.maximumInputBytes));
+    setHarness(initialHarness?.kind ?? null);
+    setModel(initialHarness && initialHarness.kind !== "custom" ? initialHarness.model : "");
+    setExecutable(initialHarness?.executable ?? "");
+    setArgsText(joinArguments(initialHarness?.kind === "custom" ? initialHarness.args : []));
+    setPaths(initialHarness?.paths ?? []);
+    setMaximumInputBytes(String(initialHarness?.maximumInputBytes ?? 0));
     setNewPath("");
     setTried(false);
   };
@@ -296,12 +297,12 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
       document.getElementById(firstInvalid[1])?.focus();
       return;
     }
-    const next = { mode, harness, model: custom ? "" : modelTyped, executable: executable.trim(), args: custom ? (args ?? []) : [], paths, maximumInputBytes: bytes, origins: initial.origins };
+    const next: SavedPolicy = { mode, harness: harness === null ? null : {
+      executable: executable.trim(), paths, maximumInputBytes: bytes, origins: initialHarness?.origins ?? [],
+      ...(harness === "custom" ? { kind: "custom", args: args ?? [] } : { kind: harness, model: modelTyped }),
+    } };
     if (await agent.save(next)) {
       setMaximumInputBytes(String(bytes));
-      setModel(next.model);
-      setExecutable(next.executable);
-      setArgsText(joinArguments(next.args));
       setTried(false);
     }
   };
@@ -487,7 +488,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
             </Field>
             <Field label="Allowed network origins" description="Requests anywhere else are blocked.">
               <div className="flex flex-wrap gap-1">
-                {initial.origins.map((o) => (
+                {(initialHarness?.origins ?? []).map((o) => (
                   <span key={o} className="rounded border border-border px-2 py-0.5 font-mono text-xs text-muted-foreground">
                     {o}
                   </span>

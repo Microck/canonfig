@@ -11,8 +11,10 @@ const IN_DEMO = DEMO ? " in this demo workspace" : "";
 const LINGER_FIX = "sudo loginctl enable-linger ubuntu";
 const HARNESS_VERSION: Record<string, string> = { codex: "0.62", claude: "2.1" };
 const POLICY_SEED: SavedPolicy = {
-  mode: agentPolicy.mode, harness: "codex", model: "", executable: "", args: [], paths: agentPolicy.writablePaths,
-  maximumInputBytes: agentPolicy.maxInputKb * 1024, origins: agentPolicy.origins,
+  mode: agentPolicy.mode, harness: {
+    kind: "codex", model: "", executable: "", paths: agentPolicy.writablePaths,
+    maximumInputBytes: agentPolicy.maxInputKb * 1024, origins: agentPolicy.origins,
+  },
 };
 const JOURNAL_SEED: SetupJournal = { phase: "planned", at: 0 };
 const SETUP_STEPS = [
@@ -59,7 +61,7 @@ export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): Admini
     fix: { why: "Install it, or exclude it on this machine so Canonfig stops reporting it.", command: `canonfig harnesses exclude ${missing[0]!.id}` },
   } : { detail: `${ws.harnesses.filter((harness) => harness.listed && harness.installed && !harness.excluded).length} listed harnesses installed` };
   const agent: Partial<DoctorCheck> = { detail: policy.mode === "deterministic-only" ? "Not used: agent policy is deterministic only"
-    : policy.harness === "custom" ? `${policy.executable} found` : `${policy.executable || policy.harness} ${HARNESS_VERSION[policy.harness ?? ""]} found` };
+    : policy.harness?.kind === "custom" ? `${policy.harness.executable} found` : `${policy.harness?.executable || policy.harness?.kind} ${HARNESS_VERSION[policy.harness?.kind ?? ""]} found` };
   const port = new URL(ws.endpoint).port;
   const overrides: Record<string, Partial<DoctorCheck>> = ws.role === "source" ? {
     "Source service": installed ? { detail: `Listening on ${new URL(ws.endpoint).host}` } : {
@@ -109,7 +111,7 @@ export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): Admini
       configured: true,
       harnessWritable: true,
       harnessConfigured: true,
-      data: policy, loading: false, busy: false, error: null, harnessLoading: false, harnessError: null, savedMessage,
+      data: policy, loading: false, busy: false, error: null, harnessLoading: false, harnessError: null, savedMessage, saveState: { kind: "Idle" },
       harnessLabels: { codex: "codex 0.62", claude: "claude 2.1" },
       reload: () => toast("Agent settings refreshed", { description: "This demo uses the saved workspace policy." }),
       save: async (next) => { setPolicy(next); setSavedMessage("Policy and harness saved."); toast.success(`Agent policy saved${IN_DEMO}`); return true; },
