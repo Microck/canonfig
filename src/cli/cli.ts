@@ -41,16 +41,16 @@ import {
   type CliPayload,
 } from "./source-commands.ts";
 import { SetupCommands, type SetupImportRequest } from "./setup-commands.ts";
-import { helpOrVersion, type HelpOrVersionOutcome } from "./help.ts";
+import { helpOrVersion, uiUsage, type HelpOrVersionOutcome } from "./help.ts";
 import { BlobTransferProgress } from "../enrollment/blob-transfer-progress.ts";
 import { humanTransferProgress } from "./transfer-progress.ts";
-import { runGui } from "../gui/server.ts";
+import { guiHostProblem, guiOrigin, runGui } from "../gui/server.ts";
 import type { ManagedCommandLease } from "../runtime/self-update/coordination.ts";
 import type { GuiQueries } from "../gui/queries.ts";
 import type { StateRepository } from "../state/state-repository.service.ts";
 
 export type CliCommand =
-  | { readonly _tag: "Ui"; readonly port: number; readonly open: boolean }
+  | { readonly _tag: "Ui"; readonly port: number; readonly open: boolean; readonly host: string; readonly origin: string | undefined }
   | { readonly _tag: "SourceInit" }
   | {
     readonly _tag: "SourceScan";
@@ -822,14 +822,24 @@ const evaluateCommand = (
       return invalid(`Missing ${area} command`);
     }
     if (area === "ui") {
-      const options = parseOptions(arguments_.slice(1), new Set(["--port"]), new Set(["--no-open"]));
-      if (options.positionals.length > 0) return invalid("Usage: canonfig ui [--port <n>] [--no-open]");
+      const options = parseOptions(arguments_.slice(1), new Set(["--port", "--host", "--origin"]), new Set(["--no-open"]));
+      if (options.positionals.length > 0) return invalid(`Usage: canonfig ${uiUsage}`);
       if (format === "json") return invalid("canonfig ui prints a browser sign-in URL and does not support --json");
       const port = one(options, "--port");
+      const host = one(options, "--host") ?? "127.0.0.1";
+      const hostProblem = guiHostProblem(host);
+      if (hostProblem !== undefined) return invalid(hostProblem);
+      const originValue = one(options, "--origin");
+      const origin = originValue === undefined ? undefined : guiOrigin(originValue);
+      if (origin !== undefined && "problem" in origin) return invalid(origin.problem);
+      // A proxy forwards to one fixed address, so a random port would leave it nothing to reach.
+      if (origin !== undefined && port === undefined) return invalid("--origin needs --port, the port your proxy forwards to");
       return command({
         _tag: "Ui",
         port: port === undefined ? 0 : parsePositiveInteger(port, "browser port", 65_535),
         open: !options.switches.has("--no-open"),
+        host,
+        origin: origin?.origin,
       }, format);
     }
     if (area === "source") return evaluateSourceCommand(action, rest, format);

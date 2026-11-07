@@ -32,14 +32,18 @@ export interface HelpGroup {
   readonly notes?: ReadonlyArray<string> | undefined;
 }
 
+export const uiUsage = "ui [--port <n>] [--host <address>] [--origin <https-url>] [--no-open]";
+
 export const helpGroups: ReadonlyArray<HelpGroup> = [
   {
     title: "Browser interface",
     areas: ["ui"],
-    usage: ["ui [--port <n>] [--no-open]"],
+    usage: [uiUsage],
     notes: [
       "Open the local browser interface with live Overview status for this machine.",
       "Runs in the foreground on 127.0.0.1 with a random port by default.",
+      "--host binds a loopback or Tailscale address (100.64.0.0/10, fd7a:115c:a1e0::/48) to reach it over your tailnet.",
+      "--origin also accepts an https proxy origin, such as tailscale serve's, and prints its sign-in URL; it needs --port.",
       "The printed sign-in URL works once. --no-open leaves opening it to you.",
       "Press Ctrl-C to stop. Other screens remain available only in the public demo.",
     ],

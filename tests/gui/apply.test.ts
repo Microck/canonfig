@@ -65,7 +65,7 @@ it("refreshes newly shared secrets before a GUI apply succeeds and preserves ref
     await follower.runPromise(Effect.flatMap(FollowerCommands, (commands) => commands.synchronize({ mode: "plan", noInput: false })));
     expect(await follower.runPromise(listSecrets())).toEqual([]);
     const ready = Promise.withResolvers<string>();
-    gui = follower.runPromise(runGui({ port: 0, open: false }, {
+    gui = follower.runPromise(runGui({ port: 0, open: false, host: "127.0.0.1", origin: undefined }, {
       writeStdout: (text) => ready.resolve(text.trim()), writeStderr: () => {}, setExitCode: () => {},
     }), { signal: controller.signal });
     void gui.catch(ready.reject);

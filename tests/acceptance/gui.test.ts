@@ -6,6 +6,7 @@ import { createServer } from "node:net";
 import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { evaluateCli } from "../../src/cli/cli.ts";
 import { programVersion } from "../../src/cli/help.ts";
@@ -46,8 +47,8 @@ const fixture = () => {
   };
 };
 
-const start = async (env: NodeJS.ProcessEnv) => {
-  const child = spawn(process.execPath, ["--import", "tsx", entry, "ui", "--no-open"], {
+const start = async (env: NodeJS.ProcessEnv, args: string[] = []) => {
+  const child = spawn(process.execPath, ["--import", "tsx", entry, "ui", "--no-open", ...args], {
     env, stdio: ["ignore", "pipe", "pipe"],
   });
   children.add(child);
@@ -56,7 +57,7 @@ const start = async (env: NodeJS.ProcessEnv) => {
   let errors = "";
   child.stdout.on("data", (chunk: Buffer) => {
     output += chunk.toString();
-    const match = output.match(/http:\/\/127\.0\.0\.1:\d+\/\?token=[a-f0-9]+/u);
+    const match = output.match(/https?:\/\/\S+\/\?token=[a-f0-9]+/u);
     if (match) ready(match[0]);
   });
   child.stderr.on("data", (chunk: Buffer) => { errors += chunk.toString(); });
@@ -93,9 +94,22 @@ afterEach(async () => {
 
 describe("canonfig ui command", () => {
   it("parses the foreground server flags and rejects invalid input", () => {
-    expect(evaluateCli(["ui"])).toMatchObject({ command: { _tag: "Ui", port: 0, open: true } });
+    expect(evaluateCli(["ui"])).toMatchObject({ command: { _tag: "Ui", port: 0, open: true, host: "127.0.0.1" } });
     expect(evaluateCli(["ui", "--no-open", "--port", "5317"])).toMatchObject({ command: { _tag: "Ui", port: 5317, open: false } });
-    for (const args of [["--port", "0"], ["--port", "65536"], ["--port", "no"], ["--host", "0.0.0.0"], ["extra"], ["--json"]]) {
+    // Loopback and Tailscale addresses only: a LAN or wildcard bind would put the token on the wire in clear text.
+    for (const host of ["::1", "100.64.0.1", "100.127.255.254", "fd7a:115c:a1e0::1"]) {
+      expect(evaluateCli(["ui", "--host", host])).toMatchObject({ command: { _tag: "Ui", host } });
+    }
+    expect(evaluateCli(["ui", "--port", "5317", "--origin", "https://Atlas.Tailnet.ts.net/"]))
+      .toMatchObject({ command: { _tag: "Ui", origin: "https://atlas.tailnet.ts.net" } });
+    for (const args of [
+      ["--port", "0"], ["--port", "65536"], ["--port", "no"], ["extra"], ["--json"],
+      ["--host", "0.0.0.0"], ["--host", "::"], ["--host", "192.168.1.20"], ["--host", "100.128.0.1"], ["--host", "localhost"],
+      ["--origin", "https://atlas.tailnet.ts.net"],
+      ["--port", "5317", "--origin", "http://atlas.tailnet.ts.net"],
+      ["--port", "5317", "--origin", "https://atlas.tailnet.ts.net/ui"],
+      ["--port", "5317", "--origin", "https://user@atlas.tailnet.ts.net"],
+    ]) {
       expect(evaluateCli(["ui", ...args])).toMatchObject({ _tag: "InvalidInput", exitCode: 2 });
     }
   });
@@ -163,6 +177,57 @@ describe("canonfig ui command", () => {
       expect((await fetch(`${server.origin}/api/session`, { headers: { Cookie: cookie } })).status).toBe(200);
     }
     expect(jar.size).toBe(2);
+  }, 60_000);
+
+  it("signs in through an https proxy origin with a Secure cookie and keeps the loopback origin", async () => {
+    const machine = fixture();
+    const probe = createServer();
+    probe.listen(0, "127.0.0.1");
+    await once(probe, "listening");
+    const address = probe.address();
+    if (address === null || Schema.is(Schema.String)(address)) throw new Error("No probe port");
+    probe.close();
+    await once(probe, "close");
+    const proxyOrigin = "https://atlas.tailnet.ts.net";
+    const server = await start(machine.env, ["--port", String(address.port), "--origin", proxyOrigin]);
+    // The printed link is the proxy's: the token works once, so it names the origin the user will open.
+    expect(new URL(server.url).origin).toBe(proxyOrigin);
+    const local = `http://127.0.0.1:${address.port}`;
+    const token = new URL(server.url).search;
+    // tailscale serve forwards to loopback with the public Host, as this raw request does.
+    const send = (path: string, headers: OutgoingHttpHeaders) => {
+      const { promise, resolve: accept, reject } = Promise.withResolvers<{ status?: number; setCookie?: string[] }>();
+      const outgoing = request(`${local}${path}`, { headers }, (response) => {
+        response.resume();
+        response.once("end", () => accept({ status: response.statusCode, setCookie: response.headers["set-cookie"] }));
+      });
+      outgoing.once("error", reject);
+      outgoing.end();
+      return promise;
+    };
+    const proxied = { Host: "atlas.tailnet.ts.net" };
+    expect((await send(`/${token}`, { ...proxied, Origin: "http://atlas.tailnet.ts.net" })).status).toBe(403);
+    expect((await send(`/${token}`, { Host: "other.tailnet.ts.net" })).status).toBe(403);
+    const exchange = await send(`/${token}`, proxied);
+    expect(exchange.status).toBe(303);
+    const setCookie = exchange.setCookie?.[0] ?? "";
+    expect(setCookie).toContain("Secure");
+    const cookie = setCookie.split(";")[0];
+    expect((await send("/api/session", { ...proxied, Cookie: cookie, Origin: proxyOrigin })).status).toBe(200);
+    // The session is the server's, not the origin's, so the loopback origin still accepts it.
+    expect((await send("/api/session", { Host: `127.0.0.1:${address.port}`, Cookie: cookie })).status).toBe(200);
+  }, 60_000);
+
+  it("binds an IPv6 address and checks the bracketed origin", async () => {
+    const machine = fixture();
+    const server = await start(machine.env, ["--host", "::1"]);
+    expect(server.origin).toMatch(/^http:\/\/\[::1\]:\d+$/u);
+    const exchange = await fetch(server.url, { redirect: "manual" });
+    expect(exchange.status).toBe(303);
+    expect(exchange.headers.get("set-cookie")).not.toContain("Secure");
+    const cookie = exchange.headers.get("set-cookie")?.split(";")[0] ?? "";
+    expect((await fetch(`${server.origin}/api/session`, { headers: { Cookie: cookie } })).status).toBe(200);
+    expect(await requestStatus(`${server.origin}/api/session`, { Cookie: cookie, Host: "127.0.0.1" })).toBe(403);
   }, 60_000);
 
   it("returns the CLI status payload unchanged for an initialized Source", async () => {
