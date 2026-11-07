@@ -347,6 +347,14 @@ verification commands.
 
 The executor captures stdout, stderr, exit status, changed paths, and verification evidence. It redacts known credentials before persistence. An agent statement is never proof of completion by itself.
 
+Controlled subprocesses move through `Starting`, `Running`, `Stopping`,
+`Closing`, and `Settled` under one transition owner. The first stop cause wins:
+a later timeout or cancellation cannot replace an output-limit or input-write
+failure that already started termination. Settlement waits for native close
+and owned process-tree termination, then removes the timer and abort listeners.
+Cancellation is checked after asynchronous input authorization and again after
+the listeners are attached.
+
 ## Skill drift rule
 
 For each managed skill file, the Applied Resource Record stores the digest Canonfig last wrote.

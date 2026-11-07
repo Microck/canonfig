@@ -3175,6 +3175,59 @@ writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
     expect(error).toBeInstanceOf(AgentExecutionCancelledError);
   });
 
+  it("observes cancellation between construction and process start", async () => {
+    const controller = new AbortController();
+    const execution = executeControlledProcess({
+      executable: process.execPath,
+      arguments: ["-e", "setInterval(() => {}, 1000)"],
+      timeoutMilliseconds: 100,
+      maximumInputBytes: 0,
+      maximumOutputBytes: 1_000,
+      secrets: [],
+      signal: controller.signal,
+    });
+    controller.abort();
+    const error = await Effect.runPromise(execution.pipe(Effect.flip));
+    expect(error).toBeInstanceOf(AgentExecutionCancelledError);
+  });
+  it("settles a failed spawn through close without leaking its timeout", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-agent-failed-spawn-"));
+    try {
+      const error = await Effect.runPromise(executeControlledProcess({
+        executable: join(root, "missing-executable"),
+        arguments: [],
+        timeoutMilliseconds: 100,
+        maximumInputBytes: 0,
+        maximumOutputBytes: 1_000,
+        secrets: [],
+      }).pipe(Effect.flip));
+      expect(error).toBeInstanceOf(AgentProcessError);
+      expect(error.message).toContain("ENOENT");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("keeps the output-limit cause when timeout fires before native close", async () => {
+    // A detached descendant holds the real stdout pipe open after its parent
+    // is killed. Fake timers cannot advance that OS-owned close notification.
+    const script = [
+      "const { spawn } = require('node:child_process');",
+      "spawn(process.execPath, ['-e', 'setTimeout(() => {}, 750)'], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] });",
+      "process.stdout.write('x'.repeat(2000));",
+      "setInterval(() => {}, 1000);",
+    ].join("");
+    const error = await Effect.runPromise(executeControlledProcess({
+      executable: process.execPath,
+      arguments: ["-e", script],
+      timeoutMilliseconds: 500,
+      maximumInputBytes: 0,
+      maximumOutputBytes: 1_000,
+      secrets: [],
+    }).pipe(Effect.flip));
+    expect(error).toBeInstanceOf(AgentOutputLimitError);
+  });
+
   it("enforces combined stdout and stderr output limits", async () => {
     const error = await Effect.runPromise(executeControlledProcess({
       executable: process.execPath,
