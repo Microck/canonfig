@@ -6,6 +6,8 @@ import { useSharedReader, useSharedState } from "./store";
 import type { Workspace } from "./workspace-types";
 import type { AdministrationSlice, DoctorCheck, SavedPolicy, SetupJournal } from "./administration-types";
 import { updateGate } from "./update-gate";
+import { transitionUpdate, type UpdateEvent, type UpdateLifecycle } from "./live/self-update";
+import { TransitionError } from "../lib/state-machine";
 
 const IN_DEMO = DEMO ? " in this demo workspace" : "";
 const LINGER_FIX = "sudo loginctl enable-linger ubuntu";
@@ -44,10 +46,21 @@ export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): Admini
   const [checkingInstaller, setCheckingInstaller] = useSharedState<string | null>("installer-checking", null);
   const [checkedInstaller, setCheckedInstaller] = useState<string | null>(null);
   const [tunnelUp] = useSharedState("tunnel-up", true);
-  const [version, setVersion] = useSharedState<{ npmCli: string | null; latest: string | null }>("self-update", { npmCli: selfUpdateSeed[ws.role].npmCli, latest: null });
-  const [checkingVersion, setCheckingVersion] = useSharedState<object | null>("self-update-checking", null);
-  const readCheckingVersion = useSharedReader<object | null>("self-update-checking", null);
-  const [appliedVersion, setAppliedVersion] = useSharedState<AdministrationSlice["version"]["checked"]>("self-update-applied", null);
+  const [version, setVersion] = useSharedState<UpdateLifecycle>("self-update", {
+    kind: "ready", status: { enabled: selfUpdateSeed[ws.role].npmCli !== null, pending: false, platform: ws.role === "source" ? "linux" : "darwin", settings: { npmCli: selfUpdateSeed[ws.role].npmCli } }, checked: null,
+  });
+  const latestVersion = useRef(version);
+  latestVersion.current = version;
+  const sendVersion = (event: UpdateEvent) => {
+    const next = transitionUpdate(latestVersion.current, event);
+    latestVersion.current = next; setVersion(next);
+    return next;
+  };
+  const updateStatus = "status" in version ? version.status : null;
+  const checkedVersion = "checked" in version ? version.checked : null;
+  const settings = updateStatus?.settings;
+  const settingsRecord = settings !== null && typeof settings === "object" && !Array.isArray(settings) ? Object.fromEntries(Object.entries(settings)) : null;
+  const npmCli = typeof settingsRecord?.npmCli === "string" ? settingsRecord.npmCli : null;
   const [skillBusy] = useSharedState<string | null>("skill-busy", null);
   const [doctorRunning, setDoctorRunning] = useState(false);
   const [doctorProgress, setDoctorProgress] = useState(100);
@@ -149,46 +162,37 @@ export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): Admini
       },
     },
     version: {
-      data: { enabled: version.npmCli !== null, pending: false, platform: ws.role === "source" ? "linux" : "darwin", settings: version.npmCli ? { npmCli: version.npmCli } : null },
-      current: APP_VERSION, npmCli: version.npmCli, latest: version.latest, loading: false, busy: checkingVersion !== null, error: null,
-      checked: appliedVersion ?? (version.latest ? { current: APP_VERSION, candidate: version.latest, status: version.latest === APP_VERSION ? "current" : "available", detail: `Only patches in the ${APP_VERSION.split(".").slice(0, 2).join(".")} line are offered.` } : null),
-      checking: checkingVersion !== null, unfinished: gate.unfinished, progress: null,
-      reload: () => toast("Update status refreshed", { description: "This demo uses simulated release data." }),
+      lifecycle: version, data: updateStatus,
+      current: APP_VERSION, npmCli, latest: checkedVersion?.candidate ?? null, loading: false,
+      busy: version.kind === "changing", error: null, checked: checkedVersion,
+      checking: version.kind === "changing" && version.action === "check", unfinished: gate.unfinished, progress: null,
+      resume: () => { throw new TransitionError("Demo update", version.kind, "resume"); },
+      reload: () => {
+        const loading = sendVersion({ kind: "load" });
+        if (loading.kind === "loading" && loading.status) sendVersion({ kind: "status", status: loading.status });
+      },
       check: () => {
-        if (readCheckingVersion()) return;
-        setAppliedVersion(null);
-        const run = {}; setCheckingVersion(run);
-        ws.later(() => {
-          if (readCheckingVersion() !== run) return;
-          setCheckingVersion(null); setVersion((previous) => ({ ...previous, latest: LATEST_PATCH }));
-          toast(LATEST_PATCH === APP_VERSION ? "Canonfig is up to date" : `Canonfig ${LATEST_PATCH} is available`, { description: `This machine has ${APP_VERSION}.` });
-        }, 900);
+        sendVersion({ kind: "start", action: "check" });
+        ws.later(() => sendVersion({ kind: "checked", checked: { current: APP_VERSION, candidate: LATEST_PATCH, status: LATEST_PATCH === APP_VERSION ? "current" : "available", detail: `Only patches in the ${APP_VERSION.split(".").slice(0, 2).join(".")} line are offered.` } }), 900);
       },
       enable: (npmCli, confirmIdle) => {
-        if (!confirmIdle) return;
-        if (gate.unfinished) { toast.error("Recover or abandon the interrupted sync first."); return; }
-        setAppliedVersion(null);
-        setVersion((previous) => ({ ...previous, npmCli }));
-        toast.success("Updates turned on", { description: `Start the services and schedules you stopped again.${DEMO ? "\nSaved in this demo workspace." : ""}` });
+        if (!confirmIdle || gate.unfinished) throw new TransitionError("Demo update", version.kind, "enable without idle confirmation");
+        sendVersion({ kind: "start", action: "enable" });
+        sendVersion({ kind: "status", status: { enabled: true, pending: false, platform: ws.role === "source" ? "linux" : "darwin", settings: { npmCli } } });
+        toast.success("Updates turned on");
       },
       disable: () => {
-        if (gate.busyWith) {
-          toast.error("Updates are still on", { description: gate.busyWith === "service" ? "The source service is running.\nStop it first, then turn updates off."
-            : gate.busyWith === "sync" ? "A sync is running.\nTurn updates off once it finishes." : "Another Canonfig command is running.\nTurn updates off once it finishes." });
-          return;
-        }
-        setCheckingVersion(null); setVersion({ npmCli: null, latest: null });
-        setAppliedVersion(null);
-        toast("Updates turned off", { description: "Backups of earlier versions and the update records stay on this machine." });
+        if (gate.busyWith) { toast.error("Updates are still on", { description: "Stop running Canonfig commands before turning updates off." }); return; }
+        sendVersion({ kind: "start", action: "disable" });
+        sendVersion({ kind: "status", status: { enabled: false, pending: false, platform: ws.role === "source" ? "linux" : "darwin", settings: null } });
+        toast("Updates turned off");
       },
       apply: () => {
-        if (readCheckingVersion()) return;
-        const candidate = version.latest ?? APP_VERSION;
-        setAppliedVersion({
-          current: APP_VERSION, candidate,
-          status: gate.busyWith || gate.unfinished ? "deferred" : candidate === APP_VERSION ? "current" : "updated",
-          detail: gate.busyWith || gate.unfinished ? "Another Canonfig operation needs attention. Stop running commands and recover any interrupted sync before installing." : "The demo simulated this update. No package was installed.",
-        });
+        const candidate = checkedVersion?.candidate ?? APP_VERSION;
+        sendVersion({ kind: "start", action: "apply" });
+        sendVersion({ kind: "ticket", ticket: "demo-update" });
+        sendVersion({ kind: "checked", checked: { current: APP_VERSION, candidate, status: gate.busyWith || gate.unfinished ? "deferred" : candidate === APP_VERSION ? "current" : "updated",
+          detail: gate.busyWith || gate.unfinished ? "Another Canonfig operation needs attention. Stop running commands and recover any interrupted sync before installing." : "The demo simulated this update. No package was installed." } });
       },
     },
     setup: {

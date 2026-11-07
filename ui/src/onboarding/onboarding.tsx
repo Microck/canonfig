@@ -19,6 +19,7 @@ import { DitherProgress, Hint, Mono, Term } from "@/shared/shared";
 import { DisclosureTrigger, Facts, Field, FieldError, OnboardingShell, PROGRESS_MARK, RadioRow, STEP_ITEMS, STEP_MS, StepTransition, Stepper, simulate, useFocusOnMount } from "./kit";
 import { ErrorNotice } from "@/live/session";
 import { SetupEvidence, type EnrollmentController } from "./enrollment-controller";
+import { TransitionError, useStateMachine } from "@/lib/state-machine";
 
 // Rings drifting inward toward the centre: many machines converging on one.
 // At speed 1 a ring takes about 20 seconds to move one ring inward.
@@ -136,6 +137,35 @@ function SetupBackdrop({ job }: { job: Job | null }) {
 type Role = "source" | "follower";
 type Stage = "choose" | Role;
 
+type OnboardingStage =
+  | { kind: "choosing"; returnedFrom: Role | null }
+  | { kind: "inspecting-source"; returnedFrom: Role | null }
+  | { kind: Role };
+type StageEvent = { kind: "choose"; role: Role; live: boolean } | { kind: "source-ready" } | { kind: "inspection-failed" } | { kind: "back"; from: Role };
+function transitionStage(state: OnboardingStage, event: StageEvent): OnboardingStage {
+  switch (event.kind) {
+    case "choose":
+      if (state.kind !== "choosing") break;
+      return event.role === "source" && event.live ? { kind: "inspecting-source", returnedFrom: state.returnedFrom } : { kind: event.role };
+    case "source-ready":
+      if (state.kind === "inspecting-source") return { kind: "source" };
+      break;
+    case "inspection-failed":
+      if (state.kind === "inspecting-source") return { kind: "choosing", returnedFrom: state.returnedFrom };
+      break;
+    case "back":
+      if (state.kind === event.from) return { kind: "choosing", returnedFrom: event.from };
+      break;
+  }
+  throw new TransitionError("Onboarding", state.kind, event.kind);
+}
+
+type TrustState = { kind: "unverified" } | { kind: "verified"; identity: string };
+type TrustEvent = { kind: "verify"; identity: string } | { kind: "reset" };
+function transitionTrust(_state: TrustState, event: TrustEvent): TrustState {
+  return event.kind === "verify" ? { kind: "verified", identity: event.identity } : { kind: "unverified" };
+}
+
 /** A new Source, as the wizard created it. */
 export interface SourceSetup {
   role: "source";
@@ -217,13 +247,11 @@ const NO_IMPORT = "none";
 
 
 export function Onboarding({ onDone, data, live, onCancel }: { onDone: (setup: Setup) => void; data: OnboardingData; live?: EnrollmentController; onCancel?: () => void }) {
-  const [stage, setStage] = useState<Stage>(live?.session.role === "follower" ? "follower" : "choose");
-  // The wizard left with "Change my answer", or null on the first visit, which gets the full entrance.
-  const [returnedFrom, setReturnedFrom] = useState<Role | null>(null);
+  const stageFlow = useStateMachine<OnboardingStage, StageEvent>(live?.session.role === "follower" ? { kind: "follower" } : { kind: "choosing", returnedFrom: null }, transitionStage);
+  const stage: Stage = stageFlow.state.kind === "inspecting-source" || stageFlow.state.kind === "choosing" ? "choose" : stageFlow.state.kind;
   const back = (from: Role) => {
     if (onCancel) { onCancel(); return; }
-    setReturnedFrom(from);
-    setStage("choose");
+    stageFlow.send({ kind: "back", from });
   };
   // Lives here, not in the wizard, because the backdrop follows it too. One job per visit:
   // the wizard can't be left while it runs (Back is disabled) or once it's done (hidden).
@@ -251,9 +279,11 @@ export function Onboarding({ onDone, data, live, onCancel }: { onDone: (setup: S
             the picked card's shell (CardShell) can grow straight into the wizard card's place.
             `custom` tells the leaving choice which card was picked. */}
         <AnimatePresence mode="popLayout" custom={stage}>
-          {stage === "choose" && <Choose key="choose" returnedFrom={returnedFrom} onPick={(role) => {
-            if (live && role === "source") void live.planSetup(undefined, undefined, () => setStage(role));
-            else setStage(role);
+          {stage === "choose" && <Choose key="choose" busy={stageFlow.state.kind === "inspecting-source"} returnedFrom={"returnedFrom" in stageFlow.state ? stageFlow.state.returnedFrom : null} onPick={(role) => {
+            stageFlow.send({ kind: "choose", role, live: !!live });
+            if (live && role === "source") void live.planSetup(undefined, undefined, () => stageFlow.send({ kind: "source-ready" })).then(() => {
+              if (stageFlow.current.current.kind === "inspecting-source") stageFlow.send({ kind: "inspection-failed" });
+            });
           }} />}
           {stage === "source" && <SourceWizard key="source" data={data} live={live} job={job} onRun={run} onBack={() => back("source")} onDone={onDone} />}
           {stage === "follower" && <FollowerWizard key="follower" data={data} live={live} job={job} onRun={run} onBack={() => back("follower")} onDone={onDone} />}
@@ -356,7 +386,7 @@ function choiceVariants(role: Role, returning: boolean): { card: Variants; conte
 }
 
 // popLayout finds a leaving screen through its outermost motion element, so screens need no ref.
-function Choose({ returnedFrom, onPick }: { returnedFrom: Role | null; onPick: (role: Role) => void }) {
+function Choose({ returnedFrom, onPick, busy }: { returnedFrom: Role | null; onPick: (role: Role) => void; busy: boolean }) {
   const heading = useFocusOnMount<HTMLHeadingElement>();
   const present = useIsPresent();
   const reduced = useReducedMotion();
@@ -364,7 +394,7 @@ function Choose({ returnedFrom, onPick }: { returnedFrom: Role | null; onPick: (
   const item = reduced ? undefined : CHOOSE_ITEM;
   return (
     // Leaving, it sits above the wizard so the picked card's text clears over the growing shell; inert, so it can't be picked twice.
-    <motion.div inert={!present} variants={screen} initial="hidden" animate="shown" exit="exit" className={cn("w-full max-w-[680px] pb-10 text-center", !present && "z-10")}>
+    <motion.div inert={!present || busy} variants={screen} initial="hidden" animate="shown" exit="exit" className={cn("w-full max-w-[680px] pb-10 text-center", !present && "z-10")}>
       <motion.div variants={item}>
         <h1 ref={heading} tabIndex={-1} className="text-[28px] leading-tight font-semibold tracking-[-0.025em] outline-none">
           What should this machine do?
@@ -636,7 +666,7 @@ function Wizard({
                   {steps[step]}
                 </h2>
                 <StepTransition step={step} direction={direction}>
-                  {children}
+                  <fieldset disabled={busy} className="min-w-0">{children}</fieldset>
                 </StepTransition>
               </>
             )}
@@ -838,9 +868,9 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
         else setStep(s);
       }}
       onBack={onBack}
-      finalLabel={`Make ${data.hostname} the Source`}
+      finalLabel={live?.sourceState.kind === "needs-human-action" ? "Resume approved setup" : `Make ${data.hostname} the Source`}
       busyLabel="Creating…"
-      blocked={live ? step === SOURCE_STEP.service && !live.approved : (step === SOURCE_STEP.profile && !name.trim()) || (step === SOURCE_STEP.service && !portValid)}
+      blocked={live ? !live.approved && (step === SOURCE_STEP.service || step === SOURCE_STEP.create) : (step === SOURCE_STEP.profile && !name.trim()) || (step === SOURCE_STEP.service && !portValid)}
       onBlocked={() => {
         setTried(true);
         // The port lives under Advanced; its error must be visible.
@@ -873,6 +903,8 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
       }
     >
       {live?.state.error && <ErrorNotice error={live.state.error} />}
+      {(live?.sourceState.kind === "observation-lost" || live?.sourceState.kind === "failed") && <div className="space-y-2"><p>Reload the setup journal before continuing.</p><Button type="button" variant="outline" onClick={live.reloadStatus}>Reload setup status</Button></div>}
+      {live?.sourceState.kind === "needs-human-action" && <p role="status">Setup needs human action. Review the journal before trying again.</p>}
       {step === SOURCE_STEP.profile && (
         <div className="space-y-5">
           <p className="leading-relaxed text-muted-foreground">
@@ -1148,7 +1180,8 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
   const FOLLOWER_INSTALLED = data.followerInstalled;
   const [step, setStep] = useState(0);
   const [tried, setTried] = useState(false);
-  const [invite, setInvite] = useState<string | null>(null);
+  const [demoInvite, setInvite] = useState<string | null>(null);
+  const invite = live ? live.invitationLabel : demoInvite;
   const [paste, setPaste] = useState(false);
   const [pasted, setPasted] = useState("");
   const [pasteTried, setPasteTried] = useState(false);
@@ -1157,18 +1190,23 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
   const [sshUser, setSshUser] = useState(live ? "" : "maria");
   const [hostKey, setHostKey] = useState("./source-host-key.pub");
   const [advanced, setAdvanced] = useState(false);
-  const [trusted, setTrusted] = useState(false);
-  const [sourceTrusted, setSourceTrusted] = useState(false);
   const [replace, setReplace] = useState(false);
   const [sshPort, setSshPort] = useState("22");
   const [localPort, setLocalPort] = useState("");
+  const sshTrust = useStateMachine<TrustState, TrustEvent>({ kind: "unverified" }, transitionTrust);
+  const sourceTrust = useStateMachine<TrustState, TrustEvent>({ kind: "unverified" }, transitionTrust);
+  const sshIdentity = JSON.stringify([sshHost, sshUser, hostKey, sshPort, localPort]);
+  const sourceIdentity = live ? JSON.stringify([live.envelope, live.inspection?.sourceFingerprint, live.inspection?.tlsFingerprint]) : data.endpoint;
+  const trusted = sshTrust.state.kind === "verified" && sshTrust.state.identity === sshIdentity;
+  const sourceTrusted = sourceTrust.state.kind === "verified" && sourceTrust.state.identity === sourceIdentity;
+  const setTrusted = (checked: boolean) => sshTrust.send(checked ? { kind: "verify", identity: sshIdentity } : { kind: "reset" });
+  const setSourceTrusted = (checked: boolean) => sourceTrust.send(checked ? { kind: "verify", identity: sourceIdentity } : { kind: "reset" });
   const [name, setName] = useState(live ? data.hostname : "laptop");
   // Harnesses the person excludes on this machine; Canonfig projects the rest of atlas's list that is installed here.
   const [excluded, setExcluded] = useState<HarnessId[]>([]);
-  const [liveExcluded, setLiveExcluded] = useState<HarnessId[] | null>(null);
-  const selectedExclusions = liveExcluded ?? [...(live?.harnessReport?.excluded ?? [])];
-  const [preferencesChanged, setPreferencesChanged] = useState(false);
-  const [useSchedule, setUseSchedule] = useState(!live);
+  const selectedExclusions = live?.preferenceDraft?.excluded ?? [];
+  const [demoSchedule, setUseSchedule] = useState(!live);
+  const useSchedule = live ? live.preferenceDraft?.schedule ?? false : demoSchedule;
   const progress = live ? null : job?.progress ?? null;
   const done = live ? live.joined : !!job?.done;
   const sourceName = live ? "the Source" : "atlas";
@@ -1205,7 +1243,7 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
   const pasteValid = live ? !!pasted.trim() : pasted.trim().startsWith("canonfig-invite-v1:");
   const readPasted = () => {
     setPasteTried(true);
-    if (live) void live.inspectInvitation(pasted, (inspection) => { setInvite("(pasted)"); setSourceTrusted(false); setTrusted(false); setLocalPort(new URL(inspection.endpoint).port || "443"); });
+    if (live) void live.inspectInvitation(pasted, (inspection) => { setSourceTrusted(false); setTrusted(false); setLocalPort(new URL(inspection.endpoint).port || "443"); });
     else if (pasteValid) setInvite("(pasted)");
   };
 
@@ -1219,7 +1257,7 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
         setTried(false);
         setStep(s);
       }}
-      onBack={onBack}
+      onBack={() => { live?.clearInvitation(); onBack(); }}
       finalLabel={`Join ${sourceName}`}
       busyLabel="Joining…"
       blocked={blocked}
@@ -1247,16 +1285,16 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
                 <ul className="divide-y divide-border rounded-lg border border-border">
                   {live.harnessReport.harnesses.map((h) => <li key={h.harness}><label className="flex min-h-11 items-center gap-3 px-3.5 py-2.5">
                     <Checkbox checked={!selectedExclusions.includes(h.harness)} disabled={live.state.loading} onCheckedChange={(checked) => {
-                      setLiveExcluded(checked ? selectedExclusions.filter((id) => id !== h.harness) : [...selectedExclusions, h.harness]);
-                      setPreferencesChanged(true);
+                      live.editPreferences({ excluded: checked ? selectedExclusions.filter((id) => id !== h.harness) : [...selectedExclusions, h.harness], schedule: useSchedule });
                     }} />
                     <span className="min-w-0 flex-1">{h.name}</span><span className="text-sm text-muted-foreground">{!h.installed ? "Not installed" : !h.listed ? "Not listed" : "Installed"}</span>
                   </label></li>)}
                 </ul>
-                <label className={CHECK_ROW}><Checkbox checked={useSchedule} disabled={live.state.loading} onCheckedChange={(checked) => { setUseSchedule(checked === true); setPreferencesChanged(true); }} />Use the profile's default schedule</label>
+                <label className={CHECK_ROW}><Checkbox checked={useSchedule} disabled={live.state.loading} onCheckedChange={(checked) => live.editPreferences({ excluded: selectedExclusions, schedule: checked === true })} />Use the profile's default schedule</label>
                 <p className="text-sm text-muted-foreground">The CLI requires an applied profile before selecting its default schedule. If refused, apply from Sync and set the schedule afterwards.</p>
-                <Button type="button" disabled={live.state.loading} onClick={() => { setPreferencesChanged(false); void live.savePreferences(selectedExclusions, useSchedule); }}>Save local preferences</Button>
-                {live.preferencesSaved && !preferencesChanged && <p role="status">Local preferences saved.</p>}
+                <Button type="button" disabled={live.state.loading} onClick={() => void live.savePreferences(selectedExclusions, useSchedule)}>Save local preferences</Button>
+                {live.followerState.kind === "preferences-failed" && <p>Some preferences may already be saved. Retry rechecks the local report before continuing.</p>}
+                {live.preferencesSaved && <p role="status">Local preferences saved.</p>}
               </>}
             </div>}
           </Finished>
@@ -1312,7 +1350,7 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
                   <div className="mt-4 flex flex-wrap justify-center gap-2">
                     {live ? <Input type="file" aria-label="Invitation file" onChange={async (event) => {
                       const file = event.target.files?.[0];
-                      if (file) void live.inspectInvitation(await file.text(), (inspection) => { setInvite(file.name); setSourceTrusted(false); setTrusted(false); setLocalPort(new URL(inspection.endpoint).port || "443"); });
+                      if (file) void live.inspectInvitation(await file.text(), (inspection) => { setSourceTrusted(false); setTrusted(false); setLocalPort(new URL(inspection.endpoint).port || "443"); }, file.name);
                     }} /> : <Button type="button" variant="outline" size="sm" onClick={() => setInvite("~/Downloads/canonfig-invite")}>
                       Use the example file
                     </Button>}

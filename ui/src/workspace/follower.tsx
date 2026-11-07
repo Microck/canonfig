@@ -674,7 +674,7 @@ function SyncForm() {
  */
 function DriftPanel({ item, onClose }: { item: PlanItem; onClose: () => void }) {
   const ws = useWorkspace();
-  const applied = ws.appliedRevision;
+  const applied = item.appliedRevision ?? ws.appliedRevision;
   return (
     <DetailPanel
       title={item.resource}

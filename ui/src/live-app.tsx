@@ -16,6 +16,7 @@ import { requestError } from "./workspace/live/resource";
 import type { GuiRequestError } from "./gui-client";
 import { CommandBox } from "./workspace/kit";
 import { Mono } from "./shared/shared";
+import type { InstalledUpdate } from "./workspace/live/self-update";
 
 const SKELETON_THEME: SkulletTheme = {
   dark: { base: "var(--muted)", highlight: "color-mix(in oklab, var(--foreground) 7%, transparent)" },
@@ -26,13 +27,13 @@ const SKELETON_THEME: SkulletTheme = {
 type SessionState =
   | { kind: "loading" }
   | { kind: "ready"; session: GuiSession }
-  | { kind: "error"; error: GuiRequestError };
+  | { kind: "error"; error: GuiRequestError }
+  | ({ kind: "installed" } & InstalledUpdate);
 
 export default function LiveApp({ backend = httpBackend }: { backend?: WorkspaceBackend }) {
   const route = useAppRoute();
   const [state, setState] = useState<SessionState>({ kind: "loading" });
   const [revision, setRevision] = useState(0);
-  const [installedVersion, setInstalledVersion] = useState<string | null>(null);
   useEffect(() => {
     const controller = new AbortController();
     setState({ kind: "loading" });
@@ -48,10 +49,11 @@ export default function LiveApp({ backend = httpBackend }: { backend?: Workspace
   useEffect(() => { document.title = `${pageTitle(route)} | Canonfig`; }, [route]);
 
   let content;
-  if (installedVersion !== null) {
+  if (state.kind === "installed") {
     content = <main className="mx-auto max-w-[880px] px-4 py-12 sm:px-8">
       <h1 className="text-xl font-medium">Canonfig updated</h1>
-      <p role="status" className="my-6">Canonfig {installedVersion} is installed. Start <Mono>canonfig ui</Mono> again.</p>
+      <p role="status" className="my-6">Canonfig {state.version} is installed. Start <Mono>canonfig ui</Mono> again.</p>
+      <p className="mb-6">{state.detail}</p>
       <CommandBox>canonfig ui</CommandBox>
     </main>;
   } else if (state.kind === "loading") {
@@ -63,7 +65,7 @@ export default function LiveApp({ backend = httpBackend }: { backend?: Workspace
   } else if (route.kind !== "workspace" || !isRouteForRole(route, state.session.role)) {
     content = <NotFound href={overviewPath(state.session.role)} />;
   } else {
-    content = <LiveWorkspaceProvider key={state.session.role} backend={backend} session={state.session} route={route} onInstalled={setInstalledVersion}><Frame /></LiveWorkspaceProvider>;
+    content = <LiveWorkspaceProvider key={state.session.role} backend={backend} session={state.session} route={route} onInstalled={(result) => setState({ kind: "installed", ...result })}><Frame /></LiveWorkspaceProvider>;
   }
   return <SkulletProvider mode="dark" theme={SKELETON_THEME}>
     <TooltipProvider delayDuration={250}>
