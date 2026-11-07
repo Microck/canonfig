@@ -27,9 +27,7 @@ import {
 import {
   sshHostKeyFingerprint,
   sshHostKeyType,
-  TunnelConfigurationSchema,
   TunnelJournalSchema,
-  TunnelProcessSchema,
   TunnelStartInputSchema,
   type TunnelConfiguration,
   type TunnelJournal,
@@ -45,7 +43,6 @@ const isEnoent = (cause: unknown): boolean =>
 
 const decode = Schema.decodeUnknownSync;
 const stateFileName = "tunnel.json";
-const configurationFileName = "tunnel-config.json";
 const knownHostsFileName = "tunnel-known_hosts";
 const logFileName = "tunnel.log";
 const pollIntervalMilliseconds = 200;
@@ -210,8 +207,6 @@ const ownsTunnelProcess = async (state: TunnelProcess): Promise<boolean> => {
 };
 
 const stateFilePath = (directory: string): string => join(directory, stateFileName);
-const configurationFilePath = (directory: string): string =>
-  join(directory, configurationFileName);
 
 const readRecord = <Value>(
   path: string,
@@ -275,19 +270,6 @@ const writeRecord = (
       }),
   }).pipe(Effect.uninterruptible);
 
-// Released 6.1 files are decoded only at this boundary. Once v2 is published,
-// tunnel-config.json is obsolete and never consulted again.
-const LegacyConfiguration = Schema.Struct({
-  version: Schema.Literal(1),
-  desired: Schema.Literals(["running", "stopped"]),
-  recordedAt: Schema.NonEmptyString,
-  ...TunnelConfigurationSchema.fields,
-});
-const LegacyProcess = Schema.Struct({
-  version: Schema.Literal(1),
-  ...TunnelProcessSchema.fields,
-});
-
 const processMatches = (state: TunnelProcess, config: TunnelConfiguration): boolean =>
   state.ssh.host === config.sshHost
   && state.ssh.port === config.sshPort
@@ -301,31 +283,8 @@ const processMatches = (state: TunnelProcess, config: TunnelConfiguration): bool
   && state.sourceFingerprint === config.sourceFingerprint;
 
 const readLifecycle = (directory: string) => Effect.gen(function*() {
-  const record = yield* readRecord(stateFilePath(directory), Schema.Unknown, "tunnel journal");
-  if (Schema.is(TunnelJournalSchema)(record)) {
-    return { state: record.state, convert: false };
-  }
-  const legacy = yield* readRecord(
-    configurationFilePath(directory), LegacyConfiguration, "released tunnel configuration",
-  );
-  if (record === undefined && legacy === undefined) {
-    return { state: { _tag: "Unconfigured" } satisfies TunnelState, convert: false };
-  }
-  const previous = Schema.is(LegacyProcess)(record) ? record : undefined;
-  if (legacy === undefined || (record !== undefined && previous === undefined)
-    || (previous !== undefined && !processMatches(previous, legacy))) {
-    return yield* new TunnelConfigurationError({
-      operation: "convert released tunnel state",
-      message: `the tunnel records in ${directory} cannot be combined safely. Keep both files and the pinned known_hosts file; inspect the recorded PID and command line, stop only that verified SSH process, then move tunnel.json and tunnel-config.json aside and configure the tunnel again with an invitation. No process was stopped or forgotten.`,
-    });
-  }
-  const config = decode(TunnelConfigurationSchema)(legacy);
-  const state: TunnelState = previous === undefined
-    ? legacy.desired === "stopped" ? { _tag: "Stopped", config } : { _tag: "Down", config }
-    : legacy.desired === "stopped"
-    ? { _tag: "Stopping", config, process: decode(TunnelProcessSchema)(previous) }
-    : { _tag: "Running", config, process: decode(TunnelProcessSchema)(previous) };
-  return { state, convert: true };
+  const record = yield* readRecord(stateFilePath(directory), TunnelJournalSchema, "tunnel journal");
+  return record?.state ?? { _tag: "Unconfigured" } satisfies TunnelState;
 });
 
 const processOf = (state: TunnelState): TunnelProcess | undefined => {
@@ -437,8 +396,7 @@ const withTunnelState = <A>(
     catch: () => new TunnelConfigurationError({ operation, message: `cannot create tunnel state directory ${directory}` }),
   });
   return yield* withRunLock(stateFilePath(directory), operation, Effect.gen(function*() {
-    const loaded = yield* readLifecycle(directory);
-    let state: TunnelState = loaded.state;
+    let state: TunnelState = yield* readLifecycle(directory);
     const persist = () => writeRecord(directory, stateFileName, { version: 2, state }, "tunnel journal");
     const owner: TunnelOwner = {
       current: () => state,
@@ -449,18 +407,6 @@ const withTunnelState = <A>(
         yield* persist();
       }).pipe(Effect.uninterruptible),
     };
-    if (loaded.convert) {
-      yield* persist();
-      yield* Effect.tryPromise({
-        try: () => unlink(configurationFilePath(directory)).catch((cause: unknown) => {
-          if (!isEnoent(cause)) throw cause;
-        }),
-        catch: () => new TunnelConfigurationError({
-          operation: "retire released tunnel configuration",
-          message: `tunnel.json is now authoritative; the obsolete ${configurationFilePath(directory)} could not be removed`,
-        }),
-      });
-    }
     return yield* run(owner);
   })).pipe(Effect.mapError((error) =>
     error._tag === "RunLockHeldError" || error._tag === "MachineFilesystemError"
@@ -1181,7 +1127,7 @@ const makeTunnel = Effect.sync(() => {
   const tunnelStatus = Effect.fn("Tunnel.tunnelStatus")(function*(
     input: StopTunnelInput,
   ): Effect.fn.Return<TunnelStatusReport, TunnelError> {
-    return yield* lifecycleStatus((yield* readLifecycle(input.stateDirectory)).state);
+    return yield* lifecycleStatus(yield* readLifecycle(input.stateDirectory));
   });
 
   const stopTunnel = Effect.fn("Tunnel.stopTunnel")(function*(

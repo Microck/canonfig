@@ -323,32 +323,6 @@ describe("managed enrollment tunnel", () => {
   });
 
   describe.skipIf(process.platform === "win32")("lifecycle without the invitation", () => {
-    it("refuses a stale automatic restart of a released stopped tunnel before spawning", async () => {
-      const root = await mkdtemp(join(tmpdir(), "canonfig-tunnel-stopped-"));
-      const executable = join(root, "ssh");
-      const marker = join(root, "spawned");
-      try {
-        await writeFile(executable, `#!/bin/sh\ntouch '${marker}'\nexit 1\n`, { mode: 0o700 });
-        await writeFile(join(root, "tunnel-config.json"), JSON.stringify({
-          version: 1, desired: "stopped", recordedAt: new Date().toISOString(),
-          sshHost: "source.example", sshPort: 22, sshUser: "operator",
-          sshHostKey: `ssh-ed25519 ${Buffer.alloc(32, 1).toString("base64")}`,
-          localHost: "127.0.0.1", localPort: 17342,
-          remoteHost: "127.0.0.1", remotePort: 17342,
-          tlsFingerprint: "a".repeat(64), sourceFingerprint: "b".repeat(64),
-          sshExecutable: executable, timeoutMilliseconds: 1_000,
-        }));
-        const failure = await Effect.runPromise(Effect.flatMap(Tunnel, (tunnel) =>
-          tunnel.restartTunnel({ stateDirectory: root, onlyIfDown: true })
-        ).pipe(Effect.flip, Effect.provide(TunnelLive)));
-        expect(failure).toMatchObject({
-          _tag: "TunnelConfigurationError",
-          message: expect.stringContaining("operator's latest intent"),
-        });
-        await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
-      } finally { await rm(root, { recursive: true, force: true }); }
-    });
-
     it("refuses a concurrent stop while start owns the lifecycle journal", async () => {
       const root = await temporaryRoot();
       const { promise: gate, resolve: release } = Promise.withResolvers<void>();
@@ -386,20 +360,6 @@ describe("managed enrollment tunnel", () => {
         .toMatchObject({ lifecycle: "stopped" });
     });
 
-    it("converts released stopped configuration into the canonical journal", async () => {
-      const root = await temporaryRoot();
-      const source = await fakeSource();
-      const input = await startManagedTunnel(root, source.port, source.tlsFingerprint);
-      const { stateDirectory: _stateDirectory, ...config } = input;
-      await writeFile(join(root, "tunnel-config.json"), JSON.stringify({
-        version: 1, desired: "stopped", recordedAt: new Date().toISOString(), ...config,
-      }));
-      expect(await runTunnel(Effect.flatMap(Tunnel, (tunnel) => tunnel.tunnelStatus({ stateDirectory: root }))))
-        .toMatchObject({ lifecycle: "stopped" });
-      await runTunnel(Effect.flatMap(Tunnel, (tunnel) => tunnel.stopTunnel({ stateDirectory: root })));
-      expect(decodeTunnelJournal(await readFile(join(root, "tunnel.json"), "utf8")).state._tag).toBe("Stopped");
-      await expect(access(join(root, "tunnel-config.json"))).rejects.toMatchObject({ code: "ENOENT" });
-    });
     it("restarts a dead tunnel from its recorded configuration, with no invitation (CF-55)", async () => {
       const root = await temporaryRoot();
       const source = await fakeSource();

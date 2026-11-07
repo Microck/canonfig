@@ -145,17 +145,10 @@ human-blocked, or drift-blocked result requires its matching payload and
 stops aggregation. No stopped result can turn into convergence through an
 omitted optional field.
 
-Migration 3, `synchronization_lifecycle`, upgrades released 6.1 rows in place
-using stored ownership and run evidence. The newest terminal run remains open
-for idempotent finalization; older terminal runs never release newer ownership.
-Terminal writes retain a non-executable `completed` text transition; finalization
-does not reconstruct or replay their write intent. Unclassifiable ownership and
-orphan takeovers refuse the migration with recovery steps and leave it rolled
-back. Ambiguous append-local plans in `Applying` or `Interrupted` remain intact
-and refuse recovery with instructions to preserve the database and snapshots,
-restore the affected targets manually, and set up fresh state. Existing takeover
-and rollback snapshot formats remain readable; no migration reads current target
-bytes to invent ownership.
+State format 7 creates the current schema directly. Any earlier migration
+history is refused before schema or data writes. Move `~/.canonfig/state.sqlite`
+aside and set the machine up again. There is no in-place state upgrade or
+conversion of older on-disk journal shapes.
 
 ## Profile contract
 
@@ -421,8 +414,8 @@ enters rollback. A blocked rollback records the affected skill and keeps its
 backup and journal; newer local edits are not removed.
 
 Recovery stays manual when interruption leaves a rename or configuration
-publication ambiguous. Released version 1 journals contain no phases and are
-refused with recovery instructions rather than interpreted as a fresh update.
+publication ambiguous. Invalid journals fail the same decoder as any other
+malformed record.
 Preserve the journal and backups, compare trees and configuration against their
 recorded digests, and finish or restore the interrupted update before removing
 the journal and any stale lock.

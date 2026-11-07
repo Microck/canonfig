@@ -1285,9 +1285,6 @@ const prepareWrite = (
 ): Effect.Effect<PreparedResourceAction, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const transition = detail.textTransition;
-    if (transition.kind === "completed") return yield* new InvalidExecutionPlanError({
-      message: "Completed historical writes cannot be replayed; plan a new synchronization",
-    });
     const shared = context.resource.policy === "append-local" && context.resource.kind === "file";
     if (shared !== (transition.kind !== "whole-file" && transition.kind !== "leave-section")) {
       return yield* new InvalidExecutionPlanError({ message: `Text transition ${transition.kind} does not match ${context.resource.policy} policy` });

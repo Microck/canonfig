@@ -1,53 +1,13 @@
-import { createHash } from "node:crypto";
-import { Effect, Schema } from "effect";
-import { canonicalJson } from "../profile/profile-codec.ts";
-import { AppliedResourceRecordSchema } from "../domain/synchronization.ts";
+import { Effect } from "effect";
 import { SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { SqlClient } from "effect/unstable/sql";
-import { RepositoryDecodeError } from "./state-repository.errors.ts";
-const isJsonObject: (value: Schema.MutableJson | undefined) => value is Schema.MutableJsonObject =
-  Schema.is(Schema.Record(Schema.String, Schema.MutableJson));
-const isString = Schema.is(Schema.String);
-
-/** Released rows are classified from stored evidence, never current target bytes. */
-const upgradeAppliedRecord = (value: Schema.Schema.Type<typeof Schema.MutableJson>) => {
-  const record = Schema.decodeUnknownSync(Schema.MutableJson)(value);
-  const invalid = (message: string) => new RepositoryDecodeError({
-    entity: "6.1 ownership migration", id: isJsonObject(record) && isString(record.resource) ? record.resource : "unknown",
-    message: `${message}. Preserve state.sqlite and .backups, restore the affected targets from the retained snapshots manually, then move state.sqlite aside and set the machine up again. No managed target was changed by this upgrade.`,
-  });
-  if (!isJsonObject(record)) return Effect.fail(invalid("Stored ownership is not an object"));
-  for (const [key, field] of Object.entries(record)) if (field === null) delete record[key];
-  switch (record.kind) {
-    case "file":
-      if (isString(record.symlinkTo)) {
-        record.ownership = "Symlink";
-        delete record.executable;
-        delete record.mode;
-      } else record.ownership = record.policy === "append-local" ? "SourceSection" : "WholeFile";
-      break;
-    case "directory":
-    case "skill": record.ownership = "DirectoryEntries"; break;
-    case "config": record.ownership = "ConfigKeys"; break;
-    case "tool": record.ownership = "QualifiedTool"; break;
-  }
-  return Schema.decodeUnknownEffect(AppliedResourceRecordSchema)(record).pipe(
-    Effect.mapError((error) => invalid(`Stored ownership cannot be classified safely: ${String(error)}`)));
-};
 
 /**
- * The migrations of the state database, in order.
- *
- * State format 6 started a new schema history: this release cannot read a
- * database an earlier release created, so it carries no upgrade path for one.
- * The repository refuses any database whose migration history is not a
- * prefix of this list, and the operator reinitializes the machine instead.
+ * One canonical schema for current state. Older migration histories are refused
+ * before any schema or data writes, rather than converted at startup.
  */
 export const stateSchemaMigrations = [
-  { id: 1, name: "state_format_6" },
-  { id: 2, name: "archive_events" },
-  { id: 3, name: "synchronization_lifecycle" },
-  { id: 4, name: "enrollment_lifecycle" },
+  { id: 1, name: "state_format_7" },
 ] as const;
 
 /**
@@ -55,7 +15,7 @@ export const stateSchemaMigrations = [
  * to the schema adds a migration after the last one, and to the list above.
  */
 export const stateMigrations = SqliteMigrator.fromRecord({
-  "0001_state_format_6": Effect.gen(function*() {
+  "0001_state_format_7": Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient;
 
     yield* sql`PRAGMA foreign_keys = ON`;
@@ -126,7 +86,7 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         action_id TEXT NOT NULL,
         sequence INTEGER NOT NULL,
         state TEXT NOT NULL CHECK (
-          state IN ('pending', 'running', 'succeeded', 'failed', 'skipped')
+          state IN ('pending', 'running', 'succeeded', 'failed', 'blocked', 'interrupted', 'rolled-back')
         ),
         recorded_at TEXT NOT NULL,
         attempt INTEGER NOT NULL CHECK (attempt >= 0),
@@ -271,15 +231,8 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         id TEXT PRIMARY KEY,
         follower_id TEXT NOT NULL,
         revision_id TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (
-          status IN (
-            'applying',
-            'Converged',
-            'HumanActionRequired',
-            'FollowerDrift',
-            'Failed',
-            'Interrupted'
-          )
+        phase TEXT NOT NULL CHECK (
+          phase IN ('Preparing', 'Applying', 'Interrupted', 'Finalizing', 'Abandoning', 'Complete')
         ),
         plan_json TEXT NOT NULL,
         started_at TEXT NOT NULL,
@@ -292,30 +245,17 @@ export const stateMigrations = SqliteMigrator.fromRecord({
     `;
 
     yield* sql`
-      CREATE UNIQUE INDEX one_active_applying_run_per_follower
+      CREATE UNIQUE INDEX one_open_run_per_follower
       ON synchronization_runs(follower_id)
-      WHERE status = 'applying'
+      WHERE phase != 'Complete'
     `;
 
     yield* sql`
       CREATE INDEX recoverable_runs_by_follower
-      ON synchronization_runs(follower_id, status)
-      WHERE status IN ('applying', 'Interrupted')
+      ON synchronization_runs(follower_id, phase)
+      WHERE phase != 'Complete'
     `;
 
-    yield* sql`
-      CREATE TRIGGER block_run_while_recoverable
-      BEFORE INSERT ON synchronization_runs
-      WHEN EXISTS (
-        SELECT 1
-        FROM synchronization_runs
-        WHERE follower_id = NEW.follower_id
-          AND status IN ('applying', 'Interrupted')
-      )
-      BEGIN
-        SELECT RAISE(ABORT, 'recoverable synchronization run exists');
-      END
-    `;
 
     yield* sql`
       CREATE TABLE applied_resources (
@@ -324,16 +264,7 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         revision_id TEXT NOT NULL,
         digest TEXT NOT NULL,
         applied_at TEXT NOT NULL,
-        owned_files_json TEXT,
-        kind TEXT,
-        policy TEXT,
-        target TEXT,
-        owned_keys_json TEXT,
-        config_format TEXT,
-        executable INTEGER,
-        symlink_target TEXT,
-        mode INTEGER,
-        installer_recipe_json TEXT,
+        record_json TEXT NOT NULL,
         PRIMARY KEY (follower_id, resource_id)
       )
     `;
@@ -361,18 +292,32 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         surface TEXT NOT NULL,
         root TEXT NOT NULL,
         snapshot TEXT,
-        run_id TEXT NOT NULL,
+        run_id TEXT NOT NULL REFERENCES synchronization_runs(id),
         taken_over_at TEXT NOT NULL,
+        phase TEXT NOT NULL CHECK (phase IN ('Reserved', 'Owned', 'Uncertain')),
+        backup_mode TEXT NOT NULL CHECK (backup_mode IN ('Disabled', 'Snapshot', 'Pending')),
+        CHECK ((backup_mode = 'Snapshot' AND snapshot IS NOT NULL)
+          OR (backup_mode IN ('Disabled', 'Pending') AND snapshot IS NULL)),
+        CHECK (backup_mode != 'Pending' OR phase = 'Reserved'),
         PRIMARY KEY (harness, surface)
       )
     `;
-  }),
-  // `canonfig export` and `canonfig import`, apart from synchronization_runs:
-  // an export changes nothing Canonfig manages, and a row there would become
-  // the last sync outcome `status` reports. Append-only, like an audit log.
-  "0002_archive_events": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      CREATE TABLE enrollment_credential_retirements (
+        reference TEXT PRIMARY KEY NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('Staged', 'Retiring'))
+      )
+    `;
+    yield* sql`
+      CREATE TABLE scheduled_invocations (
+        id TEXT PRIMARY KEY NOT NULL,
+        started_at TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('Running', 'Completed', 'Failed')),
+        invocation_json TEXT NOT NULL
+      )
+    `;
 
+    // Archives are append-only events, not synchronization outcomes.
     yield* sql`
       CREATE TABLE archive_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -411,210 +356,7 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       END
     `;
   }),
-  "0003_synchronization_lifecycle": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`DROP TRIGGER block_run_while_recoverable`;
-    yield* sql`DROP INDEX one_active_applying_run_per_follower`;
-    yield* sql`DROP INDEX recoverable_runs_by_follower`;
-    yield* sql`ALTER TABLE synchronization_runs ADD COLUMN phase TEXT NOT NULL DEFAULT 'Complete'
-      CHECK (phase IN ('Preparing', 'Applying', 'Interrupted', 'Finalizing', 'Abandoning', 'Complete'))`;
-    // Only the newest terminal run can still need its post-execution effects.
-    // Earlier runs must never replay ownership release over a later takeover.
-    yield* sql`UPDATE synchronization_runs SET phase = CASE
-      WHEN status = 'applying' THEN 'Applying'
-      WHEN status = 'Interrupted' THEN 'Interrupted'
-      WHEN id = (SELECT recent.id FROM synchronization_runs recent
-        WHERE recent.follower_id = synchronization_runs.follower_id
-        ORDER BY recent.started_at DESC, recent.rowid DESC LIMIT 1) THEN 'Finalizing'
-      ELSE 'Complete' END`;
-    yield* sql`DELETE FROM deployment_receipts WHERE run_id IN
-      (SELECT id FROM synchronization_runs WHERE phase != 'Complete')`;
-    yield* sql`UPDATE synchronization_runs SET completed_at = NULL WHERE phase != 'Complete'`;
-    yield* sql`ALTER TABLE synchronization_runs DROP COLUMN status`;
-    yield* sql`CREATE UNIQUE INDEX one_open_run_per_follower ON synchronization_runs(follower_id)
-      WHERE phase != 'Complete'`;
-    yield* sql`CREATE INDEX recoverable_runs_by_follower ON synchronization_runs(follower_id, phase)
-      WHERE phase != 'Complete'`;
-    yield* sql`ALTER TABLE harness_takeovers ADD COLUMN phase TEXT NOT NULL DEFAULT 'Reserved'
-      CHECK (phase IN ('Reserved', 'Owned', 'Uncertain'))`;
-    yield* sql`UPDATE harness_takeovers SET phase = CASE
-      WHEN EXISTS (SELECT 1 FROM applied_resources a
-        WHERE a.resource_id = 'harness:' || harness_takeovers.harness || ':' ||
-          CASE WHEN instr(harness_takeovers.surface, '#') > 0
-            THEN substr(harness_takeovers.surface, 1, instr(harness_takeovers.surface, '#') - 1)
-            ELSE harness_takeovers.surface END
-          AND (SELECT COUNT(*) FROM applied_resources b WHERE b.resource_id = a.resource_id) = 1
-          AND (instr(harness_takeovers.surface, '#') = 0 OR EXISTS (
-            SELECT 1 FROM json_each(a.owned_keys_json) key
-            WHERE key.value = substr(harness_takeovers.surface, instr(harness_takeovers.surface, '#') + 1)))) THEN 'Owned'
-      WHEN EXISTS (SELECT 1 FROM synchronization_runs r WHERE r.id = harness_takeovers.run_id AND r.phase IN ('Applying', 'Interrupted')) THEN 'Reserved'
-      ELSE 'Uncertain' END`;
-    const orphaned = yield* sql`SELECT harness, surface FROM harness_takeovers t
-      WHERE NOT EXISTS (SELECT 1 FROM synchronization_runs r WHERE r.id = t.run_id)
-        OR t.phase = 'Uncertain' AND NOT EXISTS (
-          SELECT 1 FROM synchronization_runs r WHERE r.id = t.run_id AND r.phase = 'Finalizing'
-            AND json_extract(r.outcome_json, '$.outcome') = 'Failed' AND json_extract(r.outcome_json, '$.rollbackIncomplete') = 1)`;
-    const orphan = Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ harness: Schema.String, surface: Schema.String })))(orphaned)[0];
-    if (orphan !== undefined) return yield* new RepositoryDecodeError({
-      entity: "6.1 takeover migration", id: `${orphan.harness}:${orphan.surface}`,
-      message: "This takeover has no safe ownership or recoverable run evidence. Preserve state.sqlite and .backups, recover the original target from its takeover snapshot manually, then move state.sqlite aside and set the machine up again. No managed target was changed by this upgrade.",
-    });
-    yield* sql`CREATE TABLE harness_takeovers_v3 (
-      harness TEXT NOT NULL, surface TEXT NOT NULL, root TEXT NOT NULL, snapshot TEXT,
-      run_id TEXT NOT NULL REFERENCES synchronization_runs(id), taken_over_at TEXT NOT NULL,
-      phase TEXT NOT NULL CHECK (phase IN ('Reserved', 'Owned', 'Uncertain')),
-      backup_mode TEXT NOT NULL CHECK (backup_mode IN ('Disabled', 'Snapshot', 'Pending')),
-      CHECK ((backup_mode = 'Snapshot' AND snapshot IS NOT NULL)
-        OR (backup_mode IN ('Disabled', 'Pending') AND snapshot IS NULL)),
-      CHECK (backup_mode != 'Pending' OR phase = 'Reserved'),
-      PRIMARY KEY (harness, surface))`;
-    yield* sql`INSERT INTO harness_takeovers_v3
-      SELECT harness, surface, root, snapshot, run_id, taken_over_at, phase,
-        CASE WHEN snapshot IS NULL THEN 'Disabled' ELSE 'Snapshot' END FROM harness_takeovers`;
-    yield* sql`DROP TABLE harness_takeovers`;
-    yield* sql`ALTER TABLE harness_takeovers_v3 RENAME TO harness_takeovers`;
-    yield* sql`CREATE TABLE applied_resources_v3 (
-      follower_id TEXT NOT NULL, resource_id TEXT NOT NULL, revision_id TEXT NOT NULL,
-      digest TEXT NOT NULL, applied_at TEXT NOT NULL, record_json TEXT NOT NULL,
-      PRIMARY KEY (follower_id, resource_id))`;
-    const applied = yield* sql`SELECT follower_id, resource_id, revision_id, digest, applied_at,
-      json_object('resource', resource_id, 'revision', revision_id, 'digest', digest, 'appliedAt', applied_at,
-        'kind', kind, 'policy', policy, 'target', target, 'ownedFiles', json(owned_files_json),
-        'ownedKeys', json(owned_keys_json), 'configFormat', config_format,
-        'executable', CASE WHEN executable IS NULL THEN NULL ELSE json(CASE WHEN executable = 1 THEN 'true' ELSE 'false' END) END,
-        'symlinkTo', symlink_target, 'mode', mode, 'installerRecipe', json(installer_recipe_json)) AS record_json
-      FROM applied_resources`;
-    for (const row of Schema.decodeUnknownSync(Schema.Array(Schema.Struct({
-      follower_id: Schema.String, resource_id: Schema.String, revision_id: Schema.String,
-      digest: Schema.String, applied_at: Schema.String, record_json: Schema.String,
-    })))(applied)) {
-      const record = yield* upgradeAppliedRecord(JSON.parse(row.record_json));
-      yield* sql`INSERT INTO applied_resources_v3 VALUES (${row.follower_id}, ${row.resource_id},
-        ${row.revision_id}, ${row.digest}, ${row.applied_at}, ${JSON.stringify(record)})`;
-    }
-    yield* sql`DROP TABLE applied_resources`;
-    yield* sql`ALTER TABLE applied_resources_v3 RENAME TO applied_resources`;
-    const previousRecords = yield* sql`SELECT id, removed_resource_json FROM action_journal WHERE removed_resource_json IS NOT NULL`;
-    for (const row of Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ id: Schema.Number, removed_resource_json: Schema.String })))(previousRecords)) {
-      const record = yield* upgradeAppliedRecord(JSON.parse(row.removed_resource_json));
-      yield* sql`UPDATE action_journal SET removed_resource_json = ${JSON.stringify(record)} WHERE id = ${row.id}`;
-    }
-    yield* sql`ALTER TABLE synchronization_runs ADD COLUMN recovery_error TEXT`;
-    yield* sql`CREATE TABLE action_journal_v3 (
-      id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, action_id TEXT NOT NULL,
-      sequence INTEGER NOT NULL,
-      state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'succeeded', 'failed', 'blocked', 'interrupted', 'rolled-back')),
-      recorded_at TEXT NOT NULL, attempt INTEGER NOT NULL CHECK (attempt >= 0),
-      verification_json TEXT, rollback_reference TEXT, removed_resource_json TEXT,
-      FOREIGN KEY (run_id, action_id) REFERENCES run_actions(run_id, action_id),
-      UNIQUE (run_id, sequence))`;
-    yield* sql`INSERT INTO action_journal_v3
-      SELECT j.id, j.run_id, j.action_id,
-        ROW_NUMBER() OVER (PARTITION BY j.run_id ORDER BY j.sequence) - 1,
-        CASE WHEN j.state = 'failed' AND json_extract(j.verification_json, '$.method') = 'run-rolled-back' THEN 'rolled-back'
-          WHEN j.state = 'failed' AND json_extract(j.verification_json, '$.method') = 'interrupted' THEN 'interrupted'
-          WHEN j.state = 'skipped' THEN 'blocked' ELSE j.state END,
-        j.recorded_at, j.attempt, j.verification_json, j.rollback_reference, j.removed_resource_json
-      FROM action_journal j
-      WHERE j.state != 'skipped' OR EXISTS (
-        SELECT 1 FROM synchronization_runs r, json_each(r.plan_json, '$.actions') a
-        WHERE r.id = j.run_id AND json_extract(a.value, '$.id') = j.action_id
-          AND json_extract(a.value, '$.detail.kind') IN ('human-action', 'agent-task', 'drift-conflict'))`;
-    yield* sql`DROP TABLE action_journal`;
-    yield* sql`ALTER TABLE action_journal_v3 RENAME TO action_journal`;
-    // Terminal writes need only historical evidence, never reconstructed intent.
-    // Only Applying/Interrupted can replay writes or their inverses.
-    const rows = yield* sql`SELECT id, phase, plan_json FROM synchronization_runs`;
-    for (const row of Schema.decodeUnknownSync(Schema.Array(Schema.Struct({
-      id: Schema.String, phase: Schema.String, plan_json: Schema.String,
-    })))(rows)) {
-      const plan = Schema.decodeUnknownSync(Schema.MutableJson)(JSON.parse(row.plan_json));
-      if (!isJsonObject(plan) || !Array.isArray(plan.actions)) continue;
-      let ambiguous = false;
-      for (const action of plan.actions) {
-        if (!isJsonObject(action)) continue;
-        const detail = action.detail;
-        if (!isJsonObject(detail) || detail.kind !== "write-file") continue;
-        if (row.phase === "Finalizing" || row.phase === "Complete") {
-          detail.textTransition = { kind: "completed" };
-          delete detail.retainedLocalDigest;
-          delete detail.previousSourceDigest;
-          continue;
-        }
-        const policies = yield* sql`SELECT json_extract(resource.value, '$.policy') AS policy
-          FROM synchronization_runs run
-          JOIN local_revisions revision ON revision.id = run.revision_id,
-            json_each(revision.revision_json, '$.resources') resource
-          WHERE run.id = ${row.id} AND json_extract(resource.value, '$.id') = ${String(action.resource)}
-          UNION ALL SELECT json_extract(resource.value, '$.policy') AS policy
-          FROM synchronization_runs run
-          JOIN profile_revisions revision ON revision.id = run.revision_id,
-            json_each(revision.revision_json, '$.resources') resource
-          WHERE run.id = ${row.id} AND json_extract(resource.value, '$.id') = ${String(action.resource)}
-          LIMIT 1`;
-        const policy = Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ policy: Schema.String })))(policies)[0]?.policy;
-        if (isString(detail.retainedLocalDigest)) detail.textTransition = { kind: "adopt-local", retainedDigest: detail.retainedLocalDigest };
-        else if (policy !== undefined && policy !== "append-local" && detail.previousSourceDigest === undefined) detail.textTransition = { kind: "whole-file" };
-        else ambiguous = true;
-        delete detail.retainedLocalDigest;
-        delete detail.previousSourceDigest;
-      }
-      if (ambiguous) {
-        yield* sql`UPDATE synchronization_runs SET recovery_error =
-          'This 6.1 run has ambiguous append-local ownership. Preserve state.sqlite and .backups, restore its affected targets from the retained snapshots manually, then move state.sqlite aside and set the machine up again. No managed target was changed by this upgrade.'
-          WHERE id = ${row.id}`;
-      } else {
-        if (isString(plan.encoded)) {
-          const encoded = Schema.decodeUnknownSync(Schema.MutableJson)(JSON.parse(plan.encoded));
-          if (isJsonObject(encoded)) {
-            encoded.actions = plan.actions;
-            plan.encoded = canonicalJson(encoded);
-            plan.digest = createHash("sha256").update(plan.encoded).digest("hex");
-          }
-        }
-        yield* sql`UPDATE synchronization_runs SET plan_json = ${JSON.stringify(plan)} WHERE id = ${row.id}`;
-      }
-    }
-  }),
-  "0004_enrollment_lifecycle": Effect.gen(function*() {
-    const sql = yield* SqlClient.SqlClient;
-    // Released active configurations upgrade in place. Old pending rows lack
-    // replacement ownership and must be recovered explicitly, not guessed.
-    yield* sql`
-      UPDATE follower_sync_configuration
-      SET configuration_json = json_remove(
-        json_set(configuration_json, '$.lifecycle', json_object(
-          '_tag', CASE WHEN json_extract(configuration_json, '$.enrollmentPending') = 1
-            THEN 'LegacyPending' ELSE 'Active' END
-        )), '$.enrollmentPending'
-      )
-    `;
-    yield* sql`
-      CREATE TABLE enrollment_credential_retirements (
-        reference TEXT PRIMARY KEY NOT NULL,
-        state TEXT NOT NULL CHECK (state IN ('Staged', 'Retiring'))
-      )
-    `;
-    yield* sql`
-      INSERT OR IGNORE INTO enrollment_credential_retirements (reference, state)
-      SELECT credential_reference, 'Retiring' FROM followers WHERE revoked = 1
-    `;
-    yield* sql`
-      CREATE TABLE scheduled_invocations (
-        id TEXT PRIMARY KEY NOT NULL,
-        started_at TEXT NOT NULL,
-        state TEXT NOT NULL CHECK (state IN ('Running', 'Completed', 'Failed')),
-        invocation_json TEXT NOT NULL
-      )
-    `;
-    yield* sql`
-      CREATE TABLE scheduled_invocation_imports (
-        path TEXT PRIMARY KEY NOT NULL,
-        digest TEXT NOT NULL
-      )
-    `;
-  }),
 });
 
 /** Bumped by every change to what stored state means. */
-export const stateFormatVersion = 6;
+export const stateFormatVersion = 7;

@@ -131,7 +131,6 @@ import {
   type DoctorAgentConfiguration,
   type DoctorSourceConfiguration,
 } from "./doctor.ts";
-import { loadScheduledInvocations } from "./scheduled-invocations.ts";
 
 export interface RuntimeLayerOptions {
   readonly statePath?: string | undefined;
@@ -218,9 +217,9 @@ const rollbackRecoveryDetail = "follower replacement rollback is pending; both c
 
 
 /** Keep the existing CLI evidence shape as a view of the canonical SQL records. */
-const readScheduleFires = (repository: StateRepository["Service"], statePath: string) =>
+const readScheduleFires = (repository: StateRepository["Service"]) =>
   Effect.gen(function*() {
-    const invocations = yield* loadScheduledInvocations(repository, statePath);
+    const invocations = yield* mapFailure(repository.listScheduledInvocations());
     return invocations.map((invocation) => ({
       id: invocation.id, generation: invocation.generation, startedAt: invocation.startedAt,
       at: invocation._tag === "Running" ? invocation.startedAt : invocation.at,
@@ -831,7 +830,7 @@ const followerCommandsLayer = (
           ...qualifiedClientMethods,
         ];
         const scheduleInput = finalizedScheduleInput(configuration);
-        const fires = yield* readScheduleFires(repository, statePath);
+        const fires = yield* readScheduleFires(repository);
         const scheduled = scheduleInput === undefined
           ? { status: "not-selected" as const, detail: unscheduledDetail(configuration) }
           : yield* schedules.status(scheduleInput).pipe(
@@ -1265,9 +1264,8 @@ const followerCommandsLayer = (
         return installedGeneration.pipe(Effect.flatMap((generation) => {
           const identity = { ...invocation, generation };
           const start = scheduled
-            ? readScheduleFires(repository, statePath).pipe(Effect.andThen(mapFailure(
-              repository.transitionScheduledInvocation({ ...identity, _tag: "Running" }),
-            ))) : Effect.void;
+            ? mapFailure(repository.transitionScheduledInvocation({ ...identity, _tag: "Running" }))
+            : Effect.void;
           return start.pipe(Effect.andThen(Effect.gen(function*() {
             // A scheduled run restarts a down managed tunnel once, and a
             // transport failure while the tunnel is down reports the tunnel.
@@ -1628,7 +1626,7 @@ const followerCommandsLayer = (
                 ),
               );
             }
-            return readScheduleFires(repository, statePath).pipe(Effect.flatMap((fires) => mapFailure(schedules.status(input)).pipe(
+            return readScheduleFires(repository).pipe(Effect.flatMap((fires) => mapFailure(schedules.status(input)).pipe(
               Effect.map((status) =>
                 payload({
                   ...status,
@@ -1713,7 +1711,7 @@ const followerCommandsLayer = (
         Effect.all([
           mapFailure(repository.getFollowerSynchronizationConfiguration()),
           effectiveScheduleInput(repository),
-          readScheduleFires(repository, statePath),
+          readScheduleFires(repository),
           tunnel.tunnelStatus({ stateDirectory: join(dirname(statePath), "tunnel") }).pipe(
             Effect.catch(() => Effect.succeed(undefined)),
           ),

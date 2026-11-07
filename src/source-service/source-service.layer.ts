@@ -67,7 +67,6 @@ const ServiceRegistration = Schema.Union([
 ]);
 type ServiceRegistration = typeof ServiceRegistration.Type;
 const ServiceRecordSchema = Schema.Struct({ version: Schema.Literal(2), registration: ServiceRegistration });
-const ReleasedServiceRecord = Schema.Struct({ version: Schema.Literal(1), ...RequestedService.fields });
 
 type RegistrationEvent =
   | { readonly _tag: "Install"; readonly requested: SourceServiceInput }
@@ -548,12 +547,6 @@ export const sourceServiceLayer = (
           return Effect.try({
             try: () => {
               const record: unknown = JSON.parse(text);
-              const released = Schema.decodeUnknownOption(ReleasedServiceRecord)(record);
-              if (released._tag === "Some") {
-                return { _tag: "Installed" as const, requested: {
-                  hostname: released.value.hostname, port: released.value.port,
-                } };
-              }
               return Schema.decodeUnknownSync(ServiceRecordSchema)(record).registration;
             },
             catch: () => new SourceServiceConfigurationError({

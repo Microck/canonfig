@@ -167,7 +167,7 @@ const readJournal = (
       catch: () =>
         fail(
           "setup journal",
-          `The setup journal is unsupported or invalid. Released canonfig.setup/v1 journals cannot prove whether pending work already ran. Inspect any setup side effects first, then back up and remove ${journalPath} and run setup plan again. Do not remove state.sqlite.`,
+          `The setup journal is invalid. Inspect any setup side effects first, then back up and remove ${journalPath} and run setup plan again. Do not remove state.sqlite.`,
           "prerequisite",
           `Inspect any setup side effects first, then back up and remove ${journalPath} and run setup plan again. Do not remove state.sqlite.`,
         ),

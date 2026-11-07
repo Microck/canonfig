@@ -57,7 +57,7 @@ const SecretManifestReferenceSchema = Schema.Struct({
     name: Schema.String,
     reference: CredentialReference,
   })),
-  retiredReferences: Schema.optional(Schema.Array(CredentialReference)),
+  retiredReferences: Schema.Array(CredentialReference),
 });
 
 type SecretManifestReference = typeof SecretManifestReferenceSchema.Type;
@@ -543,7 +543,7 @@ describe("secure secret transfer", () => {
       schemaVersion: 1,
       secrets: [{ name: "rotated", value: "new-value" }],
     }));
-    expect((await readSecretManifest(setup)).retiredReferences ?? []).toEqual([]);
+    expect((await readSecretManifest(setup)).retiredReferences).toEqual([]);
     expect(await storedValue(setup, "rotated")).toBe("new-value");
   });
 
@@ -574,7 +574,7 @@ describe("secure secret transfer", () => {
       schemaVersion: 1,
       secrets: [],
     }));
-    expect((await readSecretManifest(setup)).retiredReferences ?? []).toEqual([]);
+    expect((await readSecretManifest(setup)).retiredReferences).toEqual([]);
   });
 
   it("keeps revoked source credentials tracked until removal can retry", async () => {
@@ -598,7 +598,7 @@ describe("secure secret transfer", () => {
       .toContain(oldReference);
 
     await runFollower(setup, clearTransferredSecrets());
-    expect((await readSecretManifest(setup)).retiredReferences ?? []).toEqual([]);
+    expect((await readSecretManifest(setup)).retiredReferences).toEqual([]);
   });
 
   it("rejects an encoded payload that would exceed the transport ceiling", async () => {

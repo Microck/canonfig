@@ -57,11 +57,6 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly databaseFile: () => Effect.Effect<string, StateRepositoryError>;
   readonly transitionScheduledInvocation: (invocation: ScheduledInvocation) => Effect.Effect<void, StateRepositoryError>;
   readonly listScheduledInvocations: () => Effect.Effect<ReadonlyArray<ScheduledInvocation>, StateRepositoryError>;
-  readonly importScheduledInvocations: (input: {
-    readonly path: string;
-    readonly digest: ContentDigest;
-    readonly invocations: ReadonlyArray<ScheduledInvocation>;
-  }) => Effect.Effect<void, StateRepositoryError>;
   readonly saveSourceIdentity: (
     identity: SourceIdentity,
   ) => Effect.Effect<void, StateRepositoryError>;

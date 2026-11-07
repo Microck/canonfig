@@ -1,11 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { createHash, X509Certificate } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { generate } from "selfsigned";
@@ -47,48 +46,6 @@ describe("doctor probes", () => {
     ]);
     expect(summary.completed).toBe(false);
     expect(summary.text).toContain("run lock held");
-  });
-
-  it("loads a well-formed released receipt during doctor without operator recovery", () => {
-    const home = mkdtempSync(join(tmpdir(), "canonfig-receipt-upgrade-"));
-    const legacy = join(home, ".canonfig", "schedule-fires.json");
-    try {
-      mkdirSync(join(home, ".canonfig"));
-      writeFileSync(legacy, JSON.stringify({ schema: "canonfig.schedule-fire/v1", fires: [
-        { startedAt: "2026-11-07T00:00:01Z", at: "2026-11-07T00:00:01Z", outcome: "started", generation: "installed" },
-        { startedAt: "2026-11-07T00:00:01Z", at: "2026-11-07T00:00:02Z", outcome: "completed", generation: "installed" },
-      ] }));
-      const upgraded = executeDoctor(home, ["--json", "--no-input"], {
-        XDG_CONFIG_HOME: join(home, "config"), XDG_DATA_HOME: join(home, "data"),
-        XDG_CACHE_HOME: join(home, "cache"), CANONFIG_LOCAL_CREDENTIAL_ROOT: join(home, "credentials"),
-      });
-      expect(upgraded.status, upgraded.stdout + upgraded.stderr).toBe(0);
-      expect(existsSync(legacy)).toBe(false);
-      expect(existsSync(`${legacy}.imported`)).toBe(true);
-      const database = new DatabaseSync(join(home, ".canonfig", "state.sqlite"), { readOnly: true });
-      expect(database.prepare("SELECT state FROM scheduled_invocations").all()).toEqual([{ state: "Completed" }]);
-      expect(database.prepare("SELECT count(*) AS count FROM scheduled_invocation_imports").get()?.count).toBe(1);
-      database.close();
-    } finally { rmSync(home, { recursive: true, force: true }); }
-  });
-
-  it.each(["malformed", "ambiguous"])("refuses %s released receipt files with clear recovery", (kind) => {
-    const home = mkdtempSync(join(tmpdir(), "canonfig-legacy-receipts-"));
-    try {
-      mkdirSync(join(home, ".canonfig"));
-      writeFileSync(join(home, ".canonfig", "schedule-fires.json"), kind === "malformed" ? "{partial" : JSON.stringify({
-        schema: "canonfig.schedule-fire/v1", fires: [
-          { startedAt: "2026-11-07T00:00:01Z", at: "2026-11-07T00:00:02Z", outcome: "completed" },
-          { startedAt: "2026-11-07T00:00:01Z", at: "2026-11-07T00:00:03Z", outcome: "failed", reason: "another invocation" },
-        ],
-      }));
-      const refused = executeDoctor(home, ["--json", "--no-input"], {
-        XDG_CONFIG_HOME: join(home, "config"), XDG_DATA_HOME: join(home, "data"),
-        XDG_CACHE_HOME: join(home, "cache"), CANONFIG_LOCAL_CREDENTIAL_ROOT: join(home, "credentials"),
-      });
-      expect(refused.status, refused.stdout + refused.stderr).toBe(3);
-      expect(refused.stdout + refused.stderr).toContain("Move that receipt aside");
-    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
   it("reports every typed probe deterministically without prompting", () => {

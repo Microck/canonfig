@@ -77,7 +77,7 @@ it.skipIf(process.platform === "win32" || process.getuid?.() === 0).each([0o500,
   }, 50000,
 );
 
-// A release before state format 6 wrote another migration history. Canonfig
+// An earlier state format wrote another migration history. Canonfig
 // refuses that database before it migrates or writes anything, and names the
 // fix: move the database aside and set the machine up again.
 it("refuses state an earlier release wrote without changing it", () => {

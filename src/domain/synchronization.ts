@@ -49,8 +49,6 @@ const noTextTransitionEvidence = {
 
 /** Persisted text-write intent, independent of optional evidence fields. */
 export const TextWriteTransition = Schema.Union([
-  // Released terminal writes retain history but have no replayable intent.
-  Schema.Struct({ ...noTextTransitionEvidence, kind: Schema.Literal("completed") }),
   Schema.Struct({ ...noTextTransitionEvidence, kind: Schema.Literal("whole-file") }),
   Schema.Struct({ ...noTextTransitionEvidence, kind: Schema.Literal("create-section") }),
   Schema.Struct({ ...noTextTransitionEvidence, kind: Schema.Literal("adopt-local"), retainedDigest: ContentDigest }),
@@ -132,7 +130,6 @@ export const checkTextWriteTransition = (
 ): void => {
   let valid: boolean;
   switch (transition.kind) {
-    case "completed": valid = false; break;
     case "whole-file": valid = true; break;
     case "create-section": valid = current.kind === "absent"; break;
     case "adopt-local":

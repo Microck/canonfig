@@ -146,7 +146,6 @@ const ActiveRunRow = Schema.Struct({
   started_at: Schema.String,
   phase: Schema.Literals(["Preparing", "Applying", "Interrupted", "Finalizing", "Abandoning"]),
   outcome_json: Schema.NullOr(Schema.String),
-  recovery_error: Schema.NullOr(Schema.String),
 });
 const OpenRunIdentityRow = Schema.Struct({
   id: Schema.String,
@@ -327,7 +326,7 @@ const statusCount = Effect.fn("StateRepository.statusCount")(function*(
 const makeRepository = Effect.gen(function*() {
   const sql = yield* SqlClient.SqlClient;
 
-  // A database from before state format 6 has a different migration history.
+  // Earlier state formats have a different migration history.
   // Running the current migrations over it would fail halfway or, worse,
   // succeed against tables whose rows this release cannot decode.
   const history = yield* sql`
@@ -598,12 +597,6 @@ const makeRepository = Effect.gen(function*() {
     );
     const row = decoded[0];
     if (row === undefined) return undefined;
-    const legacy = yield* parseJson(Schema.Struct({ lifecycle: Schema.Struct({ _tag: Schema.String }) }),
-      row.configuration_json, "follower enrollment lifecycle", "1");
-    if (legacy.lifecycle._tag === "LegacyPending") return yield* new RepositoryDecodeError({
-      entity: "follower enrollment lifecycle", id: "1",
-      message: "This released pending enrollment does not record the previous identity. Revoke its follower identity on the Source, move this Canonfig state directory aside, then enroll again with a new invitation. Keep its credential store until the old identity has been revoked.",
-    });
     return yield* parseJson(
       FollowerSynchronizationConfiguration,
       row.configuration_json,
@@ -2662,7 +2655,7 @@ const makeRepository = Effect.gen(function*() {
   const loadRecovery = Effect.fn("StateRepository.loadRecovery")(
     function*(follower: FollowerIdType): Effect.fn.Return<RecoveryState | undefined, StateRepositoryError> {
       const runRows = yield* sql`
-        SELECT id, follower_id, revision_id, plan_json, started_at, phase, outcome_json, recovery_error
+        SELECT id, follower_id, revision_id, plan_json, started_at, phase, outcome_json
         FROM synchronization_runs
         WHERE follower_id = ${follower}
           AND phase != 'Complete'
@@ -2677,7 +2670,6 @@ const makeRepository = Effect.gen(function*() {
       );
       const row = runs[0];
       if (row === undefined) return undefined;
-      if (row.recovery_error !== null) return yield* new RepositoryDecodeError({ entity: "6.1 run recovery", id: row.id, message: row.recovery_error });
       const plan = yield* parseJson(
         SynchronizationPlanSchema,
         row.plan_json,
@@ -2958,32 +2950,6 @@ const makeRepository = Effect.gen(function*() {
     })).pipe(Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("transition scheduled invocation")(error))));
   });
 
-  const importScheduledInvocations = Effect.fn("StateRepository.importScheduledInvocations")(function*(
-    input: Parameters<StateRepository["Service"]["importScheduledInvocations"]>[0],
-  ): Effect.fn.Return<void, StateRepositoryError> {
-    yield* sql.withTransaction(Effect.gen(function*() {
-      const rows = yield* sql`SELECT digest FROM scheduled_invocation_imports WHERE path = ${input.path}`;
-      const imported = (yield* decodeRows(Schema.Struct({ digest: ContentDigest }), rows,
-        "scheduled invocation import", input.path))[0];
-      if (imported !== undefined) {
-        if (imported.digest === input.digest) return;
-        return yield* new RepositoryDecodeError({
-          entity: "scheduled invocation import", id: input.path,
-          message: "the receipt changed after it was imported; its events cannot be assigned safely",
-        });
-      }
-      for (const record of input.invocations) {
-        const invocation = yield* Schema.decodeUnknownEffect(ScheduledInvocation)(record)
-          .pipe(Effect.mapError(decodeError("scheduled invocation import", input.path)));
-        yield* sql`
-          INSERT INTO scheduled_invocations (id, started_at, state, invocation_json)
-          VALUES (${invocation.id}, ${invocation.startedAt}, ${invocation._tag}, ${JSON.stringify(invocation)})
-        `;
-      }
-      yield* sql`INSERT INTO scheduled_invocation_imports (path, digest) VALUES (${input.path}, ${input.digest})`;
-    })).pipe(Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("import scheduled invocations")(error))));
-  });
-
   const listScheduledInvocations = Effect.fn("StateRepository.listScheduledInvocations")(function*() {
     const rows = yield* sql`
       SELECT invocation_json FROM (
@@ -3003,7 +2969,6 @@ const makeRepository = Effect.gen(function*() {
     databaseFile,
     transitionScheduledInvocation,
     listScheduledInvocations,
-    importScheduledInvocations,
     saveSourceIdentity,
     registerFollower,
     saveFollowerSynchronizationConfiguration,

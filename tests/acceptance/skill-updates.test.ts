@@ -210,14 +210,6 @@ describe("tracked upstream skill updates", () => {
     expect(await readFile(path.join(location.root, "skills/second/SKILL.md"), "utf8")).toContain("Version one");
     expect(await readFile(path.join(location.root, journal.swaps[0].backup, "SKILL.md"), "utf8")).toContain("Version one");
   });
-  it("refuses released unphased journals with manual recovery instructions", async () => {
-    const { location, input } = await fixture();
-    await trackSkill(location, input);
-    const journal = JSON.stringify({ version: 1, previousConfig: await listSkills(location), swaps: [] });
-    await write(location.root, `${location.config}.pending`, journal);
-    await expect(updateSkills(location, [])).rejects.toThrow("released version 1");
-    expect(await readFile(path.join(location.root, `${location.config}.pending`), "utf8")).toBe(journal);
-  });
   it("rolls back an installed tree when atomic configuration publication fails", async () => {
     const { location, input, upstream } = await fixture(); await trackSkill(location, input); await advance(upstream);
     const configuration = path.join(location.root, location.config);

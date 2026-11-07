@@ -40,7 +40,7 @@ const SecretManifestEntrySchema = Schema.Struct({
 const SecretManifestSchema = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   secrets: Schema.Array(SecretManifestEntrySchema),
-  retiredReferences: Schema.optional(Schema.Array(CredentialReference)),
+  retiredReferences: Schema.Array(CredentialReference),
 });
 
 const SecretTransaction = Schema.Union([
@@ -275,12 +275,12 @@ const readManifest = (): Effect.Effect<
       ),
     );
     const active = new Set(manifest.secrets.map(entry => String(entry.reference)));
-    if (manifest.retiredReferences?.some(reference => active.has(String(reference)))) {
+    if (manifest.retiredReferences.some(reference => active.has(String(reference)))) {
       return yield* secretError("state", "read secret manifest", "the secret manifest marks an active credential for retirement; preserve secrets.json and inspect its references before retrying");
     }
     return {
       ...manifest,
-      retiredReferences: uniqueReferences(manifest.retiredReferences ?? []),
+      retiredReferences: uniqueReferences(manifest.retiredReferences),
     };
   });
 
@@ -304,16 +304,11 @@ const writeManifest = (
         secretError("storage", "write secret manifest", "the Canonfig data directory cannot be secured")
       ),
     );
-    const manifest: SecretManifest = retired.length === 0
-      ? {
-        schemaVersion: 1,
-        secrets: [...secrets].sort((left, right) => left.name.localeCompare(right.name)),
-      }
-      : {
-        schemaVersion: 1,
-        secrets: [...secrets].sort((left, right) => left.name.localeCompare(right.name)),
-        retiredReferences: retired,
-      };
+    const manifest: SecretManifest = {
+      schemaVersion: 1,
+      secrets: [...secrets].sort((left, right) => left.name.localeCompare(right.name)),
+      retiredReferences: retired,
+    };
     const content = new TextEncoder().encode(`${JSON.stringify(manifest, null, 2)}\n`);
     if (content.byteLength > maximumManifestBytes) {
       return yield* secretError(
@@ -481,7 +476,7 @@ const recoverSecretTransaction = () => Effect.gen(function*() {
   const current = yield* readManifest();
   const active = new Set(current.secrets.map(entry => String(entry.reference)));
   const created = state._tag === "Committed" ? [] : state.created;
-  const retiring = uniqueReferences([...(current.retiredReferences ?? []), ...created])
+  const retiring = uniqueReferences([...current.retiredReferences, ...created])
     .filter(reference => !active.has(String(reference)));
   yield* writeManifest(current.secrets, retiring);
   yield* removeRetiredReferences(current.secrets, retiring, "clean retired secrets");
@@ -611,7 +606,7 @@ export const storeSecret = (
       { name: validName, reference, origin },
     ];
     const retired = [
-      ...(current.retiredReferences ?? []),
+      ...current.retiredReferences,
       ...(previous === undefined ? [] : [previous.reference]),
     ];
     yield* transaction.publish(next, retired, "replace secret");
@@ -628,7 +623,7 @@ export const removeSecret = (
     if (existing === undefined) return false;
     const next = current.secrets.filter((secret) => secret.name !== validName);
     const retired = [
-      ...(current.retiredReferences ?? []),
+      ...current.retiredReferences,
       existing.reference,
     ];
     const transaction = secretTransaction(current);
@@ -646,7 +641,7 @@ export const clearTransferredSecrets = (): Effect.Effect<
     const local = current.secrets.filter((secret) => secret.origin === "local");
     const source = current.secrets.filter((secret) => secret.origin === "source");
     const retired = [
-      ...(current.retiredReferences ?? []),
+      ...current.retiredReferences,
       ...source.map((secret) => secret.reference),
     ];
     if (source.length === 0 && retired.length === 0) return [];
@@ -665,7 +660,7 @@ export const loadSharedSecrets = (): Effect.Effect<
     const manifest = yield* readManifest();
     yield* removeRetiredReferences(
       manifest.secrets,
-      manifest.retiredReferences ?? [],
+      manifest.retiredReferences,
       "clean retired secrets",
     );
     const shared = manifest.secrets.filter((secret) => secret.origin === "local");
@@ -704,7 +699,7 @@ export const applyTransferredSecrets = (
     const current = yield* readManifest();
     yield* removeRetiredReferences(
       current.secrets,
-      current.retiredReferences ?? [],
+      current.retiredReferences,
       "clean retired secrets",
     );
     const incomingNames = new Set(incoming.map((secret) => secret.name));

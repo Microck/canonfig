@@ -285,16 +285,6 @@ describe.skipIf(process.platform === "win32")("systemd Source service lifecycle"
     expect(error.message).toContain("source-service.json");
   });
 
-  it("loads a released registration without changing its endpoint", async () => {
-    const { root, run } = await setup("exit 0");
-    await mkdir(join(root, ".canonfig"), { recursive: true });
-    await writeFile(join(root, ".canonfig/source-service.json"), JSON.stringify({
-      version: 1, hostname: "::1", port: 23456,
-    }));
-    const status = await run(Effect.flatMap(SourceService, (service) => service.status(undefined)));
-    expect(status.endpoint).toBe("https://[::1]:23456");
-  });
-
   it("refuses install and remove while another registration operation owns the lock", async () => {
     const { root, run } = await setup("exit 0");
     await mkdir(join(root, ".canonfig"), { recursive: true });
@@ -316,7 +306,7 @@ describe.skipIf(process.platform === "win32")("systemd Source service lifecycle"
     const requested = { hostname: "127.0.0.1", port: 23456 };
     await mkdir(join(root, ".canonfig"), { recursive: true });
     await writeFile(join(root, ".canonfig/source-service.json"), JSON.stringify({
-      version: 1, ...requested,
+      version: 2, registration: { _tag: "Installed", requested },
     }));
     await mkdir(join(root, ".config/systemd/user"), { recursive: true });
     await writeFile(join(root, ".config/systemd/user/canonfig-source.service"), "installed definition");

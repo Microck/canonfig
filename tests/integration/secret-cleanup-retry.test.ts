@@ -26,7 +26,7 @@ const ManifestSchema = Schema.Struct({
     name: Schema.String,
     reference: CredentialReference,
   })),
-  retiredReferences: Schema.optional(Schema.Array(CredentialReference)),
+  retiredReferences: Schema.Array(CredentialReference),
 });
 
 const readManifest = async (home: string) =>

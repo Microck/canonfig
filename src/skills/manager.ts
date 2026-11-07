@@ -79,11 +79,8 @@ async function withLock<T>(location: SkillLocation, action: () => Promise<T>): P
   try {
     await handle.writeFile(JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }) + "\n");
     if (await exists(`${configPath(location)}.pending`)) {
-      let phase = "The journal has no trustworthy phase (including released version 1 journals)";
-      try {
-        const journal = Schema.decodeUnknownSync(SkillTransaction)(JSON.parse(await fs.readFile(`${configPath(location)}.pending`, "utf8")));
-        phase = `The recorded transaction phase is ${journal._tag}; swap phases are ${journal.swaps.map((swap) => `${swap.path}: ${swap._tag}`).join(", ")}`;
-      } catch { /* Old or unreadable journals require the same conservative manual recovery. */ }
+      const journal = Schema.decodeUnknownSync(SkillTransaction)(JSON.parse(await fs.readFile(`${configPath(location)}.pending`, "utf8")));
+      const phase = `The recorded transaction phase is ${journal._tag}; swap phases are ${journal.swaps.map((swap) => `${swap.path}: ${swap._tag}`).join(", ")}`;
       throw new CanonfigError("SKILL_RECOVERY_REQUIRED", `A previous update left a .pending recovery journal. ${phase}. Preserve the journal and backups, compare installed trees and source configuration with the recorded digests, and finish or restore that update manually before removing the journal and any stale lock`);
     }
     return await action();

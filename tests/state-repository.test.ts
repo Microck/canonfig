@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -60,7 +60,6 @@ import {
   FollowerSynchronizationConfiguration,
 } from "../src/synchronization/follower-sync-config.ts";
 import { describeUnattendedRuns } from "../src/runtime/readiness.ts";
-import { loadScheduledInvocations } from "../src/runtime/scheduled-invocations.ts";
 
 const temporaryDirectories: Array<string> = [];
 
@@ -465,83 +464,6 @@ describe("StateRepository SQLite adapter", () => {
     }));
   });
 
-  it.each([false, true])("migrates released follower state without guessing pending ownership (pending=%s)", async (pending) => {
-    const path = databasePath();
-    const sourceIdentity = decode(SourceIdentity)({ keyId: "source", publicKeyFingerprint: "source" });
-    await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
-      repository.saveFollowerSynchronizationConfiguration({ sourceIdentity, configuration: followerConfigurationFixture(path) })));
-    const database = new DatabaseSync(path);
-    database.exec(`
-      DELETE FROM effect_sql_migrations WHERE migration_id = 4;
-      DROP TABLE enrollment_credential_retirements;
-      DROP TABLE scheduled_invocations;
-      DROP TABLE scheduled_invocation_imports;
-      UPDATE follower_sync_configuration SET configuration_json = json_set(
-        json_remove(configuration_json, '$.lifecycle'), '$.enrollmentPending', json('${pending}')
-      );
-    `);
-    database.close();
-    const loaded = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
-      Effect.result(repository.getFollowerSynchronizationConfiguration())));
-    if (pending) {
-      expect(loaded._tag).toBe("Failure");
-      if (loaded._tag === "Failure") expect(loaded.failure.message).toContain("move this Canonfig state directory aside");
-    } else {
-      expect(loaded).toMatchObject({ _tag: "Success", success: { lifecycle: { _tag: "Active" } } });
-    }
-  });
-
-  it("imports released receipts once across a failed post-commit archive", async () => {
-    const path = databasePath();
-    const legacy = join(dirname(path), "schedule-fires.json");
-    writeFileSync(legacy, JSON.stringify({ schema: "canonfig.schedule-fire/v1", fires: [
-      { startedAt: "2026-11-07T00:00:01Z", at: "2026-11-07T00:00:01Z", outcome: "started", generation: "installed" },
-      { startedAt: "2026-11-07T00:00:02Z", at: "2026-11-07T00:00:03Z", outcome: "failed", reason: "run lock held", generation: "installed" },
-      { startedAt: "2026-11-07T00:00:01Z", at: "2026-11-07T00:00:04Z", outcome: "completed", generation: "installed" },
-    ] }));
-    mkdirSync(`${legacy}.imported`);
-    const refused = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
-      Effect.result(loadScheduledInvocations(repository, path))));
-    expect(refused._tag).toBe("Failure");
-    const committed = new DatabaseSync(path, { readOnly: true });
-    expect(committed.prepare("SELECT count(*) AS count FROM scheduled_invocations").get()?.count).toBe(2);
-    expect(committed.prepare("SELECT count(*) AS count FROM scheduled_invocation_imports").get()?.count).toBe(1);
-    committed.close();
-    rmSync(`${legacy}.imported`, { recursive: true });
-    const imported = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
-      loadScheduledInvocations(repository, path)));
-    expect(imported.map((invocation) => invocation._tag)).toEqual(["Completed", "Failed"]);
-    expect(existsSync(legacy)).toBe(false);
-    expect(existsSync(`${legacy}.imported`)).toBe(true);
-    const repeated = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
-      loadScheduledInvocations(repository, path)));
-    expect(repeated).toEqual(imported);
-  });
-
-  it("rolls back a failed legacy import together with its acknowledgement", async () => {
-    const path = databasePath();
-    await runWithRepository(path, Effect.flatMap(StateRepository, (repository) => repository.databaseFile()));
-    const legacy = join(dirname(path), "schedule-fires.json");
-    writeFileSync(legacy, JSON.stringify({ schema: "canonfig.schedule-fire/v1", fires: [
-      { startedAt: "2026-11-07T00:00:01Z", at: "2026-11-07T00:00:02Z", outcome: "completed" },
-      { startedAt: "2026-11-07T00:00:03Z", at: "2026-11-07T00:00:04Z", outcome: "completed" },
-    ] }));
-    const database = new DatabaseSync(path);
-    database.exec(`CREATE TRIGGER fail_second_import BEFORE INSERT ON scheduled_invocations
-      WHEN NEW.id LIKE '%:1' BEGIN SELECT RAISE(FAIL, 'import interrupted'); END`);
-    const refused = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
-      Effect.result(loadScheduledInvocations(repository, path))));
-    expect(refused._tag).toBe("Failure");
-    expect(database.prepare("SELECT count(*) AS count FROM scheduled_invocations").get()?.count).toBe(0);
-    expect(database.prepare("SELECT count(*) AS count FROM scheduled_invocation_imports").get()?.count).toBe(0);
-    expect(existsSync(legacy)).toBe(true);
-    database.exec("DROP TRIGGER fail_second_import");
-    database.close();
-    const imported = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
-      loadScheduledInvocations(repository, path)));
-    expect(imported).toHaveLength(2);
-  });
-
   it("keeps concurrent invocations and reports the latest start, not the latest completion", async () => {
     const path = databasePath();
     const earlier = { id: "earlier", generation: "installed", startedAt: "2026-08-15T12:00:01Z" };
@@ -573,8 +495,42 @@ describe("StateRepository SQLite adapter", () => {
   });
 
 
+  it("refuses 6.1 migration history without changing its state", async () => {
+    const path = databasePath();
+    const database = new DatabaseSync(path);
+    database.exec(`
+      CREATE TABLE effect_sql_migrations (
+        migration_id integer PRIMARY KEY NOT NULL,
+        created_at datetime NOT NULL DEFAULT current_timestamp,
+        name VARCHAR(255) NOT NULL
+      );
+      INSERT INTO effect_sql_migrations (migration_id, name)
+        VALUES (1, 'state_format_6'), (2, 'archive_events');
+      CREATE TABLE retained_evidence (content TEXT NOT NULL);
+      INSERT INTO retained_evidence VALUES ('preserve this state');
+    `);
+    const schema = database.prepare("SELECT sql FROM sqlite_master ORDER BY name").all();
+    const history = database.prepare("SELECT * FROM effect_sql_migrations ORDER BY migration_id").all();
+    database.close();
+    const refused = await Effect.runPromise(Effect.flip(
+      Effect.flatMap(StateRepository, () => Effect.void).pipe(Effect.provide(stateRepositoryLayer(path))),
+    ));
+    expect(refused).toBeInstanceOf(EarlierStateFormatError);
+    const runtime = await Effect.runPromise(Effect.flip(
+      Effect.flatMap(StateRepository, () => Effect.void).pipe(Effect.provide(runtimeStateLayer(path))),
+    ));
+    expect(runtime).toBeInstanceOf(StateInitializationError);
+    expect(runtime.message).toContain("created by an earlier Canonfig version");
+    expect(runtime.message).toContain(`move ${path} aside`);
+    const retained = new DatabaseSync(path, { readOnly: true });
+    expect(retained.prepare("SELECT sql FROM sqlite_master ORDER BY name").all()).toEqual(schema);
+    expect(retained.prepare("SELECT * FROM effect_sql_migrations ORDER BY migration_id").all()).toEqual(history);
+    expect(retained.prepare("SELECT * FROM retained_evidence").all()).toEqual([{ content: "preserve this state" }]);
+    retained.close();
+  });
+
   it("refuses state an earlier release created and asks to reinitialize", async () => {
-    // A release before state format 6 recorded a different migration history.
+    // A different migration history is never applied to the current schema.
     const path = databasePath();
     const database = new DatabaseSync(path);
     database.exec(`

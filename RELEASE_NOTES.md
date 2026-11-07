@@ -1,9 +1,10 @@
 # Canonfig v6.1.1
 
-The settings page for Canonfig itself in `canonfig ui` is now called Version in
-the sidebar, page header, and machine menu. There are no other changes.
+Synchronization and enrollment now record explicit lifecycle transitions, and
+first-time followers can enroll again after a Source restart discards their
+pending enrollment.
 
-Machines running 6.1.0 can update with `canonfig self-update` or
-`npm install --global @microck/canonfig@6.1.1`.
-
-Canonfig 6.1.0 and 6.1.1 work together.
+This build requires fresh Canonfig state. It refuses earlier databases, including
+6.1 state, without changing their schema or data. Move
+`~/.canonfig/state.sqlite` aside and set the machine up again. There is no
+in-place state conversion.

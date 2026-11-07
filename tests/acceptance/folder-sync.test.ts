@@ -370,9 +370,7 @@ describe("folder sync across a Source and its followers", () => {
     const previous = JSON.parse(String(database.prepare("SELECT configuration_json FROM follower_sync_configuration").get()?.configuration_json));
     database.exec(`
       CREATE TRIGGER interrupt_confirmation BEFORE UPDATE ON follower_sync_configuration
-      WHEN json_extract(NEW.configuration_json, '$.enrollmentPending') IS NULL
-        AND (json_extract(NEW.configuration_json, '$.lifecycle._tag') IS NULL
-          OR json_extract(NEW.configuration_json, '$.lifecycle._tag') = 'RetiringPrevious')
+      WHEN json_extract(NEW.configuration_json, '$.lifecycle._tag') = 'RetiringPrevious'
       BEGIN SELECT RAISE(FAIL, 'interrupted local confirmation'); END;
     `);
     database.close();

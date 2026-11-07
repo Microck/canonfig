@@ -84,18 +84,9 @@ that identity once at start and retains it on completion/failure. Reinstallation
 and processes started before registration do not prove the current job fired.
 Historical records remain stored but do not count as current readiness.
 
-Migration `0004_enrollment_lifecycle` stores each unattended invocation in SQLite
-as `Running`, `Completed` or `Failed`, with an invocation id and its start time.
+Each unattended invocation is stored in SQLite as `Running`, `Completed` or
+`Failed`, with an invocation id and its start time.
 Only that running invocation can accept its terminal result. Overlapping starts
 cannot overwrite each other, and readiness uses the latest start, not whichever
 completion arrived last. A `Running` receipt without a terminal result remains
 unverified, whether its process is still running or was interrupted.
-
-Released `schedule-fires.json` files are imported once. Start times and installation
-generations group their events into invocations, including terminal events whose
-start was trimmed from the ten-event file. SQLite commits the imported invocations
-and import acknowledgement in one transaction, then archives the file as
-`schedule-fires.json.imported`. A retry after an archive failure cannot import it twice.
-Malformed files, missing start times, conflicting terminal events, or changed files
-after an acknowledged import are refused with recovery instructions. Move only
-those refused files aside and let the native scheduler run again.

@@ -74,17 +74,6 @@ describe("explicit text ownership transitions", () => {
     expect(Schema.is(TextWriteTransition)(transition)).toBe(false);
   });
 
-  it("refuses to prepare historical completed writes", async () => {
-    const value = fixture({ kind: "completed" }, encode("Keep local content.\n"));
-    const failure = await Effect.runPromise(prepareResourceAction(value.context).pipe(
-      Effect.flip, Effect.provide(value.layer),
-    ));
-    expect(failure).toMatchObject({ _tag: "InvalidExecutionPlanError", message: expect.stringContaining("cannot be replayed") });
-    expect(readFileSync(value.target, "utf8")).toBe("Keep local content.\n");
-    expect(() => checkTextWriteTransition({ kind: "completed" }, { kind: "absent" }, digest))
-      .toThrow(InvalidTextTransitionError);
-  });
-
   it("rejects the old optional-field action shape instead of guessing an intent", () => {
     expect(Schema.is(ActionDetailSchema)({ kind: "write-file", target: "~/notes.md", digest, retainedLocalDigest: digest })).toBe(false);
     expect(Schema.is(ActionDetailSchema)({ kind: "write-file", target: "~/notes.md", digest, textTransition: { kind: "whole-file" }, previousSourceDigest: digest })).toBe(false);

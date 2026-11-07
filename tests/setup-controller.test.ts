@@ -182,21 +182,6 @@ describe("setup controller decisions", () => {
     }
   });
 
-  it("refuses released setup journals with specific recovery instructions", async () => {
-    const home = mkdtempSync(join(tmpdir(), "canonfig-setup-legacy-"));
-    const path = join(home, "setup.json");
-    const original = JSON.stringify({ ...journal(), schema: "canonfig.setup/v1" });
-    writeFileSync(path, original);
-    try {
-      const failure = await Effect.runPromise(setupStatus(path).pipe(
-        Effect.flip, Effect.provide(linuxMachineStateLayer({ environment: [{ name: "HOME", value: home }] })),
-      ));
-      expect(failure.message).toContain("canonfig.setup/v1");
-      expect(failure.recovery).toContain("Do not remove state.sqlite");
-      expect(readFileSync(path, "utf8")).toBe(original);
-    } finally { rmSync(home, { recursive: true, force: true }); }
-  });
-
   it("verifies an interrupted scaffold from its existing files without writing again", async () => {
     const home = mkdtempSync(join(tmpdir(), "canonfig-setup-scaffold-"));
     const item: SetupPlanItem = {
@@ -744,7 +729,7 @@ if (!fs.existsSync(saved)) {
       }
     }, 60_000);
 
-    it.each(["changed", "missing", "oversized", "legacy"] as const)(
+    it.each(["changed", "missing", "oversized"] as const)(
       "rejects %s authoring inputs before executing an approved recipe",
       (change) => {
         const test = fixture();
@@ -755,25 +740,8 @@ if (!fs.existsSync(saved)) {
           if (change === "changed") test.writeRecipe("1.5.0");
           else if (change === "missing") rmSync(test.file);
           else if (change === "oversized") writeFileSync(test.file, " ".repeat(maxSetupDiscoveryFileBytes + 1));
-          else {
-            const legacy = test.setup(["approve", "--approver", "operator"]);
-            delete legacy.discoveryInputs;
-            writeFileSync(join(test.home, ".canonfig", "setup.json"), JSON.stringify(legacy));
-          }
           const rejected = test.invoke(["apply"]);
           expect(rejected.status, rejected.stderr || rejected.stdout).toBe(3);
-          if (change === "legacy") {
-            const refusedStatus = test.invoke(["status"]);
-            expect(refusedStatus.status).toBe(3);
-            expect(refusedStatus.stderr || refusedStatus.stdout).toContain("Do not remove state.sqlite");
-            expect(existsSync(join(test.home, "packages"))).toBe(false);
-            // An unsupported record is never rewritten as if its items were pending.
-            rmSync(join(test.home, ".canonfig", "setup.json"));
-            test.writeRecipe("1.5.0");
-            const replanned = test.plan();
-            expect(replanned.approvals).toEqual([]);
-            return;
-          }
           const status = test.setup(["status"]);
           expect(status.approved).toBe(false);
           expect(status.items).toEqual(before.items);

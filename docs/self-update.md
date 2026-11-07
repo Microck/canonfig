@@ -5,6 +5,11 @@ major.minor line**. A 6.1.x installation never moves to 6.2 or 7.x on its
 own. Source/follower major.minor compatibility still requires a coordinated fleet
 rollout for those releases. This is independent of skill and configuration sync.
 
+This build uses state format 7 and does not convert earlier Canonfig databases.
+If startup says the state came from an earlier version, move
+`~/.canonfig/state.sqlite` aside and set the machine up again. Finish or recover
+unfinished work with the build that created it before replacing that build.
+
 ## Supported installations and first enable
 
 Use a user-owned global npm prefix under your own home, with Node.js 24+ and the
@@ -118,8 +123,7 @@ Do not copy this state between machines or blindly clear a gate/lease.
 Version 2 transaction records name the last confirmed step:
 `Prepared`, `OldMoved`, `Installed`, or `Committed`. A rename can precede its
 step record during a crash, so still inspect the actual package trees before
-manual recovery. Released version 1 journals remain recovery blockers and use
-the same manual inspection below; they are never guessed into a completed state.
+manual recovery. Any pending journal blocks another update until inspected.
 Persisted progress carries that operation's id too, so another updater cannot
 replace its progress while the gate is held.
 

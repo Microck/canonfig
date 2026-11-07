@@ -67,12 +67,7 @@ export function assertNoUnfinishedRun(state: string): void {
   regular(state);
   const db=new DatabaseSync(state,{readOnly:true});
   try {
-    // The updater runs before repository migration. Read the released schema
-    // boundary explicitly so 6.1 unfinished runs still block an upgrade.
-    const hasPhase=db.prepare("PRAGMA table_info(synchronization_runs)").all().some(column=>column.name==="phase");
-    const row=db.prepare(hasPhase
-      ? "SELECT id FROM synchronization_runs WHERE phase != 'Complete' LIMIT 1"
-      : "SELECT id FROM synchronization_runs WHERE status IN ('applying', 'Interrupted') LIMIT 1").get();
+    const row=db.prepare("SELECT id FROM synchronization_runs WHERE phase != 'Complete' LIMIT 1").get();
     if(row)throw new Error("An unfinished sync exists. Finish or recover it with the current build before updating.");
   } finally {db.close();}
 }

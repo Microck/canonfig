@@ -191,12 +191,12 @@ describe("self-update policy and package activation",()=>{
  it("refuses unfinished and unreadable synchronization state without installing",async()=>{
   const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
   const state=join(f.home,".canonfig","state.sqlite");mkdirSync(dirname(state),{recursive:true});
-  const db=new DatabaseSync(state);db.exec("CREATE TABLE synchronization_runs (id TEXT,status TEXT); INSERT INTO synchronization_runs VALUES ('old','Interrupted')");db.close();
+  const db=new DatabaseSync(state);db.exec("CREATE TABLE synchronization_runs (id TEXT,phase TEXT); INSERT INTO synchronization_runs VALUES ('open','Interrupted')");db.close();
   await expect(update(f.root,true,f.runner,undefined,f.home)).rejects.toThrow("unfinished");
   expect(f.calls.some(args=>args[1]==="install")).toBe(false);
   rmSync(state);writeFileSync(state,"not sqlite");expect(()=>assertNoUnfinishedRun(state)).toThrow();
  });
- it.each(["Preparing","Applying","Interrupted","Finalizing","Complete"])("reads migrated synchronization phase %s before updating",(phase)=>{
+ it.each(["Preparing","Applying","Interrupted","Finalizing","Complete"])("reads canonical synchronization phase %s before updating",(phase)=>{
   const f=fixture();const state=join(f.home,"state.sqlite");
   const db=new DatabaseSync(state);
   try {

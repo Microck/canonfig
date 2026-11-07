@@ -63,11 +63,9 @@ Invitation states are `Available`, `Prepared`, `Consumed` or `Expired`. Re-prepa
 compares the current reservation in the same SQL transaction that retires its
 credential and installs its replacement. Expiry is evaluated at operation time.
 
-Migration `0004_enrollment_lifecycle` upgrades released active configurations in
-place. Released pending configurations cannot identify a superseded enrollment,
-so they are refused with recovery instructions: revoke the identity on its Source,
-move the Canonfig state directory aside, and enroll with a fresh invitation.
-Retain the credential store until the old identity is revoked.
+State format 7 stores enrollment lifecycles directly. State written by an
+earlier Canonfig version is refused at open without conversion. Move
+`~/.canonfig/state.sqlite` aside and set the machine up again.
 
 A private pipe does not authenticate its producer and does not grant approval to
 enroll or replace an identity. Supply the value only after approving the Source,
