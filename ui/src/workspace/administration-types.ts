@@ -1,4 +1,5 @@
 import type { Schema } from "effect";
+import type { UpdateLifecycle } from "./live/self-update";
 import type { GuiAgentPolicy, GuiSourceServiceStatus, GuiSelfUpdateCheck, GuiSelfUpdateStatus, GuiSelfUpdateProgress } from "../../../src/gui/contract/administration";
 import type { GuiRequestError } from "../gui-client";
 
@@ -70,6 +71,8 @@ export interface AdministrationSlice {
     run: () => void;
   };
   version: AdministrationResource<typeof GuiSelfUpdateStatus.Type> & {
+    lifecycle: UpdateLifecycle;
+    resume: () => void;
     current: string;
     npmCli: string | null;
     latest: string | null;

@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Schema } from "effect";
-import { GuiOperationTicket } from "../../../../src/gui/contract/operations";
 import {
   GuiAgentHarness, GuiAgentHarnessRead, GuiAgentPolicy, GuiAgentPolicyRead, GuiDoctorResult, GuiInstallerCheck, GuiInstallers,
-  GuiSelfUpdateCheck, GuiSelfUpdateProgress, GuiSelfUpdateStatus, GuiSourceServiceChange, GuiSourceServiceRemoval, GuiSourceServiceReport,
+  GuiSourceServiceChange, GuiSourceServiceRemoval, GuiSourceServiceReport,
 } from "../../../../src/gui/contract/administration";
 import type { GuiSession } from "../../../../src/gui/contract/session";
 import { GuiRequestError, type WorkspaceBackend } from "../../gui-client";
 import type { AdministrationSlice, SavedPolicy } from "../administration-types";
+import { useLiveSelfUpdate, type InstalledUpdate } from "./self-update";
 
 function requestError(cause: unknown): GuiRequestError {
   return cause instanceof GuiRequestError ? cause : new GuiRequestError({
@@ -57,7 +56,7 @@ function useAdministrationResource<T>(load: ((signal: AbortSignal) => Promise<T>
   return { data, setData, loading: enabled && (!attempted.current || loading), busy, error, setError, run, reload };
 }
 
-export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSession, paths: readonly string[], onInstalled: (version: string) => void): AdministrationSlice {
+export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSession, paths: readonly string[], onInstalled: (result: InstalledUpdate) => void): AdministrationSlice {
   const configured = session.role !== "unconfigured";
   const sourceLoad = useCallback((signal: AbortSignal) => backend.request("/api/source-service", GuiSourceServiceReport, signal), [backend]);
   const service = useAdministrationResource(session.role === "source" ? sourceLoad : null, paths.includes("/api/source-service"));
@@ -68,14 +67,10 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
   const installersLoad = useCallback((signal: AbortSignal) => backend.request("/api/installers", GuiInstallers, signal), [backend]);
   const installers = useAdministrationResource(configured ? installersLoad : null, paths.includes("/api/installers"));
   const doctor = useAdministrationResource<typeof GuiDoctorResult.Type>(null);
-  const versionLoad = useCallback((signal: AbortSignal) => backend.request("/api/self-update", GuiSelfUpdateStatus, signal), [backend]);
-  const version = useAdministrationResource(configured ? versionLoad : null, paths.includes("/api/self-update"));
+  const version = useLiveSelfUpdate(backend, configured && paths.includes("/api/self-update"), onInstalled);
   const [serviceAction, setServiceAction] = useState<"install" | "remove" | null>(null);
   const [checkingInstaller, setCheckingInstaller] = useState<string | null>(null);
   const [checkedInstaller, setCheckedInstaller] = useState<string | null>(null);
-  const [checkedVersion, setCheckedVersion] = useState<typeof GuiSelfUpdateCheck.Type | null>(null);
-  const [updateAction, setUpdateAction] = useState<"check" | "enable" | "disable" | "apply" | null>(null);
-  const [updateProgress, setUpdateProgress] = useState<typeof GuiSelfUpdateProgress.Type | null>(null);
   const [savedMessage, setSavedMessage] = useState("");
 
   const changeService = (action: "install" | "remove", hostname?: "127.0.0.1" | "::1", port?: number) => {
@@ -146,45 +141,6 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
     : null;
   const npmCli = typeof updateSettings?.npmCli === "string" ? updateSettings.npmCli : null;
 
-  const changeVersion = (action: "check" | "enable" | "disable" | "apply", body: unknown = {}) => {
-    if (version.busy || checkedVersion?.status === "updated") return;
-    void version.run(async (signal) => {
-      setUpdateAction(action);
-      setUpdateProgress(null);
-      setCheckedVersion(null);
-      try {
-        const path = `/api/self-update/${action}`;
-        if (action === "apply") {
-          const ticket = await backend.request(path, GuiOperationTicket, signal, { method: "POST", body });
-          let operation = await backend.operation(ticket.id, signal);
-          while (true) {
-            signal.throwIfAborted();
-            if (operation.journal !== null) {
-              const progress = Schema.decodeUnknownSync(GuiSelfUpdateProgress)(operation.journal);
-              setUpdateProgress((previous) => previous?.phase === progress.phase && previous.candidate === progress.candidate ? previous : progress);
-            }
-            if (operation.state !== "running") break;
-            await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
-            signal.throwIfAborted();
-            operation = await backend.operation(ticket.id, signal);
-          }
-          if (operation.state === "failed") throw operation.failure ? new GuiRequestError(operation.failure) : new Error("The operation failed without a diagnostic.");
-          const checked = Schema.decodeUnknownSync(GuiSelfUpdateCheck)(operation.result);
-          setCheckedVersion(checked);
-          if (checked.status === "updated") onInstalled(checked.candidate);
-          // The server closes after an updated result. Do not reload status here.
-        } else if (action === "check") {
-          const checked = await backend.request(path, GuiSelfUpdateCheck, signal, { method: "POST", body });
-          if (!signal.aborted) setCheckedVersion(checked);
-        } else {
-          const status = await backend.request(path, GuiSelfUpdateStatus, signal, { method: "POST", body });
-          if (!signal.aborted) version.setData(status);
-        }
-      } finally {
-        if (!signal.aborted) setUpdateAction(null);
-      }
-    });
-  };
 
   return {
     service: {
@@ -225,14 +181,9 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
       reload: runDoctor, status: doctor.data?.report.status ?? null, run: runDoctor,
     },
     version: {
-      data: version.data, loading: version.loading, busy: version.busy, error: version.error, reload: version.reload,
-      current: session.version, npmCli, latest: checkedVersion?.candidate ?? null, checked: checkedVersion,
-      checking: updateAction === "check", unfinished: version.data?.pending ?? false,
-      progress: updateProgress,
-      check: () => changeVersion("check"),
-      enable: (npmCli, confirmIdle) => changeVersion("enable", { npmCli, confirmIdle }),
-      disable: () => changeVersion("disable"),
-      apply: () => changeVersion("apply"),
+      ...version,
+      current: session.version, npmCli, latest: version.checked?.candidate ?? null,
+      unfinished: version.data?.pending ?? false,
     },
     setup: null,
   };
