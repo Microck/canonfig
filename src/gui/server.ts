@@ -91,6 +91,18 @@ const sessionCookie = (request: IncomingMessage, cookieName: string): string | u
   return matches.length === 1 ? matches[0]?.slice(cookieName.length + 1) : undefined;
 };
 
+/**
+ * Whether a request's Host names the same authority as `origin`, compared the way URLs compare them: host case
+ * and the scheme's default port do not matter (`ATLAS.tailnet.ts.net:443` matches `https://atlas.tailnet.ts.net`).
+ * A Host carrying anything beyond host and port, such as `x@atlas.tailnet.ts.net`, never matches.
+ */
+const sameAuthority = (origin: string, host: string | undefined): boolean => {
+  if (host === undefined || /[@/?#\\]/u.test(host)) return false;
+  const expected = new URL(origin);
+  const candidate = `${expected.protocol}//${host}`;
+  return URL.canParse(candidate) && new URL(candidate).host === expected.host;
+};
+
 /** No shell interpolation: the URL is passed as one argument on every platform. */
 const openBrowser = (url: string, io: CliIo): void => {
   const executable = process.platform === "darwin" ? "open"
@@ -179,7 +191,7 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
     response.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
     // Host picks the origin (a proxy such as tailscale serve passes the public Host through). Anything
     // else, a rebound DNS name included, is refused, as is a request whose Origin names another site.
-    const origin = origins.find((candidate) => new URL(candidate).host === request.headers.host);
+    const origin = origins.find((candidate) => sameAuthority(candidate, request.headers.host));
     if (origin === undefined || (request.headers.origin !== undefined && request.headers.origin !== origin)) {
       json(response, 403, failureBody("authentication-or-revocation", "This request must come from a Canonfig browser origin."));
       return;

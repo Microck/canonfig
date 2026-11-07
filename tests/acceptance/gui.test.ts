@@ -208,7 +208,9 @@ describe("canonfig ui command", () => {
     const proxied = { Host: "atlas.tailnet.ts.net" };
     expect((await send(`/${token}`, { ...proxied, Origin: "http://atlas.tailnet.ts.net" })).status).toBe(403);
     expect((await send(`/${token}`, { Host: "other.tailnet.ts.net" })).status).toBe(403);
-    const exchange = await send(`/${token}`, proxied);
+    expect((await send(`/${token}`, { Host: "evil.example@atlas.tailnet.ts.net" })).status).toBe(403);
+    // Host case and the scheme's default port do not matter, as for any URL authority.
+    const exchange = await send(`/${token}`, { Host: "ATLAS.tailnet.ts.net:443" });
     expect(exchange.status).toBe(303);
     const setCookie = exchange.setCookie?.[0] ?? "";
     expect(setCookie).toContain("Secure");
