@@ -62,8 +62,10 @@ rollback.
   computed from that state, never maintained separately.
 - An incomplete rollback keeps all of the run's journals and preimages,
   including already-restored actions that recovery must inspect. Cleanup
-  removes them only after recovery completes, or explicit abandonment.
-  Cleanup must not remove another action's or run's files.
+  removes that per-run material only after recovery completes, or explicit
+  abandonment. Every takeover reservation and original takeover snapshot also
+  stays intact while recovery can replay its actions without taking over those
+  surfaces again. Cleanup must not remove another action's or run's files.
 
 Recovery covers process interruption. Flush guarantees remain those of the
 platform adapter and filesystem; this does not promise identical power-loss

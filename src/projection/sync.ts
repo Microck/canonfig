@@ -123,10 +123,10 @@ export const discardRunArtifacts = (run: RunIdType) =>
 
 /**
  * Finish a run the shared engine completed or recovered. A failed run forgets
- * its takeovers only after rollback completed. Incomplete rollback keeps the
- * original snapshot and ownership available for restore. A run stopped early
- * keeps takeovers only for surfaces it applied. An interrupted run keeps
- * everything for `canonfig recover`.
+ * its takeovers only after rollback completed. Incomplete rollback keeps every
+ * takeover and its original snapshot, including restored surfaces recovery can
+ * replay. A run stopped early keeps takeovers only for surfaces it applied.
+ * An interrupted run keeps everything for `canonfig recover`.
  */
 export const finishProjectionRun = (
   statePath: string,
@@ -136,21 +136,11 @@ export const finishProjectionRun = (
   revision: PlanningLocalRevision,
 ) =>
   Effect.gen(function*() {
-    if (outcome.outcome === "Interrupted") return { snapshotDeleted: false, pruned: [] };
-    const repository = yield* StateRepository;
-    const backups = backupsOf(statePath);
-    if (outcome.outcome === "Failed" && outcome.rollbackIncomplete) {
-      if (outcome.failedRollbackResources !== undefined) {
-        const retained = new Set(outcome.failedRollbackResources);
-        const restored = (yield* repository.loadHarnessTakeovers()).filter((takeover) =>
-          takeover.run === run && !retained.has(surfaceResourceId(takeover.harness, takeover.surface.split("#")[0]!))
-        );
-        yield* repository.releaseTakeovers(restored);
-        const snapshot = yield* snapshotOfRun(backups, run);
-        if (snapshot !== undefined) yield* dropSnapshotEntries(backups, snapshot, restored);
-      }
+    if (outcome.outcome === "Interrupted" || outcome.outcome === "Failed" && outcome.rollbackIncomplete === true) {
       return { snapshotDeleted: false, pruned: [] };
     }
+    const repository = yield* StateRepository;
+    const backups = backupsOf(statePath);
     if (outcome.outcome === "Failed") {
       yield* repository.removeRunTakeovers(run);
       const snapshot = yield* snapshotOfRun(backups, run);

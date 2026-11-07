@@ -602,6 +602,48 @@ describe("local projection", () => {
     expect(readFileSync(instructions, "utf8")).toBe("original instructions\n");
   }, 60_000);
 
+  it("keeps a restored surface's original takeover backup when another rollback fails and recovery replays it", async () => {
+    const value = fixture(["claude-code", "codex"], {
+      surfaces: { "claude-code": ["instructions"], codex: ["instructions"] },
+      mcp: {}, hooks: [],
+    });
+    const restoredTarget = join(value.home, ".claude", "CLAUDE.md");
+    const blockedTarget = join(value.home, ".codex", "AGENTS.md");
+    write(restoredTarget, "Original Claude instructions before Canonfig.\n");
+    write(blockedTarget, "Original Codex instructions before Canonfig.\n");
+    let blockedWrites = 0;
+    const partialRollback = Layer.effect(MachineState, Effect.map(MachineState, (service) => ({
+      ...service,
+      atomicWrite: (input: Parameters<typeof service.atomicWrite>[0]) => {
+        if (input.path.absolute !== blockedTarget) return service.atomicWrite(input);
+        blockedWrites += 1;
+        const failure = new MachineFilesystemError({
+          operation: blockedWrites === 1 ? "apply after publication" : "restore instructions",
+          path: blockedTarget, message: "fixture target unavailable until recovery",
+        });
+        return blockedWrites === 1
+          ? service.atomicWrite(input).pipe(Effect.andThen(Effect.fail(failure)))
+          : Effect.fail(failure);
+      },
+    }))).pipe(Layer.provide(machineLayer(value)));
+    const failed = await Effect.runPromise(synchronizeLocal(value.statePath, "apply", {
+      noBackup: false, environment: environmentOf(value),
+    }).pipe(Effect.provide(layer(value, partialRollback))));
+    expect(failed.outcome).toMatchObject({ outcome: "Failed", rollbackIncomplete: true });
+    expect(readFileSync(restoredTarget, "utf8")).toBe("Original Claude instructions before Canonfig.\n");
+    expect(readFileSync(blockedTarget, "utf8")).toContain("Prefer small diffs.");
+    const snapshot = snapshots(value)[0];
+    if (snapshot === undefined) throw new Error("first-takeover snapshot is missing");
+
+    const recovered = await Effect.runPromise(recoverLocal(value.statePath).pipe(Effect.provide(layer(value))));
+    expect(recovered.outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(restoredTarget, "utf8")).toContain("Prefer small diffs.");
+    expect(readFileSync(blockedTarget, "utf8")).toContain("Prefer small diffs.");
+    expect((await restore(value, snapshot)).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(restoredTarget, "utf8")).toBe("Original Claude instructions before Canonfig.\n");
+    expect(readFileSync(blockedTarget, "utf8")).toBe("Original Codex instructions before Canonfig.\n");
+  }, 60_000);
+
   it("recovers an interrupted run through recover", async () => {
     const value = fixture(["claude-code"]);
     const blocked = join(value.home, ".claude", "CLAUDE.md");
