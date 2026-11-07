@@ -75,6 +75,7 @@ export class StateRepository extends Context.Service<StateRepository, {
   ) => Effect.Effect<boolean, StateRepositoryError>;
   readonly saveEnrollmentSource: (
     source: EnrollmentSourceRecord,
+    expected?: EnrollmentSourceRecord,
   ) => Effect.Effect<void, StateRepositoryError>;
   readonly getEnrollmentSource: (
   ) => Effect.Effect<EnrollmentSourceRecord | undefined, StateRepositoryError>;

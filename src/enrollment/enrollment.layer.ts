@@ -537,7 +537,7 @@ const makeEnrollment = Effect.gen(function*() {
       yield* removeSourceSecrets(sourceMaterial(migrated));
       return { material: sourceMaterial(current), ...secrets };
     }
-    yield* repository.saveEnrollmentSource(migrated).pipe(
+    yield* repository.saveEnrollmentSource(migrated, record).pipe(
       Effect.mapError(repositoryError("migrate source credentials")),
       Effect.tapError(() => removeSourceSecrets(sourceMaterial(migrated))),
     );

@@ -205,6 +205,20 @@ const malformedRequest = (
   });
 
 describe("loopback HTTPS enrollment", () => {
+  it("allows concurrent Source initialization to publish only one immutable identity", async () => {
+    const setup = fixture();
+    const attempts = await runSource(setup, Effect.flatMap(Enrollment, (enrollment) =>
+      Effect.all([
+        Effect.result(enrollment.initializeSource()),
+        Effect.result(enrollment.initializeSource()),
+      ], { concurrency: 2 })));
+    const winners = attempts.flatMap((attempt) => attempt._tag === "Success" ? [attempt.success] : []);
+    expect(winners.length).toBeGreaterThanOrEqual(1);
+    const stored = await runSource(setup, Effect.flatMap(Enrollment, (enrollment) => enrollment.source()));
+    expect(winners.every((winner) => winner.source.publicKeyFingerprint === stored.source.publicKeyFingerprint)).toBe(true);
+    expect(readdirSync(join(setup.root, "source", "credentials"))).toHaveLength(3);
+  });
+
   it("validates runtime server hosts independently of typed callers", async () => {
     const setup = fixture();
     const valid = await runSource(

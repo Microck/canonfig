@@ -27,6 +27,11 @@ is contacted and no state layer is constructed for malformed invitation input.
 The command logger captures the original `--stdin` invocation before input is
 read; the resolved value is never assigned to `process.argv`.
 
+Source initialization is create-only under the state database write lock. A
+concurrent initializer cannot replace an initialized signing or TLS identity.
+Credential relocation compares the existing identity and references in that same
+transaction; a stale operation fails and removes only the new items it created.
+
 A private pipe does not authenticate its producer and does not grant approval to
 enroll or replace an identity. Supply the value only after approving the Source,
 Follower Identity, selected profile, and any separately granted secret authority.

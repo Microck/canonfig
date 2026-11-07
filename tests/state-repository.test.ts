@@ -322,6 +322,26 @@ describe("StateRepository SQLite adapter", () => {
     expect(rows(sourcePath)).toEqual({ source: 1, follower: 0, followers: 0, signingKey: "own" });
   });
 
+  it("refuses replacing an initialized Source identity", async () => {
+    const path = databasePath();
+    const first = {
+      identity: decode(SourceIdentity)({ keyId: "first", publicKeyFingerprint: "first" }),
+      signingKeyReference: decode(CredentialReference)("secure-store://first/signing"),
+      tlsKeyReference: decode(CredentialReference)("secure-store://first/tls"),
+      tlsCertificateReference: decode(CredentialReference)("secure-store://first/cert"),
+      tlsFingerprint: decode(CertificateFingerprint)("first-tls"),
+    };
+    const second = { ...first, identity: decode(SourceIdentity)({ keyId: "second", publicKeyFingerprint: "second" }) };
+    const result = await runWithRepository(path, Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.saveEnrollmentSource(first);
+      const refused = yield* Effect.result(repository.saveEnrollmentSource(second));
+      return { refused, stored: yield* repository.getEnrollmentSource() };
+    }));
+    expect(result.refused._tag).toBe("Failure");
+    expect(result.stored).toEqual(first);
+  });
+
   it("refuses state an earlier release created and asks to reinitialize", async () => {
     // A release before state format 6 recorded a different migration history.
     const path = databasePath();

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { open, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { SqliteClient, SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { Effect, Layer, Schema } from "effect";
@@ -558,13 +559,33 @@ const makeRepository = Effect.gen(function*() {
   });
 
   const saveEnrollmentSource = Effect.fn("StateRepository.saveEnrollmentSource")(
-    function*(source: EnrollmentSourceRecord): Effect.fn.Return<void, StateRepositoryError> {
+    function*(source: EnrollmentSourceRecord, expected?: EnrollmentSourceRecord): Effect.fn.Return<void, StateRepositoryError> {
       const transaction = Effect.gen(function*() {
         // One role per machine, checked under the write lock: the Source
         // identity is refused while a follower configuration, pending or
         // complete, exists.
         const follower = yield* getFollowerSynchronizationConfiguration();
         if (follower !== undefined) return yield* followerRoleConflict(follower, "be a Source");
+        const stored = yield* getEnrollmentSource();
+        const lifecycle: { readonly _tag: "Absent" } | { readonly _tag: "Initialized"; readonly source: EnrollmentSourceRecord } =
+          stored === undefined ? { _tag: "Absent" } : { _tag: "Initialized", source: stored };
+        // Initialization is create-only. Relocation compares the entire old
+        // record under the write lock and cannot change either pinned identity.
+        if (
+          (lifecycle._tag === "Initialized" && expected === undefined)
+          || (expected !== undefined && (
+            lifecycle._tag !== "Initialized"
+            || !isDeepStrictEqual(lifecycle.source, expected)
+            || source.identity.keyId !== expected.identity.keyId
+            || source.identity.publicKeyFingerprint !== expected.identity.publicKeyFingerprint
+            || source.tlsFingerprint !== expected.tlsFingerprint
+          ))
+        ) {
+          return yield* new EnrollmentStateConflictError({
+            reason: "credential-conflict",
+            message: "the Source identity or credential references changed; retry the operation without replacing the initialized identity",
+          });
+        }
         yield* sql`
           INSERT INTO source_identity (singleton, key_id, public_key_fingerprint)
           VALUES (
