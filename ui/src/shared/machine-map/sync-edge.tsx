@@ -158,9 +158,12 @@ export const SyncEdge = memo(function SyncEdge({ sourceX, sourceY, targetX, targ
 
       {link.broken && (
         <EdgeLabelRenderer>
+          {/* The loading skeleton draws no edges, so this badge would float alone as a dot: skullet-ignore keeps
+              skullet from drawing it, and cf-broken-link hides its own border while the page loads (machine-map.css). */}
           <span
+            skullet-ignore=""
             aria-hidden
-            className="pointer-events-none absolute grid size-5 place-items-center rounded-full border border-border bg-panel text-bad/80"
+            className="cf-broken-link pointer-events-none absolute grid size-5 place-items-center rounded-full border border-border bg-panel text-bad/80"
             style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
           >
             <LinkBreak className="size-3" />

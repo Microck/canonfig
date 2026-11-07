@@ -45,6 +45,11 @@
   pointer-events: stroke;
 }
 
+/* The loading skeleton (aria-busy) draws no edges, so a broken-link badge would float alone as a ring. */
+[aria-busy="true"] .cf-map .cf-broken-link {
+  visibility: hidden;
+}
+
 /* React Flow is MIT and asks for its attribution; keep it, quietly. */
 .cf-map .react-flow__attribution {
   margin: 12px;

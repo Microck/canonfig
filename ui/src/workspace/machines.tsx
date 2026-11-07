@@ -175,7 +175,7 @@ function SourceMachinesView() {
           <ListBullets bold={!map} className="size-3.5" /> List
         </ToolbarTab>
       </Toolbar>
-      <Body detail={detail}>
+      <Body page={ws.machinesMode} detail={detail}>
         {map ? (
           <div data-tour="machine-map" className="flex h-full flex-col">
             <MachineMap
@@ -328,7 +328,7 @@ function FollowerMachinesView() {
           <ListBullets bold={!map} className="size-3.5" /> List
         </ToolbarTab>
       </Toolbar>
-      <Body detail={ws.enrollment && ws.focus ? <EnrollmentDetail source={ws.focus === SOURCE_ID} onClose={() => ws.navigate(workspaceHref("follower", "machines", { machinesMode: ws.machinesMode }))} onCustomize={() => {
+      <Body page={ws.machinesMode} detail={ws.enrollment && ws.focus ? <EnrollmentDetail source={ws.focus === SOURCE_ID} onClose={() => ws.navigate(workspaceHref("follower", "machines", { machinesMode: ws.machinesMode }))} onCustomize={() => {
         setCustomizeId(ws.focus);
         ws.navigate(workspaceHref("follower", "machines", { focus: ws.focus }));
       }} /> : undefined}>

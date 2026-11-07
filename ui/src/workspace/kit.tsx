@@ -961,15 +961,17 @@ function Unwalked({ content }: { content: ReactNode }) {
  * fetches it again, the column and the detail panel's body show a skeleton measured from the real content,
  * so nothing moves when it is revealed. Skullet mounts the content afresh on reveal, so local state inside
  * `children` starts over; the pages that pass `reloading` (Sync, Follower secrets) keep none worth keeping.
+ * A page that swaps between views inside one Body (Machines' Map and List) passes `page`: each view is its own
+ * load, and a fresh Skeleton per view measures that view instead of keeping the previous view's shape.
  */
-export function Body({ children, detail, reloading = false }: { children: ReactNode; detail?: ReactNode; reloading?: boolean }) {
+export function Body({ children, detail, reloading = false, page }: { children: ReactNode; detail?: ReactNode; reloading?: boolean; page?: string }) {
   const ws = useScreenContext();
   const loading = ws.pageLoading || reloading;
   return (
     <PageLoading.Provider value={loading}>
       <div className="flex min-h-0 flex-1">
         <div className="@container flex min-w-0 flex-1 flex-col overflow-y-auto *:shrink-0">
-          <Skeleton loading={loading} label="Loading page" className="skeleton-column">
+          <Skeleton key={page} loading={loading} label="Loading page" className="skeleton-column">
             <Unwalked content={children} />
           </Skeleton>
         </div>
