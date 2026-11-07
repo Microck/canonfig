@@ -22,6 +22,7 @@ import { AgentResolution } from "../agent/agent-resolution.service.ts";
 import { EnrollmentLive } from "../enrollment/enrollment.layer.ts";
 import { Enrollment } from "../enrollment/enrollment.service.ts";
 import {
+  authenticateFollower,
   cancelFollowerEnrollment,
   enrollFollower,
   finalizeFollowerEnrollment,
@@ -77,13 +78,14 @@ import { MachineRoleConflictError } from "../state/state-repository.errors.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { SynchronizationLive } from "../synchronization/synchronization.layer.ts";
 import { Synchronization } from "../synchronization/synchronization.service.ts";
-import { runLockHolder } from "../synchronization/run-lock.ts";
+import { runLockHolder, withRunLock } from "../synchronization/run-lock.ts";
 import {
   followerConvergence,
   openRunReport,
 } from "../synchronization/run-status.ts";
 import {
   defaultScheduledInvocation,
+  FollowerConfigurationFields,
 } from "../synchronization/follower-sync-config.ts";
 import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
@@ -211,6 +213,8 @@ const mapFailure = <Success, Failure extends TaggedRuntimeError, Requirements>(
   effect: Effect.Effect<Success, Failure, Requirements>,
 ): Effect.Effect<Success, CliCommandFailure, Requirements> =>
   effect.pipe(Effect.mapError(commandFailure));
+const rollbackRecoveryDetail = "follower replacement rollback is pending; both credentials are retained. Bring the previous Source online, then retry the same `canonfig follower enroll --stdin --name <name> --replace` command with its invitation";
+
 
 /**
  * The follower's own decision about the native synchronization job, written to
@@ -296,7 +300,7 @@ const unscheduledDetail = (
   configuration: FollowerSynchronizationConfiguration | undefined,
 ): string => {
   if (configuration === undefined) return "no follower is enrolled; enroll and apply a profile before selecting a schedule";
-  if (configuration.enrollmentPending === true) return "follower enrollment is pending; finish or resume enrollment before selecting a schedule";
+  if (configuration.lifecycle._tag !== "Active") return "follower enrollment is pending; finish or resume enrollment before selecting a schedule";
   if (configuration.scheduleOverride?.kind === "disabled") {
     return "scheduled synchronization is off on this follower (`canonfig schedule remove`); run `canonfig schedule set` to turn it on";
   }
@@ -317,7 +321,7 @@ const persistScheduleOverride = (
           message: "canonfig schedule set needs an enrolled follower; enroll, then apply the selected profile first",
         }));
       if (configuration === undefined) return unavailable();
-      if (configuration.enrollmentPending === true && scheduleOverride?.kind !== "disabled") {
+      if (configuration.lifecycle._tag !== "Active" && scheduleOverride?.kind !== "disabled") {
         return Effect.fail(new CliCommandFailure({
           category: "usage-or-configuration",
           message: "follower enrollment is pending; finish or resume enrollment before selecting a schedule",
@@ -327,6 +331,7 @@ const persistScheduleOverride = (
         Effect.flatMap((state) =>
           state.sourceIdentity === undefined ? unavailable() : mapFailure(
             repository.saveFollowerSynchronizationConfiguration({
+              expectedConfiguration: configuration,
               sourceIdentity: state.sourceIdentity,
               configuration: {
                 ...configuration,
@@ -347,7 +352,7 @@ const persistScheduleOverride = (
  * against a built-in constant or against a different notion of drift.
  */
 const finalizedScheduleInput = (configuration: FollowerSynchronizationConfiguration | undefined): ResolvedScheduleInput | undefined =>
-  configuration?.enrollmentPending === true ? undefined
+  (configuration !== undefined && configuration.lifecycle._tag !== "Active") ? undefined
     : desiredScheduleInput(configuration?.scheduleOverride, configuration?.scheduleDefault);
 
 const effectiveScheduleInput = (
@@ -690,6 +695,98 @@ const followerCommandsLayer = (
     const agentResolution = yield* AgentResolution;
     const tunnel = yield* Tunnel;
     const policies = policyFile(policyPath);
+    const withEnrollmentLock = <A>(operation: Effect.Effect<A, CliCommandFailure>) =>
+      withRunLock(statePath, "change follower enrollment", operation).pipe(
+        Effect.mapError((error) => error instanceof CliCommandFailure ? error : commandFailure(error)),
+      );
+    const recoverStagedCredentials = Effect.gen(function*() {
+      yield* mapFailure(repository.recoverEnrollmentCredentialStaging());
+      for (const retiring of yield* mapFailure(repository.listEnrollmentCredentialRetirements())) {
+        yield* mapFailure(machine.removeCredential(retiring.credentialReference));
+        yield* mapFailure(repository.completeEnrollmentCredentialRetirement(retiring.credentialReference));
+      }
+    });
+    const finishEnrollment = Effect.fn("Follower.finishEnrollment")(function*(
+      initial: FollowerSynchronizationConfiguration,
+    ) {
+      if (initial.lifecycle._tag === "Unenrolling") return yield* new CliCommandFailure({
+        category: "human-action-required",
+        message: "follower unenrollment has started; run `canonfig follower unenroll` to finish it before enrolling again",
+      });
+      const state = yield* mapFailure(repository.loadState(initial.follower.id));
+      if (state.sourceIdentity === undefined) return yield* new CliCommandFailure({
+        category: "usage-or-configuration", message: "follower source identity is not configured",
+      });
+      const sourceIdentity = state.sourceIdentity;
+      const save = (previous: FollowerSynchronizationConfiguration, lifecycle: FollowerSynchronizationConfiguration["lifecycle"]) => {
+        const next = { ...previous, lifecycle, updatedAt: new Date().toISOString() };
+        return mapFailure(repository.saveFollowerSynchronizationConfiguration({
+          sourceIdentity,
+          expectedConfiguration: previous,
+          configuration: next,
+        })).pipe(Effect.as(next));
+      };
+      let configuration = initial;
+      if (configuration.lifecycle._tag === "Finalizing") {
+        const finalization = yield* finalizeFollowerEnrollment({
+          endpoint: configuration.source.endpoint,
+          tlsFingerprint: configuration.source.tlsFingerprint,
+          credentialReference: configuration.credentialReference,
+        }).pipe(Effect.provideService(MachineState, machine), Effect.result);
+        if (finalization._tag === "Failure") {
+          const previous = configuration.lifecycle.previous;
+          if (finalization.failure._tag !== "InvalidFollowerCredentialError" || previous === undefined) {
+            return yield* mapFailure(Effect.fail(finalization.failure));
+          }
+          configuration = yield* save(configuration, { _tag: "RollbackPending", previous });
+        } else {
+        configuration = yield* save(configuration, configuration.lifecycle.previous === undefined
+          ? { _tag: "Active" }
+          : {
+            _tag: "RetiringPrevious", previous: configuration.lifecycle.previous,
+            cleanup: { _tag: configuration.lifecycle.previous.follower.id === configuration.follower.id ? "RemoveLocal" : "RevokeRemote" },
+          });
+        }
+      }
+      if (configuration.lifecycle._tag === "RollbackPending") {
+        const previous = configuration.lifecycle.previous;
+        // Never guess that the old authority still works after the candidate
+        // disappears. An offline check leaves both credentials durably owned.
+        yield* mapFailure(authenticateFollower({
+          endpoint: previous.source.endpoint, tlsFingerprint: previous.source.tlsFingerprint,
+          credentialReference: previous.credentialReference,
+        }).pipe(Effect.provideService(MachineState, machine))).pipe(
+          Effect.mapError((error) => new CliCommandFailure({
+            category: error.category,
+            message: `${rollbackRecoveryDetail}. ${error.message}`,
+          })),
+        );
+        const restored: FollowerSynchronizationConfiguration = {
+          ...Schema.decodeUnknownSync(FollowerConfigurationFields)(previous),
+          lifecycle: { _tag: "Active" }, updatedAt: new Date().toISOString(),
+        };
+        yield* mapFailure(repository.saveFollowerSynchronizationConfiguration({
+          expectedConfiguration: configuration, configuration: restored, sourceIdentity: previous.sourceIdentity,
+        }));
+        yield* recoverStagedCredentials;
+        return { _tag: "Restored" as const, configuration: restored, source: previous.sourceIdentity };
+      }
+      if (configuration.lifecycle._tag === "RetiringPrevious") {
+        const previous = configuration.lifecycle.previous;
+        if (configuration.lifecycle.cleanup._tag === "RevokeRemote") {
+          yield* mapFailure(revokeFollowerEnrollment({
+            endpoint: previous.source.endpoint, tlsFingerprint: previous.source.tlsFingerprint,
+            credentialReference: previous.credentialReference,
+          }).pipe(Effect.provideService(MachineState, machine)));
+          configuration = yield* save(configuration, {
+            _tag: "RetiringPrevious", previous, cleanup: { _tag: "RemoveLocal" },
+          });
+        }
+        yield* mapFailure(machine.removeCredential(previous.credentialReference));
+        configuration = yield* save(configuration, { _tag: "Active" });
+      }
+      return { _tag: "Finished" as const, configuration, source: state.sourceIdentity };
+    });
     const outcomePayload = <Value extends {
       readonly outcome?: {
         readonly outcome: string;
@@ -771,6 +868,7 @@ const followerCommandsLayer = (
           ...qualifiedClientMethods,
         ];
         const scheduleInput = finalizedScheduleInput(configuration);
+        const fires = readScheduleFires(statePath);
         const scheduled = scheduleInput === undefined
           ? { status: "not-selected" as const, detail: unscheduledDetail(configuration) }
           : yield* schedules.status(scheduleInput).pipe(
@@ -780,7 +878,7 @@ const followerCommandsLayer = (
                 detail: error.message,
               }),
               onSuccess: (status) => {
-                const runs = describeUnattendedRuns(currentScheduleFires(status, readScheduleFires(statePath)));
+                const runs = describeUnattendedRuns(currentScheduleFires(status, fires));
                 const verified = status.state === "current" && status.bindingUsable === true && runs.completed;
                 return {
                   status: verified ? "verified" as const : "pending" as const,
@@ -853,9 +951,21 @@ const followerCommandsLayer = (
                 message: "this machine has an unfinished local sync; run 'canonfig recover' or 'canonfig abandon', then enroll",
               });
             }
-            const existing = yield* mapFailure(
+            let existing = yield* mapFailure(
               repository.getFollowerSynchronizationConfiguration(),
             );
+            yield* recoverStagedCredentials;
+            if (existing !== undefined && existing.lifecycle._tag !== "Active") {
+              const finished = yield* finishEnrollment(existing);
+              if (finished._tag === "Finished") {
+                const adopted = yield* mapFailure(repository.adoptLocalProjection(existing.follower.id));
+                return payload({
+                  follower: finished.configuration.follower, profile: finished.configuration.profile,
+                  source: finished.source, resumed: true, adoptedLocalRecords: adopted,
+                });
+              }
+              existing = finished.configuration;
+            }
             // A completed enrollment is a singleton. Enrolling a different
             // name over it silently left the previous identity's Applied
             // Resource Records orphaned in the database under an id nothing
@@ -867,7 +977,7 @@ const followerCommandsLayer = (
             // to orphan.
             if (
               existing !== undefined
-              && existing.enrollmentPending !== true
+              && existing.lifecycle._tag === "Active"
               && existing.follower.name !== input.followerName
             ) {
               if (!input.replace) {
@@ -886,7 +996,7 @@ const followerCommandsLayer = (
             // as drift, so the machine moves them into local/ (or removes
             // them) before it enrolls. A completed enrollment already holds
             // its mirror there, so rotation and --replace skip the check.
-            if (existing === undefined || existing.enrollmentPending === true) {
+            if (existing === undefined) {
               const folder = dirname(statePath);
               const authored = yield* Effect.tryPromise({
                 try: () => authoredEntries(folder),
@@ -903,61 +1013,16 @@ const followerCommandsLayer = (
                 });
               }
             }
-            if (existing?.enrollmentPending === true) {
-              const resumed = yield* finalizeFollowerEnrollment({
-                endpoint: existing.source.endpoint,
-                tlsFingerprint: existing.source.tlsFingerprint,
-                credentialReference: existing.credentialReference,
-              }).pipe(
-                Effect.provideService(MachineState, machine),
-                Effect.match({
-                  onSuccess: () => ({ ok: true as const }),
-                  onFailure: (error) => ({ ok: false as const, error }),
-                }),
-              );
-              if (!resumed.ok) {
-                const tag = resumed.error._tag ?? "";
-                if (tag !== "InvalidFollowerCredentialError") {
-                  return yield* mapFailure(Effect.fail(resumed.error));
-                }
-                // The source restarted after the prepare phase and discarded
-                // its ambiguous marker. Discard the local half as well; the
-                // invitation can now be safely retried.
-                yield* machine.removeCredential(existing.credentialReference).pipe(
-                  Effect.ignore,
-                );
-              } else {
-                const state = yield* mapFailure(
-                  repository.loadState(existing.follower.id),
-                );
-                if (state.sourceIdentity === undefined) {
-                  return yield* new CliCommandFailure({
-                    category: "usage-or-configuration",
-                    message: "follower source identity is not configured",
-                  });
-                }
-                yield* mapFailure(repository.saveFollowerSynchronizationConfiguration({
-                  sourceIdentity: state.sourceIdentity,
-                  configuration: {
-                    ...existing,
-                    enrollmentPending: undefined,
-                    updatedAt: new Date().toISOString(),
-                  },
-                }));
-                const adopted = yield* mapFailure(repository.adoptLocalProjection(existing.follower.id));
-                return payload({
-                  follower: existing.follower,
-                  profile: existing.profile,
-                  source: state.sourceIdentity,
-                  resumed: true,
-                  adoptedLocalRecords: adopted,
-                });
-              }
-            }
 
             const prepared = yield* mapFailure(enrollFollower({
               ...input,
               finalize: false,
+              beforeStoreCredential: (reference) => repository.stageEnrollmentCredential(reference).pipe(
+                Effect.mapError(() => new CredentialStorageError({
+                  operation: "stage follower credential", reference: "follower credential",
+                  message: "credential ownership could not be recorded; no credential was written",
+                })),
+              ),
             }).pipe(Effect.provideService(MachineState, machine)));
             const follower = {
               ...prepared.follower,
@@ -1005,9 +1070,14 @@ const followerCommandsLayer = (
             // credential rotation: the follower-owned settings stay. A new
             // identity starts from defaults, and the reply lists every
             // setting that was reset.
-            const previous = existing !== undefined && existing.enrollmentPending !== true
+            const previous = existing !== undefined && existing.lifecycle._tag === "Active"
               ? existing
               : undefined;
+            const previousSource = previous === undefined ? undefined
+              : (yield* mapFailure(repository.loadState(previous.follower.id))).sourceIdentity;
+            if (previous !== undefined && previousSource === undefined) return yield* new CliCommandFailure({
+              category: "usage-or-configuration", message: "the previous follower Source identity is unavailable",
+            });
             const rotated = previous !== undefined && previous.follower.id === follower.id;
             const resets = previous === undefined || rotated
               ? []
@@ -1031,7 +1101,7 @@ const followerCommandsLayer = (
                 localExecution: previous.localExecution,
               }
               : {};
-            const configuration = {
+            const configuration: FollowerSynchronizationConfiguration = {
               schemaVersion: 1 as const,
               follower,
               profile,
@@ -1047,7 +1117,8 @@ const followerCommandsLayer = (
               // Record how this machine keeps its credential, so a later run
               // does not have to rediscover it from the environment.
               credentialPolicy: enrolledCredentialPolicy,
-              enrollmentPending: true as const,
+              lifecycle: { _tag: "Finalizing", previous: previous === undefined || previousSource === undefined
+                ? undefined : { ...Schema.decodeUnknownSync(FollowerConfigurationFields)(previous), sourceIdentity: previousSource } },
               scheduledInvocation: {
                 ...defaultScheduledInvocation,
                 timeoutMilliseconds: input.timeoutMilliseconds
@@ -1060,6 +1131,7 @@ const followerCommandsLayer = (
             const stateIdentity = source;
             const saved = yield* repository.saveFollowerSynchronizationConfiguration({
               sourceIdentity: stateIdentity,
+              expectedConfiguration: existing,
               configuration,
             }).pipe(
               Effect.match({
@@ -1089,63 +1161,14 @@ const followerCommandsLayer = (
               }
               return yield* mapFailure(Effect.fail(saved.error));
             }
-            const finalized = yield* finalizeFollowerEnrollment({
-              endpoint: input.invitation.endpoint,
-              tlsFingerprint: prepared.tlsFingerprint,
-              credentialReference: prepared.credentialReference,
-            }).pipe(
-              Effect.provideService(MachineState, machine),
-              Effect.match({
-                onSuccess: () => ({ ok: true as const }),
-                onFailure: (error) => ({ ok: false as const, error }),
-              }),
-            );
-            if (!finalized.ok) return yield* mapFailure(Effect.fail(finalized.error));
-            const cleared = yield* mapFailure(
-              repository.saveFollowerSynchronizationConfiguration({
-                sourceIdentity: source,
-                configuration: {
-                  ...configuration,
-                  enrollmentPending: undefined,
-                  updatedAt: new Date().toISOString(),
-                },
-              }),
-            ).pipe(
-              Effect.match({
-                onSuccess: () => ({ ok: true as const }),
-                onFailure: (error) => ({ ok: false as const, error }),
-              }),
-            );
-            if (!cleared.ok) return yield* cleared.error;
-            // Retire what the new enrollment superseded. A rotation's previous
-            // credential no longer authenticates, so only the local item goes;
-            // a replaced identity is also revoked on its Source.
-            const previousIdentity = previous === undefined
-              || previous.credentialReference === prepared.credentialReference
-              ? undefined
-              : rotated
-              ? yield* machine.removeCredential(previous.credentialReference).pipe(
-                Effect.match({
-                  onSuccess: () => ({ follower: previous.follower.id, credentialRemoved: true }),
-                  onFailure: () => ({ follower: previous.follower.id, credentialRemoved: false }),
-                }),
-              )
-              : yield* revokeFollowerEnrollment({
-                endpoint: previous.source.endpoint,
-                tlsFingerprint: previous.source.tlsFingerprint,
-                credentialReference: previous.credentialReference,
-              }).pipe(
-                Effect.provideService(MachineState, machine),
-                Effect.match({
-                  onSuccess: () => ({ follower: previous.follower.id, revoked: true, detail: "revoked on its Source" }),
-                  onFailure: (error) => ({
-                    follower: previous.follower.id,
-                    revoked: false,
-                    detail: `${error.message}; revoke it on its Source with \`canonfig source revoke ${previous.follower.id}\``,
-                  }),
-                }),
-                Effect.tap(() => machine.removeCredential(previous.credentialReference).pipe(Effect.ignore)),
-              );
+            const finished = yield* finishEnrollment(configuration);
+            if (finished._tag === "Restored") return yield* new CliCommandFailure({
+              category: "human-action-required",
+              message: "the Source discarded the replacement; the previous enrollment was authenticated and restored. Retry the same enrollment command with its invitation",
+            });
+            const previousIdentity = previous === undefined ? undefined : rotated
+              ? { follower: previous.follower.id, credentialRemoved: true }
+              : { follower: previous.follower.id, credentialRemoved: true, revoked: true, detail: "revoked on its Source" };
             // The harness surfaces this machine projected from its own
             // folder now belong to the follower's runs, which update them
             // under the same three-way rule.
@@ -1159,10 +1182,10 @@ const followerCommandsLayer = (
               previousIdentity,
               adoptedLocalRecords: adopted,
             });
-          }),
+          }).pipe(withEnrollmentLock),
       unenroll: () =>
         Effect.gen(function*() {
-          const configuration = yield* mapFailure(
+          let configuration = yield* mapFailure(
             repository.getFollowerSynchronizationConfiguration(),
           );
           if (configuration === undefined) {
@@ -1171,16 +1194,46 @@ const followerCommandsLayer = (
               detail: "this machine is not enrolled; nothing was removed",
             });
           }
+          yield* recoverStagedCredentials;
+          if (configuration.lifecycle._tag !== "Unenrolling") {
+            const state = yield* mapFailure(repository.loadState(configuration.follower.id));
+            if (state.sourceIdentity === undefined) return yield* new CliCommandFailure({
+              category: "usage-or-configuration", message: "follower source identity is not configured",
+            });
+            const next = {
+              ...configuration,
+              lifecycle: {
+                _tag: "Unenrolling" as const,
+                previous: "previous" in configuration.lifecycle ? configuration.lifecycle.previous : undefined,
+              },
+              updatedAt: new Date().toISOString(),
+            };
+            yield* mapFailure(repository.saveFollowerSynchronizationConfiguration({
+              sourceIdentity: state.sourceIdentity, expectedConfiguration: configuration, configuration: next,
+            }));
+            configuration = next;
+          }
+          if (configuration.lifecycle._tag === "Unenrolling" && configuration.lifecycle.previous !== undefined) {
+            const previous = configuration.lifecycle.previous;
+            yield* revokeFollowerEnrollment({
+              endpoint: previous.source.endpoint, tlsFingerprint: previous.source.tlsFingerprint,
+              credentialReference: previous.credentialReference,
+            }).pipe(Effect.provideService(MachineState, machine), Effect.ignore);
+            yield* mapFailure(machine.removeCredential(previous.credentialReference));
+          }
           const follower = configuration.follower.id;
           // Revoke on the Source first, while the credential still exists.
           // An unreachable Source does not keep the machine enrolled: the
           // reply says so and names the command to run there.
-          const source = yield* revokeFollowerEnrollment({
+          const authority = {
             endpoint: configuration.source.endpoint,
             tlsFingerprint: configuration.source.tlsFingerprint,
             credentialReference: configuration.credentialReference,
-          }).pipe(
+          };
+          const source = yield* revokeFollowerEnrollment(authority).pipe(
             Effect.provideService(MachineState, machine),
+            Effect.catchTag("InvalidFollowerCredentialError", () =>
+              cancelFollowerEnrollment(authority).pipe(Effect.provideService(MachineState, machine))),
             Effect.match({
               onSuccess: () => ({ revoked: true, detail: "revoked on the Source" }),
               onFailure: (error) => ({
@@ -1189,18 +1242,7 @@ const followerCommandsLayer = (
               }),
             }),
           );
-          yield* machine.removeCredential(configuration.credentialReference).pipe(Effect.ignore);
-          const stillStored = yield* machine.loadCredential({
-            reference: configuration.credentialReference,
-          }).pipe(Effect.match({ onSuccess: () => true, onFailure: () => false }));
-          if (stillStored) {
-            // Keep the record that names the item, so a retry can remove it.
-            return yield* new CliCommandFailure({
-              category: "human-action-required",
-              message:
-                "the follower credential could not be removed from this machine's credential store; unlock the store for this session and run `canonfig follower unenroll` again",
-            });
-          }
+          yield* mapFailure(machine.removeCredential(configuration.credentialReference));
           const secrets = yield* clearTransferredSecrets().pipe(
             Effect.provideService(MachineState, machine),
             Effect.match({
@@ -1208,7 +1250,7 @@ const followerCommandsLayer = (
               onFailure: (error) => ({ removed: [], detail: error.message }),
             }),
           );
-          yield* mapFailure(repository.removeFollowerSynchronizationConfiguration());
+          yield* mapFailure(repository.removeFollowerSynchronizationConfiguration(configuration));
           return payload({
             unenrolled: true,
             follower,
@@ -1220,7 +1262,7 @@ const followerCommandsLayer = (
             note:
               "files Canonfig applied stay in place; a native schedule, if installed, still starts `canonfig sync`: remove it with `canonfig schedule remove`",
           });
-        }),
+        }).pipe(withEnrollmentLock),
       synchronize: (input) => {
         // Only the rendered native job passes --scheduled, so the fire
         // record is evidence the real scheduler started this process.
@@ -1432,9 +1474,13 @@ const followerCommandsLayer = (
                     tlsFingerprint: configuration.source.tlsFingerprint,
                   },
                   ...state,
+                  enrollmentLifecycle: configuration.lifecycle._tag,
+                  enrollmentRecovery: configuration.lifecycle._tag === "RollbackPending" ? rollbackRecoveryDetail : undefined,
                   activeRecovery: openRun,
                   lifecycle: {
                     ...lifecycle,
+                    enrolled: configuration.lifecycle._tag === "RollbackPending"
+                      ? { reached: false, detail: rollbackRecoveryDetail } : lifecycle.enrolled,
                     converged: followerConvergence(
                       lifecycle.converged,
                       openRun,
@@ -1487,6 +1533,7 @@ const followerCommandsLayer = (
                   : mapFailure(
                     repository.saveFollowerSynchronizationConfiguration({
                       sourceIdentity: state.sourceIdentity,
+                      expectedConfiguration: configuration,
                       configuration: {
                         ...configuration,
                         agentPolicy: policy,
@@ -1534,6 +1581,7 @@ const followerCommandsLayer = (
                       : mapFailure(
                         repository.saveFollowerSynchronizationConfiguration({
                           sourceIdentity: state.sourceIdentity,
+                          expectedConfiguration: configuration,
                           configuration: {
                             ...configuration,
                             agentHarness,
@@ -1567,7 +1615,7 @@ const followerCommandsLayer = (
         "profileDefault" in input
           ? mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
             Effect.flatMap((configuration) =>
-              configuration?.enrollmentPending === true
+              (configuration !== undefined && configuration.lifecycle._tag !== "Active")
                 ? Effect.fail(new CliCommandFailure({ category: "usage-or-configuration",
                   message: "follower enrollment is pending; finish or resume enrollment before selecting a schedule" }))
                 : configuration?.scheduleDefault === undefined
@@ -1596,7 +1644,7 @@ const followerCommandsLayer = (
       scheduleStatus: () =>
         mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
           Effect.flatMap((configuration) => {
-            if (configuration?.enrollmentPending === true) return Effect.succeed(payload({
+            if ((configuration !== undefined && configuration.lifecycle._tag !== "Active")) return Effect.succeed(payload({
               state: "enrollment-pending",
               detail: `${unscheduledDetail(configuration)}. A native job may remain installed; remove it with \`canonfig schedule remove\` if it is no longer wanted`,
             }));
@@ -1607,7 +1655,7 @@ const followerCommandsLayer = (
                 Effect.map((native) =>
                   payload(native.state === "not-installed"
                     ? { state: "not-selected", detail: unscheduledDetail(configuration) }
-                    : { state: "unmanaged", detail: configuration === undefined || configuration.enrollmentPending === true
+                    : { state: "unmanaged", detail: configuration === undefined || configuration.lifecycle._tag !== "Active"
                       ? `${unscheduledDetail(configuration)}. A native job remains installed; remove it with \`canonfig schedule remove\` if it is no longer wanted`
                       : unmanagedScheduleDetail, nativeState: native.state })
                 ),
@@ -1731,7 +1779,16 @@ const followerCommandsLayer = (
                   adapter: configuration.agentHarness.kind,
                   executable: configuration.agentHarness.executable,
                 },
-            });
+            }).pipe(Effect.map((report) => configuration?.lifecycle._tag !== "RollbackPending" ? report : {
+              ...report,
+              status: report.status === "healthy" ? "degraded" as const : report.status,
+              probes: report.probes.map((probe) => probe.name !== "source" ? probe : {
+                ...probe,
+                status: probe.status === "pass" ? "warning" as const : probe.status,
+                message: `${rollbackRecoveryDetail}. ${probe.message}`,
+                details: { ...probe.details, enrollmentLifecycle: "RollbackPending", recovery: rollbackRecoveryDetail },
+              }),
+            }));
           }),
         ).pipe(
           Effect.provideService(MachineState, machine),

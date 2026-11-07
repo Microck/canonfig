@@ -429,6 +429,7 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
           sourceIdentity: enrollment.source,
           configuration: decode(FollowerSynchronizationConfiguration)({
             schemaVersion: 1,
+            lifecycle: { _tag: "Active" },
             follower,
             profile: revision.profileId,
             source: {

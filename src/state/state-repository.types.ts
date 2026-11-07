@@ -116,6 +116,8 @@ export interface RegisterFollowerInput {
 
 export interface SaveFollowerSynchronizationConfigurationInput {
   readonly configuration: FollowerSynchronizationConfiguration;
+  /** Absent means create-only; settings and lifecycle changes compare the read snapshot. */
+  readonly expectedConfiguration?: FollowerSynchronizationConfiguration;
   readonly sourceIdentity: SourceIdentity;
 }
 

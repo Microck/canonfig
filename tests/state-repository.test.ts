@@ -56,6 +56,7 @@ import { runtimeStateLayer } from "../src/runtime/state-layer.ts";
 import { StateInitializationError } from "../src/runtime/state-initialization.errors.ts";
 import {
   defaultScheduledInvocation,
+  FollowerSynchronizationConfiguration,
 } from "../src/synchronization/follower-sync-config.ts";
 
 const temporaryDirectories: Array<string> = [];
@@ -159,6 +160,16 @@ const start = (
     startedAt: "2026-08-15T12:01:00Z",
   });
 
+const followerConfigurationFixture = (path: string) => decode(FollowerSynchronizationConfiguration)({
+  schemaVersion: 1, lifecycle: { _tag: "Active" },
+  follower: follower(), profile: "profile-1",
+  source: { endpoint: "https://127.0.0.1:17342", tlsFingerprint: "tls-source", signingFingerprint: "source" },
+  credentialReference: follower().credentialReference,
+  cacheDirectory: join(dirname(path), "cache"), stateLocation: path,
+  agentPolicy: "deterministic-only", scheduledInvocation: defaultScheduledInvocation,
+  updatedAt: "2026-08-15T12:00:00Z",
+});
+
 describe("StateRepository SQLite adapter", () => {
   it("runs idempotent migrations and persists identities as references", async () => {
     const path = databasePath();
@@ -208,6 +219,7 @@ describe("StateRepository SQLite adapter", () => {
         sourceIdentity,
         configuration: {
           schemaVersion: 1,
+          lifecycle: { _tag: "Active" },
           follower: configuredFollower,
           profile: decode(ProfileId)("profile-1"),
           source: {
@@ -265,7 +277,7 @@ describe("StateRepository SQLite adapter", () => {
         cacheDirectory: join(dirname(path), "cache"),
         stateLocation: path,
         agentPolicy: "deterministic-only" as const,
-        enrollmentPending: true as const,
+        lifecycle: { _tag: "Finalizing" as const },
         scheduledInvocation: defaultScheduledInvocation,
         updatedAt: "2026-08-15T12:00:00Z",
       },
@@ -340,6 +352,50 @@ describe("StateRepository SQLite adapter", () => {
     }));
     expect(result.refused._tag).toBe("Failure");
     expect(result.stored).toEqual(first);
+  });
+  it("refuses a stale settings write after unenrollment instead of recreating the enrollment", async () => {
+    const path = databasePath();
+    const sourceIdentity = decode(SourceIdentity)({ keyId: "source", publicKeyFingerprint: "source" });
+    const stale = followerConfigurationFixture(path);
+    const result = await runWithRepository(path, Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.saveFollowerSynchronizationConfiguration({ sourceIdentity, configuration: stale });
+      const retiring = { ...stale, lifecycle: { _tag: "Unenrolling" as const } };
+      yield* repository.saveFollowerSynchronizationConfiguration({
+        sourceIdentity, configuration: retiring, expectedConfiguration: stale,
+      });
+      yield* repository.removeFollowerSynchronizationConfiguration(retiring);
+      const refused = yield* Effect.result(repository.saveFollowerSynchronizationConfiguration({
+        sourceIdentity, configuration: { ...stale, agentPolicy: "agent-apply" }, expectedConfiguration: stale,
+      }));
+      return { refused, configuration: yield* repository.getFollowerSynchronizationConfiguration() };
+    }));
+    expect(result.refused._tag).toBe("Failure");
+    expect(result.configuration).toBeUndefined();
+  });
+
+  it.each([false, true])("migrates released follower state without guessing pending ownership (pending=%s)", async (pending) => {
+    const path = databasePath();
+    const sourceIdentity = decode(SourceIdentity)({ keyId: "source", publicKeyFingerprint: "source" });
+    await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      repository.saveFollowerSynchronizationConfiguration({ sourceIdentity, configuration: followerConfigurationFixture(path) })));
+    const database = new DatabaseSync(path);
+    database.exec(`
+      DELETE FROM effect_sql_migrations WHERE migration_id = 4;
+      DROP TABLE enrollment_credential_retirements;
+      UPDATE follower_sync_configuration SET configuration_json = json_set(
+        json_remove(configuration_json, '$.lifecycle'), '$.enrollmentPending', json('${pending}')
+      );
+    `);
+    database.close();
+    const loaded = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      Effect.result(repository.getFollowerSynchronizationConfiguration())));
+    if (pending) {
+      expect(loaded._tag).toBe("Failure");
+      if (loaded._tag === "Failure") expect(loaded.failure.message).toContain("move this Canonfig state directory aside");
+    } else {
+      expect(loaded).toMatchObject({ _tag: "Success", success: { lifecycle: { _tag: "Active" } } });
+    }
   });
 
   it("refuses state an earlier release created and asks to reinitialize", async () => {

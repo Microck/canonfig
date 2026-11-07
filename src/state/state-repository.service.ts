@@ -74,6 +74,7 @@ export class StateRepository extends Context.Service<StateRepository, {
    * Returns whether an enrollment was recorded.
    */
   readonly removeFollowerSynchronizationConfiguration: (
+    expected: FollowerSynchronizationConfiguration,
   ) => Effect.Effect<boolean, StateRepositoryError>;
   readonly saveEnrollmentSource: (
     source: EnrollmentSourceRecord,

@@ -379,6 +379,17 @@ export const stateMigrations = SqliteMigrator.fromRecord({
   }),
   "0004_enrollment_lifecycle": Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient;
+    // Released active configurations upgrade in place. Old pending rows lack
+    // replacement ownership and must be recovered explicitly, not guessed.
+    yield* sql`
+      UPDATE follower_sync_configuration
+      SET configuration_json = json_remove(
+        json_set(configuration_json, '$.lifecycle', json_object(
+          '_tag', CASE WHEN json_extract(configuration_json, '$.enrollmentPending') = 1
+            THEN 'LegacyPending' ELSE 'Active' END
+        )), '$.enrollmentPending'
+      )
+    `;
     yield* sql`
       CREATE TABLE enrollment_credential_retirements (
         reference TEXT PRIMARY KEY NOT NULL,

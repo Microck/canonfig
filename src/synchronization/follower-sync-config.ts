@@ -7,7 +7,7 @@ import {
   ProfileId,
   Timestamp,
 } from "../domain/brand.ts";
-import { AgentPolicy, FollowerIdentity } from "../domain/identity.ts";
+import { AgentPolicy, FollowerIdentity, SourceIdentity } from "../domain/identity.ts";
 import { ScheduleDefaultSchema } from "../domain/profile.ts";
 import { SyncScheduleSchema } from "../schedule/schedule-manager.types.ts";
 import { ExecutableAuthorizationSchema } from "../domain/synchronization.ts";
@@ -57,7 +57,7 @@ export const FollowerAgentHarnessConfiguration = Schema.Struct({
 export type FollowerAgentHarnessConfiguration =
   typeof FollowerAgentHarnessConfiguration.Type;
 
-export const FollowerSynchronizationConfiguration = Schema.Struct({
+export const FollowerConfigurationFields = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   follower: FollowerIdentity,
   /** The one profile its Source publishes, recorded at enrollment. */
@@ -87,8 +87,6 @@ export const FollowerSynchronizationConfiguration = Schema.Struct({
       path: Schema.NonEmptyString,
     }),
   ])),
-  /** Set only between source preparation and source finalization. */
-  enrollmentPending: Schema.optional(Schema.Literal(true)),
   /** Last authorized profile-level default schedule, inherited when no override is set. */
   scheduleDefault: Schema.optional(ScheduleDefaultSchema),
   /**
@@ -140,6 +138,35 @@ export const FollowerSynchronizationConfiguration = Schema.Struct({
     ),
   })),
   updatedAt: Timestamp,
+});
+
+const PreviousFollowerEnrollment = Schema.Struct({
+  ...FollowerConfigurationFields.fields,
+  sourceIdentity: SourceIdentity,
+});
+
+/** Previous enrollment remains owned until its remote and local retirement finish. */
+export const FollowerEnrollmentLifecycle = Schema.Union([
+  Schema.TaggedStruct("Active", {}),
+  Schema.TaggedStruct("Finalizing", {
+    previous: Schema.optional(PreviousFollowerEnrollment),
+  }),
+  Schema.TaggedStruct("RetiringPrevious", {
+    previous: PreviousFollowerEnrollment,
+    cleanup: Schema.Union([
+      Schema.TaggedStruct("RevokeRemote", {}),
+      Schema.TaggedStruct("RemoveLocal", {}),
+    ]),
+  }),
+  Schema.TaggedStruct("RollbackPending", { previous: PreviousFollowerEnrollment }),
+  Schema.TaggedStruct("Unenrolling", {
+    previous: Schema.optional(PreviousFollowerEnrollment),
+  }),
+]);
+
+export const FollowerSynchronizationConfiguration = Schema.Struct({
+  ...FollowerConfigurationFields.fields,
+  lifecycle: FollowerEnrollmentLifecycle,
 });
 
 export type FollowerSynchronizationConfiguration =

@@ -32,6 +32,19 @@ concurrent initializer cannot replace an initialized signing or TLS identity.
 Credential relocation compares the existing identity and references in that same
 transaction; a stale operation fails and removes only the new items it created.
 
+Follower enrollment records `Finalizing`, `RetiringPrevious`, `RollbackPending`,
+`Active` or `Unenrolling` in SQLite. Replacement keeps the previous identity,
+Source identity and credential reference until retirement finishes. Retry the same
+enroll command after interruption; an existing managed mirror is not treated as
+authored content. Settings writes compare the configuration they read and cannot
+recreate an enrollment removed by another command.
+
+If the Source discards a prepared replacement, Canonfig authenticates the previous
+credential before restoring its authority. An unreachable previous Source leaves
+`RollbackPending`; `status` and `doctor` name that state and the retry command.
+Both credentials remain owned and untouched until that check succeeds. Bring the
+previous Source online and retry the same enroll command with its invitation.
+
 Credential storage records ownership before writing bytes. Source cancellation,
 replacement, revocation and restart recovery retain retirement references until
 the credential store confirms deletion. A failed deletion remains retryable;
@@ -42,6 +55,12 @@ because a historical digest row remains.
 Invitation states are `Available`, `Prepared`, `Consumed` or `Expired`. Re-prepare
 compares the current reservation in the same SQL transaction that retires its
 credential and installs its replacement. Expiry is evaluated at operation time.
+
+Migration `0004_enrollment_lifecycle` upgrades released active configurations in
+place. Released pending configurations cannot identify a superseded enrollment,
+so they are refused with recovery instructions: revoke the identity on its Source,
+move the Canonfig state directory aside, and enroll with a fresh invitation.
+Retain the credential store until the old identity is revoked.
 
 A private pipe does not authenticate its producer and does not grant approval to
 enroll or replace an identity. Supply the value only after approving the Source,

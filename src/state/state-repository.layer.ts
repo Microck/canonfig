@@ -459,6 +459,72 @@ const makeRepository = Effect.gen(function*() {
           dirname(configuration.stateLocation),
         );
       }
+      const current = yield* getFollowerSynchronizationConfiguration();
+      if (!isDeepStrictEqual(current, input.expectedConfiguration === undefined
+        ? undefined : JSON.parse(JSON.stringify(input.expectedConfiguration)))) {
+        return yield* new EnrollmentStateConflictError({
+          reason: "credential-conflict",
+          message: "the follower enrollment changed; read its current state and retry",
+        });
+      }
+      const before = current?.lifecycle._tag;
+      const after = configuration.lifecycle._tag;
+      const unchangedEnrollment = current !== undefined
+        && current.credentialReference === configuration.credentialReference
+        && isDeepStrictEqual(current.follower, configuration.follower)
+        && current.profile === configuration.profile
+        && isDeepStrictEqual(current.source, configuration.source);
+      let valid = false;
+      if (after === "Unenrolling") {
+        valid = unchangedEnrollment;
+      } else {
+        switch (current?.lifecycle._tag) {
+          case undefined:
+            valid = after === "Active" || after === "Finalizing";
+            break;
+          case "Active":
+            valid = after === "Active" && unchangedEnrollment;
+            if (configuration.lifecycle._tag === "Finalizing" && configuration.lifecycle.previous !== undefined) {
+              const { sourceIdentity, ...previous } = configuration.lifecycle.previous;
+              const state = yield* loadState(current.follower.id);
+              valid = isDeepStrictEqual({ ...previous, lifecycle: current.lifecycle }, current)
+                && isDeepStrictEqual(sourceIdentity, state.sourceIdentity);
+            }
+            break;
+          case "Finalizing":
+            valid = unchangedEnrollment && (current.lifecycle.previous === undefined
+              ? after === "Active"
+              : (configuration.lifecycle._tag === "RetiringPrevious" || configuration.lifecycle._tag === "RollbackPending")
+                && isDeepStrictEqual(current.lifecycle.previous, configuration.lifecycle.previous));
+            break;
+          case "RetiringPrevious":
+            valid = unchangedEnrollment && (current.lifecycle.cleanup._tag === "RemoveLocal"
+              ? after === "Active"
+              : configuration.lifecycle._tag === "RetiringPrevious"
+                && configuration.lifecycle.cleanup._tag === "RemoveLocal"
+                && isDeepStrictEqual(current.lifecycle.previous, configuration.lifecycle.previous));
+            break;
+          case "RollbackPending": {
+            const { sourceIdentity, ...previous } = current.lifecycle.previous;
+            valid = after === "Active"
+              && isDeepStrictEqual(sourceIdentity, input.sourceIdentity)
+              && isDeepStrictEqual({
+                ...previous, updatedAt: configuration.updatedAt, lifecycle: { _tag: "Active" },
+              }, configuration);
+            if (valid) yield* sql`
+              INSERT OR IGNORE INTO enrollment_credential_retirements (reference, state)
+              VALUES (${current.credentialReference}, 'Retiring')
+            `;
+            break;
+          }
+          case "Unenrolling":
+            break;
+        }
+      }
+      if (!valid) return yield* new EnrollmentStateConflictError({
+        reason: "credential-conflict",
+        message: `illegal follower enrollment transition ${before ?? "Unenrolled"} -> ${after}`,
+      });
       yield* sql`
         INSERT INTO followers (
           id,
@@ -510,6 +576,7 @@ const makeRepository = Effect.gen(function*() {
           configuration_json = excluded.configuration_json,
           updated_at = excluded.updated_at
       `;
+      yield* sql`DELETE FROM enrollment_credential_retirements WHERE reference = ${configuration.credentialReference} AND state = 'Staged'`;
     });
     yield* sql.withTransaction(transaction).pipe(
       Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("save follower synchronization configuration")(error))),
@@ -535,6 +602,12 @@ const makeRepository = Effect.gen(function*() {
     );
     const row = decoded[0];
     if (row === undefined) return undefined;
+    const legacy = yield* parseJson(Schema.Struct({ lifecycle: Schema.Struct({ _tag: Schema.String }) }),
+      row.configuration_json, "follower enrollment lifecycle", "1");
+    if (legacy.lifecycle._tag === "LegacyPending") return yield* new RepositoryDecodeError({
+      entity: "follower enrollment lifecycle", id: "1",
+      message: "This released pending enrollment does not record the previous identity. Revoke its follower identity on the Source, move this Canonfig state directory aside, then enroll again with a new invitation. Keep its credential store until the old identity has been revoked.",
+    });
     return yield* parseJson(
       FollowerSynchronizationConfiguration,
       row.configuration_json,
@@ -545,17 +618,18 @@ const makeRepository = Effect.gen(function*() {
 
   const removeFollowerSynchronizationConfiguration = Effect.fn(
     "StateRepository.removeFollowerSynchronizationConfiguration",
-  )(function*(): Effect.fn.Return<boolean, StateRepositoryError> {
-    const removed = yield* statusCount(
-      sql,
-      sql`SELECT count(*) AS count FROM follower_sync_configuration WHERE singleton = 1`,
-      "follower synchronization configuration",
-      "1",
-    );
-    yield* sql`DELETE FROM follower_sync_configuration WHERE singleton = 1`.pipe(
-      Effect.mapError(sqlError("remove follower synchronization configuration")),
-    );
-    return removed > 0;
+  )(function*(expected: FollowerSynchronizationConfiguration): Effect.fn.Return<boolean, StateRepositoryError> {
+    return yield* sql.withTransaction(Effect.gen(function*() {
+      const current = yield* getFollowerSynchronizationConfiguration();
+      if (current?.lifecycle._tag !== "Unenrolling"
+        || !isDeepStrictEqual(current, JSON.parse(JSON.stringify(expected)))) {
+        return yield* new EnrollmentStateConflictError({
+          reason: "credential-conflict", message: "the follower enrollment changed before removal; retry unenrollment",
+        });
+      }
+      yield* sql`DELETE FROM follower_sync_configuration WHERE singleton = 1`;
+      return true;
+    })).pipe(Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("remove follower synchronization configuration")(error))));
   });
 
   const saveEnrollmentSource = Effect.fn("StateRepository.saveEnrollmentSource")(
