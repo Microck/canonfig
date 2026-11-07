@@ -15,7 +15,14 @@ export class GuiOperations extends Context.Service<GuiOperations, {
 interface OperationRecord {
   snapshot: GuiOperation;
   readonly journal: () => Effect.Effect<Schema.Json, CliCommandFailure>;
-  readonly onDelivered?: () => void;
+  delivery: { readonly kind: "pending"; readonly callback: () => void } | { readonly kind: "none" | "delivered" };
+}
+
+function finish(entry: OperationRecord, snapshot: Exclude<GuiOperation, { state: "running" }>) {
+  if (entry.snapshot.state !== "running") throw new CliCommandFailure({
+    category: "internal", message: `Operation ${snapshot.id} is already terminal.`,
+  });
+  entry.snapshot = snapshot;
 }
 
 /** HTTP disconnection does not cancel an apply. The GUI scope still owns its lifetime. */
@@ -34,15 +41,15 @@ export const makeGuiOperations = Effect.gen(function*() {
       category: "usage-or-configuration", message: "This GUI session has reached 64 operations. Restart canonfig ui before starting another operation.",
     }));
     const id = randomUUID();
-    const entry: OperationRecord = { snapshot: { id, state: "running", journal: null }, journal, onDelivered };
+    const entry: OperationRecord = { snapshot: { id, state: "running", journal: null }, journal, delivery: onDelivered ? { kind: "pending", callback: onDelivered } : { kind: "none" } };
     operations.set(id, entry);
     yield* operation.pipe(
       Effect.match({
-        onSuccess: (result) => { entry.snapshot = { id, state: "succeeded", journal: null, result }; },
-        onFailure: (error) => { entry.snapshot = { id, state: "failed", journal: null, failure: failureBody(error.category, error.message) }; },
+        onSuccess: (result) => { finish(entry, { id, state: "succeeded", journal: null, result }); },
+        onFailure: (error) => { finish(entry, { id, state: "failed", journal: null, failure: failureBody(error.category, error.message) }); },
       }),
       Effect.catchCause(() => Effect.sync(() => {
-        entry.snapshot = { id, state: "failed", journal: null, failure: failureBody("internal", "The operation stopped unexpectedly. Inspect its journal before retrying.") };
+        finish(entry, { id, state: "failed", journal: null, failure: failureBody("internal", "The operation stopped unexpectedly. Inspect its journal before retrying.") });
       })),
       Effect.forkIn(scope),
     );
@@ -62,7 +69,12 @@ export const makeGuiOperations = Effect.gen(function*() {
     }),
     afterResponse: (body) => {
       if (Schema.is(GuiOperation)(body) && body.state === "succeeded") {
-        operations.get(body.id)?.onDelivered?.();
+        const entry = operations.get(body.id);
+        if (entry?.delivery.kind === "pending") {
+          const { callback } = entry.delivery;
+          entry.delivery = { kind: "delivered" };
+          callback();
+        }
       }
     },
   };
