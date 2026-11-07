@@ -140,6 +140,10 @@ Action replay and repository writes share `transitionAction`: unstarted tail
 actions stay `Pending`, semantic blockers stay `Blocked`, and `RolledBack`
 is distinct from execution failure. Verification method strings describe proof,
 not lifecycle.
+Normal execution and recovery also share `reduceActionResult`: each failed,
+human-blocked, or drift-blocked result requires its matching payload and
+stops aggregation. No stopped result can turn into convergence through an
+omitted optional field.
 
 Migration 3, `synchronization_lifecycle`, upgrades released 6.1 rows in place
 using stored ownership and run evidence. The newest terminal run remains open
