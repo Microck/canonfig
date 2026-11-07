@@ -38,6 +38,8 @@ Source identity and credential reference until retirement finishes. Retry the sa
 enroll command after interruption; an existing managed mirror is not treated as
 authored content. Settings writes compare the configuration they read and cannot
 recreate an enrollment removed by another command.
+Disabling a native schedule remains possible while enrollment is pending; that
+settings update preserves the lifecycle and both credential owners.
 
 If the Source discards a prepared replacement, Canonfig authenticates the previous
 credential before restoring its authority. An unreachable previous Source leaves

@@ -476,15 +476,19 @@ const makeRepository = Effect.gen(function*() {
         && current.profile === configuration.profile
         && isDeepStrictEqual(current.source, configuration.source);
       let valid = false;
-      if (after === "Unenrolling") {
+      if (current !== undefined && isDeepStrictEqual(current.lifecycle, configuration.lifecycle)) {
         valid = unchangedEnrollment;
+      } else if (configuration.lifecycle._tag === "Unenrolling") {
+        valid = unchangedEnrollment && isDeepStrictEqual(
+          current !== undefined && "previous" in current.lifecycle ? current.lifecycle.previous : undefined,
+          configuration.lifecycle.previous,
+        );
       } else {
         switch (current?.lifecycle._tag) {
           case undefined:
             valid = after === "Active" || after === "Finalizing";
             break;
           case "Active":
-            valid = after === "Active" && unchangedEnrollment;
             if (configuration.lifecycle._tag === "Finalizing" && configuration.lifecycle.previous !== undefined) {
               const { sourceIdentity, ...previous } = configuration.lifecycle.previous;
               const state = yield* loadState(current.follower.id);

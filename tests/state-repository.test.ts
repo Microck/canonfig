@@ -376,6 +376,49 @@ describe("StateRepository SQLite adapter", () => {
     expect(result.configuration).toBeUndefined();
   });
 
+  it("updates schedule settings without changing a pending enrollment lifecycle", async () => {
+    const path = databasePath();
+    const sourceIdentity = decode(SourceIdentity)({ keyId: "source", publicKeyFingerprint: "source" });
+    const pending = { ...followerConfigurationFixture(path), lifecycle: { _tag: "Finalizing" as const } };
+    const stored = await runWithRepository(path, Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.saveFollowerSynchronizationConfiguration({ sourceIdentity, configuration: pending });
+      yield* repository.saveFollowerSynchronizationConfiguration({
+        sourceIdentity, expectedConfiguration: pending,
+        configuration: { ...pending, scheduleOverride: { kind: "disabled" } },
+      });
+      return yield* repository.getFollowerSynchronizationConfiguration();
+    }));
+    expect(stored?.lifecycle).toEqual({ _tag: "Finalizing" });
+    expect(stored?.scheduleOverride).toEqual({ kind: "disabled" });
+  });
+
+  it("refuses to drop previous credential ownership when unenrollment starts", async () => {
+    const path = databasePath();
+    const sourceIdentity = decode(SourceIdentity)({ keyId: "source", publicKeyFingerprint: "source" });
+    const previous = followerConfigurationFixture(path);
+    const candidateReference = decode(CredentialReference)("secure-store://candidate");
+    await runWithRepository(path, Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.saveFollowerSynchronizationConfiguration({
+        sourceIdentity,
+        configuration: {
+          ...previous, credentialReference: candidateReference,
+          follower: { ...previous.follower, credentialReference: candidateReference },
+          lifecycle: { _tag: "Finalizing", previous: { ...previous, sourceIdentity } },
+        },
+      });
+      const current = yield* repository.getFollowerSynchronizationConfiguration();
+      if (current === undefined) throw new Error("the pending fixture was not stored");
+      const refused = yield* Effect.result(repository.saveFollowerSynchronizationConfiguration({
+        sourceIdentity, expectedConfiguration: current,
+        configuration: { ...current, lifecycle: { _tag: "Unenrolling" } },
+      }));
+      expect(refused._tag).toBe("Failure");
+      expect((yield* repository.getFollowerSynchronizationConfiguration())?.lifecycle).toEqual(current.lifecycle);
+    }));
+  });
+
   it.each([false, true])("migrates released follower state without guessing pending ownership (pending=%s)", async (pending) => {
     const path = databasePath();
     const sourceIdentity = decode(SourceIdentity)({ keyId: "source", publicKeyFingerprint: "source" });
