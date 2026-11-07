@@ -308,6 +308,22 @@ If another Canonfig process is changing secrets, the command fails with exit 3
 before changing anything; a Follower Machine's fetch from a busy Source Machine
 fails with exit 6. Wait for the other process to finish and retry.
 
+If a manifest write becomes visible but its final checks fail, Canonfig keeps
+the active credentials and reports an unconfirmed publication. Retry the
+operation to inspect the manifest and finish any retired-credential cleanup.
+If `secrets.json` disappeared after publication, Canonfig refuses cleanup and
+keeps every credential. Preserve the transaction file, inspect its previous
+and next manifests, and restore the intended `secrets.json` before retrying.
+
+`~/.canonfig/secrets-transaction.json` records credential ownership during a
+change. It contains references and native item names, never secret values.
+If a credential write stops before its reference is recorded, the next
+operation names that native item and refuses to create more credentials.
+Inspect it and the journal's created references in your platform credential
+store. Remove only items not named by `secrets.json`, then remove the transaction
+file and retry. Keep both files until that inspection is complete.
+Existing version 1 secret manifests remain readable.
+
 ## Secrets in output and logs
 
 Canonfig removes configured secret values from captured command arguments,
