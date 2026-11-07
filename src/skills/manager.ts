@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { Schema } from "effect";
 import { CanonfigError } from "./errors.ts";
 import { assertNoSymlinkPathComponents, atomicWrite, ensureDirectoryNoFollow } from "./filesystem.ts";
 import { fetchSkill, fingerprint, inventory, normalizeSource, readLocalSkill, safePath, validateSource, type SkillFile, type SkillSource } from "./upstream.ts";
@@ -77,7 +78,14 @@ async function withLock<T>(location: SkillLocation, action: () => Promise<T>): P
   }
   try {
     await handle.writeFile(JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }) + "\n");
-    if (await exists(`${configPath(location)}.pending`)) throw new CanonfigError("SKILL_RECOVERY_REQUIRED", "A previous update left a .pending recovery journal. Inspect its recorded backups and configuration before another update; the previous operation may have changed installed data");
+    if (await exists(`${configPath(location)}.pending`)) {
+      let phase = "The journal has no trustworthy phase (including released version 1 journals)";
+      try {
+        const journal = Schema.decodeUnknownSync(SkillTransaction)(JSON.parse(await fs.readFile(`${configPath(location)}.pending`, "utf8")));
+        phase = `The recorded transaction phase is ${journal._tag}; swap phases are ${journal.swaps.map((swap) => `${swap.path}: ${swap._tag}`).join(", ")}`;
+      } catch { /* Old or unreadable journals require the same conservative manual recovery. */ }
+      throw new CanonfigError("SKILL_RECOVERY_REQUIRED", `A previous update left a .pending recovery journal. ${phase}. Preserve the journal and backups, compare installed trees and source configuration with the recorded digests, and finish or restore that update manually before removing the journal and any stale lock`);
+    }
     return await action();
   } finally { await handle.close(); await fs.unlink(lock); }
 }
@@ -134,6 +142,84 @@ export const skillUpdateOperations: SkillUpdateOperations = {
   rename: fs.rename, remove: fs.rm, writeFile: fs.writeFile, writeAtomic: atomicWrite,
 };
 
+const swapFields = {
+  path: Schema.String, staged: Schema.String, backup: Schema.String,
+  previousDigest: Schema.String, expectedDigest: Schema.String,
+};
+const SkillSwap = Schema.TaggedUnion({
+  Staging: swapFields,
+  Staged: swapFields,
+  MovingOld: swapFields,
+  OldMoved: swapFields,
+  Installing: swapFields,
+  Installed: swapFields,
+  RemovingNew: swapFields,
+  Restoring: swapFields,
+  Restored: swapFields,
+  RecoveryRequired: { ...swapFields, cause: Schema.String },
+});
+type SkillSwap = typeof SkillSwap.Type;
+const transactionFields = {
+  version: Schema.Literal(2),
+  previousConfig: Schema.Struct({
+    version: Schema.Literal(1),
+    skills: Schema.Array(Schema.Struct({
+      name: Schema.String, path: Schema.String, source: Schema.String,
+      ref: Schema.String, subdir: Schema.String, commit: Schema.String, digest: Schema.String,
+    })),
+  }),
+  swaps: Schema.Array(SkillSwap),
+};
+const SkillTransaction = Schema.TaggedUnion({
+  Preparing: transactionFields,
+  Swapping: transactionFields,
+  PublishingConfig: transactionFields,
+  ConfigCommitted: transactionFields,
+  RollingBack: transactionFields,
+  Finished: transactionFields,
+});
+type SkillTransaction = typeof SkillTransaction.Type;
+type SkillTransition =
+  | { readonly _tag: "Record" }
+  | { readonly _tag: "Transaction"; readonly phase: SkillTransaction["_tag"] }
+  | { readonly _tag: "Swap"; readonly index: number; readonly phase: Exclude<SkillSwap["_tag"], "RecoveryRequired"> }
+  | { readonly _tag: "Recovery"; readonly index: number; readonly cause: string };
+
+function swapTransitionAllowed(transaction: SkillTransaction["_tag"], from: SkillSwap["_tag"], to: SkillSwap["_tag"]): boolean {
+  switch (transaction) {
+    case "Preparing":
+      return from === "Staging" && to === "Staged";
+    case "Swapping":
+      switch (from) {
+        case "Staged": return to === "MovingOld";
+        case "MovingOld": return to === "OldMoved" || to === "Staged";
+        case "OldMoved": return to === "Installing";
+        case "Installing": return to === "Installed" || to === "OldMoved";
+        default: return false;
+      }
+    case "RollingBack":
+      if (to === "RecoveryRequired") return from !== "RecoveryRequired";
+      switch (from) {
+        case "Staging":
+        case "Staged":
+        case "Restoring": return to === "Restored";
+        case "OldMoved": return to === "Restoring";
+        case "Installed": return to === "RemovingNew";
+        case "RemovingNew": return to === "OldMoved";
+        default: return false;
+      }
+    default:
+      return false;
+  }
+}
+const transactionTransitions = {
+  Preparing: ["Swapping", "RollingBack"],
+  Swapping: ["PublishingConfig", "RollingBack"],
+  PublishingConfig: ["ConfigCommitted", "RollingBack"],
+  ConfigCommitted: ["Finished"],
+  RollingBack: ["Finished"],
+  Finished: [],
+} satisfies Readonly<Record<SkillTransaction["_tag"], ReadonlyArray<SkillTransaction["_tag"]>>>;
 export async function updateSkills(location: SkillLocation, names: readonly string[], operations: SkillUpdateOperations = skillUpdateOperations, validateSelection?: (config: SkillConfig) => void): Promise<SkillCheck[]> {
   return withLock(location, async () => {
     const original = await readConfig(location);
@@ -142,19 +228,63 @@ export async function updateSkills(location: SkillLocation, names: readonly stri
     if (prepared.some((item) => item.check.status === "local-edits")) throw new CanonfigError("SKILL_LOCAL_EDITED", "Local edits detected. No skill was updated; check the preview and reconcile changes before applying");
     const changed = prepared.filter((item) => item.check.status === "update-available");
     if (!changed.length) return prepared.map((item) => item.check);
-    const swaps: Array<{ item: Prepared; destination: string; staged: string; backup: string; moved: boolean; installed: boolean }> = [];
+    const swaps: SkillSwap[] = [];
+    for (const item of changed) {
+      const destination = path.join(location.root, item.skill.path);
+      await assertNoSymlinkPathComponents(location.root, destination);
+      const suffix = randomUUID();
+      swaps.push({
+        _tag: "Staging", path: item.skill.path,
+        staged: path.relative(location.root, `${destination}.canonfig-stage-${suffix}`),
+        backup: path.relative(location.root, `${destination}.canonfig-backup-${suffix}`),
+        previousDigest: item.skill.digest, expectedDigest: item.digest,
+      });
+    }
     const journal = `${configPath(location)}.pending`;
-    let committed = false;
-    let rollbackFailed = false;
+    let transaction = Schema.decodeUnknownSync(SkillTransaction)({ _tag: "Preparing", version: 2, previousConfig: original, swaps });
+    const swapAt = (index: number): SkillSwap => {
+      const swap = transaction.swaps[index];
+      if (swap === undefined) throw new CanonfigError("SKILL_TRANSITION_INVALID", `Unknown skill swap ${index}`);
+      return swap;
+    };
+    // This is the only writer of transaction and per-skill lifecycle state.
+    // Intent phases precede renames so a crash never claims a rename did not run.
+    const transition = async (event: SkillTransition): Promise<void> => {
+      if (event._tag === "Transaction") {
+        if (!transactionTransitions[transaction._tag].some((phase) => phase === event.phase)
+          || event.phase === "Swapping" && transaction.swaps.some((swap) => swap._tag !== "Staged")
+          || event.phase === "PublishingConfig" && transaction.swaps.some((swap) => swap._tag !== "Installed")
+          || event.phase === "Finished" && transaction._tag === "RollingBack" && transaction.swaps.some((swap) => swap._tag !== "Restored")) {
+          throw new CanonfigError("SKILL_TRANSITION_INVALID", `Cannot transition skill transaction from ${transaction._tag} to ${event.phase}`);
+        }
+        if (event.phase === "Finished") {
+          const next: SkillTransaction = { ...transaction, _tag: "Finished" };
+          await operations.writeAtomic(journal, JSON.stringify(next, null, 2) + "\n", 0o600, location.root);
+          transaction = next;
+          return;
+        }
+        transaction = { ...transaction, _tag: event.phase };
+      } else if (event._tag === "Swap" || event._tag === "Recovery") {
+        const previous = transaction.swaps[event.index];
+        const phase = event._tag === "Recovery" ? "RecoveryRequired" : event.phase;
+        if (previous === undefined
+          || !swapTransitionAllowed(transaction._tag, previous._tag, phase)) {
+          throw new CanonfigError("SKILL_TRANSITION_INVALID", `Cannot transition skill swap to ${phase} in ${transaction._tag}`);
+        }
+        const { _tag: _, ...fields } = previous;
+        const next: SkillSwap = event._tag === "Recovery"
+          ? { ...fields, _tag: "RecoveryRequired", cause: event.cause }
+          : { ...fields, _tag: event.phase };
+        transaction = { ...transaction, swaps: transaction.swaps.map((swap, index) => index === event.index ? next : swap) };
+      }
+      await operations.writeAtomic(journal, JSON.stringify(transaction, null, 2) + "\n", 0o600, location.root);
+    };
+    await transition({ _tag: "Record" });
     try {
-      for (const item of changed) {
-        const destination = path.join(location.root, item.skill.path);
-        await assertNoSymlinkPathComponents(location.root, destination);
-        const suffix = randomUUID();
-        const staged = `${destination}.canonfig-stage-${suffix}`;
-        const backup = `${destination}.canonfig-backup-${suffix}`;
-        const swap = { item, destination, staged, backup, moved: false, installed: false };
-        swaps.push(swap);
+      for (const [index, item] of changed.entries()) {
+        const swap = swapAt(index);
+        const destination = path.join(location.root, swap.path);
+        const staged = path.join(location.root, swap.staged);
         const originalDirectoryMode = (await fs.stat(destination)).mode & 0o777;
         await fs.mkdir(staged, { mode: 0o700 });
         for (const file of item.files) {
@@ -169,43 +299,79 @@ export async function updateSkills(location: SkillLocation, names: readonly stri
         }
         if (process.platform !== "win32") await fs.chmod(staged, originalDirectoryMode);
         if (fingerprint(await readLocalSkill(location.root, path.relative(location.root, staged).split(path.sep).join("/"))) !== item.digest) throw new CanonfigError("SKILL_VERIFY_FAILED", "Staged skill did not match fetched content");
+        await transition({ _tag: "Swap", index, phase: "Staged" });
       }
       if (JSON.stringify(await readConfig(location)) !== JSON.stringify(original)) throw new CanonfigError("SKILL_CONFIG_EDITED", "Source configuration changed while updates were prepared");
-      await operations.writeAtomic(journal, JSON.stringify({ version: 1, previousConfig: original, swaps: swaps.map((swap) => ({ path: swap.item.skill.path, staged: path.relative(location.root, swap.staged), backup: path.relative(location.root, swap.backup), expectedDigest: swap.item.digest })) }, null, 2) + "\n", 0o600, location.root);
-      for (const swap of swaps) {
-        await assertNoSymlinkPathComponents(location.root, swap.destination);
-        if (fingerprint(await readLocalSkill(location.root, swap.item.skill.path)) !== swap.item.skill.digest) throw new CanonfigError("SKILL_LOCAL_EDITED", "Skill changed while update was staged; refusing replacement");
-        await operations.rename(swap.destination, swap.backup); swap.moved = true;
-        if (fingerprint(await readLocalSkill(location.root, path.relative(location.root, swap.backup).split(path.sep).join("/"))) !== swap.item.skill.digest) throw new CanonfigError("SKILL_LOCAL_EDITED", "Skill changed during replacement; restoring its backup");
-        await operations.rename(swap.staged, swap.destination); swap.installed = true;
+      await transition({ _tag: "Transaction", phase: "Swapping" });
+      for (const [index, swap] of transaction.swaps.entries()) {
+        const destination = path.join(location.root, swap.path);
+        const backup = path.join(location.root, swap.backup);
+        await assertNoSymlinkPathComponents(location.root, destination);
+        if (fingerprint(await readLocalSkill(location.root, swap.path)) !== swap.previousDigest) throw new CanonfigError("SKILL_LOCAL_EDITED", "Skill changed while update was staged; refusing replacement");
+        await transition({ _tag: "Swap", index, phase: "MovingOld" });
+        try { await operations.rename(destination, backup); }
+        catch (error) { await transition({ _tag: "Swap", index, phase: "Staged" }); throw error; }
+        await transition({ _tag: "Swap", index, phase: "OldMoved" });
+        if (fingerprint(await readLocalSkill(location.root, swap.backup.split(path.sep).join("/"))) !== swap.previousDigest) throw new CanonfigError("SKILL_LOCAL_EDITED", "Skill changed during replacement; restoring its backup");
+        await transition({ _tag: "Swap", index, phase: "Installing" });
+        try { await operations.rename(path.join(location.root, swap.staged), destination); }
+        catch (error) { await transition({ _tag: "Swap", index, phase: "OldMoved" }); throw error; }
+        await transition({ _tag: "Swap", index, phase: "Installed" });
       }
       const next: SkillConfig = { version: 1, skills: original.skills.map((skill) => {
         const updated = changed.find((item) => item.skill.name === skill.name);
         return updated ? { ...skill, commit: updated.check.nextCommit, digest: updated.digest } : skill;
       }) };
       if (JSON.stringify(await readConfig(location)) !== JSON.stringify(original)) throw new CanonfigError("SKILL_CONFIG_EDITED", "Source configuration changed during update; restoring installed skills");
+      await transition({ _tag: "Transaction", phase: "PublishingConfig" });
       await writeConfig(location, next, operations.writeAtomic);
-      committed = true;
+      await transition({ _tag: "Transaction", phase: "ConfigCommitted" });
+      await transition({ _tag: "Transaction", phase: "Finished" });
     } catch (error) {
-      for (const swap of [...swaps].reverse()) {
-        try {
-          if (swap.installed) {
-            if (fingerprint(await readLocalSkill(location.root, swap.item.skill.path)) !== swap.item.digest) throw new Error("New local edits require manual recovery");
-            await operations.remove(swap.destination, { recursive: true });
-          }
-          if (swap.moved) await operations.rename(swap.backup, swap.destination);
-        } catch { rollbackFailed = true; }
+      // Never roll back installed bytes once the source configuration committed.
+      if (transaction._tag === "ConfigCommitted" || transaction._tag === "Finished") {
+        throw new CanonfigError("SKILL_RECOVERY_REQUIRED", `Skill configuration committed but recovery bookkeeping failed. Preserve installed skills and inspect ${location.config}.pending`);
       }
-      if (rollbackFailed) throw new CanonfigError("SKILL_RECOVERY_REQUIRED", `Update stopped and rollback needs manual recovery. Backups are preserved; inspect ${location.config}.pending`);
+      await transition({ _tag: "Transaction", phase: "RollingBack" });
+      for (let index = transaction.swaps.length - 1; index >= 0; index--) {
+        const swap = swapAt(index);
+        const destination = path.join(location.root, swap.path);
+        try {
+          if (swap._tag === "Installed") {
+            if (fingerprint(await readLocalSkill(location.root, swap.path)) !== swap.expectedDigest) throw new Error("New local edits require manual recovery");
+            await transition({ _tag: "Swap", index, phase: "RemovingNew" });
+            await operations.remove(destination, { recursive: true });
+            await transition({ _tag: "Swap", index, phase: "OldMoved" });
+          }
+          const current = swapAt(index);
+          if (current._tag === "OldMoved") {
+            await transition({ _tag: "Swap", index, phase: "Restoring" });
+            await operations.rename(path.join(location.root, swap.backup), destination);
+          } else if (current._tag !== "Staging" && current._tag !== "Staged") {
+            throw new Error(`Interrupted ${current._tag} needs manual recovery`);
+          }
+          await transition({ _tag: "Swap", index, phase: "Restored" });
+        } catch (cause) {
+          await transition({ _tag: "Recovery", index, cause: cause instanceof Error ? cause.message : String(cause) });
+        }
+      }
+      if (transaction.swaps.some((swap) => swap._tag === "RecoveryRequired")) {
+        throw new CanonfigError("SKILL_RECOVERY_REQUIRED", `Update stopped and rollback needs manual recovery. Backups are preserved; inspect ${location.config}.pending`);
+      }
+      await transition({ _tag: "Transaction", phase: "Finished" });
       throw error;
     } finally {
-      for (const swap of swaps) {
-        try { if (await exists(swap.staged)) await operations.remove(swap.staged, { recursive: true }); }
-        catch { /* Best-effort cleanup must not mask the transaction result. */ }
-        try { if (committed && await exists(swap.backup)) await operations.remove(swap.backup, { recursive: true }); }
-        catch { /* Retain the backup without preventing journal cleanup. */ }
+      if (transaction._tag === "Finished") {
+        for (const swap of transaction.swaps) {
+          try { await operations.remove(path.join(location.root, swap.staged), { recursive: true, force: true }); }
+          catch { /* Best-effort cleanup must not mask the transaction result. */ }
+          if (swap._tag === "Installed") {
+            try { await operations.remove(path.join(location.root, swap.backup), { recursive: true, force: true }); }
+            catch { /* Retain the backup without preventing journal cleanup. */ }
+          }
+        }
+        if (await exists(journal)) await fs.unlink(journal);
       }
-      if (!rollbackFailed && await exists(journal)) await fs.unlink(journal);
     }
     return prepared.map((item) => item.check);
   });

@@ -130,6 +130,94 @@ describe("tracked upstream skill updates", () => {
     expect(code).toBe(4); expect(stderr).not.toContain(location.root);
     expect(stderr).toContain(input.path);
   });
+  it("records staging ownership before creating skill content", async () => {
+    const { location, input, upstream } = await fixture();
+    await trackSkill(location, input);
+    await advance(upstream);
+    let observed = false;
+    await updateSkills(location, [], {
+      ...skillUpdateOperations,
+      writeFile: async (file, bytes, options) => {
+        const journal = JSON.parse(await readFile(path.join(location.root, `${location.config}.pending`), "utf8"));
+        expect(journal).toMatchObject({
+          version: 2, _tag: "Preparing",
+          swaps: [{ _tag: "Staging", path: input.path }],
+        });
+        observed = true;
+        return skillUpdateOperations.writeFile(file, bytes, options);
+      },
+    });
+    expect(observed).toBe(true);
+  });
+  it("records each rename intent before touching the installed tree", async () => {
+    const { location, input, upstream } = await fixture();
+    await trackSkill(location, input);
+    await advance(upstream);
+    const phases: string[] = [];
+    await updateSkills(location, [], {
+      ...skillUpdateOperations,
+      rename: async (from, to) => {
+        const journal = JSON.parse(await readFile(path.join(location.root, `${location.config}.pending`), "utf8"));
+        expect(journal._tag).toBe("Swapping");
+        phases.push(journal.swaps[0]._tag);
+        return skillUpdateOperations.rename(from, to);
+      },
+    });
+    expect(phases).toEqual(["MovingOld", "Installing"]);
+  });
+  it("keeps committed configuration and installed bytes when journal publication fails", async () => {
+    const { location, input, upstream } = await fixture();
+    await trackSkill(location, input);
+    await advance(upstream);
+    await expect(updateSkills(location, [], {
+      ...skillUpdateOperations,
+      writeAtomic: async (file, content, mode, root) => {
+        if (file.endsWith(".pending") && JSON.parse(String(content))._tag === "ConfigCommitted") {
+          throw new Error("fixture journal publication failed");
+        }
+        return atomicWrite(file, content, mode, root);
+      },
+    })).rejects.toMatchObject({ code: "SKILL_RECOVERY_REQUIRED" });
+    expect(await readFile(path.join(location.root, input.path, "SKILL.md"), "utf8")).toContain("Version two");
+    expect((await checkSkills(location, []))[0]?.status).toBe("unchanged");
+    const journal = JSON.parse(await readFile(path.join(location.root, `${location.config}.pending`), "utf8"));
+    expect(journal).toMatchObject({ _tag: "PublishingConfig", swaps: [{ _tag: "Installed" }] });
+    expect(await readFile(path.join(location.root, journal.swaps[0].backup, "SKILL.md"), "utf8")).toContain("Version one");
+  });
+  it("preserves per-skill rollback outcomes when one installed tree has new local edits", async () => {
+    const { location, input, upstream } = await fixture();
+    await trackSkill(location, input);
+    await cp(path.join(location.root, input.path), path.join(location.root, "skills/second"), { recursive: true });
+    await trackSkill(location, { ...input, name: "second", path: "skills/second" });
+    await advance(upstream);
+    const configuration = path.join(location.root, location.config);
+    await expect(updateSkills(location, [], {
+      ...skillUpdateOperations,
+      writeAtomic: async (file, content, mode, root) => {
+        if (file === configuration) {
+          await writeFile(path.join(location.root, input.path, "SKILL.md"), "new local edits");
+          throw new Error("fixture configuration publication failed");
+        }
+        return atomicWrite(file, content, mode, root);
+      },
+    })).rejects.toMatchObject({ code: "SKILL_RECOVERY_REQUIRED" });
+    const journal = JSON.parse(await readFile(`${configuration}.pending`, "utf8"));
+    expect(journal).toMatchObject({
+      _tag: "RollingBack",
+      swaps: [{ _tag: "RecoveryRequired", path: input.path }, { _tag: "Restored", path: "skills/second" }],
+    });
+    expect(await readFile(path.join(location.root, input.path, "SKILL.md"), "utf8")).toBe("new local edits");
+    expect(await readFile(path.join(location.root, "skills/second/SKILL.md"), "utf8")).toContain("Version one");
+    expect(await readFile(path.join(location.root, journal.swaps[0].backup, "SKILL.md"), "utf8")).toContain("Version one");
+  });
+  it("refuses released unphased journals with manual recovery instructions", async () => {
+    const { location, input } = await fixture();
+    await trackSkill(location, input);
+    const journal = JSON.stringify({ version: 1, previousConfig: await listSkills(location), swaps: [] });
+    await write(location.root, `${location.config}.pending`, journal);
+    await expect(updateSkills(location, [])).rejects.toThrow("released version 1");
+    expect(await readFile(path.join(location.root, `${location.config}.pending`), "utf8")).toBe(journal);
+  });
   it("rolls back an installed tree when atomic configuration publication fails", async () => {
     const { location, input, upstream } = await fixture(); await trackSkill(location, input); await advance(upstream);
     const configuration = path.join(location.root, location.config);
