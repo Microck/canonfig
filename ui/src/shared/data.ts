@@ -372,10 +372,7 @@ export const skillSources: SkillSource[] = [
   { id: "skills/release-notes", source: DEMO_SKILLS_REPO, ref: "v1.2.0", subdir: "skills/release-notes", commit: upstreamSkills[2].commit, baseline: upstreamSkills[2].files },
 ];
 
-/**
- * The newest stable patch in APP_VERSION's major.minor line on the demo's npm registry. Self-update only moves
- * within that line (latestPatch in src/runtime/self-update/core.ts).
- */
+/** The demo registry offers one newer stable patch, eligible for manual updates. */
 export const LATEST_PATCH = APP_VERSION.replace(/\d+$/, (patch) => String(Number(patch) + 1));
 
 /** Each demo machine's self-update opt-in: the official npm-cli.js it uses, or null before opting in. */

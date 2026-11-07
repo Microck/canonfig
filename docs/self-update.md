@@ -1,9 +1,16 @@
 # Opt-in self-updates
 
-Canonfig can check for and activate **stable patch releases in its current
-major.minor line**. A 6.1.x installation never moves to 6.2 or 7.x on its
-own. Source/follower major.minor compatibility still requires a coordinated fleet
-rollout for those releases. This is independent of skill and configuration sync.
+Manual checks and applies, including the browser Version page, offer the newest
+stable release in the installed major version. Automatic updates install the
+newest stable patch in the current major.minor line, or the newest stable release
+overall when a newer major exists. Automatic updates never take an in-major minor
+upgrade. Prereleases are never eligible.
+
+Source Machines and Follower Machines only pair on the same major.minor, so update
+every machine after a minor or major change. A new major may refuse older state.
+Follow its startup refusal's recovery instructions, using the old build to finish
+or recover unfinished work first. Self-updates are independent of skill and
+configuration sync.
 
 This build uses state format 7 and does not convert earlier Canonfig databases.
 If startup says the state came from an earlier version, move
@@ -52,13 +59,17 @@ canonfig self-update auto --apply --once
 canonfig self-update auto --apply --interval 86400
 ```
 
-Check and an apply without `--apply` are previews. They require opt-in settings
-so the npm executable and installation prefix are already established. Automatic
-mode polls in the foreground (24 hours default; 60 seconds to seven days), or
-runs once for an **explicitly operator-managed scheduler**. It installs eligible
-patches only when idle. Active commands defer a pass. Unfinished synchronization
-runs, unknown/unreadable state, invalid settings and update errors stop the
-worker. Finish or recover unfinished runs using their original build first.
+Check and an apply without `--apply` preview the newest stable release in the
+installed major. A newer major is reported, not selected: it installs
+automatically if auto updates are on, or with
+`npm install --global @microck/canonfig@<version>`.
+They require opt-in settings so the npm executable and installation prefix are
+already established. Automatic mode polls in the foreground (24 hours default;
+60 seconds to seven days), or runs once for an **explicitly operator-managed
+scheduler**. It installs eligible patches or newer majors only when idle. Active
+commands defer a pass. Unfinished synchronization runs, unknown/unreadable state,
+invalid settings and update errors stop the worker. Finish or recover unfinished
+runs using their original build first.
 
 A continuously running Source or watcher deliberately defers self-updates: stop
 it for a maintenance window. This feature does not automatically kill/restart
@@ -69,20 +80,22 @@ After successful activation the updater exits. Restart it under the new build,
 or let your external scheduler invoke `auto --apply --once` again. Existing
 scheduled follower bindings may need refreshing with the normal `sync --apply`.
 No credentials, enrollment or user configuration are migrated by the updater.
-If the Node executable path, the installation path or the major.minor line changes, review and
+Successful activation also updates the saved major.minor line, so the next
+command uses the installed release. If the Node executable path, installation
+root/prefix, state path or release line changes outside self-update, review and
 explicitly disable/re-enable the configuration rather than reusing stale intent.
 
 ## Update from the browser
 
 Open the Version page in Settings in `canonfig ui`. The same installation limits,
-patch-only policy and recovery rules apply as in the terminal.
+manual same-major selection and recovery rules apply as in the terminal.
 
 1. Stop all other Canonfig processes and pause schedules before first enable.
    Enter the absolute path to npm's `bin/npm-cli.js` and confirm that the other
    processes are idle. The GUI joins update coordination when enable succeeds.
-2. Check for an eligible patch, then apply it. The page reports the updater's
-   checking, staging, verifying, activating and complete phases, with the selected
-   version once known.
+2. Check for an eligible stable release in the same major, then apply it. The page
+   reports checking, staging, verifying, activating and complete phases, with the
+   selected version once known. Newer majors are reported but never selected here.
 3. After a successful update, run `canonfig ui` again in your terminal and open
    its new launch URL. The old server delivers the result before it exits and
    frees its port. It does not restart itself or other services.
@@ -100,7 +113,7 @@ GUI before using a separate terminal to apply or disable updates.
 
 ## Staging, safety and recovery
 
-The updater installs the exact patch in a separate staging prefix with lifecycle
+The updater installs the exact release in a separate staging prefix with lifecycle
 scripts disabled and nested dependencies. npm performs registry integrity checks.
 The staged package must identify as `@microck/canonfig` at the selected version,
 resolve its declared dependencies inside its package tree, and pass version/help
@@ -147,7 +160,9 @@ is created before the first rename:
 
 Only after that inspection may you remove the pending journal and confirmed-stale
 gate/readers with all writers stopped. Then verify the CLI version before
-resuming. Ordinary CLI commands deliberately refuse to run while a pending
+resuming. If you restored a package on a different major.minor line, disable and
+explicitly re-enable self-updates after review to bind settings to that restored
+line. Ordinary CLI commands deliberately refuse to run while a pending
 transaction remains. If unsure, keep the installation stopped and seek a reviewed
 manual restore. Do not run npm over an unfinished transaction.
 No automatic rollback or stale-gate takeover is claimed. Only reader leases with

@@ -140,7 +140,7 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
     queryRoute("/api/self-update", () => Effect.try({ try: status, catch: updateFailure })),
     mutationRoute("POST", "/api/self-update/check", EmptyBody,
       () => Effect.tryPromise({
-        try: (signal) => update(root, false, undefined, signal),
+        try: (signal) => update(root, false, "manual", undefined, signal),
         catch: updateFailure,
       }).pipe(Effect.map(toJson))),
     mutationRoute("POST", "/api/self-update/enable", GuiSelfUpdateEnable,
@@ -161,7 +161,7 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
       let installed = false;
       return operations.start(Effect.tryPromise({
         try: (signal) => lease.selfUpdate(
-          () => update(root, true, undefined, signal, undefined, (progress) => { journal = progress; }),
+          () => update(root, true, "manual", undefined, signal, undefined, (progress) => { journal = progress; }),
           (result) => {
             installed = result.status === "updated";
             return !installed;

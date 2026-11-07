@@ -17,13 +17,16 @@ enable --apply --confirm-idle --npm-cli /absolute/path/to/npm/bin/npm-cli.js
   global npm prefix under your home is supported. No service is installed.
 disable --apply: stop future updates (only when no coordinated commands are active).
 status: print local opt-in settings and any interrupted update.
-check: query the official npm registry for a newer stable patch in this minor line.
-apply --apply: stage, verify and activate that patch only when idle.
+check: query the official npm registry for the newest stable release in this major.
+apply --apply: stage, verify and activate that release only when idle; never a major.
 auto --apply [--once] [--interval SECONDS]: foreground periodic updater (24h default).
-  Busy installations defer. An unfinished sync blocks. Successful activation exits;
-  restart under the new build, or use --once from an external scheduler.
-Major/minor changes require a coordinated fleet upgrade. No forced takeover,
-service restart, credential changes or removal of retained package backups.
+  Installs current-line stable patches or the newest stable release of a newer
+  major. Never installs an in-major minor upgrade. Busy installations defer;
+  unfinished syncs block. After activation, restart under the new build.
+Source and Followers only pair on the same major.minor: update every machine
+after minor or major changes. A new major may refuse older state; follow its
+startup refusal's recovery instructions. No forced takeover, service restart,
+credential changes or removal of retained package backups.
 --json emits structured results. Every write requires --apply.
 `;
 export function parseSelfUpdateArguments(args: readonly string[]) {
@@ -60,7 +63,7 @@ export async function runSelfUpdateCli(args: readonly string[],root:string,io:Cl
   }
   if(command==="enable"){
    installation(root);if(!npmCli)throw new Error("enable requires --npm-cli");
-   if(!apply){output("Preview: opt in to stable patch updates only. Stop all current Canonfig processes/schedules, then rerun with --apply --confirm-idle.");return;}
+   if(!apply){output("Preview: opt in to stable self-updates. Manual updates stay in this major; auto installs current-line patches or newer majors, never an in-major minor. Stop all current Canonfig processes/schedules, then rerun with --apply --confirm-idle.");return;}
    await enable(root,npmCli,idle,undefined,undefined,signal);output("Self-update enabled. Run self-update auto --apply in foreground or schedule self-update auto --apply --once. Restart prior services only after enabling.");return;
   }
   if(command==="disable"){
@@ -70,7 +73,7 @@ export async function runSelfUpdateCli(args: readonly string[],root:string,io:Cl
   // Checks require explicit opt-in so the npm executable/prefix are established.
   do {
    if(signal?.aborted)return;
-   const result=await update(root,apply,undefined,signal);output(result);
+   const result=await update(root,apply,command==="auto"?"auto":"manual",undefined,signal);output(result);
    if(command!=="auto"||once||!apply||result.status==="updated")return;
    await delay(interval*1000,undefined,{signal});
   }while(!signal?.aborted);

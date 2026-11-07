@@ -114,18 +114,28 @@ canonfig self-update auto --apply --once
 canonfig self-update disable --apply
 ```
 
-Opt-in updates to the latest stable patch release of the installed
-`major.minor` line, for a global npm installation under your home directory.
-Minor and major upgrades stay manual.
+Opt-in stable updates support global npm installations under your home directory.
+Manual checks and applies offer the newest stable release in the installed major.
+Automatic updates take the newest stable patch in the current `major.minor` line,
+or the newest stable release overall when a newer major exists. They never take
+an in-major minor upgrade. Prereleases are excluded.
+
+Manual checks report newer majors without selecting them. A newer major installs
+automatically if auto updates are on, or with
+`npm install --global @microck/canonfig@<version>`.
+Source and Followers only pair on the same `major.minor`, so update every machine
+after a minor or major change. A new major may refuse older state: follow its
+startup refusal's recovery steps, finishing or recovering work with the old build
+first.
 
 | Command | Options |
 | --- | --- |
 | `enable` | `--apply`, `--confirm-idle`, and `--npm-cli <absolute path to npm-cli.js>`, all required. Stop every Canonfig process and schedule first. |
 | `disable` | `--apply` required. |
 | `status` | Prints settings and any interrupted update. Read-only. |
-| `check` | Asks the npm registry for a newer patch. Read-only. |
-| `apply` | `--apply` required. Installs, verifies, and activates the patch only when Canonfig is idle. |
-| `auto` | Without `--apply`, previews once. `--apply` keeps running in the foreground and checks every `--interval <seconds>` (default 86400, from 60 to 604800). `--once` runs one pass, for an external scheduler. |
+| `check` | Asks the official npm registry for the newest stable release in this major. Reports newer majors without selecting them. Read-only. |
+| `apply` | `--apply` required. Installs, verifies, and activates that same-major release only when Canonfig is idle. |
+| `auto` | Installs current-line stable patches or the newest stable release of a newer major, never an in-major minor. Without `--apply`, previews once. `--apply` keeps running in the foreground and checks every `--interval <seconds>` (default 86400, from 60 to 604800). `--once` runs one pass, for an external scheduler. |
 
 A running command or an unfinished sync blocks activation. The browser's
 Version page in Settings supports the same operations, with the npm CLI path

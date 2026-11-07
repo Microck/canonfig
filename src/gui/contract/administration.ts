@@ -104,6 +104,9 @@ export const GuiSelfUpdateStatus = Schema.Struct({
   pending: Schema.Boolean,
   settings: Schema.NullOr(Schema.Json),
 });
+/** Manual checks offer only the installed major's newest stable release.
+ * Detail also reports newer majors and pairing/state warnings for line changes.
+ */
 export const GuiSelfUpdateCheck = Schema.Struct({
   current: Schema.String,
   candidate: Schema.String,

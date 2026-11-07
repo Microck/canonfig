@@ -171,14 +171,15 @@ for (const role of ["source", "follower"] as const) {
   });
 }
 
-it("self-update renders persisted progress and stops requests after installation", async () => {
+it("self-update offers a same-major minor, preserves major notices and pairing warnings, and stops requests after installation", async () => {
   const requests: string[] = [];
   let operationReads = 0;
+  const detail = "Source and Followers only pair on the same major.minor, so update every machine. 8.0.0: a new major is available; it installs automatically if auto updates are on, or with npm install --global @microck/canonfig@8.0.0.";
   const responses: Record<string, unknown> = {
     "/api/session": { role: "source", machineName: "Update fixture", folderPath: "/tmp/update-fixture", version: "7.0.0" },
     "/api/status": { machineRole: { role: "source" }, lifecycle: {}, tunnel: null },
     "/api/self-update": { enabled: true, pending: false, platform: "linux", settings: { npmCli: "/tmp/update-fixture/npm/bin/npm-cli.js" } },
-    "/api/self-update/check": { current: "7.0.0", candidate: "7.0.1", status: "available", detail: "Patch available." },
+    "/api/self-update/check": { current: "7.0.0", candidate: "7.1.0", status: "available", detail },
     "/api/self-update/apply": { id: "update-operation" },
   };
   // This disposable HTTP fixture exercises the real browser transport and schemas,
@@ -194,8 +195,8 @@ it("self-update renders persisted progress and stops requests after installation
     if (path === "/api/operations/update-operation") {
       operationReads += 1;
       outgoing.end(JSON.stringify(operationReads === 1
-        ? { id: "update-operation", state: "running", journal: { phase: "staging", candidate: "7.0.1" } }
-        : { id: "update-operation", state: "succeeded", journal: { phase: "complete", candidate: "7.0.1" }, result: { current: "7.0.0", candidate: "7.0.1", status: "updated", detail: "Installed 7.0.1. Receipt unavailable; keep the update record for recovery." } }));
+        ? { id: "update-operation", state: "running", journal: { phase: "staging", candidate: "7.1.0" } }
+        : { id: "update-operation", state: "succeeded", journal: { phase: "complete", candidate: "7.1.0" }, result: { current: "7.0.0", candidate: "7.1.0", status: "updated", detail: `Installed 7.1.0. Receipt unavailable; keep the update record for recovery. ${detail}` } }));
       return;
     }
     outgoing.statusCode = path in responses ? path === "/api/self-update/apply" ? 202 : 200 : 404;
@@ -234,12 +235,14 @@ it("self-update renders persisted progress and stops requests after installation
     await act(async () => { root.render(<LiveApp backend={backend} />); });
     await settle("/tmp/update-fixture/npm/bin/npm-cli.js");
     await click("Check for updates");
-    await settle("Patch available.");
-    await click("Install 7.0.1…");
+    await settle(detail);
+    assert.ok(container.textContent?.includes("Automatic updates install patches in the current minor line or a newer major, never an in-major minor upgrade."));
+    await click("Install 7.1.0…");
     assert.ok(document.body.textContent?.includes("After installation, this GUI stops."));
     await click("Install update");
-    await settle("staging 7.0.1");
-    await settle("Canonfig 7.0.1 is installed. Start canonfig ui again.");
+    await settle("staging 7.1.0");
+    await settle("Canonfig 7.1.0 is installed. Start canonfig ui again.");
+    assert.ok(container.textContent?.includes(detail), "Pairing warnings and major notices must survive activation");
     assert.ok(container.textContent?.includes("Receipt unavailable; keep the update record for recovery."), "Committed-update warnings must survive the terminal screen");
     assert.equal(container.querySelector('[role="status"] .font-mono')?.textContent, "canonfig ui");
     assert.ok(!container.querySelector('[role="status"]')?.textContent?.includes("`"));
@@ -251,7 +254,7 @@ it("self-update renders persisted progress and stops requests after installation
     await act(async () => { navigate("/source/settings/version"); });
     await act(async () => { await delay(550); });
     assert.deepEqual(requests, completedRequests, "completion must unmount resource reads and stop operation polling");
-    assert.ok(container.textContent?.includes("Canonfig 7.0.1 is installed."));
+    assert.ok(container.textContent?.includes("Canonfig 7.1.0 is installed."));
     assert.equal(container.querySelectorAll("button").length, 1, "only the copy command control remains");
   } finally {
     await act(async () => { root.unmount(); });

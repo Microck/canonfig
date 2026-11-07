@@ -52,7 +52,7 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     title: "Self-update",
     areas: ["self-update"],
     usage: ["self-update enable|disable|status|check|apply|auto [--apply]"],
-    notes: ["Opt-in stable patch updates for user-private global npm installations; see self-update --help.", "Active commands and unfinished syncs block activation. Major/minor fleet upgrades remain manual."],
+    notes: ["Opt-in stable updates for user-private global npm installations; see self-update --help.", "Manual updates stay in the current major. Auto installs current-line patches or newer majors, never in-major minors. Active commands and unfinished syncs block activation."],
   },
   {
     title: "Source Machine",

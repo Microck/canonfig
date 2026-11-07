@@ -173,7 +173,7 @@ export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): Admini
       },
       check: () => {
         sendVersion({ kind: "start", action: "check" });
-        ws.later(() => sendVersion({ kind: "checked", checked: { current: APP_VERSION, candidate: LATEST_PATCH, status: LATEST_PATCH === APP_VERSION ? "current" : "available", detail: `Only patches in the ${APP_VERSION.split(".").slice(0, 2).join(".")} line are offered.` } }), 900);
+        ws.later(() => sendVersion({ kind: "checked", checked: { current: APP_VERSION, candidate: LATEST_PATCH, status: LATEST_PATCH === APP_VERSION ? "current" : "available", detail: "Manual updates install the newest stable release in the current major, never a newer major." } }), 900);
       },
       enable: (npmCli, confirmIdle) => {
         if (!confirmIdle || gate.unfinished) throw new TransitionError("Demo update", version.kind, "enable without idle confirmation");

@@ -10,21 +10,51 @@ import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { acquireGate, assertPrivateDirectory, readersActive, regular, updateDirectory } from "./coordination.ts";
 
-export const parseVersion = (value: string): readonly [number, number, number] => {
+type StableVersion = readonly [number, number, number];
+export const parseVersion = (value: string): StableVersion => {
   if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.test(value)) throw new Error(`Unsupported stable version: ${value}`);
   const parts = value.split(".").map(Number);
   if (parts.some((n) => !Number.isSafeInteger(n))) throw new Error("Version component exceeds safe range");
   return [parts[0]!, parts[1]!, parts[2]!];
 };
-export function latestPatch(current: string, versions: readonly string[]): string {
-  const [major, minor, patch] = parseVersion(current);
-  let best = patch;
-  for (const candidate of versions) {
-    if (!/^\d+\.\d+\.\d+$/u.test(candidate)) continue;
-    const [a,b,c] = parseVersion(candidate);
-    if (a === major && b === minor && c > best) best = c;
+const newer = (a: StableVersion, b: StableVersion): boolean =>
+  a[0] > b[0] || (a[0] === b[0] && (a[1] > b[1] || (a[1] === b[1] && a[2] > b[2])));
+
+/** Automatic passes skip in-major minors, but a newer major takes priority over patches. */
+export function selectAutomaticRelease(current: string, versions: readonly string[]): string {
+  const installed = parseVersion(current);
+  let best = installed;
+  let selected = current;
+  for (const version of versions) {
+    if (!/^\d+\.\d+\.\d+$/u.test(version)) continue;
+    const release = parseVersion(version);
+    if ((release[0] > installed[0] || (release[0] === installed[0] && release[1] === installed[1])) && newer(release, best)) {
+      best = release;
+      selected = version;
+    }
   }
-  return `${major}.${minor}.${best}`;
+  return selected;
+}
+
+/** Manual checks offer same-major releases and report a newer major without installing it. */
+export function selectManualRelease(current: string, versions: readonly string[]) {
+  const installed = parseVersion(current);
+  let best = installed;
+  let latestMajor = installed;
+  let candidate = current;
+  let newMajor: string | null = null;
+  for (const version of versions) {
+    if (!/^\d+\.\d+\.\d+$/u.test(version)) continue;
+    const release = parseVersion(version);
+    if (release[0] === installed[0] && newer(release, best)) {
+      best = release;
+      candidate = version;
+    } else if (release[0] > installed[0] && newer(release, latestMajor)) {
+      latestMajor = release;
+      newMajor = version;
+    }
+  }
+  return { candidate, newMajor };
 }
 export interface Invocation { executable: string; args: readonly string[]; timeout?: number }
 export type Runner = (invocation: Invocation, signal?: AbortSignal) => Promise<string>;
@@ -140,7 +170,7 @@ const writeTransaction = (path: string, state: UpdateTransaction): void => {
   syncFile(temporary); renameSync(temporary, path); syncDirectory(dirname(path));
 };
 export interface UpdateResult {current:string;candidate:string;status:"current"|"available"|"deferred"|"updated";detail:string}
-export async function update(root:string,apply:boolean,runner:Runner=run,signal?:AbortSignal, home=homedir(), onProgress?: (progress: UpdateProgress) => void):Promise<UpdateResult>{
+export async function update(root:string,apply:boolean,mode:"manual"|"auto",runner:Runner=run,signal?:AbortSignal, home=homedir(), onProgress?: (progress: UpdateProgress) => void):Promise<UpdateResult>{
   if(signal?.aborted)throw new Error("Self-update cancelled");
   const location=installation(root,home);const directory=updateDirectory(location.root);const settings=readSettings(directory);
   const [major,minor]=parseVersion(location.version);
@@ -179,8 +209,18 @@ export async function update(root:string,apply:boolean,runner:Runner=run,signal?
   const common=["--global","--registry=https://registry.npmjs.org/","--@microck:registry=https://registry.npmjs.org/","--userconfig",isolated[0]!,"--globalconfig",isolated[1]!,"--cache",join(directory,"cache")];
   const raw=await runner({executable:settings.node,args:[settings.npmCli,"view","@microck/canonfig","versions","--json",...common]},signal);
   const versions=Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.String)))(raw);
-  const candidate=latestPatch(location.version,versions);
-  const result:UpdateResult={current:location.version,candidate,status:candidate===location.version?"current":"available",detail:"Only stable patches within the enabled major.minor line are eligible."};
+  const selection = mode === "auto"
+    ? { candidate: selectAutomaticRelease(location.version, versions), newMajor: null }
+    : selectManualRelease(location.version, versions);
+  const { candidate, newMajor } = selection;
+  const [candidateMajor, candidateMinor] = parseVersion(candidate);
+  let detail = mode === "auto"
+    ? "Automatic updates install current-line stable patches or the newest stable release of a newer major, never an in-major minor."
+    : "Manual updates install the newest stable release in the current major, never a newer major.";
+  if (newMajor !== null) detail += ` ${newMajor}: a new major is available; it installs automatically if auto updates are on, or with npm install --global @microck/canonfig@${newMajor}.`;
+  if (candidateMajor !== major || candidateMinor !== minor) detail += " Source and Followers only pair on the same major.minor, so update every machine.";
+  if (candidateMajor !== major) detail += " The new version may refuse older state. Follow its startup refusal's recovery instructions; use the old build to finish or recover unfinished work before moving old state aside and setting up again.";
+  const result:UpdateResult={current:location.version,candidate,status:candidate===location.version?"current":"available",detail};
   if(!apply||candidate===location.version) {
     progress({phase:"complete", candidate});
     return result;
@@ -189,7 +229,7 @@ export async function update(root:string,apply:boolean,runner:Runner=run,signal?
     if(JSON.stringify(readSettings(directory))!==JSON.stringify(settings))throw new Error("Self-update settings changed while checking; no update applied");
     if(readersActive(directory)) {
       progress({phase:"complete", candidate});
-      return {...result,status:"deferred",detail:"Canonfig commands are active (or left a stale lease). Retry after they finish; do not remove live leases."};
+      return {...result,status:"deferred",detail:`Canonfig commands are active (or left a stale lease). Retry after they finish; do not remove live leases. ${result.detail}`};
     }
     assertNoUnfinishedRun(settings.state);
     if(installation(root,home).version!==location.version)throw new Error("Installation changed during check");
@@ -226,16 +266,24 @@ export async function update(root:string,apply:boolean,runner:Runner=run,signal?
     // operator recovery; never delete the old package or pretend it succeeded.
     renameSync(staged,location.root); transaction = advanceUpdate(transaction, "Installed");
     writeTransaction(journal, transaction);syncDirectory(dirname(location.root));
+    // Commit the selected line under the gate before publishing the receipt.
+    // A failure retains the pending journal, so stale settings cannot admit commands.
+    if (candidateMajor !== major || candidateMinor !== minor) {
+      const settingsPath = join(directory, "settings.json");
+      const temporary = `${settingsPath}.${operationId}.tmp`;
+      writeFileSync(temporary, JSON.stringify({ ...settings, line: `${candidateMajor}.${candidateMinor}` }, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+      syncFile(temporary); renameSync(temporary, settingsPath); syncDirectory(directory);
+    }
     transaction = advanceUpdate(transaction, "Committed");writeTransaction(journal, transaction);
     renameSync(journal,join(directory,"last-transaction.json"));syncDirectory(directory);
-    committed={...result,status:"updated",detail:`Retained previous package at ${backup}. Restart this updater under the new build; refresh managed follower bindings with sync --apply. No service was restarted.`};
+    committed={...result,status:"updated",detail:`Retained previous package at ${backup}. Restart this updater under the new build; refresh managed follower bindings with sync --apply. No service was restarted. ${result.detail}`};
     progress({phase:"complete", candidate});
     return committed;
     } catch(error) {
       // Installation is irreversible here, even if its receipt is not durable.
       // Never turn a bookkeeping error into permission for the old process to resume.
       if(transaction._tag==="Installed"||transaction._tag==="Committed") {
-        committed={...result,status:"updated",detail:`The candidate is installed, but update bookkeeping failed: ${error instanceof Error ? error.message : String(error)}. Restart under the new build. Preserve ${directory} and inspect any pending journal before running commands. Retained previous package at ${backup}. No service was restarted.`};
+        committed={...result,status:"updated",detail:`The candidate is installed, but update bookkeeping failed: ${error instanceof Error ? error.message : String(error)}. Restart under the new build. Preserve ${directory} and inspect any pending journal before running commands. Retained previous package at ${backup}. No service was restarted. ${result.detail}`};
         return committed;
       }
       // A pending journal (even partial) owns recovery evidence. Only discard
