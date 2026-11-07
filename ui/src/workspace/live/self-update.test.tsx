@@ -12,7 +12,7 @@ import { useLiveAdministration } from "./administration";
 GlobalRegistrator.register();
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 after(async () => { await GlobalRegistrator.unregister(); });
-const session = { role: "follower" as const, machineName: "test", folderPath: "/tmp/test", version: "7.0.0" };
+const session = { role: "follower" as const, machineName: "test", folderPath: "/tmp/test", version: "7.1.0" };
 let version: AdministrationSlice["version"];
 function Probe({ backend }: { backend: WorkspaceBackend }) { version = useLiveAdministration(backend, session, ["/api/self-update"], () => assert.fail("Unexpected installation")).version; return null; }
 async function fixture() {
@@ -24,10 +24,10 @@ async function fixture() {
     operation: async (id) => {
       if (pollingFailed) throw new GuiRequestError({ category: "internal", exitCode: 1, message: "Lost observation" });
       pollingFailed = true;
-      return { id, state: "running", journal: { phase: "staging", candidate: "7.0.1" } };
+      return { id, state: "running", journal: { phase: "staging", candidate: "7.1.1" } };
     },
     request: async (path, schema) => {
-      const body = path === "/api/self-update/check" ? { current: "7.0.0", candidate: "7.0.1", status: "available", detail: "Patch available" }
+      const body = path === "/api/self-update/check" ? { current: "7.1.0", candidate: "7.1.1", status: "available", detail: "Patch available" }
         : path === "/api/self-update/apply" ? { id: "update-ticket" }
           : { platform: "linux", enabled, pending: false, settings: enabled ? { npmCli: "/npm/bin/npm-cli.js" } : null };
       return Schema.decodeUnknownSync(schema)(body);
@@ -68,7 +68,7 @@ it("the Version page treats an installed result with a warning as success", asyn
   const { VersionView } = await import("../settings");
   const { ScreenContext } = await import("../screen-context");
   const { TooltipProvider } = await import("../../components/ui/tooltip");
-  const checked = { current: "7.0.0", candidate: "7.0.1", status: "updated" as const, detail: "Receipt unavailable; keep the update record for recovery." };
+  const checked = { current: "7.1.0", candidate: "7.1.1", status: "updated" as const, detail: "Receipt unavailable; keep the update record for recovery." };
   assert.ok(version.data);
   const installed = { ...version, checked, latest: checked.candidate, lifecycle: { kind: "installed" as const, status: version.data, checked } };
   const workspace = { role: "source", admin: { version: installed } } as Workspace;
@@ -76,9 +76,9 @@ it("the Version page treats an installed result with a warning as success", asyn
   const root = createRoot(container);
   try {
     await act(async () => root.render(<TooltipProvider><ScreenContext value={{ pageLoading: false, navigate: () => {} }}><WorkspaceContext value={workspace}><VersionView /></WorkspaceContext></ScreenContext></TooltipProvider>));
-    assert.ok(container.textContent?.includes("Canonfig 7.0.1 is installed."));
+    assert.ok(container.textContent?.includes("Canonfig 7.1.1 is installed."));
     assert.ok(container.textContent?.includes(checked.detail));
     assert.equal(container.querySelector('[role="alert"]'), null);
-    assert.ok(![...container.querySelectorAll("button")].some((button) => button.textContent?.includes("Install 7.0.1")));
+    assert.ok(![...container.querySelectorAll("button")].some((button) => button.textContent?.includes("Install 7.1.1")));
   } finally { await act(async () => root.unmount()); container.remove(); await app.close(); }
 });

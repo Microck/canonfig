@@ -23,7 +23,7 @@ const contracts: ReadonlyArray<SkillContract> = [
     ],
     bodyTerms: [
       "Node.js 24",
-      "@microck/canonfig@7.0.0",
+      "@microck/canonfig@7.1.0",
       "canonfig source init",
       "canonfig follower enroll",
       "pinned trust",
@@ -72,7 +72,7 @@ const contracts: ReadonlyArray<SkillContract> = [
       "tailscale status --json",
       "number-to-ID mapping",
       "Node.js 24",
-      "@microck/canonfig@7.0.0",
+      "@microck/canonfig@7.1.0",
       "canonfig setup plan",
       "canonfig setup apply",
       "canonfig follower enroll",

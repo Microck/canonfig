@@ -1,52 +1,51 @@
-# Canonfig v7.0.0
+# Canonfig v7.1.0
 
-This release makes Canonfig's long-running operations recover correctly after
-a crash, a lost connection, or a late reply. Each one now records exactly which
-step it reached, so an interrupted operation resumes or reports what to do
-instead of guessing.
+`canonfig ui` can now be used from other devices on your tailnet, and
+`canonfig self-update` can move to new minor and major versions.
 
-## Breaking change: set machines up again
+## Reach the browser interface over Tailscale
 
-Canonfig 7.0.0 uses a new state format and does not read state written by 6.x.
-On a machine that ran 6.x, the first 7.0.0 command that opens Canonfig state
-(such as `canonfig status` or `canonfig sync`) refuses the old state and tells
-you to move `state.sqlite` aside and set the machine up again. Nothing is
-changed before that refusal.
+- `canonfig ui --host <address>` listens on this machine's Tailscale address
+  instead of `127.0.0.1`. It accepts loopback and Tailscale addresses only
+  (`::1`, `100.64.0.0/10`, `fd7a:115c:a1e0::/48`) and refuses any other
+  address, because the interface is served over plain HTTP.
+- `canonfig ui --port <n> --origin <https-url>` works behind an HTTPS proxy
+  such as `tailscale serve`. The printed sign-in link uses that address, and
+  the browser session cookie is marked `Secure`.
 
-Install with `npm install --global @microck/canonfig@7.0.0` on every machine,
-then set up the Source and enroll each Follower again. A 7.0 Source and 6.x
-Followers refuse each other, so update them all.
+```bash
+tailscale serve --bg 5317
+canonfig ui --port 5317 --no-open --origin https://atlas.tailnet.ts.net
+```
 
-## Synchronization
+The sign-in link still works only once, and requests from any other host or
+origin are still refused. Without these options `canonfig ui` listens on
+`127.0.0.1` only, as before.
 
-- A sync is no longer marked complete before its last cleanup step finishes.
-  An interrupted sync resumes that step on the next run.
-- Rollback keeps the files it needs to restore your harness until the restore
-  has finished, and reports a rollback that could not finish.
-- A blocked action is reported as blocked, not as skipped.
+## Self-update beyond patches
 
-## Machines and enrollment
+- Automatic updates (`canonfig self-update auto`) install the newest patch in
+  your current `major.minor` line, or the newest release of a newer major
+  version when one exists. They never move to a new minor on their own.
+- Manual updates (`canonfig self-update apply` and the Version page in
+  `canonfig ui`) install the newest release in your current major version,
+  including new minors. A newer major is reported with the command that
+  installs it.
+- An update to a new minor or major warns that a Source and its Followers
+  only pair on the same `major.minor`, so every machine needs it. A major
+  update also warns that it may refuse older state.
 
-- Setting up a Source can no longer leave it half initialized.
-- Replacing or removing a Follower's enrollment keeps the old credential until
-  the change is confirmed. If the Source cannot be reached to confirm a
-  rollback, `canonfig status` and `canonfig doctor` show the pending rollback
-  and the command that finishes it.
-- If the Source restarts while a Follower is joining for the first time, the
-  Follower drops the discarded enrollment and you can enroll again with a new
-  invitation.
-- Unattended run receipts now live in the state database.
-- Shared secrets, tunnels, setup steps, skill updates, and the Source service
-  install now each record their progress, so an interruption leaves a clear
-  state.
-- `canonfig self-update` reports an installed update as installed, with a
-  warning, when only its follow-up bookkeeping failed.
+## Fixes
 
-## Browser interface
+- The Machines page no longer shows the List view's loading skeleton on the
+  Map, or the Map under the List's skeleton, when switching views.
+- The Map's loading skeleton no longer shows a stray dot for an unreachable
+  machine's connection.
 
-- Late replies can no longer overwrite newer edits in the profile editor,
-  local items, secrets, policy, or onboarding.
-- A follower command whose status check failed recovers instead of looking
-  finished.
-- A failed tool scan offers a retry, and a running revocation cannot be
-  dismissed.
+## Upgrading
+
+Install with `npm install --global @microck/canonfig@7.1.0` on every machine.
+Machines on 7.0.x run the earlier updater, which installs patches only, so
+`canonfig self-update` cannot reach 7.1.0 from there; from 7.1.0 on it can
+move between minor versions. A 7.1 Source and its Followers must all run
+7.1.x, because Canonfig only pairs machines on the same minor version.

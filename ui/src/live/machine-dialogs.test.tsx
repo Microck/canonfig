@@ -24,7 +24,7 @@ function Fixture({ backend }: { backend: WorkspaceBackend }) {
   const route = useAppRoute();
   assert.equal(route.kind, "workspace");
   if (route.kind !== "workspace") return null;
-  return <TooltipProvider><LiveWorkspaceProvider backend={backend} session={GuiSession.make({ role: "source", machineName: "Dialog fixture", folderPath: "/tmp/dialog-fixture", version: "7.0.0" })} route={route} onInstalled={() => assert.fail("Unexpected installation")}>
+  return <TooltipProvider><LiveWorkspaceProvider backend={backend} session={GuiSession.make({ role: "source", machineName: "Dialog fixture", folderPath: "/tmp/dialog-fixture", version: "7.1.0" })} route={route} onInstalled={() => assert.fail("Unexpected installation")}>
     <Controls /><MachinesView /><InviteDialog /><ChangeGroupsDialog />
   </LiveWorkspaceProvider></TooltipProvider>;
 }
