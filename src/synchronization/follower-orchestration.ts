@@ -123,14 +123,22 @@ export const loadFollowerSynchronizationConfiguration = Effect.fn(
   const configuration = yield* repository
     .getFollowerSynchronizationConfiguration()
     .pipe(
-      Effect.mapError(() =>
-        configurationError("stale", "follower synchronization configuration is unreadable")
+      Effect.mapError((error) =>
+        configurationError("stale", error.message)
       ),
     );
   if (configuration === undefined) {
     return yield* configurationError(
       "missing",
       "follower synchronization configuration is not enrolled",
+    );
+  }
+  if (configuration.lifecycle._tag !== "Active") {
+    return yield* configurationError(
+      "stale",
+      configuration.lifecycle._tag === "Unenrolling"
+        ? "follower unenrollment is incomplete; run `canonfig follower unenroll` before synchronizing"
+        : "follower enrollment is pending; resume `canonfig follower enroll` before synchronizing",
     );
   }
   if (configuration.stateLocation !== stateLocation) {
@@ -784,6 +792,7 @@ const persistProfileScheduleDefault = Effect.fn(
   const state = yield* repository.loadState(configuration.follower.id);
   if (state.sourceIdentity === undefined) return;
   yield* repository.saveFollowerSynchronizationConfiguration({
+    expectedConfiguration: configuration,
     sourceIdentity: state.sourceIdentity,
     configuration: {
       ...configuration,

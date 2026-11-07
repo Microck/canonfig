@@ -352,6 +352,23 @@ const validateEndpoint = (
 const makeEnrollment = Effect.gen(function*() {
   const repository = yield* StateRepository;
   const machine = yield* MachineState;
+  const retireCredentials = Effect.fn("Enrollment.retireCredentials")(function*() {
+    const retiring = yield* repository.listEnrollmentCredentialRetirements().pipe(
+      Effect.mapError(repositoryError("load retiring credentials")),
+    );
+    for (const entry of retiring) {
+      yield* machine.removeCredential(entry.credentialReference).pipe(
+        Effect.mapError((error) => new CredentialStorageError({
+          operation: "retire enrollment credential",
+          reference: "follower credential",
+          message: `Enrollment credential cleanup is still pending: ${credentialFailureDetail(error)}. Unlock or repair the credential store and retry the command or start the Source again.`,
+        })),
+      );
+      yield* repository.completeEnrollmentCredentialRetirement(entry.credentialReference).pipe(
+        Effect.mapError(repositoryError("complete credential retirement")),
+      );
+    }
+  });
   // Only the exclusive server owner may recover interrupted enrollment. Merely
   // constructing this layer (status, invite, inspection) must never cancel work.
   const startServerSession = Effect.fn("Enrollment.startServerSession")(function*() {
@@ -364,11 +381,12 @@ const makeEnrollment = Effect.gen(function*() {
           : "The Source server lease could not be acquired safely. Check state-directory permissions and access to operating-system process information, then retry.",
       })),
     );
+    yield* repository.recoverEnrollmentCredentialStaging().pipe(Effect.mapError(repositoryError("recover staged credentials")));
     const abandoned = yield* repository.listPendingEnrollments().pipe(Effect.mapError(repositoryError("recover pending enrollment")));
     for (const pending of abandoned) {
       yield* repository.cancelPendingEnrollment({ credentialDigest: pending.credentialDigest }).pipe(Effect.mapError(repositoryError("recover pending enrollment")));
-      yield* machine.removeCredential(pending.credentialReference).pipe(Effect.ignore);
     }
+    yield* retireCredentials();
   });
   const maximumRevisionValidationCacheEntries = 1024;
   const validatedRevisionCache = new Map<
@@ -537,7 +555,7 @@ const makeEnrollment = Effect.gen(function*() {
       yield* removeSourceSecrets(sourceMaterial(migrated));
       return { material: sourceMaterial(current), ...secrets };
     }
-    yield* repository.saveEnrollmentSource(migrated).pipe(
+    yield* repository.saveEnrollmentSource(migrated, record).pipe(
       Effect.mapError(repositoryError("migrate source credentials")),
       Effect.tapError(() => removeSourceSecrets(sourceMaterial(migrated))),
     );
@@ -722,10 +740,10 @@ const makeEnrollment = Effect.gen(function*() {
     if (invitation === undefined) {
       return yield* new InvitationNotFoundError({ message: "the invitation is unknown" });
     }
-    if (invitation.usedAt !== undefined) {
+    if (invitation.lifecycle._tag === "Consumed") {
       return yield* new InvitationReplayError({ message: "the invitation was already used" });
     }
-    if (Date.parse(invitation.expiresAt) <= Date.now()) {
+    if (invitation.lifecycle._tag === "Expired") {
       return yield* new InvitationExpiredError({ message: "the invitation has expired" });
     }
     const normalizedName = request.followerName.trim().normalize("NFC");
@@ -759,7 +777,7 @@ const makeEnrollment = Effect.gen(function*() {
         message: "durable enrollment state is unavailable",
       });
     }
-    if (existingCredential.found && !existingCredential.record.follower.revoked) {
+    if (existingCredential.found && existingCredential.record.lifecycle._tag === "Active") {
       return yield* new DuplicateFollowerIdentityError({
         message: "the follower identity is already enrolled",
       });
@@ -768,6 +786,12 @@ const makeEnrollment = Effect.gen(function*() {
     const credentialReference = yield* machine.storeCredential({
       name: `canonfig-source-follower-${followerId}-${randomUUID()}`,
       value: Redacted.make(credential),
+      beforeStore: (reference) => repository.stageEnrollmentCredential(reference).pipe(
+        Effect.mapError(() => new CredentialStorageError({
+          operation: "stage enrollment credential", reference: "follower credential",
+          message: "The follower credential ownership could not be recorded; no credential was written.",
+        })),
+      ),
     }).pipe(
       Effect.mapError((error) =>
         new CredentialStorageError({
@@ -792,19 +816,9 @@ const makeEnrollment = Effect.gen(function*() {
     const pending = pendingEnrollments.find(
       (entry) => entry.codeDigest === sha256(request.code),
     );
-    if (pending !== undefined) {
-      if (pending.follower !== follower.id) {
-        return yield* new InvitationReplayError({
-          message: "the invitation was already used",
-        });
-      }
-      // A process may have returned the prepared response before the follower
-      // persisted its local configuration. Re-prepare the same one-time
-      // invitation instead of leaving a retry permanently blocked.
-      yield* repository.cancelPendingEnrollment({
-        credentialDigest: pending.credentialDigest,
-      }).pipe(Effect.mapError(repositoryError("replace pending enrollment")));
-      yield* machine.removeCredential(pending.credentialReference).pipe(Effect.ignore);
+    if (pending !== undefined && pending.follower !== follower.id) {
+      yield* machine.removeCredential(credentialReference).pipe(Effect.ignore);
+      return yield* new InvitationReplayError({ message: "the invitation was already used" });
     }
     yield* repository.consumeEnrollmentInvitation({
       codeDigest: sha256(request.code),
@@ -815,10 +829,12 @@ const makeEnrollment = Effect.gen(function*() {
       credentialDigest: sha256(credential),
       credentialReference: decode(CredentialReference)(credentialReference),
       consumedAt: enrolledAt,
+      replacingCredentialDigest: pending?.credentialDigest,
     }).pipe(
       Effect.mapError(repositoryError("consume invitation")),
       Effect.tapError(() => machine.removeCredential(credentialReference).pipe(Effect.ignore)),
     );
+    yield* retireCredentials();
     // Everything after this point is a read: a failure below leaves the
     // pending enrollment for the follower to finalize or cancel, and cancel
     // removes the credential stored above.
@@ -855,27 +871,21 @@ const makeEnrollment = Effect.gen(function*() {
       const stored = yield* repository.findFollowerCredential(credentialDigest).pipe(
         Effect.mapError(repositoryError("finalize follower enrollment")),
       );
-      if (stored === undefined || stored.follower.revoked) {
+      if (stored === undefined || stored.lifecycle._tag !== "Active") {
         return yield* new InvalidFollowerCredentialError({
           message: "the follower credential is invalid",
         });
       }
+      yield* retireCredentials();
       return;
     }
-    // Read the credential this finalization replaces before the rotation
-    // overwrites the record, so it can be retired afterwards.
-    const previous = yield* repository.getFollowerCredential(pendingEnrollment.follower).pipe(
-      Effect.map((record) => record.credentialReference),
-      Effect.catch(() => Effect.succeed(undefined)),
-    );
+    // finalizeEnrollment retains retirement ownership in its SQL transaction.
     yield* repository.finalizeEnrollment({
       follower: pendingEnrollment.follower,
       credentialDigest,
       credentialReference: pendingEnrollment.credentialReference,
     }).pipe(Effect.mapError(repositoryError("finalize follower enrollment")));
-    if (previous !== undefined && previous !== pendingEnrollment.credentialReference) {
-      yield* machine.removeCredential(previous).pipe(Effect.ignore);
-    }
+    yield* retireCredentials();
   });
 
   /** A cancelled or abandoned enrollment removes the credential it stored. */
@@ -883,15 +893,10 @@ const makeEnrollment = Effect.gen(function*() {
     "Enrollment.cancelPendingEnrollment",
   )(function*(credential: string) {
     const credentialDigest = sha256(credential);
-    const pending = (yield* repository.listPendingEnrollments().pipe(
-      Effect.mapError(repositoryError("find pending enrollment")),
-    )).find((entry) => entry.credentialDigest === credentialDigest);
     yield* repository.cancelPendingEnrollment({ credentialDigest }).pipe(
       Effect.mapError(repositoryError("cancel pending enrollment")),
     );
-    if (pending !== undefined) {
-      yield* machine.removeCredential(pending.credentialReference).pipe(Effect.ignore);
-    }
+    yield* retireCredentials();
   });
 
   /**
@@ -902,20 +907,24 @@ const makeEnrollment = Effect.gen(function*() {
   const revokeAndRetire = Effect.fn("Enrollment.revokeAndRetire")(function*(
     follower: typeof FollowerId.Type,
   ) {
-    const stored = yield* repository.getFollowerCredential(follower).pipe(
-      Effect.mapError(repositoryError("revoke follower")),
-    );
     yield* repository.revokeFollower(follower).pipe(
       Effect.mapError(repositoryError("revoke follower")),
     );
-    yield* machine.removeCredential(stored.credentialReference).pipe(Effect.ignore);
+    yield* retireCredentials();
   });
 
   const revokeAuthenticatedFollower = Effect.fn(
     "Enrollment.revokeAuthenticatedFollower",
   )(function*(credential: string) {
-    const authenticated = yield* authenticate(credential);
-    yield* revokeAndRetire(authenticated.follower.id);
+    // Revocation retries authenticate the digest without granting ordinary
+    // access to a revoked identity, so a failed retirement can finish.
+    const stored = yield* repository.findFollowerCredential(sha256(credential)).pipe(
+      Effect.mapError(repositoryError("revoke follower")),
+    );
+    if (credential.length < 32 || credential.length > 512 || stored === undefined) {
+      return yield* new InvalidFollowerCredentialError({ message: "the follower credential is invalid" });
+    }
+    yield* revokeAndRetire(stored.follower.id);
   });
 
   const authenticate = Effect.fn("Enrollment.authenticate")(function*(
@@ -934,7 +943,7 @@ const makeEnrollment = Effect.gen(function*() {
         message: "the follower credential is invalid",
       });
     }
-    if (stored.follower.revoked) {
+    if (stored.lifecycle._tag !== "Active") {
       return yield* new RevokedFollowerCredentialError({
         message: "the follower credential has been revoked",
       });

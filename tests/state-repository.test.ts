@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -57,7 +57,10 @@ import { runtimeStateLayer } from "../src/runtime/state-layer.ts";
 import { StateInitializationError } from "../src/runtime/state-initialization.errors.ts";
 import {
   defaultScheduledInvocation,
+  FollowerSynchronizationConfiguration,
 } from "../src/synchronization/follower-sync-config.ts";
+import { describeUnattendedRuns } from "../src/runtime/readiness.ts";
+import { loadScheduledInvocations } from "../src/runtime/scheduled-invocations.ts";
 
 const temporaryDirectories: Array<string> = [];
 
@@ -160,6 +163,16 @@ const start = (
     startedAt: "2026-08-15T12:01:00Z",
   });
 
+const followerConfigurationFixture = (path: string) => decode(FollowerSynchronizationConfiguration)({
+  schemaVersion: 1, lifecycle: { _tag: "Active" },
+  follower: follower(), profile: "profile-1",
+  source: { endpoint: "https://127.0.0.1:17342", tlsFingerprint: "tls-source", signingFingerprint: "source" },
+  credentialReference: follower().credentialReference,
+  cacheDirectory: join(dirname(path), "cache"), stateLocation: path,
+  agentPolicy: "deterministic-only", scheduledInvocation: defaultScheduledInvocation,
+  updatedAt: "2026-08-15T12:00:00Z",
+});
+
 describe("StateRepository SQLite adapter", () => {
   it("refuses illegal action transitions before appending durable evidence", async () => {
     const path = databasePath();
@@ -254,6 +267,7 @@ describe("StateRepository SQLite adapter", () => {
         sourceIdentity,
         configuration: {
           schemaVersion: 1,
+          lifecycle: { _tag: "Active" },
           follower: configuredFollower,
           profile: decode(ProfileId)("profile-1"),
           source: {
@@ -311,7 +325,7 @@ describe("StateRepository SQLite adapter", () => {
         cacheDirectory: join(dirname(path), "cache"),
         stateLocation: path,
         agentPolicy: "deterministic-only" as const,
-        enrollmentPending: true as const,
+        lifecycle: { _tag: "Finalizing" as const },
         scheduledInvocation: defaultScheduledInvocation,
         updatedAt: "2026-08-15T12:00:00Z",
       },
@@ -367,6 +381,197 @@ describe("StateRepository SQLite adapter", () => {
     expect(refusedFollower.message).toContain(`move ${dirname(sourcePath)} aside`);
     expect(rows(sourcePath)).toEqual({ source: 1, follower: 0, followers: 0, signingKey: "own" });
   });
+
+  it("refuses replacing an initialized Source identity", async () => {
+    const path = databasePath();
+    const first = {
+      identity: decode(SourceIdentity)({ keyId: "first", publicKeyFingerprint: "first" }),
+      signingKeyReference: decode(CredentialReference)("secure-store://first/signing"),
+      tlsKeyReference: decode(CredentialReference)("secure-store://first/tls"),
+      tlsCertificateReference: decode(CredentialReference)("secure-store://first/cert"),
+      tlsFingerprint: decode(CertificateFingerprint)("first-tls"),
+    };
+    const second = { ...first, identity: decode(SourceIdentity)({ keyId: "second", publicKeyFingerprint: "second" }) };
+    const result = await runWithRepository(path, Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.saveEnrollmentSource(first);
+      const refused = yield* Effect.result(repository.saveEnrollmentSource(second));
+      return { refused, stored: yield* repository.getEnrollmentSource() };
+    }));
+    expect(result.refused._tag).toBe("Failure");
+    expect(result.stored).toEqual(first);
+  });
+  it("refuses a stale settings write after unenrollment instead of recreating the enrollment", async () => {
+    const path = databasePath();
+    const sourceIdentity = decode(SourceIdentity)({ keyId: "source", publicKeyFingerprint: "source" });
+    const stale = followerConfigurationFixture(path);
+    const result = await runWithRepository(path, Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.saveFollowerSynchronizationConfiguration({ sourceIdentity, configuration: stale });
+      const retiring = { ...stale, lifecycle: { _tag: "Unenrolling" as const } };
+      yield* repository.saveFollowerSynchronizationConfiguration({
+        sourceIdentity, configuration: retiring, expectedConfiguration: stale,
+      });
+      yield* repository.removeFollowerSynchronizationConfiguration(retiring);
+      const refused = yield* Effect.result(repository.saveFollowerSynchronizationConfiguration({
+        sourceIdentity, configuration: { ...stale, agentPolicy: "agent-apply" }, expectedConfiguration: stale,
+      }));
+      return { refused, configuration: yield* repository.getFollowerSynchronizationConfiguration() };
+    }));
+    expect(result.refused._tag).toBe("Failure");
+    expect(result.configuration).toBeUndefined();
+  });
+
+  it("updates schedule settings without changing a pending enrollment lifecycle", async () => {
+    const path = databasePath();
+    const sourceIdentity = decode(SourceIdentity)({ keyId: "source", publicKeyFingerprint: "source" });
+    const pending = { ...followerConfigurationFixture(path), lifecycle: { _tag: "Finalizing" as const } };
+    const stored = await runWithRepository(path, Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.saveFollowerSynchronizationConfiguration({ sourceIdentity, configuration: pending });
+      yield* repository.saveFollowerSynchronizationConfiguration({
+        sourceIdentity, expectedConfiguration: pending,
+        configuration: { ...pending, scheduleOverride: { kind: "disabled" } },
+      });
+      return yield* repository.getFollowerSynchronizationConfiguration();
+    }));
+    expect(stored?.lifecycle).toEqual({ _tag: "Finalizing" });
+    expect(stored?.scheduleOverride).toEqual({ kind: "disabled" });
+  });
+
+  it("refuses to drop previous credential ownership when unenrollment starts", async () => {
+    const path = databasePath();
+    const sourceIdentity = decode(SourceIdentity)({ keyId: "source", publicKeyFingerprint: "source" });
+    const previous = followerConfigurationFixture(path);
+    const candidateReference = decode(CredentialReference)("secure-store://candidate");
+    await runWithRepository(path, Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* repository.saveFollowerSynchronizationConfiguration({
+        sourceIdentity,
+        configuration: {
+          ...previous, credentialReference: candidateReference,
+          follower: { ...previous.follower, credentialReference: candidateReference },
+          lifecycle: { _tag: "Finalizing", previous: { ...previous, sourceIdentity } },
+        },
+      });
+      const current = yield* repository.getFollowerSynchronizationConfiguration();
+      if (current === undefined) throw new Error("the pending fixture was not stored");
+      const refused = yield* Effect.result(repository.saveFollowerSynchronizationConfiguration({
+        sourceIdentity, expectedConfiguration: current,
+        configuration: { ...current, lifecycle: { _tag: "Unenrolling" } },
+      }));
+      expect(refused._tag).toBe("Failure");
+      expect((yield* repository.getFollowerSynchronizationConfiguration())?.lifecycle).toEqual(current.lifecycle);
+    }));
+  });
+
+  it.each([false, true])("migrates released follower state without guessing pending ownership (pending=%s)", async (pending) => {
+    const path = databasePath();
+    const sourceIdentity = decode(SourceIdentity)({ keyId: "source", publicKeyFingerprint: "source" });
+    await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      repository.saveFollowerSynchronizationConfiguration({ sourceIdentity, configuration: followerConfigurationFixture(path) })));
+    const database = new DatabaseSync(path);
+    database.exec(`
+      DELETE FROM effect_sql_migrations WHERE migration_id = 4;
+      DROP TABLE enrollment_credential_retirements;
+      DROP TABLE scheduled_invocations;
+      DROP TABLE scheduled_invocation_imports;
+      UPDATE follower_sync_configuration SET configuration_json = json_set(
+        json_remove(configuration_json, '$.lifecycle'), '$.enrollmentPending', json('${pending}')
+      );
+    `);
+    database.close();
+    const loaded = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      Effect.result(repository.getFollowerSynchronizationConfiguration())));
+    if (pending) {
+      expect(loaded._tag).toBe("Failure");
+      if (loaded._tag === "Failure") expect(loaded.failure.message).toContain("move this Canonfig state directory aside");
+    } else {
+      expect(loaded).toMatchObject({ _tag: "Success", success: { lifecycle: { _tag: "Active" } } });
+    }
+  });
+
+  it("imports released receipts once across a failed post-commit archive", async () => {
+    const path = databasePath();
+    const legacy = join(dirname(path), "schedule-fires.json");
+    writeFileSync(legacy, JSON.stringify({ schema: "canonfig.schedule-fire/v1", fires: [
+      { startedAt: "2026-11-07T00:00:01Z", at: "2026-11-07T00:00:01Z", outcome: "started", generation: "installed" },
+      { startedAt: "2026-11-07T00:00:02Z", at: "2026-11-07T00:00:03Z", outcome: "failed", reason: "run lock held", generation: "installed" },
+      { startedAt: "2026-11-07T00:00:01Z", at: "2026-11-07T00:00:04Z", outcome: "completed", generation: "installed" },
+    ] }));
+    mkdirSync(`${legacy}.imported`);
+    const refused = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      Effect.result(loadScheduledInvocations(repository, path))));
+    expect(refused._tag).toBe("Failure");
+    const committed = new DatabaseSync(path, { readOnly: true });
+    expect(committed.prepare("SELECT count(*) AS count FROM scheduled_invocations").get()?.count).toBe(2);
+    expect(committed.prepare("SELECT count(*) AS count FROM scheduled_invocation_imports").get()?.count).toBe(1);
+    committed.close();
+    rmSync(`${legacy}.imported`, { recursive: true });
+    const imported = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      loadScheduledInvocations(repository, path)));
+    expect(imported.map((invocation) => invocation._tag)).toEqual(["Completed", "Failed"]);
+    expect(existsSync(legacy)).toBe(false);
+    expect(existsSync(`${legacy}.imported`)).toBe(true);
+    const repeated = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      loadScheduledInvocations(repository, path)));
+    expect(repeated).toEqual(imported);
+  });
+
+  it("rolls back a failed legacy import together with its acknowledgement", async () => {
+    const path = databasePath();
+    await runWithRepository(path, Effect.flatMap(StateRepository, (repository) => repository.databaseFile()));
+    const legacy = join(dirname(path), "schedule-fires.json");
+    writeFileSync(legacy, JSON.stringify({ schema: "canonfig.schedule-fire/v1", fires: [
+      { startedAt: "2026-11-07T00:00:01Z", at: "2026-11-07T00:00:02Z", outcome: "completed" },
+      { startedAt: "2026-11-07T00:00:03Z", at: "2026-11-07T00:00:04Z", outcome: "completed" },
+    ] }));
+    const database = new DatabaseSync(path);
+    database.exec(`CREATE TRIGGER fail_second_import BEFORE INSERT ON scheduled_invocations
+      WHEN NEW.id LIKE '%:1' BEGIN SELECT RAISE(FAIL, 'import interrupted'); END`);
+    const refused = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      Effect.result(loadScheduledInvocations(repository, path))));
+    expect(refused._tag).toBe("Failure");
+    expect(database.prepare("SELECT count(*) AS count FROM scheduled_invocations").get()?.count).toBe(0);
+    expect(database.prepare("SELECT count(*) AS count FROM scheduled_invocation_imports").get()?.count).toBe(0);
+    expect(existsSync(legacy)).toBe(true);
+    database.exec("DROP TRIGGER fail_second_import");
+    database.close();
+    const imported = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      loadScheduledInvocations(repository, path)));
+    expect(imported).toHaveLength(2);
+  });
+
+  it("keeps concurrent invocations and reports the latest start, not the latest completion", async () => {
+    const path = databasePath();
+    const earlier = { id: "earlier", generation: "installed", startedAt: "2026-08-15T12:00:01Z" };
+    const later = { id: "later", generation: "installed", startedAt: "2026-08-15T12:00:02Z" };
+    await runWithRepository(path, Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* Effect.all([
+        repository.transitionScheduledInvocation({ ...earlier, _tag: "Running" }),
+        repository.transitionScheduledInvocation({ ...later, _tag: "Running" }),
+      ], { concurrency: 2 });
+      yield* repository.transitionScheduledInvocation({
+        ...later, _tag: "Failed", at: "2026-08-15T12:00:03Z", reason: "run lock held",
+      });
+      yield* repository.transitionScheduledInvocation({ ...earlier, _tag: "Completed", at: "2026-08-15T12:00:04Z" });
+      const duplicate = yield* Effect.result(repository.transitionScheduledInvocation({
+        ...earlier, _tag: "Completed", at: "2026-08-15T12:00:05Z",
+      }));
+      expect(duplicate._tag).toBe("Failure");
+    }));
+    const invocations = await runWithRepository(path, Effect.flatMap(StateRepository, (repository) =>
+      repository.listScheduledInvocations()));
+    expect(invocations.map((invocation) => invocation.id)).toEqual(["earlier", "later"]);
+    const summary = describeUnattendedRuns(invocations.map((invocation) => ({
+      ...invocation, at: invocation._tag === "Running" ? invocation.startedAt : invocation.at,
+      outcome: invocation._tag === "Completed" ? "completed" : invocation._tag === "Failed" ? "failed" : "started",
+    })));
+    expect(summary.completed).toBe(false);
+    expect(summary.text).toContain("run lock held");
+  });
+
 
   it("refuses state an earlier release created and asks to reinitialize", async () => {
     // A release before state format 6 recorded a different migration history.
@@ -1249,6 +1454,7 @@ describe("StateRepository SQLite adapter", () => {
       id: "follower-1", name: "Follower follower-1", groups: ["base"],
       enrolledAt: "2026-08-15T12:00:00Z", revoked: true,
       pending: false, credentialPresent: false,
+      credentialLifecycle: { _tag: "Retiring" },
     }]);
     expect(rows.invitations).toEqual([{
       endpoint: "https://127.0.0.1:7341", groups: [],

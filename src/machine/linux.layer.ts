@@ -2083,11 +2083,15 @@ export const linuxMachineStateLayer = (
           const bytes = new TextEncoder().encode(Redacted.value(input.value));
           if (localCredentialRoot !== undefined) {
             const path = join(localCredentialRoot, `${name}.credential`);
+            yield* (input.beforeStore?.(decode(CredentialReference)(`local-file:${path}`)) ?? Effect.void);
             yield* atomicWriteFile(path, bytes, defaultFileMode);
             return decode(CredentialReference)(`local-file:${path}`);
           }
           const secretTool = yield* requireSecretTool();
           const parts = secretServiceParts(bytes);
+          yield* (input.beforeStore?.(decode(CredentialReference)(
+            parts.length === 1 ? `secret-service:${name}` : `secret-service:${name}:${parts.length}`,
+          )) ?? Effect.void);
           for (let part = 0; part < parts.length; part += 1) {
             const label = parts.length === 1
               ? "Canonfig credential"
@@ -2160,7 +2164,9 @@ export const linuxMachineStateLayer = (
         function*(reference: CredentialReferenceType): Effect.fn.Return<void, MachineStateError> {
           if (localCredentialRoot !== undefined) {
             const path = yield* localCredentialPath(reference, localCredentialRoot);
-            yield* promiseEffect("remove credential", path, () => unlink(path));
+            yield* promiseEffect("remove credential", path, () => unlink(path).catch((cause: unknown) => {
+              if (!(cause instanceof Error && "code" in cause && cause.code === "ENOENT")) throw cause;
+            }));
             return;
           }
           const item = yield* secretServiceItem(reference);

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { open, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { SqliteClient, SqliteMigrator } from "@canonfig/effect-sql-sqlite-node";
 import { Effect, Layer, Schema } from "effect";
@@ -95,6 +96,7 @@ import type {
   VerificationEvidence,
 } from "./state-repository.types.ts";
 import { stateFormatVersion, stateMigrations, stateSchemaMigrations } from "./state-schema.ts";
+import { ScheduledInvocation } from "./state-repository.types.ts";
 import { buildIdentity } from "../runtime/build-identity.ts";
 import type {
   PlanningLocalRevision,
@@ -449,6 +451,76 @@ const makeRepository = Effect.gen(function*() {
           dirname(configuration.stateLocation),
         );
       }
+      const current = yield* getFollowerSynchronizationConfiguration();
+      if (!isDeepStrictEqual(current, input.expectedConfiguration === undefined
+        ? undefined : JSON.parse(JSON.stringify(input.expectedConfiguration)))) {
+        return yield* new EnrollmentStateConflictError({
+          reason: "credential-conflict",
+          message: "the follower enrollment changed; read its current state and retry",
+        });
+      }
+      const before = current?.lifecycle._tag;
+      const after = configuration.lifecycle._tag;
+      const unchangedEnrollment = current !== undefined
+        && current.credentialReference === configuration.credentialReference
+        && isDeepStrictEqual(current.follower, configuration.follower)
+        && current.profile === configuration.profile
+        && isDeepStrictEqual(current.source, configuration.source);
+      let valid = false;
+      if (current !== undefined && isDeepStrictEqual(current.lifecycle, configuration.lifecycle)) {
+        valid = unchangedEnrollment;
+      } else if (configuration.lifecycle._tag === "Unenrolling") {
+        valid = unchangedEnrollment && isDeepStrictEqual(
+          current !== undefined && "previous" in current.lifecycle ? current.lifecycle.previous : undefined,
+          configuration.lifecycle.previous,
+        );
+      } else {
+        switch (current?.lifecycle._tag) {
+          case undefined:
+            valid = after === "Active" || after === "Finalizing";
+            break;
+          case "Active":
+            if (configuration.lifecycle._tag === "Finalizing" && configuration.lifecycle.previous !== undefined) {
+              const { sourceIdentity, ...previous } = configuration.lifecycle.previous;
+              const state = yield* loadState(current.follower.id);
+              valid = isDeepStrictEqual({ ...previous, lifecycle: current.lifecycle }, current)
+                && isDeepStrictEqual(sourceIdentity, state.sourceIdentity);
+            }
+            break;
+          case "Finalizing":
+            valid = unchangedEnrollment && (current.lifecycle.previous === undefined
+              ? after === "Active"
+              : (configuration.lifecycle._tag === "RetiringPrevious" || configuration.lifecycle._tag === "RollbackPending")
+                && isDeepStrictEqual(current.lifecycle.previous, configuration.lifecycle.previous));
+            break;
+          case "RetiringPrevious":
+            valid = unchangedEnrollment && (current.lifecycle.cleanup._tag === "RemoveLocal"
+              ? after === "Active"
+              : configuration.lifecycle._tag === "RetiringPrevious"
+                && configuration.lifecycle.cleanup._tag === "RemoveLocal"
+                && isDeepStrictEqual(current.lifecycle.previous, configuration.lifecycle.previous));
+            break;
+          case "RollbackPending": {
+            const { sourceIdentity, ...previous } = current.lifecycle.previous;
+            valid = after === "Active"
+              && isDeepStrictEqual(sourceIdentity, input.sourceIdentity)
+              && isDeepStrictEqual({
+                ...previous, updatedAt: configuration.updatedAt, lifecycle: { _tag: "Active" },
+              }, configuration);
+            if (valid) yield* sql`
+              INSERT OR IGNORE INTO enrollment_credential_retirements (reference, state)
+              VALUES (${current.credentialReference}, 'Retiring')
+            `;
+            break;
+          }
+          case "Unenrolling":
+            break;
+        }
+      }
+      if (!valid) return yield* new EnrollmentStateConflictError({
+        reason: "credential-conflict",
+        message: `illegal follower enrollment transition ${before ?? "Unenrolled"} -> ${after}`,
+      });
       yield* sql`
         INSERT INTO followers (
           id,
@@ -500,6 +572,7 @@ const makeRepository = Effect.gen(function*() {
           configuration_json = excluded.configuration_json,
           updated_at = excluded.updated_at
       `;
+      yield* sql`DELETE FROM enrollment_credential_retirements WHERE reference = ${configuration.credentialReference} AND state = 'Staged'`;
     });
     yield* sql.withTransaction(transaction).pipe(
       Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("save follower synchronization configuration")(error))),
@@ -525,6 +598,12 @@ const makeRepository = Effect.gen(function*() {
     );
     const row = decoded[0];
     if (row === undefined) return undefined;
+    const legacy = yield* parseJson(Schema.Struct({ lifecycle: Schema.Struct({ _tag: Schema.String }) }),
+      row.configuration_json, "follower enrollment lifecycle", "1");
+    if (legacy.lifecycle._tag === "LegacyPending") return yield* new RepositoryDecodeError({
+      entity: "follower enrollment lifecycle", id: "1",
+      message: "This released pending enrollment does not record the previous identity. Revoke its follower identity on the Source, move this Canonfig state directory aside, then enroll again with a new invitation. Keep its credential store until the old identity has been revoked.",
+    });
     return yield* parseJson(
       FollowerSynchronizationConfiguration,
       row.configuration_json,
@@ -535,27 +614,48 @@ const makeRepository = Effect.gen(function*() {
 
   const removeFollowerSynchronizationConfiguration = Effect.fn(
     "StateRepository.removeFollowerSynchronizationConfiguration",
-  )(function*(): Effect.fn.Return<boolean, StateRepositoryError> {
-    const removed = yield* statusCount(
-      sql,
-      sql`SELECT count(*) AS count FROM follower_sync_configuration WHERE singleton = 1`,
-      "follower synchronization configuration",
-      "1",
-    );
-    yield* sql`DELETE FROM follower_sync_configuration WHERE singleton = 1`.pipe(
-      Effect.mapError(sqlError("remove follower synchronization configuration")),
-    );
-    return removed > 0;
+  )(function*(expected: FollowerSynchronizationConfiguration): Effect.fn.Return<boolean, StateRepositoryError> {
+    return yield* sql.withTransaction(Effect.gen(function*() {
+      const current = yield* getFollowerSynchronizationConfiguration();
+      if (current?.lifecycle._tag !== "Unenrolling"
+        || !isDeepStrictEqual(current, JSON.parse(JSON.stringify(expected)))) {
+        return yield* new EnrollmentStateConflictError({
+          reason: "credential-conflict", message: "the follower enrollment changed before removal; retry unenrollment",
+        });
+      }
+      yield* sql`DELETE FROM follower_sync_configuration WHERE singleton = 1`;
+      return true;
+    })).pipe(Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("remove follower synchronization configuration")(error))));
   });
 
   const saveEnrollmentSource = Effect.fn("StateRepository.saveEnrollmentSource")(
-    function*(source: EnrollmentSourceRecord): Effect.fn.Return<void, StateRepositoryError> {
+    function*(source: EnrollmentSourceRecord, expected?: EnrollmentSourceRecord): Effect.fn.Return<void, StateRepositoryError> {
       const transaction = Effect.gen(function*() {
         // One role per machine, checked under the write lock: the Source
         // identity is refused while a follower configuration, pending or
         // complete, exists.
         const follower = yield* getFollowerSynchronizationConfiguration();
         if (follower !== undefined) return yield* followerRoleConflict(follower, "be a Source");
+        const stored = yield* getEnrollmentSource();
+        const lifecycle: { readonly _tag: "Absent" } | { readonly _tag: "Initialized"; readonly source: EnrollmentSourceRecord } =
+          stored === undefined ? { _tag: "Absent" } : { _tag: "Initialized", source: stored };
+        // Initialization is create-only. Relocation compares the entire old
+        // record under the write lock and cannot change either pinned identity.
+        if (
+          (lifecycle._tag === "Initialized" && expected === undefined)
+          || (expected !== undefined && (
+            lifecycle._tag !== "Initialized"
+            || !isDeepStrictEqual(lifecycle.source, expected)
+            || source.identity.keyId !== expected.identity.keyId
+            || source.identity.publicKeyFingerprint !== expected.identity.publicKeyFingerprint
+            || source.tlsFingerprint !== expected.tlsFingerprint
+          ))
+        ) {
+          return yield* new EnrollmentStateConflictError({
+            reason: "credential-conflict",
+            message: "the Source identity or credential references changed; retry the operation without replacing the initialized identity",
+          });
+        }
         yield* sql`
           INSERT INTO source_identity (singleton, key_id, public_key_fingerprint)
           VALUES (
@@ -681,6 +781,7 @@ const makeRepository = Effect.gen(function*() {
     "StateRepository.findEnrollmentInvitation",
   )(function*(
     codeDigest: typeof ContentDigest.Type,
+    at = new Date().toISOString(),
   ): Effect.fn.Return<StoredEnrollmentInvitation | undefined, StateRepositoryError> {
     const rows = yield* sql`
       SELECT
@@ -707,17 +808,22 @@ const makeRepository = Effect.gen(function*() {
       "enrollment invitation groups",
       codeDigest,
     );
-    const storedInvitation: StoredEnrollmentInvitation = {
+    const pendingRows = yield* sql`
+      SELECT follower_id, credential_digest FROM pending_enrollments WHERE code_digest = ${codeDigest}
+    `.pipe(Effect.mapError(sqlError("load prepared invitation")));
+    const pending = (yield* decodeRows(Schema.Struct({
+      follower_id: FollowerId, credential_digest: ContentDigest,
+    }), pendingRows, "prepared invitation", codeDigest))[0];
+    const lifecycle: StoredEnrollmentInvitation["lifecycle"] = row.used_at !== null
+      ? { _tag: "Consumed", usedAt: row.used_at }
+      : Date.parse(row.expires_at) <= Date.parse(at) ? { _tag: "Expired" }
+      : pending !== undefined ? { _tag: "Prepared", follower: pending.follower_id, credentialDigest: pending.credential_digest }
+      : { _tag: "Available" };
+    return {
       intendedSourceFingerprint: row.intended_source_fingerprint,
       tlsFingerprint: row.tls_fingerprint,
-      endpoint: row.endpoint,
-      groups,
-      expiresAt: row.expires_at,
+      endpoint: row.endpoint, groups, expiresAt: row.expires_at, lifecycle,
     };
-    if (row.used_at !== null) {
-      return { ...storedInvitation, usedAt: row.used_at };
-    }
-    return storedInvitation;
   });
 
   const listEnrollmentInvitations = Effect.fn("StateRepository.listEnrollmentInvitations")(
@@ -742,19 +848,25 @@ const makeRepository = Effect.gen(function*() {
     function*(): Effect.fn.Return<ReadonlyArray<EnrollmentFollowerSummary>, StateRepositoryError> {
       const rows = yield* sql`
         SELECT f.id, f.name, f.groups_json, f.enrolled_at, f.revoked,
-          EXISTS(SELECT 1 FROM follower_credentials c WHERE c.follower_id = f.id) AS credential_present
+          EXISTS(SELECT 1 FROM follower_credentials c WHERE c.follower_id = f.id)
+            AND NOT EXISTS(SELECT 1 FROM enrollment_credential_retirements r WHERE r.reference = f.credential_reference)
+            AND f.revoked = 0 AS credential_present,
+          EXISTS(SELECT 1 FROM enrollment_credential_retirements r
+            WHERE r.reference = f.credential_reference AND r.state = 'Retiring') AS retiring
         FROM followers f WHERE f.id != ${localProjectionFollower}
         ORDER BY f.enrolled_at, f.id
       `.pipe(Effect.mapError(sqlError("list enrollment followers")));
       const decoded = yield* decodeRows(Schema.Struct({
         id: FollowerId, name: Schema.String, groups_json: Schema.String,
-        enrolled_at: Schema.String, revoked: Schema.Number, credential_present: Schema.Number,
+        enrolled_at: Schema.String, revoked: Schema.Number, credential_present: Schema.Number, retiring: Schema.Number,
       }), rows, "enrollment followers", "all");
       const followers = yield* Effect.forEach(decoded, (row) => parseJson(
         Schema.Array(GroupName), row.groups_json, "follower groups", row.id,
       ).pipe(Effect.map((groups) => ({
         id: row.id, name: row.name, groups, enrolledAt: row.enrolled_at,
         revoked: row.revoked !== 0, credentialPresent: row.credential_present !== 0, pending: false,
+        credentialLifecycle: row.revoked === 0 ? { _tag: "Active" as const }
+          : row.retiring !== 0 ? { _tag: "Retiring" as const } : { _tag: "Retired" as const },
       }))));
       const pendingRows = yield* sql`
         SELECT follower_json FROM pending_enrollments ORDER BY created_at, follower_id
@@ -765,6 +877,7 @@ const makeRepository = Effect.gen(function*() {
         FollowerIdentity, row.follower_json, "pending follower", "inventory",
       ).pipe(Effect.map(({ id, name, groups, enrolledAt, revoked }) => ({
         id, name, groups, enrolledAt, revoked, credentialPresent: true, pending: true,
+        credentialLifecycle: { _tag: "Prepared" as const },
       }))));
       return [...followers, ...summaries];
     },
@@ -776,51 +889,40 @@ const makeRepository = Effect.gen(function*() {
     input: ConsumeEnrollmentInvitationInput,
   ): Effect.fn.Return<void, StateRepositoryError> {
     const transaction = Effect.gen(function*() {
-      const rows = yield* sql`
-        SELECT
-          intended_source_fingerprint,
-          tls_fingerprint,
-          endpoint,
-          groups_json,
-          expires_at,
-          used_at
-        FROM enrollment_invitations
-        WHERE code_digest = ${input.codeDigest}
-      `;
-      const invitations = yield* decodeRows(
-        EnrollmentInvitationRow,
-        rows,
-        "enrollment invitation",
-        input.codeDigest,
-      );
-      const invitation = invitations[0];
+      const invitation = yield* findEnrollmentInvitation(input.codeDigest, input.consumedAt);
       if (invitation === undefined) {
         return yield* new EnrollmentStateConflictError({
           reason: "invitation-not-found",
           message: "the invitation is unknown",
         });
       }
-      if (invitation.used_at !== null) {
+      if (invitation.lifecycle._tag === "Consumed") {
         return yield* new EnrollmentStateConflictError({
           reason: "invitation-used",
           message: "the invitation was already consumed",
         });
       }
-      if (Date.parse(invitation.expires_at) <= Date.parse(input.consumedAt)) {
+      if (invitation.lifecycle._tag === "Expired") {
         return yield* new EnrollmentStateConflictError({
           reason: "invitation-expired",
           message: "the invitation has expired",
         });
       }
       if (
-        invitation.intended_source_fingerprint !== input.intendedSourceFingerprint
-        || invitation.tls_fingerprint !== input.tlsFingerprint
+        invitation.intendedSourceFingerprint !== input.intendedSourceFingerprint
+        || invitation.tlsFingerprint !== input.tlsFingerprint
       ) {
         return yield* new EnrollmentStateConflictError({
           reason: "invitation-mismatch",
           message: "the invitation is not valid for this source",
         });
       }
+      if (invitation.lifecycle._tag === "Prepared" && (
+        invitation.lifecycle.credentialDigest !== input.replacingCredentialDigest
+        || invitation.lifecycle.follower !== input.follower.id
+      )) return yield* new EnrollmentStateConflictError({
+        reason: "credential-conflict", message: "the prepared invitation changed; retry with its current state",
+      });
       const nonceRows = yield* sql`
         SELECT count(*) AS count
         FROM enrollment_invitations
@@ -841,6 +943,18 @@ const makeRepository = Effect.gen(function*() {
       }
       // Enforce identity exclusivity in the transaction as well as at the
       // service boundary, including concurrent invitations for the same name.
+      if (input.replacingCredentialDigest !== undefined) {
+        if (invitation.lifecycle._tag !== "Prepared") return yield* new EnrollmentStateConflictError({
+          reason: "credential-conflict",
+          message: "the prepared enrollment changed before replacement; retry with the current invitation state",
+        });
+        yield* sql`
+          INSERT OR IGNORE INTO enrollment_credential_retirements (reference, state)
+          SELECT credential_reference, 'Retiring' FROM pending_enrollments
+          WHERE credential_digest = ${input.replacingCredentialDigest}
+        `;
+        yield* sql`DELETE FROM pending_enrollments WHERE credential_digest = ${input.replacingCredentialDigest}`;
+      }
       const activeIdentityCount = yield* statusCount(sql, sql`
         SELECT count(*) AS count FROM followers
         WHERE id = ${input.follower.id} AND revoked = 0
@@ -872,12 +986,7 @@ const makeRepository = Effect.gen(function*() {
           message: "the invitation is already pending finalization",
         });
       }
-      const invitationGroups = yield* parseJson(
-        Schema.Array(GroupName),
-        invitation.groups_json,
-        "enrollment invitation groups",
-        input.codeDigest,
-      );
+      const invitationGroups = invitation.groups;
       const requestedGroups = [...input.follower.groups];
       if (
         requestedGroups.length !== invitationGroups.length
@@ -923,17 +1032,10 @@ const makeRepository = Effect.gen(function*() {
           ${input.consumedAt}
         )
       `;
+      yield* sql`DELETE FROM enrollment_credential_retirements WHERE reference = ${input.credentialReference} AND state = 'Staged'`;
     });
     yield* sql.withTransaction(transaction).pipe(
-      Effect.mapError((error) =>
-        error instanceof EnrollmentStateConflictError
-          ? error
-          : error instanceof RepositoryDecodeError
-          ? error
-          : error instanceof RepositorySqlError
-          ? error
-          : sqlError("consume enrollment invitation")(error)
-      ),
+      Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("consume enrollment invitation")(error))),
     );
   });
 
@@ -1066,6 +1168,11 @@ const makeRepository = Effect.gen(function*() {
           `;
         } else {
           yield* sql`
+            INSERT OR IGNORE INTO enrollment_credential_retirements (reference, state)
+            SELECT credential_reference, 'Retiring' FROM follower_credentials
+            WHERE follower_id = ${follower.id} AND credential_reference != ${input.credentialReference}
+          `;
+          yield* sql`
             UPDATE followers
             SET
               name = ${follower.name},
@@ -1140,10 +1247,39 @@ const makeRepository = Effect.gen(function*() {
   const cancelPendingEnrollment = Effect.fn(
     "StateRepository.cancelPendingEnrollment",
   )(function*(input: CancelPendingEnrollmentInput): Effect.fn.Return<void, StateRepositoryError> {
-    yield* sql`
-      DELETE FROM pending_enrollments
-      WHERE credential_digest = ${input.credentialDigest}
-    `.pipe(Effect.mapError(sqlError("cancel pending enrollment")));
+    yield* sql.withTransaction(Effect.gen(function*() {
+      yield* sql`
+        INSERT OR IGNORE INTO enrollment_credential_retirements (reference, state)
+        SELECT credential_reference, 'Retiring' FROM pending_enrollments
+        WHERE credential_digest = ${input.credentialDigest}
+      `;
+      yield* sql`DELETE FROM pending_enrollments WHERE credential_digest = ${input.credentialDigest}`;
+    })).pipe(Effect.mapError(sqlError("cancel pending enrollment")));
+  });
+
+  const stageEnrollmentCredential = Effect.fn("StateRepository.stageEnrollmentCredential")(function*(reference: typeof CredentialReference.Type) {
+    yield* sql`INSERT INTO enrollment_credential_retirements (reference, state) VALUES (${reference}, 'Staged')`
+      .pipe(Effect.mapError(sqlError("stage enrollment credential")));
+  });
+
+  const recoverEnrollmentCredentialStaging = Effect.fn("StateRepository.recoverEnrollmentCredentialStaging")(function*() {
+    yield* sql`UPDATE enrollment_credential_retirements SET state = 'Retiring' WHERE state = 'Staged'`
+      .pipe(Effect.mapError(sqlError("recover enrollment credential staging")));
+  });
+
+  const listEnrollmentCredentialRetirements = Effect.fn("StateRepository.listEnrollmentCredentialRetirements")(function*() {
+    const rows = yield* sql`
+      SELECT state AS _tag, reference AS credentialReference FROM enrollment_credential_retirements WHERE state = 'Retiring' ORDER BY reference
+    `.pipe(Effect.mapError(sqlError("list retiring enrollment credentials")));
+    return yield* decodeRows(Schema.TaggedStruct("Retiring", { credentialReference: CredentialReference }),
+      rows, "retiring enrollment credentials", "all");
+  });
+
+  const completeEnrollmentCredentialRetirement = Effect.fn("StateRepository.completeEnrollmentCredentialRetirement")(function*(
+    reference: typeof CredentialReference.Type,
+  ) {
+    yield* sql`DELETE FROM enrollment_credential_retirements WHERE reference = ${reference} AND state = 'Retiring'`
+      .pipe(Effect.mapError(sqlError("complete enrollment credential retirement")));
   });
 
   const listPendingEnrollments = Effect.fn(
@@ -1193,7 +1329,13 @@ const makeRepository = Effect.gen(function*() {
       credentialReference: row.credential_reference,
       enrolledAt: row.enrolled_at,
     }).pipe(Effect.mapError(decodeError("follower", row.id)));
+    const retiring = row.revoked === 0 ? false : (yield* statusCount(sql, sql`
+      SELECT count(*) AS count FROM enrollment_credential_retirements
+      WHERE reference = ${row.credential_reference} AND state = 'Retiring'
+    `, "follower credential retirement", row.id)) > 0;
     return {
+      lifecycle: row.revoked === 0 ? { _tag: "Active" } : retiring
+        ? { _tag: "Retiring", credentialReference: row.credential_reference } : { _tag: "Retired" },
       follower,
       credentialDigest: row.credential_digest,
       credentialReference: row.credential_reference,
@@ -1259,16 +1401,16 @@ const makeRepository = Effect.gen(function*() {
 
   const revokeFollower = Effect.fn("StateRepository.revokeFollower")(
     function*(follower: FollowerIdType): Effect.fn.Return<void, StateRepositoryError> {
-      const count = yield* statusCount(
-        sql,
-        sql`SELECT count(*) AS count FROM followers WHERE id = ${follower}`,
-        "follower",
-        follower,
-      );
-      if (count === 0) return yield* new FollowerNotFoundError({ follower });
-      yield* sql`UPDATE followers SET revoked = 1 WHERE id = ${follower}`.pipe(
-        Effect.mapError(sqlError("revoke follower")),
-      );
+      yield* sql.withTransaction(Effect.gen(function*() {
+        const count = yield* statusCount(sql,
+          sql`SELECT count(*) AS count FROM followers WHERE id = ${follower}`, "follower", follower);
+        if (count === 0) return yield* new FollowerNotFoundError({ follower });
+        yield* sql`
+          INSERT OR IGNORE INTO enrollment_credential_retirements (reference, state)
+          SELECT credential_reference, 'Retiring' FROM followers WHERE id = ${follower} AND revoked = 0
+        `;
+        yield* sql`UPDATE followers SET revoked = 1 WHERE id = ${follower}`;
+      })).pipe(Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("revoke follower")(error))));
     },
   );
 
@@ -2786,11 +2928,77 @@ const makeRepository = Effect.gen(function*() {
     },
   );
 
+  const transitionScheduledInvocation = Effect.fn("StateRepository.transitionScheduledInvocation")(function*(
+    input: ScheduledInvocation,
+  ): Effect.fn.Return<void, StateRepositoryError> {
+    const invocation = yield* Schema.decodeUnknownEffect(ScheduledInvocation)(input)
+      .pipe(Effect.mapError(decodeError("scheduled invocation", input.id)));
+    yield* sql.withTransaction(Effect.gen(function*() {
+      const rows = yield* sql`SELECT invocation_json FROM scheduled_invocations WHERE id = ${invocation.id}`;
+      const decoded = yield* decodeRows(Schema.Struct({ invocation_json: Schema.String }), rows, "scheduled invocation", invocation.id);
+      const existing = decoded[0] === undefined ? undefined
+        : yield* parseJson(ScheduledInvocation, decoded[0].invocation_json, "scheduled invocation", invocation.id);
+      if (invocation._tag === "Running" ? existing !== undefined
+        : existing?._tag !== "Running" || existing.startedAt !== invocation.startedAt
+          || existing.generation !== invocation.generation) {
+        return yield* new InvalidRunTransitionError({
+          run: invocation.id, message: "a scheduled invocation must start once and finish that same running invocation once",
+        });
+      }
+      yield* sql`
+        INSERT INTO scheduled_invocations (id, started_at, state, invocation_json)
+        VALUES (${invocation.id}, ${invocation.startedAt}, ${invocation._tag}, ${JSON.stringify(invocation)})
+        ON CONFLICT(id) DO UPDATE SET state = excluded.state, invocation_json = excluded.invocation_json
+      `;
+    })).pipe(Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("transition scheduled invocation")(error))));
+  });
+
+  const importScheduledInvocations = Effect.fn("StateRepository.importScheduledInvocations")(function*(
+    input: Parameters<StateRepository["Service"]["importScheduledInvocations"]>[0],
+  ): Effect.fn.Return<void, StateRepositoryError> {
+    yield* sql.withTransaction(Effect.gen(function*() {
+      const rows = yield* sql`SELECT digest FROM scheduled_invocation_imports WHERE path = ${input.path}`;
+      const imported = (yield* decodeRows(Schema.Struct({ digest: ContentDigest }), rows,
+        "scheduled invocation import", input.path))[0];
+      if (imported !== undefined) {
+        if (imported.digest === input.digest) return;
+        return yield* new RepositoryDecodeError({
+          entity: "scheduled invocation import", id: input.path,
+          message: "the receipt changed after it was imported; its events cannot be assigned safely",
+        });
+      }
+      for (const record of input.invocations) {
+        const invocation = yield* Schema.decodeUnknownEffect(ScheduledInvocation)(record)
+          .pipe(Effect.mapError(decodeError("scheduled invocation import", input.path)));
+        yield* sql`
+          INSERT INTO scheduled_invocations (id, started_at, state, invocation_json)
+          VALUES (${invocation.id}, ${invocation.startedAt}, ${invocation._tag}, ${JSON.stringify(invocation)})
+        `;
+      }
+      yield* sql`INSERT INTO scheduled_invocation_imports (path, digest) VALUES (${input.path}, ${input.digest})`;
+    })).pipe(Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("import scheduled invocations")(error))));
+  });
+
+  const listScheduledInvocations = Effect.fn("StateRepository.listScheduledInvocations")(function*() {
+    const rows = yield* sql`
+      SELECT invocation_json FROM (
+        SELECT started_at, rowid AS invocation_order, invocation_json FROM scheduled_invocations
+        ORDER BY started_at DESC, rowid DESC LIMIT 10
+      ) ORDER BY started_at, invocation_order
+    `.pipe(Effect.mapError(sqlError("list scheduled invocations")));
+    const decoded = yield* decodeRows(Schema.Struct({ invocation_json: Schema.String }), rows, "scheduled invocations", "all");
+    return yield* Effect.forEach(decoded, (row) =>
+      parseJson(ScheduledInvocation, row.invocation_json, "scheduled invocation", "all"));
+  });
+
   return StateRepository.of({
     beginRun,
     abandonRun,
     finalizeRun,
     databaseFile,
+    transitionScheduledInvocation,
+    listScheduledInvocations,
+    importScheduledInvocations,
     saveSourceIdentity,
     registerFollower,
     saveFollowerSynchronizationConfiguration,
@@ -2807,6 +3015,10 @@ const makeRepository = Effect.gen(function*() {
     finalizeEnrollment,
     cancelPendingEnrollment,
     listPendingEnrollments,
+    stageEnrollmentCredential,
+    recoverEnrollmentCredentialStaging,
+    listEnrollmentCredentialRetirements,
+    completeEnrollmentCredentialRetirement,
     findFollowerCredential,
     getFollowerCredential,
     revokeFollower,

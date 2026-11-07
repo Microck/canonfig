@@ -47,6 +47,7 @@ export const stateSchemaMigrations = [
   { id: 1, name: "state_format_6" },
   { id: 2, name: "archive_events" },
   { id: 3, name: "synchronization_lifecycle" },
+  { id: 4, name: "enrollment_lifecycle" },
 ] as const;
 
 /**
@@ -565,6 +566,44 @@ export const stateMigrations = SqliteMigrator.fromRecord({
         yield* sql`UPDATE synchronization_runs SET plan_json = ${JSON.stringify(plan)} WHERE id = ${row.id}`;
       }
     }
+  }),
+  "0004_enrollment_lifecycle": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+    // Released active configurations upgrade in place. Old pending rows lack
+    // replacement ownership and must be recovered explicitly, not guessed.
+    yield* sql`
+      UPDATE follower_sync_configuration
+      SET configuration_json = json_remove(
+        json_set(configuration_json, '$.lifecycle', json_object(
+          '_tag', CASE WHEN json_extract(configuration_json, '$.enrollmentPending') = 1
+            THEN 'LegacyPending' ELSE 'Active' END
+        )), '$.enrollmentPending'
+      )
+    `;
+    yield* sql`
+      CREATE TABLE enrollment_credential_retirements (
+        reference TEXT PRIMARY KEY NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('Staged', 'Retiring'))
+      )
+    `;
+    yield* sql`
+      INSERT OR IGNORE INTO enrollment_credential_retirements (reference, state)
+      SELECT credential_reference, 'Retiring' FROM followers WHERE revoked = 1
+    `;
+    yield* sql`
+      CREATE TABLE scheduled_invocations (
+        id TEXT PRIMARY KEY NOT NULL,
+        started_at TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('Running', 'Completed', 'Failed')),
+        invocation_json TEXT NOT NULL
+      )
+    `;
+    yield* sql`
+      CREATE TABLE scheduled_invocation_imports (
+        path TEXT PRIMARY KEY NOT NULL,
+        digest TEXT NOT NULL
+      )
+    `;
   }),
 });
 

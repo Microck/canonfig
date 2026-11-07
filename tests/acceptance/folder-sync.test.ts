@@ -6,13 +6,16 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { ConfigValue } from "../../src/domain/resource.ts";
 
 import { adapterFor } from "../../src/projection/adapters/index.ts";
 import type { TargetId } from "../../src/projection/model.ts";
+import { CredentialReference } from "../../src/domain/brand.ts";
+import { cancelFollowerEnrollment } from "../../src/enrollment/follower-client.ts";
+import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 
 /**
  * The folder model end to end through the CLI: a Source and its followers
@@ -156,8 +159,8 @@ const unusedPort = (): Promise<number> =>
   });
 
 /** `canonfig source serve` in the background; resolves with its endpoint once it listens. */
-const serve = async (source: Machine): Promise<string> => {
-  const port = await unusedPort();
+const serve = async (source: Machine, requestedPort?: number): Promise<string> => {
+  const port = requestedPort ?? await unusedPort();
   const child = spawn(process.execPath, [
     "--import", "tsx", "src/runtime/main.ts", "source", "serve", "--host", "127.0.0.1", "--port", `${port}`, "--json",
   ], { cwd: project, env: source.environment, stdio: ["ignore", "pipe", "pipe"] });
@@ -241,6 +244,108 @@ const rowCount = (state: string, table: string): number => {
 };
 
 describe("folder sync across a Source and its followers", () => {
+  it("retains both credentials and reports rollback pending while the previous Source is offline", async () => {
+    const previous = await startSource();
+    const candidate = await startSource();
+    const follower = machine("offline-rollback");
+    enroll(previous.source, previous.endpoint, follower, "old-name");
+    succeed(follower.run(["sync", "--apply"]), "initial mirror");
+    const remote = new DatabaseSync(candidate.source.state);
+    remote.exec(`
+      CREATE TRIGGER interrupt_finalize BEFORE INSERT ON followers
+      BEGIN SELECT RAISE(FAIL, 'interrupted Source finalization'); END;
+    `);
+    remote.close();
+    const invitation = join(candidate.source.home, "offline.invite");
+    succeed(candidate.source.run(["source", "invite", "--endpoint", candidate.endpoint, "--output", invitation]), "candidate invitation");
+    const envelope = read(invitation);
+    const command = ["follower", "enroll", "--replace", "--stdin", "--name", "replacement"];
+    const failed = follower.run(command, envelope);
+    expect(failed.status, failed.stdout + failed.stderr).not.toBe(0);
+    const local = new DatabaseSync(follower.state, { readOnly: true });
+    const pending = JSON.parse(String(local.prepare("SELECT configuration_json FROM follower_sync_configuration").get()?.configuration_json));
+    local.close();
+    expect(pending.lifecycle._tag).toBe("Finalizing");
+    // Cancel only the Source's prepared half, as restart recovery would do.
+    // Transport leaves the locally owned item in place until rollback settles.
+    await Effect.runPromise(cancelFollowerEnrollment({
+      endpoint: candidate.endpoint,
+      tlsFingerprint: pending.source.tlsFingerprint,
+      credentialReference: Schema.decodeUnknownSync(CredentialReference)(pending.credentialReference),
+    }).pipe(Effect.provide(linuxMachineStateLayer({
+      environment: [{ name: "HOME", value: follower.home }],
+      credentialPolicy: { kind: "local-file", path: String(follower.environment.CANONFIG_LOCAL_CREDENTIAL_ROOT) },
+    }))));
+    const repaired = new DatabaseSync(candidate.source.state);
+    repaired.exec("DROP TRIGGER interrupt_finalize");
+    repaired.close();
+    const previousServer = servers[0];
+    if (previousServer === undefined) throw new Error("disposable previous Source server is missing");
+    const stopped = once(previousServer, "close");
+    previousServer.kill("SIGTERM");
+    await stopped;
+    servers.splice(servers.indexOf(previousServer), 1);
+    const store = String(follower.environment.CANONFIG_LOCAL_CREDENTIAL_ROOT);
+    const retained = readdirSync(store).sort();
+    expect(retained).toHaveLength(2);
+    const offline = follower.run(command, envelope);
+    expect(offline.status, offline.stdout + offline.stderr).not.toBe(0);
+    expect(offline.stdout + offline.stderr).toContain("rollback is pending");
+    const status = succeed(follower.run(["status"]), "rollback status");
+    expect(status.envelope.data).toMatchObject({ enrollmentLifecycle: "RollbackPending" });
+    expect(status.stdout).toContain("canonfig follower enroll");
+    const doctor = follower.run(["doctor", "--no-input", "--timeout-ms", "1000"]);
+    expect(doctor.stdout + doctor.stderr).toContain("rollback is pending");
+    expect(doctor.stdout + doctor.stderr).toContain("canonfig follower enroll");
+    expect(readdirSync(store).sort()).toEqual(retained);
+    await serve(previous.source, Number(new URL(previous.endpoint).port));
+    succeed(follower.run(command, envelope), "verified rollback and replacement retry");
+    expect(readdirSync(store)).toHaveLength(1);
+    const settled = new DatabaseSync(follower.state, { readOnly: true });
+    const active = JSON.parse(String(settled.prepare("SELECT configuration_json FROM follower_sync_configuration").get()?.configuration_json));
+    expect(active.lifecycle).toEqual({ _tag: "Active" });
+    expect(active.source.endpoint).toBe(candidate.endpoint);
+    expect(settled.prepare("SELECT count(*) AS count FROM enrollment_credential_retirements").get()?.count).toBe(0);
+    settled.close();
+  }, 240_000);
+
+  it("resumes replacement after remote finalization without treating the existing mirror as authored content", async () => {
+    const { source, endpoint } = await startSource();
+    const follower = machine("replacement");
+    enroll(source, endpoint, follower, "old-name");
+    succeed(follower.run(["sync", "--apply"]), "initial sync");
+    const database = new DatabaseSync(follower.state);
+    const previous = JSON.parse(String(database.prepare("SELECT configuration_json FROM follower_sync_configuration").get()?.configuration_json));
+    database.exec(`
+      CREATE TRIGGER interrupt_confirmation BEFORE UPDATE ON follower_sync_configuration
+      WHEN json_extract(NEW.configuration_json, '$.enrollmentPending') IS NULL
+        AND (json_extract(NEW.configuration_json, '$.lifecycle._tag') IS NULL
+          OR json_extract(NEW.configuration_json, '$.lifecycle._tag') = 'RetiringPrevious')
+      BEGIN SELECT RAISE(FAIL, 'interrupted local confirmation'); END;
+    `);
+    database.close();
+    const invitation = join(source.home, "replacement.invite");
+    succeed(source.run(["source", "invite", "--endpoint", endpoint, "--output", invitation]), "replacement invitation");
+    const envelope = read(invitation);
+    const failed = follower.run(["follower", "enroll", "--replace", "--stdin", "--name", "new-name"], envelope);
+    expect(failed.status, failed.stdout + failed.stderr).not.toBe(0);
+    const interrupted = new DatabaseSync(follower.state);
+    interrupted.exec("DROP TRIGGER interrupt_confirmation");
+    interrupted.close();
+    const resumed = follower.run(["follower", "enroll", "--replace", "--stdin", "--name", "new-name"], envelope);
+    succeed(resumed, "resume replacement with an existing mirror");
+    const local = new DatabaseSync(follower.state, { readOnly: true });
+    const active = JSON.parse(String(local.prepare("SELECT configuration_json FROM follower_sync_configuration").get()?.configuration_json));
+    local.close();
+    expect(active.lifecycle).toEqual({ _tag: "Active" });
+    expect(active.follower.name).toBe("new-name");
+    expect(existsSync(previous.credentialReference.slice("local-file:".length))).toBe(false);
+    const remote = new DatabaseSync(source.state, { readOnly: true });
+    expect(remote.prepare("SELECT revoked FROM followers WHERE id = ?").get(previous.follower.id)?.revoked).toBe(1);
+    remote.close();
+    succeed(follower.run(["sync", "--apply"]), "sync replacement");
+  }, 180_000);
+
   it("publishes, enrolls, mirrors and projects, and re-keys an earlier local projection", async () => {
     const { source, endpoint } = await startSource();
     const follower = machine("laptop", ["claude-code"]);
@@ -407,7 +512,7 @@ describe("folder sync across a Source and its followers", () => {
     // already holds the Follower role.
     const state = new DatabaseSync(follower.state);
     try {
-      state.prepare("UPDATE follower_sync_configuration SET configuration_json = json_set(configuration_json, '$.enrollmentPending', json('true'))").run();
+      state.prepare("UPDATE follower_sync_configuration SET configuration_json = json_set(configuration_json, '$.lifecycle', json('{\"_tag\":\"Finalizing\"}'))").run();
     } finally {
       state.close();
     }

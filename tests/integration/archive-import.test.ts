@@ -196,6 +196,7 @@ describe("import refuses archives a Canonfig export never produces", () => {
         sourceIdentity: decode(SourceIdentity)({ keyId: "source-key", publicKeyFingerprint: "source-fingerprint" }),
         configuration: decode(FollowerSynchronizationConfiguration)({
           schemaVersion: 1,
+          lifecycle: { _tag: "Active" },
           follower,
           profile: "workstation",
           source: { endpoint: "https://127.0.0.1:9/", tlsFingerprint: "tls-fingerprint", signingFingerprint: "source-fingerprint" },

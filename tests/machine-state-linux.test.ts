@@ -14,6 +14,8 @@ import {
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
 import { Cause, Effect, Redacted } from "effect";
 import { describe, expect, it } from "vitest";
@@ -23,6 +25,8 @@ import { CredentialStorageError } from "../src/machine/machine-state.errors.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
 import { nativeSecretStoreLayer } from "../src/secrets/native-secret-store.ts";
 import { machineStateContract } from "./contract/machine-state.contract.ts";
+import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
+import { StateRepository } from "../src/state/state-repository.service.ts";
 
 const environment = (root: string) => [
   { name: "HOME", value: join(root, "home") },
@@ -50,6 +54,110 @@ machineStateContract("Linux", {
       credentialPolicy: { kind: "secure-store" },
       environment: environment(root),
     }),
+});
+
+describe("credential staging ownership", () => {
+  it("does not write credential bytes when beforeStore fails", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-hook-failure-"));
+    const store = join(root, "credentials");
+    try {
+      const error = await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        return yield* Effect.flip(machine.storeCredential({
+          name: "not-written", value: Redacted.make("private fixture value"),
+          beforeStore: () => Effect.fail(new CredentialStorageError({
+            operation: "stage", reference: "fixture", message: "ownership write failed",
+          })),
+        }));
+      }).pipe(Effect.provide(linuxMachineStateLayer({
+        credentialPolicy: { kind: "local-file", path: store }, environment: environment(root),
+      }))));
+      expect(error.message).toBe("ownership write failed");
+      expect(existsSync(store) ? readdirSync(store) : []).toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(["before-write", "after-write"])("recovers staged ownership after an isolated child exits %s", async (phase) => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-hook-interruption-"));
+    const store = join(root, "credentials");
+    const path = join(root, "state.sqlite");
+    const moduleUrl = (relative: string) => JSON.stringify(pathToFileURL(
+      join(import.meta.dirname, "../src", relative),
+    ).href);
+    // Only this disposable child exits abruptly; it cannot touch operator state.
+    const child = `
+      import { Effect, Layer, Redacted } from "effect";
+      import { linuxMachineStateLayer } from ${moduleUrl("machine/linux.layer.ts")};
+      import { MachineState } from ${moduleUrl("machine/machine-state.service.ts")};
+      import { stateRepositoryLayer } from ${moduleUrl("state/state-repository.layer.ts")};
+      import { StateRepository } from ${moduleUrl("state/state-repository.service.ts")};
+      await Effect.runPromise(Effect.gen(function*() {
+        const repository = yield* StateRepository;
+        const machine = yield* MachineState;
+        yield* machine.storeCredential({
+          name: "interrupted", value: Redacted.make("private fixture value"),
+          beforeStore: (reference) => repository.stageEnrollmentCredential(reference).pipe(
+            Effect.orDie,
+            Effect.tap(() => Effect.sync(() => {
+              if (${JSON.stringify(phase)} === "before-write") process.exit(73);
+            }))
+          ),
+        });
+        process.exit(73);
+      }).pipe(Effect.provide(Layer.merge(
+        stateRepositoryLayer(${JSON.stringify(path)}),
+        linuxMachineStateLayer({
+          credentialPolicy: {kind:"local-file", path:${JSON.stringify(store)}}
+        })
+      ))));
+    `;
+    try {
+      const exited = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", child], {
+        encoding: "utf8", timeout: 30_000,
+        env: {
+          ...process.env, HOME: root, XDG_CONFIG_HOME: join(root, "config"),
+          XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"),
+        },
+      });
+      expect(exited.status, exited.stderr).toBe(73);
+      expect(existsSync(store) ? readdirSync(store).length : 0).toBe(phase === "after-write" ? 1 : 0);
+      const owned = await Effect.runPromise(Effect.gen(function*() {
+        const repository = yield* StateRepository;
+        yield* repository.recoverEnrollmentCredentialStaging();
+        return yield* repository.listEnrollmentCredentialRetirements();
+      }).pipe(Effect.provide(stateRepositoryLayer(path))));
+      expect(owned).toHaveLength(1);
+      await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        for (const entry of owned) yield* machine.removeCredential(entry.credentialReference);
+      }).pipe(Effect.provide(linuxMachineStateLayer({
+        credentialPolicy: { kind: "local-file", path: store }, environment: environment(root),
+      }))));
+      expect(existsSync(store) ? readdirSync(store) : []).toEqual([]);
+      const remaining = await Effect.runPromise(Effect.gen(function*() {
+        const repository = yield* StateRepository;
+        for (const entry of owned) yield* repository.completeEnrollmentCredentialRetirement(entry.credentialReference);
+        return yield* repository.listEnrollmentCredentialRetirements();
+      }).pipe(Effect.provide(stateRepositoryLayer(path))));
+      expect(remaining).toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("keeps local deletion failures visible and ignores only missing files", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-linux-remove-"));
+    const store = join(root, "credentials");
+    try {
+      await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const reference = yield* machine.storeCredential({ name: "remove", value: Redacted.make("private fixture value") });
+        yield* machine.removeCredential(reference);
+        yield* machine.removeCredential(reference);
+        mkdirSync(String(reference).slice("local-file:".length));
+        expect((yield* Effect.result(machine.removeCredential(reference)))._tag).toBe("Failure");
+      }).pipe(Effect.provide(linuxMachineStateLayer({
+        credentialPolicy: { kind: "local-file", path: store }, environment: environment(root),
+      }))));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
 });
 
 describe("portable safe-root mutation", () => {

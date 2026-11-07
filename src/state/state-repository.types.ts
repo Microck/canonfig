@@ -1,3 +1,4 @@
+import { Schema } from "effect";
 import type {
   ActionId,
   CertificateFingerprint,
@@ -21,6 +22,21 @@ import type { McpQualificationReceipt } from "../domain/mcp-qualification.ts";
 import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
 import type { CompiledResourceBlob } from "../profile/compiler.ts";
+
+const ScheduledInvocationFields = {
+  id: Schema.NonEmptyString,
+  generation: Schema.optional(Schema.NonEmptyString),
+  startedAt: Schema.NonEmptyString,
+};
+
+export const ScheduledInvocation = Schema.Union([
+  Schema.TaggedStruct("Running", ScheduledInvocationFields),
+  Schema.TaggedStruct("Completed", { ...ScheduledInvocationFields, at: Schema.NonEmptyString }),
+  Schema.TaggedStruct("Failed", {
+    ...ScheduledInvocationFields, at: Schema.NonEmptyString, reason: Schema.NonEmptyString,
+  }),
+]);
+export type ScheduledInvocation = typeof ScheduledInvocation.Type;
 
 /**
  * Bytes held in memory, or a regular file the repository streams into
@@ -115,6 +131,8 @@ export interface RegisterFollowerInput {
 
 export interface SaveFollowerSynchronizationConfigurationInput {
   readonly configuration: FollowerSynchronizationConfiguration;
+  /** Absent means create-only; settings and lifecycle changes compare the read snapshot. */
+  readonly expectedConfiguration?: FollowerSynchronizationConfiguration;
   readonly sourceIdentity: SourceIdentity;
 }
 
@@ -151,6 +169,8 @@ export interface ConsumeEnrollmentInvitationInput {
   readonly credentialDigest: ContentDigest;
   readonly credentialReference: CredentialReference;
   readonly consumedAt: string;
+  /** Atomic re-prepare may replace only this still-prepared credential. */
+  readonly replacingCredentialDigest?: ContentDigest;
 }
 
 export interface FinalizeEnrollmentInput {
@@ -170,14 +190,30 @@ export interface PendingEnrollmentRecord {
   readonly credentialReference: CredentialReference;
 }
 
+export type EnrollmentCredentialRetirement = {
+  readonly _tag: "Retiring";
+  readonly credentialReference: CredentialReference;
+};
+
 export interface StoredEnrollmentInvitation {
   readonly intendedSourceFingerprint: CertificateFingerprint;
   readonly tlsFingerprint: CertificateFingerprint;
   readonly endpoint: string;
   readonly groups: ReadonlyArray<GroupName>;
   readonly expiresAt: string;
-  readonly usedAt?: string | undefined;
+  readonly lifecycle:
+    | { readonly _tag: "Available" }
+    | { readonly _tag: "Expired" }
+    | { readonly _tag: "Prepared"; readonly follower: FollowerId; readonly credentialDigest: ContentDigest }
+    | { readonly _tag: "Consumed"; readonly usedAt: string };
 }
+
+export const EnrollmentCredentialLifecycle = Schema.Union([
+  Schema.TaggedStruct("Prepared", {}),
+  Schema.TaggedStruct("Active", {}),
+  Schema.TaggedStruct("Retiring", {}),
+  Schema.TaggedStruct("Retired", {}),
+]);
 
 /** Enrollment inventory without credentials or invitation bearer material. */
 export interface EnrollmentFollowerSummary {
@@ -188,6 +224,7 @@ export interface EnrollmentFollowerSummary {
   readonly revoked: boolean;
   readonly pending: boolean;
   readonly credentialPresent: boolean;
+  readonly credentialLifecycle: typeof EnrollmentCredentialLifecycle.Type;
 }
 
 export interface EnrollmentInvitationSummary {
@@ -198,6 +235,10 @@ export interface EnrollmentInvitationSummary {
 }
 
 export interface FollowerCredentialRecord {
+  readonly lifecycle:
+    | { readonly _tag: "Active" }
+    | { readonly _tag: "Retiring"; readonly credentialReference: CredentialReference }
+    | { readonly _tag: "Retired" };
   readonly follower: FollowerIdentity;
   readonly credentialDigest: ContentDigest;
   readonly credentialReference: CredentialReference;

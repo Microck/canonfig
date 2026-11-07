@@ -38,6 +38,7 @@ const storeFollowerConfiguration = (
     credentialReference: "fixture-credential", enrolledAt: at };
   const configuration = Schema.decodeUnknownSync(FollowerSynchronizationConfiguration)({
     schemaVersion: 1, follower, profile: "fixture-profile",
+    lifecycle: { _tag: "Active" },
     source: { endpoint: "https://127.0.0.1:1", tlsFingerprint: "fixture-tls", signingFingerprint: "fixture-signing" },
     credentialReference: follower.credentialReference, cacheDirectory: join(home, "cache"),
     stateLocation: state, agentPolicy: "deterministic-only",
@@ -63,7 +64,7 @@ it.each(["fresh", "source-only", "pending", "pending-rotation"])("refuses schedu
     if (mode.startsWith("pending")) {
       // Faithful persisted state at the prepare/finalize boundary.
       storeFollowerConfiguration(home, state, {
-        enrollmentPending: true,
+        lifecycle: { _tag: "Finalizing" },
         scheduleDefault: mode === "pending-rotation" ? { type: "daily", at: "04:30", timezone: "local" } : undefined,
         scheduleOverride: mode === "pending-rotation" ? { kind: "schedule", schedule: { kind: "daily", localTime: "04:30" } } : undefined,
       });
