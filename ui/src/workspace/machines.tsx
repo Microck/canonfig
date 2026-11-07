@@ -430,7 +430,7 @@ function SourceDetail({ onClose, onCustomize }: { onClose: () => void; onCustomi
 
 class DialogTransitionError extends Error {
   readonly name = "DialogTransitionError";
-  constructor(readonly phase: string, readonly event: string) {
+  constructor(phase: string, event: string) {
     super(`Cannot ${event} while dialog is ${phase}.`);
   }
 }
@@ -786,7 +786,7 @@ function InviteForm() {
   const freshDraft = (endpoint: string, outDir: string): InviteDraft => ({
     name: "", endpoint, expiry: "1h", groups: [], outDir, inviteId: newInvitationId(ws.invitations), tried: false,
   });
-  const [state, dispatch] = useReducer(invitationTransition<InviteDraft, SubmittedInvitation>, undefined, () => ({
+  const [state, dispatch] = useReducer(invitationTransition<InviteDraft, SubmittedInvitation>, undefined, (): InvitationDialogState<InviteDraft, SubmittedInvitation> => ({
     phase: ws.inviteOpen ? "editing" : "closed", draft: freshDraft(ws.endpoint, "~"),
   }));
   const creating = useRef<number | undefined>(undefined);

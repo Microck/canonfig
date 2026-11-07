@@ -526,7 +526,7 @@ function SyncForm() {
               <Button
                 size="sm"
                 variant="primary"
-                disabled={running || ws.interrupted || blocks.blocked !== null || collisions.length > 0 || (live !== undefined && live.operation?.state !== "succeeded")}
+                disabled={running || ws.interrupted || blocks.blocked !== null || collisions.length > 0 || (live !== undefined && !live.canApply)}
                 onClick={ws.applyPlan}
                 data-tour="sync-apply"
               >

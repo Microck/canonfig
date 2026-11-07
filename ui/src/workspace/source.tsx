@@ -11,6 +11,7 @@ import { isCoarsePointer } from "@/lib/utils";
 import { AnimatedNumber, DitherProgress, Hint, Mono, StateCell, StateLabel, Term } from "@/shared/shared";
 import { DEMO, PLAIN, SECRETS_GROUP, STATE_META, type Revision } from "@/shared/metadata";
 import { ErrorNotice } from "../live/session";
+import { GuiRequestError } from "../gui-client";
 import { useSharedState, useWorkspace, type PendingChange, type Workspace } from "./store";
 import { GetStarted } from "./guide";
 import { whyBehind } from "./machines";
@@ -476,7 +477,7 @@ function PublishForm() {
     return () => window.clearInterval(t);
   }, [open, ws.capabilities.profileWrite, live]);
 
-  const checked = ws.profileLive ? ws.profileLive.validation?.valid === true : check >= 100;
+  const checked = ws.profileLive ? ws.profileLive.publication.kind === "Validated" : check >= 100;
   const reviewerError = tried && !reviewer.trim() ? "Enter the name of the person who reviewed these changes." : null;
 
   return (
@@ -578,7 +579,7 @@ function PublishForm() {
               <Button type="button" variant="ghost" disabled={ws.publishing} onClick={() => ws.setPublishOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" variant="primary" disabled={!checked || ws.publishing}>
+              <Button type="submit" variant="primary" disabled={!checked || ws.publishing || ws.profileLive?.busy}>
                 {ws.publishing ? "Publishing…" : !checked ? "Checking files…" : <>Publish revision {ws.nextSequence}</>}
               </Button>
             </div>
@@ -713,27 +714,46 @@ function RevisionDetail({ revision: r, onClose }: { revision: Revision; onClose:
   );
 }
 
+interface SecretDraft { name: string; value: string; replaces: string | null; tried: boolean }
+type SecretFlow =
+  | { kind: "Closed" | "Saved" }
+  | { kind: "Editing"; id: number; draft: SecretDraft }
+  | { kind: "Submitting"; id: number; draft: SecretDraft }
+  | { kind: "Failed"; id: number; draft: SecretDraft };
+type SecretEvent =
+  | { kind: "Open"; id: number; name?: string }
+  | { kind: "Change"; update: Partial<SecretDraft> }
+  | { kind: "Submit" }
+  | { kind: "Succeeded" | "Failed"; id: number }
+  | { kind: "Close" };
+function secretTransition(state: SecretFlow, event: SecretEvent): SecretFlow {
+  if (event.kind === "Open" && state.kind !== "Submitting") return { kind: "Editing", id: event.id, draft: { name: event.name ?? "", replaces: event.name ?? null, value: "", tried: false } };
+  if (event.kind === "Close" && state.kind !== "Submitting") return { kind: "Closed" };
+  if ("draft" in state) {
+    if (event.kind === "Change" && state.kind !== "Submitting") return { ...state, kind: "Editing", draft: { ...state.draft, ...event.update } };
+    if (event.kind === "Submit" && state.kind !== "Submitting") return { ...state, kind: "Submitting" };
+    if ((event.kind === "Succeeded" || event.kind === "Failed") && state.kind === "Submitting" && state.id === event.id) return event.kind === "Succeeded" ? { kind: "Saved" } : { ...state, kind: "Failed" };
+  }
+  throw new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: `Cannot ${event.kind.toLowerCase()} the secret form while it is ${state.kind}.` });
+}
+
 export function SecretsView() {
   const ws = useWorkspace();
-  const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<string | null>(null);
+  const [flow, setFlow] = useState<SecretFlow>({ kind: "Closed" });
+  const generation = useRef(0);
+  const send = (event: SecretEvent) => setFlow((state) => secretTransition(state, event));
+  const open = "draft" in flow;
+  const submitting = flow.kind === "Submitting";
+  const { name, value, replaces: editing, tried } = "draft" in flow ? flow.draft : { name: "", value: "", replaces: null, tried: false };
+  const setOpen = (next: boolean) => { if (!next && !submitting) send({ kind: "Close" }); };
   const [removing, setRemoving] = useState<string | null>(null);
-  const [name, setName] = useState("");
-  const [value, setValue] = useState("");
-  const [tried, setTried] = useState(false);
   const receivers = ws.followers.filter((f) => f.groups.includes(SECRETS_GROUP));
   const others = ws.followers.length - receivers.length;
   const cols = "minmax(180px,240px) 120px minmax(160px,360px) minmax(40px,1fr)";
   const colsMin = 180 + 120 + 160 + 40 + 3 * 12 + 20;
   const share = () => ws.setChangeGroups({ addGroup: SECRETS_GROUP });
 
-  const openSet = (n?: string) => {
-    setEditing(n ?? null);
-    setName(n ?? "");
-    setValue("");
-    setTried(false);
-    setOpen(true);
-  };
+  const openSet = (name?: string) => { if (!submitting) send({ kind: "Open", id: ++generation.current, name }); };
 
   const trimmed = name.trim();
   const nameError = !tried || editing ? null : !trimmed ? "Enter a name." : ws.secrets.some((s) => s.name === trimmed) ? `${trimmed} already exists. Use Replace value on its row.` : null;
@@ -821,25 +841,27 @@ export function SecretsView() {
         <div className="pb-16" />
       </Body>
 
-      <Dialog open={open} onOpenChange={(next) => { setOpen(next); if (!next) setValue(""); }}>
+      <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md">
           <form
             className="contents"
             onSubmit={async (e) => {
               e.preventDefault();
-              setTried(true);
+              send({ kind: "Change", update: { tried: true } });
               const badName = !editing && (!trimmed || ws.secrets.some((s) => s.name === trimmed));
               if (badName || !value) {
                 document.getElementById(badName ? "sec-name" : "sec-value")?.focus();
                 return;
               }
+              if (!("id" in flow) || submitting) return;
+              const id = flow.id;
+              send({ kind: "Submit" });
               if (ws.profileLive) {
-                if (!await ws.profileLive.setSecret(editing ?? trimmed, value)) return;
-                setValue("");
+                if (!await ws.profileLive.setSecret(editing ?? trimmed, value)) { send({ kind: "Failed", id }); return; }
               } else {
               ws.setSecrets((p) => (editing ? p.map((s) => (s.name === editing ? { ...s, updated: "Today" } : s)) : [...p, { name: trimmed, updated: "Today", sharedWith: receivers.length }]));
               }
-              setOpen(false);
+              send({ kind: "Succeeded", id });
               toast.success(editing ? `Replaced ${editing}` : `Saved ${trimmed}`, { description: DEMO ? "Saved in this demo workspace." : undefined });
             }}
           >
@@ -850,13 +872,13 @@ export function SecretsView() {
               </DialogDescription>
             </DialogHeader>
             <ProfileActionNotice />
-            <div className="grid gap-3">
+            <fieldset disabled={submitting} className="grid gap-3">
               {!editing && (
                 <Field label="Name" htmlFor="sec-name" error={nameError}>
                   <Input
                     id="sec-name"
                     value={name}
-                    onChange={(e) => setName(e.target.value)}
+                    onChange={(e) => send({ kind: "Change", update: { name: e.target.value } })}
                     aria-invalid={!!nameError}
                     aria-describedby={nameError ? "sec-name-note" : undefined}
                     placeholder="anthropic-api-key"
@@ -876,19 +898,19 @@ export function SecretsView() {
                   id="sec-value"
                   type="password"
                   value={value}
-                  onChange={(e) => setValue(e.target.value)}
+                  onChange={(e) => send({ kind: "Change", update: { value: e.target.value } })}
                   aria-invalid={!!valueError}
                   aria-describedby="sec-value-note"
                   autoComplete="off"
                   data-1p-ignore
                 />
               </Field>
-            </div>
+            </fieldset>
             <DialogFooter>
-              <Button type="button" variant="ghost" onClick={() => { setOpen(false); setValue(""); }}>
+              <Button type="button" variant="ghost" disabled={submitting} onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" variant="primary" disabled={ws.profileLive?.busy}>
+              <Button type="submit" variant="primary" disabled={submitting || ws.profileLive?.busy}>
                 Save secret
               </Button>
             </DialogFooter>

@@ -1,4 +1,5 @@
 /// <reference types="node" />
+/// <reference lib="es2024.promise" />
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer, type ServerResponse } from "node:http";
@@ -40,6 +41,7 @@ async function fixture(category: LocalCategory = "skills", existing = false) {
   const item: LocalItem | null = existing ? category === "mcp" || category === "settings" ? { id: `${category}/example`, path: `${category}/example`, category, summary: "" } : { id: "skills/example", path: "skills/example", category: "skills", summary: "" } : null;
   const live: FollowerLive = {
     action: { loading: false, error: null }, operation: null, operationName: "", allowed: [category, ...["instructions", "skills", "mcp", "settings"].filter((entry): entry is LocalCategory => entry !== category)],
+    command: { kind: "Idle" }, canApply: false, resumeObservation: unexpected,
     local: { items: [{ path: "local.jsonc", digest: "config-digest", files: [] }, ...(existing ? [{ path: "skills/example", digest: "item-digest", files: [
       { path: "skills/example/SKILL.md", base64: "b3JpZ2luYWw=", executable: false, digest: "text-digest" },
       { path: "skills/example/asset.bin", base64: "/wCA", executable: true, digest: "binary-digest" },

@@ -29,7 +29,8 @@ type DraftStatus =
   | { tag: "editing" | "confirming-removal"; draft: LocalDraft }
   | { tag: "failed"; draft: LocalDraft; error: string }
   | { tag: "submitting"; draft: LocalDraft; request: string }
-  | { tag: "saved" | "cancelled" };
+  | { tag: "saved" }
+  | { tag: "cancelled" };
 type DraftFlow = DraftStatus & { baseline: DraftBaseline };
 type DraftEvent =
   | { type: "refresh"; baseline: DraftBaseline }
@@ -115,6 +116,7 @@ function transition(flow: DraftFlow, event: DraftEvent): DraftFlow {
     if (draft.category !== "skills") throw illegal();
     return next({ tag: "editing", draft: { ...draft, files: [...draft.files, draftFile({ path: `${draft.path}/`, base64: "", executable: false })] } });
   }
+  if (!("id" in event)) throw illegal();
   const file = draft.files.find((entry) => entry.id === event.id);
   if (!file) throw illegal();
   if (event.type === "remove-file") {

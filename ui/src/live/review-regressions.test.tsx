@@ -18,6 +18,8 @@ const { LiveWorkspaceProvider } = await import("../workspace/live-provider");
 const { createRoot } = await import("react-dom/client");
 const { ProfileView } = await import("../workspace/profile");
 const { LocalView } = await import("../workspace/follower");
+const { SecretsView } = await import("../workspace/source");
+const { FollowerOperationEvidence } = await import("../workspace/follower-evidence");
 const { SetupJournal } = await import("../onboarding/enrollment-controller");
 const { TooltipProvider } = await import("../components/ui/tooltip");
 after(async () => { await GlobalRegistrator.unregister(); });
@@ -32,6 +34,17 @@ function Probe() {
     {ws.revisions.map((revision) => <button key={revision.sequence} onClick={() => ws.profileLive?.inspectRevision(revision.sequence)}>Inspect {revision.sequence}</button>)}
     <p data-testid="revision">{JSON.stringify(ws.profileLive?.revisionDetail)}</p>
     <button onClick={() => { void ws.profileLive?.validate(); }}>Validate</button>
+    <button onClick={ws.followerLive?.check}>Check follower</button>
+    <button onClick={ws.followerLive?.resumeObservation}>Resume follower</button>
+    <button onClick={ws.applyPlan}>Apply follower</button>
+    <button onClick={() => ws.restore("snapshot")}>Restore follower</button>
+    <p data-testid="command">{JSON.stringify(ws.followerLive?.command)}</p>
+    <p data-testid="phase">{ws.phase}</p>
+    <p data-testid="can-apply">{String(ws.followerLive?.canApply)}</p>
+    <p data-testid="validation">{String(ws.profileLive?.validation?.valid)}</p>
+    <button onClick={() => { if (ws.admin.agent.data) void ws.admin.agent.save({ ...ws.admin.agent.data, mode: "agent-propose" }); }}>Save agent</button>
+    <p data-testid="policy-save">{JSON.stringify(ws.admin.agent.saveState)}</p>
+    <p data-testid="policy">{ws.admin.agent.data?.mode}</p>
   </div>;
 }
 function Fixture({ backend, session }: { backend: WorkspaceBackend; session: GuiSession }) {
@@ -43,6 +56,8 @@ function Fixture({ backend, session }: { backend: WorkspaceBackend; session: Gui
     {route.view === "setup" && <SetupJournal backend={backend} session={session} />}
     {route.view === "profile" && route.profileTab === "items" && <ProfileView />}
     {route.view === "local" && <LocalView />}
+    {route.view === "secrets" && <SecretsView />}
+    {route.role === "follower" && <FollowerOperationEvidence />}
   </LiveWorkspaceProvider></TooltipProvider>;
 }
 
@@ -109,7 +124,7 @@ async function click(label: string) {
   await act(async () => { button.click(); });
 }
 const profile = { items: [], config: { profile: { id: "review", name: "Review" }, groups: { work: [] } }, supportedSurfaces: {} };
-const follower = { id: "review-follower", name: "Review laptop", groups: ["work", "secrets"], enrolledAt: "2026-11-06T00:00:00Z", revoked: false, pending: false, credentialPresent: true };
+const follower = { id: "review-follower", name: "Review laptop", groups: ["work", "secrets"], enrolledAt: "2026-11-06T00:00:00Z", revoked: false, pending: false, credentialPresent: true, credentialLifecycle: { _tag: "Active" } };
 const sourceResponses = () => ({
   "/api/status": { machineRole: { role: "source" }, lifecycle: {}, tunnel: null },
   "/api/profile/items": profile,
@@ -292,3 +307,160 @@ for (const resolution of ["Discard my edits", "Re-apply my edits"]) {
     } finally { await app.close(); }
   });
 }
+
+it("retains an uncertain follower ticket, blocks another command and resumes its observation", async () => {
+  let polls = 0;
+  const responses = { ...sourceResponses(), "/api/sync/plan": { id: "plan" } };
+  const app = await fixture("/follower/overview", responses, (path, _method, _body, outgoing) => {
+    if (path !== "/api/operations/plan") return false;
+    polls++;
+    if (polls === 2) {
+      outgoing.statusCode = 503;
+      outgoing.end(JSON.stringify({ category: "internal", exitCode: 1, message: "Observation disconnected" }));
+    } else outgoing.end(JSON.stringify(polls === 1 ? { id: "plan", state: "running", journal: {} } : { id: "plan", state: "succeeded", journal: {}, result: { plan: {} } }));
+    return true;
+  });
+  try {
+    await click("Check follower");
+    await until(() => polls === 2, "The running operation was not polled");
+    await until(() => app.container.querySelector('[data-testid="command"]')?.textContent?.includes("ObservationLost") === true, "Lost observation was not represented");
+    await click("Check follower");
+    assert.equal(app.mutations.filter(({ path }) => path === "/api/sync/plan").length, 1);
+    await click("Resume follower");
+    await until(() => app.container.querySelector('[data-testid="can-apply"]')?.textContent === "true", "Resumed plan did not enable Apply");
+    assert.equal(polls, 3);
+  } finally { await app.close(); }
+});
+
+it("offers ticket recovery even when the first operation observation fails", async () => {
+  let polls = 0;
+  const app = await fixture("/follower/overview", { ...sourceResponses(), "/api/sync/plan": { id: "first-poll" } }, (path, _method, _body, outgoing) => {
+    if (path !== "/api/operations/first-poll") return false;
+    if (++polls === 1) {
+      outgoing.statusCode = 503;
+      outgoing.end(JSON.stringify({ category: "internal", exitCode: 1, message: "First observation disconnected" }));
+    } else outgoing.end(JSON.stringify({ id: "first-poll", state: "succeeded", journal: null, result: {} }));
+    return true;
+  });
+  try {
+    await click("Check follower");
+    await until(() => app.container.querySelector('[data-testid="command"]')?.textContent?.includes("ObservationLost") === true, "First-poll failure lost the ticket");
+    await click("Resume observation");
+    await until(() => app.container.querySelector('[data-testid="can-apply"]')?.textContent === "true", "First-poll recovery did not complete the plan");
+  } finally { await app.close(); }
+});
+
+it("only a successful plan enables Apply and successful Apply reaches done", async () => {
+  const responses = {
+    ...sourceResponses(), "/api/sync/plan": { id: "plan" }, "/api/backups/restore": { id: "restore" }, "/api/sync/apply": { id: "apply" },
+    ...Object.fromEntries(["plan", "restore", "apply"].map((id) => [`/api/operations/${id}`, { id, state: "succeeded", journal: {}, result: {} }])),
+  };
+  const app = await fixture("/follower/overview", responses);
+  try {
+    await click("Apply follower");
+    assert.equal(app.mutations.filter(({ path }) => path === "/api/sync/apply").length, 0, "Apply without a successful plan must be refused by the transition owner");
+    await click("Restore follower");
+    await until(() => app.container.querySelector('[data-testid="command"]')?.textContent?.includes('"kind":"Completed","command":"restore"') === true, "Restore did not complete");
+    assert.equal(app.container.querySelector('[data-testid="can-apply"]')?.textContent, "false");
+    await click("Check follower");
+    await until(() => app.container.querySelector('[data-testid="can-apply"]')?.textContent === "true", "Plan did not enable Apply");
+    await click("Apply follower");
+    await until(() => app.container.querySelector('[data-testid="phase"]')?.textContent === "done", "Successful apply did not reach done");
+  } finally { await app.close(); }
+});
+
+it("a profile save refresh keeps edits made after the submitted draft", async () => {
+  const snapshot = (digest: string, body: string) => ({ ...profile, items: [{ path: "AGENTS.md", digest, files: [{ path: "AGENTS.md", base64: Buffer.from(body).toString("base64"), executable: false }] }] });
+  let refresh: ServerResponse | undefined;
+  let reads = 0;
+  const app = await fixture("/source/profile?focus=instructions", { ...sourceResponses(), "/api/profile/items": snapshot("original", "Original") }, (path, method, _body, outgoing) => {
+    if (path === "/api/profile/config" && method === "PUT") { outgoing.end('{"saved":true}'); return true; }
+    if (path === "/api/profile/items" && ++reads > 1) { refresh = outgoing; return true; }
+    return false;
+  });
+  try {
+    await until(() => document.querySelector<HTMLTextAreaElement>("#item-Body")?.value === "Original", "Editor did not load");
+    await fill("#item-Body", "Submitted");
+    await click("Save to the folder");
+    await until(() => refresh !== undefined, "Save did not invalidate the snapshot");
+    await fill("#item-Body", "A newer unsaved edit");
+    await act(async () => { refresh?.end(JSON.stringify(snapshot("saved", "Submitted"))); });
+    await until(() => !app.container.querySelector('[aria-busy="true"]'), "Refresh did not settle");
+    assert.equal(document.querySelector<HTMLTextAreaElement>("#item-Body")?.value, "A newer unsaved edit");
+    assert.equal([...document.querySelectorAll("button")].find((button) => button.textContent === "Save to the folder")?.disabled, false);
+  } finally { await app.close(); }
+});
+
+it("discovery failure stops Finding tools and offers a scan-specific retry", async () => {
+  let scans = 0;
+  const app = await fixture("/source/profile", sourceResponses(), (path, _method, _body, outgoing) => {
+    if (path !== "/api/profile/scan") return false;
+    scans++;
+    outgoing.statusCode = scans === 1 ? 500 : 200;
+    outgoing.end(JSON.stringify(scans === 1 ? { category: "internal", exitCode: 1, message: "Discovery failed" } : { tools: [] }));
+    return true;
+  });
+  try {
+    await until(() => !app.container.querySelector('[aria-busy="true"]'), "Profile did not load");
+    await click("Discover tools");
+    await until(() => document.body.textContent?.includes("Discovery failed") === true, "Discovery failure was not shown");
+    assert.equal(document.body.textContent?.includes("Finding tools…"), false);
+    await click("Retry discovery");
+    await until(() => scans === 2 && !document.body.textContent?.includes("Finding tools…"), "Retry did not settle");
+  } finally { await app.close(); }
+});
+
+it("a changed folder snapshot invalidates publication review evidence", async () => {
+  const responses: Record<string, unknown> = { ...sourceResponses(), "/api/profile/validate": { valid: true, errors: [], profile: {} } };
+  const app = await fixture("/source/profile", responses);
+  try {
+    await until(() => !app.container.querySelector('[aria-busy="true"]'), "Profile did not load");
+    await click("Validate");
+    await until(() => app.container.querySelector('[data-testid="validation"]')?.textContent === "true", "Validation did not finish");
+    responses["/api/profile/items"] = { ...profile, config: { ...profile.config, profile: { id: "changed", name: "Changed" } } };
+    await click("Reload page");
+    await until(() => app.container.querySelector('[data-testid="profile-name"]')?.textContent === "Changed", "Folder did not refresh");
+    assert.equal(app.container.querySelector('[data-testid="validation"]')?.textContent, "undefined");
+  } finally { await app.close(); }
+});
+
+it("a secret submission freezes its draft and cannot close as if it cancelled the write", async () => {
+  let saving: ServerResponse | undefined;
+  const app = await fixture("/source/secrets", sourceResponses(), (path, method, _body, outgoing) => {
+    if (path !== "/api/secrets" || method !== "PUT") return false;
+    saving = outgoing; return true;
+  });
+  try {
+    await until(() => !app.container.querySelector('[aria-busy="true"]'), "Secrets did not load");
+    await click("Set secret");
+    await fill("#sec-name", "test-secret");
+    await fill("#sec-value", "submitted-value");
+    await click("Save secret");
+    await until(() => saving !== undefined, "Secret save did not start");
+    assert.equal(document.querySelector<HTMLInputElement>("#sec-value")?.closest("fieldset")?.disabled, true);
+    assert.equal([...document.querySelectorAll("button")].find((button) => button.textContent === "Cancel")?.disabled, true);
+    await act(async () => { saving?.end(JSON.stringify({ name: "test-secret", origin: "local" })); });
+    await until(() => !document.querySelector("#sec-value"), "Saved secret form did not close");
+  } finally { await app.close(); }
+});
+
+it("a failed harness save retains the committed policy as an explicit partial success", async () => {
+  const responses: Record<string, unknown> = {
+    "/api/status": { machineRole: { role: "follower" }, lifecycle: {}, tunnel: null },
+    "/api/agent/policy": { configured: false, default: "deterministic-only" },
+    "/api/agent/harness": { configured: false },
+  };
+  const app = await fixture("/follower/settings/agent", responses, (path, method, _body, outgoing) => {
+    if (method !== "PUT") return false;
+    if (path === "/api/agent/policy") { outgoing.end('"agent-propose"'); return true; }
+    if (path === "/api/agent/harness") { outgoing.statusCode = 500; outgoing.end(JSON.stringify({ category: "internal", exitCode: 1, message: "Harness write failed" })); return true; }
+    return false;
+  });
+  try {
+    await until(() => app.requests.includes("GET /api/agent/policy") && !app.container.querySelector('[aria-busy="true"]'), "Policy did not load");
+    await click("Save agent");
+    await until(() => app.mutations.some(({ path }) => path === "/api/agent/harness"), "Harness save did not start");
+    await until(() => app.container.querySelector('[data-testid="policy-save"]')?.textContent?.includes("HarnessFailed") === true, "Partial commit was not represented");
+    assert.equal(app.container.querySelector('[data-testid="policy"]')?.textContent, "agent-propose");
+  } finally { await app.close(); }
+});

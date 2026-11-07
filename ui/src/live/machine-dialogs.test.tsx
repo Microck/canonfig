@@ -32,7 +32,7 @@ function Controls() {
   const ws = useWorkspace();
   return <><output data-testid="followers">{ws.followers.map((entry) => entry.id).join(",")}</output><button onClick={ws.reload}>Reload page</button><button onClick={() => ws.setChangeGroups({ followerId: "dialog-follower" })}>Open groups</button></>;
 }
-const follower = { id: "dialog-follower", name: "Original laptop", groups: ["work"], enrolledAt: "2026-11-06T00:00:00Z", revoked: false, pending: false, credentialPresent: true };
+const follower = { id: "dialog-follower", name: "Original laptop", groups: ["work"], enrolledAt: "2026-11-06T00:00:00Z", revoked: false, pending: false, credentialPresent: true, credentialLifecycle: { _tag: "Active" } };
 type Handler = (path: string, body: unknown, outgoing: ServerResponse) => boolean;
 async function fixture(handler: Handler) {
   const responses: Record<string, unknown> = {

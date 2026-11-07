@@ -3,8 +3,8 @@ import { Schema } from "effect";
 import { HARNESS_NAMES, LOCAL_CATEGORIES, APPEND_LOCAL_CATEGORIES, SURFACE_CATEGORIES, type HarnessId, type SurfaceCategory } from "@/shared/metadata";
 import { GuiProfileSnapshot, GuiProfileSaved, GuiProfileValidation, GuiRevisions, GuiSkills, GuiTrackedSkill, GuiSkillChecks, profileEndpoints, type GuiProfileConfigWrite, type GuiSkillCheck } from "../../../../src/gui/contract/profile";
 import { GuiArchiveDownload, GuiSecrets, GuiSecretSummary, GuiSecretRemoval } from "../../../../src/gui/contract/synchronization";
-import type { GuiRequestError, GuiSession, WorkspaceBackend } from "../../gui-client";
-import type { ProfileSlice, ProfileEdit, ScannedTool } from "../workspace-types";
+import { GuiRequestError, type GuiSession, type WorkspaceBackend } from "../../gui-client";
+import type { DiscoveryState, PublicationState, ProfileSlice, ProfileEdit } from "../workspace-types";
 import { authoredItems, itemWrite, object, strings } from "../profile-authoring";
 import { WEEK, type Schedule } from "../schedule";
 import { requestError, resourceState, useLiveActions, useLiveResource } from "./resource";
@@ -14,6 +14,32 @@ function scheduleOf(value: Schema.Json | undefined): Schedule | null {
   const [cadence, time] = value.split("@");
   if (!time) return null;
   return cadence === "daily" ? { cadence: "daily", days: [], time } : { cadence: "days", days: WEEK.filter((day) => cadence?.slice(7).split(",").includes(day)), time };
+}
+
+type PublicationEvent =
+  | { kind: "Invalidate" }
+  | { kind: "Validate"; snapshot: string }
+  | { kind: "Validated"; snapshot: string; validation: GuiProfileValidation }
+  | { kind: "Publish"; snapshot: string }
+  | { kind: "Published" }
+  | { kind: "Failed"; stage: "validation" | "publication"; error: GuiRequestError };
+function publicationTransition(state: PublicationState, event: PublicationEvent): PublicationState {
+  if (event.kind === "Invalidate") return { kind: "Unvalidated" };
+  if (event.kind === "Validate" && state.kind !== "Publishing") return { kind: "Validating", snapshot: event.snapshot };
+  if (event.kind === "Validated" && state.kind === "Validating" && state.snapshot === event.snapshot) return { kind: event.validation.valid ? "Validated" : "Invalid", snapshot: event.snapshot, validation: event.validation };
+  if (event.kind === "Publish" && state.kind === "Validated" && state.snapshot === event.snapshot) return { kind: "Publishing", snapshot: event.snapshot };
+  if (event.kind === "Published" && state.kind === "Publishing") return { kind: "Published" };
+  if (event.kind === "Failed") return { kind: "Failed", stage: event.stage, error: event.error };
+  throw new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: `Cannot ${event.kind.toLowerCase()} this folder review while it is ${state.kind}. Validate the current folder before publishing.` });
+}
+type DiscoveryEvent = { kind: "Scan"; id: number } | { kind: "Results"; id: number; tools: Extract<DiscoveryState, { kind: "Results" }>["tools"] } | { kind: "Failed"; id: number; error: GuiRequestError };
+function discoveryTransition(state: DiscoveryState, event: DiscoveryEvent): DiscoveryState {
+  if (event.kind === "Scan" && state.kind !== "Scanning") return { kind: "Scanning", id: event.id };
+  if (state.kind === "Scanning" && event.id === state.id) {
+    if (event.kind === "Results") return event;
+    if (event.kind === "Failed") return event;
+  }
+  throw new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: `Cannot ${event.kind.toLowerCase()} tool discovery while it is ${state.kind}.` });
 }
 
 export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, reload: () => void, refresh: () => void): Omit<ProfileSlice, "profileTab"> {
@@ -27,9 +53,13 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
   const [actionState, setActionState] = useState({ loading: false, error: null as GuiRequestError | null });
   useEffect(() => () => active.current?.abort(), []);
   async function run(action: (signal: AbortSignal) => Promise<unknown>, refresh = true) {
-    if (active.current) return false;
+    if (active.current) {
+      setActionState((state) => ({ ...state, error: new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: "Another profile action is running. Wait for it to finish, then retry." }) }));
+      return false;
+    }
     const controller = new AbortController(); active.current = controller;
     setActionState({ loading: true, error: null });
+    if (refresh) publishEvent({ kind: "Invalidate" });
     try {
       await action(controller.signal);
       if (controller.signal.aborted) return false;
@@ -42,13 +72,22 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
     } finally { active.current = null; }
   }
   const [publishOpen, setPublishOpen] = useState(false);
-  const [publishing, setPublishing] = useState(false);
-  const [validation, setValidation] = useState<GuiProfileValidation | null>(null);
+  const [publication, setPublication] = useState<PublicationState>({ kind: "Unvalidated" });
+  const publicationRef = useRef(publication);
+  const publishEvent = (event: PublicationEvent) => { const next = publicationTransition(publicationRef.current, event); publicationRef.current = next; setPublication(next); };
+  const publishing = publication.kind === "Publishing";
+  const observation = JSON.stringify({ items: items.data?.items.map(({ path, digest }) => [path, digest]), config: items.data?.config });
+  const observed = useRef(observation);
+  if (observed.current !== observation) { observed.current = observation; publishEvent({ kind: "Invalidate" }); }
+  const validation = "validation" in publication ? publication.validation : null;
   const [archive, setArchive] = useState<GuiArchiveDownload | null>(null);
   const [skillChecks, setSkillChecks] = useState<Record<string, GuiSkillCheck>>({});
   const [skillBusy, setSkillBusy] = useState<string | null>(null);
-  const [scannedTools, setScannedTools] = useState<ScannedTool[]>([]);
-  const [scanDone, setScanDone] = useState(false);
+  const [discovery, setDiscovery] = useState<DiscoveryState>({ kind: "Idle" });
+  const discoveryRef = useRef(discovery);
+  const discoveryId = useRef(0);
+  const discoverEvent = (event: DiscoveryEvent) => { const next = discoveryTransition(discoveryRef.current, event); discoveryRef.current = next; setDiscovery(next); };
+  const scannedTools = discovery.kind === "Results" ? discovery.tools : [];
   const [revisionDetail, setRevisionDetail] = useState<NonNullable<ProfileSlice["profileLive"]>["revisionDetail"]>(null);
   const revisionRequest = useRef<AbortController | null>(null);
   useEffect(() => () => revisionRequest.current?.abort(), []);
@@ -94,19 +133,35 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
     });
   }
   const profileLive: NonNullable<ProfileSlice["profileLive"]> = {
-    snapshot: items.data, busy: actionState.loading, error: actionState.error, validation, archive, skillChecks, skillBusy, scanDone, revisionDetail,
-    reload: () => { setActionState({ loading: false, error: null }); setValidation(null); refresh(); }, saveItem, saveConfig,
+    snapshot: items.data, busy: actionState.loading, error: actionState.error, validation, publication, archive, skillChecks, skillBusy, discovery, revisionDetail,
+    reload: () => { publishEvent({ kind: "Invalidate" }); refresh(); }, saveItem, saveConfig,
     setSecret: (name, value) => run((signal) => backend.request("/api/secrets", GuiSecretSummary, signal, { method: "PUT", body: { name, value } })),
     removeSecret: (name) => run((signal) => backend.request("/api/secrets", GuiSecretRemoval, signal, { method: "DELETE", body: { name } })),
-    validate: () => run(async (signal) => { setValidation(null); setValidation(await backend.request(profileEndpoints.validate, GuiProfileValidation, signal, { method: "POST", body: {} })); }, false),
-    scan: () => run(async (signal) => {
-      setScanDone(false);
-      const scan = object(await backend.request(profileEndpoints.scan, Schema.Json, signal, { method: "POST", body: {} }));
-      setScannedTools((Array.isArray(scan.tools) ? scan.tools : []).map((value) => {
-        const tool = object(value), evidence = object(Array.isArray(tool.evidence) ? tool.evidence[0] : undefined);
-        return { id: String(tool.id), executable: String(tool.executable), command: strings(evidence.invocation).join(" "), file: String(evidence.sourcePath ?? ""), where: String(tool.reviewStatus ?? "") };
-      })); setScanDone(true);
-    }, false),
+    validate: async () => {
+      publishEvent({ kind: "Validate", snapshot: observation });
+      const accepted = await run(async (signal) => {
+        const validation = await backend.request(profileEndpoints.validate, GuiProfileValidation, signal, { method: "POST", body: {} });
+        publishEvent({ kind: "Validated", snapshot: observation, validation });
+      }, false);
+      if (!accepted) publishEvent({ kind: "Failed", stage: "validation", error: new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: "Folder validation did not finish. Retry validation before publishing." }) });
+      return accepted;
+    },
+    scan: async () => {
+      const id = ++discoveryId.current;
+      discoverEvent({ kind: "Scan", id });
+      const accepted = await run(async (signal) => {
+        try {
+          const scan = object(await backend.request(profileEndpoints.scan, Schema.Json, signal, { method: "POST", body: {} }));
+          const tools = (Array.isArray(scan.tools) ? scan.tools : []).map((value) => {
+            const tool = object(value), evidence = object(Array.isArray(tool.evidence) ? tool.evidence[0] : undefined);
+            return { id: String(tool.id), executable: String(tool.executable), command: strings(evidence.invocation).join(" "), file: String(evidence.sourcePath ?? ""), where: String(tool.reviewStatus ?? "") };
+          });
+          discoverEvent({ kind: "Results", id, tools });
+        } catch (cause) { discoverEvent({ kind: "Failed", id, error: requestError(cause) }); throw cause; }
+      }, false);
+      if (!accepted && discoveryRef.current.kind === "Scanning") discoverEvent({ kind: "Failed", id, error: new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: "Another profile action is running. Retry discovery when it finishes." }) });
+      return accepted;
+    },
     inspectRevision,
     trackSkill: (name, source, ref, subdir) => run(async (signal) => {
       setSkillBusy(`track:skills/${name}`);
@@ -127,7 +182,13 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
     latest: revisions.data?.revisions[0]?.sequence, publicationReviewer: "", secrets: (secrets.data?.secrets ?? []).map(({ name }) => ({ name })),
     setSecrets: (update) => { const current = (secrets.data?.secrets ?? []).map(({ name }) => ({ name })); const next = typeof update === "function" ? update(current) : update; const removed = current.find((entry) => !next.some((after) => after.name === entry.name)); if (removed) void profileLive.removeSecret(removed.name); },
     pending, markProfileEdit: (edit) => setPending((previous) => [...previous.filter((entry) => entry.id !== edit.id), edit]), removeProfileEdit: (edit) => setPending((previous) => previous.filter((entry) => entry.id !== edit.id)), nextSequence: undefined, publishing,
-    publish: (reviewer, onDone) => { void run(async (signal) => { setPublishing(true); try { await operations.operation(profileEndpoints.publications, { reviewer }, signal); setValidation(null); setPending([]); onDone(); } finally { setPublishing(false); } }); },
+    publish: (reviewer, onDone) => { void run(async (signal) => {
+      publishEvent({ kind: "Publish", snapshot: observation });
+      try {
+        await operations.operation(profileEndpoints.publications, { reviewer }, signal);
+        publishEvent({ kind: "Published" }); setPending([]); onDone(); reload();
+      } catch (cause) { publishEvent({ kind: "Failed", stage: "publication", error: requestError(cause) }); throw cause; }
+    }, false); },
     listed, setListed: (update) => { if (!items.data) return; const next = typeof update === "function" ? update(listed) : update; void saveConfig(items.data, [{ path: ["harnesses"], value: next }, { path: ["surfaces"], value: Object.fromEntries(Object.entries(surfaces).filter(([id]) => next.includes(id as HarnessId))) }]); },
     surfaces, setSurfaces: (update) => { if (items.data) void saveConfig(items.data, [{ path: ["surfaces"], value: typeof update === "function" ? update(surfaces) : update }]); },
     skillSources: (skills.data?.skills ?? []).map((skill) => ({ id: `skills/${skill.name}`, source: skill.source, ref: skill.ref, subdir: skill.subdir, commit: skill.commit, baseline: {} })), upstreamSkills: [], demoSkillsRepo: "", scannedTools,
