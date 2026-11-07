@@ -41,6 +41,11 @@ recreate an enrollment removed by another command.
 Disabling a native schedule remains possible while enrollment is pending; that
 settings update preserves the lifecycle and both credential owners.
 
+If the Source discards a first-time preparation after restarting, Canonfig removes
+the pending configuration and durably retires its rejected credential. Enroll
+again with a new invitation. Network failures keep the pending configuration
+and credential so the same enrollment can be retried.
+
 If the Source discards a prepared replacement, Canonfig authenticates the previous
 credential before restoring its authority. An unreachable previous Source leaves
 `RollbackPending`; `status` and `doctor` name that state and the retry command.

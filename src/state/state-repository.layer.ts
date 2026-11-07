@@ -617,12 +617,17 @@ const makeRepository = Effect.gen(function*() {
   )(function*(expected: FollowerSynchronizationConfiguration): Effect.fn.Return<boolean, StateRepositoryError> {
     return yield* sql.withTransaction(Effect.gen(function*() {
       const current = yield* getFollowerSynchronizationConfiguration();
-      if (current?.lifecycle._tag !== "Unenrolling"
+      const discardedPreparation = current?.lifecycle._tag === "Finalizing" && current.lifecycle.previous === undefined;
+      if ((current?.lifecycle._tag !== "Unenrolling" && !discardedPreparation)
         || !isDeepStrictEqual(current, JSON.parse(JSON.stringify(expected)))) {
         return yield* new EnrollmentStateConflictError({
           reason: "credential-conflict", message: "the follower enrollment changed before removal; retry unenrollment",
         });
       }
+      if (discardedPreparation) yield* sql`
+        INSERT OR IGNORE INTO enrollment_credential_retirements (reference, state)
+        VALUES (${expected.credentialReference}, 'Retiring')
+      `;
       yield* sql`DELETE FROM follower_sync_configuration WHERE singleton = 1`;
       return true;
     })).pipe(Effect.catchTag("SqlError", (error) => Effect.fail(sqlError("remove follower synchronization configuration")(error))));

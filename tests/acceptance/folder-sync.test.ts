@@ -244,6 +244,58 @@ const rowCount = (state: string, table: string): number => {
 };
 
 describe("folder sync across a Source and its followers", () => {
+  it("keeps first enrollment pending while offline, then retires a preparation discarded by Source restart", async () => {
+    const { source, endpoint } = await startSource();
+    const follower = machine("discarded-first-preparation");
+    const remote = new DatabaseSync(source.state);
+    remote.exec(`
+      CREATE TRIGGER interrupt_first_finalize BEFORE INSERT ON followers
+      BEGIN SELECT RAISE(FAIL, 'interrupted Source finalization'); END;
+    `);
+    remote.close();
+    const invitation = join(source.home, "first.invite");
+    succeed(source.run(["source", "invite", "--endpoint", endpoint, "--output", invitation]), "first invitation");
+    const envelope = read(invitation);
+    const command = ["follower", "enroll", "--stdin", "--name", "first-follower"];
+    const failed = follower.run(command, envelope);
+    expect(failed.status, failed.stdout + failed.stderr).not.toBe(0);
+    const local = new DatabaseSync(follower.state, { readOnly: true });
+    const pending = JSON.parse(String(local.prepare("SELECT configuration_json FROM follower_sync_configuration").get()?.configuration_json));
+    local.close();
+    expect(pending.lifecycle).toEqual({ _tag: "Finalizing" });
+    const store = String(follower.environment.CANONFIG_LOCAL_CREDENTIAL_ROOT);
+    const credentialFiles = readdirSync(store);
+    expect(credentialFiles).toHaveLength(1);
+    const server = servers[0];
+    if (server === undefined) throw new Error("disposable Source server is missing");
+    const stopped = once(server, "close");
+    server.kill("SIGTERM");
+    await stopped;
+    servers.splice(servers.indexOf(server), 1);
+    const offline = follower.run(command, envelope);
+    expect(offline.status, offline.stdout + offline.stderr).toBe(6);
+    const retained = new DatabaseSync(follower.state, { readOnly: true });
+    expect(JSON.parse(String(retained.prepare("SELECT configuration_json FROM follower_sync_configuration").get()?.configuration_json))).toEqual(pending);
+    expect(retained.prepare("SELECT count(*) AS count FROM enrollment_credential_retirements").get()?.count).toBe(0);
+    retained.close();
+    expect(readdirSync(store)).toEqual(credentialFiles);
+    const repaired = new DatabaseSync(source.state);
+    repaired.exec("DROP TRIGGER interrupt_first_finalize");
+    repaired.close();
+    await serve(source, Number(new URL(endpoint).port));
+    expect(rowCount(source.state, "pending_enrollments")).toBe(0);
+    const discarded = follower.run(command, envelope);
+    expect(discarded.status, discarded.stdout + discarded.stderr).toBe(3);
+    expect(discarded.stdout + discarded.stderr).toContain("Source discarded the pending enrollment");
+    expect(discarded.stdout + discarded.stderr).toContain("enroll again with a new invitation");
+    expect(rowCount(follower.state, "follower_sync_configuration")).toBe(0);
+    expect(rowCount(follower.state, "enrollment_credential_retirements")).toBe(0);
+    expect(readdirSync(store)).toHaveLength(0);
+    enroll(source, endpoint, follower, "first-follower");
+    expect(readdirSync(store)).toHaveLength(1);
+    succeed(follower.run(["sync", "--apply"]), "sync after fresh first enrollment");
+  }, 180_000);
+
   it("retains both credentials and reports rollback pending while the previous Source is offline", async () => {
     const previous = await startSource();
     const candidate = await startSource();

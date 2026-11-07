@@ -690,8 +690,16 @@ const followerCommandsLayer = (
         }).pipe(Effect.provideService(MachineState, machine), Effect.result);
         if (finalization._tag === "Failure") {
           const previous = configuration.lifecycle.previous;
-          if (finalization.failure._tag !== "InvalidFollowerCredentialError" || previous === undefined) {
+          if (finalization.failure._tag !== "InvalidFollowerCredentialError") {
             return yield* mapFailure(Effect.fail(finalization.failure));
+          }
+          if (previous === undefined) {
+            yield* mapFailure(repository.removeFollowerSynchronizationConfiguration(configuration));
+            yield* recoverStagedCredentials;
+            return yield* new CliCommandFailure({
+              category: "human-action-required",
+              message: "the Source discarded the pending enrollment; enroll again with a new invitation",
+            });
           }
           configuration = yield* save(configuration, { _tag: "RollbackPending", previous });
         } else {
