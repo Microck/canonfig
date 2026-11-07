@@ -14,9 +14,8 @@ const sshKeyPattern =
   /^(ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-rsa) ([A-Za-z0-9+/]+={0,2})(?:\s.*)?$/u;
 
 /**
- * Everything needed to (re)start the approved tunnel. It is recorded durably
- * beside the process record, so a tunnel can be restarted after its process
- * dies or the machine reboots without the one-use invitation envelope.
+ * Everything needed to restart the approved tunnel, retained in every
+ * configured lifecycle state independently of observed process liveness.
  */
 const tunnelConfigurationFields = {
   sshHost: Schema.String.check(
@@ -67,30 +66,28 @@ const tunnelConfigurationFields = {
 
 export const TunnelStartInputSchema = Schema.Struct({
   ...tunnelConfigurationFields,
-  /**
-   * Directory holding tunnel.json, tunnel-config.json, the managed
-   * known_hosts file, and the log.
-   */
+  /** Directory holding the canonical tunnel journal, pinned host key and log. */
   stateDirectory: Schema.NonEmptyString,
 });
 
 export type TunnelStartInput = typeof TunnelStartInputSchema.Type;
 
-/**
- * The durable restart record. `desired` separates an operator's
- * `tunnel stop` (never restarted automatically) from a tunnel that died.
- */
-export const TunnelConfigurationFileSchema = Schema.Struct({
-  version: Schema.Literal(1),
-  desired: Schema.Literals(["running", "stopped"]),
-  recordedAt: Schema.NonEmptyString,
-  ...tunnelConfigurationFields,
+export const TunnelConfigurationSchema = Schema.Struct(tunnelConfigurationFields);
+export type TunnelConfiguration = typeof TunnelConfigurationSchema.Type;
+
+/** Identity and pins retained even if spawning or recording a PID is interrupted. */
+export const TunnelLaunchSchema = Schema.Struct({
+  processArgumentFingerprint: Schema.NonEmptyString,
+  systemdUnit: Schema.optionalKey(Schema.String.check(
+    Schema.isPattern(/^canonfig-tunnel-[a-f0-9]{64}-[a-f0-9]{32}\.service$/u),
+  )),
+  logPath: Schema.NonEmptyString,
+  knownHostsPath: Schema.NonEmptyString,
 });
+export type TunnelLaunch = typeof TunnelLaunchSchema.Type;
 
-export type TunnelConfigurationFile = typeof TunnelConfigurationFileSchema.Type;
-
-export const TunnelStateFileSchema = Schema.Struct({
-  version: Schema.Literal(1),
+export const TunnelProcessSchema = Schema.Struct({
+  ...TunnelLaunchSchema.fields,
   ssh: Schema.Struct({
     host: Schema.NonEmptyString,
     port: Schema.Int,
@@ -103,17 +100,46 @@ export const TunnelStateFileSchema = Schema.Struct({
   tlsFingerprint: CertificateFingerprint,
   sourceFingerprint: CertificateFingerprint,
   pid: Schema.Int.check(Schema.isGreaterThan(0)),
-  processArgumentFingerprint: Schema.NonEmptyString,
-  /** A separate systemd user service owns tunnels recovered by native jobs. */
-  systemdUnit: Schema.optional(Schema.String.check(
-    Schema.isPattern(/^canonfig-tunnel-[a-f0-9]{64}-[a-f0-9]{32}\.service$/u),
-  )),
   startedAt: Schema.NonEmptyString,
-  logPath: Schema.NonEmptyString,
-  knownHostsPath: Schema.NonEmptyString,
 });
 
-export type TunnelStateFile = typeof TunnelStateFileSchema.Type;
+export type TunnelProcess = typeof TunnelProcessSchema.Type;
+
+export const TunnelState = Schema.TaggedUnion({
+  Unconfigured: {},
+  Stopped: { config: TunnelConfigurationSchema },
+  Starting: {
+    opId: Schema.NonEmptyString,
+    config: TunnelConfigurationSchema,
+    launch: TunnelLaunchSchema,
+    ownedProcess: Schema.optionalKey(TunnelProcessSchema),
+  },
+  Running: { config: TunnelConfigurationSchema, process: TunnelProcessSchema },
+  Down: {
+    config: TunnelConfigurationSchema,
+    previous: Schema.optionalKey(TunnelProcessSchema),
+  },
+  Stopping: {
+    config: TunnelConfigurationSchema,
+    process: Schema.optionalKey(TunnelProcessSchema),
+    launch: Schema.optionalKey(TunnelLaunchSchema),
+  },
+  RecoveryRequired: {
+    config: TunnelConfigurationSchema,
+    process: Schema.optionalKey(TunnelProcessSchema),
+    launch: Schema.optionalKey(TunnelLaunchSchema),
+    intent: Schema.Literals(["running", "stopped"]),
+    failedStep: Schema.NonEmptyString,
+  },
+});
+export type TunnelState = typeof TunnelState.Type;
+
+/** The sole authoritative record. Released v1 split records are read only. */
+export const TunnelJournalSchema = Schema.Struct({
+  version: Schema.Literal(2),
+  state: TunnelState,
+});
+export type TunnelJournal = typeof TunnelJournalSchema.Type;
 
 /**
  * `down`: the tunnel should be running but is not (its process died, or SSH is

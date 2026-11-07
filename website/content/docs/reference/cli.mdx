@@ -660,7 +660,7 @@ Start the Source Machine's endpoint first, then the tunnel.
 | `--timeout-ms <ms>` | Default 30000, at most 300000. |
 
 The first start saves everything needed to restart in
-`~/.canonfig/tunnel/tunnel-config.json` (mode `0600`), so you need not keep the
+`~/.canonfig/tunnel/tunnel.json` (mode `0600`), so you need not keep the
 invitation. `tunnel start` without `--invitation` restarts from that record and
 accepts only `--timeout-ms`; without a record it exits 2 and names the
 first-start command. To use a specific SSH key, add
@@ -671,8 +671,16 @@ the command to run. When the tunnel does not come up, the error says which of
 three things happened: SSH exited, SSH never opened the forward, or SSH
 connected but the Source Machine is not answering.
 
-`tunnel stop` stops the tunnel and keeps the record, so nothing restarts it.
-`tunnel stop --forget` also deletes the record.
+`tunnel stop` records stopped intent before it tears down the process, so
+unattended sync cannot restart an intentional stop. `tunnel stop --forget`
+forgets the restart configuration only after cleanup succeeds. Failed cleanup
+keeps the process identity and pinned host key for inspection; finish it with
+`tunnel stop` before starting again. Concurrent start and stop operations refuse
+to overlap.
+
+Released split records in `tunnel.json` and `tunnel-config.json` are combined
+when their identities agree. If they disagree, Canonfig changes nothing and
+names the files and process to inspect before configuring another tunnel.
 
 ## Profiles
 
