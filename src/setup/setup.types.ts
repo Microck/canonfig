@@ -144,23 +144,71 @@ export type SetupPlanItem = typeof SetupPlanItem.Type;
 
 export const SetupItemStatus = Schema.Literals([
   "pending",
+  "running",
+  "interrupted",
   "completed",
   "skipped",
   "failed",
 ]);
 export type SetupItemStatus = typeof SetupItemStatus.Type;
 
-export const SetupItemRecord = Schema.Struct({
+const setupItemRecordFields = {
   id: Schema.String,
-  status: SetupItemStatus,
-  evidence: Schema.optional(Schema.String),
-  detailDigest: Schema.optional(Schema.String),
+  detailDigest: Schema.String,
   updatedAt: Schema.String,
-});
+};
+
+/** Only started work can be uncertain; terminal records always carry proof. */
+export const SetupItemRecord = Schema.Union([
+  Schema.Struct({ ...setupItemRecordFields, status: Schema.Literal("pending") }),
+  Schema.Struct({
+    ...setupItemRecordFields,
+    status: Schema.Literal("running"),
+    startedAt: Schema.String,
+  }),
+  Schema.Struct({
+    ...setupItemRecordFields,
+    status: Schema.Literal("interrupted"),
+    startedAt: Schema.String,
+    evidence: Schema.String,
+  }),
+  Schema.Struct({
+    ...setupItemRecordFields,
+    status: Schema.Literal("completed"),
+    evidence: Schema.String,
+  }),
+  Schema.Struct({
+    ...setupItemRecordFields,
+    status: Schema.Literal("failed"),
+    evidence: Schema.String,
+  }),
+  Schema.Struct({
+    ...setupItemRecordFields,
+    status: Schema.Literal("skipped"),
+    dependencies: Schema.Array(Schema.String),
+    evidence: Schema.optionalKey(Schema.String),
+  }),
+]);
 export type SetupItemRecord = typeof SetupItemRecord.Type;
 
+/** Public status omits journal digests and timestamps, not outcome guarantees. */
+export const SetupItemSummary = Schema.Union([
+  Schema.Struct({ id: Schema.String, status: Schema.Literals(["pending", "running"]) }),
+  Schema.Struct({
+    id: Schema.String,
+    status: Schema.Literals(["interrupted", "completed", "failed"]),
+    evidence: Schema.String,
+  }),
+  Schema.Struct({
+    id: Schema.String,
+    status: Schema.Literal("skipped"),
+    evidence: Schema.optionalKey(Schema.String),
+  }),
+]);
+export type SetupItemSummary = typeof SetupItemSummary.Type;
+
 export const SetupStageRecord = Schema.Struct({
-  stage: Schema.String,
+  stage: Schema.Literals(setupStages),
   digest: Schema.String,
   completedAt: Schema.String,
 });
@@ -222,18 +270,14 @@ export type SetupImportReview = typeof SetupImportReview.Type;
  * stale approvals instead of reusing them.
  */
 export const SetupJournal = Schema.Struct({
-  schema: Schema.Literal("canonfig.setup/v1"),
+  schema: Schema.Literal("canonfig.setup/v2"),
   role: SetupRole,
-  // Absent on journals written before request scopes existed; read as full.
-  scope: Schema.optional(SetupRequestScope),
+  scope: SetupRequestScope,
   // Recorded only once the operator chooses one.
   mode: Schema.optional(SetupMode),
-  // The normalized `--file` paths discovery read. Absent on journals written
-  // before the decision record existed.
-  discoveryPaths: Schema.optional(Schema.Array(Schema.String)),
-  // Exact bounded authoring bytes, independent of installed-tool discovery.
-  // Older journals require a new plan before apply.
-  discoveryInputs: Schema.optional(Schema.Array(SetupDiscoveryInput)),
+  // The normalized `--file` paths and exact bounded bytes discovery reviewed.
+  discoveryPaths: Schema.Array(Schema.String),
+  discoveryInputs: Schema.Array(SetupDiscoveryInput),
   planDigest: Schema.String,
   intent: Schema.String,
   inventory: SetupInventory,
@@ -252,5 +296,5 @@ export const SetupJournal = Schema.Struct({
 });
 export type SetupJournal = typeof SetupJournal.Type;
 
-export const decodeSetupJournal = Schema.decodeUnknownSync(SetupJournal);
+export const decodeSetupJournal = Schema.decodeUnknownSync(SetupJournal, { onExcessProperty: "error" });
 export const encodeSetupJournal = Schema.encodeUnknownSync(SetupJournal);

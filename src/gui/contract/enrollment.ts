@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import { FollowerId, GroupName } from "../../domain/brand.ts";
 import {
-  SetupApproval, SetupDiscoveryInput, SetupJournal, SetupMode,
+  SetupApproval, SetupDiscoveryInput, SetupItemSummary, SetupJournal, SetupMode,
   SetupProvenance, SetupRequestScope, SetupRole, SetupStageRecord,
 } from "../../setup/setup.types.ts";
 
@@ -19,9 +19,7 @@ export const GuiSetupStatus = Schema.Struct({
   approved: Schema.Boolean,
   approvals: Schema.Array(SetupApproval),
   stages: Schema.Array(SetupStageRecord),
-  items: Schema.Array(Schema.Struct({
-    id: Schema.String, status: Schema.String, evidence: Schema.optionalKey(Schema.String),
-  })),
+  items: Schema.Array(SetupItemSummary),
   catalog: Schema.Array(SetupProvenance),
 });
 export type GuiSetupStatus = typeof GuiSetupStatus.Type;

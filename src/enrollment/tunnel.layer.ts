@@ -7,6 +7,7 @@ import { isAbsolute, join, resolve } from "node:path";
 
 import { Effect, Layer, Schema } from "effect";
 
+import { withRunLock } from "../synchronization/run-lock.ts";
 import { probeSourceDescriptor } from "./follower-client.ts";
 import {
   TunnelConfigurationError,
@@ -26,12 +27,16 @@ import {
 import {
   sshHostKeyFingerprint,
   sshHostKeyType,
-  TunnelConfigurationFileSchema,
+  TunnelConfigurationSchema,
+  TunnelJournalSchema,
+  TunnelProcessSchema,
   TunnelStartInputSchema,
-  TunnelStateFileSchema,
-  type TunnelConfigurationFile,
+  type TunnelConfiguration,
+  type TunnelJournal,
+  type TunnelLaunch,
+  type TunnelProcess,
   type TunnelStartInput,
-  type TunnelStateFile,
+  type TunnelState,
   type TunnelStatusReport,
 } from "./tunnel.types.ts";
 
@@ -167,7 +172,7 @@ const readProcessCommandLine = (
     });
   });
 
-const ownsTunnelProcess = async (state: TunnelStateFile): Promise<boolean> => {
+const ownsTunnelProcess = async (state: TunnelProcess): Promise<boolean> => {
   if (!isAlive(state.pid)) return false;
   if (process.platform === "linux") {
     try {
@@ -234,7 +239,7 @@ const readRecord = <Value>(
 const writeRecord = (
   directory: string,
   fileName: string,
-  value: TunnelStateFile | TunnelConfigurationFile,
+  value: TunnelJournal,
   what: string,
 ): Effect.Effect<void, TunnelConfigurationError> =>
   Effect.tryPromise({
@@ -242,10 +247,22 @@ const writeRecord = (
       await mkdir(directory, { recursive: true });
       const temporary = join(directory, `.tunnel-${randomUUID()}.json.part`);
       try {
-        await writeFile(temporary, `${JSON.stringify(value, undefined, 2)}\n`, {
-          mode: 0o600,
-        });
+        const handle = await open(temporary, "wx", 0o600);
+        try {
+          await handle.writeFile(`${JSON.stringify(value, undefined, 2)}\n`);
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
         await rename(temporary, join(directory, fileName));
+        if (process.platform !== "win32") {
+          const parent = await open(directory, "r");
+          try {
+            await parent.sync();
+          } finally {
+            await parent.close();
+          }
+        }
       } catch (error) {
         await unlink(temporary).catch(() => undefined);
         throw error;
@@ -258,92 +275,229 @@ const writeRecord = (
       }),
   }).pipe(Effect.uninterruptible);
 
-const readStateFile = (
-  directory: string,
-): Effect.Effect<TunnelStateFile | undefined, TunnelError> =>
-  readRecord(stateFilePath(directory), TunnelStateFileSchema, "tunnel state");
+// Released 6.1 files are decoded only at this boundary. Once v2 is published,
+// tunnel-config.json is obsolete and never consulted again.
+const LegacyConfiguration = Schema.Struct({
+  version: Schema.Literal(1),
+  desired: Schema.Literals(["running", "stopped"]),
+  recordedAt: Schema.NonEmptyString,
+  ...TunnelConfigurationSchema.fields,
+});
+const LegacyProcess = Schema.Struct({
+  version: Schema.Literal(1),
+  ...TunnelProcessSchema.fields,
+});
 
-const writeStateFile = (
-  directory: string,
-  state: TunnelStateFile,
-): Effect.Effect<void, TunnelError> =>
-  writeRecord(directory, stateFileName, state, "tunnel state");
+const processMatches = (state: TunnelProcess, config: TunnelConfiguration): boolean =>
+  state.ssh.host === config.sshHost
+  && state.ssh.port === config.sshPort
+  && state.ssh.user === config.sshUser
+  && state.ssh.hostKeyFingerprint === sshHostKeyFingerprint(config.sshHostKey)
+  && state.local.host === config.localHost
+  && state.local.port === config.localPort
+  && state.remote.host === config.remoteHost
+  && state.remote.port === config.remotePort
+  && state.tlsFingerprint === config.tlsFingerprint
+  && state.sourceFingerprint === config.sourceFingerprint;
 
-const readConfigurationFile = (
-  directory: string,
-): Effect.Effect<TunnelConfigurationFile | undefined, TunnelError> =>
-  readRecord(
-    configurationFilePath(directory),
-    TunnelConfigurationFileSchema,
-    "tunnel configuration",
+const readLifecycle = (directory: string) => Effect.gen(function*() {
+  const record = yield* readRecord(stateFilePath(directory), Schema.Unknown, "tunnel journal");
+  if (Schema.is(TunnelJournalSchema)(record)) {
+    return { state: record.state, convert: false };
+  }
+  const legacy = yield* readRecord(
+    configurationFilePath(directory), LegacyConfiguration, "released tunnel configuration",
   );
+  if (record === undefined && legacy === undefined) {
+    return { state: { _tag: "Unconfigured" } satisfies TunnelState, convert: false };
+  }
+  const previous = Schema.is(LegacyProcess)(record) ? record : undefined;
+  if (legacy === undefined || (record !== undefined && previous === undefined)
+    || (previous !== undefined && !processMatches(previous, legacy))) {
+    return yield* new TunnelConfigurationError({
+      operation: "convert released tunnel state",
+      message: `the tunnel records in ${directory} cannot be combined safely. Keep both files and the pinned known_hosts file; inspect the recorded PID and command line, stop only that verified SSH process, then move tunnel.json and tunnel-config.json aside and configure the tunnel again with an invitation. No process was stopped or forgotten.`,
+    });
+  }
+  const config = decode(TunnelConfigurationSchema)(legacy);
+  const state: TunnelState = previous === undefined
+    ? legacy.desired === "stopped" ? { _tag: "Stopped", config } : { _tag: "Down", config }
+    : legacy.desired === "stopped"
+    ? { _tag: "Stopping", config, process: decode(TunnelProcessSchema)(previous) }
+    : { _tag: "Running", config, process: decode(TunnelProcessSchema)(previous) };
+  return { state, convert: true };
+});
 
-const writeConfigurationFile = (
-  directory: string,
-  configuration: TunnelConfigurationFile,
-): Effect.Effect<void, TunnelError> =>
-  writeRecord(directory, configurationFileName, configuration, "tunnel configuration");
+const processOf = (state: TunnelState): TunnelProcess | undefined => {
+  switch (state._tag) {
+    case "Starting": return state.ownedProcess;
+    case "Running":
+    case "Stopping":
+    case "RecoveryRequired": return state.process;
+    case "Down": return state.previous;
+    case "Stopped":
+    case "Unconfigured": return undefined;
+  }
+};
 
-const removeConfigurationFile = (
-  directory: string,
-): Effect.Effect<void, TunnelConfigurationError> =>
-  Effect.tryPromise({
-    try: async () => {
-      try {
-        await unlink(configurationFilePath(directory));
-      } catch (error) {
-        if (!isEnoent(error)) throw error;
+interface TunnelOwnership {
+  process?: TunnelProcess;
+  launch?: TunnelLaunch;
+}
+
+const ownershipOf = (state: TunnelState) => {
+  const ownership: TunnelOwnership = {};
+  const process = processOf(state);
+  if (process !== undefined) ownership.process = process;
+  if (state._tag === "Starting" || state._tag === "Stopping" || state._tag === "RecoveryRequired") {
+    if (state.launch !== undefined) ownership.launch = state.launch;
+  }
+  return ownership;
+};
+
+type TunnelEvent =
+  | { readonly _tag: "Start"; readonly config: TunnelConfiguration; readonly opId: string; readonly launch: TunnelLaunch }
+  | { readonly _tag: "Own"; readonly process: TunnelProcess }
+  | { readonly _tag: "Ready" }
+  | { readonly _tag: "Stop" }
+  | { readonly _tag: "Stopped" }
+  | { readonly _tag: "Forget" }
+  | { readonly _tag: "Down" }
+  | { readonly _tag: "Failed"; readonly failedStep: string; readonly intent: "running" | "stopped" };
+
+const nextTunnelState = (
+  state: TunnelState, event: TunnelEvent,
+): Effect.Effect<TunnelState, TunnelConfigurationError> => {
+  switch (event._tag) {
+    case "Start":
+      if (state._tag === "Unconfigured" || state._tag === "Stopped" || state._tag === "Down") {
+        return Effect.succeed({
+          _tag: "Starting", config: event.config, opId: event.opId, launch: event.launch,
+        });
       }
-    },
-    catch: () =>
-      new TunnelConfigurationError({
-        operation: "forget tunnel configuration",
-        message: `the tunnel configuration at ${configurationFilePath(directory)} could not be removed`,
-      }),
-  }).pipe(Effect.uninterruptible);
+      break;
+    case "Own":
+      if (state._tag === "Starting" && state.ownedProcess === undefined) {
+        return Effect.succeed({ ...state, ownedProcess: event.process });
+      }
+      break;
+    case "Ready":
+      if (state._tag === "Starting" && state.ownedProcess !== undefined) {
+        return Effect.succeed({ _tag: "Running", config: state.config, process: state.ownedProcess });
+      }
+      break;
+    case "Stop":
+      if (state._tag !== "Unconfigured") {
+        return Effect.succeed({
+          _tag: "Stopping", config: state.config, ...ownershipOf(state),
+        });
+      }
+      break;
+    case "Stopped":
+      if (state._tag === "Stopping") return Effect.succeed({ _tag: "Stopped", config: state.config });
+      break;
+    case "Forget":
+      if (state._tag === "Stopped" || state._tag === "Unconfigured") {
+        return Effect.succeed({ _tag: "Unconfigured" });
+      }
+      break;
+    case "Down":
+      if (state._tag === "Starting" || state._tag === "Stopping") {
+        return Effect.succeed({ _tag: "Down", config: state.config });
+      }
+      break;
+    case "Failed":
+      if (state._tag === "Starting" || state._tag === "Stopping") {
+        return Effect.succeed({
+          _tag: "RecoveryRequired", config: state.config,
+          intent: event.intent, failedStep: event.failedStep,
+          ...ownershipOf(state),
+        });
+      }
+      break;
+  }
+  return Effect.fail(new TunnelConfigurationError({
+    operation: "transition tunnel",
+    message: `cannot apply tunnel ${event._tag} while ${state._tag}; run \`canonfig tunnel status\` and finish recovery with \`canonfig tunnel stop\` before starting again`,
+  }));
+};
 
-const configurationOf = (
-  input: TunnelStartInput,
-  desired: TunnelConfigurationFile["desired"],
-): TunnelConfigurationFile => {
+interface TunnelOwner {
+  readonly current: () => TunnelState;
+  readonly transition: (event: TunnelEvent) => Effect.Effect<void, TunnelError>;
+}
+
+/** The only lifecycle writer, held across all OS effects and compensation. */
+const withTunnelState = <A>(
+  directory: string, operation: string,
+  run: (owner: TunnelOwner) => Effect.Effect<A, TunnelError>,
+): Effect.Effect<A, TunnelError> => Effect.gen(function*() {
+  yield* Effect.tryPromise({
+    try: () => mkdir(directory, { recursive: true }),
+    catch: () => new TunnelConfigurationError({ operation, message: `cannot create tunnel state directory ${directory}` }),
+  });
+  return yield* withRunLock(stateFilePath(directory), operation, Effect.gen(function*() {
+    const loaded = yield* readLifecycle(directory);
+    let state: TunnelState = loaded.state;
+    const persist = () => writeRecord(directory, stateFileName, { version: 2, state }, "tunnel journal");
+    const owner: TunnelOwner = {
+      current: () => state,
+      transition: (event) => Effect.gen(function*() {
+        // Keep attempted ownership in memory if publication fails so compensation
+        // still knows its PID. The preceding Starting journal retains launch pins.
+        state = yield* nextTunnelState(state, event);
+        yield* persist();
+      }).pipe(Effect.uninterruptible),
+    };
+    if (loaded.convert) {
+      yield* persist();
+      yield* Effect.tryPromise({
+        try: () => unlink(configurationFilePath(directory)).catch((cause: unknown) => {
+          if (!isEnoent(cause)) throw cause;
+        }),
+        catch: () => new TunnelConfigurationError({
+          operation: "retire released tunnel configuration",
+          message: `tunnel.json is now authoritative; the obsolete ${configurationFilePath(directory)} could not be removed`,
+        }),
+      });
+    }
+    return yield* run(owner);
+  })).pipe(Effect.mapError((error) =>
+    error._tag === "RunLockHeldError" || error._tag === "MachineFilesystemError"
+      ? new TunnelConfigurationError({
+        operation,
+        message: error._tag === "RunLockHeldError"
+          ? `another tunnel operation holds ${error.path}; wait for it to finish before retrying`
+          : error.message,
+      })
+      : error
+  ));
+});
+
+const configurationOf = (input: TunnelStartInput): TunnelConfiguration => {
   const { stateDirectory: _stateDirectory, ...fields } = input;
-  return { version: 1, desired, recordedAt: new Date().toISOString(), ...fields };
+  return fields;
 };
 
 const startInputOf = (
-  configuration: TunnelConfigurationFile,
+  configuration: TunnelConfiguration,
   stateDirectory: string,
   timeoutMilliseconds: number | undefined,
-): TunnelStartInput => {
-  const { version: _version, desired: _desired, recordedAt: _recordedAt, ...fields } =
-    configuration;
-  return {
-    ...fields,
-    stateDirectory,
-    timeoutMilliseconds: timeoutMilliseconds ?? fields.timeoutMilliseconds,
-  };
-};
+): TunnelStartInput => ({
+  ...configuration, stateDirectory,
+  timeoutMilliseconds: timeoutMilliseconds ?? configuration.timeoutMilliseconds,
+});
 
-const removeStateFiles = (
-  directory: string,
-  state: TunnelStateFile,
-): Effect.Effect<void, TunnelConfigurationError> =>
+const removePins = (launch: TunnelLaunch): Effect.Effect<void, TunnelConfigurationError> =>
   Effect.tryPromise({
-    try: async () => {
-      for (const path of [stateFilePath(directory), state.knownHostsPath]) {
-        try {
-          await unlink(path);
-        } catch (error) {
-          if (!isEnoent(error)) throw error;
-        }
-      }
-    },
-    catch: () =>
-      new TunnelConfigurationError({
-        operation: "remove tunnel state",
-        message: "the tunnel state could not be removed completely",
-      }),
-  }).pipe(Effect.uninterruptible);
+    try: () => unlink(launch.knownHostsPath).catch((cause: unknown) => {
+      if (!isEnoent(cause)) throw cause;
+    }),
+    catch: () => new TunnelConfigurationError({
+      operation: "remove tunnel pins",
+      message: `the pinned SSH host key at ${launch.knownHostsPath} could not be removed; tunnel ownership was retained`,
+    }),
+  });
 
 const isAlive = (pid: number): boolean => {
   try {
@@ -354,46 +508,41 @@ const isAlive = (pid: number): boolean => {
   }
 };
 
-const terminateProcess = (pid: number): Promise<void> =>
-  new Promise<void>((resolveTermination) => {
-    if (!isAlive(pid)) {
-      resolveTermination();
-      return;
-    }
-    if (process.platform === "win32") {
+const terminateProcess = async (pid: number): Promise<void> => {
+  if (!isAlive(pid)) return;
+  if (process.platform === "win32") {
+    await new Promise<void>((resolveTermination, rejectTermination) => {
       const killer = spawn(
         `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\taskkill.exe`,
         ["/pid", String(pid), "/t", "/f"],
         { shell: false, stdio: "ignore", windowsHide: true },
       );
-      killer.once("error", () => resolveTermination());
-      killer.once("close", () => resolveTermination());
-      setTimeout(resolveTermination, killGraceMilliseconds).unref?.();
-      return;
-    }
+      const timer = setTimeout(() => rejectTermination(new Error("taskkill did not finish")), killGraceMilliseconds);
+      killer.once("error", (cause) => { clearTimeout(timer); rejectTermination(cause); });
+      killer.once("close", () => { clearTimeout(timer); resolveTermination(); });
+    });
+  } else {
     try {
       process.kill(pid, "SIGTERM");
-    } catch {
-      resolveTermination();
+    } catch (cause) {
+      if (isAlive(pid)) throw cause;
       return;
     }
-    const deadline = Date.now() + killGraceMilliseconds;
-    const poll = (): void => {
-      if (!isAlive(pid) || Date.now() >= deadline) {
-        if (isAlive(pid)) {
-          try {
-            process.kill(pid, "SIGKILL");
-          } catch {
-            // Already gone.
-          }
-        }
-        resolveTermination();
-        return;
-      }
-      setTimeout(poll, 100).unref?.();
-    };
-    poll();
-  });
+  }
+  const deadline = Date.now() + killGraceMilliseconds;
+  while (isAlive(pid) && Date.now() < deadline) {
+    await new Promise<void>((resolvePoll) => setTimeout(resolvePoll, 50));
+  }
+  if (!isAlive(pid)) return;
+  if (process.platform !== "win32") {
+    process.kill(pid, "SIGKILL");
+    const forcedDeadline = Date.now() + killGraceMilliseconds;
+    while (isAlive(pid) && Date.now() < forcedDeadline) {
+      await new Promise<void>((resolvePoll) => setTimeout(resolvePoll, 50));
+    }
+  }
+  if (isAlive(pid)) throw new Error(`tunnel process ${pid} still exists after termination`);
+};
 
 const readLogTail = async (logPath: string): Promise<string | undefined> => {
   try {
@@ -458,7 +607,7 @@ const resolveSshExecutable = async (executable: string): Promise<string> => {
 };
 
 const terminateTunnelProcess = async (
-  state: TunnelStateFile,
+  state: TunnelProcess,
   directory: string,
 ): Promise<void> => {
   if (state.systemdUnit === undefined) return terminateProcess(state.pid);
@@ -489,29 +638,24 @@ const spawnSystemdTunnel = async (
   const environment = ["PATH", "SSH_AUTH_SOCK"].flatMap((name) =>
     process.env[name] === undefined ? [] : [`--setenv=${name}=${process.env[name]}`]
   );
-  try {
-    await runSystemdCommand(process.env.CANONFIG_SYSTEMD_RUN ?? "/usr/bin/systemd-run", [
-      "--user", "--collect", "--service-type=exec", `--unit=${unit}`,
-      "--property=KillMode=control-group",
-      `--property=TimeoutStopSec=${killGraceMilliseconds}ms`,
-      `--property=StandardOutput=append:${resolve(logPath)}`,
-      `--property=StandardError=append:${resolve(logPath)}`,
-      ...environment,
-      // Transient service commands still expand $ variables at execution.
-      "--", ssh, ...argv.map((argument) => argument.replaceAll("$", () => "$$")),
-    ]);
-    // Type=exec waits for execve, so MainPID is available when the launcher exits.
-    const pid = Number(await runSystemdCommand(systemctl(), [
-      "--user", "show", unit, "--property=MainPID", "--value",
-    ]));
-    if (!Number.isSafeInteger(pid) || pid <= 0) {
-      throw new Error("the managed SSH service exited before its process could be recorded");
-    }
-    return pid;
-  } catch (cause) {
-    await runSystemdCommand(systemctl(), ["--user", "stop", unit]).catch(() => undefined);
-    throw cause;
+  await runSystemdCommand(process.env.CANONFIG_SYSTEMD_RUN ?? "/usr/bin/systemd-run", [
+    "--user", "--collect", "--service-type=exec", `--unit=${unit}`,
+    "--property=KillMode=control-group",
+    `--property=TimeoutStopSec=${killGraceMilliseconds}ms`,
+    `--property=StandardOutput=append:${resolve(logPath)}`,
+    `--property=StandardError=append:${resolve(logPath)}`,
+    ...environment,
+    // Transient service commands still expand $ variables at execution.
+    "--", ssh, ...argv.map((argument) => argument.replaceAll("$", () => "$$")),
+  ]);
+  // The lifecycle owner retains this unit even if querying MainPID fails.
+  const pid = Number(await runSystemdCommand(systemctl(), [
+    "--user", "show", unit, "--property=MainPID", "--value",
+  ]));
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    throw new Error("the managed SSH service exited before its process could be recorded");
   }
+  return pid;
 };
 
 const spawnTunnelProcess = (
@@ -704,7 +848,8 @@ const waitTunnelReady = (
 
 /** A recorded configuration with no live process record: stopped on purpose, or down. */
 const configuredStatus = (
-  configuration: TunnelConfigurationFile,
+  configuration: TunnelConfiguration,
+  stopped = false,
 ): TunnelStatusReport => {
   const endpoint = tunnelEndpoint(startInputOf(configuration, ".", undefined));
   const identity = {
@@ -714,10 +859,10 @@ const configuredStatus = (
   };
   const target = sshTarget(configuration.sshUser, configuration.sshHost);
   return {
-    lifecycle: configuration.desired === "stopped" ? "stopped" : "down",
+    lifecycle: stopped ? "stopped" : "down",
     endpoint,
     identity,
-    detail: configuration.desired === "stopped"
+    detail: stopped
       ? `the tunnel to ${target} was stopped with \`canonfig tunnel stop\`; run \`${restartCommand}\` to start it from the recorded configuration`
       : `the tunnel to ${target} is not running; run \`${restartCommand}\` to start it from the recorded configuration`,
     restartable: true,
@@ -726,17 +871,16 @@ const configuredStatus = (
 };
 
 const statusOf = (
-  state: TunnelStateFile,
+  state: TunnelProcess,
   reconnected: boolean,
-  configuration: TunnelConfigurationFile | undefined,
 ): Effect.Effect<TunnelStatusReport, TunnelError> =>
   Effect.gen(function*() {
     const alive = isAlive(state.pid);
     const endpoint =
       `https://${state.local.host === "::1" ? "[::1]" : state.local.host}:${state.local.port}`;
     const target = sshTarget(state.ssh.user, state.ssh.host);
-    const restartable = configuration !== undefined;
-    const recovery = restartable ? restartCommand : invitationStartCommand;
+    const restartable = true;
+    const recovery = restartCommand;
     const baseIdentity = {
       sshHostKeyFingerprint: state.ssh.hostKeyFingerprint,
       tlsPinnedFingerprint: state.tlsFingerprint,
@@ -811,250 +955,243 @@ const statusOf = (
     } satisfies TunnelStatusReport;
   });
 
-const makeTunnel = Effect.sync(() => {
-  const startTunnel = Effect.fn("Tunnel.startTunnel")(function*(
-    rawInput: TunnelStartInput,
-  ): Effect.fn.Return<TunnelStatusReport, TunnelError> {
-    const input = yield* Schema.decodeUnknownEffect(TunnelStartInputSchema)(rawInput).pipe(
-      Effect.mapError(() =>
-        new TunnelConfigurationError({
-          operation: "start tunnel",
-          message: "the tunnel configuration is invalid",
-        })
-      ),
-    );
+const lifecycleStatus = (state: TunnelState): Effect.Effect<TunnelStatusReport, TunnelError> => {
+  switch (state._tag) {
+    case "Unconfigured":
+      return Effect.succeed({
+        lifecycle: "not-configured", identity: undefined,
+        detail: "no tunnel has been configured", restartable: false,
+      });
+    case "Running": return statusOf(state.process, false);
+    case "Stopped": return Effect.succeed(configuredStatus(state.config, true));
+    case "Down": return Effect.succeed(configuredStatus(state.config));
+    case "Starting":
+    case "Stopping":
+    case "RecoveryRequired": {
+      const process = processOf(state);
+      const stopped = state._tag === "Stopping"
+        || (state._tag === "RecoveryRequired" && state.intent === "stopped");
+      return Effect.succeed({
+        ...configuredStatus(state.config, stopped),
+        pid: process?.pid, startedAt: process?.startedAt,
+        restartable: false,
+        recovery: "canonfig tunnel stop",
+        detail: state._tag === "RecoveryRequired"
+          ? `tunnel recovery is required after ${state.failedStep}; process and pinned material were retained. Run \`canonfig tunnel stop\` to finish cleanup before starting again.`
+          : `the tunnel is ${state._tag === "Starting" ? "starting" : "stopping"}; if its operation was interrupted, run \`canonfig tunnel stop\` to recover it before starting again`,
+      });
+    }
+  }
+};
+
+/** Never discard process identity or pins until teardown has been confirmed. */
+const teardown = (
+  state: TunnelState, directory: string, newlySpawned = false,
+): Effect.Effect<void, TunnelError> => Effect.gen(function*() {
+  const process = processOf(state);
+  const launch = state._tag === "Starting" || state._tag === "Stopping" || state._tag === "RecoveryRequired"
+    ? state.launch ?? process : process;
+  yield* Effect.tryPromise({
+    try: async () => {
+      if (process !== undefined) {
+        if (isAlive(process.pid) && !newlySpawned && !(await ownsTunnelProcess(process))) {
+          throw new Error(`PID ${process.pid} does not match the recorded SSH process; inspect it manually, do not signal it blindly`);
+        }
+        await terminateTunnelProcess(process, directory);
+      } else if (launch?.systemdUnit !== undefined) {
+        if (!launch.systemdUnit.startsWith(tunnelUnitPrefix(directory))) {
+          throw new Error("the recorded service does not belong to this state directory");
+        }
+        await runSystemdCommand(systemctl(), ["--user", "stop", launch.systemdUnit]);
+      } else if (state._tag === "Starting" || state._tag === "RecoveryRequired"
+        || (state._tag === "Stopping" && launch !== undefined)) {
+        // A crash between spawn and PID publication cannot prove that nothing
+        // launched. The operation-specific known_hosts path identifies it.
+        throw new Error(`an interrupted launch has no confirmed PID; inspect processes using ${launch?.knownHostsPath ?? directory}, stop the verified SSH process, then move tunnel.json aside before configuring again`);
+      }
+    },
+    catch: (cause) => new TunnelProcessError({
+      operation: "tear down tunnel",
+      message: cause instanceof Error ? cause.message : "the tunnel could not be stopped",
+    }),
+  });
+  if (launch !== undefined) yield* removePins(launch);
+});
+
+const failCleanup = (
+  owner: TunnelOwner, intent: "running" | "stopped", cleanup: Effect.Effect<void, TunnelError>,
+): Effect.Effect<void, TunnelError> => cleanup.pipe(
+  Effect.catch((failure) => owner.transition({
+    _tag: "Failed", intent, failedStep: failure.message,
+  }).pipe(Effect.andThen(Effect.fail(failure)))),
+);
+
+const startOwned = (
+  owner: TunnelOwner, input: TunnelStartInput,
+): Effect.Effect<TunnelStatusReport, TunnelError> => Effect.uninterruptibleMask((restore) =>
+  Effect.gen(function*() {
     const extra = input.sshArguments ?? [];
     yield* rejectBypassArguments(extra);
-    const timeoutMilliseconds = input.timeoutMilliseconds ?? 30_000;
-    const executable = input.sshExecutable ?? "ssh";
-    const configuration = configurationOf(input, "running");
-    const existing = yield* readStateFile(input.stateDirectory);
-    if (existing !== undefined) {
-      const current = yield* statusOf(existing, false, configuration);
-      const sameConfiguration = existing.ssh.host === input.sshHost
-        && existing.ssh.port === input.sshPort
-        && existing.ssh.user === input.sshUser
-        && existing.ssh.hostKeyFingerprint === sshHostKeyFingerprint(input.sshHostKey)
-        && existing.local.host === input.localHost
-        && existing.local.port === input.localPort
-        && existing.remote.host === input.remoteHost
-        && existing.remote.port === input.remotePort
-        && existing.tlsFingerprint === input.tlsFingerprint
-        && existing.sourceFingerprint === input.sourceFingerprint;
-      if (current.lifecycle === "running" && sameConfiguration) {
-        // A tunnel started before restart configurations were recorded
-        // becomes restartable the first time it is confirmed here.
-        yield* writeConfigurationFile(input.stateDirectory, configuration);
-        return current;
-      }
-      if (
-        (yield* Effect.promise(() => ownsTunnelProcess(existing)))
-        || (existing.systemdUnit !== undefined && !isAlive(existing.pid))
-      ) {
-        yield* Effect.tryPromise({
-          try: () => terminateTunnelProcess(existing, input.stateDirectory),
-          catch: () =>
-            new TunnelProcessError({
-              operation: "reclaim tunnel",
-              message: `the previous tunnel process ${existing.pid} could not be stopped`,
-            }),
-        });
-      }
-      yield* removeStateFiles(input.stateDirectory, existing);
+    const config = configurationOf(input);
+    const existing = owner.current();
+    if (existing._tag === "Starting" || existing._tag === "Stopping" || existing._tag === "RecoveryRequired") {
+      return yield* new TunnelConfigurationError({
+        operation: "start tunnel",
+        message: `the recorded tunnel is ${existing._tag}; run \`canonfig tunnel stop\` to finish recovery before starting it`,
+      });
     }
-    const knownHostsPath = join(resolve(input.stateDirectory), knownHostsFileName);
+    if (existing._tag === "Running") {
+      const report = yield* statusOf(existing.process, false);
+      if (report.lifecycle === "running" && processMatches(existing.process, config)) return report;
+      yield* owner.transition({ _tag: "Stop" });
+      yield* failCleanup(owner, "stopped", teardown(owner.current(), input.stateDirectory));
+      yield* owner.transition({ _tag: "Stopped" });
+    } else if (existing._tag === "Down" && existing.previous !== undefined) {
+      yield* owner.transition({ _tag: "Stop" });
+      yield* failCleanup(owner, "stopped", teardown(owner.current(), input.stateDirectory));
+      yield* owner.transition({ _tag: "Stopped" });
+    }
+    const opId = randomUUID();
+    // A unique path leaves durable launch identity even if PID publication fails.
+    const knownHostsPath = join(resolve(input.stateDirectory), `${knownHostsFileName}-${opId}`);
     const logPath = join(resolve(input.stateDirectory), logFileName);
-    yield* Effect.tryPromise({
-      try: async () => {
-        await mkdir(input.stateDirectory, { recursive: true });
-        await writeFile(
-          knownHostsPath,
-          knownHostsEntry(input.sshHost, input.sshPort, input.sshHostKey),
-          { mode: 0o600 },
-        );
-      },
-      catch: () =>
-        new TunnelConfigurationError({
-          operation: "pin SSH host key",
-          message: "the pinned SSH host key could not be recorded",
-        }),
-    });
-    // setsid/detached does not leave a systemd cgroup. Native recovery must
-    // give SSH its own user service, not a child of the sync oneshot.
+    // setsid/detached cannot leave a systemd cgroup. Native jobs give SSH a
+    // dedicated service whose identity is journaled before calling systemd-run.
     const systemdUnit = process.platform === "linux"
         && /^[a-f0-9]{32}$/u.test(process.env.INVOCATION_ID ?? "")
-      ? `${tunnelUnitPrefix(input.stateDirectory)}${randomUUID().replaceAll("-", "")}.service`
+      ? `${tunnelUnitPrefix(input.stateDirectory)}${opId.replaceAll("-", "")}.service`
       : undefined;
-    let pid: number | undefined;
-    let recorded = false;
-    let startedState: TunnelStateFile | undefined;
-    const cleanupUnrecorded = Effect.gen(function*() {
-      if (recorded) return;
-      const processId = pid;
-      if (processId !== undefined) {
-        yield* Effect.tryPromise({
-          try: async () => {
-            if (systemdUnit !== undefined) {
-              await runSystemdCommand(systemctl(), ["--user", "stop", systemdUnit]);
-            } else {
-              await terminateProcess(processId);
-            }
-          },
-          catch: () =>
-            new TunnelProcessError({
-              operation: "cancel tunnel start",
-              message: "the starting tunnel process could not be stopped",
-            }),
-        }).pipe(Effect.ignore);
-      }
-      if (startedState !== undefined) {
-        yield* removeStateFiles(input.stateDirectory, startedState).pipe(Effect.ignore);
-      }
-      yield* Effect.tryPromise({
-        try: () => unlink(knownHostsPath).catch(() => undefined),
-        catch: () =>
-          new TunnelProcessError({
-            operation: "cancel tunnel start",
-            message: "temporary tunnel material could not be removed",
-          }),
-      }).pipe(Effect.ignore);
+    const argv = buildSshArguments(input, knownHostsPath, extra);
+    const launchFields = {
+      processArgumentFingerprint: processArgumentFingerprint(argv), knownHostsPath, logPath,
+    };
+    const launch: TunnelLaunch = systemdUnit === undefined ? launchFields : { ...launchFields, systemdUnit };
+    yield* owner.transition({ _tag: "Start", config, opId, launch });
+    yield* Effect.tryPromise({
+      try: () => writeFile(knownHostsPath, knownHostsEntry(input.sshHost, input.sshPort, input.sshHostKey), { mode: 0o600 }),
+      catch: () => new TunnelConfigurationError({
+        operation: "pin SSH host key", message: "the pinned SSH host key could not be recorded; run `canonfig tunnel stop` before starting again",
+      }),
     });
-    const classifyStartupFailure = (error: TunnelProcessError | TunnelReadinessError) =>
-      Effect.promise(() => readLogTail(logPath)).pipe(
-        Effect.flatMap((tail): Effect.Effect<never, TunnelProcessError | TunnelReadinessError | TunnelHostKeyError> =>
-          tail !== undefined && hostKeyFailurePattern.test(tail)
-            ? Effect.fail(new TunnelHostKeyError({
-              host: input.sshHost,
-              message: "the SSH host key is unknown or has changed; the connection was blocked",
-            }))
-            : Effect.fail(error)
-        ),
-      );
-    const started = yield* Effect.gen(function*() {
-      const argv = buildSshArguments(input, knownHostsPath, extra);
-      const processId = yield* spawnTunnelProcess(executable, argv, logPath, systemdUnit);
-      pid = processId;
-      yield* waitTunnelReady(input, processId, logPath, timeoutMilliseconds);
-      const state: TunnelStateFile = {
-        version: 1,
+    const establish = Effect.gen(function*() {
+      const pid = yield* spawnTunnelProcess(input.sshExecutable ?? "ssh", argv, logPath, systemdUnit);
+      const process: TunnelProcess = {
+        ...launch,
         ssh: {
-          host: input.sshHost,
-          port: input.sshPort,
-          user: input.sshUser,
+          host: input.sshHost, port: input.sshPort, user: input.sshUser,
           hostKeyType: sshHostKeyType(input.sshHostKey),
           hostKeyFingerprint: sshHostKeyFingerprint(input.sshHostKey),
         },
         local: { host: input.localHost, port: input.localPort },
         remote: { host: input.remoteHost, port: input.remotePort },
-        tlsFingerprint: input.tlsFingerprint,
-        sourceFingerprint: input.sourceFingerprint,
-        pid: processId,
-        processArgumentFingerprint: processArgumentFingerprint(argv),
-        systemdUnit,
-        startedAt: new Date().toISOString(),
-        logPath,
-        knownHostsPath,
+        tlsFingerprint: input.tlsFingerprint, sourceFingerprint: input.sourceFingerprint,
+        pid, startedAt: new Date().toISOString(),
       };
-      startedState = state;
-      yield* writeStateFile(input.stateDirectory, state);
-      // The durable restart record: `tunnel start` and a scheduled sync can
-      // bring this tunnel back after its process dies or the machine reboots,
-      // without the one-use invitation envelope.
-      yield* writeConfigurationFile(input.stateDirectory, configuration);
-      recorded = true;
-      return state;
+      // Spawn and ownership publication cannot be interrupted between them.
+      yield* owner.transition({ _tag: "Own", process });
+      yield* restore(waitTunnelReady(input, pid, logPath, input.timeoutMilliseconds ?? 30_000));
+      const report = yield* restore(statusOf(process, existing._tag !== "Unconfigured"));
+      if (report.lifecycle !== "running") {
+        return yield* new TunnelReadinessError({
+          endpoint: tunnelEndpoint(input),
+          message: `the tunnel endpoint is not ready: ${report.detail}`,
+        });
+      }
+      yield* owner.transition({ _tag: "Ready" });
+      return report;
     }).pipe(
       Effect.catchTags({
-        TunnelProcessError: classifyStartupFailure,
-        TunnelReadinessError: classifyStartupFailure,
+        TunnelProcessError: (error) => classifyStartupFailure(error, input, logPath),
+        TunnelReadinessError: (error) => classifyStartupFailure(error, input, logPath),
       }),
-      Effect.ensuring(cleanupUnrecorded),
     );
-    const report = yield* statusOf(started, existing !== undefined, configuration);
-    if (report.lifecycle !== "running") {
-      const tail = yield* Effect.promise(() => readLogTail(logPath));
-      return yield* new TunnelReadinessError({
-        endpoint: tunnelEndpoint(input),
-        message: tail === undefined
-          ? `the tunnel started but the endpoint is not ready: ${report.detail}`
-          : `the tunnel started but the endpoint is not ready: ${report.detail} (${tail})`,
+    return yield* establish.pipe(Effect.catchCause((cause) => {
+      // The same owner compensates both readiness failures and interruption.
+      // A failed Ready publication may already be visible on disk.
+      const state = owner.current();
+      return Effect.gen(function*() {
+        if (state._tag === "Running") yield* owner.transition({ _tag: "Stop" });
+        yield* failCleanup(owner, "running", teardown(owner.current(), input.stateDirectory, true));
+        yield* owner.transition({ _tag: "Down" });
+        return yield* Effect.failCause(cause);
       });
-    }
-    return report;
+    }));
+  })
+);
+
+const classifyStartupFailure = (
+  error: TunnelProcessError | TunnelReadinessError, input: TunnelStartInput, logPath: string,
+) => Effect.promise(() => readLogTail(logPath)).pipe(
+  Effect.flatMap((tail): Effect.Effect<never, TunnelProcessError | TunnelReadinessError | TunnelHostKeyError> =>
+    tail !== undefined && hostKeyFailurePattern.test(tail)
+      ? Effect.fail(new TunnelHostKeyError({
+        host: input.sshHost,
+        message: "the SSH host key is unknown or has changed; the connection was blocked",
+      }))
+      : Effect.fail(error)
+  ),
+);
+
+const makeTunnel = Effect.sync(() => {
+  const startTunnel = Effect.fn("Tunnel.startTunnel")(function*(
+    rawInput: TunnelStartInput,
+  ): Effect.fn.Return<TunnelStatusReport, TunnelError> {
+    const input = yield* Schema.decodeUnknownEffect(TunnelStartInputSchema)(rawInput).pipe(
+      Effect.mapError(() => new TunnelConfigurationError({
+        operation: "start tunnel", message: "the tunnel configuration is invalid",
+      })),
+    );
+    return yield* withTunnelState(input.stateDirectory, "start tunnel", (owner) => startOwned(owner, input));
   });
 
   const restartTunnel = Effect.fn("Tunnel.restartTunnel")(function*(
     input: RestartTunnelInput,
   ): Effect.fn.Return<TunnelStatusReport, TunnelError> {
-    const configuration = yield* readConfigurationFile(input.stateDirectory);
-    if (configuration === undefined) {
-      return yield* new TunnelConfigurationError({
-        operation: "restart tunnel",
-        message:
-          `no tunnel configuration is recorded in ${input.stateDirectory}; run \`${invitationStartCommand}\` once to record one`,
-      });
-    }
-    return yield* startTunnel(
-      startInputOf(configuration, input.stateDirectory, input.timeoutMilliseconds),
-    );
+    return yield* withTunnelState(input.stateDirectory, "restart tunnel", (owner) => Effect.gen(function*() {
+      const state = owner.current();
+      if (state._tag === "Unconfigured") {
+        return yield* new TunnelConfigurationError({
+          operation: "restart tunnel",
+          message: `no tunnel configuration is recorded in ${input.stateDirectory}; run \`${invitationStartCommand}\` once to record one`,
+        });
+      }
+      if (input.onlyIfDown && state._tag !== "Down" && state._tag !== "Running") {
+        return yield* new TunnelConfigurationError({
+          operation: "restart tunnel",
+          message: `automatic recovery cannot restart a tunnel that is ${state._tag}; the operator's latest intent was retained`,
+        });
+      }
+      return yield* startOwned(owner, startInputOf(state.config, input.stateDirectory, input.timeoutMilliseconds));
+    }));
   });
 
   const tunnelStatus = Effect.fn("Tunnel.tunnelStatus")(function*(
     input: StopTunnelInput,
   ): Effect.fn.Return<TunnelStatusReport, TunnelError> {
-    const [existing, configuration] = yield* Effect.all([
-      readStateFile(input.stateDirectory),
-      readConfigurationFile(input.stateDirectory),
-    ]);
-    if (existing === undefined) {
-      return configuration === undefined
-        ? {
-          lifecycle: "not-configured",
-          identity: undefined,
-          detail: "no tunnel has been configured",
-          restartable: false,
-        }
-        : configuredStatus(configuration);
-    }
-    return yield* statusOf(existing, false, configuration);
+    return yield* lifecycleStatus((yield* readLifecycle(input.stateDirectory)).state);
   });
 
   const stopTunnel = Effect.fn("Tunnel.stopTunnel")(function*(
     input: StopTunnelRequest,
   ): Effect.fn.Return<StopTunnelResult, TunnelError> {
-    const [existing, configuration] = yield* Effect.all([
-      readStateFile(input.stateDirectory),
-      readConfigurationFile(input.stateDirectory),
-    ]);
-    let owned = false;
-    if (existing !== undefined) {
-      owned = yield* Effect.promise(() => ownsTunnelProcess(existing));
-      if (owned || (existing.systemdUnit !== undefined && !isAlive(existing.pid))) {
-        yield* Effect.tryPromise({
-          try: () => terminateTunnelProcess(existing, input.stateDirectory),
-          catch: () =>
-            new TunnelProcessError({
-              operation: "stop tunnel",
-              message: `tunnel process ${existing.pid} could not be stopped`,
-            }),
-        });
-      }
-      yield* removeStateFiles(input.stateDirectory, existing);
-    }
-    if (input.forget === true) {
-      yield* removeConfigurationFile(input.stateDirectory);
-    } else if (configuration !== undefined && configuration.desired !== "stopped") {
-      // Recorded so neither a scheduled sync nor doctor treats a deliberate
-      // stop as an outage to repair.
-      yield* writeConfigurationFile(input.stateDirectory, {
-        ...configuration,
-        desired: "stopped",
-      });
-    }
-    const restartable = input.forget !== true && configuration !== undefined;
-    return existing === undefined
-      ? { stopped: false, restartable }
-      : { stopped: owned || !isAlive(existing.pid), pid: existing.pid, restartable };
+    return yield* withTunnelState(input.stateDirectory, "stop tunnel", (owner) => Effect.uninterruptible(
+      Effect.gen(function*() {
+        const existing = owner.current();
+        if (existing._tag === "Unconfigured") return { stopped: false, restartable: false };
+        const process = processOf(existing);
+        // Publish stopped intent before touching a process or deleting pins.
+        // If publication fails, no OS mutation is attempted.
+        yield* owner.transition({ _tag: "Stop" });
+        yield* failCleanup(owner, "stopped", teardown(owner.current(), input.stateDirectory));
+        yield* owner.transition({ _tag: "Stopped" });
+        if (input.forget) yield* owner.transition({ _tag: "Forget" });
+        return {
+          stopped: process !== undefined,
+          pid: process?.pid,
+          restartable: !input.forget,
+        };
+      }),
+    ));
   });
 
   return Tunnel.of({ startTunnel, restartTunnel, tunnelStatus, stopTunnel });

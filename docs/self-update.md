@@ -115,6 +115,20 @@ not in a published profile. Preserve them as local operational data. Successful
 transactions retain `last-transaction.json`; incomplete ones retain `pending.json`.
 Do not copy this state between machines or blindly clear a gate/lease.
 
+Version 2 transaction records name the last confirmed step:
+`Prepared`, `OldMoved`, `Installed`, or `Committed`. A rename can precede its
+step record during a crash, so still inspect the actual package trees before
+manual recovery. Released version 1 journals remain recovery blockers and use
+the same manual inspection below; they are never guessed into a completed state.
+Persisted progress carries that operation's id too, so another updater cannot
+replace its progress while the gate is held.
+
+Once the candidate occupies the canonical package path, activation reports
+`updated` and requires restart even if receipt flushing or progress delivery
+fails. The result names the bookkeeping failure and retained recovery data.
+The old GUI stays suspended and exits after delivering that result; it never
+reacquires a command lease against the changed installation.
+
 For an interrupted update, stop all Canonfig/updater/package-manager processes.
 Inspect the pending journal and preserve both old and candidate trees. **Check
 whether the recorded backup exists before attempting any restore.** The journal

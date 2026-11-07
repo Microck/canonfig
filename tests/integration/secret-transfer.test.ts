@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { pathToFileURL } from "node:url";
 import { mkdtempSync, rmSync } from "node:fs";
-import { access, readFile, stat } from "node:fs/promises";
+import { access, readFile, rm, stat } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -29,6 +29,7 @@ import { macosMachineStateLayer } from "../../src/machine/macos.layer.ts";
 import {
   CredentialStorageError,
   HumanActionRequiredError,
+  UnconfirmedPublicationError,
 } from "../../src/machine/machine-state.errors.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
@@ -913,6 +914,80 @@ it("excludes a concurrent local write while a Source transfer owns the manifest 
   await expect(runFollower(setup, storeSecret("race-name", "local-value"))).rejects.toMatchObject({ category: "usage" });
   await runFollower(setup, storeSecret("independent", "local-value"));
   expect(await storedValue(setup, "independent")).toBe("local-value");
+});
+
+it.each(["local", "source"] as const)("preserves active %s credentials after unconfirmed manifest publication", async(origin)=>{
+  const setup=fixture();
+  let unconfirmed=false;
+  const published=Layer.effect(MachineState,Effect.map(MachineState,machine=>({
+    ...machine,
+    atomicWrite:(input:Parameters<typeof machine.atomicWrite>[0])=>machine.atomicWrite(input).pipe(
+      Effect.flatMap(()=>{
+        if(unconfirmed||!input.path.absolute.endsWith("secrets.json"))return Effect.void;
+        unconfirmed=true;
+        return Effect.fail(new UnconfirmedPublicationError({path:input.path.absolute,state:"in-place",
+          published:{dev:1n,ino:1n},message:"directory flush failed after publication"}));
+      }),
+    ),
+  }))).pipe(Layer.provide(setup.followerMachine));
+  const operation=origin==="local"?storeSecret("published","retained-value"):applyTransferredSecrets({
+    schemaVersion:1,secrets:[{name:"published",value:"retained-value"}],
+  });
+  await expect(Effect.runPromise(operation.pipe(Effect.provide(published)))).rejects.toMatchObject({category:"storage"});
+  expect(await storedValue(setup,"published")).toBe("retained-value");
+  const recovered=await runFollower(setup,loadSharedSecrets());
+  expect(recovered.secrets).toEqual(origin==="local"?[{name:"published",value:"retained-value"}]:[]);
+  expect(await storedValue(setup,"published")).toBe("retained-value");
+  await expect(access(join(setup.followerHome,".canonfig","secrets-transaction.json"))).rejects.toMatchObject({code:"ENOENT"});
+});
+
+it("retains credential ownership when an unconfirmed manifest disappears", async () => {
+  const setup = fixture();
+  let created: typeof CredentialReference.Type | undefined;
+  const replaced = Layer.effect(MachineState, Effect.map(MachineState, (machine) => ({
+    ...machine,
+    storeCredential: (input: Parameters<typeof machine.storeCredential>[0]) =>
+      machine.storeCredential(input).pipe(Effect.tap((reference) => Effect.sync(() => { created = reference; }))),
+    atomicWrite: (input: Parameters<typeof machine.atomicWrite>[0]) => machine.atomicWrite(input).pipe(
+      Effect.flatMap((published) => input.path.absolute.endsWith("secrets.json")
+        ? Effect.promise(() => rm(input.path.absolute)).pipe(Effect.andThen(Effect.fail(
+          new UnconfirmedPublicationError({
+            path: input.path.absolute, state: "replaced", published, message: "published name disappeared",
+          }),
+        )))
+        : Effect.void),
+    ),
+  }))).pipe(Layer.provide(setup.followerMachine));
+  await expect(Effect.runPromise(storeSecret("uncertain", "retained-value").pipe(Effect.provide(replaced))))
+    .rejects.toMatchObject({ publication: "published-unconfirmed" });
+  await expect(runFollower(setup, storeSecret("other", "new-value")))
+    .rejects.toMatchObject({ message: expect.stringContaining("manifest disappeared") });
+  if (created === undefined) throw new Error("the fixture did not create its credential");
+  const reference = created;
+  expect(await runFollower(setup, Effect.flatMap(MachineState, (machine) =>
+    machine.loadCredential({ reference }).pipe(Effect.map(Redacted.value))))).toBe("retained-value");
+  await access(join(setup.followerHome, ".canonfig", "secrets-transaction.json"));
+});
+
+it("records native item ownership before a credential write can lose its reference",async()=>{
+  const setup=fixture();
+  let credentialName="";
+  const interrupted=Layer.effect(MachineState,Effect.map(MachineState,machine=>({
+    ...machine,
+    storeCredential:(input:Parameters<typeof machine.storeCredential>[0])=>Effect.gen(function*(){
+      credentialName=input.name;
+      const text=yield* Effect.promise(()=>readFile(join(setup.followerHome,".canonfig","secrets-transaction.json"),"utf8"));
+      const journal=JSON.parse(text);
+      expect(journal.state).toMatchObject({_tag:"Storing",credentialName});
+      yield* machine.storeCredential(input);
+      return yield* Effect.fail(new CredentialStorageError({operation:"store credential",
+        reference:credentialName,message:"provider lost response after write"}));
+    }),
+  }))).pipe(Layer.provide(setup.followerMachine));
+  await expect(Effect.runPromise(storeSecret("interrupted","retained-value").pipe(Effect.provide(interrupted)))).rejects.toMatchObject({category:"storage"});
+  await expect(runFollower(setup,storeSecret("other","new-value"))).rejects.toMatchObject({
+    category:"state",message:expect.stringContaining(credentialName),
+  });
 });
 
 
