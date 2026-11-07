@@ -184,6 +184,10 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly startRun: (
     input: StartRunInput,
   ) => Effect.Effect<void, StateRepositoryError>;
+  readonly beginRun: (run: RunId) => Effect.Effect<void, StateRepositoryError>;
+  readonly abandonRun: (run: RunId) => Effect.Effect<void, StateRepositoryError>;
+  /** Acknowledge idempotent finalization effects, then publish the receipt. */
+  readonly finalizeRun: (run: RunId, completedAt: string) => Effect.Effect<void, StateRepositoryError>;
   readonly journalAction: (
     input: JournalActionInput,
   ) => Effect.Effect<void, StateRepositoryError>;

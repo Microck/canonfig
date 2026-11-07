@@ -17,6 +17,7 @@ import type {
   PlannedAction,
   SynchronizationOutcome,
 } from "../domain/synchronization.ts";
+import { createAppliedResourceRecord, type AppliedDirectoryEntry } from "../domain/synchronization.ts";
 import { requireFreeSpace, type DiskRequirement } from "../machine/disk-space.ts";
 import {
   type InsufficientDiskError,
@@ -379,7 +380,7 @@ const verificationEvidence = (
 const journal = (
   run: SynchronizationRunInput["id"],
   action: ActionId,
-  state: "running" | "succeeded" | "failed" | "skipped",
+  state: "running" | "succeeded" | "failed" | "blocked" | "interrupted" | "rolled-back",
   verification?: VerificationEvidence | undefined,
   rollbackReference?: string | undefined,
   attempt = 1,
@@ -415,7 +416,7 @@ const rollbackPrepared = (
 
 export const ownedFilesFor = (
   desired: SynchronizationRunInput["revision"]["desired"][number]["desired"],
-): AppliedResourceRecord["ownedFiles"] =>
+): ReadonlyArray<AppliedDirectoryEntry> | undefined =>
   desired.kind === "directory" || desired.kind === "skill"
     ? desiredDirectoryEntries(desired).map((entry) => ({
       path: entry.path,
@@ -453,7 +454,7 @@ export const configOwnership = (
   return { ownedKeys, digest };
 };
 
-const appliedResourceFor = (
+export const appliedResourceFor = (
   input: SynchronizationRunInput,
   state: ActionState,
   appliedAt: string,
@@ -464,45 +465,89 @@ const appliedResourceFor = (
   const desired = state.context.desired;
   const detail = state.action.detail;
   const installerRecipe = detail.kind === "install-tool" || detail.kind === "no-op"
-    ? detail.provenance ?? previous?.installerRecipe
+    ? detail.provenance ?? (previous?.ownership === "QualifiedTool" ? previous.installerRecipe : undefined)
     : undefined;
   const owned = desired.kind === "config" ? configOwnership(desired, input.artifacts) : undefined;
   const digest = owned?.digest ?? desiredResourceDigest(desired) ?? installerRecipe?.fingerprint;
   if (digest === undefined) return undefined;
-  return {
-    resource: state.action.resource,
+  return createAppliedResourceRecord({
+    resource: state.context.resource,
     revision: input.revision.id,
     digest,
     appliedAt,
-    kind: state.context.resource.kind,
-    policy: state.context.resource.policy,
-    target: state.context.resource.target,
-    executable: desired.kind === "file" ? desired.executable : undefined,
-    mode: desired.kind === "file" || desired.kind === "directory" || desired.kind === "skill"
-      ? desired.mode
-      : undefined,
-    symlinkTo: desired.kind === "file" ? desired.symlinkTo : undefined,
+    desired,
     ownedFiles: ownedFilesFor(desired),
     ownedKeys: owned?.ownedKeys,
-    configFormat: desired.kind === "config" ? desired.format : undefined,
     installerRecipe,
-  };
+  });
 };
 
-export interface ActionResult {
-  readonly kind: "verified" | "human" | "drift" | "failed";
+export type RollbackState =
+  | { readonly _tag: "NotRequired" }
+  | { readonly _tag: "Restored" }
+  | { readonly _tag: "Blocked"; readonly phase: "physical" | "ownership"; readonly reference?: string | undefined };
+
+type RollbackCompletion =
+  | { readonly _tag: "Restored" }
+  | { readonly _tag: "Blocked"; readonly phase: "physical" | "ownership"; readonly reason: string };
+
+/** Recovery material is disposable only after both halves of the inverse commit. */
+export const restoreAction = <R1, R2>(
+  physical: Effect.Effect<void, unknown, R1>,
+  ownership: Effect.Effect<void, unknown, R2>,
+): Effect.Effect<RollbackCompletion, never, R1 | R2> =>
+  physical.pipe(
+    Effect.matchEffect({
+      onFailure: (error) => Effect.succeed({ _tag: "Blocked" as const, phase: "physical" as const, reason: String(error) }),
+      onSuccess: () => ownership.pipe(Effect.match({
+        onFailure: (error) => ({ _tag: "Blocked" as const, phase: "ownership" as const, reason: String(error) }),
+        onSuccess: () => ({ _tag: "Restored" as const }),
+      })),
+    }),
+  );
+
+interface VerifiedActionResult {
+  readonly kind: "verified";
   readonly resource?: ResourceId | undefined;
-  readonly human?: HumanAction | undefined;
-  readonly drift?: DriftConflict | undefined;
-  readonly reason?: string | undefined;
-  /** Runtime inverse retained until physical and ownership changes are terminal. */
   readonly rollback?: Effect.Effect<void, unknown, MachineState> | undefined;
   readonly rollbackReference?: string | undefined;
-  /** Physical rollback failed, so terminal cleanup must preserve its snapshot. */
-  readonly rollbackFailed?: boolean | undefined;
-  /** A no-replace write found its target taken; see `SynchronizationOutcome` `occupiedTarget`. */
-  readonly occupiedTarget?: string | undefined;
 }
+
+export type ActionResult =
+  | VerifiedActionResult
+  | { readonly kind: "human"; readonly human: HumanAction }
+  | { readonly kind: "drift"; readonly drift: DriftConflict }
+  | { readonly kind: "failed"; readonly reason: string; readonly rollbackState: RollbackState;
+      readonly rollbackReference?: string | undefined; readonly occupiedTarget?: string | undefined };
+
+export type ActionProgress =
+  | { readonly _tag: "Running"; readonly verified: Set<ResourceId> }
+  | { readonly _tag: "Human"; readonly actions: ReadonlyArray<HumanAction> }
+  | { readonly _tag: "Drift"; readonly conflicts: ReadonlyArray<DriftConflict> }
+  | { readonly _tag: "Failed"; readonly reason: string; readonly occupiedTarget?: string | undefined };
+
+/** Both normal execution and replay stop through the same outcome transition. */
+export const reduceActionResult = (progress: ActionProgress, result: ActionResult) =>
+  Effect.gen(function*() {
+    if (progress._tag !== "Running") return yield* new InvalidExecutionPlanError({ message: `cannot execute an action after ${progress._tag}` });
+    switch (result.kind) {
+      case "verified":
+        if (result.resource !== undefined) progress.verified.add(result.resource);
+        return progress;
+      case "human": return { _tag: "Human" as const, actions: [result.human] };
+      case "drift": return { _tag: "Drift" as const, conflicts: [result.drift] };
+      case "failed": return { _tag: "Failed" as const, reason: result.reason, occupiedTarget: result.occupiedTarget };
+    }
+  });
+
+export const actionProgressOutcome = (run: RunId, progress: ActionProgress): SynchronizationOutcome => {
+  switch (progress._tag) {
+    case "Running": return { outcome: "Converged", run, verified: [...progress.verified].sort() };
+    case "Human": return { outcome: "HumanActionRequired", run, actions: progress.actions };
+    case "Drift": return { outcome: "FollowerDrift", run, conflicts: progress.conflicts };
+    case "Failed": return { outcome: "Failed", run, reason: progress.reason, occupiedTarget: progress.occupiedTarget };
+  }
+};
 
 export const driftResult = (
   input: SynchronizationRunInput,
@@ -510,7 +555,7 @@ export const driftResult = (
 ): ActionResult => {
   const detail = state.action.detail;
   if (detail.kind !== "drift-conflict") {
-    return { kind: "failed", reason: "invalid drift action" };
+    return { kind: "failed", reason: "invalid drift action", rollbackState: { _tag: "NotRequired" } };
   }
   const previous = input.appliedResources?.find((record) =>
     record.resource === state.action.resource
@@ -542,7 +587,7 @@ const agentActionResult = (
   Effect.gen(function*() {
     const detail = state.action.detail;
     if (detail.kind !== "agent-task") {
-      return { kind: "failed", reason: "invalid agent action" } satisfies ActionResult;
+      return { kind: "failed", reason: "invalid agent action", rollbackState: { _tag: "NotRequired" } } satisfies ActionResult;
     }
     const task = input.plan.agentTasks.find((candidate) =>
       candidate.id === detail.taskId
@@ -558,7 +603,7 @@ const agentActionResult = (
       yield* journal(
         input.id,
         state.action.id,
-        "skipped",
+        "blocked",
         undefined,
         undefined,
         attempt,
@@ -593,7 +638,7 @@ const agentActionResult = (
       yield* journal(
         input.id,
         state.action.id,
-        "skipped",
+        "blocked",
         undefined,
         undefined,
         attempt,
@@ -622,6 +667,7 @@ const agentActionResult = (
       );
       return {
         kind: "failed",
+        rollbackState: { _tag: "NotRequired" },
         reason: `verification failed for agent task ${state.action.resource}${
           verification.reason === undefined ? "" : `: ${verification.reason}`
         }`,
@@ -644,7 +690,7 @@ const agentActionResult = (
       journal(
         input.id,
         state.action.id,
-        "failed",
+        "interrupted",
         { status: "not-run", method: "interrupted" },
         undefined,
         attempt,
@@ -689,7 +735,7 @@ export const executeSynchronizationAction = (
   Effect.gen(function*() {
     const detail = state.action.detail;
     if (detail.kind === "human-action") {
-      yield* journal(input.id, state.action.id, "skipped", undefined, undefined, attempt);
+      yield* journal(input.id, state.action.id, "blocked", undefined, undefined, attempt);
       return {
         kind: "human",
         human: {
@@ -704,7 +750,7 @@ export const executeSynchronizationAction = (
     }
     if (detail.kind === "drift-conflict") {
       const result = driftResult(input, state);
-      if (result.drift !== undefined) {
+      if (result.kind === "drift") {
         const repository = yield* StateRepository;
         yield* repository.recordDrift({
           run: input.id,
@@ -712,7 +758,7 @@ export const executeSynchronizationAction = (
           recordedAt: yield* now(),
         });
       }
-      yield* journal(input.id, state.action.id, "skipped", undefined, undefined, attempt);
+      yield* journal(input.id, state.action.id, "blocked", undefined, undefined, attempt);
       return result;
     }
 
@@ -783,6 +829,7 @@ export const executeSynchronizationAction = (
         );
         return {
           kind: "failed",
+          rollbackState: { _tag: "Restored" },
           reason: `verification failed for resource ${state.action.resource}${
             verification.reason === undefined ? "" : `: ${verification.reason}`
           }`,
@@ -817,7 +864,7 @@ export const executeSynchronizationAction = (
           Effect.andThen(journal(
             input.id,
             state.action.id,
-            "failed",
+            "interrupted",
             { status: "not-run", method: "interrupted" },
             prepared?.rollbackReference,
             attempt,
@@ -838,12 +885,13 @@ export const executeSynchronizationAction = (
         return rollbackPrepared(prepared).pipe(
           Effect.match({
             onSuccess: (): ActionResult => ({
+              rollbackState: { _tag: "Restored" },
               kind: "failed", reason: actionFailureReason(state, error, input.knownSecrets ?? []),
               occupiedTarget,
             }),
             onFailure: (rollbackError): ActionResult => ({
               kind: "failed", reason: `${actionFailureReason(state, error, input.knownSecrets ?? [])}; rollback failed: ${redact(rollbackError, input.knownSecrets ?? [])}${prepared?.rollbackReference === undefined ? "" : `; rollback snapshot retained at ${prepared.rollbackReference}`}`,
-              rollbackFailed: true, rollbackReference: prepared?.rollbackReference,
+              rollbackState: { _tag: "Blocked", phase: "physical", reference: prepared?.rollbackReference }, rollbackReference: prepared?.rollbackReference,
               occupiedTarget,
             }),
           }),
@@ -864,20 +912,12 @@ export const executeSynchronizationAction = (
     Effect.catch((error) =>
       Effect.succeed({
         kind: "failed",
+        rollbackState: { _tag: "NotRequired" },
         reason: redact(error, input.knownSecrets ?? []),
       } satisfies ActionResult)
     ),
   );
 
-const completeSkipped = (
-  input: SynchronizationRunInput,
-  states: ReadonlyArray<ActionState>,
-): Effect.Effect<void, never, StateRepository> =>
-  Effect.forEach(
-    states,
-    (state) => journal(input.id, state.action.id, "skipped").pipe(Effect.ignore),
-    { discard: true },
-  );
 
 /**
  * Disk requirement of one run, checked before its run record exists. Each
@@ -1114,8 +1154,6 @@ export const executeSynchronizationPlan = (
     const completedActions: Array<ActionId> = [];
     const verified = new Set<ResourceId>();
     const applied: Array<AppliedResourceRecord> = [];
-    const human: Array<HumanAction> = [];
-    const drift: Array<DriftConflict> = [];
     const removedResources = new Set<ResourceId>();
     const failedRollbacks: Array<ActionId> = [];
     const completedRollbacks: Array<{
@@ -1126,12 +1164,13 @@ export const executeSynchronizationPlan = (
     }> = [];
     let failedReason: string | undefined;
     let occupiedTarget: string | undefined;
+    let progress: ActionProgress = { _tag: "Running", verified };
 
     const runActions = Effect.gen(function*() {
       for (let index = 0; index < states.length; index += 1) {
         const state = states[index]!;
         const result = yield* executeSynchronizationAction(input, state);
-        if (result.rollbackFailed) failedRollbacks.push(state.action.id);
+        if (result.kind === "failed" && result.rollbackState._tag === "Blocked") failedRollbacks.push(state.action.id);
         completedActions.push(state.action.id);
         if (result.kind === "verified" && result.rollback !== undefined) {
           completedRollbacks.push({
@@ -1141,17 +1180,12 @@ export const executeSynchronizationPlan = (
             reference: result.rollbackReference,
           });
         }
-        if (result.resource !== undefined) verified.add(result.resource);
-        if (
-          result.resource !== undefined
-          && input.revision.removedResources?.includes(result.resource) === true
-        ) {
-          removedResources.add(result.resource);
+        if (result.kind === "verified" && result.resource !== undefined && input.revision.removedResources?.includes(result.resource) === true) removedResources.add(result.resource);
+        progress = yield* reduceActionResult(progress, result);
+        if (result.kind === "failed") {
+          failedReason = result.reason;
+          occupiedTarget = result.occupiedTarget;
         }
-        if (result.human !== undefined) human.push(result.human);
-        if (result.drift !== undefined) drift.push(result.drift);
-        if (result.reason !== undefined) failedReason = result.reason;
-        if (result.occupiedTarget !== undefined) occupiedTarget = result.occupiedTarget;
         if (result.kind !== "verified") {
           if (result.kind === "failed") {
             for (const completed of completedRollbacks.reverse()) {
@@ -1160,33 +1194,17 @@ export const executeSynchronizationPlan = (
                 : input.appliedResources?.find((record) =>
                   record.resource === completed.resource
                 );
-              yield* completed.rollback.pipe(
-                Effect.tapError(() => Effect.sync(() => {
-                  failedRollbacks.push(completed.action);
-                })),
-                Effect.andThen(journal(
-                  input.id,
-                  completed.action,
-                  "failed",
-                  { status: "not-run", method: "run-rolled-back" },
-                  completed.reference,
-                  1,
-                  previousApplied,
-                  completed.resource !== undefined && previousApplied === undefined
-                    ? completed.resource
-                    : undefined,
-                )),
-                Effect.catch((error) => {
-                  failedReason = `${failedReason ?? "synchronization failed"}; rollback failed for ${completed.action}: ${redact(
-                    error instanceof Error ? error : new Error(String(error)),
-                    input.knownSecrets ?? [],
-                  )}`;
-                  return Effect.void;
-                }),
-              );
+              const rollback = yield* restoreAction(completed.rollback, journal(
+                input.id, completed.action, "rolled-back",
+                { status: "not-run", method: "run-rolled-back" }, completed.reference, 1, previousApplied,
+                completed.resource !== undefined && previousApplied === undefined ? completed.resource : undefined,
+              ));
+              if (rollback._tag === "Blocked") {
+                failedRollbacks.push(completed.action);
+                failedReason = `${failedReason ?? "synchronization failed"}; ${rollback.phase} rollback failed for ${completed.action}: ${redact(new Error(rollback.reason), input.knownSecrets ?? [])}`;
+              }
             }
           }
-          yield* completeSkipped(input, states.slice(index + 1));
           break;
         }
       }
@@ -1213,53 +1231,14 @@ export const executeSynchronizationPlan = (
 
     const outcome: SynchronizationOutcome = failedReason !== undefined
       ? { outcome: "Failed", run: input.id, reason: failedReason, occupiedTarget }
-      : drift.length > 0
-      ? { outcome: "FollowerDrift", run: input.id, conflicts: drift }
-      : human.length > 0
-      ? { outcome: "HumanActionRequired", run: input.id, actions: human }
-      : {
-        outcome: "Converged",
-        run: input.id,
-        verified: [...verified].sort(),
-      };
+      : actionProgressOutcome(input.id, progress);
 
     if (outcome.outcome === "Converged") {
       const appliedAt = yield* now();
-      const desiredByResource = new Map(input.revision.desired.map((entry) => [
-        entry.resource,
-        entry.desired,
-      ]));
-      const resourceById = new Map(input.revision.resources.map((resource) => [
-        resource.id,
-        resource,
-      ]));
-      for (const resource of outcome.verified) {
-        if (removedResources.has(resource)) continue;
-        const desired = desiredByResource.get(resource);
-        const owned = desired?.kind === "config" ? configOwnership(desired, input.artifacts) : undefined;
-        const digest = desired === undefined ? undefined : owned?.digest ?? desiredResourceDigest(desired);
-        if (digest !== undefined) {
-          const ownedFiles = desired === undefined ? undefined : ownedFilesFor(desired);
-          applied.push({
-            resource,
-            revision: input.revision.id,
-            digest,
-            appliedAt,
-            kind: resourceById.get(resource)?.kind,
-            policy: resourceById.get(resource)?.policy,
-            target: resourceById.get(resource)?.target,
-            executable: desired?.kind === "file" ? desired.executable : undefined,
-            mode: desired?.kind === "file"
-                || desired?.kind === "directory"
-                || desired?.kind === "skill"
-              ? desired.mode
-              : undefined,
-            symlinkTo: desired?.kind === "file" ? desired.symlinkTo : undefined,
-            ownedFiles,
-            ownedKeys: owned?.ownedKeys,
-            configFormat: desired?.kind === "config" ? desired.format : undefined,
-          });
-        }
+      for (const state of states) {
+        if (!verified.has(state.action.resource) || removedResources.has(state.action.resource)) continue;
+        const record = appliedResourceFor(input, state, appliedAt);
+        if (record !== undefined) applied.push(record);
       }
     }
     return {

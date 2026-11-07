@@ -651,7 +651,11 @@ export const planBuilt = (input: PlanBuiltInput) =>
       .filter((id) => parseSurfaceResourceId(id) !== undefined);
     for (const record of input.retired) {
       const state = removedResourceState(record);
-      if (state === undefined) continue;
+      if (state === undefined) {
+        // Qualified tools release provenance without uninstalling software.
+        removedResources.push(record.resource);
+        continue;
+      }
       const prerequisites = input.retiredDependsOn?.(record) ?? [];
       const retiresRuntime = record.resource.startsWith("runtime:");
       const resource = {
@@ -747,6 +751,13 @@ export const buildProjection = (
   held: ReadonlyArray<TargetId> = [],
 ) =>
   Effect.gen(function*() {
+    const pendingTakeover = takeovers.find((takeover) => takeover._tag !== "Owned");
+    if (pendingTakeover !== undefined) {
+      return yield* new ProjectionHumanActionError({
+        harness: pendingTakeover.harness,
+        message: `${pendingTakeover.harness} surface ${pendingTakeover.surface} has ${pendingTakeover._tag.toLowerCase()} takeover state from run ${pendingTakeover.run}; run 'canonfig recover' before syncing, or explicitly abandon that run after reviewing its recovery evidence`,
+      });
+    }
     const model = { ...loaded.model, harnesses: loaded.model.harnesses.filter((harness) => !held.includes(harness)) };
     const projected = yield* projectSurfaces({ ...loaded, model }, context, takeovers);
     const owned = new Set(takeovers.map((takeover) => `${takeover.harness}\0${takeover.surface}`));
@@ -801,7 +812,8 @@ export const buildProjection = (
       let releases: ReadonlyArray<string> = [];
       if (entry.surface.kind === "config" && entry.surface.settings !== undefined && entry.content.kind === "config") {
         const keys = entry.content.keys;
-        const ownedKeys = applied.get(id)?.ownedKeys ?? [];
+        const previous = applied.get(id);
+        const ownedKeys = previous?.ownership === "ConfigKeys" ? previous.ownedKeys : [];
         const covered = yield* claimed(entry.harness, [...keys.map((key) => key.path), ...ownedKeys]);
         releases = ownedKeys.filter((key) => covered.has(key));
         entry = { ...entry, content: { ...entry.content, keys: keys.filter((key) => !covered.has(key.path)) } };
@@ -835,7 +847,9 @@ export const buildProjection = (
       } else if (entry.surface.kind === "config") {
         // Protect previously applied keys even when this revision drops all of
         // them: removing a locally edited key must still report drift.
-        const anyOwned = (applied.get(id)?.ownedKeys?.length ?? 0) > 0 || takeoverUnits(entry).length > pending.length;
+        const previous = applied.get(id);
+        const anyOwned = (previous?.ownership === "ConfigKeys" && previous.ownedKeys.length > 0)
+          || takeoverUnits(entry).length > pending.length;
         built.push(configResource(
           id,
           entry.surface.target,
@@ -856,10 +870,10 @@ export const buildProjection = (
       const harness = TARGET_IDS.find((candidate) => candidate === parsed?.harness);
       if (
         harness === undefined || builtIds.has(record.resource) || isHeldSurface(record)
-        || record.kind !== "config" || record.target === undefined || record.configFormat === undefined
+        || record.ownership !== "ConfigKeys"
         || parsed?.surface !== settingsSurfaceOf(adapterFor(harness).layout(context, loaded.model))?.id
       ) continue;
-      const covered = yield* claimed(harness, record.ownedKeys ?? []);
+      const covered = yield* claimed(harness, record.ownedKeys);
       if (covered.size === 0) continue;
       built.push(configResource(record.resource, record.target, "replace-if-unmodified", record.configFormat, [], [...covered]));
     }
@@ -991,7 +1005,9 @@ export const planRestore = (
         problems.push(`${target}: Canonfig has no applied state for it (it was never applied completely, or was already restored)`);
         continue;
       }
-      const released = entries.filter((entry) => entry.kind === "config" && !applied.ownedKeys?.includes(entry.key));
+      const released = entries.filter((entry) =>
+        entry.kind === "config" && (applied.ownership !== "ConfigKeys" || !applied.ownedKeys.includes(entry.key))
+      );
       if (released.length > 0) {
         problems.push(`${target}: snapshot contains config keys Canonfig no longer owns (already restored or released)`);
         continue;
@@ -1003,7 +1019,9 @@ export const planRestore = (
       }
       // An append-local surface is compared on Canonfig's part only: the
       // machine's own text or entries beside it are never drift.
-      const resource = { ...state.resource, policy: applied.policy === "append-local" ? "append-local" as const : "replace-if-unmodified" as const };
+      const shared = applied.ownership === "SourceSection"
+        || applied.ownership === "DirectoryEntries" && applied.policy === "append-local";
+      const resource = { ...state.resource, policy: shared ? "append-local" as const : "replace-if-unmodified" as const };
       const verification = removedResourceVerification(applied, state.desired);
       const observed = yield* observeFollowerResource({ resource }, state.desired, verification, applied);
       const drafts = planResource({ resource, desired: state.desired, observed, applied, platform });
@@ -1037,7 +1055,11 @@ export const planRestore = (
           const value = snapshot.keys.get(entry.harness)?.get(entry.target)?.get(entry.key);
           return value === undefined ? [] : [{ path: entry.key, value }];
         });
-        const kept = (applied.ownedKeys ?? []).filter((key) => !captured.has(key));
+        // The preflight above requires ConfigKeys ownership for every captured key.
+        if (applied.ownership !== "ConfigKeys") {
+          return yield* new ProjectionHumanActionError({ message: `${first.target}: its applied state does not own config keys` });
+        }
+        const kept = applied.ownedKeys.filter((key) => !captured.has(key));
         if (kept.length === 0) {
           built.push(configResource(id, first.target, "merge", first.format, keys));
           restored.push(id);
@@ -1063,7 +1085,8 @@ export const planRestore = (
       // Canonfig's (first adoption kept everything that was there), so giving
       // it back means removing only Canonfig's part, not writing the snapshot
       // over the machine's later edits.
-      if (!isFolder(first) && applied.policy === "append-local") {
+      if (!isFolder(first) && (applied.ownership === "SourceSection"
+        || applied.ownership === "DirectoryEntries" && applied.policy === "append-local")) {
         retired.push(applied);
         continue;
       }

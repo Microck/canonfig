@@ -788,7 +788,7 @@ const surfaceFiles = (record: AppliedResourceRecord, target: MachinePath, home: 
     if (record.policy === "append-local") return leftOut("is shared with this machine's own content (append-local), which an export does not hold");
     switch (record.kind) {
       case "file": {
-        if (record.symlinkTo !== undefined) return leftOut("is a link Canonfig applied, which an export does not hold");
+        if (record.ownership === "Symlink") return leftOut("is a link Canonfig applied, which an export does not hold");
         if (kind !== "regular") return unexpected("regular file");
         const content = yield* read(target);
         if (content === undefined || sha256BytesHex(content) !== record.digest) return leftOut(changedSinceApply);

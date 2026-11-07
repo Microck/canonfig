@@ -34,10 +34,127 @@ import {
   type InstallerRecipeProvenance as InstallerRecipeProvenanceType,
 } from "./mcp-qualification.ts";
 import { PublishedResourceSchema, VerificationInputSchema } from "./profile.ts";
+import type { DesiredResource } from "../synchronization/synchronization.types.ts";
 /**
  * Synchronization domain types: plans, actions, outcomes, drift, agent tasks,
  * and human action records.
  */
+
+const noTextTransitionEvidence = {
+  retainedDigest: Schema.optionalKey(Schema.Never),
+  previousDigest: Schema.optionalKey(Schema.Never),
+  previousSourceDigest: Schema.optionalKey(Schema.Never),
+  sourceDigest: Schema.optionalKey(Schema.Never),
+};
+
+/** Persisted text-write intent, independent of optional evidence fields. */
+export const TextWriteTransition = Schema.Union([
+  Schema.Struct({ ...noTextTransitionEvidence, kind: Schema.Literal("whole-file") }),
+  Schema.Struct({ ...noTextTransitionEvidence, kind: Schema.Literal("create-section") }),
+  Schema.Struct({ ...noTextTransitionEvidence, kind: Schema.Literal("adopt-local"), retainedDigest: ContentDigest }),
+  Schema.Struct({ ...noTextTransitionEvidence, kind: Schema.Literal("convert-whole"), previousDigest: ContentDigest }),
+  Schema.Struct({ ...noTextTransitionEvidence, kind: Schema.Literal("update-section"), previousSourceDigest: ContentDigest }),
+  Schema.Struct({ ...noTextTransitionEvidence, kind: Schema.Literal("adopt-section"), sourceDigest: ContentDigest }),
+  Schema.Struct({ ...noTextTransitionEvidence, kind: Schema.Literal("leave-section"), previousSourceDigest: ContentDigest }),
+]);
+export type TextWriteTransition = typeof TextWriteTransition.Type;
+
+export const ObservedTextComposition = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("unmanaged"), sourceDigest: Schema.optionalKey(Schema.Never), hasLocal: Schema.optionalKey(Schema.Never) }),
+  Schema.Struct({ kind: Schema.Literal("managed"), sourceDigest: ContentDigest, hasLocal: Schema.Boolean }),
+]);
+export type ObservedTextComposition = typeof ObservedTextComposition.Type;
+
+export type TextOwnership =
+  | { readonly kind: "absent" }
+  | { readonly kind: "unmanaged"; readonly digest: string }
+  | { readonly kind: "owned-whole"; readonly digest: string; readonly appliedDigest: string }
+  | { readonly kind: "owned-section"; readonly sourceDigest: string; readonly hasLocal: boolean; readonly appliedDigest: string }
+  | { readonly kind: "orphan-section"; readonly sourceDigest: string; readonly hasLocal: boolean }
+  | { readonly kind: "invalid" };
+
+/** Markers prove composition, not ownership; only an applied record proves ownership. */
+export const classifyTextOwnership = (
+  observed: ObservedResourceState,
+  applied: AppliedResourceRecord | undefined,
+): TextOwnership => {
+  if (observed.state === "absent") return { kind: "absent" };
+  if (observed.state !== "present" || observed.objectKind !== "regular") return { kind: "invalid" };
+  const composition = observed.textComposition;
+  if (composition === undefined) return { kind: "invalid" };
+  if (applied?.ownership === "WholeFile") return { kind: "owned-whole", digest: observed.digest, appliedDigest: applied.digest };
+  if (composition.kind === "managed") {
+    if (applied === undefined) return { ...composition, kind: "orphan-section" };
+    return applied.ownership === "SourceSection"
+      ? { ...composition, kind: "owned-section", appliedDigest: applied.digest }
+      : { kind: "invalid" };
+  }
+  if (applied === undefined) return { kind: "unmanaged", digest: observed.digest };
+  return { kind: "invalid" };
+};
+
+export class InvalidTextTransitionError extends TaggedError<InvalidTextTransitionError>()(
+  "InvalidTextTransitionError",
+  { message: Schema.String },
+) {}
+
+/** Select the intent once; planners still apply the existing permission/drift rule. */
+export const planTextWriteTransition = (
+  ownership: TextOwnership,
+  destination: "shared" | "whole",
+): TextWriteTransition => {
+  if (destination === "whole") {
+    if (ownership.kind === "owned-section") return {
+      kind: "leave-section", previousSourceDigest: ContentDigest.make(ownership.sourceDigest),
+    };
+    if (ownership.kind === "absent") return { kind: "whole-file" };
+  } else {
+    switch (ownership.kind) {
+      case "absent": return { kind: "create-section" };
+      case "unmanaged": return { kind: "adopt-local", retainedDigest: ContentDigest.make(ownership.digest) };
+      case "owned-whole": return { kind: "convert-whole", previousDigest: ContentDigest.make(ownership.appliedDigest) };
+      case "owned-section": return { kind: "update-section", previousSourceDigest: ContentDigest.make(ownership.sourceDigest) };
+      case "orphan-section": return { kind: "adopt-section", sourceDigest: ContentDigest.make(ownership.sourceDigest) };
+      case "invalid": break;
+    }
+  }
+  throw new InvalidTextTransitionError({ message: `Cannot transition ${ownership.kind} text to ${destination} ownership` });
+};
+
+/** One owner for execution and review preconditions, including post-write replay. */
+export const checkTextWriteTransition = (
+  transition: TextWriteTransition,
+  current: { readonly kind: "absent" } | { readonly kind: "unmanaged"; readonly digest: string }
+    | { readonly kind: "managed"; readonly digest: string; readonly sourceDigest: string; readonly hasLocal: boolean },
+  desiredDigest: string,
+): void => {
+  let valid: boolean;
+  switch (transition.kind) {
+    case "whole-file": valid = true; break;
+    case "create-section": valid = current.kind === "absent"; break;
+    case "adopt-local":
+      valid = current.kind === "unmanaged" && current.digest === transition.retainedDigest;
+      break;
+    case "convert-whole":
+      valid = current.kind !== "absent" && current.digest === transition.previousDigest;
+      break;
+    case "update-section":
+      valid = current.kind === "managed"
+        && (current.sourceDigest === transition.previousSourceDigest || current.sourceDigest === desiredDigest);
+      break;
+    case "adopt-section":
+      valid = current.kind === "managed" && current.sourceDigest === transition.sourceDigest
+        && current.sourceDigest === desiredDigest;
+      break;
+    case "leave-section":
+      valid = current.kind === "managed" && !current.hasLocal
+        && current.sourceDigest === transition.previousSourceDigest;
+      break;
+  }
+  if (!valid) throw new InvalidTextTransitionError({
+    message: `Illegal ${transition.kind} text transition from ${current.kind}; replan and review synchronization`,
+  });
+};
 
 /** One planned action in a Synchronization Plan. */
 export interface PlannedAction {
@@ -71,18 +188,9 @@ export type ActionDetail =
     /** Normalized regular-file executable intent; absent for non-file writes. */
     readonly executable?: boolean | undefined;
     readonly mode?: number | undefined;
-    /** Source baseline retained by a persisted append-local action. */
-    readonly previousSourceDigest?: string | undefined;
-    /**
-     * First-adoption ambiguity report. Present when an append-local target is
-     * adopted with pre-existing content that differs from the Source payload:
-     * the existing bytes are preserved as follower-local text because the
-     * planner cannot distinguish an old shared rule from a deliberate local
-     * addition, so the operator is told explicitly.
-     */
+    readonly textTransition: TextWriteTransition;
+    /** First adoption preserves unmanaged bytes and offers a private review. */
     readonly adoptionNotice?: string | undefined;
-    /** Exact unmanaged bytes retained locally; no text enters the public plan. */
-    readonly retainedLocalDigest?: string | undefined;
     /**
      * Publish without replacing: fail when a file appeared at `target` after
      * planning instead of overwriting it. Set only by `canonfig import`.
@@ -237,10 +345,8 @@ export type ObservedResourceState =
   | {
     readonly state: "present";
     readonly digest: string;
-    /** Digest of the marked Source payload, independent of local additions. */
-    readonly managedSourceDigest?: string | undefined;
-    /** With `managedSourceDigest`: whether text follows the closing marker. */
-    readonly managedLocalText?: boolean | undefined;
+    /** Parsed composition evidence is paired, never inferred from missing flags. */
+    readonly textComposition?: ObservedTextComposition | undefined;
     readonly executable: boolean;
     readonly mode?: number | undefined;
     /**
@@ -270,30 +376,16 @@ export type ObservedResourceState =
   }
   | { readonly state: "unverifiable"; readonly reason: string };
 
-/** Applied Resource Record: what Canonfig last wrote for one resource. */
-export interface AppliedResourceRecord {
-  readonly resource: ResourceId;
-  readonly revision: string;
+/** Applied Resource Records have exactly one ownership interpretation. */
+export type AppliedResourceRecord = Schema.Schema.Type<typeof AppliedResourceRecordSchema>;
+
+export interface AppliedDirectoryEntry {
+  readonly path: string;
   readonly digest: string;
-  readonly appliedAt: string;
-  readonly kind?: "file" | "directory" | "config" | "skill" | "tool" | "credential" | undefined;
-  readonly policy?: "replace" | "mirror-owned" | "merge" | "replace-if-unmodified" | "append-local" | "ensure" | "require-local" | undefined;
-  readonly target?: string | undefined;
-  readonly executable?: boolean | undefined;
-  readonly mode?: number | undefined;
+  readonly executable: boolean;
+  readonly mode: number;
+  readonly objectKind: "regular" | "directory" | "symlink";
   readonly symlinkTo?: string | undefined;
-  readonly ownedFiles?: ReadonlyArray<{
-    readonly path: string;
-    readonly digest: string;
-    readonly executable?: boolean | undefined;
-    readonly mode?: number | undefined;
-    readonly objectKind?: "regular" | "directory" | "symlink" | undefined;
-    readonly symlinkTo?: string | undefined;
-  }> | undefined;
-  readonly ownedKeys?: ReadonlyArray<string> | undefined;
-  readonly configFormat?: "toml" | "json" | "yaml" | undefined;
-  /** Exact qualified recipe retained so a PATH discovery cannot impersonate it. */
-  readonly installerRecipe?: InstallerRecipeProvenanceType | undefined;
 }
 
 export const PlannedActionKindSchema = Schema.Literals([
@@ -355,9 +447,10 @@ export const ActionDetailSchema = Schema.Union([
     digest: ContentDigest,
     executable: Schema.optional(Schema.Boolean),
     mode: Schema.optional(Schema.Int),
-    previousSourceDigest: Schema.optional(ContentDigest),
+    textTransition: TextWriteTransition,
+    previousSourceDigest: Schema.optionalKey(Schema.Never),
+    retainedLocalDigest: Schema.optionalKey(Schema.Never),
     adoptionNotice: Schema.optional(Schema.NonEmptyString),
-    retainedLocalDigest: Schema.optional(ContentDigest),
     noReplace: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
@@ -510,8 +603,9 @@ export const ObservedResourceStateSchema = Schema.Union([
   Schema.Struct({
     state: Schema.Literal("present"),
     digest: ContentDigest,
-    managedSourceDigest: Schema.optional(ContentDigest),
-    managedLocalText: Schema.optional(Schema.Boolean),
+    textComposition: Schema.optional(ObservedTextComposition),
+    managedSourceDigest: Schema.optionalKey(Schema.Never),
+    managedLocalText: Schema.optionalKey(Schema.Never),
     executable: Schema.Boolean,
     mode: Schema.optional(Schema.Int),
     objectKind: Schema.optional(ObservedObjectKind),
@@ -544,44 +638,139 @@ export const ObservedResourceStateSchema = Schema.Union([
   }),
 ]);
 
-export const AppliedResourceRecordSchema = Schema.Struct({
+const appliedResourceFields = {
   resource: ResourceIdSchema,
   revision: ProfileRevisionId,
   digest: ContentDigest,
   appliedAt: Timestamp,
-  kind: Schema.optional(Schema.Literals([
-    "file",
-    "directory",
-    "config",
-    "skill",
-    "tool",
-    "credential",
-  ])),
-  policy: Schema.optional(Schema.Literals([
-    "replace",
-    "mirror-owned",
-    "merge",
-    "replace-if-unmodified",
-    "append-local",
-    "ensure",
-    "require-local",
-  ])),
-  target: Schema.optional(Schema.NonEmptyString),
-  executable: Schema.optional(Schema.Boolean),
-  mode: Schema.optional(Schema.Int),
-  symlinkTo: Schema.optional(Schema.NonEmptyString),
-  ownedFiles: Schema.optional(Schema.Array(Schema.Struct({
-    path: Schema.NonEmptyString,
-    digest: ContentDigest,
-    executable: Schema.optional(Schema.Boolean),
-    mode: Schema.optional(Schema.Int),
-    objectKind: Schema.optional(Schema.Literals(["regular", "directory", "symlink"])),
-    symlinkTo: Schema.optional(Schema.NonEmptyString),
-  }))),
-  ownedKeys: Schema.optional(Schema.Array(Schema.NonEmptyString)),
-  configFormat: Schema.optional(Schema.Literals(["toml", "json", "yaml"])),
-  installerRecipe: Schema.optional(InstallerRecipeProvenance),
-});
+  target: Schema.NonEmptyString,
+};
+
+const appliedFileFields = {
+  ...appliedResourceFields,
+  kind: Schema.Literal("file"),
+  executable: Schema.Boolean,
+  mode: Schema.Int,
+};
+
+const wholeFilePolicies = Schema.Literals(["replace", "replace-if-unmodified"]);
+
+export const AppliedResourceRecordSchema = Schema.Union([
+  Schema.Struct({
+    ...appliedFileFields,
+    ownership: Schema.Literal("WholeFile"),
+    policy: wholeFilePolicies,
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
+  Schema.Struct({
+    ...appliedResourceFields,
+    ownership: Schema.Literal("Symlink"),
+    kind: Schema.Literal("file"),
+    policy: wholeFilePolicies,
+    symlinkTo: Schema.NonEmptyString,
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
+  Schema.Struct({
+    ...appliedFileFields,
+    ownership: Schema.Literal("SourceSection"),
+    policy: Schema.Literal("append-local"),
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
+  Schema.Struct({
+    ...appliedResourceFields,
+    ownership: Schema.Literal("DirectoryEntries"),
+    kind: Schema.Literals(["directory", "skill"]),
+    policy: Schema.Literals(["replace", "replace-if-unmodified", "mirror-owned", "append-local"]),
+    mode: Schema.Int,
+    ownedFiles: Schema.Array(Schema.Struct({
+      path: Schema.NonEmptyString,
+      digest: ContentDigest,
+      executable: Schema.Boolean,
+      mode: Schema.Int,
+      objectKind: Schema.Literals(["regular", "directory", "symlink"]),
+      symlinkTo: Schema.optional(Schema.NonEmptyString),
+    }).check(Schema.makeFilter((entry) =>
+      (entry.objectKind === "symlink") !== (entry.symlinkTo !== undefined)
+        ? { path: ["symlinkTo"], issue: "only a symlink entry must name its target" }
+        : undefined
+    ))),
+  }).check(Schema.makeFilter((record) =>
+    record.kind === "skill" && record.policy !== "replace" && record.policy !== "replace-if-unmodified"
+      ? { path: ["policy"], issue: "skill ownership requires replace or replace-if-unmodified" }
+      : undefined
+  )).annotate({ parseOptions: { onExcessProperty: "error" } }),
+  Schema.Struct({
+    ...appliedResourceFields,
+    ownership: Schema.Literal("ConfigKeys"),
+    kind: Schema.Literal("config"),
+    policy: Schema.Literals(["merge", "replace", "replace-if-unmodified"]),
+    ownedKeys: Schema.Array(Schema.NonEmptyString),
+    configFormat: Schema.Literals(["toml", "json", "yaml"]),
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
+  Schema.Struct({
+    ...appliedResourceFields,
+    ownership: Schema.Literal("QualifiedTool"),
+    kind: Schema.Literal("tool"),
+    policy: Schema.Literal("ensure"),
+    /** Exact qualified recipe prevents PATH discovery from impersonating it. */
+    installerRecipe: InstallerRecipeProvenance,
+  }).annotate({ parseOptions: { onExcessProperty: "error" } }),
+]);
+
+const decodeAppliedResourceRecord = Schema.decodeUnknownSync(AppliedResourceRecordSchema);
+
+/**
+ * Build ownership only after verification. Execution and recovery supply the
+ * same post-write config keys/digest, including write-and-release handovers.
+ * Tool discovery and credential checks do not establish removable ownership.
+ */
+export const createAppliedResourceRecord = (input: {
+  readonly resource: Pick<Schema.Schema.Type<typeof PublishedResourceSchema>, "id" | "kind" | "policy" | "target">;
+  readonly revision: string;
+  readonly digest: string;
+  readonly appliedAt: string;
+  readonly desired: DesiredResource;
+  readonly ownedFiles?: ReadonlyArray<AppliedDirectoryEntry> | undefined;
+  readonly ownedKeys?: ReadonlyArray<string> | undefined;
+  readonly installerRecipe?: InstallerRecipeProvenanceType | undefined;
+}): AppliedResourceRecord | undefined => {
+  const { desired, resource } = input;
+  if (desired.kind !== resource.kind) {
+    throw new Error(`Cannot record ownership for ${resource.id}: verified ${desired.kind} differs from ${resource.kind}`);
+  }
+  const common = {
+    resource: resource.id,
+    revision: input.revision,
+    digest: input.digest,
+    appliedAt: input.appliedAt,
+    target: resource.target,
+    kind: resource.kind,
+    policy: resource.policy,
+  };
+  // Decode once at the construction boundary, not again in ownership readers.
+  switch (desired.kind) {
+    case "file":
+      return decodeAppliedResourceRecord(desired.symlinkTo !== undefined
+        ? { ...common, ownership: "Symlink", symlinkTo: desired.symlinkTo }
+        : {
+          ...common,
+          ownership: resource.policy === "append-local" ? "SourceSection" : "WholeFile",
+          executable: desired.executable,
+          mode: desired.mode,
+        });
+    case "directory":
+    case "skill":
+      return decodeAppliedResourceRecord({ ...common, ownership: "DirectoryEntries", mode: desired.mode, ownedFiles: input.ownedFiles });
+    case "config":
+      return decodeAppliedResourceRecord({ ...common, ownership: "ConfigKeys", ownedKeys: input.ownedKeys, configFormat: desired.format });
+    case "tool":
+      return input.installerRecipe === undefined ? undefined : decodeAppliedResourceRecord({
+        ...common,
+        ownership: "QualifiedTool",
+        digest: input.installerRecipe.fingerprint,
+        installerRecipe: input.installerRecipe,
+      });
+    case "credential":
+      return undefined;
+  }
+};
 
 /** Runtime schema aliases share names with their corresponding domain types. */
 export const PlannedActionKind = PlannedActionKindSchema;

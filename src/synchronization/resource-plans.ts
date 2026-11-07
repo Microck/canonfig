@@ -6,7 +6,7 @@ import {
   ContentDigest as ContentDigestSchema,
   type ContentDigest,
 } from "../domain/brand.ts";
-import type { ActionDetail, PlannedActionKind } from "../domain/synchronization.ts";
+import { classifyTextOwnership, planTextWriteTransition, type ActionDetail, type PlannedActionKind, type TextWriteTransition } from "../domain/synchronization.ts";
 import type { AutomaticRecipeMethod, BuildPolicy } from "../domain/resource.ts";
 import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
 import {
@@ -57,9 +57,8 @@ interface WriteFileActionDetail {
   readonly digest: ContentDigest;
   executable?: boolean;
   mode?: number;
-  previousSourceDigest?: string;
+  textTransition: TextWriteTransition;
   adoptionNotice?: string;
-  retainedLocalDigest?: string;
   noReplace?: boolean;
 }
 
@@ -288,12 +287,12 @@ const observedMatchesApplied = (
   if (
     (context.resource.kind === "directory" || context.resource.kind === "skill")
     && context.observed.state === "directory"
-    && applied.ownedFiles !== undefined
+    && applied.ownership === "DirectoryEntries"
   ) {
     const ownedByPath = new Map(
       applied.ownedFiles.map((file) => [file.path, fileSignature(file)] as const),
     );
-    return (applied.mode === undefined || context.observed.mode === applied.mode)
+    return context.observed.mode === applied.mode
       && context.observed.files.every((file) =>
         "state" in file
           || ownedByPath.get(file.path) === undefined
@@ -302,31 +301,16 @@ const observedMatchesApplied = (
   }
   const currentDigest = observedDigest(context);
   if (currentDigest !== applied.digest) return false;
-  if (
-    context.resource.kind === "file"
-    && context.observed.state === "present"
-    && (
-      applied.executable !== undefined
-        && context.observed.executable !== applied.executable
-      || applied.symlinkTo === undefined
-        && applied.mode !== undefined
-        && context.observed.mode !== applied.mode
-      || applied.symlinkTo === undefined
-        && context.observed.objectKind !== undefined
-        && context.observed.objectKind !== "regular"
-      || applied.symlinkTo !== undefined
-        && context.observed.objectKind !== undefined
-        && context.observed.objectKind !== "symlink"
-    )
-  ) {
-    return false;
-  }
-  if (
-    context.resource.kind === "file"
-    && context.observed.state === "present"
-    && applied.symlinkTo === undefined
-    && context.observed.symlinkTo !== undefined
-  ) {
+  if (context.resource.kind === "file" && context.observed.state === "present") {
+    if (applied.ownership === "Symlink") {
+      return context.observed.objectKind === undefined || context.observed.objectKind === "symlink";
+    }
+    if (applied.ownership === "WholeFile" || applied.ownership === "SourceSection") {
+      return context.observed.executable === applied.executable
+        && context.observed.mode === applied.mode
+        && context.observed.symlinkTo === undefined
+        && (context.observed.objectKind === undefined || context.observed.objectKind === "regular");
+    }
     return false;
   }
   return true;
@@ -337,18 +321,16 @@ const writeFile = (
   digest: ContentDigest,
   executable?: boolean | undefined,
   mode?: number | undefined,
+  textTransition: TextWriteTransition = { kind: "whole-file" },
 ): WriteFileDraft => {
   const detail: WriteFileActionDetail = {
     kind: "write-file",
     target: context.resource.target,
     digest,
+    textTransition,
   };
   if (executable !== undefined) detail.executable = executable;
   if (mode !== undefined) detail.mode = mode;
-  if (context.resource.policy === "append-local" && context.observed.state === "present"
-    && context.observed.managedSourceDigest !== undefined) {
-    detail.previousSourceDigest = context.observed.managedSourceDigest;
-  }
   if (context.noReplace === true) detail.noReplace = true;
   return { kind: "write-file", detail };
 };
@@ -582,36 +564,35 @@ const planAppendLocal = (context: ResourcePlanningContext): ReadonlyArray<Resour
       instructions: `Inspect ${context.resource.target}. Restore valid UTF-8 text and the Canonfig Source markers before retrying.`,
     } }];
   }
-  if (observed.state === "absent") return [writeFile(context, desired.digest, false, desired.mode)];
-  if (observed.state !== "present" || observed.objectKind !== "regular"
-    || (observed.managedSourceDigest === undefined && context.applied?.policy === "append-local")) {
+  const ownership = classifyTextOwnership(observed, context.applied);
+  if (ownership.kind === "invalid") {
     return [driftConflict(context, desired.digest, observedDigest(context) ?? sha256Hex("canonfig:invalid-text-target"))];
   }
-  if (observed.managedSourceDigest === undefined && context.applied !== undefined) {
-    // The file was Canonfig's whole output under another policy. Unchanged,
-    // it holds no local text to keep; edited, it is ordinary Follower Drift.
-    return observedMatchesApplied(context)
-      ? [{ kind: "write-file", detail: { ...writeFile(context, desired.digest, false, desired.mode).detail, previousSourceDigest: context.applied.digest } }]
-      : [driftConflict(context, desired.digest, observedDigest(context) ?? sha256Hex("canonfig:invalid-text-target"))];
-  }
-  if (observed.managedSourceDigest === undefined) {
-    const draft = writeFile(context, desired.digest, false, desired.mode);
-    const current = observedDigest(context);
-    if (current !== undefined) {
-      return [{
-        kind: "write-file",
-        detail: {
-          ...draft.detail,
-          adoptionNotice: "First adoption preserves the entire existing file as local text. Matching Source bytes do not establish ownership. Inspect exact Source and retained local text before applying: canonfig sync --plan --review-local",
-          retainedLocalDigest: current,
-        },
-      }];
+  const transition = planTextWriteTransition(ownership, "shared");
+  const draft = writeFile(context, desired.digest, false, desired.mode, transition);
+  switch (ownership.kind) {
+    case "absent": return [draft];
+    case "owned-whole":
+      // An unchanged whole-file output has no machine-local copy to retain.
+      return observedMatchesApplied(context) ? [draft]
+        : [driftConflict(context, desired.digest, observedDigest(context) ?? sha256Hex("canonfig:invalid-text-target"))];
+    case "unmanaged":
+      return [{ ...draft, detail: {
+        ...draft.detail,
+        adoptionNotice: "First adoption preserves the entire existing file as local text. Matching Source bytes do not establish ownership. Inspect exact Source and retained local text before applying: canonfig sync --plan --review-local",
+      } }];
+    case "owned-section":
+    case "orphan-section": {
+      if (observed.state !== "present") throw new InvalidObservedStateError({
+        resource: context.resource.id, kind: context.resource.kind, observedState: observed.state,
+      });
+      const sourceObserved = { ...observed, digest: ownership.sourceDigest };
+      // Keep permission and three-way drift checks on the Source payload.
+      return planReplaceIfUnmodified({ ...context, observed: sourceObserved }).map((action) =>
+        action.detail.kind === "write-file" ? draft : action
+      );
     }
-    return [draft];
   }
-  const sourceObserved = { ...observed, digest: observed.managedSourceDigest };
-  // Reuse the file permission and three-way drift rules with the owned payload.
-  return planReplaceIfUnmodified({ ...context, observed: sourceObserved });
 };
 
 /** The first segment of a tree-relative path: the top-level entry it belongs to. */
@@ -630,7 +611,8 @@ const appendLocalView = (
   const observed = context.observed;
   if (observed.state !== "directory") return context;
   const claimed = new Set(
-    [...desiredDirectoryEntries(desired), ...context.applied?.ownedFiles ?? []].map((entry) => topLevelEntry(entry.path)),
+    [...desiredDirectoryEntries(desired), ...(context.applied?.ownership === "DirectoryEntries" ? context.applied.ownedFiles : [])]
+      .map((entry) => topLevelEntry(entry.path)),
   );
   return { ...context, observed: { ...observed, files: observed.files.filter((file) => claimed.has(topLevelEntry(file.path))) } };
 };
@@ -649,7 +631,8 @@ const planAppendLocalDirectory = (
   desired: Extract<DesiredResource, { readonly kind: "directory" | "skill" }>,
 ): ReadonlyArray<ResourceActionDraft> => {
   const view = appendLocalView(context, desired);
-  const owned = new Set((context.applied?.ownedFiles ?? []).map((entry) => topLevelEntry(entry.path)));
+  const owned = new Set((context.applied?.ownership === "DirectoryEntries" ? context.applied.ownedFiles : [])
+    .map((entry) => topLevelEntry(entry.path)));
   const present = view.observed.state === "directory" ? presentObservedFiles(view.observed.files) : [];
   const unowned = present.filter((file) => !owned.has(topLevelEntry(file.path)));
   if (unowned.length > 0) {
@@ -703,7 +686,8 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
   const declared = new Set(declaredKeys);
   const released = new Set(context.desired.releases ?? []);
   const dropped = sortedUnique(
-    (context.applied?.ownedKeys ?? []).filter((key) => !declared.has(key) && !released.has(key)),
+    (context.applied?.ownership === "ConfigKeys" ? context.applied.ownedKeys : [])
+      .filter((key) => !declared.has(key) && !released.has(key)),
   );
   // Changing ownership between an object and its children is not removal.
   // Pruning the old ancestor would also erase newly unowned sibling fields.
@@ -761,7 +745,8 @@ const planMirror = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
   const desiredPaths = new Set(desiredFiles.map((file) => file.path));
   const desiredAncestorPaths = relativePathAncestors([...desiredPaths]);
   const ownedByPath = new Map(
-    (context.applied?.ownedFiles ?? []).map((file) => [file.path, file] as const),
+    (context.applied?.ownership === "DirectoryEntries" ? context.applied.ownedFiles : [])
+      .map((file) => [file.path, file] as const),
   );
   const adds = desiredFiles
     .filter((file) => file.digest !== undefined
@@ -834,7 +819,7 @@ const planConfigIfUnmodified = (
   ) {
     const declared = new Set(desired.keys);
     const released = new Set(desired.releases ?? []);
-    const owned = applied.ownedKeys ?? [];
+    const owned = applied.ownership === "ConfigKeys" ? applied.ownedKeys : [];
     const onlyGivesBack = owned.some((key) => released.has(key) && !declared.has(key))
       && owned.every((key) => declared.has(key) || released.has(key))
       && observed.digest === desired.digest;
@@ -886,14 +871,15 @@ const planReplaceIfUnmodified = (
     && context.observed.state === "directory"
     && observedMatchesDesired(tree, context.observed)) return [noOp()];
   const currentDigest = tree !== undefined && context.observed.state === "directory"
-    ? observedDirectoryDigest(context.observed, context.applied?.ownedFiles ?? desiredDirectoryEntries(tree))
+    ? observedDirectoryDigest(context.observed, context.applied?.ownership === "DirectoryEntries"
+      ? context.applied.ownedFiles : desiredDirectoryEntries(tree))
     : observedDigest(context);
   if (
     context.desired.kind === "file"
     && context.applied !== undefined
     && context.observed.state === "present"
     && (
-      context.applied.symlinkTo === undefined
+      context.applied.ownership !== "Symlink"
         ? context.observed.symlinkTo !== undefined
           || context.observed.objectKind !== undefined
             && context.observed.objectKind !== "regular"
@@ -933,8 +919,8 @@ const planReplaceIfUnmodified = (
       ? context.observed.executable
       : undefined,
     lastAppliedExecutable: compareFilePermissions
-      ? context.applied?.executable
-      : undefined,
+        && (context.applied?.ownership === "WholeFile" || context.applied?.ownership === "SourceSection")
+      ? context.applied.executable : undefined,
     desiredMode: compareFilePermissions || compareSkillRootPermissions
       ? desiredResourceMode(context.desired)
       : undefined,
@@ -943,9 +929,10 @@ const planReplaceIfUnmodified = (
       : compareSkillRootPermissions && context.observed.state === "directory"
       ? context.observed.mode
       : undefined,
-    lastAppliedMode: compareFilePermissions || compareSkillRootPermissions
-      ? context.applied?.mode
-      : undefined,
+    lastAppliedMode: (compareFilePermissions || compareSkillRootPermissions)
+        && (context.applied?.ownership === "WholeFile" || context.applied?.ownership === "SourceSection"
+          || context.applied?.ownership === "DirectoryEntries")
+      ? context.applied.mode : undefined,
   });
   switch (drift) {
     case "unchanged":
@@ -1080,7 +1067,7 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
   }
   if (context.observed.state === "present" && replaces === undefined) {
     if (provenance === undefined) return [noOp()];
-    if (context.applied?.installerRecipe?.fingerprint === provenance.fingerprint) {
+    if (context.applied?.ownership === "QualifiedTool" && context.applied.installerRecipe.fingerprint === provenance.fingerprint) {
       return [noOp(provenance)];
     }
     // A PATH hit without this exact qualified binding is not evidence that the
@@ -1223,17 +1210,16 @@ const planRemovedResource = (
     applied === undefined
     || applied.kind !== context.resource.kind
     || applied.policy !== context.resource.policy
-    || applied.target === undefined
   ) {
     return [];
   }
   if (context.resource.policy === "append-local" && context.resource.kind === "file") {
     const observed = context.observed;
-    const ownedContext = observed.state === "present" && observed.managedSourceDigest !== undefined
-      ? { ...context, observed: { ...observed, digest: observed.managedSourceDigest } }
+    const ownership = classifyTextOwnership(observed, applied);
+    const ownedContext = observed.state === "present" && ownership.kind === "owned-section"
+      ? { ...context, observed: { ...observed, digest: ownership.sourceDigest } }
       : context;
-    if (observed.state !== "absent" && (observed.state !== "present"
-      || observed.managedSourceDigest === undefined || !observedMatchesApplied(ownedContext))) {
+    if (ownership.kind !== "absent" && (ownership.kind !== "owned-section" || !observedMatchesApplied(ownedContext))) {
       return [driftConflict(context, Schema.decodeUnknownSync(ContentDigestSchema)(applied.digest),
         observedDigest(context) ?? sha256Hex("canonfig:invalid-text-target"))];
     }
@@ -1269,8 +1255,7 @@ const planRemovedResource = (
       }
       if (
         (context.resource.policy !== "merge" && context.resource.policy !== "replace-if-unmodified")
-        || applied.ownedKeys === undefined
-        || applied.configFormat === undefined
+        || applied.ownership !== "ConfigKeys"
       ) {
         return [];
       }
@@ -1290,7 +1275,7 @@ const planRemovedResource = (
           && context.resource.policy !== "replace"
           && context.resource.policy !== "replace-if-unmodified"
           && context.resource.policy !== "append-local")
-        || applied.ownedFiles === undefined
+        || applied.ownership !== "DirectoryEntries"
       ) {
         return [];
       }
@@ -1313,7 +1298,6 @@ const planRemovedResource = (
         },
       }];
     case "tool":
-    case "credential":
       // Ensure and require-local intentionally do not claim ownership of
       // follower software or secrets, so removal is never automatic.
       return [];
@@ -1328,7 +1312,8 @@ const directoryMemberConflict = (context: ResourcePlanningContext): ResourceActi
     ...relativePathAncestors(desiredDirectoryEntries(context.desired).map((entry) => entry.path)),
     ...(context.desired.directories ?? []).map((entry) => entry.path),
   ]);
-  const owned = new Map((context.applied?.ownedFiles ?? []).map((entry) => [entry.path, entry]));
+  const owned = new Map((context.applied?.ownership === "DirectoryEntries" ? context.applied.ownedFiles : [])
+    .map((entry) => [entry.path, entry]));
   const conflicts = sortedUnique(presentObservedFiles(context.observed.files)
     .filter((entry) => required.has(entry.path) && entry.objectKind !== "directory")
     .filter((entry) => {
@@ -1355,15 +1340,15 @@ const planLeaveAppendLocal = (
   context: ResourcePlanningContext,
   desired: Extract<DesiredResource, { readonly kind: "file" }>,
 ): ReadonlyArray<ResourceActionDraft> => {
-  const observed = context.observed;
-  if (observed.state === "absent") return planReplace(context);
-  if (observed.state !== "present" || observed.managedSourceDigest === undefined) {
+  const ownership = classifyTextOwnership(context.observed, context.applied);
+  if (ownership.kind === "absent") return planReplace(context);
+  if (ownership.kind !== "owned-section") {
     return [driftConflict(context, desired.digest, observedDigest(context) ?? sha256Hex("canonfig:invalid-text-target"))];
   }
-  if (observed.managedSourceDigest !== context.applied?.digest) {
-    return [driftConflict(context, desired.digest, Schema.decodeUnknownSync(ContentDigestSchema)(observed.managedSourceDigest))];
+  if (ownership.sourceDigest !== ownership.appliedDigest) {
+    return [driftConflict(context, desired.digest, Schema.decodeUnknownSync(ContentDigestSchema)(ownership.sourceDigest))];
   }
-  if (observed.managedLocalText === true) {
+  if (ownership.hasLocal) {
     return [{
       kind: "human-action",
       detail: {
@@ -1373,7 +1358,7 @@ const planLeaveAppendLocal = (
       },
     }];
   }
-  return [writeFile(context, desired.digest, desired.executable, desired.mode)];
+  return [writeFile(context, desired.digest, desired.executable, desired.mode, planTextWriteTransition(ownership, "whole"))];
 };
 
 /** Exhaustive Apply Policy dispatch. Transfer planning is intentionally absent. */
@@ -1384,7 +1369,7 @@ export const planResource = (
   if (rootConflict !== undefined) return [rootConflict];
   const memberConflict = directoryMemberConflict(context);
   if (memberConflict !== undefined) return [memberConflict];
-  if (context.desired.kind === "file" && context.applied?.policy === "append-local"
+  if (context.desired.kind === "file" && context.applied?.ownership === "SourceSection"
     && context.resource.policy !== "append-local") {
     return planLeaveAppendLocal(context, context.desired);
   }

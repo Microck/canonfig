@@ -166,6 +166,17 @@ from the target, and a tool with no usable recipe and no `agentInstall` is
 Human Action Required rather than an Agent Task, because a task with no
 writable path and no origin cannot install anything.
 
+Each Applied Resource Record has one explicit ownership mode: `WholeFile`,
+`Symlink`, `SourceSection`, `DirectoryEntries`, `ConfigKeys`, or `QualifiedTool`.
+The mode requires its own evidence: regular-file permissions, a link target,
+directory entries, config keys and format, or qualified installer provenance.
+Execution and recovery use the same verified-state constructor. A config
+handover records only the keys still owned after the write, with their digest;
+releasing every key remains an explicit empty key set. Retirement interprets
+every mode, while qualified tools release provenance without uninstalling
+software. Incomplete or contradictory persisted ownership is a recovery error,
+not permission to skip retirement or assume file modes.
+
 Apply Policies mean:
 
 - `replace`: atomically replace the target after recording rollback material.

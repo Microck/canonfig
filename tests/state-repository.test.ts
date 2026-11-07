@@ -41,6 +41,7 @@ import {
 import {
   ActiveRunExistsError,
   EarlierStateFormatError,
+  InvalidRunTransitionError,
   MachineRoleConflictError,
   RepositoryDecodeError,
   RepositorySqlError,
@@ -160,6 +161,31 @@ const start = (
   });
 
 describe("StateRepository SQLite adapter", () => {
+  it("refuses illegal action transitions before appending durable evidence", async () => {
+    const path = databasePath();
+    await runWithRepository(path, Effect.gen(function*() {
+      yield* seed();
+      const repository = yield* StateRepository;
+      yield* start(repository, "run-transitions", follower().id, revision().id);
+      const event = {
+        run: asRunId("run-transitions"), action: asActionId("action-1"),
+        attempt: 1, recordedAt: "2026-08-15T12:01:01Z",
+      };
+      expect(yield* Effect.flip(repository.journalAction({
+        ...event, state: "succeeded", verification: { status: "passed", method: "digest" },
+      }))).toBeInstanceOf(InvalidRunTransitionError);
+      yield* repository.journalAction({ ...event, state: "running" });
+      expect(yield* Effect.flip(repository.journalAction({
+        ...event, state: "succeeded", verification: { status: "failed", method: "digest" },
+      }))).toBeInstanceOf(InvalidRunTransitionError);
+      yield* repository.journalAction({ ...event, state: "succeeded", verification: { status: "passed", method: "digest" } });
+      expect(yield* Effect.flip(repository.journalAction({ ...event, state: "running" }))).toBeInstanceOf(InvalidRunTransitionError);
+      const recovery = yield* repository.loadRecovery(follower().id);
+      expect(recovery?.actions.filter((entry) => entry.action === event.action).map((entry) => entry.state))
+        .toEqual(["pending", "running", "succeeded"]);
+    }));
+  });
+
   it("runs idempotent migrations and persists identities as references", async () => {
     const path = databasePath();
     const program = Effect.gen(function*() {
@@ -362,6 +388,7 @@ describe("StateRepository SQLite adapter", () => {
         outcome: decode(SynchronizationOutcomeSchema)({ outcome: "Converged", run: "run-sync", verified: [] }),
         appliedResources: [],
       });
+      yield* repository.finalizeRun(asRunId("run-sync"), "2026-08-15T12:03:01Z");
       yield* repository.recordArchiveEvent({
         occurredAt: "2026-08-15T12:04:00Z",
         command: "export",
@@ -661,6 +688,7 @@ describe("StateRepository SQLite adapter", () => {
           },
           appliedResources: [],
         });
+        yield* repository.finalizeRun(asRunId("run-active"), "2026-08-15T12:03:01Z");
         yield* start(
           repository,
           "run-after-completion",
@@ -677,9 +705,9 @@ describe("StateRepository SQLite adapter", () => {
     const database = new DatabaseSync(path, { readOnly: true });
     const indexes = database.prepare(
       "SELECT sql FROM sqlite_master WHERE name = ?",
-    ).get("one_active_applying_run_per_follower");
+    ).get("one_open_run_per_follower");
     database.close();
-    expect(String(indexes?.sql)).toContain("WHERE status = 'applying'");
+    expect(String(indexes?.sql)).toContain("WHERE phase != 'Complete'");
   });
 
   it("blocks a new run after restart until interrupted recovery is terminal", async () => {
@@ -833,9 +861,11 @@ describe("StateRepository SQLite adapter", () => {
       digest: digestA,
       appliedAt: "2026-08-15T12:00:59Z",
       kind: "file" as const,
+      ownership: "WholeFile" as const,
       policy: "replace" as const,
       target: "~/.canonfig/removed",
       executable: false,
+      mode: 0o600,
     };
     const recovery = await runWithRepository(
       path,
@@ -849,23 +879,12 @@ describe("StateRepository SQLite adapter", () => {
           revision().id,
         );
         const database = new DatabaseSync(path);
-        database.prepare(`
-          INSERT INTO applied_resources (
-            follower_id, resource_id, revision_id, digest, applied_at,
-            kind, policy, target, executable
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          follower().id,
-          removed.resource,
-          removed.revision,
-          removed.digest,
-          removed.appliedAt,
-          removed.kind,
-          removed.policy,
-          removed.target,
-          0,
-        );
+        database.prepare("INSERT INTO applied_resources (follower_id, resource_id, revision_id, digest, applied_at, record_json) VALUES (?, ?, ?, ?, ?, ?)").run(follower().id, removed.resource, removed.revision, removed.digest, removed.appliedAt, JSON.stringify(removed));
         database.close();
+        yield* repository.journalAction({
+          run: asRunId("run-removed-resource"), action: asActionId("action-1"),
+          state: "running", attempt: 1, recordedAt: "2026-08-15T12:01:00Z",
+        });
         yield* repository.journalAction({
           run: asRunId("run-removed-resource"),
           action: asActionId("action-1"),
@@ -927,15 +946,25 @@ describe("StateRepository SQLite adapter", () => {
             revision: revision().id,
             digest: digestA,
             appliedAt: "2026-08-15T12:03:00Z",
+            ownership: "DirectoryEntries",
+            kind: "directory",
+            policy: "replace",
+            target: "~/.canonfig/owned",
             mode: 0o644,
             ownedFiles: [{
               path: "nested/file",
               digest: digestB,
               executable: false,
               mode: 0o640,
+              objectKind: "regular",
             }],
           }],
         });
+        const finalizing = yield* repository.loadRecovery(follower().id);
+        expect(finalizing?.run.lifecycle._tag).toBe("Finalizing");
+        expect(yield* repository.loadDeploymentReceipt(asRunId("run-complete"))).toBeUndefined();
+        expect(yield* Effect.flip(start(repository, "blocked", follower().id, revision().id))).toBeInstanceOf(ActiveRunExistsError);
+        yield* repository.finalizeRun(asRunId("run-complete"), "2026-08-15T12:03:01Z");
         const completedRecovery = yield* repository.loadRecovery(follower().id);
         yield* start(
           repository,
@@ -954,12 +983,17 @@ describe("StateRepository SQLite adapter", () => {
       revision: "revision-1",
       digest: digestA,
       appliedAt: "2026-08-15T12:03:00Z",
+      ownership: "DirectoryEntries",
+      kind: "directory",
+      policy: "replace",
+      target: "~/.canonfig/owned",
       mode: 0o644,
       ownedFiles: [{
         path: "nested/file",
         digest: digestB,
         executable: false,
         mode: 0o640,
+        objectKind: "regular",
       }],
     }]);
   });
@@ -984,6 +1018,7 @@ describe("StateRepository SQLite adapter", () => {
                 kind: "write-file",
                 target: "~/.config/client",
                 digest: digestA,
+                textTransition: { kind: "whole-file" },
               },
               before: [],
             },
@@ -1053,6 +1088,10 @@ describe("StateRepository SQLite adapter", () => {
           ["transfer", "sha256-and-size"],
         ] as const) {
           yield* repository.journalAction({
+            run: asRunId("run-evidence"), action: asActionId(action),
+            state: "running", attempt: 1, recordedAt: "2026-08-15T12:01:59Z",
+          });
+          yield* repository.journalAction({
             run: asRunId("run-evidence"),
             action: asActionId(action),
             state: "succeeded",
@@ -1072,6 +1111,7 @@ describe("StateRepository SQLite adapter", () => {
           }),
           appliedResources: [],
         });
+        yield* repository.finalizeRun(asRunId("run-evidence"), "2026-08-15T12:03:01Z");
         const firstReceipt = yield* repository.loadDeploymentReceipt(
           asRunId("run-evidence"),
         );
@@ -1099,6 +1139,10 @@ describe("StateRepository SQLite adapter", () => {
           secondPlan,
         );
         yield* repository.journalAction({
+          run: asRunId("run-noop"), action: asActionId("noop"),
+          state: "running", attempt: 1, recordedAt: "2026-08-15T12:03:59Z",
+        });
+        yield* repository.journalAction({
           run: asRunId("run-noop"),
           action: asActionId("noop"),
           state: "succeeded",
@@ -1116,6 +1160,7 @@ describe("StateRepository SQLite adapter", () => {
           }),
           appliedResources: [],
         });
+        yield* repository.finalizeRun(asRunId("run-noop"), "2026-08-15T12:05:01Z");
         const latestReceipt = yield* repository.latestDeploymentReceipt(
           follower().id,
         );

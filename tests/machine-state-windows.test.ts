@@ -121,7 +121,7 @@ describe.skipIf(process.platform !== "win32")("Windows file permission ownership
       const resourceTarget = kind === "directory" ? managed : target;
       const detail = kind === "directory"
         ? { kind: "mirror-directory" as const, target: managed, adds: [relative], removes: [] }
-        : { kind: "write-file" as const, target, digest, executable: false, mode: 0o600 };
+        : { kind: "write-file" as const, target, digest, executable: false, mode: 0o600, textTransition: { kind: "whole-file" as const } };
       const context: ResourceExecutionContext = {
         run: RunId.make("run-native-permissions"),
         action: { id: ActionId.make("action:native-permissions:0:write"), resource, kind: detail.kind, detail, before: [] },

@@ -11,8 +11,6 @@ import {
 } from "../domain/brand.ts";
 import type {
   AppliedResourceRecord,
-  DriftConflict,
-  HumanAction,
   PlannedAction,
   SynchronizationOutcome,
 } from "../domain/synchronization.ts";
@@ -23,18 +21,23 @@ import {
 import { MachineState } from "../machine/machine-state.service.ts";
 import { canonicalJson, sha256Hex } from "../profile/profile-codec.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
+import { transitionAction } from "../state/action-lifecycle.ts";
 import type { StateRepositoryError } from "../state/state-repository.errors.ts";
 import type {
   ActionJournalRecord,
+  ActionLifecycle,
   RecoveryState,
   VerificationEvidence,
 } from "../state/state-repository.types.ts";
 import {
-  configOwnership,
+  appliedResourceFor,
+  restoreAction,
+  reduceActionResult,
+  actionProgressOutcome,
+  type ActionProgress,
   executionContexts,
   executionLimits,
   executeSynchronizationAction,
-  ownedFilesFor,
   removeRunTemporaryEntries,
   type ActionResult,
   type SynchronizationExecutionResult,
@@ -162,58 +165,13 @@ const validateJournal = (
     const latest = new Map<string, ActionJournalRecord>();
     for (const action of actions) {
       const actionEvents = events.get(action.id);
-      if (
-        actionEvents === undefined
-        || actionEvents[0]?.state !== "pending"
-        || actionEvents[0]?.attempt !== 0
-        || actionEvents.filter((event) => event.state === "pending").length !== 1
-      ) {
-        return yield* integrityError(
-          recovery,
-          `action ${action.id} does not have one valid initial journal event`,
-        );
-      }
-      const attempts = new Map<number, Array<ActionJournalRecord>>();
-      let previousAttempt = 0;
-      for (const event of actionEvents.slice(1)) {
-        if (event.attempt < 1 || event.attempt < previousAttempt) {
-          return yield* integrityError(
-            recovery,
-            `action ${action.id} has invalid attempt ordering`,
-          );
-        }
-        previousAttempt = event.attempt;
-        const attemptEvents = attempts.get(event.attempt) ?? [];
-        attemptEvents.push(event);
-        attempts.set(event.attempt, attemptEvents);
-      }
-      for (const [attempt, attemptEvents] of attempts) {
-        const terminal = attemptEvents.findIndex((event) =>
-          event.state === "succeeded" || event.state === "skipped"
-        );
-        const laterEvents = terminal < 0 ? [] : attemptEvents.slice(terminal + 1);
-        const completedRollback = attemptEvents[terminal]?.state === "succeeded"
-          && laterEvents.length === 1
-          && laterEvents[0]?.state === "failed"
-          && laterEvents[0]?.verification?.status === "not-run"
-          && laterEvents[0]?.verification?.method === "run-rolled-back";
-        if (terminal >= 0 && terminal !== attemptEvents.length - 1 && !completedRollback) {
-          return yield* integrityError(
-            recovery,
-            `terminal action ${action.id} attempt ${String(attempt)} has later journal events`,
-          );
-        }
+      let lifecycle: ActionLifecycle | undefined;
+      if (actionEvents === undefined) return yield* integrityError(recovery, `action ${action.id} has no journal`);
+      for (const event of actionEvents) {
+        lifecycle = yield* transitionAction(recovery.run.id, lifecycle, event).pipe(
+          Effect.mapError((error) => integrityError(recovery, error.message)));
       }
       const last = actionEvents.at(-1)!;
-      if (
-        last.state === "succeeded"
-        && last.verification?.status !== "passed"
-      ) {
-        return yield* integrityError(
-          recovery,
-          `succeeded action ${action.id} lacks passing verification evidence`,
-        );
-      }
       latest.set(action.id, last);
     }
     return latest;
@@ -264,7 +222,7 @@ const evidence = (verification: ResourceVerification): VerificationEvidence => {
 const appendJournal = (
   run: SynchronizationRunInput["id"],
   action: PlannedAction,
-  state: "running" | "succeeded" | "failed" | "skipped",
+  state: "running" | "succeeded" | "failed" | "blocked" | "interrupted" | "rolled-back",
   attempt: number,
   verification?: VerificationEvidence,
   rollbackReference?: string,
@@ -348,7 +306,7 @@ const preservedOutcome = (
       },
     };
   }
-  return { kind: "failed", reason: `invalid skipped action ${action.id}` };
+  return { kind: "failed", reason: `invalid blocked action ${action.id}`, rollbackState: { _tag: "NotRequired" } };
 };
 
 const uncertainInstaller = (
@@ -379,7 +337,7 @@ const uncertainInstaller = (
       return appendJournal(
         input.id,
         action,
-        "skipped",
+        "blocked",
         attempt,
         observed,
       ).pipe(Effect.as({
@@ -469,8 +427,8 @@ export const recoverSynchronizationPlan = (
     const restoredPreimagesByAction = new Map<ActionId, RollbackProjection>();
     for (const state of states) {
       const last = latest.get(state.action.id)!;
-      if (last.state === "pending" || last.state === "skipped") continue;
-      if (last.state === "failed" && last.verification?.method === "run-rolled-back") {
+      if (last.state === "pending" || last.state === "blocked") continue;
+      if (last.state === "rolled-back") {
         restoredPreimagesByAction.set(state.action.id, new Map(earlierRemovalPreimages));
       }
       const reference = latestRollbackReference(recovery.actions, state.action.id);
@@ -483,7 +441,7 @@ export const recoverSynchronizationPlan = (
     const removalsWithSuccessorWrites = new Set<ActionId>();
     for (const state of [...states].reverse()) {
       const last = latest.get(state.action.id)!;
-      if (last.state === "pending" || last.state === "skipped") continue;
+      if (last.state === "pending" || last.state === "blocked") continue;
       const reference = latestRollbackReference(recovery.actions, state.action.id);
       if (reference === undefined) continue;
       const inspection = yield* inspectRollbackTargets(state.context, reference, laterPreimages, restoredPreimagesByAction.get(state.action.id)).pipe(
@@ -511,8 +469,7 @@ export const recoverSynchronizationPlan = (
     const verified = new Set<ResourceId>();
     const removedResources = new Set<ResourceId>();
     const failedRollbacks: Array<ActionId> = [];
-    const human: Array<HumanAction> = [];
-    const drift: Array<DriftConflict> = recovery.drift.map((entry) => entry.conflict);
+    let progress: ActionProgress = { _tag: "Running", verified };
     const completedRollbacks: Array<{
       readonly action: PlannedAction;
       readonly attempt: number;
@@ -531,7 +488,7 @@ export const recoverSynchronizationPlan = (
         readonly resource: ResourceId;
         readonly previousApplied?: AppliedResourceRecord | undefined;
       } | undefined;
-      if (last.state === "skipped") {
+      if (last.state === "blocked") {
         result = preservedOutcome(input, state.action);
       } else if (
         last.state === "succeeded"
@@ -624,6 +581,7 @@ export const recoverSynchronizationPlan = (
         } else {
           result = {
             kind: "failed",
+            rollbackState: { _tag: "NotRequired" },
             reason: `previously completed action ${state.action.id} no longer verifies`,
           };
         }
@@ -647,7 +605,7 @@ export const recoverSynchronizationPlan = (
         }
         result = yield* executeSynchronizationAction(input, state, attempt);
       }
-      if (result.rollbackFailed) failedRollbacks.push(state.action.id);
+      if (result.kind === "failed" && result.rollbackState._tag === "Blocked") failedRollbacks.push(state.action.id);
       if (result.kind === "verified" && result.rollback !== undefined) {
         if (result.resource !== undefined && rollbackOwnership === undefined) {
           rollbackOwnership = {
@@ -665,11 +623,11 @@ export const recoverSynchronizationPlan = (
           resource: rollbackOwnership?.resource,
           previousApplied: rollbackOwnership?.previousApplied,
         });
-      } else if (result.kind === "failed" && !result.rollbackFailed && rollbackOwnership !== undefined) {
+      } else if (result.kind === "failed" && result.rollbackState._tag !== "Blocked" && rollbackOwnership !== undefined) {
         yield* appendJournal(
           input.id,
           state.action,
-          "failed",
+          "rolled-back",
           attempt,
           { status: "not-run", method: "run-rolled-back" },
           result.rollbackReference,
@@ -679,45 +637,22 @@ export const recoverSynchronizationPlan = (
             : undefined,
         );
       }
-      if (result.resource !== undefined) verified.add(result.resource);
-      if (
-        result.resource !== undefined
-        && recoveryInput.revision.removedResources?.includes(result.resource) === true
-      ) {
-        removedResources.add(result.resource);
-      }
-      if (result.human !== undefined) human.push(result.human);
-      if (
-        result.drift !== undefined
-        && !drift.some((entry) => entry.resource === result.drift?.resource)
-      ) {
-        drift.push(result.drift);
-      }
-      if (result.reason !== undefined) failedReason = result.reason;
+      if (result.kind === "verified" && result.resource !== undefined
+        && recoveryInput.revision.removedResources?.includes(result.resource) === true) removedResources.add(result.resource);
+      progress = yield* reduceActionResult(progress, result);
+      if (result.kind === "failed") failedReason = result.reason;
       if (result.kind !== "verified") {
         if (result.kind === "failed") {
           for (const completed of completedRollbacks.reverse()) {
-            yield* completed.rollback.pipe(
-              Effect.tapError(() => Effect.sync(() => {
-                failedRollbacks.push(completed.action.id);
-              })),
-              Effect.andThen(appendJournal(
-                input.id,
-                completed.action,
-                "failed",
-                completed.attempt,
-                { status: "not-run", method: "run-rolled-back" },
-                completed.reference,
-                completed.previousApplied,
-                completed.previousApplied === undefined
-                  ? completed.resource
-                  : undefined,
-              )),
-              Effect.catch((error) => {
-                failedReason = `${failedReason ?? "synchronization recovery failed"}; rollback failed for ${completed.action.id}: ${String(error)}`;
-                return Effect.void;
-              }),
-            );
+            const rollback = yield* restoreAction(completed.rollback, appendJournal(
+              input.id, completed.action, "rolled-back", completed.attempt,
+              { status: "not-run", method: "run-rolled-back" }, completed.reference, completed.previousApplied,
+              completed.previousApplied === undefined ? completed.resource : undefined,
+            ));
+            if (rollback._tag === "Blocked") {
+              failedRollbacks.push(completed.action.id);
+              failedReason = `${failedReason ?? "synchronization recovery failed"}; ${rollback.phase} rollback failed for ${completed.action.id}: ${rollback.reason}`;
+            }
           }
         }
         break;
@@ -726,55 +661,14 @@ export const recoverSynchronizationPlan = (
 
     const outcome: SynchronizationOutcome = failedReason !== undefined
       ? { outcome: "Failed", run: input.id, reason: failedReason }
-      : drift.length > 0
-      ? { outcome: "FollowerDrift", run: input.id, conflicts: drift }
-      : human.length > 0
-      ? { outcome: "HumanActionRequired", run: input.id, actions: human }
-      : {
-        outcome: "Converged",
-        run: input.id,
-        verified: [...verified].sort(),
-      };
+      : actionProgressOutcome(input.id, progress);
     const appliedResources: Array<AppliedResourceRecord> = [];
     if (outcome.outcome === "Converged") {
       const appliedAt = yield* now;
-      const desired = new Map(recoveryInput.revision.desired.map((entry) => [
-        entry.resource,
-        entry.desired,
-      ]));
-      const resourceById = new Map(recoveryInput.revision.resources.map((resource) => [
-        resource.id,
-        resource,
-      ]));
-      for (const resource of outcome.verified) {
-        if (removedResources.has(resource)) continue;
-        const value = desired.get(resource);
-        const owned = value?.kind === "config" ? configOwnership(value, recoveryInput.artifacts) : undefined;
-        const digest = value === undefined
-          ? undefined
-          : owned?.digest ?? desiredResourceDigest(value);
-        if (digest !== undefined) {
-          const ownedFiles = value === undefined ? undefined : ownedFilesFor(value);
-          appliedResources.push({
-            resource,
-            revision: recoveryInput.revision.id,
-            digest,
-            appliedAt,
-            kind: resourceById.get(resource)?.kind,
-            policy: resourceById.get(resource)?.policy,
-            target: resourceById.get(resource)?.target,
-            executable: value?.kind === "file" ? value.executable : undefined,
-            mode: value?.kind === "file"
-                || value?.kind === "directory"
-                || value?.kind === "skill"
-              ? value.mode
-              : undefined,
-            symlinkTo: value?.kind === "file" ? value.symlinkTo : undefined,
-            ownedFiles,
-            ownedKeys: owned?.ownedKeys,
-            configFormat: value?.kind === "config" ? value.format : undefined,
-          });
-        }
+      for (const state of states) {
+        if (!verified.has(state.action.resource) || removedResources.has(state.action.resource)) continue;
+        const record = appliedResourceFor(input, state, appliedAt);
+        if (record !== undefined) appliedResources.push(record);
       }
     }
     return {
