@@ -1146,11 +1146,12 @@ describe("synchronization crash recovery", () => {
     expect(runRows(value).at(-1)?.rollback_reference).toBeNull();
   });
 
-  it("requires human action when uncertain installer evidence stays ambiguous", async () => {
+  it.each(["running", "blocked"] as const)("requires human action when uncertain installer evidence stays ambiguous after %s", async (state) => {
     const value = fixture(temporaryDirectory(), { kind: "tool" });
     const plan = persistedPlan(value);
     await seed(value, plan);
     await journal(value, plan.actions[0]!.id, "running");
+    if (state === "blocked") await journal(value, plan.actions[0]!.id, "blocked");
     const bin = join(value.root, "bin");
     mkdirSync(bin, { recursive: true });
     const installer = join(bin, "apt-get");

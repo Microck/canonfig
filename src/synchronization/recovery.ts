@@ -491,7 +491,7 @@ export const recoverSynchronizationPlan = (
         readonly resource: ResourceId;
         readonly previousApplied?: AppliedResourceRecord | undefined;
       } | undefined;
-      if (last.state === "blocked") {
+      if (last.state === "blocked" && state.action.detail.kind !== "install-tool") {
         result = preservedOutcome(input, state.action);
       } else if (
         last.state === "succeeded"
