@@ -11,6 +11,7 @@ import { ErrorNotice } from "../live/session";
 import { record } from "./live/follower";
 import { holdNavigation } from "./routes";
 import type { GuiLocalFile, GuiLocalItem } from "../../../src/gui/contract/synchronization";
+import { localId } from "../lib/utils";
 
 type FileContent = { kind: "text"; text: string } | { kind: "binary"; base64: string };
 type FileDraft = { id: string; path: string; executable: boolean; upload: string | null } & FileContent;
@@ -60,7 +61,7 @@ function fileContent(base64: string): FileContent {
   catch { return { kind: "binary", base64 }; } // Preserve binary skill assets until the person replaces them.
 }
 function draftFile(file: Pick<typeof GuiLocalFile.Type, "path" | "base64" | "executable">): FileDraft {
-  return { id: crypto.randomUUID(), path: file.path, executable: file.executable, upload: null, ...fileContent(file.base64) };
+  return { id: localId(), path: file.path, executable: file.executable, upload: null, ...fileContent(file.base64) };
 }
 function newDraft(category: LocalCategory): LocalDraft {
   if (category === "mcp" || category === "settings") return { kind: "config-entry", category, name: "", json: "{}" };
@@ -177,7 +178,7 @@ export function LocalAuthoringEditor({ live, item, onClose }: { live: FollowerLi
     leaveWithoutAsking(onClose);
   };
   const upload = async (id: string, file: File) => {
-    const request = crypto.randomUUID();
+    const request = localId();
     send({ type: "upload-start", id, request });
     // Removal, a mode change, newer typing or another replacement cancels this read's ownership.
     const ownsRead = () => {
@@ -223,7 +224,7 @@ export function LocalAuthoringEditor({ live, item, onClose }: { live: FollowerLi
       if (original && path !== original.path) changes.push({ path: original.path, expectedDigest: original.digest, files: [] });
       write = () => live.saveItems({ changes });
     }
-    const request = crypto.randomUUID();
+    const request = localId();
     send({ type: "submit", request });
     let saved: boolean;
     let error = "Nothing was saved. Check the error and retry.";

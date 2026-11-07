@@ -29,18 +29,20 @@ export interface GuiOptions {
   readonly origin: string | undefined;
 }
 
-// Tailscale's address ranges: CGNAT IPv4 and its ULA IPv6 prefix. Traffic to them stays inside the
-// tailnet's WireGuard tunnels, so the sign-in token and session cookie never cross a LAN in clear text.
-const tailnet = new BlockList();
-tailnet.addSubnet("100.64.0.0", 10, "ipv4");
-tailnet.addSubnet("fd7a:115c:a1e0::", 48, "ipv6");
+// Addresses the GUI may bind: loopback, and Tailscale's ranges (CGNAT IPv4 and its ULA IPv6 prefix). Traffic to
+// the latter stays inside the tailnet's WireGuard tunnels, so the sign-in token and session cookie never cross a
+// LAN in clear text. A BlockList matches any spelling of an address, such as 0:0:0:0:0:0:0:1 for ::1.
+const bindable = new BlockList();
+bindable.addAddress("127.0.0.1", "ipv4");
+bindable.addAddress("::1", "ipv6");
+bindable.addSubnet("100.64.0.0", 10, "ipv4");
+bindable.addSubnet("fd7a:115c:a1e0::", 48, "ipv6");
 
 /** Why `host` cannot carry the GUI, or undefined when it can: loopback or a Tailscale address only. */
 export const guiHostProblem = (host: string): string | undefined => {
   const family = isIP(host);
   if (family === 0) return `--host needs an IP address, not ${host}`;
-  if (host === "127.0.0.1" || host === "::1") return undefined;
-  if (tailnet.check(host, family === 4 ? "ipv4" : "ipv6")) return undefined;
+  if (bindable.check(host, family === 4 ? "ipv4" : "ipv6")) return undefined;
   return `--host ${host} is not a loopback or Tailscale address; the browser interface only listens on 127.0.0.1, ::1, 100.64.0.0/10 or fd7a:115c:a1e0::/48`;
 };
 
@@ -292,7 +294,8 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
   );
   const address = server.address();
   if (address === null || Schema.is(Schema.String)(address)) return yield* Effect.die("The browser server has no TCP address");
-  const bound = `http://${isIP(options.host) === 6 ? `[${options.host}]` : options.host}:${address.port}`;
+  // URL normalizes the spelling (IPv6 case and zero groups), so it matches the origin of every parsed request.
+  const bound = new URL(`http://${isIP(options.host) === 6 ? `[${options.host}]` : options.host}:${address.port}`).origin;
   origins = options.origin === undefined ? [bound] : [bound, options.origin];
   // The token works once, so it is printed for one origin: the proxy's when one is configured.
   const url = `${options.origin ?? bound}/?token=${token}`;

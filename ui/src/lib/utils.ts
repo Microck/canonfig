@@ -14,6 +14,12 @@ export const SNAP_EASING = `cubic-bezier(${SNAP.join(", ")})`;
 export const isCoarsePointer = () => window.matchMedia("(pointer: coarse)").matches;
 
 /**
+ * A random id for in-page bookkeeping (draft rows, request generations). crypto.randomUUID() exists only in
+ * secure contexts, and `canonfig ui --host <tailnet address>` serves plain HTTP; getRandomValues works in both.
+ */
+export const localId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+
+/**
  * Removes a list item from its own X button and keeps keyboard focus in the list: on the next item's X, else the
  * previous one, else the element with id `fallback` (the list's Add control). Without it, focus falls to <body>
  * with the removed button and Tab starts again from the top of the page. The list is every button that shares

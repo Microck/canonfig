@@ -218,9 +218,10 @@ describe("canonfig ui command", () => {
     expect((await send("/api/session", { Host: `127.0.0.1:${address.port}`, Cookie: cookie })).status).toBe(200);
   }, 60_000);
 
-  it("binds an IPv6 address and checks the bracketed origin", async () => {
+  // The expanded spelling of ::1 must bind and still match requests, which carry the normalized origin.
+  it.each(["::1", "0:0:0:0:0:0:0:1"])("binds IPv6 %s and checks the bracketed origin", async (host) => {
     const machine = fixture();
-    const server = await start(machine.env, ["--host", "::1"]);
+    const server = await start(machine.env, ["--host", host]);
     expect(server.origin).toMatch(/^http:\/\/\[::1\]:\d+$/u);
     const exchange = await fetch(server.url, { redirect: "manual" });
     expect(exchange.status).toBe(303);
