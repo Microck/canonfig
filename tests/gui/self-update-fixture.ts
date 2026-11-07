@@ -32,7 +32,11 @@ export interface GuiSelfUpdateFixture {
   readonly cleanup: () => Promise<void>;
 }
 
-export async function createGuiSelfUpdateFixture(options: { holdDownload?: boolean } = {}): Promise<GuiSelfUpdateFixture> {
+export async function createGuiSelfUpdateFixture(options: {
+  holdDownload?: boolean;
+  releases?: readonly string[];
+  fixtureRuntime?: boolean;
+} = {}): Promise<GuiSelfUpdateFixture> {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "canonfig-gui-update-")));
   let registry: Server | undefined;
   const cleanup = async () => {
@@ -81,7 +85,11 @@ export async function createGuiSelfUpdateFixture(options: { holdDownload?: boole
   // uses the existing checkout without installing or changing its packages.
   const initial = join(home, "initial");
   mkdirSync(initial);
-  cpSync(join(project, "dist"), join(initial, "dist"), { recursive: true });
+  if (!options.fixtureRuntime) cpSync(join(project, "dist"), join(initial, "dist"), { recursive: true });
+  else {
+    mkdirSync(join(initial, "dist", "runtime"), { recursive: true });
+    writeFileSync(join(initial, "dist", "runtime", "main.js"), `console.log(${JSON.stringify(previous)});\n`);
+  }
   writeFileSync(join(initial, "package.json"), JSON.stringify(manifest(previous)));
   const prefix = join(home, "prefix");
   npm(["install", "--global", "--prefix", prefix, "--offline", "--ignore-scripts", "--no-audit", "--no-fund", pack(initial)]);
@@ -90,12 +98,17 @@ export async function createGuiSelfUpdateFixture(options: { holdDownload?: boole
 
   // This local release fixture has a real executable and no dependencies. npm
   // installs its packed bytes; the updater executes both required CLI smokes.
-  const release = join(home, "release");
-  mkdirSync(join(release, "dist", "runtime"), { recursive: true });
-  writeFileSync(join(release, "package.json"), JSON.stringify(manifest(candidate)));
-  writeFileSync(join(release, "dist", "runtime", "main.js"), `#!/usr/bin/env node\nconst args = process.argv.slice(2);\nif (args.length === 1 && args[0] === "--version") console.log(${JSON.stringify(candidate)});\nelse if (args.join(" ") === "self-update --help") console.log("Local patch fixture: self-update help");\nelse process.exitCode = 2;\n`, { mode: 0o755 });
-  const tarball = readFileSync(pack(release));
-  const integrity = `sha512-${createHash("sha512").update(tarball).digest("base64")}`;
+  const releases = options.releases ?? [candidate];
+  const tarballs = new Map<string, Buffer>();
+  const versions: Record<string, unknown> = { [previous]: manifest(previous) };
+  for (const version of releases) {
+    const release = join(home, `release-${version}`);
+    mkdirSync(join(release, "dist", "runtime"), { recursive: true });
+    writeFileSync(join(release, "package.json"), JSON.stringify(manifest(version)));
+    writeFileSync(join(release, "dist", "runtime", "main.js"), `#!/usr/bin/env node\nconst args = process.argv.slice(2);\nif (args.length === 1 && args[0] === "--version") console.log(${JSON.stringify(version)});\nelse if (args.join(" ") === "self-update --help") console.log("Local release fixture: self-update help");\nelse process.exitCode = 2;\n`, { mode: 0o755 });
+    const tarball = readFileSync(pack(release));
+    tarballs.set(`/${version}.tgz`, tarball);
+  }
   const downloadStarted = Promise.withResolvers<void>();
   const allowDownload = Promise.withResolvers<void>();
   if (!options.holdDownload) allowDownload.resolve();
@@ -103,7 +116,8 @@ export async function createGuiSelfUpdateFixture(options: { holdDownload?: boole
   let requests = 0;
   registry = createServer((request, response) => {
     requests += 1;
-    if (request.url === "/candidate.tgz") {
+    const tarball = tarballs.get(request.url ?? "");
+    if (tarball) {
       downloadStarted.resolve();
       void allowDownload.promise.then(() => {
         response.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": tarball.length });
@@ -115,16 +129,20 @@ export async function createGuiSelfUpdateFixture(options: { holdDownload?: boole
       response.writeHead(404); response.end(); return;
     }
     response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-    response.end(JSON.stringify({ name: "@microck/canonfig", "dist-tags": { latest: candidate }, versions: {
-      [previous]: manifest(previous),
-      [candidate]: { ...manifest(candidate), dist: { tarball: `${registryOrigin}/candidate.tgz`, integrity } },
-    } }));
+    response.end(JSON.stringify({ name: "@microck/canonfig", "dist-tags": { latest: releases.at(-1) ?? previous }, versions }));
   });
   registry.listen(0, "127.0.0.1");
   await once(registry, "listening");
   const address = registry.address();
   if (address === null || typeof address === "string") throw new Error("Missing local registry address");
   registryOrigin = `http://127.0.0.1:${address.port}`;
+  for (const version of releases) {
+    const tarball = tarballs.get(`/${version}.tgz`)!;
+    versions[version] = { ...manifest(version), dist: {
+      tarball: `${registryOrigin}/${version}.tgz`,
+      integrity: `sha512-${createHash("sha512").update(tarball).digest("base64")}`,
+    } };
+  }
 
   // Only this test npm entrypoint redirects the updater's fixed registry flags.
   // All npm output, packing, metadata parsing and installation are real npm.

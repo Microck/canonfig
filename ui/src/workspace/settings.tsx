@@ -731,7 +731,7 @@ export function VersionView() {
   const closeConfirmation = (open: boolean) => { if (!open) setConfirmation({ kind: "none" }); };
   const enableFocus = useDialogReturnFocus(focusPageHeading);
   const on = version.data?.enabled;
-  const releaseLine = version.current.split(".").slice(0, 2).join(".");
+  const releaseMajor = version.current.split(".")[0];
   const available = !!on && version.checked?.status === "available";
   const updated = version.checked?.status === "updated";
   return <>
@@ -742,17 +742,17 @@ export function VersionView() {
     </>} />
     <Body reloading={version.loading}>
       <Column>
-        <Lede>Canonfig can update itself to new patch releases from npm. It stays in the {releaseLine} line: moving to a newer minor or major version is a step you take on every machine together, by hand.</Lede>
+        <Lede>Check and install the newest stable release in major {releaseMajor} here. Automatic updates install patches in the current minor line or a newer major, never an in-major minor upgrade. Source and Followers only pair on the same major.minor, so update every machine after a minor or major change.</Lede>
         {version.error && <ErrorNotice error={version.error} />}
         {version.lifecycle.kind === "observation-lost" && <div className="mt-3"><p>The update may still be running. Resume observing it before starting another command.</p><Button variant="outline" size="sm" onClick={version.resume}>Resume update observation</Button></div>}
         <SectionLabel>This machine</SectionLabel>
         <div className={cn("mt-1", settingsGroup)}>
           <SettingRow title="Version"><Mono className="text-foreground">{version.current}</Mono></SettingRow>
-          <SettingRow title="Updates" description={on ? `Patches in the ${releaseLine} line, installed when you choose to.` : "Opt in to patch updates from npm."}>
+          <SettingRow title="Updates" description={on ? "Manual updates stay in this major. Run self-update auto to install current-line patches or newer majors automatically." : "Opt in to stable updates from npm. Enabling does not start automatic updates."}>
             <span className="inline-flex items-center gap-1.5 text-base"><StatusMark kind={on ? "ok" : "off"} />{version.data ? on ? "On" : "Off" : "Not loaded"}</span>
           </SettingRow>
           {version.npmCli && <SettingRow title="npm" description={<><Mono className="break-all">{version.npmCli}</Mono><br />Canonfig fetches only its own package from registry.npmjs.org, with install scripts off.</>} />}
-          {(on || version.checked) && <SettingRow title="Newest patch">
+          {(on || version.checked) && <SettingRow title="Newest same-major release">
             <span className="inline-flex items-center gap-1.5 text-base" aria-live="polite">
               <StatusMark kind={available ? "warn" : version.checked?.status === "current" || updated ? "ok" : "off"} />
               {version.checking ? "Checking…" : version.checked ? `${version.checked.candidate}: ${version.checked.status}` : "Not checked yet"}
@@ -776,7 +776,7 @@ export function VersionView() {
       </DialogContent>
     </Dialog>
     <ConfirmDialog open={confirmation.kind === "disable"} onOpenChange={closeConfirmation} title="Turn off Canonfig updates?"
-      body="Canonfig stops checking for and installing patches on this machine. The backups of earlier versions and the update records stay."
+      body="Canonfig stops checking for and installing updates on this machine. The backups of earlier versions and the update records stay."
       confirm="Turn off updates" onConfirm={version.disable} />
     <ConfirmDialog open={confirmation.kind === "install"} onOpenChange={closeConfirmation} title={`Install Canonfig ${confirmation.kind === "install" ? confirmation.candidate : ""}?`}
       body="Stop every other Canonfig process and pause its schedules first. After installation, this GUI stops. Start canonfig ui again to use the installed version. Canonfig restarts nothing."

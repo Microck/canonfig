@@ -215,8 +215,9 @@ local edits block an update rather than being discarded. see
 
 ## self-updates
 
-opt-in `canonfig self-update` installs stable patch releases for user-owned
-global npm installs; major and minor upgrades stay manual. read
+opt-in `canonfig self-update` installs stable releases for user-owned global npm
+installs. manual updates stay in the current major; automatic updates take
+current-line patches or newer majors, never an in-major minor. read
 [setup, automation and recovery](docs/self-update.md) before enabling it.
 
 ## what gets applied

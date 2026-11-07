@@ -3,7 +3,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { disable, enable, installation, latestPatch, parseVersion, update, assertNoUnfinishedRun, run, type Runner, type UpdateProgress } from "../../src/runtime/self-update/core.ts";
+import { disable, enable, installation, selectAutomaticRelease, selectManualRelease, parseVersion, update, assertNoUnfinishedRun, run, type Runner, type UpdateProgress } from "../../src/runtime/self-update/core.ts";
 import { commandLease, managedCommandLease, updateDirectory, acquireGate } from "../../src/runtime/self-update/coordination.ts";
 import { runSelfUpdateCli } from "../../src/runtime/self-update/cli.ts";
 import { Effect, Fiber } from "effect";
@@ -21,7 +21,7 @@ function fixture(){
  const runner:Runner=async({args})=>{
   calls.push(args);
   if(args[1]==="root")return dirname(dirname(root));
-  if(args[1]==="view")return '["4.2.0","4.2.1","4.3.0","5.0.0","4.2.2-beta.1"]';
+  if(args[1]==="view")return '["4.2.0","4.2.1","4.2.2-beta.1"]';
   if(args[1]==="install") {const stage=args[args.indexOf("--prefix")+1]!;put(packageAt(stage),"4.2.1");return "";}
   if(args[1]==="--version")return "4.2.1\n";
   return "self-update help\n";
@@ -34,9 +34,12 @@ describe("self-update policy and package activation",()=>{
   const text=await run({executable:process.execPath,args:["-e","console.log(JSON.stringify(Object.keys(process.env).filter(k=>/^npm_config_/i.test(k)||['NPM_TOKEN','NODE_AUTH_TOKEN','NODE_OPTIONS'].includes(k))))"]});
   expect(text.trim()).toBe("[]");
  });
- it("selects stable forward patches only",()=>{
-  expect(latestPatch("4.2.5",["4.2.4","4.2.6","4.2.7-rc.1","4.3.0","5.0.0"])).toBe("4.2.6");
-  expect(latestPatch("4.2.5",["4.3.0"])).toBe("4.2.5");
+ it("selects stable forward releases for each mode",()=>{
+  const versions=["4.2.4","4.2.6","4.2.7-rc.1","4.3.0","5.0.0","5.1.2","5.1.1"];
+  expect(selectAutomaticRelease("4.2.5",versions)).toBe("5.1.2");
+  expect(selectAutomaticRelease("4.2.5",["4.3.0"])).toBe("4.2.5");
+  expect(selectManualRelease("4.2.5",versions)).toEqual({candidate:"4.3.0",newMajor:"5.1.2"});
+  expect(selectManualRelease("4.2.5",["4.2.4","4.1.9","4.3.0-beta","3.9.0"])).toEqual({candidate:"4.2.5",newMajor:null});
   for(const invalid of ["latest","v4.2.0","4.2.0-beta","04.2.0","4.2.9007199254740992"])expect(()=>parseVersion(invalid)).toThrow();
  });
  it("refuses non-private, non-global and checkout installations",()=>{
@@ -59,9 +62,9 @@ describe("self-update policy and package activation",()=>{
  });
  it("previews without activation, then retains the old package and receipt",async()=>{
   const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
-  expect((await update(f.root,false,f.runner,undefined,f.home)).status).toBe("available");
+  expect((await update(f.root, false, "manual", f.runner,undefined,f.home)).status).toBe("available");
   expect(installation(f.root,f.home).version).toBe("4.2.0");
-  const result=await update(f.root,true,f.runner,undefined,f.home);expect(result.status).toBe("updated");
+  const result=await update(f.root, true, "manual", f.runner,undefined,f.home);expect(result.status).toBe("updated");
   expect(installation(f.root,f.home).version).toBe("4.2.1");
   const dir=updateDirectory(f.root);expect(existsSync(join(dir,"pending.json"))).toBe(false);
   const backups=readdirSync(dir).filter(n=>n.startsWith("backup-"));expect(backups).toHaveLength(1);
@@ -76,9 +79,9 @@ describe("self-update policy and package activation",()=>{
  it("defers for active readers and blocks new readers under the updater gate",async()=>{
   const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
   const release=commandLease(f.root)!;
-  expect((await update(f.root,true,f.runner,undefined,f.home)).status).toBe("deferred");release();
+  expect((await update(f.root, true, "manual", f.runner,undefined,f.home)).status).toBe("deferred");release();
   const gate=acquireGate(updateDirectory(f.root));expect(()=>commandLease(f.root)).toThrow("busy");gate();
-  expect((await update(f.root,true,f.runner,undefined,f.home)).status).toBe("updated");
+  expect((await update(f.root, true, "manual", f.runner,undefined,f.home)).status).toBe("updated");
  });
  it.each([
   ["live PID regardless of age", JSON.stringify({pid:process.pid,started:"1970-01-01T00:00:00.000Z"})],
@@ -89,7 +92,7 @@ describe("self-update policy and package activation",()=>{
   const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
   const readers=join(updateDirectory(f.root),"readers");mkdirSync(readers,{recursive:true});
   const path=join(readers,`${process.pid}-retained.json`);writeFileSync(path,record);
-  expect((await update(f.root,true,f.runner,undefined,f.home)).status).toBe("deferred");
+  expect((await update(f.root, true, "manual", f.runner,undefined,f.home)).status).toBe("deferred");
   expect(()=>disable(f.root)).toThrow("Cannot disable");
   expect(readFileSync(path,"utf8")).toBe(record);
  });
@@ -113,14 +116,14 @@ describe("self-update policy and package activation",()=>{
    const result=await lease.selfUpdate(async()=>{
     expect(lease.suspended).toBe(true);
     expect(readdirSync(readers)).toEqual([other]);
-    return update(f.root,true,f.runner,undefined,f.home);
+    return update(f.root, true, "manual", f.runner,undefined,f.home);
    },result=>result.status!=="updated");
    expect(result.status).toBe("deferred");expect(lease.suspended).toBe(false);
    expect(readdirSync(readers)).toContain(other);expect(readdirSync(readers)).toHaveLength(2);
    await expect(lease.selfUpdate(async()=>disable(f.root),()=>true)).rejects.toThrow("Cannot disable while commands or an interrupted transaction exist");
    expect(readdirSync(readers)).toContain(other);expect(readdirSync(readers)).toHaveLength(2);
    releaseOther();
-   expect((await lease.selfUpdate(()=>update(f.root,true,f.runner,undefined,f.home),result=>result.status!=="updated")).status).toBe("updated");
+   expect((await lease.selfUpdate(()=>update(f.root, true, "manual", f.runner,undefined,f.home),result=>result.status!=="updated")).status).toBe("updated");
    expect(readdirSync(readers)).toEqual([]);
   } finally {releaseOther();lease.close();}
  });
@@ -152,7 +155,7 @@ describe("self-update policy and package activation",()=>{
  it("reports each update phase only after its progress record is persisted",async()=>{
   const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
   const progress:UpdateProgress[]=[];
-  const result=await update(f.root,true,f.runner,undefined,f.home,value=>{
+  const result=await update(f.root, true, "manual", f.runner,undefined,f.home,value=>{
    expect(JSON.parse(readFileSync(join(updateDirectory(f.root),"progress.json"),"utf8"))).toMatchObject({version:2,operationId:expect.any(String),...value});
    progress.push(value);
   });
@@ -172,7 +175,7 @@ describe("self-update policy and package activation",()=>{
   const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
   const lease=managedCommandLease(f.root);const directory=updateDirectory(f.root);
   try {
-   const result=await lease.selfUpdate(()=>update(f.root,true,f.runner,undefined,f.home,value=>{
+   const result=await lease.selfUpdate(()=>update(f.root, true, "manual", f.runner,undefined,f.home,value=>{
     if(failure==="receipt"&&value.phase==="activating")mkdirSync(join(directory,"last-transaction.json"));
     if(failure==="progress-file"&&value.phase==="activating") {
      rmSync(join(directory,"progress.json"));mkdirSync(join(directory,"progress.json"));
@@ -192,7 +195,7 @@ describe("self-update policy and package activation",()=>{
   const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
   const state=join(f.home,".canonfig","state.sqlite");mkdirSync(dirname(state),{recursive:true});
   const db=new DatabaseSync(state);db.exec("CREATE TABLE synchronization_runs (id TEXT,phase TEXT); INSERT INTO synchronization_runs VALUES ('open','Interrupted')");db.close();
-  await expect(update(f.root,true,f.runner,undefined,f.home)).rejects.toThrow("unfinished");
+  await expect(update(f.root, true, "manual", f.runner,undefined,f.home)).rejects.toThrow("unfinished");
   expect(f.calls.some(args=>args[1]==="install")).toBe(false);
   rmSync(state);writeFileSync(state,"not sqlite");expect(()=>assertNoUnfinishedRun(state)).toThrow();
  });
@@ -209,14 +212,14 @@ describe("self-update policy and package activation",()=>{
  it("honors disable while a registry query is in flight",async()=>{
   const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
   const runner:Runner=async(input,signal)=>{const result=await f.runner(input,signal);if(input.args[1]==="view")rmSync(join(updateDirectory(f.root),"settings.json"));return result;};
-  await expect(update(f.root,true,runner,undefined,f.home)).rejects.toThrow();
+  await expect(update(f.root, true, "manual", runner,undefined,f.home)).rejects.toThrow();
   expect(f.calls.some(args=>args[1]==="install")).toBe(false);
   expect(installation(f.root,f.home).version).toBe("4.2.0");
  });
  it("keeps the old install after staging failure",async()=>{
   const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
   const runner:Runner=(input,signal)=>input.args[1]==="install"?Promise.reject(new Error("offline")):f.runner(input,signal);
-  await expect(update(f.root,true,runner,undefined,f.home)).rejects.toThrow("offline");
+  await expect(update(f.root, true, "manual", runner,undefined,f.home)).rejects.toThrow("offline");
   expect(installation(f.root,f.home).version).toBe("4.2.0");expect(existsSync(join(updateDirectory(f.root),"pending.json"))).toBe(false);
   expect(readdirSync(updateDirectory(f.root)).some(n=>n.startsWith("stage-"))).toBe(false);
  });
@@ -230,14 +233,14 @@ describe("self-update policy and package activation",()=>{
     const foreign=join(dirname(dirname(staged)),"outside");mkdirSync(foreign);writeFileSync(join(foreign,"index.js"),"module.exports = {};\n");
    }return result;
   };
-  await expect(update(f.root,true,runner,undefined,f.home)).rejects.toThrow("not self-contained");
+  await expect(update(f.root, true, "manual", runner,undefined,f.home)).rejects.toThrow("not self-contained");
   expect(installation(f.root,f.home).version).toBe("4.2.0");
   expect(readdirSync(updateDirectory(f.root)).some(n=>n.startsWith("stage-"))).toBe(false);
  });
  it("activates the canonical package instead of moving a directory alias",async()=>{
   const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
   const alias=join(f.home,"alias");symlinkSync(f.root,alias,process.platform==="win32"?"junction":"dir");
-  expect((await update(alias,true,f.runner,undefined,f.home)).status).toBe("updated");
+  expect((await update(alias, true, "manual", f.runner,undefined,f.home)).status).toBe("updated");
   expect(lstatSync(alias).isSymbolicLink()).toBe(true);expect(installation(f.root,f.home).version).toBe("4.2.1");
  });
  it("blocks commands when settings were removed but recovery is pending",async()=>{
@@ -254,11 +257,11 @@ describe("self-update policy and package activation",()=>{
  it.skipIf(process.platform==="win32")("rejects writable ancestors and state before any npm invocation",async()=>{
   const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);f.calls.length=0;
   const parent=dirname(f.root);chmodSync(parent,0o777);
-  await expect(update(f.root,false,f.runner,undefined,f.home)).rejects.toThrow("not writable");expect(f.calls).toHaveLength(0);chmodSync(parent,0o755);
+  await expect(update(f.root, false, "manual", f.runner,undefined,f.home)).rejects.toThrow("not writable");expect(f.calls).toHaveLength(0);chmodSync(parent,0o755);
   const dir=updateDirectory(f.root);chmodSync(dir,0o777);
-  await expect(update(f.root,false,f.runner,undefined,f.home)).rejects.toThrow("not writable");expect(f.calls).toHaveLength(0);chmodSync(dir,0o700);
+  await expect(update(f.root, false, "manual", f.runner,undefined,f.home)).rejects.toThrow("not writable");expect(f.calls).toHaveLength(0);chmodSync(dir,0o700);
   chmodSync(join(dir,"settings.json"),0o666);
-  await expect(update(f.root,false,f.runner,undefined,f.home)).rejects.toThrow("not writable");expect(f.calls).toHaveLength(0);
+  await expect(update(f.root, false, "manual", f.runner,undefined,f.home)).rejects.toThrow("not writable");expect(f.calls).toHaveLength(0);
  });
  it("emits the standard JSON envelope for help, status and usage failures",async()=>{
   let out="",err="";const io={writeStdout:(s:string)=>{out+=s;},writeStderr:(s:string)=>{err+=s;},setExitCode:()=>{}};
@@ -275,16 +278,16 @@ describe("self-update policy and package activation",()=>{
    if(input.args[1]==="self-update")rmSync(staged,{recursive:true});
    return result;
   };
-  await expect(update(f.root,true,runner,undefined,f.home)).rejects.toThrow();
+  await expect(update(f.root, true, "manual", runner,undefined,f.home)).rejects.toThrow();
   const dir=updateDirectory(f.root);expect(existsSync(join(dir,"pending.json"))).toBe(true);
   expect(readdirSync(dir).some(n=>n.startsWith("backup-"))).toBe(true);
   expect(()=>commandLease(f.root)).toThrow("Interrupted");
  });
  it("refuses changed release line and cancelled activation",async()=>{
   const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
-  f.put(f.root,"4.3.0");await expect(update(f.root,true,f.runner,undefined,f.home)).rejects.toThrow("release line");
+  f.put(f.root,"4.3.0");await expect(update(f.root, true, "manual", f.runner,undefined,f.home)).rejects.toThrow("release line");
   f.put(f.root,"4.2.0");const c=new AbortController();c.abort();
-  await expect(update(f.root,true,f.runner,c.signal,f.home)).rejects.toThrow("cancelled");
+  await expect(update(f.root, true, "manual", f.runner,c.signal,f.home)).rejects.toThrow("cancelled");
   expect(installation(f.root,f.home).version).toBe("4.2.0");
  });
  it("renders help without touching installation/state and rejects unsafe flags",async()=>{

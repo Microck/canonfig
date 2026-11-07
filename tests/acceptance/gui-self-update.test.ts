@@ -11,6 +11,7 @@ import { GuiOperation, GuiOperationTicket } from "../../src/gui/contract/operati
 import { GuiSelfUpdateCheck, GuiSelfUpdateProgress, GuiSelfUpdateStatus } from "../../src/gui/contract/administration.ts";
 import { GuiError } from "../../src/gui/contract/session.ts";
 import { updateDirectory } from "../../src/runtime/self-update/coordination.ts";
+import { parseVersion } from "../../src/runtime/self-update/core.ts";
 
 const machines: GuiSelfUpdateFixture[] = [];
 const children = new Set<ChildProcess>();
@@ -22,10 +23,22 @@ interface GuiServer {
   readonly exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
 }
 
-async function fixture() {
-  const machine = await createGuiSelfUpdateFixture({ holdDownload: true });
+async function fixture(releases?: readonly string[]) {
+  const machine = await createGuiSelfUpdateFixture({ holdDownload: true, releases });
   machines.push(machine);
   return machine;
+}
+
+async function invokeCli(machine: GuiSelfUpdateFixture, args: string[]) {
+  const child = spawn(process.execPath, [machine.entry, ...args, "--json"], { env: machine.env, stdio: ["ignore", "pipe", "pipe"] });
+  children.add(child);
+  let stdout = "", stderr = "";
+  child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+  child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+  const [code] = await once(child, "close");
+  children.delete(child);
+  expect(code, stderr).toBe(0);
+  return JSON.parse(stdout);
 }
 
 async function stop(child: ChildProcess, signal: "SIGINT" | "SIGTERM" | "SIGKILL" = "SIGTERM") {
@@ -119,8 +132,11 @@ const enable = async (server: GuiServer, npmCli: string) => {
 };
 
 describe("GUI self-update with a disposable npm installation", () => {
-  it("enables, checks and activates a local patch before cleanly exiting and freeing its port", async () => {
-    const machine = await fixture();
+  it("enables, checks and activates a minor without selecting the reported major before cleanly exiting and freeing its port", async () => {
+    const [major, minor] = parseVersion(previous);
+    const candidate = `${major}.${minor + 1}.2`;
+    const newMajor = `${major + 1}.0.0`;
+    const machine = await fixture([candidate, newMajor]);
     const server = await start(machine);
     const cliFailure = machine.invoke(["self-update", "apply", "--apply", "--json"]);
     expect(cliFailure.status).toBe(3);
@@ -168,6 +184,9 @@ describe("GUI self-update with a disposable npm installation", () => {
     const checked = await server.api("/api/self-update/check", {});
     expect(checked.status).toBe(200);
     expect(Schema.decodeUnknownSync(GuiSelfUpdateCheck)(checked.body)).toMatchObject({ current: previous, candidate, status: "available" });
+    const detail = Schema.decodeUnknownSync(GuiSelfUpdateCheck)(checked.body).detail;
+    expect(detail).toContain("Source and Followers only pair on the same major.minor");
+    expect(detail).toContain(`npm install --global @microck/canonfig@${newMajor}`);
     expect(machine.version()).toBe(previous);
     // A forcibly killed GUI cannot release its lease on any platform. Activation
     // must reclaim that dead reader under its gate, without touching this GUI.
@@ -191,6 +210,8 @@ describe("GUI self-update with a disposable npm installation", () => {
     expect(Schema.decodeUnknownSync(GuiSelfUpdateCheck)(completed.result)).toMatchObject({ current: previous, candidate, status: "updated" });
     expect(await server.exited).toEqual({ code: 0, signal: null });
     expect(machine.version()).toBe(candidate);
+    expect(JSON.parse(readFileSync(join(updateDirectory(machine.root), "settings.json"), "utf8")).line)
+      .toBe(candidate.split(".").slice(0, 2).join("."));
     expect(machine.invoke(["--version"]).stdout.trim()).toBe(candidate);
     expect(machine.readers()).toHaveLength(0);
     expect(existsSync(join(updateDirectory(machine.root), "pending.json"))).toBe(false);
@@ -234,7 +255,7 @@ describe("GUI self-update with a disposable npm installation", () => {
     const completed = await operation(server, await apply(server));
     expect(completed.state).toBe("succeeded");
     expect(Schema.decodeUnknownSync(GuiSelfUpdateCheck)(completed.result)).toMatchObject({ status: "deferred", current: previous, candidate,
-      detail: "Canonfig commands are active (or left a stale lease). Retry after they finish; do not remove live leases." });
+      detail: expect.stringContaining("Canonfig commands are active (or left a stale lease). Retry after they finish; do not remove live leases.") });
     expect(machine.readers()).toContain(otherLease);
     expect(machine.readers()).toHaveLength(2);
     expect(machine.version()).toBe(previous);
@@ -264,5 +285,27 @@ describe("GUI self-update with a disposable npm installation", () => {
     expect((await server.api("/api/session")).status).toBe(200);
     await enable(server, machine.npmCli);
     expect(machine.readers()).toHaveLength(1);
+  }, 120_000);
+
+  it.each(["manual", "auto"] as const)("uses the %s selection policy through the installed CLI", async (mode) => {
+    const [major, minor, patch] = parseVersion(previous);
+    const patchRelease = `${major}.${minor}.${patch + 1}`;
+    const minorRelease = `${major}.${minor + 1}.2`;
+    const majorRelease = `${major + 1}.2.3`;
+    const machine = await fixture([patchRelease, minorRelease, majorRelease]);
+    machine.allowDownload();
+    await invokeCli(machine, ["self-update", "enable", "--apply", "--confirm-idle", "--npm-cli", machine.npmCli]);
+    const preview = await invokeCli(machine, ["self-update", mode === "auto" ? "auto" : "check"]);
+    const candidate = mode === "auto" ? majorRelease : minorRelease;
+    expect(preview.data).toMatchObject({ status: "available", candidate });
+    if (mode === "manual") expect(preview.data.detail).toContain(`npm install --global @microck/canonfig@${majorRelease}`);
+    expect(machine.version()).toBe(previous);
+    const applied = await invokeCli(machine, ["self-update", mode === "auto" ? "auto" : "apply", "--apply", ...(mode === "auto" ? ["--once"] : [])]);
+    expect(applied.data).toMatchObject({ status: "updated", candidate });
+    expect(applied.data.detail).toContain("Source and Followers only pair on the same major.minor");
+    if (mode === "auto") expect(applied.data.detail).toContain("may refuse older state");
+    expect(machine.version()).toBe(candidate);
+    expect(JSON.parse(readFileSync(join(updateDirectory(machine.root), "settings.json"), "utf8")).line)
+      .toBe(candidate.split(".").slice(0, 2).join("."));
   }, 120_000);
 });
