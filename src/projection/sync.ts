@@ -549,6 +549,10 @@ export const restoreLocal = Effect.fn("LocalProjection.restore")(function*(
   const repository = yield* StateRepository;
   const synchronization = yield* Synchronization;
   yield* assertUpgradeGate(follower);
+  // A retained partial-rollback snapshot is not ready for restore planning.
+  if ((yield* repository.loadOpenRunIdentity(follower)) !== undefined) {
+    return yield* new ActiveRunExistsError({ follower });
+  }
   const snapshot = yield* readSnapshot(backupsOf(statePath), requested);
   const applied = yield* repository.loadAppliedResources(follower);
   const planned = yield* planRestore(snapshot, applied, follower);
