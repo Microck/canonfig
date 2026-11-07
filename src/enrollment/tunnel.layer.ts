@@ -592,6 +592,19 @@ const runSystemdCommand = (
 
 const systemctl = (): string => process.env.CANONFIG_SYSTEMCTL ?? "/usr/bin/systemctl";
 
+// A transient unit unloads as soon as SSH exits, which can happen between
+// `show` and `stop` when SSH fails at once (for example a host-key refusal).
+// A stop that fails because the unit is already gone has reached its goal; any
+// other stop failure still surfaces.
+const stopTunnelUnit = async (unit: string): Promise<void> => {
+  try {
+    await runSystemdCommand(systemctl(), ["--user", "stop", unit]);
+  } catch (error) {
+    const properties = await runSystemdCommand(systemctl(), ["--user", "show", unit, "--property=LoadState"]);
+    if (!/^LoadState=not-found$/mu.test(properties)) throw error;
+  }
+};
+
 const resolveSshExecutable = async (executable: string): Promise<string> => {
   if (isAbsolute(executable) || executable.includes("/")) return resolve(executable);
   for (const directory of (process.env.PATH ?? "/usr/bin:/bin").split(":")) {
@@ -625,7 +638,7 @@ const terminateTunnelProcess = async (
     throw new Error("the tunnel service no longer owns the recorded SSH process");
   }
   // Stop the whole dedicated cgroup, including any SSH subprocesses.
-  await runSystemdCommand(systemctl(), ["--user", "stop", state.systemdUnit]);
+  await stopTunnelUnit(state.systemdUnit);
 };
 
 const spawnSystemdTunnel = async (
@@ -1002,7 +1015,7 @@ const teardown = (
         if (!launch.systemdUnit.startsWith(tunnelUnitPrefix(directory))) {
           throw new Error("the recorded service does not belong to this state directory");
         }
-        await runSystemdCommand(systemctl(), ["--user", "stop", launch.systemdUnit]);
+        await stopTunnelUnit(launch.systemdUnit);
       } else if (state._tag === "Starting" || state._tag === "RecoveryRequired"
         || (state._tag === "Stopping" && launch !== undefined)) {
         // A crash between spawn and PID publication cannot prove that nothing
