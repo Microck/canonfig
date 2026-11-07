@@ -5,6 +5,7 @@ import type {
 } from "../domain/synchronization.ts";
 import type {
   ContentDigest,
+  CredentialReference,
   FollowerId,
   GroupName,
   ProfileId,
@@ -24,6 +25,7 @@ import type {
   DeploymentReceipt,
   HarnessTakeover,
   EnrollmentSourceRecord,
+  EnrollmentCredentialRetirement,
   EnrollmentFollowerSummary,
   EnrollmentInvitationSummary,
   FollowerCredentialRecord,
@@ -101,6 +103,11 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly cancelPendingEnrollment: (
     input: CancelPendingEnrollmentInput,
   ) => Effect.Effect<void, StateRepositoryError>;
+  readonly stageEnrollmentCredential: (reference: CredentialReference) => Effect.Effect<void, StateRepositoryError>;
+  /** Only the exclusive enrollment or Source-server owner may abandon staging. */
+  readonly recoverEnrollmentCredentialStaging: () => Effect.Effect<void, StateRepositoryError>;
+  readonly listEnrollmentCredentialRetirements: () => Effect.Effect<ReadonlyArray<EnrollmentCredentialRetirement>, StateRepositoryError>;
+  readonly completeEnrollmentCredentialRetirement: (reference: CredentialReference) => Effect.Effect<void, StateRepositoryError>;
   readonly listPendingEnrollments: (
   ) => Effect.Effect<ReadonlyArray<PendingEnrollmentRecord>, StateRepositoryError>;
   readonly findFollowerCredential: (

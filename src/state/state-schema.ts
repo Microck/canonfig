@@ -13,6 +13,7 @@ import { SqlClient } from "effect/unstable/sql";
 export const stateSchemaMigrations = [
   { id: 1, name: "state_format_6" },
   { id: 2, name: "archive_events" },
+  { id: 4, name: "enrollment_lifecycle" },
 ] as const;
 
 /**
@@ -376,6 +377,20 @@ export const stateMigrations = SqliteMigrator.fromRecord({
       END
     `;
   }),
+  "0004_enrollment_lifecycle": Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      CREATE TABLE enrollment_credential_retirements (
+        reference TEXT PRIMARY KEY NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('Staged', 'Retiring'))
+      )
+    `;
+    yield* sql`
+      INSERT OR IGNORE INTO enrollment_credential_retirements (reference, state)
+      SELECT credential_reference, 'Retiring' FROM followers WHERE revoked = 1
+    `;
+  }),
+
 });
 
 /** Bumped by every change to what stored state means. */

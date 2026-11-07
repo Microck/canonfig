@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { X509Certificate } from "node:crypto";
 import { request as httpsRequest } from "node:https";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -541,6 +541,42 @@ describe("loopback HTTPS enrollment", () => {
     const authenticated = await runFollower(setup, authenticateFollower({ endpoint: server.endpoint,
       tlsFingerprint: prepared.tlsFingerprint, credentialReference: prepared.credentialReference }));
     expect(authenticated.follower.id).toBe(prepared.follower.id);
+  });
+
+  it("retries cancelled credential retirement after a real deletion failure", async () => {
+    const setup = fixture();
+    const server = await start(setup);
+    const prepared = await runFollower(setup, enrollFollower({
+      invitation: await invitation(setup, server), followerName: "Cleanup Retry", finalize: false,
+    }));
+    const database = new DatabaseSync(setup.sourceDatabase, { readOnly: true });
+    const reference = String(database.prepare("SELECT credential_reference FROM pending_enrollments").get()?.credential_reference);
+    database.close();
+    const path = reference.slice("local-file:".length);
+    const held = `${path}.held`;
+    // A directory at the credential path makes unlink fail even as root.
+    renameSync(path, held);
+    mkdirSync(path);
+    const failed = await runFollower(setup, cancelFollowerEnrollment({
+      endpoint: server.endpoint, tlsFingerprint: prepared.tlsFingerprint,
+      credentialReference: prepared.credentialReference,
+    }).pipe(Effect.result));
+    expect(failed._tag).toBe("Failure");
+    if (failed._tag === "Failure") expect(failed.failure).toBeInstanceOf(CredentialStorageError);
+    const retained = new DatabaseSync(setup.sourceDatabase, { readOnly: true });
+    expect(retained.prepare("SELECT reference, state FROM enrollment_credential_retirements").all())
+      .toEqual([{ reference, state: "Retiring" }]);
+    expect(retained.prepare("SELECT count(*) AS count FROM pending_enrollments").get()?.count).toBe(0);
+    retained.close();
+    rmSync(path, { recursive: true });
+    renameSync(held, path);
+    await server.close();
+    openServers.splice(openServers.indexOf(server), 1);
+    await start(setup);
+    expect(existsSync(path)).toBe(false);
+    const cleaned = new DatabaseSync(setup.sourceDatabase, { readOnly: true });
+    expect(cleaned.prepare("SELECT count(*) AS count FROM enrollment_credential_retirements").get()?.count).toBe(0);
+    cleaned.close();
   });
 
   it("does not leak Source credentials on duplicate, cancelled or revoked enrollments", async () => {

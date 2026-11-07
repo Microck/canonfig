@@ -1204,6 +1204,7 @@ describe("StateRepository SQLite adapter", () => {
       id: "follower-1", name: "Follower follower-1", groups: ["base"],
       enrolledAt: "2026-08-15T12:00:00Z", revoked: true,
       pending: false, credentialPresent: false,
+      credentialLifecycle: { _tag: "Retiring" },
     }]);
     expect(rows.invitations).toEqual([{
       endpoint: "https://127.0.0.1:7341", groups: [],
