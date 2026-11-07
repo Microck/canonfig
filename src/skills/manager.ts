@@ -79,7 +79,12 @@ async function withLock<T>(location: SkillLocation, action: () => Promise<T>): P
   try {
     await handle.writeFile(JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }) + "\n");
     if (await exists(`${configPath(location)}.pending`)) {
-      const journal = Schema.decodeUnknownSync(SkillTransaction)(JSON.parse(await fs.readFile(`${configPath(location)}.pending`, "utf8")));
+      let journal: SkillTransaction;
+      try {
+        journal = Schema.decodeUnknownSync(SkillTransaction)(JSON.parse(await fs.readFile(`${configPath(location)}.pending`, "utf8")));
+      } catch {
+        throw new CanonfigError("SKILL_RECOVERY_REQUIRED", "The skill update recovery journal is invalid or unreadable. Preserve it and inspect the installed skills and source configuration before retrying");
+      }
       const phase = `The recorded transaction phase is ${journal._tag}; swap phases are ${journal.swaps.map((swap) => `${swap.path}: ${swap._tag}`).join(", ")}`;
       throw new CanonfigError("SKILL_RECOVERY_REQUIRED", `A previous update left a .pending recovery journal. ${phase}. Preserve the journal and backups, compare installed trees and source configuration with the recorded digests, and finish or restore that update manually before removing the journal and any stale lock`);
     }
