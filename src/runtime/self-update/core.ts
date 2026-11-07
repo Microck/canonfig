@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { TaggedError } from "../../domain/tagged-error.ts";
 import { readSettings } from "./settings.ts";
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
@@ -127,7 +128,7 @@ const UpdateTransaction = Schema.Union([
   Schema.TaggedStruct("Committed", transactionFields),
 ]);
 type UpdateTransaction = typeof UpdateTransaction.Type;
-export class UpdateTransitionError extends Schema.TaggedError<UpdateTransitionError>()(
+export class UpdateTransitionError extends TaggedError<UpdateTransitionError>()(
   "UpdateTransitionError", { from: Schema.String, to: Schema.String },
 ) {}
 const updateTransitions = {

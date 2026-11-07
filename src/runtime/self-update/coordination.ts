@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, lstatSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Schema } from "effect";
+import { TaggedError } from "../../domain/tagged-error.ts";
 
 export const updateDirectory = (root: string) => join(dirname(root), ".canonfig-self-update");
 export function entry(path: string) {
@@ -96,7 +97,7 @@ type LeaseState =
   | { readonly _tag: "Blocked" }
   | { readonly _tag: "RestartRequired" }
   | { readonly _tag: "Closed" };
-export class LeaseTransitionError extends Schema.TaggedError<LeaseTransitionError>()(
+export class LeaseTransitionError extends TaggedError<LeaseTransitionError>()(
   "LeaseTransitionError", { message: Schema.String },
 ) {}
 /** A capability for this command's lease, never for another process's reader files. */
