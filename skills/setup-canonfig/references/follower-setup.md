@@ -79,7 +79,7 @@ stop / Other. Retiring a Source strands its followers and needs approval.
 Use an approved user-level install only when needed.
 
 ```bash
-npm install --global @microck/canonfig@6.1.1
+npm install --global @microck/canonfig@7.0.0
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```

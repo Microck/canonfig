@@ -154,7 +154,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
   const metadata = Schema.decodeUnknownSync(PackageMetadata)(
     JSON.parse(readFileSync(metadataPath, "utf8")),
   );
-  if (metadata.name !== "@microck/canonfig" || metadata.version !== "6.1.1") {
+  if (metadata.name !== "@microck/canonfig" || metadata.version !== "7.0.0") {
     fail(`unexpected package identity: ${metadata.name}@${metadata.version}`);
   }
   if (metadata.license !== "MIT") fail(`unexpected package license: ${metadata.license}`);
@@ -188,7 +188,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
 const validatePackageContents = (
   artifact: typeof PackedArtifact.Type,
 ): void => {
-  if (artifact.name !== "@microck/canonfig" || artifact.version !== "6.1.1") {
+  if (artifact.name !== "@microck/canonfig" || artifact.version !== "7.0.0") {
     fail(`unexpected packed identity: ${artifact.name}@${artifact.version}`);
   }
   // The shared live screens include full authoring, enrollment, synchronization,
@@ -249,7 +249,7 @@ const validateBinary = (executable: string): void => {
 
   const version = invokeExecutable(executable, ["--version"]);
   requireSuccess("packed executable version", version);
-  if (version.stdout !== "6.1.1\n" || version.stderr !== "") {
+  if (version.stdout !== "7.0.0\n" || version.stderr !== "") {
     fail("packed executable version output is invalid");
   }
 
