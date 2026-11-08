@@ -10,7 +10,7 @@ import { LiveResourcesContext, requestError, useLiveActions, useLiveResource } f
 import { GuiInvitationInspection, GuiSetupJournal, GuiSetupStatus } from "../../../src/gui/contract/enrollment";
 import { GuiHarnessReport } from "../../../src/gui/contract/synchronization";
 import { TARGET_IDS } from "../../../src/projection/model";
-import { Onboarding, type ImportOffer, type OnboardingData } from "./onboarding";
+import { Onboarding, type OnboardingData } from "./onboarding";
 import { Facts, Field } from "./kit";
 import type { ResourceState } from "@/workspace/workspace-types";
 import { TransitionError, useStateMachine } from "@/lib/state-machine";
@@ -115,12 +115,11 @@ export function useEnrollmentController(backend: WorkspaceBackend, session: GuiS
     data: {
       hostname: session.machineName, endpoint: inspection?.endpoint ?? "", profileName: session.machineName,
       harnesses: TARGET_IDS.map((id) => ({ id, name: HARNESS_NAMES[id], installed: Array.isArray(detected) && detected.includes(id), listed: selectedHarnesses.includes(id), excluded: false })),
-      offers: (importReview?.imports?.offered ?? []).map((offer): ImportOffer => {
-        const [from, category, ...name] = offer.id.split("/");
-        return { id: offer.id, source: from as ImportOffer["source"], category: category as ImportOffer["category"], name: name.join("/"),
-          harnesses: from === "agents" ? [...TARGET_IDS] : [from as HarnessId], path: "", target: offer.target,
-          secrets: [], credentialNotes: [...offer.secrets], notes: [...offer.notes] };
-      }), skipped: [], importNotes: importReview?.exclusions ?? [], followerInstalled: [],
+      offers: importReview?.imports?.offered ?? [],
+      skipped: importReview?.imports?.skipped ?? [],
+      collisions: importReview?.imports?.collisions ?? [],
+      present: importReview?.imports?.present ?? [],
+      followerInstalled: [],
     },
     planSetup(harnesses, imports, next) {
       assertIdle(); sendSource({ kind: "plan" });

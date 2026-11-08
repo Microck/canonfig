@@ -27,10 +27,10 @@ const IMPORT_OFFERS: ImportOffer[] = [
     notes: ["Its tools list isn't copied: Claude Code's tool names don't match Canonfig's capabilities, so it starts read-only."],
   }),
   offer("claude-code", "commands", "ship", "~/.claude/commands/ship.md"),
-  offer("claude-code", "mcp", "github", "~/.claude.json", { secrets: [{ field: "env.GITHUB_TOKEN", fromEnv: "GITHUB_TOKEN" }] }),
+  offer("claude-code", "mcp", "github", "~/.claude.json", { secrets: ["env.GITHUB_TOKEN -> fromEnv GITHUB_TOKEN"] }),
   offer("codex", "instructions", "AGENTS.md", "~/.codex/AGENTS.md"),
   offer("codex", "mcp", "linear", "~/.codex/config.toml", {
-    secrets: [{ field: "headers.Authorization", fromEnv: "LINEAR_AUTHORIZATION" }],
+    secrets: ["headers.Authorization -> fromEnv LINEAR_AUTHORIZATION"],
     notes: ["Its X-Timeout header isn't copied, because its value isn't text."],
   }),
   offer("opencode", "commands", "review-pr", "~/.config/opencode/commands/review-pr.md"),
@@ -50,6 +50,11 @@ export function SimulatedOnboarding({ onDone }: { onDone: (setup: Setup) => void
   return <Onboarding onDone={onDone} data={{
     hostname: machine.hostname, endpoint: machine.endpoint, profileName: profile.name,
     harnesses, offers: IMPORT_OFFERS, skipped: IMPORT_SKIPPED,
+    present: [],
+    collisions: [{
+      kind: "candidates", target: "AGENTS.md",
+      candidates: IMPORT_OFFERS.filter((item) => item.category === "instructions").map(({ id, source, path }) => ({ id, source, path })),
+    }],
     followerInstalled: ["codex", "claude-code", "oh-my-pi", "opencode"],
   }} />;
 }

@@ -1,6 +1,6 @@
 // Shared first-run flow. Demo choices seed the simulated workspace; live operations
 // preserve the backend's plan digest, approval, invitation and enrollment evidence.
-import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { AnimatePresence, cubicBezier, LayoutGroup, motion, useIsPresent, usePresenceData, useReducedMotion, type Variants } from "motion/react";
 import { ArrowLeft, ArrowRight, Check, Circle, FileArrowUp, RadioButton } from "@/components/icons";
@@ -14,12 +14,14 @@ import { RadioGroup } from "@/components/ui/radio-group";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { DEMO, HARNESS_NAMES, type Harness, type HarnessId } from "@/shared/metadata";
+import { DEMO, type Harness, type HarnessId } from "@/shared/metadata";
 import { DitherProgress, Hint, Mono, Term } from "@/shared/shared";
 import { DisclosureTrigger, Facts, Field, FieldError, OnboardingShell, PROGRESS_MARK, RadioRow, STEP_ITEMS, STEP_MS, StepTransition, Stepper, simulate, useFocusOnMount } from "./kit";
 import { ErrorNotice } from "@/live/session";
 import { SetupEvidence, type EnrollmentController } from "./enrollment-controller";
 import { TransitionError, useStateMachine } from "@/lib/state-machine";
+import type { SetupImportOffer, SetupImportReview } from "../../../src/setup/setup.types";
+import { ImportReview } from "./import-review";
 
 // Rings drifting inward toward the centre: many machines converging on one.
 // At speed 1 a ring takes about 20 seconds to move one ring inward.
@@ -198,52 +200,16 @@ export interface OnboardingData {
   endpoint: string;
   profileName: string;
   harnesses: Pick<Harness, "id" | "name" | "installed" | "listed" | "excluded">[];
-  offers: ImportOffer[];
-  skipped: { source: HarnessId; path: string; reason: string }[];
-  importNotes?: readonly string[];
+  offers: readonly ImportOffer[];
+  skipped: SetupImportReview["skipped"];
+  collisions: SetupImportReview["collisions"];
+  present: SetupImportReview["present"];
   followerInstalled: HarnessId[];
 }
 
 const DEFAULT_PORT = 17342;
 
-/* What the one-time import offers, shaped like ImportCandidate in src/projection/import.ts. */
-type ImportCategory = "instructions" | "rules" | "skills" | "agents" | "commands" | "mcp";
-
-export interface ImportOffer {
-  /** `<source>/<category>/<name>`, the id `setup plan --import` takes. */
-  id: string;
-  /** The harness it comes from, or "agents" for the shared ~/.agents/skills/ several harnesses read. */
-  source: HarnessId | "agents";
-  /** The harnesses that read it: it's offered while any of them is selected. */
-  harnesses: HarnessId[];
-  category: ImportCategory;
-  name: string;
-  /** Where it is now. */
-  path: string;
-  /** Where it lands in ~/.canonfig/; MCP servers land in canonfig.jsonc. */
-  target: string;
-  /** Credential-looking values, each replaced by a `fromEnv` reference before anything is copied. */
-  secrets: { field: string; fromEnv: string }[];
-  credentialNotes?: string[];
-  /** What the import drops or converts because Canonfig's format has no place for it; never a value. */
-  notes: string[];
-}
-
-const CATEGORY_LABEL: Record<ImportCategory, string> = {
-  instructions: "Instructions",
-  rules: "Rule",
-  skills: "Skill",
-  agents: "Agent",
-  commands: "Command",
-  mcp: "MCP server",
-};
-
-
-/** Where an offer comes from, in words: a harness, or the shared skills folder. */
-const sourceName = (source: ImportOffer["source"]) => (source === "agents" ? "Shared skills" : HARNESS_NAMES[source]);
-
-/** "Don't import" in a collision's choice. */
-const NO_IMPORT = "none";
+export type ImportOffer = SetupImportOffer;
 
 
 export function Onboarding({ onDone, data, live, onCancel }: { onDone: (setup: Setup) => void; data: OnboardingData; live?: EnrollmentController; onCancel?: () => void }) {
@@ -552,6 +518,7 @@ function Wizard({
   onBlocked,
   busy = false,
   done,
+  wide = false,
   children,
 }: {
   role: Role;
@@ -567,6 +534,7 @@ function Wizard({
   onBlocked?: () => void;
   busy?: boolean;
   done?: ReactNode;
+  wide?: boolean;
   children: ReactNode;
 }) {
   const heading = useFocusOnMount<HTMLHeadingElement>();
@@ -629,7 +597,7 @@ function Wizard({
       initial="hidden"
       animate="shown"
       exit="exit"
-      className={cn("w-full max-w-[600px]", !present && "z-10")}
+      className={cn("w-full", wide ? "max-w-4xl" : "max-w-[600px]", !present && "z-10")}
     >
       {/* Kept in layout (invisible, so not focusable) once done, so the card doesn't jump. */}
       <Button
@@ -801,7 +769,7 @@ const SOURCE_STEP = { profile: 0, harnesses: 1, import: 2, service: 3, create: 4
 const CHECK_ROW = "flex min-h-11 cursor-pointer items-start gap-3 rounded-lg border border-border px-3.5 py-3 hover:bg-raised/50 sm:min-h-10";
 
 function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<SourceSetup>) {
-  const { harnesses, offers: IMPORT_OFFERS, skipped: IMPORT_SKIPPED } = data;
+  const { harnesses } = data;
   const INSTALLED = harnesses.filter((h) => h.installed);
   const NOT_INSTALLED = harnesses.filter((h) => !h.installed);
   const [step, setStep] = useState(0);
@@ -810,9 +778,8 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
   // Setup lists the installed harnesses until the person edits the list, as `setup plan` does without --harness.
   // Any harness can be listed, installed or not, as `--harness` allows.
   const [listed, setListed] = useState<HarnessId[]>(() => (live ? harnesses.filter((h) => h.listed) : INSTALLED).map((h) => h.id));
-  // The import choice: checked items, and for each target that several items collide on, the one picked. Nothing by default.
+  // One selection list includes ordinary items and the explicitly chosen candidate for each collision.
   const [checked, setChecked] = useState<string[]>([]);
-  const [picks, setPicks] = useState<Record<string, string>>({});
   const [allowCredentials, setAllowCredentials] = useState(false);
   const [scan, setScan] = useState(true);
   const [service, setService] = useState<"service" | "manual">("service");
@@ -821,23 +788,12 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
   const progress = live ? null : job?.progress ?? null;
   const done = live ? live.applied : !!job?.done;
 
-  // In TARGET_IDS order, whatever order they were checked in.
   const selected = harnesses.filter((h) => listed.includes(h.id)).map((h) => h.id);
-  const offered = IMPORT_OFFERS.filter((o) => o.harnesses.some((h) => listed.includes(h)));
-  // Several items for one target collide (selectImports in src/projection/import.ts): importing
-  // everything leaves them out, and each needs its own pick. Checks and picks for items no longer
-  // offered stay in state, so re-adding a harness brings its choices back, but they count only while offered.
-  const collisions = [...new Set(offered.map((o) => o.target))]
-    .map((target) => ({ target, offers: offered.filter((o) => o.target === target) }))
-    .filter((c) => c.offers.length > 1);
-  const single = offered.filter((o) => !collisions.some((c) => c.target === o.target));
-  const imported = [
-    ...single.filter((o) => checked.includes(o.id)).map((o) => o.id),
-    ...collisions.flatMap((c) => c.offers.filter((o) => o.id === picks[c.target]).map((o) => o.id)),
-  ];
-  const importAll = single.length > 0 && single.every((o) => checked.includes(o.id));
-  const nothingFrom = selected.filter((id) => !offered.some((o) => o.harnesses.includes(id)));
-  const skipped = IMPORT_SKIPPED.filter((s) => listed.includes(s.source));
+  const offered = useMemo(() => data.offers.filter((offer) =>
+    offer.harnesses.some((harness) => listed.includes(harness)) && !data.present.includes(offer.id)
+    && !data.collisions.some((collision) => collision.kind === "folder" && collision.candidates.some((candidate) => candidate.id === offer.id))),
+  [data.offers, data.present, data.collisions, listed]);
+  const imported = offered.filter((offer) => checked.includes(offer.id)).map((offer) => offer.id);
 
   // Validated as typed, never rewritten: stripping characters would turn "1.5" into a different port.
   const portNumber = Number(port);
@@ -860,6 +816,7 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
       title={`Make ${data.hostname} the Source`}
       steps={live ? ["Your profile", "Harnesses", "Import", "Approve", "Create"] : SOURCE_STEPS}
       step={step}
+      wide={step === SOURCE_STEP.import}
       onStep={(s) => {
         setTried(false);
         if (live && s === SOURCE_STEP.import && step === SOURCE_STEP.harnesses) void live.planSetup(selected, undefined, () => setStep(s));
@@ -969,105 +926,20 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
       )}
       {step === SOURCE_STEP.import && (
         <div className="space-y-5">
-          <p className="leading-relaxed text-muted-foreground">
-            Canonfig can copy what these harnesses already hold into <Mono className="text-foreground">~/.canonfig/</Mono>, once. Nothing is imported unless you check it.
-            {DEMO && " This demo offers example items and doesn't read your files."}
-          </p>
-          {data.importNotes?.map((note) => <p key={note} className="text-sm text-muted-foreground">{note}</p>)}
-          {live && <label className={CHECK_ROW}>
-            <Checkbox checked={allowCredentials} onCheckedChange={(checked) => {
-              setAllowCredentials(checked === true);
-              if (!checked) {
-                setChecked((ids) => ids.filter((id) => !offered.find((offer) => offer.id === id)?.credentialNotes?.length));
-                setPicks({});
+          <ImportReview data={data} listed={listed} selected={checked} onSelect={setChecked}
+            allowCredentials={allowCredentials} onAllowCredentials={(allow) => {
+              setAllowCredentials(allow);
+              if (!allow) {
+                const secretIds = new Set(data.offers.filter((offer) => offer.secrets.length).map((offer) => offer.id));
+                setChecked((ids) => ids.filter((id) => !secretIds.has(id)));
               }
             }} />
-            Allow imports that replace literal secrets with environment references
-          </label>}
-          {single.length > 0 && (
-            <label className={CHECK_ROW}>
-              <Checkbox
-                checked={importAll}
-                onCheckedChange={(c) => setChecked((ids) => (c === true ? [...new Set([...ids, ...single.filter((o) => !live || allowCredentials || !o.credentialNotes?.length).map((o) => o.id)])] : ids.filter((id) => !single.some((o) => o.id === id))))}
-                className="mt-px"
-              />
-              <span>
-                <span className="font-medium">Import all</span>
-                {collisions.length > 0 && <span className="mt-1 block text-sm text-muted-foreground">Items that share a name still need a choice of their own, below.</span>}
-              </span>
-            </label>
-          )}
-          {[...new Set(single.map((o) => o.source))].map((source) => (
-            <section key={source} aria-label={sourceName(source)}>
-              <h3 className="mb-2 text-sm font-medium">{sourceName(source)}</h3>
-              <ul className="divide-y divide-border rounded-lg border border-border">
-                {single
-                  .filter((o) => o.source === source)
-                  .map((o) => (
-                    <li key={o.id}>
-                      <label className="flex min-h-11 cursor-pointer items-start gap-3 px-3.5 py-3 hover:bg-raised/50 sm:min-h-10">
-                        <Checkbox
-                          disabled={!!live && !allowCredentials && !!o.credentialNotes?.length}
-                          checked={checked.includes(o.id)}
-                          onCheckedChange={(c) => setChecked((ids) => (c === true ? [...ids, o.id] : ids.filter((id) => id !== o.id)))}
-                          className="mt-px"
-                        />
-                        <OfferText offer={o} />
-                      </label>
-                    </li>
-                  ))}
-              </ul>
-            </section>
-          ))}
-          {collisions.map((c) => (
-            <section key={c.target} aria-label={`Choose ${c.target}`}>
-              <h3 className="mb-1 text-sm font-medium">
-                Choose one <Mono className="text-foreground">{c.target}</Mono>
-              </h3>
-              <p className="mb-2 text-sm text-muted-foreground">
-                {c.offers.map((o) => sourceName(o.source)).join(" and ")} each have one, with different content. Import one of them, or neither.
-              </p>
-              <RadioGroup value={picks[c.target] ?? NO_IMPORT} onValueChange={(v) => setPicks((p) => ({ ...p, [c.target]: v }))} className="gap-2">
-                {c.offers.map((o) => (
-                  <RadioRow key={o.id} value={o.id} title={sourceName(o.source)} description={<Mono>{o.path || o.id}</Mono>} disabled={!!live && !allowCredentials && !!o.credentialNotes?.length} />
-                ))}
-                <RadioRow value={NO_IMPORT} title="Don't import" />
-              </RadioGroup>
-            </section>
-          ))}
-          {nothingFrom.length > 0 && (
-            <p className="text-sm text-muted-foreground">Nothing to import from {nothingFrom.map((id) => HARNESS_NAMES[id]).join(", ")}.</p>
-          )}
-          {skipped.length > 0 && (
-            <Collapsible>
-              <DisclosureTrigger>Can't be imported ({skipped.length})</DisclosureTrigger>
-              <CollapsibleContent className="mt-3">
-                <ul className="divide-y divide-border rounded-lg border border-border">
-                  {skipped.map((s) => (
-                    <li key={s.path} className="px-3.5 py-3">
-                      <Mono className="text-foreground">{s.path}</Mono>
-                      <span className="mt-1 block text-sm text-muted-foreground">
-                        {HARNESS_NAMES[s.source]}. {s.reason}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </CollapsibleContent>
-            </Collapsible>
-          )}
           <p className="text-sm text-muted-foreground">
-            What you don't import is replaced when a sync first writes the file or folder that holds it. With Backups on, Canonfig copies what was there into a{" "}
-            <Term term="Takeover Snapshot" /> in <Mono>~/.canonfig/.backups/</Mono> first, so you can put it back from Backups. With Backups off, nothing is copied. Files and
-            folders Canonfig has nothing to write into stay as they are.
+            With Backups on, the first sync saves replaced harness content in <Mono>~/.canonfig/.backups/</Mono>. With Backups off, it is not saved. Other files stay untouched.
           </p>
           {!live && <label className={CHECK_ROW}>
             <Checkbox checked={scan} onCheckedChange={(c) => setScan(c === true)} className="mt-px" />
-            <span>
-              <span className="font-medium">Suggest tools from the folder</span>
-              <span className="mt-1 block text-sm text-muted-foreground">
-                Reads the folder's instructions, skills, hook scripts and MCP commands, and suggests a tool for each program they need. Nothing is added until you review it.
-              </span>
-            </span>
+            <span>Suggest tools from the imported folder for review</span>
           </label>}
         </div>
       )}
@@ -1142,34 +1014,6 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
   );
 }
 
-/**
- * One offered import item: what it is, where it comes from and where it lands. A credential-looking
- * MCP value shows as the `fromEnv` reference that replaces it; the value itself is never copied.
- */
-function OfferText({ offer }: { offer: ImportOffer }) {
-  return (
-    <span className="min-w-0">
-      <span className="block">
-        <span className="font-medium">{CATEGORY_LABEL[offer.category]}</span>
-        {offer.category !== "instructions" && <Mono className="ml-2 text-foreground">{offer.name}</Mono>}
-      </span>
-      <span className="mt-1 block text-sm text-muted-foreground">
-        {offer.path ? <>From <Mono>{offer.path}</Mono> to </> : <>Imports <Mono>{offer.id}</Mono> to </>}<Mono>{offer.target}</Mono>
-      </span>
-      {offer.secrets.map((s) => (
-        <span key={s.field} className="mt-1 block text-sm text-muted-foreground">
-          <Mono>{s.field}</Mono> looks like a credential, so it becomes <Mono className="text-foreground">{`{ "fromEnv": "${s.fromEnv}" }`}</Mono> and its value isn't copied.
-        </span>
-      ))}
-      {offer.credentialNotes?.map((note) => <span key={note} className="mt-1 block text-sm text-muted-foreground">{note}</span>)}
-      {offer.notes.map((note) => (
-        <span key={note} className="mt-1 block text-sm text-muted-foreground">
-          {note}
-        </span>
-      ))}
-    </span>
-  );
-}
 
 /* ------------------------------------------------------------------ */
 /* Follower enroll                                                     */
