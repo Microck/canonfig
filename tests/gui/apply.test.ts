@@ -17,7 +17,6 @@ import { MachineState } from "../../src/machine/machine-state.service.ts";
 import { runtimeLayer } from "../../src/runtime/layers.ts";
 import { listSecrets, SECRET_SHARE_GROUP, storeSecret } from "../../src/secrets/secret-store.ts";
 import { resolveSecretBindings } from "../../src/secrets/secret-bindings.ts";
-import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 
 function machineRuntime(home: string) {
   const folder = join(home, ".canonfig");
@@ -35,8 +34,12 @@ function machineRuntime(home: string) {
       verification: "provider-presence" as const,
     }),
   }))).pipe(Layer.provide(files));
-  const enrollment = EnrollmentLive.pipe(Layer.provide(Layer.merge(machine, stateRepositoryLayer(statePath))));
-  return ManagedRuntime.make(Layer.merge(runtimeLayer({ statePath, policyPath: join(folder, "policy.json") }, machine), enrollment));
+  // Enrollment shares the runtime's own StateRepository. runtimeLayer creates the state folder before opening
+  // the database, while Layer.merge builds siblings concurrently, so a second bare repository layer could open
+  // state.sqlite before the folder exists ("unable to open database file"). A layer reference is built once per
+  // runtime, so this also keeps one connection to the database.
+  const runtime = runtimeLayer({ statePath, policyPath: join(folder, "policy.json") }, machine);
+  return ManagedRuntime.make(Layer.merge(runtime, EnrollmentLive.pipe(Layer.provide(runtime))));
 }
 
 it("refreshes newly shared secrets before a GUI apply succeeds and preserves refresh failures", async () => {
