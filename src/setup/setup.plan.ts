@@ -21,8 +21,8 @@ const asJson = <Value>(value: Value) =>
 
 /**
  * The plan digest covers intent, decisions, exclusions, bounded inventory,
- * authoring-file fingerprints and exact executable items. Runtime evidence
- * and qualified provenance are apply outputs, not approval inputs.
+ * authoring-file fingerprints, the structured import review and exact executable
+ * items. Runtime evidence and qualified provenance are apply outputs, not approval inputs.
  */
 export const setupPlanDigest = (input: {
   readonly role: SetupRole;

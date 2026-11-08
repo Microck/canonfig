@@ -41,6 +41,8 @@ Unauthenticated browser page navigations receive a small HTML sign-in guide with
 
 The structured review uses setup journal v3. Earlier v2 journals are not decoded or migrated. Both clients ask the person to preserve the earlier journal, inspect any setup side effects, move the journal aside and start setup again without removing `state.sqlite`.
 
+The plan digest binds the complete structured import review, including offers and skipped paths. A changed review requires a new approval even when no executable import item changes; a journal carrying another review fails digest validation.
+
 The journal has a 16 MiB size bound for thousands of offers, their selected execution metadata and plan evidence. Import entries hold metadata rather than file or skill contents.
 
 Onboarding owns role discovery, Source setup and Follower enrollment through tagged lifecycle transitions. Source discovery locks the role choice until it settles. Setup records approval or apply separately from its follow-up status read; reloading the journal can certify completion without repeating the mutation. Enrollment keeps a successful join when the local-preferences read fails. Preference-save failures retain the draft and completed harness changes, and a retry re-reads local preferences.

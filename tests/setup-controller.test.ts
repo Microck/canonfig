@@ -22,6 +22,7 @@ import {
   transitionSetup,
   setupItemVerdicts,
   setupPlanDigest,
+  validateSetupJournal,
 } from "../src/setup/setup.plan.ts";
 import {
   maxSetupDiscoveryFileBytes,
@@ -29,6 +30,7 @@ import {
   SetupItemSummary,
   SetupItemRecord,
   type SetupInventory,
+  type SetupImportReview,
   type SetupJournal,
   type SetupPlanItem,
 } from "../src/setup/setup.types.ts";
@@ -88,7 +90,7 @@ const journal = (overrides: Partial<SetupJournal> = {}): SetupJournal => {
   const currentItems = overrides.items ?? items;
   const planDigest = setupPlanDigest({
     role: "follower", scope: "full", intent: "prepare follower", exclusions: [],
-    inventory, discoveryInputs: [], items: currentItems,
+    inventory, discoveryInputs: [], items: currentItems, imports: overrides.imports,
   });
   const timestamp = "2026-08-17T00:00:00.000Z";
   const approvals = overrides.approvals ?? [{ digest: planDigest, approver: "operator", approvedAt: timestamp }];
@@ -421,6 +423,24 @@ process.exit(2);
       discoveryInputs: [],
       items,
     })).not.toBe(digest);
+  });
+
+  it("changes the plan digest when only the structured import review changes", () => {
+    const imports: SetupImportReview = { request: "offer", offered: [], present: [], skipped: [], collisions: [] };
+    const initial = journal({ imports });
+    const changed: SetupImportReview = { ...imports, skipped: [{ source: "codex", path: "~/.agents/skills/unfinished", reason: "has no SKILL.md" }] };
+    expect(setupPlanDigest({ ...initial, imports: changed })).not.toBe(initial.planDigest);
+  });
+
+  it("rejects a journal whose import review differs from its approved digest", async () => {
+    const imports: SetupImportReview = { request: "offer", offered: [], present: [], skipped: [], collisions: [] };
+    const initial = journal({ imports });
+    await Effect.runPromise(validateSetupJournal(initial));
+    const failure = await Effect.runPromise(validateSetupJournal({
+      ...initial,
+      imports: { ...imports, skipped: [{ source: "codex", path: "~/.agents/skills/unfinished", reason: "has no SKILL.md" }] },
+    }).pipe(Effect.flip));
+    expect(failure).toMatchObject({ _tag: "SetupError", category: "prerequisite", message: expect.stringContaining("stale plan digest") });
   });
 
   it("resumes required work without blocking on an independent optional failure", () => {
@@ -871,6 +891,30 @@ describe.runIf(process.platform === "linux")("Source harness selection and impor
       test.cleanup();
     }
   }, 60_000);
+
+  it("replanning a changed import review invalidates approval without changing executable items", () => {
+    const test = fixture();
+    try {
+      const planned = test.setup(["plan", "--role", "source", "--harness", "claude-code"]);
+      test.setup(["approve", "--approver", "operator"]);
+      expect(test.setup(["status"]).approved).toBe(true);
+      mkdirSync(join(test.home, ".claude", "skills", "unfinished"));
+      const replanned = test.setup(["plan", "--role", "source", "--harness", "claude-code"]);
+      expect(replanned).toMatchObject({
+        role: planned.role, scope: planned.scope, intent: planned.intent,
+        inventory: planned.inventory, items: planned.items,
+        exclusions: planned.exclusions, discoveryInputs: planned.discoveryInputs,
+      });
+      expect(replanned.imports.skipped).toContainEqual({
+        source: "claude-code", path: "~/.claude/skills/unfinished", reason: "has no SKILL.md",
+      });
+      expect(replanned.planDigest).not.toBe(planned.planDigest);
+      expect(replanned.approvals).toEqual([]);
+      expect(test.setup(["status"]).approved).toBe(false);
+    } finally {
+      test.cleanup();
+    }
+  }, 180_000);
 
   it("preselects installed harnesses, ignores a generic agent without ~/.cursor, and binds approval to the list", () => {
     const test = fixture();
