@@ -778,9 +778,8 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
   // Setup lists the installed harnesses until the person edits the list, as `setup plan` does without --harness.
   // Any harness can be listed, installed or not, as `--harness` allows.
   const [listed, setListed] = useState<HarnessId[]>(() => (live ? harnesses.filter((h) => h.listed) : INSTALLED).map((h) => h.id));
-  // A target owns one decision, including an explicit skip (null), even while its harness is unlisted.
-  const [choices, setChoices] = useState<ReadonlyMap<string, string | null>>(() => new Map());
-  const [allowCredentials, setAllowCredentials] = useState(false);
+  // A target keeps its chosen offer id while its harness is unlisted, so re-listing the harness restores the choice.
+  const [choices, setChoices] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [scan, setScan] = useState(true);
   const [service, setService] = useState<"service" | "manual">("service");
   const [port, setPort] = useState(String(DEFAULT_PORT));
@@ -803,13 +802,12 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
     for (const offer of offered) if (!primary.has(offer.target)) primary.set(offer.target, offer);
     for (const offer of offered) {
       const choice = choices.get(offer.target);
-      if ((collisionTargets.has(offer.target) ? choice === offer.id : choice != null && offeredIds.has(choice)) && !chosen.has(offer.target)) {
-        const candidate = collisionTargets.has(offer.target) ? offer : primary.get(offer.target)!;
-        if (allowCredentials || !candidate.secrets.length) chosen.set(offer.target, candidate.id);
+      if ((collisionTargets.has(offer.target) ? choice === offer.id : choice !== undefined && offeredIds.has(choice)) && !chosen.has(offer.target)) {
+        chosen.set(offer.target, collisionTargets.has(offer.target) ? offer.id : primary.get(offer.target)!.id);
       }
     }
     return [...chosen.values()];
-  }, [offered, choices, collisionTargets, allowCredentials]);
+  }, [offered, choices, collisionTargets]);
 
   // Validated as typed, never rewritten: stripping characters would turn "1.5" into a different port.
   const portNumber = Number(port);
@@ -891,10 +889,10 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
       )}
       {step === SOURCE_STEP.harnesses && (
         <div className="space-y-5">
-          <p className="leading-relaxed text-muted-foreground">
-            Choose the AI coding tools, such as Claude Code or Codex, that should use this profile. Canonfig calls them harnesses.
-            Selected tools receive the setup when installed on this machine or its followers.
-          </p>
+          <div className="space-y-1">
+            <p className="font-medium">Which tools sync with <Mono className="text-foreground">~/.canonfig/</Mono>?</p>
+            <p className="text-muted-foreground">Syncing replaces their instructions, skills and MCP servers. Unchecked tools are left alone, except for skills in the shared <Mono>~/.agents/skills/</Mono> folder.</p>
+          </div>
           <ul aria-label="Installed AI coding tools" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {INSTALLED.map((h) => (
               <li key={h.id}>
@@ -904,21 +902,14 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
                     onCheckedChange={(c) => setListed((ids) => (c === true ? [...ids, h.id] : ids.filter((id) => id !== h.id)))}
                     className="mt-px"
                   />
-                  <span className="min-w-0">
-                    <span className="block font-medium">{h.name}</span>
-                    <Mono>{h.id}</Mono>
-                  </span>
+                  <span className="min-w-0 font-medium">{h.name}</span>
                 </label>
               </li>
             ))}
           </ul>
           <Collapsible>
-            <DisclosureTrigger>Not installed on {data.hostname} ({NOT_INSTALLED.length})</DisclosureTrigger>
-            <CollapsibleContent className="mt-3 space-y-3">
-              <p className="text-sm text-muted-foreground">
-                Select a tool here if another machine uses it, or if you plan to install it later. Canonfig will manage its shared settings once it is installed.
-                A tool is detected when its program is in Canonfig's install folders, ~/.local/bin or PATH.
-              </p>
+            <DisclosureTrigger>Not installed here ({NOT_INSTALLED.length})</DisclosureTrigger>
+            <CollapsibleContent className="mt-3">
               <ul aria-label="AI coding tools not installed" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {NOT_INSTALLED.map((h) => (
                   <li key={h.id}>
@@ -928,10 +919,7 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
                         onCheckedChange={(c) => setListed((ids) => (c === true ? [...ids, h.id] : ids.filter((id) => id !== h.id)))}
                         className="mt-px"
                       />
-                      <span className="min-w-0">
-                        <span className="block font-medium">{h.name}</span>
-                        <span className="text-sm text-muted-foreground">Not installed</span>
-                      </span>
+                      <span className="min-w-0 font-medium">{h.name}</span>
                     </label>
                   </li>
                 ))}
@@ -942,29 +930,7 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
       )}
       {step === SOURCE_STEP.import && (
         <div className="space-y-5">
-          <ImportReview data={data} listed={listed} selected={imported} onSelect={(ids) => {
-            setChoices((previous) => {
-              const next = new Map(previous);
-              const byId = new Map(offered.map((offer) => [offer.id, offer]));
-              for (const offer of offered) if (!collisionTargets.has(offer.target)) next.delete(offer.target);
-              for (const id of ids) {
-                const offer = byId.get(id);
-                if (offer && !collisionTargets.has(offer.target)) next.set(offer.target, id);
-              }
-              return next;
-            });
-          }}
-            choices={choices} onChoose={(target, id) => setChoices((previous) => new Map(previous).set(target, id))}
-            allowCredentials={allowCredentials} onAllowCredentials={(allow) => {
-              setAllowCredentials(allow);
-              if (!allow) {
-                const deniedTargets = new Set(data.offers.filter((offer) => offer.secrets.length && imported.includes(offer.id)).map((offer) => offer.target));
-                setChoices((previous) => new Map([...previous].filter(([target]) => !deniedTargets.has(target))));
-              }
-            }} />
-          <p className="text-sm text-muted-foreground">
-            Importing copies items into the profile without changing the originals. When you later sync, Canonfig may replace managed tool settings. With the Backups setting on, it first saves replaced content in <Mono>~/.canonfig/.backups/</Mono>. With Backups off, that content is not saved.
-          </p>
+          <ImportReview data={data} listed={listed} choices={choices} onChoices={setChoices} />
           {!live && <label className={CHECK_ROW}>
             <Checkbox checked={scan} onCheckedChange={(c) => setScan(c === true)} className="mt-px" />
             <span>Suggest tools this setup needs so I can review them later</span>

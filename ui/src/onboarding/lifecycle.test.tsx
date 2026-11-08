@@ -60,6 +60,12 @@ async function until(check: () => boolean) {
   assert.fail("Onboarding did not reach the expected state");
 }
 function respond(out: ServerResponse, body: unknown) { out.end(JSON.stringify(body)); }
+/** The import tree starts collapsed; a search opens every branch that holds a match. */
+async function reveal(container: Element, query: string) {
+  const input = container.querySelector<HTMLInputElement>('input[type="search"]'); assert.ok(input);
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set; assert.ok(setter);
+  await act(async () => { setter.call(input, query); input.dispatchEvent(new Event("input", { bubbles: true })); });
+}
 function failure(out: ServerResponse) { out.statusCode = 500; respond(out, { category: "internal", exitCode: 1, message: "Observation unavailable" }); }
 
 it("Source discovery cannot replace a newer Follower choice", async () => {
@@ -95,7 +101,7 @@ it("Source discovery shows actionable earlier-journal guidance", async () => {
   } finally { await app.close(); }
 });
 
-for (const literal of [false, true]) it(`harness changes keep canonical ids and consent (primary literal: ${literal})`, async () => {
+for (const literal of [false, true]) for (const replace of [false, true]) it(`harness changes keep canonical ids and the item choice (primary literal: ${literal}, replaced while unlisted: ${replace})`, async () => {
   const category = literal ? "mcp" : "skills";
   const first = { id: `codex/${category}/shared`, source: "codex", harnesses: ["codex"], category, name: "shared", path: literal ? "~/.codex/config.toml" : "~/.agents/skills/shared", target: literal ? "canonfig.jsonc#mcp.shared" : "skills/shared", secrets: literal ? ["env.TOKEN -> fromEnv TOKEN"] : [], notes: [] };
   const second = { ...first, id: `opencode/${category}/shared`, source: "opencode", harnesses: ["opencode"], path: literal ? "~/.config/opencode/opencode.json" : "~/.config/opencode/skills/shared", secrets: [] };
@@ -132,33 +138,29 @@ for (const literal of [false, true]) it(`harness changes keep canonical ids and 
     assert.ok(checkbox);
     return checkbox;
   };
+  const review = async () => {
+    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
+    await reveal(app.container, "shared");
+  };
   try {
     const source = [...app.container.querySelectorAll("button")].find((node) => node.textContent?.includes("Make this the Source"));
     assert.ok(source); await act(async () => source.click());
     await until(() => !!app.container.querySelector("form"));
     await press("Continue"); await press("Continue");
-    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
-    if (!literal) await act(async () => shared().click());
-    await press("Back"); await act(async () => codex().click()); await press("Continue");
-    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
+    await review();
+    // A literal credential needs no separate consent: the row names the variable and checking it agrees.
+    if (literal) assert.ok(app.container.textContent?.includes("Needs $TOKEN"));
     await act(async () => shared().click());
     await press("Back"); await act(async () => codex().click()); await press("Continue");
-    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
-    assert.equal(shared().getAttribute("aria-checked"), literal ? "false" : "true");
-    if (literal) {
-      const label = [...app.container.querySelectorAll("label")].find((node) => node.textContent?.includes("Replace saved passwords and tokens"));
-      const allow = label?.querySelector<HTMLButtonElement>('[role="checkbox"]'); assert.ok(allow);
-      await act(async () => allow.click());
-      assert.equal(shared().getAttribute("aria-checked"), "true");
-      await act(async () => allow.click());
-      assert.equal(shared().getAttribute("aria-checked"), "false");
-      await act(async () => allow.click());
-      assert.equal(shared().getAttribute("aria-checked"), "false", "Revoked choices must not reappear when consent returns");
-      await act(async () => allow.click());
-    }
+    await review();
+    // Either keep the Codex choice while Codex is unlisted, or replace it with OpenCode's identical copy.
+    if (replace) await act(async () => shared().click());
+    await press("Back"); await act(async () => codex().click()); await press("Continue");
+    await review();
+    assert.equal(shared().getAttribute("aria-checked"), "true");
     await press("Continue");
     await until(() => submitted !== null);
-    assert.deepEqual(submitted, literal ? [] : ["codex/skills/shared"]);
+    assert.deepEqual(submitted, [first.id]);
   } finally { await app.close(); }
 });
 
@@ -188,12 +190,11 @@ for (const retainedCollision of [false, true]) it(`a replacement collision choic
     assert.ok(button, `Missing ${label}`);
     await act(async () => button.click());
   };
-  const choose = async (label: string) => {
-    const trigger = app.container.querySelector<HTMLButtonElement>('[aria-label="Choose version for AGENTS.md"]'); assert.ok(trigger);
-    await act(async () => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
-    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent === label);
-    assert.ok(option, `Missing source ${label}`);
-    await act(async () => option.click());
+  const choose = async (tool: string) => {
+    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
+    await reveal(app.container, "AGENTS.md");
+    const checkbox = app.container.querySelector<HTMLButtonElement>(`[role="checkbox"][aria-label="AGENTS.md from ${tool}"]`); assert.ok(checkbox, `Missing AGENTS.md from ${tool}`);
+    await act(async () => checkbox.click());
   };
   const toggleClaude = async () => {
     const label = [...app.container.querySelectorAll('ul[aria-label="Installed AI coding tools"] label')].find((node) => node.textContent?.includes("Claude Code"));
@@ -205,15 +206,10 @@ for (const retainedCollision of [false, true]) it(`a replacement collision choic
     assert.ok(source); await act(async () => source.click());
     await until(() => !!app.container.querySelector("form"));
     await press("Continue"); await press("Continue");
-    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
     await choose("Claude Code");
+    // Without Claude Code the target may stop being a collision; either way the person picks Codex's copy.
     await press("Back"); await toggleClaude(); await press("Continue");
-    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
-    if (retainedCollision) await choose("OpenAI Codex");
-    else {
-      const checkbox = app.container.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label^="AGENTS.md from"]'); assert.ok(checkbox);
-      await act(async () => checkbox.click());
-    }
+    await choose("OpenAI Codex");
     await press("Back"); await toggleClaude(); await press("Continue");
     await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
     await press("Continue");
