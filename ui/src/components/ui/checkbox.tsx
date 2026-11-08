@@ -20,9 +20,11 @@ function Checkbox({
     >
       <CheckboxPrimitive.Indicator
         data-slot="checkbox-indicator"
-        className="grid place-content-center text-current transition-none [&>svg]:size-3.5"
+        className="group grid place-content-center text-current transition-none [&>svg]:size-3.5"
       >
-        <Check />
+        {/* Radix renders the indicator for "indeterminate" too; a partly selected group shows a dash, not a check. */}
+        <Check className="group-data-[state=indeterminate]:hidden" />
+        <span aria-hidden className="hidden h-0.5 w-2 rounded-full bg-current group-data-[state=indeterminate]:block" />
       </CheckboxPrimitive.Indicator>
     </CheckboxPrimitive.Root>
   )
