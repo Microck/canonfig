@@ -18,20 +18,22 @@ const offers: ImportOffer[] = Array.from({ length: 320 }, (_, index) => ({
 }));
 const instructions: ImportOffer[] = ["codex", "claude-code"].map((source) => ({
   ...offers[0]!, id: `${source}/instructions/AGENTS.md`, source: source === "codex" ? "codex" : "claude-code",
-  category: "instructions", name: "AGENTS.md", target: "AGENTS.md", path: `~/.${source}/AGENTS.md`,
+  harnesses: source === "codex" ? ["codex"] : ["claude-code"],
+  category: "instructions", name: "AGENTS.md", target: "AGENTS.md", path: source === "codex" ? "~/.codex/AGENTS.md" : "~/.claude/CLAUDE.md",
 }));
-const credential: ImportOffer = { ...offers[0]!, id: "codex/mcp/github", category: "mcp", name: "github", target: "canonfig.jsonc#mcp.github", secrets: ["env.GITHUB_TOKEN -> fromEnv GITHUB_TOKEN"] };
-const held: ImportOffer = { ...offers[0]!, id: "codex/skills/held", name: "held", target: "skills/held" };
+const credential: ImportOffer = { ...offers[0]!, id: "codex/mcp/github", category: "mcp", name: "github", target: "canonfig.jsonc#mcp.github", path: "~/.codex/config.toml", secrets: ["env.GITHUB_TOKEN -> fromEnv GITHUB_TOKEN"] };
+const held: ImportOffer = { ...offers[0]!, id: "codex/skills/held", name: "held", target: "skills/held", path: "~/.agents/skills/held" };
+const identical: ImportOffer = { ...offers[0]!, id: "opencode/skills/skill-0", source: "opencode", harnesses: ["opencode"], path: "~/.config/opencode/skills/skill-0" };
 const data: OnboardingData = {
   hostname: "test", endpoint: "", profileName: "test", harnesses: [], followerInstalled: [], present: [],
-  offers: [...offers, ...instructions, credential, held],
+  offers: [identical, ...offers, ...instructions, credential, held],
   skipped: Array.from({ length: 13 }, (_, index) => ({ source: "codex", path: `~/.agents/skills/unfinished-${index}`, reason: "has no SKILL.md" })),
   collisions: [
     { kind: "candidates", target: "AGENTS.md", candidates: instructions.map(({ id, source, path }) => ({ id, source, path })) },
     { kind: "folder", target: held.target, candidates: [{ id: held.id, source: held.source, path: held.path }] },
   ],
 };
-const listed = ["codex"] as const;
+const listed = ["codex", "claude-code", "opencode"] as const;
 async function fixture(initialSelected: string[] = []) {
   let selection: readonly string[] = initialSelected;
   function TestReview() {
@@ -68,6 +70,19 @@ it("bulk selection keeps collisions, existing folder content and literal secrets
     assert.ok(app.container.textContent?.includes("320 selected"));
     await act(async () => button(app.container, "Select none").click());
     assert.equal(app.selection.length, 0);
+  } finally { await app.close(); }
+});
+
+it("identical targets have one row, all sources and a deterministic import id", async () => {
+  const app = await fixture();
+  try {
+    const rows = app.container.querySelectorAll<HTMLButtonElement>('[role="checkbox"][aria-label^="skill-0 from"]');
+    assert.equal(rows.length, 1);
+    const row = rows[0]!.closest("li"); assert.ok(row);
+    assert.ok(row.textContent?.includes("Codex, OpenCode"));
+    assert.ok(row.querySelector('[title*="~/.config/opencode/skills/skill-0"]'));
+    await act(async () => rows[0]!.click());
+    assert.deepEqual(app.selection, ["codex/skills/skill-0"]);
   } finally { await app.close(); }
 });
 

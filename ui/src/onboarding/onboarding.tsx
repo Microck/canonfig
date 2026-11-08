@@ -791,9 +791,25 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
   const selected = harnesses.filter((h) => listed.includes(h.id)).map((h) => h.id);
   const offered = useMemo(() => data.offers.filter((offer) =>
     offer.harnesses.some((harness) => listed.includes(harness)) && !data.present.includes(offer.id)
-    && !data.collisions.some((collision) => collision.kind === "folder" && collision.candidates.some((candidate) => candidate.id === offer.id))),
+    && !data.collisions.some((collision) => collision.kind === "folder" && collision.candidates.some((candidate) => candidate.id === offer.id)))
+    .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
   [data.offers, data.present, data.collisions, listed]);
-  const imported = offered.filter((offer) => checked.includes(offer.id)).map((offer) => offer.id);
+  const offeredIds = useMemo(() => new Set(offered.map((offer) => offer.id)), [offered]);
+  const imported = useMemo(() => {
+    const selectedIds = new Set(checked);
+    const collisions = new Set(data.collisions.filter((collision) => collision.kind === "candidates").map((collision) => collision.target));
+    const primary = new Map<string, ImportOffer>();
+    const chosen = new Map<string, string>();
+    // Harness changes retain prior choices, but one target must still submit only one id.
+    for (const offer of offered) if (!primary.has(offer.target)) primary.set(offer.target, offer);
+    for (const offer of offered) {
+      if (selectedIds.has(offer.id) && !chosen.has(offer.target)) {
+        const candidate = collisions.has(offer.target) ? offer : primary.get(offer.target)!;
+        if (allowCredentials || !candidate.secrets.length) chosen.set(offer.target, candidate.id);
+      }
+    }
+    return [...chosen.values()];
+  }, [offered, checked, data.collisions, allowCredentials]);
 
   // Validated as typed, never rewritten: stripping characters would turn "1.5" into a different port.
   const portNumber = Number(port);
@@ -926,12 +942,15 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
       )}
       {step === SOURCE_STEP.import && (
         <div className="space-y-5">
-          <ImportReview data={data} listed={listed} selected={checked} onSelect={setChecked}
+          <ImportReview data={data} listed={listed} selected={imported} onSelect={(ids) => {
+            setChecked((previous) => [...previous.filter((id) => !offeredIds.has(id)), ...ids]);
+          }}
             allowCredentials={allowCredentials} onAllowCredentials={(allow) => {
               setAllowCredentials(allow);
               if (!allow) {
-                const secretIds = new Set(data.offers.filter((offer) => offer.secrets.length).map((offer) => offer.id));
-                setChecked((ids) => ids.filter((id) => !secretIds.has(id)));
+                const deniedTargets = new Set(data.offers.filter((offer) => offer.secrets.length && imported.includes(offer.id)).map((offer) => offer.target));
+                const deniedIds = new Set(data.offers.filter((offer) => deniedTargets.has(offer.target)).map((offer) => offer.id));
+                setChecked((ids) => ids.filter((id) => !deniedIds.has(id)));
               }
             }} />
           <p className="text-sm text-muted-foreground">

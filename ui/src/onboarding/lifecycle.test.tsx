@@ -6,8 +6,9 @@ import { after, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
+import { Schema } from "effect";
 import { request, type WorkspaceBackend } from "../gui-client";
-import { GuiOperation, GuiSession, GuiStatus } from "../../../src/gui/contract";
+import { GuiOperation, GuiSession, GuiSetupPlanInput, GuiStatus } from "../../../src/gui/contract";
 import type { EnrollmentController } from "./enrollment-controller";
 
 GlobalRegistrator.register({ url: "http://localhost/setup", settings: { device: { prefersReducedMotion: "reduce" } } });
@@ -26,14 +27,16 @@ function Probe({ backend }: { backend: WorkspaceBackend }) {
   current = useEnrollmentController(backend, session);
   return <div>{current.joined ? "Joined" : "Not joined"}</div>;
 }
-async function fixture(handler: (path: string, method: string, out: ServerResponse) => void, wizard = false) {
+async function fixture(handler: (path: string, method: string, out: ServerResponse, body: string) => void, wizard = false) {
   const server = createServer((req, out) => {
     out.setHeader("Content-Type", "application/json");
     out.setHeader("Access-Control-Allow-Origin", "http://localhost");
     out.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
     out.setHeader("Access-Control-Allow-Headers", "content-type, x-canonfig-request, cache-control");
     if (req.method === "OPTIONS") { out.end(); return; }
-    req.resume(); req.on("end", () => handler(req.url ?? "/", req.method ?? "GET", out));
+    let body = "";
+    req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+    req.on("end", () => handler(req.url ?? "/", req.method ?? "GET", out, body));
   });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   const address = server.address(); assert.ok(address && typeof address !== "string");
@@ -89,6 +92,73 @@ it("Source discovery shows actionable earlier-journal guidance", async () => {
     await act(async () => source.click());
     await until(() => !!app.container.textContent?.includes(message));
     assert.ok(app.container.textContent?.includes("Do not remove state.sqlite."));
+  } finally { await app.close(); }
+});
+
+for (const literal of [false, true]) it(`harness changes keep canonical ids and consent (primary literal: ${literal})`, async () => {
+  const category = literal ? "mcp" : "skills";
+  const first = { id: `codex/${category}/shared`, source: "codex", harnesses: ["codex"], category, name: "shared", path: literal ? "~/.codex/config.toml" : "~/.agents/skills/shared", target: literal ? "canonfig.jsonc#mcp.shared" : "skills/shared", secrets: literal ? ["env.TOKEN -> fromEnv TOKEN"] : [], notes: [] };
+  const second = { ...first, id: `opencode/${category}/shared`, source: "opencode", harnesses: ["opencode"], path: literal ? "~/.config/opencode/opencode.json" : "~/.config/opencode/skills/shared", secrets: [] };
+  let submitted: readonly string[] | null = null;
+  const app = await fixture((path, _method, out, body) => {
+    if (path !== "/api/setup/plan") {
+      respond(out, { stage: "role", approved: false, approvals: [], stages: [], items: [], catalog: [], discoveryPaths: [] });
+      return;
+    }
+    const input = Schema.decodeUnknownSync(GuiSetupPlanInput)(JSON.parse(body));
+    const harnesses = input.harnesses ?? ["codex", "opencode"];
+    if (input.imports.kind !== "offer") submitted = input.imports.kind === "some" ? input.imports.requested : [];
+    respond(out, { ...journal, items: [{
+      id: "canonfig-folder", kind: "folder-scaffold", scope: "machine", optional: false, dependsOn: [],
+      detail: { harnesses, detected: ["codex", "opencode"] },
+    }], imports: {
+      request: input.imports.kind, offered: [first, second].filter((offer) => harnesses.includes(offer.source)),
+      present: [], skipped: [], collisions: [],
+    } });
+  }, true);
+  const press = async (label: string) => {
+    const button = [...app.container.querySelectorAll("button")].find((node) => node.textContent?.trim() === label);
+    assert.ok(button, `Missing ${label}`);
+    await act(async () => button.click());
+  };
+  const codex = () => {
+    const label = [...app.container.querySelectorAll('ul[aria-label="Installed harnesses"] label')].find((node) => node.textContent?.includes("Codex"));
+    const checkbox = label?.querySelector<HTMLButtonElement>('[role="checkbox"]');
+    assert.ok(checkbox);
+    return checkbox;
+  };
+  const shared = () => {
+    const checkbox = app.container.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label^="shared from"]');
+    assert.ok(checkbox);
+    return checkbox;
+  };
+  try {
+    const source = [...app.container.querySelectorAll("button")].find((node) => node.textContent?.includes("Make this the Source"));
+    assert.ok(source); await act(async () => source.click());
+    await until(() => !!app.container.querySelector("form"));
+    await press("Continue"); await press("Continue");
+    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
+    if (!literal) await act(async () => shared().click());
+    await press("Back"); await act(async () => codex().click()); await press("Continue");
+    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
+    await act(async () => shared().click());
+    await press("Back"); await act(async () => codex().click()); await press("Continue");
+    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
+    assert.equal(shared().getAttribute("aria-checked"), literal ? "false" : "true");
+    if (literal) {
+      const label = [...app.container.querySelectorAll("label")].find((node) => node.textContent?.includes("Allow literal secrets"));
+      const allow = label?.querySelector<HTMLButtonElement>('[role="checkbox"]'); assert.ok(allow);
+      await act(async () => allow.click());
+      assert.equal(shared().getAttribute("aria-checked"), "true");
+      await act(async () => allow.click());
+      assert.equal(shared().getAttribute("aria-checked"), "false");
+      await act(async () => allow.click());
+      assert.equal(shared().getAttribute("aria-checked"), "false", "Revoked choices must not reappear when consent returns");
+      await act(async () => allow.click());
+    }
+    await press("Continue");
+    await until(() => submitted !== null);
+    assert.deepEqual(submitted, literal ? [] : ["codex/skills/shared"]);
   } finally { await app.close(); }
 });
 
