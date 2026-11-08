@@ -1,6 +1,6 @@
 ---
 name: install-canonfig
-description: Install Canonfig 7.0.0 from its scoped npm package and initialize a Source Machine or securely enroll a Linux, macOS, or Windows Follower Machine. Use for Canonfig prerequisites, package installation, first-time source setup, the ~/.canonfig/ folder and its first publication, follower invitations and pinned trust, harness takeover, native schedule setup, installation verification, or installation troubleshooting.
+description: Install Canonfig 7.1.0 from its scoped npm package and initialize a Source Machine or securely enroll a Linux, macOS, or Windows Follower Machine. Use for Canonfig prerequisites, package installation, first-time source setup, the ~/.canonfig/ folder and its first publication, follower invitations and pinned trust, harness takeover, native schedule setup, installation verification, or installation troubleshooting.
 ---
 
 # Install Canonfig
@@ -17,7 +17,7 @@ security or human-action boundary.
    - macOS: [references/macos.md](references/macos.md)
    - Windows: [references/windows.md](references/windows.md)
 3. Confirm Node.js 24 or newer and npm are available.
-4. Install the exact `@microck/canonfig@7.0.0` package version. The installed
+4. Install the exact `@microck/canonfig@7.1.0` package version. The installed
    executable remains `canonfig`. The Source and followers must run the same
    major.minor release; a mismatch fails with "source/follower version
    mismatch" (exit 2).
