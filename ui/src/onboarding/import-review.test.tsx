@@ -4,6 +4,7 @@ import { after, it } from "node:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act, useState } from "react";
 import type { ImportOffer, OnboardingData } from "./onboarding";
+import type { HarnessId } from "@/shared/metadata";
 
 GlobalRegistrator.register({ url: "http://localhost/setup", settings: { device: { prefersReducedMotion: "reduce" } } });
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -41,11 +42,11 @@ const data: OnboardingData = {
 };
 const listed = ["codex", "claude-code", "opencode"] as const;
 
-async function fixture(initial: ReadonlyMap<string, string> = new Map()) {
+async function fixture(initial: ReadonlyMap<string, string> = new Map(), { review = data, tools = listed }: { review?: OnboardingData; tools?: readonly HarnessId[] } = {}) {
   let choices = initial;
   function TestReview() {
     const [value, setValue] = useState(initial);
-    return <ImportReview data={data} listed={listed} choices={value} onChoices={(next) => { choices = next; setValue(next); }} />;
+    return <ImportReview data={review} listed={tools} choices={value} onChoices={(next) => { choices = next; setValue(next); }} />;
   }
   const container = document.createElement("div"); document.body.append(container);
   const root = createRoot(container);
@@ -196,5 +197,115 @@ it("a search that matches a skipped path shows it", async () => {
   try {
     await search(app.container, "unfinished-12");
     assert.ok(app.container.textContent?.includes("~/.codex/skills/unfinished-12"));
+  } finally { await app.close(); }
+});
+
+const shared: ImportOffer = {
+  ...offers[0]!, id: "agents/opaque-shared", source: "agents", harnesses: ["codex", "opencode", "cursor"],
+  name: "shared-lint", path: "~/.agents/skills/shared-lint", target: "skills/shared-lint",
+};
+const codexShared: ImportOffer = {
+  ...shared, id: "agents/opaque-codex", harnesses: ["codex"], name: "codex-only",
+  path: "~/.agents/skills/codex-only", target: "skills/codex-only",
+};
+const sharedData: OnboardingData = { ...data, offers: [shared, codexShared], skipped: [], collisions: [] };
+
+it("shared skills disclose selected readers only when expanded and retain each offer's provenance", async () => {
+  const app = await fixture(new Map(), { review: sharedData });
+  try {
+    assert.ok(app.container.textContent?.includes("~/.agents/skills"));
+    assert.equal(app.container.textContent?.includes("OpenAI Codex"), false);
+    assert.equal(app.container.textContent?.includes("OpenCode"), false);
+    await click(app.container, "Expand Shared skills");
+    assert.ok(app.container.textContent?.includes("OpenAI Codex"));
+    assert.ok(app.container.textContent?.includes("OpenCode"));
+    assert.equal(app.container.textContent?.includes("Claude Code"), false);
+    assert.equal(app.container.textContent?.includes("Cursor"), false);
+    await click(app.container, "Collapse Shared skills");
+    assert.equal(app.container.textContent?.includes("OpenAI Codex"), false);
+    await click(app.container, "Expand Shared skills");
+    await click(app.container, "Expand Skills from Shared skills");
+    const codexOnly = control(app.container, "codex-only from Shared skills");
+    const description = document.getElementById(codexOnly.getAttribute("aria-describedby") ?? "")?.textContent;
+    assert.ok(description?.includes("OpenAI Codex"));
+    assert.equal(description?.includes("OpenCode"), false);
+    await search(app.container, "OpenCode");
+    await click(app.container, "shared-lint from Shared skills");
+    assert.equal(app.container.textContent?.includes("codex-only"), false);
+    assert.equal(app.choices.get(shared.target), shared.id);
+    await search(app.container, "Cursor");
+    assert.ok(app.container.textContent?.includes("No matches."));
+    await search(app.container, "~/.agents/skills");
+    assert.equal(checked(app.container, "shared-lint from Shared skills"), "true");
+    assert.equal(checked(app.container, "codex-only from Shared skills"), "false");
+    await search(app.container, "Shared skills");
+    assert.ok(app.container.textContent?.includes("codex-only"));
+  } finally { await app.close(); }
+
+  const opencode = await fixture(new Map(), { review: sharedData, tools: ["opencode"] });
+  try {
+    await search(opencode.container, "~/.agents/skills");
+    assert.ok(opencode.container.textContent?.includes("OpenCode"));
+    assert.equal(opencode.container.textContent?.includes("OpenAI Codex"), false);
+    assert.equal(opencode.container.textContent?.includes("codex-only"), false);
+    await click(opencode.container, "shared-lint from Shared skills");
+    assert.equal(opencode.choices.get(shared.target), shared.id);
+  } finally { await opencode.close(); }
+});
+
+it("a skips-only shared branch keeps its folder identity without inventing readers", async () => {
+  const review: OnboardingData = {
+    ...sharedData, offers: [],
+    skipped: [{ source: "agents", path: "~/.agents/skills/broken", reason: "has no SKILL.md" }],
+  };
+  const app = await fixture(new Map(), { review });
+  try {
+    assert.ok(app.container.textContent?.includes("~/.agents/skills"));
+    assert.ok(app.container.textContent?.includes("Nothing new"));
+    assert.equal(app.container.textContent?.includes("Read by"), false);
+    await click(app.container, "Expand Shared skills");
+    await click(app.container, "1 can't be imported");
+    assert.ok(app.container.textContent?.includes("Has no SKILL.md"));
+    assert.ok(app.container.textContent?.includes("~/.agents/skills/broken"));
+    await search(app.container, "~/.agents/skills");
+    assert.ok(app.container.textContent?.includes("~/.agents/skills/broken"));
+  } finally { await app.close(); }
+});
+
+it("same-name copies within one source have distinct path labels and preserve the chosen opaque id through search", async () => {
+  const first: ImportOffer = {
+    ...offers[0]!, id: "opencode/native-a", source: "opencode", harnesses: ["opencode"],
+    name: "ship", path: "~/.config/opencode/skills/ship", target: "skills/ship",
+  };
+  const second: ImportOffer = { ...first, id: "opencode/native-b", path: "~/.opencode/skills/ship" };
+  const review: OnboardingData = {
+    ...data, offers: [first, second], skipped: [],
+    collisions: [{ kind: "candidates", target: first.target, candidates: [first, second].map(({ id, source, path }) => ({ id, source, path })) }],
+  };
+  const app = await fixture(new Map(), { review });
+  const firstLabel = `ship from OpenCode at ${first.path}`;
+  const secondLabel = `ship from OpenCode at ${second.path}`;
+  try {
+    await click(app.container, "Select everything from OpenCode");
+    assert.equal(app.choices.has(first.target), false, "bulk selection must not guess between differing copies from one tool");
+    await search(app.container, "ship");
+    assert.ok(control(app.container, firstLabel).closest("label")?.textContent?.includes(first.path));
+    assert.ok(control(app.container, secondLabel).closest("label")?.textContent?.includes(second.path));
+    await click(app.container, firstLabel);
+    assert.equal(app.choices.get(first.target), first.id);
+    assert.equal(checked(app.container, secondLabel), "false");
+    assert.ok(control(app.container, secondLabel).closest("label")?.textContent?.includes(`Using ${first.path}`));
+    await search(app.container, second.path);
+    await click(app.container, secondLabel);
+    assert.deepEqual([...app.choices], [[second.target, second.id]]);
+    await search(app.container, first.path);
+    assert.equal(checked(app.container, firstLabel), "false");
+    assert.ok(control(app.container, firstLabel).closest("label")?.textContent?.includes(`Using ${second.path}`));
+    await search(app.container, "");
+    await click(app.container, "Expand OpenCode");
+    await click(app.container, "Expand Skills from OpenCode");
+    assert.equal(checked(app.container, secondLabel), "true");
+    await click(app.container, secondLabel);
+    assert.equal(app.choices.size, 0);
   } finally { await app.close(); }
 });

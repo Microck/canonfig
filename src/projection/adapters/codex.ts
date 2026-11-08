@@ -130,6 +130,11 @@ export const codexAdapter: HarnessAdapter = {
       // Codex also keeps SQLite state in the root; its file names are not documented.
       neverTouch: under(context, root, ["auth.json", "history.jsonl", "log", "sessions", "rules"]),
       sharedSkills: true,
+      // Native user roots, in host_roots.rs order; neither expands write ownership.
+      skillSources: [
+        { path: context.join(root, "skills"), depth: 64 },
+        { path: context.join(context.home, ".agents", "skills"), depth: 64, shared: true },
+      ],
     };
   },
   project(model, _layout, runtime) {

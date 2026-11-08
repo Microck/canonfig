@@ -61,6 +61,7 @@ export const claudeAdapter: HarnessAdapter = {
         ".credentials.json", "projects", "sessions", "history.jsonl", "file-history", "cache",
       ]),
       sharedSkills: false,
+      skillSources: [{ path: context.join(root, "skills"), depth: 1 }],
     };
   },
   project(model, _layout, runtime) {

@@ -6,36 +6,37 @@ import { Predicate, Schema } from "effect";
 
 import { ConfigValue } from "../domain/resource.ts";
 import { TaggedError } from "../domain/tagged-error.ts";
-import { asJson, digestOf, sha256BytesHex } from "../profile/profile-codec.ts";
+import { asJson, digestOf, sha256BytesHex, sha256Hex } from "../profile/profile-codec.ts";
 import { containsLiteralCredential, isEnvironmentReference, isSecretField } from "../secrets/credential-policy.ts";
 import { getConfigPath, parseConfigDocument } from "../synchronization/config-codec.ts";
 import { type ConfigJson, type ConfigObject, isConfigObject } from "../synchronization/config-value.ts";
 import { adapterFor } from "./adapters/index.ts";
 import { emptyModel } from "./detect.ts";
 import { type MarkdownDocument, markdownWithFrontmatter, parseMarkdownDocument } from "./frontmatter.ts";
-import type { HarnessLayout, OwnedSurface, RootContext } from "./harness.ts";
-import type { TargetId } from "./model.ts";
+import { SkillReader } from "./import-skills.ts";
+import type { HarnessLayout, OwnedSurface, RootContext, SkillReadSource } from "./harness.ts";
+import { TARGET_IDS, type TargetId } from "./model.ts";
 
 /**
  * Source setup's one-time import: reads what the selected harnesses already
  * hold (instructions, rules, skills, agents, commands, MCP servers) and turns
- * it into Canonical Folder items, the reverse of the adapters' layouts.
+ * it into Canonical Folder items. Native skill readers are explicit adapter
+ * metadata, independent of write/takeover ownership.
  *
- * Read-only on the harness. Every path comes from an adapter surface; a
- * never-touch path is refused before it is even inspected, links are never
- * followed, and MCP literals that look like credentials become `fromEnv`
- * references before anything is digested, so no secret leaves this module.
+ * Read-only on the harness. Documents and configs refuse links; only skill
+ * readers follow bounded, home-confined links and reject protected aliases.
+ * MCP credential literals become `fromEnv` references before digesting.
  */
 
 export type ImportCategory = "instructions" | "rules" | "skills" | "agents" | "commands" | "mcp";
-/** `agents` is the shared ~/.agents/skills/ surface (sharedSkillsOwner in plan.ts). */
+/** `agents` is the shared ~/.agents/skills/ reader, independent of mutation ownership. */
 export type ImportSource = TargetId | "agents";
 
 export interface ImportCandidate {
-  /** `${source}/${category}/${name}`. */
+  /** Opaque selection key beginning `${source}/`; distinct same-source copies have a path hash suffix. */
   readonly id: string;
   readonly source: ImportSource;
-  /** Selected harnesses that read it; for shared skills every scanned harness with `sharedSkills`. */
+  /** Selected native readers of this item; shared roots are scanned once. */
   readonly harnesses: ReadonlyArray<TargetId>;
   readonly category: ImportCategory;
   /** AGENTS.md, a rule/agent/command id, a skill directory name or an MCP server name. */
@@ -413,20 +414,49 @@ const manifestProblem = (manifest: TreeFile, name: string): string | undefined =
   return frontmatter.name === name ? undefined : `SKILL.md names the skill ${frontmatter.name}, but its directory is ${name}`;
 };
 
-const readSkill = async (scope: ReadScope, path: string): Promise<Outcome> => {
+const readSkill = async (scope: ReadScope, path: string, reader?: SkillReader): Promise<Outcome> => {
   const name = lastSegment(scope, path);
-  const status = await inspectRoot(scope, path);
-  if (status.kind === "skip" || status.kind === "missing") return status;
-  if (status.kind === "file") return skip("is not a skill directory");
   if (!SKILL_NAME.test(name)) return skip("skill directory names are lowercase letters, digits and '-'");
-  const files: Array<TreeFile> = [];
-  const problem = await collectTree(scope, path, "", files);
-  if (problem !== undefined) return skip(problem);
+  let files: ReadonlyArray<TreeFile>;
+  if (reader !== undefined) {
+    const tree = await reader.tree(path);
+    if (tree.kind !== "tree") return tree;
+    files = tree.files;
+  } else {
+    // Canonical Folder comparison retains its strict no-link policy.
+    const status = await inspectRoot(scope, path);
+    if (status.kind === "skip" || status.kind === "missing") return status;
+    if (status.kind === "file") return skip("is not a skill directory");
+    const collected: Array<TreeFile> = [];
+    const problem = await collectTree(scope, path, "", collected);
+    if (problem !== undefined) return skip(problem);
+    files = collected;
+  }
   const manifest = files.find((file) => file.path === "SKILL.md");
   if (manifest === undefined) return skip("Missing SKILL.md. Add a SKILL.md file with a name and description to import this skill.");
   const invalid = manifestProblem(manifest, name);
   if (invalid !== undefined) return skip(invalid);
   return ready("skills", name, { kind: "tree", files }, [], []);
+};
+
+/** Native flat skills become a single-file portable skill, without copying neighboring files. */
+const readFlatSkill = async (scope: ReadScope, reader: SkillReader, path: string): Promise<Outcome> => {
+  const read = await reader.bytes(path);
+  if (read.kind !== "bytes") return read;
+  let document;
+  try {
+    document = parseMarkdownDocument(new TextDecoder("utf-8", { fatal: true }).decode(read.content));
+  } catch {
+    return skip("flat skill is not UTF-8 Markdown with valid frontmatter");
+  }
+  const name = document.data.name ?? lastSegment(scope, path).slice(0, -3);
+  if (!Predicate.isString(name) || !SKILL_NAME.test(name)) return skip("skill names are lowercase letters, digits and '-'");
+  const description = document.data.description ?? document.content.split("\n").find((line) => line.trim() !== "")?.slice(0, 240);
+  if (!Predicate.isString(description) || description.trim() === "") return skip("flat skill has no description or body");
+  const content = markdownWithFrontmatter({ ...document.data, name, description }, document.content);
+  return ready("skills", name, {
+    kind: "tree", files: [{ path: "SKILL.md", content: new TextEncoder().encode(content), executable: read.executable }],
+  }, ["Converted a native flat skill to skills/<name>/SKILL.md; neighboring files are not copied."], []);
 };
 
 // MCP ---------------------------------------------------------------------
@@ -614,14 +644,13 @@ const layoutsFor = (
 
 const harnessScope = (
   context: RootContext,
-  layouts: ReadonlyArray<readonly [TargetId, HarnessLayout]>,
-  folder: string | undefined,
+  folder: string,
 ): ReadScope => ({
   join: context.join,
   separator: context.join("a", "b").slice(1, -1),
   base: context.home,
-  // Every scanned harness's never-touch list applies to every read.
-  neverTouch: layouts.flatMap(([, layout]) => layout.neverTouch),
+  // Protect every supported harness's state, including unselected harnesses.
+  neverTouch: layoutsFor(context, TARGET_IDS, folder).flatMap(([, layout]) => layout.neverTouch),
   folder,
 });
 
@@ -640,7 +669,7 @@ const targetOf = (category: ImportCategory, name: string): string => {
 
 class ScanCollector {
   readonly skipped: Array<ImportSkip> = [];
-  private readonly candidates = new Map<string, ImportCandidate>();
+  private readonly candidates = new Map<string, Array<ImportCandidate>>();
 
   skip(source: ImportSource, path: string, reason: string): void {
     this.skipped.push({ source, path, reason });
@@ -656,38 +685,51 @@ class ScanCollector {
     if (outcome.kind === "missing") return;
     if (outcome.kind === "skip") return this.skip(source, path, outcome.reason);
     const id = `${source}/${category}/${outcome.name}`;
-    const earlier = this.candidates.get(id);
-    if (earlier !== undefined) return this.skip(source, path, `duplicates ${id} from ${earlier.path}`);
-    this.candidates.set(id, {
+    const group = this.candidates.get(id) ?? [];
+    const identical = group.find((candidate) => candidate.digest === outcome.digest);
+    if (identical !== undefined) {
+      const index = group.indexOf(identical);
+      group[index] = {
+        ...identical,
+        harnesses: [...new Set([...identical.harnesses, ...harnesses])],
+      };
+      return;
+    }
+    group.push({
       id, source, harnesses, category, name: outcome.name, path, target: targetOf(category, outcome.name),
       digest: outcome.digest, secrets: outcome.secrets, notes: outcome.notes,
     });
+    this.candidates.set(id, group);
   }
 
   result(): ImportScan {
-    const candidates = [...this.candidates.values()].sort((left, right) => compare(left.id, right.id));
+    // Keep the short key for unambiguous items. Every competing distinct copy
+    // gets a deterministic path/content key rather than silently losing a copy.
+    const candidates = [...this.candidates.values()].flatMap((group) => group.length === 1 ? group : group.map((candidate) => ({
+      ...candidate, id: `${candidate.id}/${sha256Hex(JSON.stringify([candidate.path, candidate.digest]))}`,
+    }))).sort((left, right) => compare(left.id, right.id));
     return { candidates, skipped: this.skipped };
   }
 }
 
 // Surface ids name what a surface holds; `droids` and `prompts` are Factory's and Pi's spellings.
-const SURFACE_CATEGORIES = new Map<string, ImportCategory>([
+const SURFACE_CATEGORIES = new Map<string, DocumentCategory>([
   ["instructions", "instructions"],
   ["rules", "rules"],
-  ["skills", "skills"],
+  // Skills come exclusively from adapter skillSources, never from OwnedSurface.
   ["agents", "agents"],
   ["droids", "agents"],
   ["commands", "commands"],
   ["prompts", "commands"],
 ]);
 
-/** Every item of a rules, skills, agents or commands directory. */
+/** Every item of a rules, agents or commands directory. */
 const scanDirectory = async (
   scope: ReadScope,
   collector: ScanCollector,
   source: ImportSource,
   harnesses: ReadonlyArray<TargetId>,
-  category: Exclude<ImportCategory, "instructions" | "mcp">,
+  category: "rules" | "agents" | "commands",
   directory: string,
 ): Promise<void> => {
   const listing = await listDirectory(scope, directory);
@@ -695,7 +737,7 @@ const scanDirectory = async (
   if (listing.kind === "skip") return collector.skip(source, directory, listing.reason);
   for (const name of listing.names) {
     const path = scope.join(directory, name);
-    const outcome = category === "skills" ? await readSkill(scope, path) : await readDocument(scope, category, path);
+    const outcome = await readDocument(scope, category, path);
     collector.record(source, harnesses, category, path, outcome);
   }
 };
@@ -704,7 +746,6 @@ const scanSurface = async (
   scope: ReadScope,
   collector: ScanCollector,
   harness: TargetId,
-  layout: HarnessLayout,
   surface: OwnedSurface,
 ): Promise<void> => {
   if (surface.kind === "config") {
@@ -715,14 +756,35 @@ const scanSurface = async (
     return;
   }
   const category = SURFACE_CATEGORIES.get(surface.id);
-  if (category === undefined || category === "mcp") return;
+  if (category === undefined) return;
   if (category === "instructions") {
     if (surface.kind !== "file") return;
     return collector.record(harness, [harness], category, surface.target, await readDocument(scope, category, surface.target));
   }
-  // Shared-skills harnesses are scanned once, through ~/.agents/skills.
-  if (surface.kind !== "directory" || (category === "skills" && layout.sharedSkills)) return;
+  if (surface.kind !== "directory") return;
   await scanDirectory(scope, collector, harness, [harness], category, surface.target);
+};
+
+/** One shared-root traversal, retaining only readers whose discovery rules admit each item. */
+const scanSkills = async (
+  scope: ReadScope,
+  reader: SkillReader,
+  collector: ScanCollector,
+  source: ImportSource,
+  readers: ReadonlyArray<readonly [TargetId, SkillReadSource]>,
+): Promise<void> => {
+  const first = readers[0]![1];
+  const discovery: SkillReadSource = {
+    ...first,
+    depth: Math.max(...readers.map(([, entry]) => entry.depth)),
+    flat: readers.some(([, entry]) => entry.flat),
+  };
+  await reader.discover(discovery, async (path, depth, flat) => {
+    const harnesses = readers.filter(([, entry]) => depth <= entry.depth && (!flat || entry.flat)).map(([harness]) => harness);
+    if (harnesses.length === 0) return;
+    const outcome = flat ? await readFlatSkill(scope, reader, path) : await readSkill(scope, path, reader);
+    collector.record(source, harnesses, "skills", path, outcome);
+  }, (path, reason) => collector.skip(source, path, reason));
 };
 
 /** Read-only scan of the selected harnesses for items to import into `folder`. */
@@ -733,15 +795,23 @@ export const scanImports = async (input: {
 }): Promise<ImportScan> => {
   const { context, folder } = input;
   const layouts = layoutsFor(context, [...new Set(input.harnesses)], folder);
-  const scope = harnessScope(context, layouts, folder);
+  const scope = harnessScope(context, folder);
   const collector = new ScanCollector();
+  const reader = await SkillReader.create(context, scope.neverTouch, folder);
+  const shared = new Map<string, Array<readonly [TargetId, SkillReadSource]>>();
   for (const [harness, layout] of layouts) {
-    for (const surface of layout.surfaces) await scanSurface(scope, collector, harness, layout, surface);
+    for (const surface of layout.surfaces) await scanSurface(scope, collector, harness, surface);
+    for (const entry of layout.skillSources) {
+      if (entry.shared) {
+        const readers = shared.get(entry.path) ?? [];
+        readers.push([harness, entry]);
+        shared.set(entry.path, readers);
+      } else {
+        await scanSkills(scope, reader, collector, harness, [[harness, entry]]);
+      }
+    }
   }
-  const sharing = layouts.filter(([, layout]) => layout.sharedSkills).map(([harness]) => harness);
-  if (sharing.length > 0) {
-    await scanDirectory(scope, collector, "agents", sharing, "skills", context.join(context.home, ".agents", "skills"));
-  }
+  for (const readers of shared.values()) await scanSkills(scope, reader, collector, "agents", readers);
   return collector.result();
 };
 
@@ -751,8 +821,14 @@ const readCandidate = async (
   scope: ReadScope,
   layouts: ReadonlyArray<readonly [TargetId, HarnessLayout]>,
   candidate: ImportCandidate,
+  context: RootContext,
 ): Promise<Outcome> => {
-  if (candidate.category === "skills") return readSkill(scope, candidate.path);
+  if (candidate.category === "skills") {
+    const reader = await SkillReader.create(context, scope.neverTouch, scope.folder);
+    return candidate.path.endsWith(".md")
+      ? readFlatSkill(scope, reader, candidate.path)
+      : readSkill(scope, candidate.path, reader);
+  }
   if (candidate.category !== "mcp") return readDocument(scope, candidate.category, candidate.path);
   for (const [, layout] of layouts) {
     for (const surface of layout.surfaces) {
@@ -770,11 +846,19 @@ const readCandidate = async (
 /**
  * Re-read a candidate's source under the scan's rules and return what to
  * write. Throws ImportChangedError when the source is gone, now refused, or
- * no longer has the digest the operator reviewed.
+ * no longer has the digest the operator reviewed. `folder` is the approved
+ * scan boundary, including when it differs from the default Canonical Folder.
  */
-export const readImportContent = async (candidate: ImportCandidate, context: RootContext): Promise<ImportContent> => {
-  const layouts = layoutsFor(context, candidate.harnesses, "");
-  const outcome = await readCandidate(harnessScope(context, layouts, undefined), layouts, candidate);
+export const readImportContent = async (
+  candidate: ImportCandidate,
+  context: RootContext,
+  folder: string,
+): Promise<ImportContent> => {
+  if (folder === undefined) throw new ImportChangedError({
+    path: candidate.path, message: `${candidate.id} requires the approved Canonical Folder boundary; scan again`,
+  });
+  const layouts = layoutsFor(context, candidate.harnesses, folder);
+  const outcome = await readCandidate(harnessScope(context, folder), layouts, candidate, context);
   const changed = (message: string) => new ImportChangedError({ path: candidate.path, message: `${candidate.id} ${message}` });
   if (outcome.kind === "missing") throw changed("is gone; scan again");
   if (outcome.kind === "skip") throw changed(`can no longer be imported: ${outcome.reason}`);

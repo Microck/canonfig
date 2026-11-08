@@ -73,6 +73,13 @@ export const cursorAdapter: HarnessAdapter = {
       // The CLI login credential and IDE state paths are not documented.
       neverTouch: under(context, root, ["chats", "worktrees", "extensions"]),
       sharedSkills: true,
+      // https://cursor.com/docs/skills: native and Claude/Codex compatibility readers.
+      skillSources: [
+        { path: context.join(root, "skills"), depth: 64 },
+        { path: context.join(context.home, ".agents", "skills"), depth: 64, shared: true },
+        { path: context.join(context.home, ".claude", "skills"), depth: 64 },
+        { path: context.join(context.home, ".codex", "skills"), depth: 64 },
+      ],
     };
   },
   project(model, _layout, runtime) {

@@ -450,7 +450,7 @@ export const executeHarnessImport = (item: SetupPlanItem, environment: Environme
     const contents: Array<readonly [CandidateRecord, ImportContent]> = [];
     for (const candidate of detail.items) {
       const content = yield* Effect.tryPromise({
-        try: () => readImportContent(candidate, context),
+        try: () => readImportContent(candidate, context, detail.folder),
         catch: (error) =>
           error instanceof ImportChangedError
             ? applyFailure(

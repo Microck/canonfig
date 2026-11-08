@@ -91,6 +91,10 @@ export const copilotAdapter: HarnessAdapter = {
         "command-history-state", "logs", "ide", "plugin-data", "permissions-config.json", "providers.json",
       ]),
       sharedSkills: false,
+      skillSources: [
+        { path: context.join(root, "skills"), depth: 1 },
+        { path: context.join(context.home, ".agents", "skills"), depth: 1, shared: true },
+      ],
     };
   },
   project(model, _layout, runtime) {
