@@ -25,6 +25,7 @@ import {
 } from "../src/setup/setup.plan.ts";
 import {
   maxSetupDiscoveryFileBytes,
+  maxSetupJournalBytes,
   SetupItemSummary,
   SetupItemRecord,
   type SetupInventory,
@@ -833,6 +834,43 @@ describe.runIf(process.platform === "linux")("Source harness selection and impor
   const filesBelow = (root: string): ReadonlyArray<string> =>
     readdirSync(root, { withFileTypes: true }).flatMap((entry) =>
       entry.isDirectory() ? filesBelow(join(root, entry.name)) : [join(root, entry.name)]);
+
+  it("plans and reloads more than 2,000 import offers and selected candidates", async () => {
+    const test = fixture();
+    const journalPath = join(test.home, ".canonfig", "setup.json");
+    const environment = (name: string) => name === "HOME" ? test.home : name === "PATH" ? join(test.home, "bin") : undefined;
+    const run = <A, E>(effect: Effect.Effect<A, E, MachineState | Enrollment | StateRepository>) =>
+      Effect.runPromise(effect.pipe(
+        Effect.provide(EnrollmentLive),
+        Effect.provide(stateRepositoryLayer(join(test.home, ".canonfig", "state.sqlite"))),
+        Effect.provide(linuxMachineStateLayer({
+          environment: [{ name: "HOME", value: test.home }, { name: "PATH", value: join(test.home, "bin") }],
+          credentialPolicy: { kind: "local-file", path: join(test.home, "credentials") },
+        })),
+      ));
+    try {
+      mkdirSync(dirname(journalPath));
+      for (let index = 0; index < 2_000; index++) {
+        const name = `many-skill-${index}`;
+        write(join(test.home, ".claude", "skills", name, "SKILL.md"), `---\nname: ${name}\ndescription: Skill ${index}\n---\nUse ${name}.\n`);
+      }
+      const offered = await run(planSetup({
+        roleText: "source", files: [], harnesses: ["claude-code"], imports: { kind: "offer" }, environment,
+      }, journalPath));
+      expect(offered.imports?.offered).toHaveLength(2_003);
+      expect(statSync(journalPath).size).toBeGreaterThan(256 * 1024);
+      expect((await run(setupStatus(journalPath))).planDigest).toBe(offered.planDigest);
+
+      const selected = await run(planSetup({
+        roleText: "source", files: [], harnesses: ["claude-code"], imports: { kind: "all" }, environment,
+      }, journalPath));
+      expect(test.imported(selected)).toHaveLength(2_003);
+      expect(statSync(journalPath).size).toBeLessThan(maxSetupJournalBytes);
+      expect((await run(setupStatus(journalPath))).planDigest).toBe(selected.planDigest);
+    } finally {
+      test.cleanup();
+    }
+  }, 60_000);
 
   it("preselects installed harnesses, ignores a generic agent without ~/.cursor, and binds approval to the list", () => {
     const test = fixture();

@@ -41,7 +41,10 @@ export type SetupStage = typeof setupStages[number];
 export const maxSetupTools = 16;
 export const maxSetupDiscoveryFiles = 32;
 export const maxSetupDiscoveryFileBytes = 256 * 1024;
-export const maxSetupJournalBytes = 256 * 1024;
+// Import offers and chosen candidates duplicate metadata, not file or skill bytes.
+// Budgeting 2 KiB per item leaves room for several thousand items and evidence
+// within 16 MiB, matching MAX_CONFIG_BYTES in projection/import.ts.
+export const maxSetupJournalBytes = 16 * 1024 * 1024;
 export const maxSetupProcessBytes = 16 * 1024;
 export const setupProcessTimeoutMilliseconds = 5_000;
 export const setupRecipeTimeoutMilliseconds = 5 * 60_000;

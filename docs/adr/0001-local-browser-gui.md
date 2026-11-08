@@ -39,6 +39,8 @@ Unauthenticated browser page navigations receive a small HTML sign-in guide with
 
 The structured review uses setup journal v3. Earlier v2 journals are not decoded or migrated. Both clients ask the person to preserve the earlier journal, inspect any setup side effects, move the journal aside and start setup again without removing `state.sqlite`.
 
+The journal has a 16 MiB size bound for thousands of offers, their selected execution metadata and plan evidence. Import entries hold metadata rather than file or skill contents.
+
 Onboarding owns role discovery, Source setup and Follower enrollment through tagged lifecycle transitions. Source discovery locks the role choice until it settles. Setup records approval or apply separately from its follow-up status read; reloading the journal can certify completion without repeating the mutation. Enrollment keeps a successful join when the local-preferences read fails. Preference-save failures retain the draft and completed harness changes, and a retry re-reads local preferences.
 
 Guidance has one active mode for the tour picker, tour or page tip. Other dialogs suspend it through a shared dialog-availability observation. Each tour measurement belongs to its current step; moving to another step hides the previous geometry immediately. Map-icon reads carry a machine and generation, so a later preset or reset refuses a stale upload without changing the stored appearance format. Demo synchronization keeps held resources outside its execution cursor. Demo publication freezes its edit generation and tracks delivery per follower and revision, so later edits and deliveries cannot be settled by older timers.
