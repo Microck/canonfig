@@ -282,7 +282,7 @@ const patternList = (value: ConfigValue): ReadonlyArray<string> | undefined => {
   return items.map((item) => item.trim()).filter((item) => item !== "");
 };
 
-const dropped = (key: string): string => `The metadata field ${key} is not copied`;
+const dropped = (key: string): string => `Canonfig does not copy the metadata field ${key}`;
 
 const convertRule = (document: MarkdownDocument): Converted => {
   const notes: Array<string> = [];
@@ -313,7 +313,7 @@ const convertAgent = (document: MarkdownDocument): Converted => {
     if (key === "description") continue;
     if (key === "model" && Predicate.isString(value) && value.trim() === "inherit") continue;
     if (key === "model" && nonEmptyText(value) !== undefined) kept.push(["model", nonEmptyText(value)!]);
-    else if (key === "tools") notes.push(`${dropped(key)} because this tool's permission names differ from Canonfig's; review the imported agent's permissions before use.`);
+    else if (key === "tools") notes.push(`${dropped(key)} because this tool names permissions differently. Review the imported agent's permissions before use.`);
     else notes.push(dropped(key));
   }
   return { kind: "converted", text: markdownWithFrontmatter(Object.fromEntries(kept), document.content), notes };

@@ -119,7 +119,7 @@ const reviewImports = (input: SourceFolderInput, selected: ReadonlyArray<TargetI
     if (input.imports.kind === "none") {
       return {
         chosen: nothing,
-        decisions: ["No imports selected. Existing AI coding tool files were not read for import."],
+        decisions: ["No imports selected. Canonfig did not read your AI coding tools' files for import."],
         review: { request: "none", offered: [], present: [], skipped: [], collisions: [] } satisfies SetupImportReview,
       };
     }

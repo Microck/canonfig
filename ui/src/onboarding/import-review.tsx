@@ -180,12 +180,12 @@ export function ImportReview({ data, listed, selected, onSelect, choices, onChoo
       })}
       {!visible.length && <p className="px-3 py-5 text-sm text-muted-foreground">{model.rows.length ? "No items match. Clear the search, choose All categories, or turn off Needs a choice to see more items." : "No items to import from the selected AI coding tools. Continue to create the profile without imports, or go Back to choose other tools."}</p>}
     </div>
-    <p className="text-sm text-muted-foreground">Selected items will be copied into <Mono>~/.canonfig/</Mono>, the shared setup folder, once. Nothing is selected by default. Select available selects only visible items that need no extra choice.{model.rows.some((row) => row.kind === "candidates") && " Different versions exist for some items. Choose which tool's version to copy, or select Skip import."}</p>
+    <p className="text-sm text-muted-foreground">Canonfig copies the selected items into <Mono>~/.canonfig/</Mono>, the shared setup folder, once. Nothing is selected by default. Select available picks the visible items that need no other choice.{model.rows.some((row) => row.kind === "candidates") && " Some items differ between tools. Choose which tool's version to copy, or select Skip import."}</p>
     {missing.length > 0 && <p className="text-sm text-muted-foreground">No new items found in {missing.map((id) => HARNESS_NAMES[id]).join(", ")}. You can continue without importing from these tools.</p>}
     {model.skippedCount > 0 && <Collapsible>
       <DisclosureTrigger>Review items that can't be imported ({model.skippedCount})</DisclosureTrigger>
       <CollapsibleContent className="space-y-1 pl-4">
-        <p className="text-sm text-muted-foreground">These items will not be copied. Review the reasons below and fix the original files, then go Back and Continue to scan again, or continue without them.</p>
+        <p className="text-sm text-muted-foreground">Canonfig won't copy these items. Fix the original files, then go Back and Continue to scan again. Or continue without them.</p>
         {model.skipped.map(([reason, skips]) => <Collapsible key={reason}>
           <DisclosureTrigger>{reason.charAt(0).toUpperCase() + reason.slice(1)} ({skips.length})</DisclosureTrigger>
           <CollapsibleContent><ul className="space-y-1 pb-2 pl-4 text-sm text-muted-foreground">

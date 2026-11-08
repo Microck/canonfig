@@ -381,7 +381,7 @@ function Choose({ returnedFrom, onPick, busy }: { returnedFrom: Role | null; onP
           role="follower"
           returning={returnedFrom === "follower"}
           title="Copy the setup from another machine"
-          description="This becomes a follower: a machine that copies the setup published by your Source."
+          description="This machine becomes a follower and copies the setup your Source publishes."
           onPick={onPick}
         />
       </div>
@@ -1149,7 +1149,7 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
             onOpen={() => onDone({ role: "follower", name: machineName, tunnel, schedule: useSchedule, excluded })}
             next={live ? "Next: open Sync to review what this setup would change before applying it." : "Next: open Sync to review what the published setup, revision 7, would change before applying it."}
           >
-            This machine is now a follower: it copies the Source's published setup. Joining has not applied that setup to your AI coding tools. The Source can revoke this machine's access without affecting other followers.
+            This machine is now a follower and copies the setup the Source publishes. Joining didn't change your AI coding tools. The Source can revoke this machine's access without affecting other followers.
             {live && <div className="mt-4 space-y-4">
               {live.state.error && <ErrorNotice error={live.state.error} title="This machine joined, but its preferences could not be loaded or saved" recovery="Follow the instructions above. Reload this machine's preferences to check what was saved, then save any remaining changes. You do not need to join again." />}
               <Button type="button" variant="outline" disabled={live.state.loading} onClick={() => void live.loadHarnesses()}>Reload this machine's preferences</Button>

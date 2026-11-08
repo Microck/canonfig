@@ -24,7 +24,7 @@ const IMPORT_OFFERS: ImportOffer[] = [
   offer("claude-code", "rules", "typescript", "~/.claude/rules/typescript.md"),
   offer("claude-code", "skills", "review", "~/.claude/skills/review"),
   offer("claude-code", "agents", "researcher", "~/.claude/agents/researcher.md", {
-    notes: ["The tools list is not copied because its permission names differ from Canonfig's. Review the imported agent's permissions before use."],
+    notes: ["Canonfig does not copy the metadata field tools because this tool names permissions differently. Review the imported agent's permissions before use."],
   }),
   offer("claude-code", "commands", "ship", "~/.claude/commands/ship.md"),
   offer("claude-code", "mcp", "github", "~/.claude.json", { secrets: ["env.GITHUB_TOKEN -> fromEnv GITHUB_TOKEN"] }),

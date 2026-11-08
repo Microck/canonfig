@@ -183,7 +183,7 @@ const inspectCertificate = (
         operation: "inspect source certificate",
         message: code === "ECONNREFUSED" || code === "ECONNRESET" || code === "EPIPE"
           ? `nothing answered at the Source endpoint ${endpoint.host} (${code}); start the Source, or run \`canonfig tunnel start\` if it is reached through a managed tunnel`
-          : "The Source's secure connection certificate could not be read. Check that the Source service and SSH tunnel are running, then try again.",
+          : "Canonfig could not read the Source's connection certificate. Check that the Source service and SSH tunnel are running, then try again.",
       });
     },
   });
@@ -272,7 +272,7 @@ const requestJson = (
         ? cause
         : new EnrollmentTransportError({
           operation: "request source enrollment endpoint",
-          message: "The Source could not be reached. Check that the Source service and SSH tunnel are running, then try again.",
+          message: "This machine could not reach the Source. Check that the Source service and SSH tunnel are running, then try again.",
         }),
   });
 

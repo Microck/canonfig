@@ -966,13 +966,13 @@ export const planSetup = (
       inventory,
       items: [...items],
       decisions: [
-        `Setup role: ${role}. The role was checked before inspecting this machine.`,
+        `Setup role: ${role}. Canonfig checked the role before inspecting this machine.`,
         inventory.transport.initialized
           ? "This machine already has a Source identity. Setup keeps its existing connection identity."
-          : "No Source identity was found on this machine. Connections use a loopback address, which is reachable only on the machine itself.",
+          : "Canonfig found no Source identity on this machine. Connections use a loopback address, which only this machine can reach.",
         catalog.length > 0
           ? `Previously verified tool installation records reused: ${catalog.length}.`
-          : "No previously verified tool installations were found.",
+          : "Canonfig found no previously verified tool installations.",
         ...folder?.decisions ?? [],
       ],
       exclusions,

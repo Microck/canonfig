@@ -234,7 +234,7 @@ function setupRecordEvidence(record: GuiSetupStatus["items"][number]): string | 
 export function SetupEvidence({ controller: c, approval = false }: { controller: EnrollmentController; approval?: boolean }) {
   const records: GuiSetupStatus["items"] = c.status?.items ?? c.plan?.records ?? [];
   return <div className="space-y-4">
-    <p className="text-muted-foreground">Review the changes setup will make on this machine. Approval gives permission for these changes. Applying the plan runs them; approval alone does not.</p>
+    <p className="text-muted-foreground">Review the changes setup will make on this machine. Approving them changes nothing yet. Setup makes the changes when you apply the plan.</p>
     <Facts items={[
       ["Plan identifier", <Mono className="break-all">{c.plan?.planDigest ?? c.status?.planDigest ?? "No plan created"}</Mono>],
       ["Status", c.status?.stage ?? (c.approved ? "Approved" : "Awaiting approval")],

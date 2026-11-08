@@ -151,8 +151,8 @@ describe("scanImports", () => {
 
     const reviewer = candidate(scan, "claude-code/agents/reviewer");
     expect(reviewer.notes).toEqual([
-      "The metadata field name is not copied",
-      "The metadata field tools is not copied because this tool's permission names differ from Canonfig's; review the imported agent's permissions before use.",
+      "Canonfig does not copy the metadata field name",
+      "Canonfig does not copy the metadata field tools because this tool names permissions differently. Review the imported agent's permissions before use.",
     ]);
     expect(await readImportContent(reviewer, ctx)).toEqual({
       kind: "text", content: "---\ndescription: Reviews code\n---\nReview carefully.\n",

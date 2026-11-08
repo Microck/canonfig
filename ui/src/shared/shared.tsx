@@ -35,7 +35,7 @@ export const GLOSSARY = {
   },
   "Takeover Snapshot": {
     plain: "backup",
-    meaning: "A copy of settings Canonfig is about to replace, kept in ~/.canonfig/.backups/ so you can restore them. The Backups setting must be on to save this copy.",
+    meaning: "A copy of settings Canonfig is about to replace, kept in ~/.canonfig/.backups/ so you can restore them. Canonfig saves this copy only when the Backups setting is on.",
   },
   "Profile Revision": {
     plain: "revision",
