@@ -144,7 +144,8 @@ if (trigger.status !== 0) {
 }
 
 const readInvocation = () => {
-  const database = new DatabaseSync(statePath, { readOnly: true });
+  // The scheduled command writes this database while the poll reads it; wait out its write lock instead of failing.
+  const database = new DatabaseSync(statePath, { readOnly: true, timeout: 10_000 });
   try {
     return database.prepare("SELECT invocation_json FROM scheduled_invocations WHERE started_at > ? ORDER BY started_at DESC")
       .all(installed.installedAt)
