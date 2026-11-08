@@ -1,41 +1,44 @@
-# Canonfig v7.1.1
+# Canonfig v7.1.2
 
-The Import step in Source setup is usable with a real collection of skills and
-MCP servers, and every setup screen explains its terms for someone new to
-Canonfig.
+Source setup's Import step is now a tree of your AI coding tools, and the AI
+tools step asks one plain question.
 
 ## Import step
 
-- The step lists every item your AI coding tools offer, grouped by category,
-  with search, a category filter and a count of what you selected. It no
-  longer shows a wall of raw "import skipped" and "import collision" lines.
-- An item with identical content in several tools is one row that lists each
-  tool. Only items whose content differs ask you to choose, and the
-  "Needs a choice" filter shows just those. Each one has a version picker
-  with a "Skip import" option.
-- Items that can't be imported sit in one collapsed section, grouped by
-  reason, and the common reasons say how to fix the original file.
-- Setup no longer stops offering imports after 256 items. A machine with a
-  few thousand skills and servers can import all of them.
-- Opening a `canonfig ui` page without signing in shows a short page that
-  points to the sign-in link, instead of a raw JSON error.
+- Each tool, plus the shared `~/.agents` folder, is a collapsed row that opens
+  into categories and then items. Tool and category rows have a checkbox that
+  selects everything under them, and a search opens every branch with a match.
+- Checking an item under a tool imports that tool's copy. A copy that is
+  identical in another tool is checked there too. When the content differs,
+  the other tools show which version is used, and checking it there switches
+  to that version.
+- Checking a whole tool or category takes only items nobody has decided yet:
+  it never replaces a version you picked from another tool, and never selects
+  an MCP server that needs a password or token.
+- An MCP server that needs a password or token names the environment variable
+  on its row ("Needs `$TOKEN`"), and checking it is your consent to replace the
+  value with that variable. The separate "Replace saved passwords..." switch is
+  gone.
+- A choice made under a tool you then remove on the AI tools step is kept and
+  comes back when you add the tool again.
+- Each tool lists what it can't import under one line, grouped by reason.
+- The explanatory paragraphs above and below the list are gone.
 
-## Setup wording
+## AI tools step
 
-Setup now says what a Source, a follower, a profile and an AI coding tool are
-before it asks you to choose. Error messages say what failed and what to do
-next, and the fingerprint check explains how to compare fingerprints before
-you confirm them. Joining or creating a Source still changes none of your AI
-coding tools' files.
+The step asks "Which tools sync with `~/.canonfig/`?" and says that syncing
+replaces their instructions, skills and MCP servers, and that unchecked tools
+are left alone except for skills in the shared `~/.agents/skills/` folder.
 
 ## Upgrading
 
-Install with `npm install --global @microck/canonfig@7.1.1` on every machine,
+Install with `npm install --global @microck/canonfig@7.1.2` on every machine,
 or run `canonfig self-update apply`. Stop `canonfig ui` first, and on a Source
 run `canonfig source service remove` before installing and
 `canonfig source service install` afterwards.
 
-If you started Source setup on 7.1.0 and did not finish it, 7.1.1 refuses that
-setup's journal, `~/.canonfig/setup.json`, and tells you to move it aside.
-Check whether setup already changed anything, move the file aside, and start
-setup again. Do not remove `state.sqlite`.
+If you started Source setup on 7.1.0 and did not finish it, 7.1.1 and later
+refuse that setup's journal, `~/.canonfig/setup.json`, and tell you to move it
+aside. Finish setup on 7.1.0 before upgrading, or check whether setup already
+changed anything, move the file aside and start setup again. Do not remove
+`state.sqlite`.
