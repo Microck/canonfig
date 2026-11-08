@@ -1,214 +1,191 @@
-import { useMemo, useRef, useState } from "react";
-import { CaretDown } from "@/components/icons";
-import { Button } from "@/components/ui/button";
+import { useMemo, useState, type ReactNode } from "react";
+import { CaretRight } from "@/components/icons";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { HARNESS_NAMES, type HarnessId } from "@/shared/metadata";
 import { Mono } from "@/shared/shared";
-import { DisclosureTrigger } from "./kit";
+import { cn } from "cn";
 import type { ImportOffer, OnboardingData } from "./onboarding";
 
-const CATEGORIES = ["instructions", "rules", "skills", "agents", "commands", "mcp"] as const;
-const LABELS = { instructions: "Instructions", rules: "Rules", skills: "Skills", agents: "Agents", commands: "Commands", mcp: "MCP servers" };
-const sourceName = (source: ImportOffer["source"]) => source === "agents" ? "Shared skills" : HARNESS_NAMES[source];
-const ROW_GRID = "grid grid-cols-[16px_minmax(0,1fr)] gap-x-3 px-3 md:grid-cols-[16px_minmax(0,1fr)_176px_minmax(0,1fr)_160px]";
-const IMPORT_ROW = `${ROW_GRID} min-h-10 items-center gap-y-0.5 py-2 hover:bg-raised/50 pointer-coarse:min-h-11 md:py-0`;
-const GROUP_ROW = `${ROW_GRID} sticky top-0 z-10 min-h-10 items-center bg-panel pointer-coarse:min-h-11`;
+type Source = ImportOffer["source"];
+type Category = ImportOffer["category"];
+type Skip = OnboardingData["skipped"][number];
 
-interface ReviewRow {
-  target: string;
-  offers: readonly ImportOffer[];
-  kind: "item" | "candidates" | "folder";
-  category: ImportOffer["category"];
-}
+const CATEGORIES: readonly Category[] = ["instructions", "rules", "skills", "agents", "commands", "mcp"];
+const LABELS: Record<Category, string> = { instructions: "Instructions", rules: "Rules", skills: "Skills", agents: "Agents", commands: "Commands", mcp: "MCP servers" };
+// Harnesses in catalog order, then the shared ~/.agents folder that several harnesses read.
+const SOURCE_ORDER: readonly Source[] = [...(Object.keys(HARNESS_NAMES) as HarnessId[]), "agents"];
+const sourceName = (source: Source) => source === "agents" ? "Shared skills" : HARNESS_NAMES[source];
+/** `env.TOKEN -> fromEnv TOKEN` names the variable after `fromEnv`. */
+const variable = (secret: string) => secret.slice(secret.lastIndexOf(" ") + 1);
 
-/** One display model per scan, not one regrouping pass per row or keystroke. */
-export function ImportReview({ data, listed, selected, onSelect, choices, onChoose, allowCredentials, onAllowCredentials }: {
+type RowState = "on" | "off" | "other" | "held";
+interface SourceNode { source: Source; categories: { category: Category; offers: ImportOffer[] }[]; skipped: Skip[] }
+
+/**
+ * The Import step as a tree: tool, then category, then item. An item is one tool's copy of a target;
+ * checking it imports that copy. Targets whose copies differ (collisions) take the tool you check it under,
+ * and the other tools show which version is used. Identical copies check together. `choices` maps a target
+ * to the chosen offer id; an absent target is not imported.
+ */
+export function ImportReview({ data, listed, choices, onChoices }: {
   data: OnboardingData;
   listed: readonly HarnessId[];
-  selected: readonly string[];
-  onSelect: (ids: string[]) => void;
-  choices: ReadonlyMap<string, string | null>;
-  onChoose: (target: string, id: string | null) => void;
-  allowCredentials: boolean;
-  onAllowCredentials: (allow: boolean) => void;
+  choices: ReadonlyMap<string, string>;
+  onChoices: (next: ReadonlyMap<string, string>) => void;
 }) {
-  const [search, setSearch] = useState("");
-  const [category, setCategory] = useState("all");
-  const [needsChoice, setNeedsChoice] = useState(false);
-  const choiceFilter = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set());
+  const [query, setQuery] = useState("");
   const model = useMemo(() => {
     const present = new Set(data.present);
-    const offered = data.offers.filter((offer) => offer.harnesses.some((harness) => listed.includes(harness)) && !present.has(offer.id))
-      .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    const held = new Set(data.collisions.filter((collision) => collision.kind === "folder").map((collision) => collision.target));
+    const differing = new Set(data.collisions.filter((collision) => collision.kind === "candidates").map((collision) => collision.target));
+    const offered = data.offers.filter((offer) => offer.harnesses.some((harness) => listed.includes(harness)) && !present.has(offer.id));
     const byId = new Map(offered.map((offer) => [offer.id, offer]));
-    const colliding = new Set<string>();
-    const rows: ReviewRow[] = [];
-    for (const collision of data.collisions) {
-      const offers = collision.candidates.flatMap(({ id }) => {
-        const offer = byId.get(id);
-        return offer ? [offer] : [];
+    const sources: SourceNode[] = SOURCE_ORDER.flatMap((source) => {
+      const own = offered.filter((offer) => offer.source === source);
+      const skipped = data.skipped.filter((skip) => skip.source === source && (source === "agents" || listed.includes(source)));
+      if (!own.length && !skipped.length) return [];
+      const categories = CATEGORIES.flatMap((category) => {
+        const offers = own.filter((offer) => offer.category === category).sort((a, b) => a.name.localeCompare(b.name));
+        return offers.length ? [{ category, offers }] : [];
       });
-      if (!offers.length) continue;
-      for (const offer of offers) colliding.add(offer.id);
-      rows.push({ target: collision.target, offers, kind: collision.kind, category: offers[0]!.category });
-    }
-    const identical = new Map<string, ImportOffer[]>();
-    for (const offer of offered) {
-      if (colliding.has(offer.id)) continue;
-      const group = identical.get(offer.target);
-      if (group) group.push(offer);
-      else identical.set(offer.target, [offer]);
-    }
-    // The backend lists every different-content target as a collision. Remaining candidates
-    // for one target have identical digests; match selectImports by choosing the first sorted id.
-    for (const [target, offers] of identical) rows.push({ target, offers, kind: "item", category: offers[0]!.category });
-    rows.sort((a, b) => a.offers[0]!.name.localeCompare(b.offers[0]!.name));
-    const skipped = new Map<string, OnboardingData["skipped"][number][]>();
-    for (const skip of data.skipped) {
-      if (skip.source !== "agents" && !listed.includes(skip.source)) continue;
-      const group = skipped.get(skip.reason);
-      if (group) group.push(skip);
-      else skipped.set(skip.reason, [skip]);
-    }
-    return { rows, offered, skipped: [...skipped], skippedCount: [...skipped.values()].reduce((count, group) => count + group.length, 0) };
+      return [{ source, categories, skipped }];
+    });
+    return { held, differing, byId, sources };
   }, [data.offers, data.collisions, data.present, data.skipped, listed]);
-  const selectedIds = useMemo(() => new Set(selected), [selected]);
-  const unresolvedTargets = useMemo(() => new Set(model.rows.filter((row) => row.kind === "candidates" && choices.get(row.target) !== null && !row.offers.some((offer) => selectedIds.has(offer.id))).map((row) => row.target)), [model.rows, choices, selectedIds]);
-  const unresolved = unresolvedTargets.size;
-  const selectedCount = model.rows.filter((row) => row.kind !== "folder" && row.offers.some((offer) => selectedIds.has(offer.id))).length;
-  const groups = useMemo(() => {
-    const query = search.trim().toLocaleLowerCase();
-    return CATEGORIES.map((id) => ({ id, rows: model.rows.filter((row) => row.category === id
-      && (category === "all" || category === id)
-      && (!needsChoice || unresolvedTargets.has(row.target))
-      && (!query || row.offers.some((offer) => `${offer.name} ${offer.path}`.toLocaleLowerCase().includes(query)))) }));
-  }, [model.rows, search, category, needsChoice, unresolvedTargets]);
-  const visible = groups.flatMap((group) => group.rows);
-  const eligible = (rows: readonly ReviewRow[]) => rows.filter((row) => row.kind === "item" && (allowCredentials || !row.offers[0]!.secrets.length));
-  // Bulk selection never decides a collision or overrides existing Canonical Folder content.
-  const selectRows = (rows: readonly ReviewRow[], checked: boolean) => {
-    const selectable = eligible(rows);
-    const ids = new Set(selectable.flatMap((row) => row.offers.map((offer) => offer.id)));
-    onSelect([...selected.filter((id) => !ids.has(id)), ...(checked ? selectable.map((row) => row.offers[0]!.id) : [])]);
+
+  const state = (offer: ImportOffer): RowState => {
+    if (model.held.has(offer.target)) return "held";
+    const pick = choices.get(offer.target);
+    if (pick === undefined || !model.byId.has(pick)) return "off";
+    return !model.differing.has(offer.target) || pick === offer.id ? "on" : "other";
   };
-  const missing = listed.filter((harness) => !model.offered.some((offer) => offer.harnesses.includes(harness)));
-  const harnessCount = new Set(model.offered.flatMap((offer) => offer.harnesses.filter((harness) => listed.includes(harness)))).size;
-  const hasCredentials = model.rows.some((row) => row.kind === "item" ? row.offers[0]!.secrets.length : row.kind === "candidates" && row.offers.some((offer) => offer.secrets.length));
+  const toggle = (offer: ImportOffer, on: boolean) => {
+    const next = new Map(choices);
+    if (on) next.set(offer.target, offer.id);
+    else next.delete(offer.target);
+    onChoices(next);
+  };
+  // Checking a tool or category takes undecided targets only: it never replaces a version picked from another tool.
+  const setAll = (offers: readonly ImportOffer[], on: boolean) => {
+    const next = new Map(choices);
+    for (const offer of offers) {
+      const current = state(offer);
+      if (on && current === "off") next.set(offer.target, offer.id);
+      if (!on && current === "on") next.delete(offer.target);
+    }
+    onChoices(next);
+  };
+  // Items held by the folder or using another tool's version are not this group's to take, so they don't count:
+  // otherwise a fully taken tool would stay mixed and a click could never clear it.
+  const groupValue = (offers: readonly ImportOffer[]) => {
+    const takeable = offers.filter((offer) => state(offer) === "on" || state(offer) === "off");
+    const on = takeable.filter((offer) => state(offer) === "on").length;
+    return on === 0 ? false : on === takeable.length ? true : "indeterminate";
+  };
+  const selected = [...choices.values()].filter((id) => model.byId.has(id) && !model.held.has(model.byId.get(id)!.target)).length;
+
+  const search = query.trim().toLocaleLowerCase();
+  const matches = (offer: ImportOffer) => !search || `${offer.name} ${offer.path}`.toLocaleLowerCase().includes(search);
+  const visible = model.sources.flatMap((node) => {
+    const categories = node.categories.flatMap(({ category, offers }) => {
+      const shown = offers.filter(matches);
+      return shown.length ? [{ category, offers: shown }] : [];
+    });
+    const skipped = node.skipped.filter((skip) => !search || skip.path.toLocaleLowerCase().includes(search));
+    return categories.length || skipped.length ? [{ ...node, categories, skipped }] : [];
+  });
+  // Searching opens every branch with a match, so a hit is never hidden behind a collapsed tool.
+  const isOpen = (key: string) => !!search || open.has(key);
+  const flip = (key: string) => setOpen((previous) => {
+    const next = new Set(previous);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
+  });
 
   return <section aria-label="Review imports" className="space-y-3">
-    <p className="text-muted-foreground">Bring existing instructions, skills and settings into the shared profile. Select what to copy now, or continue without importing anything. MCP servers connect AI coding tools to other services.</p>
-    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-      <p role="status" className="tabular-nums">Items: {model.rows.length} · AI coding tools: {harnessCount} · {selectedCount} selected</p>
-      <div className="flex items-center gap-1">
-        <Button type="button" variant="ghost" size="sm" onClick={() => selectRows(visible, true)}>Select available</Button>
-        <Button type="button" variant="ghost" size="sm" onClick={() => {
-          const ids = new Set(visible.flatMap((row) => row.offers.map((offer) => offer.id)));
-          onSelect(selected.filter((id) => !ids.has(id)));
-          for (const row of visible) if (row.kind === "candidates") onChoose(row.target, null);
-        }}>Clear selection</Button>
-      </div>
+    <div className="flex items-center gap-3">
+      <Input aria-label="Search imports by name or path" type="search" placeholder="Search" value={query} onChange={(event) => setQuery(event.target.value)} className="min-w-0 flex-1" />
+      <span role="status" className="shrink-0 text-sm tabular-nums text-muted-foreground">{selected} selected</span>
     </div>
-    <div className="flex flex-wrap items-center gap-2">
-      <Input aria-label="Search imports by name or path" type="search" placeholder="review or ~/.claude/skills" value={search} onChange={(event) => setSearch(event.target.value)} className="min-w-40 flex-1" />
-      <Select value={category} onValueChange={setCategory}>
-        <SelectTrigger aria-label="Filter import category" className="min-h-10 w-44 pointer-coarse:min-h-11"><SelectValue /></SelectTrigger>
-        <SelectContent>
-          <SelectItem value="all">All categories ({model.rows.length})</SelectItem>
-          {CATEGORIES.map((id) => <SelectItem key={id} value={id}>{LABELS[id]} ({model.rows.filter((row) => row.category === id).length})</SelectItem>)}
-        </SelectContent>
-      </Select>
-      <Button ref={choiceFilter} type="button" variant={needsChoice ? "outline" : "ghost"} size="sm" aria-pressed={needsChoice} onClick={() => setNeedsChoice(!needsChoice)}>Needs a choice ({unresolved})</Button>
-    </div>
-    {hasCredentials && <label className="flex min-h-10 cursor-pointer items-center gap-3 text-sm text-muted-foreground pointer-coarse:min-h-11">
-      <Checkbox checked={allowCredentials} onCheckedChange={(value) => onAllowCredentials(value === true)} />
-      Replace saved passwords and tokens with environment variable references when importing
-    </label>}
-    {hasCredentials && <p className="text-sm text-muted-foreground">The secret values are not copied. Set the named environment variables on each machine before using these MCP servers. Enable this option to select them.</p>}
-    <div aria-label="Import items" className="max-h-[52dvh] scroll-pt-10 overflow-y-auto overscroll-contain rounded-lg border border-border">
-      {groups.filter((group) => group.rows.length).map((group) => {
-        const selectable = eligible(group.rows);
-        const count = selectable.filter((row) => row.offers.some((offer) => selectedIds.has(offer.id))).length;
-        return <Collapsible key={group.id} defaultOpen>
-          <div className={GROUP_ROW}>
-            <label className="flex min-h-10 shrink-0 items-center pointer-coarse:min-h-11">
-              <Checkbox aria-label={`Select ${LABELS[group.id]}`} disabled={!selectable.length} checked={count > 0 && count < selectable.length ? "indeterminate" : count > 0} onCheckedChange={(value) => selectRows(group.rows, value === true)} />
-            </label>
-            <CollapsibleTrigger className="group col-start-2 flex min-h-10 min-w-0 items-center justify-between gap-2 rounded-sm text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-11 md:col-span-4">
-              <span>{LABELS[group.id]} <span className="ml-1 text-muted-foreground tabular-nums">{group.rows.length}</span></span>
-              <CaretDown className="size-3.5 text-muted-foreground group-data-[state=closed]:-rotate-90" />
-            </CollapsibleTrigger>
-          </div>
-          <CollapsibleContent>
-            <ul aria-label={LABELS[group.id]}>
-              {group.rows.map((row) => {
-                const chosen = row.offers.find((item) => selectedIds.has(item.id));
-                const offer = row.kind === "item" ? row.offers[0]! : chosen ?? row.offers[0]!;
-                const sources = [...new Set(row.offers.map((item) => sourceName(item.source)))].join(", ");
-                const paths = [...new Set(row.offers.map((item) => item.path))];
-                if (row.kind === "item") return <li key={row.target}>
-                  <label className={`${IMPORT_ROW} cursor-pointer`}>
-                    <Checkbox className="col-start-1 row-span-3 row-start-1 self-start md:row-span-1 md:self-center"
-                      aria-label={`${offer.name} from ${sources}, ${paths.join(", ")}`} checked={!!chosen} disabled={!allowCredentials && !!offer.secrets.length}
-                      onCheckedChange={(value) => selectRows([row], value === true)} />
-                    <OfferText offer={offer} sources={sources} paths={paths} />
-                  </label>
-                </li>;
-                return <li key={row.target} className={IMPORT_ROW}>
-                  <span className="col-start-1 row-span-3 row-start-1 w-4 md:row-span-1" aria-hidden />
-                  <OfferText offer={offer} sources={sources} paths={paths} />
-                  <div className="col-start-2 row-start-4 mt-1 min-w-0 md:col-start-5 md:row-start-1 md:mt-0">
-                    {row.kind === "folder" ? <span className="text-sm text-muted-foreground">Already in ~/.canonfig/; kept unchanged</span> : <Select value={chosen?.id ?? (choices.get(row.target) === null ? "none" : "")} onValueChange={(value) => {
-                      onChoose(row.target, value === "none" ? null : value);
-                      // Every explicit decision leaves this filter, so keep keyboard focus in the review.
-                      if (needsChoice) requestAnimationFrame(() => choiceFilter.current?.focus());
-                    }}>
-                      <SelectTrigger aria-label={`Choose version for ${row.target}`} className="min-h-10 w-full text-sm pointer-coarse:min-h-11"><SelectValue placeholder="Choose version" /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">Skip import</SelectItem>
-                        {row.offers.map((item) => <SelectItem key={item.id} value={item.id} disabled={!allowCredentials && !!item.secrets.length}>{sourceName(item.source)}</SelectItem>)}
-                      </SelectContent>
-                    </Select>}
-                  </div>
-                </li>;
-              })}
-            </ul>
-          </CollapsibleContent>
-        </Collapsible>;
+    <ul aria-label="Import items" className="max-h-[56dvh] overflow-y-auto overscroll-contain rounded-lg border border-border py-1">
+      {visible.map((node) => {
+        const name = sourceName(node.source);
+        const offers = node.categories.flatMap((group) => group.offers);
+        const on = offers.filter((offer) => state(offer) === "on").length;
+        return <li key={node.source}>
+          <Branch depth={0} open={isOpen(node.source)} onFlip={() => flip(node.source)} name={name}
+            check={offers.length > 0 && <Checkbox aria-label={`Select everything from ${name}`} checked={groupValue(offers)} onCheckedChange={(value) => setAll(offers, value === true)} />}
+            label={<span className="truncate font-medium">{name}</span>}
+            count={offers.length ? on ? `${on} of ${offers.length}` : String(offers.length) : "Nothing new"} />
+          {isOpen(node.source) && <ul>
+            {node.categories.map(({ category, offers: group }) => {
+              const key = `${node.source}/${category}`;
+              return <li key={category}>
+                <Branch depth={1} open={isOpen(key)} onFlip={() => flip(key)} name={`${LABELS[category]} from ${name}`}
+                  check={<Checkbox aria-label={`Select ${LABELS[category]} from ${name}`} checked={groupValue(group)} onCheckedChange={(value) => setAll(group, value === true)} />}
+                  label={<span>{LABELS[category]}</span>} count={String(group.length)} />
+                {isOpen(key) && <ul>{group.map((offer) => <OfferRow key={offer.id} offer={offer} state={state(offer)} chosen={model.byId.get(choices.get(offer.target) ?? "")} differs={model.differing.has(offer.target)} onToggle={(value) => toggle(offer, value)} />)}</ul>}
+              </li>;
+            })}
+            {node.skipped.length > 0 && <li><Skipped skips={node.skipped} /></li>}
+          </ul>}
+        </li>;
       })}
-      {!visible.length && <p className="px-3 py-5 text-sm text-muted-foreground">{model.rows.length ? "No items match. Clear the search, choose All categories, or turn off Needs a choice to see more items." : "No items to import from the selected AI coding tools. Continue to create the profile without imports, or go Back to choose other tools."}</p>}
-    </div>
-    <p className="text-sm text-muted-foreground">Canonfig copies the selected items into <Mono>~/.canonfig/</Mono>, the shared setup folder, once. Nothing is selected by default. Select available picks the visible items that need no other choice.{model.rows.some((row) => row.kind === "candidates") && " Some items differ between tools. Choose which tool's version to copy, or select Skip import."}</p>
-    {missing.length > 0 && <p className="text-sm text-muted-foreground">No new items found in {missing.map((id) => HARNESS_NAMES[id]).join(", ")}. You can continue without importing from these tools.</p>}
-    {model.skippedCount > 0 && <Collapsible>
-      <DisclosureTrigger>Review items that can't be imported ({model.skippedCount})</DisclosureTrigger>
-      <CollapsibleContent className="space-y-1 pl-4">
-        <p className="text-sm text-muted-foreground">Canonfig won't copy these items. Fix the original files, then go Back and Continue to scan again. Or continue without them.</p>
-        {model.skipped.map(([reason, skips]) => <Collapsible key={reason}>
-          <DisclosureTrigger>{reason.charAt(0).toUpperCase() + reason.slice(1)} ({skips.length})</DisclosureTrigger>
-          <CollapsibleContent><ul className="space-y-1 pb-2 pl-4 text-sm text-muted-foreground">
-            {skips.map((skip) => <li key={`${skip.source}/${skip.path}`}><Mono>{skip.path}</Mono></li>)}
-          </ul></CollapsibleContent>
-        </Collapsible>)}
-      </CollapsibleContent>
-    </Collapsible>}
+      {!visible.length && <li className="px-3 py-5 text-sm text-muted-foreground">{model.sources.length ? "No matches." : "Nothing to import from the selected tools."}</li>}
+    </ul>
   </section>;
 }
 
-/** Desktop columns share one grid; narrow rows stack their source and path beneath the name. */
-function OfferText({ offer, sources, paths }: { offer: ImportOffer; sources: string; paths: readonly string[] }) {
-  const notes = [...offer.secrets.map((secret) => `Set this environment variable on each machine: ${secret}`), ...offer.notes].join("; ");
+const INDENT = ["pl-1", "pl-7", "pl-[4.25rem]"] as const;
+
+/** A tool or category row: disclosure, group checkbox, label and count. */
+function Branch({ depth, open, onFlip, name, check, label, count }: {
+  depth: 0 | 1; open: boolean; onFlip: () => void; name: string; check: ReactNode; label: ReactNode; count: string;
+}) {
+  return <div className={cn("flex min-h-10 items-center gap-1 pr-3 pointer-coarse:min-h-11", INDENT[depth])}>
+    <button type="button" aria-expanded={open} aria-label={`${open ? "Collapse" : "Expand"} ${name}`} onClick={onFlip}
+      className="flex size-10 shrink-0 items-center justify-center rounded-md text-faint hover:text-foreground pointer-coarse:size-11">
+      <CaretRight className={cn("size-3.5 transition-transform duration-150 ease-snap", open && "rotate-90")} />
+    </button>
+    <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3">{check}{label}</label>
+    <span className="shrink-0 text-sm tabular-nums text-faint">{count}</span>
+  </div>;
+}
+
+function OfferRow({ offer, state, chosen, differs, onToggle }: {
+  offer: ImportOffer; state: RowState; chosen: ImportOffer | undefined; differs: boolean; onToggle: (on: boolean) => void;
+}) {
+  const note = state === "held" ? "Already in ~/.canonfig/"
+    : state === "other" ? `Using ${sourceName(chosen!.source)}'s`
+    : differs ? "Differs in other tools" : null;
+  return <li>
+    <label title={[offer.path, ...offer.notes].join("\n")}
+      className={cn("flex min-h-10 items-center gap-3 rounded-md pr-3 pointer-coarse:min-h-11", INDENT[2], state === "held" ? "cursor-default" : "cursor-pointer hover:bg-raised/50")}>
+      <Checkbox aria-label={`${offer.name} from ${sourceName(offer.source)}`} checked={state === "on"} disabled={state === "held"} onCheckedChange={(value) => onToggle(value === true)} />
+      <Mono className="min-w-0 flex-1 truncate text-foreground">{offer.name}</Mono>
+      {offer.secrets.length > 0 && <span className="shrink-0 text-sm text-faint">Needs <Mono>{offer.secrets.map((secret) => `$${variable(secret)}`).join(", ")}</Mono></span>}
+      {note && <span className={cn("shrink-0 text-sm", state === "on" && differs ? "text-warn" : "text-faint")}>{note}</span>}
+    </label>
+  </li>;
+}
+
+/** What one tool has that can't be imported, grouped by reason, closed until asked. */
+function Skipped({ skips }: { skips: readonly Skip[] }) {
+  const [open, setOpen] = useState(false);
+  const reasons = [...new Set(skips.map((skip) => skip.reason))];
   return <>
-    <span className="col-start-2 row-start-1 flex min-w-0 items-center gap-2" title={[offer.name, notes].filter(Boolean).join("\n")}>
-      <Mono className="min-w-0 truncate text-foreground">{offer.name}</Mono>
-      {notes && <span className="shrink-0 text-sm text-muted-foreground"><span aria-hidden>† </span>{offer.secrets.length ? "Needs variables" : "Format changed"}<span className="sr-only">: {notes}</span></span>}
-    </span>
-    <span className="col-start-2 row-start-2 min-w-0 break-words text-sm text-muted-foreground md:col-start-3 md:row-start-1 md:truncate" title={sources}>{sources}</span>
-    <span className="col-start-2 row-start-3 flex min-w-0 items-center gap-1 font-mono text-sm text-muted-foreground md:col-start-4 md:row-start-1" title={paths.join("\n")}>
-      <span dir="rtl" className="min-w-0 flex-1 truncate text-left"><bdi dir="ltr">{offer.path}</bdi></span>
-      {paths.length > 1 && <span className="shrink-0">(+{paths.length - 1})</span>}
-    </span>
+    <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}
+      className="flex min-h-10 w-full items-center pr-3 pl-[3.25rem] text-left text-sm text-faint hover:text-muted-foreground pointer-coarse:min-h-11">
+      {skips.length} can't be imported
+    </button>
+    {open && <ul className="space-y-2 pr-3 pb-2 pl-[3.25rem] text-sm">
+      {reasons.map((reason) => <li key={reason}>
+        <span className="text-muted-foreground">{reason.charAt(0).toUpperCase() + reason.slice(1)}</span>
+        <ul>{skips.filter((skip) => skip.reason === reason).map((skip) => <li key={skip.path}><Mono className="text-xs text-faint break-all">{skip.path}</Mono></li>)}</ul>
+      </li>)}
+    </ul>}
   </>;
 }
