@@ -891,7 +891,7 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
         <div className="space-y-5">
           <div className="space-y-1">
             <p className="font-medium">Which tools sync with <Mono className="text-foreground">~/.canonfig/</Mono>?</p>
-            <p className="text-muted-foreground">Syncing replaces their instructions, skills and MCP servers. Unchecked tools are left alone.</p>
+            <p className="text-muted-foreground">Syncing replaces their instructions, skills and MCP servers. Unchecked tools are left alone, except for skills in the shared <Mono>~/.agents/skills/</Mono> folder.</p>
           </div>
           <ul aria-label="Installed AI coding tools" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {INSTALLED.map((h) => (

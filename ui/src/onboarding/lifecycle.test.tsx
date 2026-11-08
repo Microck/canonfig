@@ -101,7 +101,7 @@ it("Source discovery shows actionable earlier-journal guidance", async () => {
   } finally { await app.close(); }
 });
 
-for (const literal of [false, true]) it(`harness changes keep canonical ids and the item choice (primary literal: ${literal})`, async () => {
+for (const literal of [false, true]) for (const replace of [false, true]) it(`harness changes keep canonical ids and the item choice (primary literal: ${literal}, replaced while unlisted: ${replace})`, async () => {
   const category = literal ? "mcp" : "skills";
   const first = { id: `codex/${category}/shared`, source: "codex", harnesses: ["codex"], category, name: "shared", path: literal ? "~/.codex/config.toml" : "~/.agents/skills/shared", target: literal ? "canonfig.jsonc#mcp.shared" : "skills/shared", secrets: literal ? ["env.TOKEN -> fromEnv TOKEN"] : [], notes: [] };
   const second = { ...first, id: `opencode/${category}/shared`, source: "opencode", harnesses: ["opencode"], path: literal ? "~/.config/opencode/opencode.json" : "~/.config/opencode/skills/shared", secrets: [] };
@@ -153,7 +153,8 @@ for (const literal of [false, true]) it(`harness changes keep canonical ids and 
     await act(async () => shared().click());
     await press("Back"); await act(async () => codex().click()); await press("Continue");
     await review();
-    await act(async () => shared().click());
+    // Either keep the Codex choice while Codex is unlisted, or replace it with OpenCode's identical copy.
+    if (replace) await act(async () => shared().click());
     await press("Back"); await act(async () => codex().click()); await press("Continue");
     await review();
     assert.equal(shared().getAttribute("aria-checked"), "true");

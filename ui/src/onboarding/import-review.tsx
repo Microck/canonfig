@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useId, useMemo, useState, type ReactNode } from "react";
 import { CaretRight } from "@/components/icons";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -58,8 +58,10 @@ export function ImportReview({ data, listed, choices, onChoices }: {
   const state = (offer: ImportOffer): RowState => {
     if (model.held.has(offer.target)) return "held";
     const pick = choices.get(offer.target);
-    if (pick === undefined || !model.byId.has(pick)) return "off";
-    return !model.differing.has(offer.target) || pick === offer.id ? "on" : "other";
+    if (pick === undefined) return "off";
+    if (pick === offer.id || (model.byId.has(pick) && !model.differing.has(offer.target))) return "on";
+    // A different version, or a choice retained from a tool that is unlisted right now.
+    return "other";
   };
   const toggle = (offer: ImportOffer, on: boolean) => {
     const next = new Map(choices);
@@ -67,20 +69,21 @@ export function ImportReview({ data, listed, choices, onChoices }: {
     else next.delete(offer.target);
     onChoices(next);
   };
-  // Checking a tool or category takes undecided targets only: it never replaces a version picked from another tool.
+  // Checking a tool or category takes undecided targets only: it never replaces a version picked from another tool,
+  // and never takes an MCP server that needs variables, because its row is where that consent is shown.
+  const bulk = (offer: ImportOffer) => state(offer) === "on" || (state(offer) === "off" && !offer.secrets.length);
   const setAll = (offers: readonly ImportOffer[], on: boolean) => {
     const next = new Map(choices);
     for (const offer of offers) {
       const current = state(offer);
-      if (on && current === "off") next.set(offer.target, offer.id);
+      if (on && current === "off" && !offer.secrets.length) next.set(offer.target, offer.id);
       if (!on && current === "on") next.delete(offer.target);
     }
     onChoices(next);
   };
-  // Items held by the folder or using another tool's version are not this group's to take, so they don't count:
-  // otherwise a fully taken tool would stay mixed and a click could never clear it.
+  // Only rows a group click can change count, so a fully taken group shows checked and the next click clears it.
   const groupValue = (offers: readonly ImportOffer[]) => {
-    const takeable = offers.filter((offer) => state(offer) === "on" || state(offer) === "off");
+    const takeable = offers.filter(bulk);
     const on = takeable.filter((offer) => state(offer) === "on").length;
     return on === 0 ? false : on === takeable.length ? true : "indeterminate";
   };
@@ -127,10 +130,10 @@ export function ImportReview({ data, listed, choices, onChoices }: {
                 <Branch depth={1} open={isOpen(key)} onFlip={() => flip(key)} name={`${LABELS[category]} from ${name}`}
                   check={<Checkbox aria-label={`Select ${LABELS[category]} from ${name}`} checked={groupValue(group)} onCheckedChange={(value) => setAll(group, value === true)} />}
                   label={<span>{LABELS[category]}</span>} count={String(group.length)} />
-                {isOpen(key) && <ul>{group.map((offer) => <OfferRow key={offer.id} offer={offer} state={state(offer)} chosen={model.byId.get(choices.get(offer.target) ?? "")} differs={model.differing.has(offer.target)} onToggle={(value) => toggle(offer, value)} />)}</ul>}
+                {isOpen(key) && <ul>{group.map((offer) => <OfferRow key={offer.id} offer={offer} state={state(offer)} chosen={choices.get(offer.target)} listed={model.byId.has(choices.get(offer.target) ?? "")} differs={model.differing.has(offer.target)} onToggle={(value) => toggle(offer, value)} />)}</ul>}
               </li>;
             })}
-            {node.skipped.length > 0 && <li><Skipped skips={node.skipped} /></li>}
+            {node.skipped.length > 0 && <li><Skipped skips={node.skipped} searching={!!search} /></li>}
           </ul>}
         </li>;
       })}
@@ -155,29 +158,43 @@ function Branch({ depth, open, onFlip, name, check, label, count }: {
   </div>;
 }
 
-function OfferRow({ offer, state, chosen, differs, onToggle }: {
-  offer: ImportOffer; state: RowState; chosen: ImportOffer | undefined; differs: boolean; onToggle: (on: boolean) => void;
+/** One tool's copy of a target. Its notes sit on a wrapping line under the name and describe the checkbox. */
+function OfferRow({ offer, state, chosen, listed, differs, onToggle }: {
+  offer: ImportOffer; state: RowState; chosen: string | undefined; listed: boolean; differs: boolean; onToggle: (on: boolean) => void;
 }) {
-  const note = state === "held" ? "Already in ~/.canonfig/"
-    : state === "other" ? `Using ${sourceName(chosen!.source)}'s`
+  const describedBy = useId();
+  // Offer ids are `${source}/${category}/${name}`, and a retained choice's tool may be absent from this scan.
+  const chosenTool = chosen && sourceName(chosen.slice(0, chosen.indexOf("/")) as Source);
+  const status = state === "held" ? "Already in ~/.canonfig/"
+    : state === "other" ? listed ? `Using ${chosenTool}'s` : `Chosen from ${chosenTool}, which isn't listed`
     : differs ? "Differs in other tools" : null;
+  const details = [
+    ...(offer.secrets.length ? [`Needs ${offer.secrets.map((secret) => `$${variable(secret)}`).join(", ")}`] : []),
+    ...(status ? [status] : []),
+    ...offer.notes,
+  ];
   return <li>
-    <label title={[offer.path, ...offer.notes].join("\n")}
-      className={cn("flex min-h-10 items-center gap-3 rounded-md pr-3 pointer-coarse:min-h-11", INDENT[2], state === "held" ? "cursor-default" : "cursor-pointer hover:bg-raised/50")}>
-      <Checkbox aria-label={`${offer.name} from ${sourceName(offer.source)}`} checked={state === "on"} disabled={state === "held"} onCheckedChange={(value) => onToggle(value === true)} />
-      <Mono className="min-w-0 flex-1 truncate text-foreground">{offer.name}</Mono>
-      {offer.secrets.length > 0 && <span className="shrink-0 text-sm text-faint">Needs <Mono>{offer.secrets.map((secret) => `$${variable(secret)}`).join(", ")}</Mono></span>}
-      {note && <span className={cn("shrink-0 text-sm", state === "on" && differs ? "text-warn" : "text-faint")}>{note}</span>}
+    <label title={offer.path}
+      className={cn("flex min-h-10 items-start gap-3 rounded-md py-2.5 pr-3 pointer-coarse:min-h-11", INDENT[2], state === "held" ? "cursor-default" : "cursor-pointer hover:bg-raised/50")}>
+      <Checkbox aria-label={`${offer.name} from ${sourceName(offer.source)}`} aria-describedby={details.length ? describedBy : undefined}
+        checked={state === "on"} disabled={state === "held"} onCheckedChange={(value) => onToggle(value === true)} className="mt-0.5" />
+      <span className="min-w-0 flex-1">
+        <Mono className="block break-all text-foreground">{offer.name}</Mono>
+        {details.length > 0 && <span id={describedBy} className="mt-0.5 flex flex-wrap gap-x-3 text-sm text-faint">
+          {details.map((detail) => <span key={detail} className={cn(detail === status && state === "on" && differs && "text-warn")}>{detail}</span>)}
+        </span>}
+      </span>
     </label>
   </li>;
 }
 
-/** What one tool has that can't be imported, grouped by reason, closed until asked. */
-function Skipped({ skips }: { skips: readonly Skip[] }) {
-  const [open, setOpen] = useState(false);
+/** What one tool has that can't be imported, grouped by reason. Closed until asked, open while a search matches it. */
+function Skipped({ skips, searching }: { skips: readonly Skip[]; searching: boolean }) {
+  const [opened, setOpened] = useState(false);
+  const open = searching || opened;
   const reasons = [...new Set(skips.map((skip) => skip.reason))];
   return <>
-    <button type="button" aria-expanded={open} onClick={() => setOpen(!open)}
+    <button type="button" aria-expanded={open} onClick={() => setOpened(!open)}
       className="flex min-h-10 w-full items-center pr-3 pl-[3.25rem] text-left text-sm text-faint hover:text-muted-foreground pointer-coarse:min-h-11">
       {skips.length} can't be imported
     </button>
