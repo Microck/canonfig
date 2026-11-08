@@ -13,7 +13,7 @@ import { type ConfigJson, type ConfigObject, isConfigObject } from "../synchroni
 import { adapterFor } from "./adapters/index.ts";
 import { emptyModel } from "./detect.ts";
 import { type MarkdownDocument, markdownWithFrontmatter, parseMarkdownDocument } from "./frontmatter.ts";
-import { SkillReader } from "./import-skills.ts";
+import { maxImportContentBytes, SkillReader, type ImportReadLimit } from "./import-skills.ts";
 import type { HarnessLayout, OwnedSurface, RootContext, SkillReadSource } from "./harness.ts";
 import { TARGET_IDS, type TargetId } from "./model.ts";
 
@@ -73,10 +73,25 @@ export type ImportContent =
   /** The canonfig.jsonc `mcp.<name>` value, secrets already `fromEnv`. */
   | { readonly kind: "mcp"; readonly server: ConfigValue };
 
+/** Materialized payload bytes, shared by per-item reads and whole-batch admission. */
+export const importContentBytes = (content: ImportContent): number => {
+  switch (content.kind) {
+    case "text": return Buffer.byteLength(content.content, "utf8");
+    case "tree": return content.files.reduce((bytes, file) => bytes + file.content.byteLength, 0);
+    case "mcp": return Buffer.byteLength(JSON.stringify(content.server), "utf8");
+  }
+};
+
 /** The source of a candidate changed or disappeared between the scan and the import. */
 export class ImportChangedError extends TaggedError<ImportChangedError>()(
   "ImportChangedError",
   { path: Schema.String, message: Schema.String },
+) {}
+
+/** The requested import payload exceeds the remaining content budget, not a source change. */
+export class ImportSizeLimitError extends TaggedError<ImportSizeLimitError>()(
+  "ImportSizeLimitError",
+  { path: Schema.String, maximumBytes: Schema.Number, message: Schema.String },
 ) {}
 
 export type ImportSelection =
@@ -130,7 +145,7 @@ interface Ready {
   readonly notes: ReadonlyArray<string>;
 }
 
-type Outcome = Ready | Skip | Missing;
+type Outcome = Ready | Skip | Missing | ImportReadLimit;
 
 type Inspected =
   | Skip
@@ -147,6 +162,12 @@ interface ReadScope {
   readonly neverTouch: ReadonlyArray<string>;
   /** The Canonical Folder, never scanned as a source. */
   readonly folder: string | undefined;
+}
+
+interface HarnessReadScope extends ReadScope {
+  readonly folder: string;
+  readonly configPaths: ReadonlyArray<string>;
+  readonly layouts: ReadonlyArray<readonly [TargetId, HarnessLayout]>;
 }
 
 const MISSING: Missing = { kind: "missing" };
@@ -414,12 +435,17 @@ const manifestProblem = (manifest: TreeFile, name: string): string | undefined =
   return frontmatter.name === name ? undefined : `SKILL.md names the skill ${frontmatter.name}, but its directory is ${name}`;
 };
 
-const readSkill = async (scope: ReadScope, path: string, reader?: SkillReader): Promise<Outcome> => {
+const readSkill = async (
+  scope: ReadScope,
+  path: string,
+  reader?: SkillReader,
+  maximumBytes = maxImportContentBytes,
+): Promise<Outcome> => {
   const name = lastSegment(scope, path);
   if (!SKILL_NAME.test(name)) return skip("skill directory names are lowercase letters, digits and '-'");
   let files: ReadonlyArray<TreeFile>;
   if (reader !== undefined) {
-    const tree = await reader.tree(path);
+    const tree = await reader.tree(path, maximumBytes);
     if (tree.kind !== "tree") return tree;
     files = tree.files;
   } else {
@@ -440,8 +466,13 @@ const readSkill = async (scope: ReadScope, path: string, reader?: SkillReader): 
 };
 
 /** Native flat skills become a single-file portable skill, without copying neighboring files. */
-const readFlatSkill = async (scope: ReadScope, reader: SkillReader, path: string): Promise<Outcome> => {
-  const read = await reader.bytes(path);
+const readFlatSkill = async (
+  scope: ReadScope,
+  reader: SkillReader,
+  path: string,
+  maximumBytes = maxImportContentBytes,
+): Promise<Outcome> => {
+  const read = await reader.bytes(path, maximumBytes);
   if (read.kind !== "bytes") return read;
   let document;
   try {
@@ -635,24 +666,23 @@ const readMcpSurface = async (scope: ReadScope, surface: ConfigSurface): Promise
 
 // Scan --------------------------------------------------------------------
 
-const layoutsFor = (
-  context: RootContext,
-  harnesses: ReadonlyArray<TargetId>,
-  folder: string,
-): Array<readonly [TargetId, HarnessLayout]> =>
-  harnesses.map((harness) => [harness, adapterFor(harness).layout(context, emptyModel(folder))] as const);
-
-const harnessScope = (
-  context: RootContext,
-  folder: string,
-): ReadScope => ({
-  join: context.join,
-  separator: context.join("a", "b").slice(1, -1),
-  base: context.home,
-  // Protect every supported harness's state, including unselected harnesses.
-  neverTouch: layoutsFor(context, TARGET_IDS, folder).flatMap(([, layout]) => layout.neverTouch),
-  folder,
-});
+const harnessScope = (context: RootContext, folder: string): HarnessReadScope => {
+  const model = emptyModel(folder);
+  const layouts = TARGET_IDS.map((harness) => [harness, adapterFor(harness).layout(context, model)] as const);
+  return {
+    join: context.join,
+    separator: context.join("a", "b").slice(1, -1),
+    base: context.home,
+    // Protect every supported harness's state, including unselected harnesses.
+    neverTouch: layouts.flatMap(([, layout]) => layout.neverTouch),
+    // Configs may contain credentials outside owned keys. Only skill reads
+    // exclude their whole files; normal MCP import still reads owned keys.
+    configPaths: layouts.flatMap(([, layout]) => layout.surfaces.flatMap((surface) =>
+      surface.kind === "config" ? [surface.target, ...surface.alternatives ?? []] : [])),
+    layouts,
+    folder,
+  };
+};
 
 const targetOf = (category: ImportCategory, name: string): string => {
   switch (category) {
@@ -683,7 +713,7 @@ class ScanCollector {
     outcome: Outcome,
   ): void {
     if (outcome.kind === "missing") return;
-    if (outcome.kind === "skip") return this.skip(source, path, outcome.reason);
+    if (outcome.kind === "skip" || outcome.kind === "limit") return this.skip(source, path, outcome.reason);
     const id = `${source}/${category}/${outcome.name}`;
     const group = this.candidates.get(id) ?? [];
     const identical = group.find((candidate) => candidate.digest === outcome.digest);
@@ -794,10 +824,10 @@ export const scanImports = async (input: {
   readonly folder: string;
 }): Promise<ImportScan> => {
   const { context, folder } = input;
-  const layouts = layoutsFor(context, [...new Set(input.harnesses)], folder);
   const scope = harnessScope(context, folder);
+  const layouts = [...new Set(input.harnesses)].map((harness) => scope.layouts.find(([id]) => id === harness)!);
   const collector = new ScanCollector();
-  const reader = await SkillReader.create(context, scope.neverTouch, folder);
+  const reader = await SkillReader.create(context, scope.neverTouch, scope.folder, scope.configPaths);
   const shared = new Map<string, Array<readonly [TargetId, SkillReadSource]>>();
   for (const [harness, layout] of layouts) {
     for (const surface of layout.surfaces) await scanSurface(scope, collector, harness, surface);
@@ -818,19 +848,20 @@ export const scanImports = async (input: {
 // Import ------------------------------------------------------------------
 
 const readCandidate = async (
-  scope: ReadScope,
-  layouts: ReadonlyArray<readonly [TargetId, HarnessLayout]>,
+  scope: HarnessReadScope,
   candidate: ImportCandidate,
   context: RootContext,
+  maximumBytes: number,
 ): Promise<Outcome> => {
   if (candidate.category === "skills") {
-    const reader = await SkillReader.create(context, scope.neverTouch, scope.folder);
+    const reader = await SkillReader.create(context, scope.neverTouch, scope.folder, scope.configPaths);
     return candidate.path.endsWith(".md")
-      ? readFlatSkill(scope, reader, candidate.path)
-      : readSkill(scope, candidate.path, reader);
+      ? readFlatSkill(scope, reader, candidate.path, maximumBytes)
+      : readSkill(scope, candidate.path, reader, maximumBytes);
   }
   if (candidate.category !== "mcp") return readDocument(scope, candidate.category, candidate.path);
-  for (const [, layout] of layouts) {
+  for (const [harness, layout] of scope.layouts) {
+    if (!candidate.harnesses.includes(harness)) continue;
     for (const surface of layout.surfaces) {
       if (surface.kind !== "config" || ![surface.target, ...surface.alternatives ?? []].includes(candidate.path)) continue;
       const read = await readMcpSurface(scope, surface);
@@ -846,19 +877,30 @@ const readCandidate = async (
 /**
  * Re-read a candidate's source under the scan's rules and return what to
  * write. Throws ImportChangedError when the source is gone, now refused, or
- * no longer has the digest the operator reviewed. `folder` is the approved
+ * no longer has the digest the operator reviewed, and ImportSizeLimitError
+ * when its payload exceeds the remaining budget. `folder` is the approved
  * scan boundary, including when it differs from the default Canonical Folder.
  */
 export const readImportContent = async (
   candidate: ImportCandidate,
   context: RootContext,
   folder: string,
+  maximumBytes = maxImportContentBytes,
 ): Promise<ImportContent> => {
   if (folder === undefined) throw new ImportChangedError({
     path: candidate.path, message: `${candidate.id} requires the approved Canonical Folder boundary; scan again`,
   });
-  const layouts = layoutsFor(context, candidate.harnesses, folder);
-  const outcome = await readCandidate(harnessScope(context, folder), layouts, candidate, context);
+  const budget = Math.min(maximumBytes, maxImportContentBytes);
+  const outcome = await readCandidate(harnessScope(context, folder), candidate, context, budget);
+  // Converted text and sanitized MCP values can differ in size from their
+  // sources. Admit the actual payload, using the same accounting as apply.
+  if (outcome.kind === "limit" || (outcome.kind === "ready" && importContentBytes(outcome.content) > budget)) {
+    throw new ImportSizeLimitError({
+      path: candidate.path,
+      maximumBytes: budget,
+      message: `${candidate.id} exceeds the remaining import content budget of ${budget} bytes`,
+    });
+  }
   const changed = (message: string) => new ImportChangedError({ path: candidate.path, message: `${candidate.id} ${message}` });
   if (outcome.kind === "missing") throw changed("is gone; scan again");
   if (outcome.kind === "skip") throw changed(`can no longer be imported: ${outcome.reason}`);

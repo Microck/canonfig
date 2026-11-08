@@ -133,10 +133,24 @@ holds such a harness instead of retiring it. The same report backs
 `src/projection/import.ts` implements the Source setup's one-time import
 (`setup plan --import`, `--import-all`, `--no-import`). It reads instructions,
 rules, skills, agents, commands and MCP servers from the selected harnesses
-and writes them as folder items. It is read-only on the harness, refuses
-never-touch paths, never follows links, and turns MCP literals that look like
-credentials into `fromEnv` references before digesting them. A source that
+and writes them as folder items. It is read-only on the harness and refuses
+never-touch paths. Non-skill config and instruction reads reject links. MCP
+import reads owned keys and turns credential-looking literals into `fromEnv`
+references only within those keys, before digesting them. A source that
 changes between scan and import fails with `ImportChangedError`.
+
+Skill discovery reads the adapters' explicit native skill sources, including
+locations Canonfig does not own for writes. Skill reads may follow links only
+within the user's home, outside protected harness state, mixed/key-scoped
+config files and their aliases, and the Canonical Folder. Import copies
+regular-file content, not links; broken links, cycles and unsafe targets are
+reported as skipped paths. This read policy does not expand the positive
+ownership allowlist for writes or backups.
+
+Discovery skips skills above 64 MiB or with a file above 1 MiB. Applying the
+approved import has a shared 64 MiB content budget. If the selected items
+exceed that budget, the import stops before any writes. Remove large skill
+resources or select fewer items, then scan, review and approve again.
 
 ## Takeover snapshots
 

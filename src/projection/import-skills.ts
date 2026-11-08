@@ -6,6 +6,8 @@ import type { RootContext, SkillReadSource } from "./harness.ts";
 import type { ImportContent } from "./import.ts";
 
 const MAX_FILE_BYTES = 1024 * 1024;
+/** Bound both one materialized skill and all content retained by setup import. */
+export const maxImportContentBytes = 64 * MAX_FILE_BYTES;
 const MAX_FILES = 512;
 const MAX_DIRECTORIES = 4096;
 const MAX_DEPTH = 64;
@@ -17,6 +19,18 @@ type Resolved = { readonly kind: "resolved"; readonly path: string; readonly sta
 type Tree = Extract<ImportContent, { readonly kind: "tree" }>;
 type Bytes = { readonly kind: "bytes"; readonly content: Uint8Array; readonly executable: boolean };
 type Listing = { readonly kind: "entries"; readonly names: ReadonlyArray<string>; readonly identity: string };
+
+export interface ImportReadLimit {
+  readonly kind: "limit";
+  readonly path: string;
+  readonly maximumBytes: number;
+  readonly reason: string;
+}
+
+const limited = (path: string, maximumBytes: number): ImportReadLimit => ({
+  kind: "limit", path, maximumBytes,
+  reason: `import content exceeds the ${maximumBytes}-byte limit; choose fewer items or remove large skill resources and scan again`,
+});
 
 const refused = (reason: string): Refused => ({ kind: "skip", reason });
 const MISSING: Missing = { kind: "missing" };
@@ -52,60 +66,99 @@ export class SkillReader {
   private constructor(
     private readonly home: string,
     private readonly physicalHome: string,
-    private readonly foldCase: boolean,
-    private readonly exclusions: ReadonlyArray<{ readonly path: string; readonly reason: string }>,
+    private readonly exclusions: ReadonlyArray<{
+      readonly path: string;
+      readonly prefix: string;
+      readonly foldedPath: string;
+      readonly foldedPrefix: string;
+      readonly reason: string;
+    }>,
   ) {}
 
-  static async create(context: RootContext, neverTouch: ReadonlyArray<string>, folder?: string): Promise<SkillReader> {
+  static async create(context: RootContext, neverTouch: ReadonlyArray<string>, folder: string, configPaths: ReadonlyArray<string>): Promise<SkillReader> {
     const exclusions = [
       ...neverTouch.map((path) => ({ path: resolve(path), reason: "never-touch path" })),
-      ...(folder === undefined ? [] : [{ path: resolve(folder), reason: "inside the Canonical Folder" }]),
+      ...configPaths.map((path) => ({
+        path: resolve(path), reason: "protected config file; remove the config resource from the skill and scan again",
+      })),
+      { path: resolve(folder), reason: "inside the Canonical Folder" },
     ];
     const aliases = await Promise.all(exclusions.map(async (entry) => ({ ...entry, path: await exclusionAlias(entry.path) })));
-    return new SkillReader(resolve(context.home), await realpath(context.home), context.platform !== "linux", [...exclusions, ...aliases]);
+    return new SkillReader(resolve(context.home), await realpath(context.home),
+      [...exclusions, ...aliases].map((entry) => {
+        const prefix = entry.path.endsWith(sep) ? entry.path : `${entry.path}${sep}`;
+        return { ...entry, prefix, foldedPath: entry.path.toLowerCase(), foldedPrefix: prefix.toLowerCase() };
+      }));
   }
 
   private within(path: string, parent: string): boolean {
-    const child = this.foldCase ? path.toLowerCase() : path;
-    const root = this.foldCase ? parent.toLowerCase() : parent;
-    return child === root || child.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
+    return path === parent || path.startsWith(parent.endsWith(sep) ? parent : `${parent}${sep}`);
   }
 
-  private blocked(path: string): Refused | undefined {
-    if (!this.within(path, this.home) && !this.within(path, this.physicalHome)) return refused("resolves outside the home directory");
-    const exclusion = this.exclusions.find((entry) => this.within(path, entry.path));
-    return exclusion === undefined ? undefined : refused(exclusion.reason);
+  /** Resolve only the home prefix, never a link target's still-unchecked suffix. */
+  private async homeRoot(path: string): Promise<string | undefined> {
+    if (this.within(path, this.home)) return this.home;
+    if (this.within(path, this.physicalHome)) return this.physicalHome;
+    for (const root of [this.home, this.physicalHome]) {
+      if (!this.within(path.toLowerCase(), root.toLowerCase())) continue;
+      const prefix = path.slice(0, root.length);
+      try {
+        if (await realpath(prefix) === this.physicalHome) return prefix;
+      } catch (error) {
+        if (!(error instanceof Error) || failure(error).kind !== "missing") throw error;
+      }
+    }
+    return undefined;
+  }
+
+  private async blocked(path: string): Promise<Refused | undefined> {
+    if (await this.homeRoot(path) === undefined) return refused("resolves outside the home directory");
+    const folded = path.toLowerCase();
+    let canonical: string | undefined;
+    for (const entry of this.exclusions) {
+      if (path === entry.path || path.startsWith(entry.prefix)) return refused(entry.reason);
+      // A differently cased spelling is only an alias if the filesystem says
+      // so. Refresh possible aliases to cover protected files created later.
+      if (folded === entry.foldedPath || folded.startsWith(entry.foldedPrefix)) {
+        canonical ??= await exclusionAlias(path);
+        if (this.within(canonical, await exclusionAlias(entry.path))) return refused(entry.reason);
+      }
+    }
+    return undefined;
   }
 
   private async inspect(path: string): Promise<Resolved | Refused | Missing> {
     const absolute = resolve(path);
-    const denied = this.blocked(absolute);
+    const denied = await this.blocked(absolute);
     if (denied !== undefined) return denied;
     let current = this.physicalHome;
-    let pending = relative(this.within(absolute, this.home) ? this.home : this.physicalHome, absolute).split(sep).filter(Boolean);
-    const links = new Set<string>();
+    const root = (await this.homeRoot(absolute))!;
+    let pending = relative(root, absolute).split(sep).filter(Boolean);
+    let links = 0;
     for (;;) {
-      const protectedPath = this.blocked(current);
+      const protectedPath = await this.blocked(current);
       if (protectedPath !== undefined) return protectedPath;
       let status;
       try {
         status = await lstat(current);
       } catch (error) {
         const problem = error instanceof Error ? failure(error) : refused("cannot be read");
-        return problem.kind === "missing" && links.size > 0 ? refused("is a broken link") : problem;
+        return problem.kind === "missing" && links > 0 ? refused("is a broken link") : problem;
       }
       if (status.isSymbolicLink()) {
-        if (links.has(current) || links.size >= MAX_LINKS) return refused("contains a link cycle or too many links");
-        links.add(current);
+        if (++links > MAX_LINKS) return refused("contains a link cycle or too many links");
         let target;
         try {
           target = await readlink(current);
         } catch (error) {
           return error instanceof Error ? failure(error) : refused("cannot be read");
         }
+        if (sep === "\\" && target.includes("/")) {
+          return refused("uses forward slashes in a Windows link target; recreate the link with native separators");
+        }
         if (isAbsolute(target)) {
-          const root = this.within(target, this.home) ? this.home : this.physicalHome;
-          if (!this.within(target, root)) return refused("resolves outside the home directory");
+          const root = await this.homeRoot(target);
+          if (root === undefined) return refused("resolves outside the home directory");
           pending = [...target.slice(root.length).split(sep).filter(Boolean), ...pending];
           current = this.physicalHome;
         } else {
@@ -117,7 +170,18 @@ export class SkillReader {
         continue;
       }
       if (!status.isDirectory() && !status.isFile()) return refused("is not a regular file or directory");
-      if (pending.length === 0) return { kind: "resolved", path: current, status };
+      // Each component passes the boundary check before advancing. Resolve
+      // the final spelling once instead of rewalking every prefix.
+      if (pending.length === 0) {
+        try {
+          current = await realpath(current);
+        } catch (error) {
+          return error instanceof Error ? failure(error) : refused("cannot be read");
+        }
+        const canonicalDenied = await this.blocked(current);
+        if (canonicalDenied !== undefined) return canonicalDenied;
+        return { kind: "resolved", path: current, status };
+      }
       if (!status.isDirectory()) return MISSING;
       const segment = pending.shift()!;
       if (segment === ".") continue;
@@ -130,11 +194,17 @@ export class SkillReader {
     return after.kind === "resolved" && after.path === before.path && sameFile(after.status, before.status);
   }
 
-  async bytes(path: string): Promise<Bytes | Refused | Missing> {
+  async bytes(path: string, maximumBytes = MAX_FILE_BYTES): Promise<Bytes | Refused | Missing | ImportReadLimit> {
     const before = await this.inspect(path);
     if (before.kind !== "resolved") return before;
+    return this.bytesFromResolved(path, before, maximumBytes);
+  }
+
+  /** Reuse the tree walk's inspection; opened-inode and source rechecks still guard the read. */
+  private async bytesFromResolved(path: string, before: Resolved, maximumBytes: number): Promise<Bytes | Refused | Missing | ImportReadLimit> {
     if (!before.status.isFile()) return refused("is a directory, not a file");
     if (before.status.size > MAX_FILE_BYTES) return refused("is larger than 1 MiB");
+    if (before.status.size > maximumBytes) return limited(path, maximumBytes);
     try {
       // O_NONBLOCK avoids hanging if an entry is replaced with a FIFO. Check
       // the opened inode and both source paths before reading any bytes.
@@ -176,10 +246,12 @@ export class SkillReader {
     }
   }
 
-  async tree(path: string): Promise<Tree | Refused | Missing> {
+  async tree(path: string, maximumBytes = maxImportContentBytes): Promise<Tree | Refused | Missing | ImportReadLimit> {
     const files: Array<Tree["files"][number]> = [];
+    const limit = Math.min(maximumBytes, maxImportContentBytes);
+    let remaining = limit;
     let directories = 0;
-    const visit = async (directory: string, prefix: string, ancestors: ReadonlySet<string>, depth: number): Promise<Refused | Missing | undefined> => {
+    const visit = async (directory: string, prefix: string, ancestors: ReadonlySet<string>, depth: number): Promise<Refused | Missing | ImportReadLimit | undefined> => {
       if (depth > MAX_DEPTH || ++directories > MAX_DIRECTORIES) return refused("skill tree exceeds its directory traversal bound");
       const listing = await this.list(directory);
       if (listing.kind !== "entries") return listing;
@@ -195,8 +267,10 @@ export class SkillReader {
           if (problem !== undefined) return problem;
         } else {
           if (files.length >= MAX_FILES) return refused(`has more than ${MAX_FILES} files`);
-          const read = await this.bytes(entry);
+          const read = await this.bytesFromResolved(entry, status, remaining);
+          if (read.kind === "limit") return limited(path, limit);
           if (read.kind !== "bytes") return refused(`${relativePath} ${read.kind === "skip" ? read.reason : "disappeared while being read"}`);
+          remaining -= read.content.byteLength;
           files.push({ path: relativePath, content: read.content, executable: read.executable });
         }
       }

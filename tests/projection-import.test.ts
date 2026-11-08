@@ -6,6 +6,8 @@ import { dirname, posix } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { RootContext } from "../src/projection/harness.ts";
+import { parseMarkdownDocument } from "../src/projection/frontmatter.ts";
+import { SkillReader } from "../src/projection/import-skills.ts";
 import {
   existingFolderItems,
   type ImportContent,
@@ -341,6 +343,12 @@ describe("scanImports", () => {
       ["agents/skills/review", ["codex", "opencode", "factory-droid", "oh-my-pi"]],
     ]);
     expect(scan.skipped).toEqual([]);
+    const flat = await readImportContent(candidate(scan, "agents/skills/flat"), context(home), `${home}/.canonfig`);
+    if (flat.kind !== "tree") throw new Error("Expected a portable flat-skill tree");
+    expect(flat.files.map((file) => file.path)).toEqual(["SKILL.md"]);
+    const document = parseMarkdownDocument(new TextDecoder().decode(flat.files[0]!.content));
+    expect(document.data).toMatchObject({ name: "flat", description: "Shared flat skill" });
+    expect(document.content).toBe("Use flat.");
     expect(selectImports(scan, new Map(), { kind: "some", sources: ["qwen"], items: [] }).chosen.map((entry) => entry.name)).toEqual(["lint"]);
   });
 
@@ -360,6 +368,25 @@ describe("scanImports", () => {
     expect(scan.candidates.map((entry) => [entry.source, entry.name, entry.path])).toEqual([
       [harness, "lint", `${home}/${root}/lint`],
     ]);
+    expect(scan.skipped).toEqual([]);
+  });
+
+  it.each([
+    [undefined, undefined, ["claude", "cursor", "native", "shared"]],
+    ["GROK_CLAUDE_SKILLS_ENABLED", "0", ["cursor", "native", "shared"]],
+    ["GROK_CLAUDE_SKILLS_ENABLED", "false", ["cursor", "native", "shared"]],
+    ["GROK_CURSOR_SKILLS_ENABLED", "0", ["claude", "native", "shared"]],
+    ["GROK_CURSOR_SKILLS_ENABLED", "false", ["claude", "native", "shared"]],
+  ] as const)("Grok compatibility roots respect %s=%s", async (flag, value, names) => {
+    const home = makeHome();
+    put(`${home}/.grok/skills/native/SKILL.md`, skill("native", "Native skill"));
+    put(`${home}/.claude/skills/claude/SKILL.md`, skill("claude", "Claude compatibility skill"));
+    put(`${home}/.cursor/skills/cursor/SKILL.md`, skill("cursor", "Cursor compatibility skill"));
+    put(`${home}/.agents/skills/shared/SKILL.md`, skill("shared", "Generic shared skill"));
+    const ctx: RootContext = { ...context(home), environment: (name) => name === flag ? value : undefined };
+    const scan = await scanImports({ context: ctx, harnesses: ["grok-build"], folder: `${home}/.canonfig` });
+    expect(scan.candidates.map((entry) => entry.name).sort()).toEqual([...names].sort());
+    expect(candidate(scan, "agents/skills/shared").harnesses).toEqual(["grok-build"]);
     expect(scan.skipped).toEqual([]);
   });
 
@@ -451,30 +478,136 @@ describe("scanImports", () => {
     ]);
   });
 
-  it("refuses sockets and preserves skill byte and file-count bounds through links", async () => {
+  it("excludes key-scoped config files from skill resources without blocking MCP imports", async () => {
+    const home = makeHome();
+    put(`${home}/.claude.json`, JSON.stringify({
+      oauthAccount: { accessToken: OAUTH_TOKEN },
+      mcpServers: { allowed: { command: "allowed-mcp" } },
+    }));
+    put(`${home}/.codex/skills/linked/SKILL.md`, skill("linked", "Has a config resource"));
+    symlinkSync(`${home}/.claude.json`, `${home}/.codex/skills/linked/config.json`);
+    const ctx = context(home);
+    const folder = `${home}/.canonfig`;
+    const scan = await scanImports({ context: ctx, harnesses: ["codex", "claude-code"], folder });
+    expect(scan.candidates.map((entry) => entry.id)).toEqual(["claude-code/mcp/allowed"]);
+    expect(scan.skipped.some((entry) => entry.reason.includes("protected config"))).toBe(true);
+    expect(await readImportContent(candidate(scan, "claude-code/mcp/allowed"), ctx, folder)).toEqual({
+      kind: "mcp", server: { transport: "stdio", command: "allowed-mcp" },
+    });
+    expectNoLiterals(JSON.stringify(scan));
+  });
+
+  it.each([".claude.json", ".config/opencode/opencode.jsonc"])("protects an unselected key-scoped config alias at %s", async (configPath) => {
+    const home = makeHome();
+    put(`${home}/mixed-state.json`, JSON.stringify({ accessToken: OAUTH_TOKEN }));
+    mkdirSync(dirname(`${home}/${configPath}`), { recursive: true });
+    symlinkSync(`${home}/mixed-state.json`, `${home}/${configPath}`);
+    put(`${home}/.codex/skills/linked/SKILL.md`, skill("linked", "Has a config alias resource"));
+    symlinkSync(`${home}/mixed-state.json`, `${home}/.codex/skills/linked/config.json`);
+    const scan = await scanImports({ context: context(home), harnesses: ["codex"], folder: `${home}/.canonfig` });
+    expect(scan.candidates).toEqual([]);
+    expect(scan.skipped.some((entry) => entry.reason.includes("protected config"))).toBe(true);
+    expectNoLiterals(JSON.stringify(scan));
+  });
+
+  it("accepts a finite repeated-link path without treating it as a cycle", async () => {
+    const home = makeHome();
+    put(`${home}/library/version/guide.md`, "A safe guide.\n");
+    symlinkSync("version", `${home}/library/current`);
+    put(`${home}/.codex/skills/linked/SKILL.md`, skill("linked", "Uses the same link twice"));
+    symlinkSync(`${home}/library/current/../current/guide.md`, `${home}/.codex/skills/linked/guide.md`);
+    const ctx = context(home);
+    const folder = `${home}/.canonfig`;
+    const scan = await scanImports({ context: ctx, harnesses: ["codex"], folder });
+    expect(scan.skipped).toEqual([]);
+    const content = await readImportContent(candidate(scan, "codex/skills/linked"), ctx, folder);
+    expect(content.kind === "tree" ? content.files.map((file) => [file.path, new TextDecoder().decode(file.content)]) : content).toContainEqual([
+      "guide.md", "A safe guide.\n",
+    ]);
+  });
+
+  it("respects a case-sensitive filesystem even when the platform is macOS", async (test) => {
+    const home = makeHome();
+    put(`${home}/Libraries/private.md`, "Protected fixture.\n");
+    mkdirSync(`${home}/libraries`, { recursive: true });
+    if (realpathSync(`${home}/Libraries`) === realpathSync(`${home}/libraries`)) {
+      test.skip();
+      return;
+    }
+    put(`${home}/libraries/guide.md`, "A safe lowercase library.\n");
+    mkdirSync(`${home}/.codex`, { recursive: true });
+    symlinkSync(`${home}/Libraries`, `${home}/.codex/sessions`);
+    put(`${home}/.claude/skills/linked/SKILL.md`, skill("linked", "A distinct lowercase library"));
+    symlinkSync(`${home}/libraries/guide.md`, `${home}/.claude/skills/linked/guide.md`);
+    const ctx: RootContext = { ...context(home), platform: "macos" };
+    const folder = `${home}/.canonfig`;
+    const scan = await scanImports({ context: ctx, harnesses: ["claude-code"], folder });
+    expect(scan.skipped).toEqual([]);
+    const content = await readImportContent(candidate(scan, "claude-code/skills/linked"), ctx, folder);
+    expect(content.kind === "tree" ? content.files.map((file) => [file.path, new TextDecoder().decode(file.content)]) : content).toContainEqual([
+      "guide.md", "A safe lowercase library.\n",
+    ]);
+  });
+
+  it("bounds total UTF-8 skill bytes and refuses over-budget content before opening it", async () => {
+    const home = makeHome();
+    const root = `${home}/.claude/skills/budget`;
+    const manifest = skill("budget", "A bounded skill");
+    const guide = "é🚀\n";
+    put(`${root}/SKILL.md`, manifest);
+    put(`${root}/guide.md`, guide);
+    const encoder = new TextEncoder();
+    const total = encoder.encode(manifest).byteLength + encoder.encode(guide).byteLength;
+    const reader = await SkillReader.create(context(home), [], `${home}/.canonfig`, []);
+    const exact = await reader.tree(root, total);
+    expect(exact.kind === "tree" ? exact.files.map((file) => [file.path, new TextDecoder().decode(file.content)]) : exact).toEqual([
+      ["SKILL.md", manifest], ["guide.md", guide],
+    ]);
+    // An attempted read would fail on POSIX; quota rejection must happen first.
+    if (process.platform !== "win32" && process.getuid?.() !== 0) chmodSync(`${root}/guide.md`, 0o000);
+    expect(await reader.tree(root, total - 1)).toMatchObject({
+      kind: "limit", path: root, maximumBytes: total - 1,
+    });
+  });
+
+  it("preserves skill byte and file-count bounds through links", async () => {
     const home = makeHome();
     const root = `${home}/.claude/skills`;
-    put(`${root}/socket/SKILL.md`, skill("socket", "Special resource"));
+    put(`${root}/large/SKILL.md`, skill("large", "Large linked resource"));
+    put(`${home}/resources/large.bin`, "x".repeat(1024 * 1024 + 1));
+    symlinkSync(`${home}/resources/large.bin`, `${root}/large/large.bin`);
+    put(`${root}/many/SKILL.md`, skill("many", "Too many resources"));
+    for (let index = 0; index < 512; index++) put(`${root}/many/files/${index}.txt`, "resource");
+    const scan = await scanImports({ context: context(home), harnesses: ["claude-code"], folder: `${home}/.canonfig` });
+    expect(scan.candidates).toEqual([]);
+    expect(scan.skipped.map((entry) => entry.reason)).toEqual([
+      "large.bin is larger than 1 MiB", "has more than 512 files",
+    ]);
+  });
+
+  it.skipIf(process.platform === "win32")("refuses a linked filesystem socket from a short disposable home", async () => {
+    const home = realpathSync(mkdtempSync("/tmp/cf-sock-"));
+    homes.push(home);
+    const root = `${home}/.claude/skills/socket`;
+    put(`${root}/SKILL.md`, skill("socket", "Special resource"));
+    symlinkSync(`${home}/s`, `${root}/special.sock`);
     const server = createServer();
     const started = Promise.withResolvers<void>();
     server.once("error", started.reject);
-    server.listen(`${root}/socket/special.sock`, started.resolve);
-    await started.promise;
     try {
-      put(`${root}/large/SKILL.md`, skill("large", "Large linked resource"));
-      put(`${home}/resources/large.bin`, "x".repeat(1024 * 1024 + 1));
-      symlinkSync(`${home}/resources/large.bin`, `${root}/large/large.bin`);
-      put(`${root}/many/SKILL.md`, skill("many", "Too many resources"));
-      for (let index = 0; index < 512; index++) put(`${root}/many/files/${index}.txt`, "resource");
+      server.listen(`${home}/s`, started.resolve);
+      await started.promise;
       const scan = await scanImports({ context: context(home), harnesses: ["claude-code"], folder: `${home}/.canonfig` });
       expect(scan.candidates).toEqual([]);
-      expect(scan.skipped.map((entry) => entry.reason)).toEqual([
-        "large.bin is larger than 1 MiB", "has more than 512 files", "special.sock is not a regular file or directory",
-      ]);
+      expect(scan.skipped).toEqual([{
+        source: "claude-code", path: root, reason: "special.sock is not a regular file or directory",
+      }]);
     } finally {
-      const closed = Promise.withResolvers<void>();
-      server.close((error) => error === undefined ? closed.resolve() : closed.reject(error));
-      await closed.promise;
+      if (server.listening) {
+        const closed = Promise.withResolvers<void>();
+        server.close((error) => error === undefined ? closed.resolve() : closed.reject(error));
+        await closed.promise;
+      }
     }
   });
 
