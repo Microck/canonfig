@@ -93,6 +93,17 @@ function claudeHome(home: string): void {
 }
 
 describe("scanImports", () => {
+  it("keeps every item when a machine has more than 256 candidates", async () => {
+    const home = makeHome();
+    for (let index = 0; index < 320; index++) {
+      const name = `skill-${index}`;
+      put(`${home}/.claude/skills/${name}/SKILL.md`, skill(name, `Skill ${index}`));
+    }
+    const scan = await scanImports({ context: context(home), harnesses: ["claude-code"], folder: `${home}/.canonfig` });
+    expect(scan.candidates).toHaveLength(320);
+    expect(scan.skipped).toEqual([]);
+  });
+
   it("imports a Claude Code home, redacting MCP credentials and refusing leaky servers", async () => {
     const home = makeHome();
     claudeHome(home);

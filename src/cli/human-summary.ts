@@ -552,10 +552,26 @@ const summarizeSetup = (data: PayloadRecord, outline: Outline): boolean => {
       outline.lines.push(`    ${clip(evidence.replace(/\s+/gu, " ").trim(), outline)}`);
     }
   }
-  const exclusions = data.exclusions;
-  if (isList(exclusions)) outlineValue(outline, "", "exclusions: ", exclusions, 1);
-  const decisions = data.decisions;
-  if (isList(decisions) && decisions.length > 0) outlineValue(outline, "", "decisions: ", decisions, 1);
+  const review = objectOf(data.imports);
+  const folder = textOf(objectOf(items.find((item) => item.kind === "folder-scaffold")?.detail)?.folder);
+  const importExclusions = [
+    ...recordsOf(review?.skipped).map((skip) => `import skipped: ${textOf(skip.path)}: ${textOf(skip.reason)}`),
+    ...recordsOf(review?.collisions).map((collision) => {
+      const ids = recordsOf(collision.candidates).map((candidate) => textOf(candidate.id)).join(", ");
+      return collision.kind === "folder"
+        ? `import collision: ${textOf(collision.target)} already exists in ${folder} with different content (${ids}); edit or remove it there to import`
+        : `import collision: ${textOf(collision.target)} differs between ${ids}; choose one with --import <id>`;
+    }),
+  ];
+  const exclusions = [...(isList(data.exclusions) ? data.exclusions : []), ...importExclusions];
+  outlineValue(outline, "", "exclusions: ", exclusions, 1);
+  const decisions = isList(data.decisions) ? data.decisions.map((decision) =>
+    decision === "harness import declined; harness files were not read"
+      ? "harness import declined (--no-import); harness files were not read"
+      : review?.request === "offer" && textOf(decision)?.startsWith("harness import offered:")
+      ? `${textOf(decision)}; choose with --import <harness|id> or --import-all`
+      : decision) : [];
+  if (decisions.length > 0) outlineValue(outline, "", "decisions: ", decisions, 1);
   outlineRest(
     outline,
     data,

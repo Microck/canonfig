@@ -913,7 +913,7 @@ describe.runIf(process.platform === "linux")("Source harness selection and impor
       // Codex reads skills from the shared ~/.agents/skills/.
       write(join(test.home, ".agents", "skills", "deploy", "SKILL.md"), "---\nname: deploy\ndescription: Another deploy\n---\nDifferent.\n");
       const all = test.setup(["plan", "--role", "source", "--import-all"]);
-      expect(all.exclusions).toContainEqual(expect.stringContaining("import collision: skills/deploy differs between"));
+      expect(all.imports.collisions).toContainEqual(expect.objectContaining({ kind: "candidates", target: "skills/deploy" }));
       const allTargets = test.imported(all).map((entry) => entry.target);
       expect(allTargets).not.toContain("skills/deploy");
 
@@ -921,7 +921,7 @@ describe.runIf(process.platform === "linux")("Source harness selection and impor
       expect(test.imported(named).map((entry) => entry.id)).toEqual(["claude-code/skills/deploy"]);
 
       const declined = test.setup(["plan", "--role", "source", "--no-import"]);
-      expect(declined.imports).toEqual({ request: "none", offered: [], present: [] });
+      expect(declined.imports).toEqual({ request: "none", offered: [], present: [], skipped: [], collisions: [] });
       expect(test.item(declined, "harness-import")).toBeUndefined();
 
       rmSync(join(test.home, ".canonfig", "setup.json"));

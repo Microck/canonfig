@@ -105,7 +105,6 @@ const MAX_FILE_BYTES = MIB;
 // passes 1 MiB; a config file is parsed whole anyway, so it gets a wider bound.
 const MAX_CONFIG_BYTES = 16 * MIB;
 const MAX_SKILL_FILES = 512;
-const MAX_CANDIDATES = 256;
 
 const DOCUMENT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/u;
 const SKILL_NAME = /^[a-z0-9][a-z0-9-]*$/u;
@@ -659,9 +658,6 @@ class ScanCollector {
     const id = `${source}/${category}/${outcome.name}`;
     const earlier = this.candidates.get(id);
     if (earlier !== undefined) return this.skip(source, path, `duplicates ${id} from ${earlier.path}`);
-    if (this.candidates.size >= MAX_CANDIDATES) {
-      return this.skip(source, path, `more than ${MAX_CANDIDATES} import candidates; import the rest by hand`);
-    }
     this.candidates.set(id, {
       id, source, harnesses, category, name: outcome.name, path, target: targetOf(category, outcome.name),
       digest: outcome.digest, secrets: outcome.secrets, notes: outcome.notes,

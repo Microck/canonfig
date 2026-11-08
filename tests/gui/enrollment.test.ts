@@ -75,6 +75,45 @@ afterEach(async () => {
 });
 
 describe("real enrollment and setup endpoints", () => {
+  it("carries structured skips and collisions with home-relative source paths", async () => {
+    const machine = fixture();
+    for (const harness of [".codex", ".claude"]) mkdirSync(join(machine.home, harness), { recursive: true });
+    writeFileSync(join(machine.home, ".codex", "AGENTS.md"), "Codex instructions.\n");
+    writeFileSync(join(machine.home, ".claude", "CLAUDE.md"), "Claude instructions.\n");
+    mkdirSync(join(machine.home, ".claude", "skills", "unfinished"), { recursive: true });
+    for (const root of [".canonfig", ".claude"]) {
+      mkdirSync(join(machine.home, root, "skills", "held"), { recursive: true });
+      writeFileSync(join(machine.home, root, "skills", "held", "SKILL.md"), `---\nname: held\ndescription: ${root} copy\n---\n${root}\n`);
+    }
+    const server = await gui(machine.env);
+    const plan = await server.request("/api/setup/plan", {
+      role: "source", scope: "full", mode: "simple", files: [],
+      harnesses: ["codex", "claude-code"], imports: { kind: "offer" },
+    });
+    expect(plan.status).toBe(200);
+    expect(plan.body.imports.offered).toContainEqual(expect.objectContaining({
+      id: "codex/instructions/AGENTS.md", source: "codex", category: "instructions",
+      name: "AGENTS.md", path: "~/.codex/AGENTS.md",
+    }));
+    expect(plan.body.imports.skipped).toContainEqual({
+      source: "claude-code", path: "~/.claude/skills/unfinished", reason: "has no SKILL.md",
+    });
+    expect(plan.body.imports.collisions).toContainEqual({
+      kind: "candidates", target: "AGENTS.md", candidates: [
+        { id: "claude-code/instructions/AGENTS.md", source: "claude-code", path: "~/.claude/CLAUDE.md" },
+        { id: "codex/instructions/AGENTS.md", source: "codex", path: "~/.codex/AGENTS.md" },
+      ],
+    });
+    expect(plan.body.imports.collisions).toContainEqual({
+      kind: "folder", target: "skills/held", candidates: [
+        { id: "claude-code/skills/held", source: "claude-code", path: "~/.claude/skills/held" },
+      ],
+    });
+    expect(JSON.stringify(plan.body.imports)).not.toContain(machine.home);
+    expect(JSON.stringify(plan.body)).not.toContain("import skipped:");
+    expect(JSON.stringify(plan.body)).not.toContain("--import");
+  }, 60_000);
+
   it("refuses CLI setup writers while another process owns the setup journal lock", async () => {
     const machine = fixture();
     const planned = machine.invoke(["setup", "plan", "--role", "follower", "--scope", "cli-only"]);

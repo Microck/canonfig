@@ -920,7 +920,7 @@ export const planSetup = (
       imports: folder?.imports,
     };
     const intent = input.intent ?? defaultSetupIntent(role, requestScope);
-    const exclusions = [...discovery.exclusions, ...folder?.exclusions ?? []];
+    const exclusions = discovery.exclusions;
     const planDigest = setupPlanDigest({
       role,
       scope: requestScope,
@@ -929,6 +929,7 @@ export const planSetup = (
       inventory,
       items,
       discoveryInputs: discovery.inputs,
+      imports: folder?.imports,
     });
     if (previous?.records.some((record) => record.status === "running" || record.status === "interrupted")) {
       return yield* fail("setup plan", "An interrupted setup item still owns possible machine changes. Run setup apply to verify its result first. If verification cannot resolve it, inspect the named side effects, back up and remove setup.json, then plan again.", "prerequisite",
