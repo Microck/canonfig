@@ -122,7 +122,7 @@ for (const literal of [false, true]) it(`harness changes keep canonical ids and 
     await act(async () => button.click());
   };
   const codex = () => {
-    const label = [...app.container.querySelectorAll('ul[aria-label="Installed harnesses"] label')].find((node) => node.textContent?.includes("Codex"));
+    const label = [...app.container.querySelectorAll('ul[aria-label="Installed AI coding tools"] label')].find((node) => node.textContent?.includes("Codex"));
     const checkbox = label?.querySelector<HTMLButtonElement>('[role="checkbox"]');
     assert.ok(checkbox);
     return checkbox;
@@ -146,7 +146,7 @@ for (const literal of [false, true]) it(`harness changes keep canonical ids and 
     await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
     assert.equal(shared().getAttribute("aria-checked"), literal ? "false" : "true");
     if (literal) {
-      const label = [...app.container.querySelectorAll("label")].find((node) => node.textContent?.includes("Allow literal secrets"));
+      const label = [...app.container.querySelectorAll("label")].find((node) => node.textContent?.includes("Replace saved passwords and tokens"));
       const allow = label?.querySelector<HTMLButtonElement>('[role="checkbox"]'); assert.ok(allow);
       await act(async () => allow.click());
       assert.equal(shared().getAttribute("aria-checked"), "true");
@@ -189,14 +189,14 @@ for (const retainedCollision of [false, true]) it(`a replacement collision choic
     await act(async () => button.click());
   };
   const choose = async (label: string) => {
-    const trigger = app.container.querySelector<HTMLButtonElement>('[aria-label="Choose source for AGENTS.md"]'); assert.ok(trigger);
+    const trigger = app.container.querySelector<HTMLButtonElement>('[aria-label="Choose version for AGENTS.md"]'); assert.ok(trigger);
     await act(async () => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
     const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent === label);
     assert.ok(option, `Missing source ${label}`);
     await act(async () => option.click());
   };
   const toggleClaude = async () => {
-    const label = [...app.container.querySelectorAll('ul[aria-label="Installed harnesses"] label')].find((node) => node.textContent?.includes("Claude Code"));
+    const label = [...app.container.querySelectorAll('ul[aria-label="Installed AI coding tools"] label')].find((node) => node.textContent?.includes("Claude Code"));
     const checkbox = label?.querySelector<HTMLButtonElement>('[role="checkbox"]'); assert.ok(checkbox);
     await act(async () => checkbox.click());
   };

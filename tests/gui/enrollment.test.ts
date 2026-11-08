@@ -127,7 +127,7 @@ describe("real enrollment and setup endpoints", () => {
       name: "AGENTS.md", path: "~/.codex/AGENTS.md",
     }));
     expect(plan.body.imports.skipped).toContainEqual({
-      source: "claude-code", path: "~/.claude/skills/unfinished", reason: "has no SKILL.md",
+      source: "claude-code", path: "~/.claude/skills/unfinished", reason: "Missing SKILL.md. Add a SKILL.md file with a name and description to import this skill.",
     });
     expect(plan.body.imports.collisions).toContainEqual({
       kind: "candidates", target: "AGENTS.md", candidates: [

@@ -119,7 +119,7 @@ const reviewImports = (input: SourceFolderInput, selected: ReadonlyArray<TargetI
     if (input.imports.kind === "none") {
       return {
         chosen: nothing,
-        decisions: ["harness import declined; harness files were not read"],
+        decisions: ["No imports selected. Existing AI coding tool files were not read for import."],
         review: { request: "none", offered: [], present: [], skipped: [], collisions: [] } satisfies SetupImportReview,
       };
     }
@@ -152,10 +152,10 @@ const reviewImports = (input: SourceFolderInput, selected: ReadonlyArray<TargetI
       chosen,
       decisions: [
         ...selected.filter((harness) => takenOver.has(harness))
-          .map((harness) => `harness import not offered for ${harness}: Canonfig already took it over`),
+          .map((harness) => `No import offered for ${harness}. Canonfig already manages its settings; edit the shared setup in ~/.canonfig/ instead.`),
         input.imports.kind === "offer"
-          ? `harness import offered: ${scan.candidates.length} item(s), none chosen`
-          : `harness import: ${chosen.length} item(s) chosen`,
+          ? `Available imports: ${scan.candidates.length}. No items selected yet.`
+          : `Selected imports: ${chosen.length}.`,
       ],
       review: {
         request: input.imports.kind,
@@ -246,11 +246,11 @@ export const planSourceFolder = (input: SourceFolderInput) =>
       harnesses,
       items,
       decisions: [
-        `harnesses from ${origin}: ${harnesses.join(", ") || "none"}`,
-        `installed harnesses detected: ${detected.join(", ") || "none"}`,
+        `AI coding tools selected from ${origin}: ${harnesses.join(", ") || "none"}.`,
+        `Installed AI coding tools found: ${detected.join(", ") || "none"}.`,
         profile === undefined
-          ? `profile kept from the existing canonfig.jsonc: ${current?.profile?.id}`
-          : `profile proposed from the hostname: ${profile.id} (${profile.name}); edit canonfig.jsonc to rename it`,
+          ? `The profile keeps its name from canonfig.jsonc: ${current?.profile?.id}.`
+          : `The profile uses this machine's name: ${profile.name} (${profile.id}). Edit the profile in canonfig.jsonc to rename it.`,
         ...imports.decisions,
       ],
       imports: imports.review,

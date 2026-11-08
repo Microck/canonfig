@@ -255,7 +255,7 @@ export function Onboarding({ onDone, data, live, onCancel }: { onDone: (setup: S
           {stage === "follower" && <FollowerWizard key="follower" data={data} live={live} job={job} onRun={run} onBack={() => back("follower")} onDone={onDone} />}
         </AnimatePresence>
         {stage === "choose" && live?.state.loading && <p role="status">Inspecting this machine…</p>}
-        {stage === "choose" && live?.state.error && <ErrorNotice error={live.state.error} />}
+        {stage === "choose" && live?.state.error && <ErrorNotice error={live.state.error} title="This machine could not be checked" recovery="Follow the instructions above, then choose a role again to retry. If you need to restart the browser session, run canonfig ui in a terminal and open its new sign-in link." />}
       </div>
     </OnboardingShell>
   );
@@ -366,7 +366,7 @@ function Choose({ returnedFrom, onPick, busy }: { returnedFrom: Role | null; onP
           What should this machine do?
         </h1>
         <p className="mx-auto mt-3 max-w-[480px] leading-relaxed text-balance text-muted-foreground">
-          Canonfig keeps your AI agent instructions, settings, skills and tools the same on every machine.
+          Canonfig shares your AI coding tools' setup across machines. Choose a Source to edit it on, or a follower to copy it to.
         </p>
       </motion.div>
       <div className="mt-9 grid grid-cols-1 gap-3 text-left sm:grid-cols-2">
@@ -374,19 +374,19 @@ function Choose({ returnedFrom, onPick, busy }: { returnedFrom: Role | null; onP
           role="source"
           returning={returnedFrom === "source"}
           title="Make this the Source"
-          description="For the machine where you edit your setup. Other machines copy from it, and only this one publishes changes."
+          description="The Source is the machine where you edit the setup that other machines copy. Only the Source publishes changes."
           onPick={onPick}
         />
         <Choice
           role="follower"
           returning={returnedFrom === "follower"}
           title="Copy the setup from another machine"
-          description="For a machine that should get its setup from your Source."
+          description="This becomes a follower: a machine that copies the setup published by your Source."
           onPick={onPick}
         />
       </div>
       <motion.p variants={item} className="mt-6 text-sm text-muted-foreground">
-        Not sure? Make the computer you use most the Source.
+        Setting up Canonfig for the first time? Start with the machine whose setup you want to share.
       </motion.p>
     </motion.div>
   );
@@ -608,7 +608,7 @@ function Wizard({
         data-rise
         className={cn("mb-4 min-h-11 text-muted-foreground transition-[opacity,visibility] duration-150 ease-snap sm:min-h-10", done && "invisible opacity-0")}
       >
-        <ArrowLeft className="size-3.5" /> Change my answer
+        <ArrowLeft className="size-3.5" /> Back to machine choice
       </Button>
       <form ref={card} noValidate onSubmit={submit} className="relative isolate rounded-xl">
         <CardShell role={role} side="wizard" />
@@ -761,7 +761,7 @@ interface WizardProps<S extends Setup> {
 }
 
 // The Source wizard's steps, by index.
-const SOURCE_STEPS = ["Your profile", "Harnesses", "Import", "The service", "Create"];
+const SOURCE_STEPS = ["Profile", "AI tools", "Import", "Connection", "Create"];
 const SOURCE_STEP = { profile: 0, harnesses: 1, import: 2, service: 3, create: 4 } as const;
 
 
@@ -815,12 +815,12 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
   const portNumber = Number(port);
   const portValid = /^\d+$/.test(port) && portNumber >= 1 && portNumber <= 65535;
   const creates = [
-    `~/.canonfig/ with canonfig.jsonc, AGENTS.md and skills/, listing ${selected.length} ${selected.length === 1 ? "harness" : "harnesses"}`,
-    ...(imported.length > 0 ? [`${imported.length} ${imported.length === 1 ? "item" : "items"} imported from your harnesses`] : []),
-    "Canonfig's own records at ~/.canonfig/state.sqlite",
-    "A signing key, kept in your login keyring",
-    ...(service === "service" ? [`Background service at https://127.0.0.1:${portNumber}`] : []),
-    ...(scan ? ["Proposed tools for what the folder uses"] : []),
+    `The shared setup folder, ~/.canonfig/, with canonfig.jsonc, AGENTS.md and skills/. Selected AI coding tools: ${selected.length}`,
+    ...(imported.length > 0 ? [`Selected imports: ${imported.length}`] : []),
+    "Canonfig's setup records at ~/.canonfig/state.sqlite",
+    "Keys that identify the Source, kept in this machine's credential storage",
+    ...(service === "service" ? [`A background service at https://127.0.0.1:${portNumber} for other machines to connect to`] : []),
+    ...(scan ? ["Suggestions of tools the setup needs, for you to review"] : []),
   ];
 
   const nameError = tried && !name.trim() ? "Enter a profile name." : null;
@@ -830,7 +830,7 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
     <Wizard
       role="source"
       title={`Make ${data.hostname} the Source`}
-      steps={live ? ["Your profile", "Harnesses", "Import", "Approve", "Create"] : SOURCE_STEPS}
+      steps={live ? ["Profile", "AI tools", "Import", "Approve", "Create"] : SOURCE_STEPS}
       step={step}
       wide={step === SOURCE_STEP.import}
       onStep={(s) => {
@@ -860,31 +860,31 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
             next={
               !live && scan ? (
                 <>
-                  Next: check the tools Canonfig proposed, then publish your first <Term term="Profile Revision" />.
+                  Next: review suggested tools, then publish a <Term term="Profile Revision" />, a version of the setup other machines can copy.
                 </>
               ) : (
                 <>
-                  Next: add what your other machines need, then publish your first <Term term="Profile Revision" />.
+                  Next: finish editing the setup, then publish a <Term term="Profile Revision" />, a version other machines can copy.
                 </>
               )
             }
           >
-            Your <Term term="Machine Profile" /> is the <Mono className="text-foreground">~/.canonfig/</Mono> folder
-            {DEMO ? " in this demo workspace. The demo doesn't create or read that folder; edit the profile here." : "."}
+            Your shared setup, called a <Term term="Machine Profile" />, lives in <Mono className="text-foreground">~/.canonfig/</Mono>
+            {DEMO ? " in this demo workspace. This demo doesn't read or create that folder. Edit the example profile in Canonfig." : " on this machine. Open Profile to edit it, then Settings, Source service to let other machines connect."}
           </Finished>
         ) : undefined
       }
     >
-      {live?.state.error && <ErrorNotice error={live.state.error} />}
-      {(live?.sourceState.kind === "observation-lost" || live?.sourceState.kind === "failed") && <div className="space-y-2"><p>Reload the setup journal before continuing.</p><Button type="button" variant="outline" onClick={live.reloadStatus}>Reload setup status</Button></div>}
-      {live?.sourceState.kind === "needs-human-action" && <p role="status">Setup needs human action. Review the journal before trying again.</p>}
+      {live?.state.error && <ErrorNotice error={live.state.error} title="Setup could not continue" recovery="Follow the instructions above, then reload setup status before continuing. To review a new plan, go Back to machine choice and choose Source again." />}
+      {(live?.sourceState.kind === "observation-lost" || live?.sourceState.kind === "failed") && <div className="space-y-2"><p>Setup could not finish or refresh its status. Reload setup status to check what has already completed before continuing.</p><Button type="button" variant="outline" onClick={live.reloadStatus}>Reload setup status</Button></div>}
+      {live?.sourceState.kind === "needs-human-action" && <p role="status">Setup needs your help. Follow the instructions in the setup details below, then resume the approved setup.</p>}
       {step === SOURCE_STEP.profile && (
         <div className="space-y-5">
           <p className="leading-relaxed text-muted-foreground">
-            Your <Term term="Machine Profile" /> lives in your <Term term="Canonical Folder" />, <Mono className="text-foreground">~/.canonfig/</Mono> on {data.hostname}: its instructions, rules,
-            skills, agents and commands, and the settings in canonfig.jsonc. Other machines get what you publish from it.
+            A <Term term="Machine Profile" /> is the setup you share with other machines. You edit it in the <Term term="Canonical Folder" />, <Mono className="text-foreground">~/.canonfig/</Mono> on {data.hostname}.
+            It holds instructions, skills and settings for your AI coding tools. Other machines receive only the versions you publish.
           </p>
-          {live ? <Facts items={[["Profile name", data.profileName], ["Naming", "Setup uses this machine's hostname. Rename the profile later in Defaults."]]} /> : <Field label="Profile name" htmlFor="ob-name" hint="Canonfig saves it in ~/.canonfig/canonfig.jsonc." error={nameError} className="sm:max-w-80">
+          {live ? <Facts items={[["Profile name", data.profileName], ["Naming", "The profile uses this machine's name. You can rename it later in Profile, Defaults."]]} /> : <Field label="Profile name" htmlFor="ob-name" hint="Choose a name for the shared setup. Canonfig saves it in ~/.canonfig/canonfig.jsonc." error={nameError} className="sm:max-w-80">
             <Input id="ob-name" value={name} onChange={(e) => setName(e.target.value)} aria-invalid={!!nameError} aria-describedby={nameError ? "ob-name-error" : undefined} />
           </Field>}
         </div>
@@ -892,10 +892,10 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
       {step === SOURCE_STEP.harnesses && (
         <div className="space-y-5">
           <p className="leading-relaxed text-muted-foreground">
-            Canonfig writes your folder into each <Term term="Target Harness" /> on this list, on {data.hostname} and on every machine that follows it and has the harness installed.
-            {` These are installed on ${data.hostname}${DEMO ? " in this demo" : ""}.`}
+            Choose the AI coding tools, such as Claude Code or Codex, that should use this profile. Canonfig calls them harnesses.
+            Selected tools receive the setup when installed on this machine or its followers.
           </p>
-          <ul aria-label="Installed harnesses" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <ul aria-label="Installed AI coding tools" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {INSTALLED.map((h) => (
               <li key={h.id}>
                 <label className={CHECK_ROW}>
@@ -916,10 +916,10 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
             <DisclosureTrigger>Not installed on {data.hostname} ({NOT_INSTALLED.length})</DisclosureTrigger>
             <CollapsibleContent className="mt-3 space-y-3">
               <p className="text-sm text-muted-foreground">
-                Canonfig counts a harness as installed when its program is in Canonfig's install folders, ~/.local/bin or PATH. Check one to list it anyway: machines that have it
-                get your folder, and this machine takes it over, with a backup, once it's installed here.
+                Select a tool here if another machine uses it, or if you plan to install it later. Canonfig will manage its shared settings once it is installed.
+                A tool is detected when its program is in Canonfig's install folders, ~/.local/bin or PATH.
               </p>
-              <ul aria-label="Harnesses not installed" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <ul aria-label="AI coding tools not installed" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {NOT_INSTALLED.map((h) => (
                   <li key={h.id}>
                     <label className={CHECK_ROW}>
@@ -963,24 +963,24 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
               }
             }} />
           <p className="text-sm text-muted-foreground">
-            With Backups on, the first sync saves replaced harness content in <Mono>~/.canonfig/.backups/</Mono>. With Backups off, it is not saved. Other files stay untouched.
+            Importing copies items into the profile without changing the originals. When you later sync, Canonfig may replace managed tool settings. With the Backups setting on, it first saves replaced content in <Mono>~/.canonfig/.backups/</Mono>. With Backups off, that content is not saved.
           </p>
           {!live && <label className={CHECK_ROW}>
             <Checkbox checked={scan} onCheckedChange={(c) => setScan(c === true)} className="mt-px" />
-            <span>Suggest tools from the imported folder for review</span>
+            <span>Suggest tools this setup needs so I can review them later</span>
           </label>}
         </div>
       )}
       {step === SOURCE_STEP.service && (live ? <><SetupEvidence controller={live} approval />{tried && !live.approved && <FieldError>Enter your name and approve this plan before continuing.</FieldError>}</> :
         <div className="space-y-5">
           <p className="leading-relaxed text-muted-foreground">
-            Other machines connect to a small service on atlas. It only accepts connections from atlas itself, so they reach it over SSH, which each machine sets up when it joins.
+            Other machines need a connection to {data.hostname} to copy its setup. Choose when the Source service runs. They connect through SSH, a secure connection you configure when each machine joins.
           </p>
           <RadioGroup value={service} onValueChange={(v) => setService(v as "service" | "manual")} className="gap-2">
             <RadioRow value="service" title="Run it in the background" description="Starts when you log in and runs without a terminal open, so other machines can sync whenever you're logged in." />
             <RadioRow
               value="manual"
-              title="Only when I start it"
+              title="Start it manually"
               description={
                 <>
                   Other machines can sync only while <Mono>canonfig source serve</Mono> runs in a terminal.
@@ -991,7 +991,7 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
           <Collapsible open={advanced} onOpenChange={setAdvanced}>
             <DisclosureTrigger>Advanced</DisclosureTrigger>
             <CollapsibleContent className="mt-3 grid grid-cols-1 items-end gap-4 sm:grid-cols-[auto_1fr] sm:gap-6">
-              <Field label="Port" htmlFor="ob-port" error={portError}>
+              <Field label="Source service port" htmlFor="ob-port" hint="Use a whole number from 1 to 65535. Keep the default unless another service uses it." error={portError}>
                 <Input
                   id="ob-port"
                   inputMode="numeric"
@@ -1016,7 +1016,7 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
         <div>
           {live ? <SetupEvidence controller={live} /> : progress === null ? (
             <>
-              <p className="mb-3 leading-relaxed text-muted-foreground">Canonfig creates these on {data.hostname}:</p>
+              <p className="mb-3 leading-relaxed text-muted-foreground">Review what Canonfig will create on {data.hostname}, then make it the Source.</p>
               <ul className="space-y-2">
                 {creates.map((c) => (
                   <li key={c} className="flex items-center gap-2.5">
@@ -1034,7 +1034,7 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
           )}
           {/* Stays put while creating, so nothing on the card swaps places. */}
           <p className="mt-5 text-sm text-muted-foreground">
-            Canonfig changes no harness files until you sync, and other machines get nothing until you publish a <Term term="Profile Revision" />.
+            Creating the Source does not change your AI coding tools' files. Sync applies the setup to tools; publishing a <Term term="Profile Revision" /> makes a version available to other machines.
           </p>
         </div>
       )}
@@ -1098,11 +1098,11 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
   // Validate late: these only show after a Continue that couldn't proceed.
   const errors = {
     invite: step === 0 && invite === null ? (live ? "Choose a file or paste the complete invitation." : "Use the example file, or paste the invitation.") : null,
-    host: step === 1 && tunnel && !sshHost.trim() ? `Enter the SSH host for ${sourceName}.` : null,
-    user: step === 1 && tunnel && !sshUser.trim() ? `Enter your SSH user on ${sourceName}.` : null,
+    host: step === 1 && tunnel && !sshHost.trim() ? `Enter ${sourceName}'s hostname or IP address for SSH, such as atlas.local.` : null,
+    user: step === 1 && tunnel && !sshUser.trim() ? `Enter the account name you use to sign in to ${sourceName} through SSH.` : null,
     hostKey: step === 1 && tunnel && !hostKey.trim() ? "Enter the path to the Source's SSH host public key file." : null,
-    trusted: step === 1 && tunnel && !trusted ? "Confirm the host key matches the Source." : null,
-    sourceTrusted: live && step === 1 && !sourceTrusted ? "Verify the Source and TLS fingerprints before continuing." : null,
+    trusted: step === 1 && tunnel && !trusted ? "Compare the SSH host key with the Source's copy, then select the confirmation." : null,
+    sourceTrusted: live && step === 1 && !sourceTrusted ? "Compare both fingerprints with the Source through a separate trusted connection, then select the confirmation." : null,
     replace: live?.session.role === "follower" && step === 2 && !replace ? "Confirm replacement of this machine's enrollment." : null,
     ports: live && step === 1 && tunnel && (![sshPort, localPort].every((port) => /^\d+$/.test(port) && Number(port) >= 1 && Number(port) <= 65535)) ? "Use whole port numbers from 1 to 65535." : null,
     name: step === 2 && !machineName ? "Enter a name for this machine." : null,
@@ -1147,37 +1147,38 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
             action="Open Canonfig"
             busy={live?.state.loading}
             onOpen={() => onDone({ role: "follower", name: machineName, tunnel, schedule: useSchedule, excluded })}
-            next={live ? "Next: review what the profile would change here in Sync before applying it." : "Next: see what revision 7 would change here, before you apply it."}
+            next={live ? "Next: open Sync to review what this setup would change before applying it." : "Next: open Sync to review what the published setup, revision 7, would change before applying it."}
           >
-            {!live && "Canonfig hasn't changed any files here yet. "}{sourceName} can disconnect this machine on its own, without affecting the others.
+            This machine is now a follower: it copies the Source's published setup. Joining has not applied that setup to your AI coding tools. The Source can revoke this machine's access without affecting other followers.
             {live && <div className="mt-4 space-y-4">
-              {live.state.error && <ErrorNotice error={live.state.error} />}
-              <Button type="button" variant="outline" disabled={live.state.loading} onClick={() => void live.loadHarnesses()}>Reload local preferences</Button>
+              {live.state.error && <ErrorNotice error={live.state.error} title="This machine joined, but its preferences could not be loaded or saved" recovery="Follow the instructions above. Reload this machine's preferences to check what was saved, then save any remaining changes. You do not need to join again." />}
+              <Button type="button" variant="outline" disabled={live.state.loading} onClick={() => void live.loadHarnesses()}>Reload this machine's preferences</Button>
               {live.harnessReport && <>
+                <p>Choose which AI coding tools use the Source's setup on this machine. Clear a tool to keep it outside Canonfig's control here.</p>
                 <ul className="divide-y divide-border rounded-lg border border-border">
                   {live.harnessReport.harnesses.map((h) => <li key={h.harness}><label className="flex min-h-11 items-center gap-3 px-3.5 py-2.5">
                     <Checkbox checked={!selectedExclusions.includes(h.harness)} disabled={live.state.loading} onCheckedChange={(checked) => {
                       live.editPreferences({ excluded: checked ? selectedExclusions.filter((id) => id !== h.harness) : [...selectedExclusions, h.harness], schedule: useSchedule });
                     }} />
-                    <span className="min-w-0 flex-1">{h.name}</span><span className="text-sm text-muted-foreground">{!h.installed ? "Not installed" : !h.listed ? "Not listed" : "Installed"}</span>
+                    <span className="min-w-0 flex-1">{h.name}</span><span className="text-sm text-muted-foreground">{!h.installed ? "Not installed here" : !h.listed ? "Not in the Source's profile" : "Installed here"}</span>
                   </label></li>)}
                 </ul>
-                <label className={CHECK_ROW}><Checkbox checked={useSchedule} disabled={live.state.loading} onCheckedChange={(checked) => live.editPreferences({ excluded: selectedExclusions, schedule: checked === true })} />Use the profile's default schedule</label>
-                <p className="text-sm text-muted-foreground">The CLI requires an applied profile before selecting its default schedule. If refused, apply from Sync and set the schedule afterwards.</p>
-                <Button type="button" disabled={live.state.loading} onClick={() => void live.savePreferences(selectedExclusions, useSchedule)}>Save local preferences</Button>
-                {live.followerState.kind === "preferences-failed" && <p>Some preferences may already be saved. Retry rechecks the local report before continuing.</p>}
-                {live.preferencesSaved && <p role="status">Local preferences saved.</p>}
+                <label className={CHECK_ROW}><Checkbox checked={useSchedule} disabled={live.state.loading} onCheckedChange={(checked) => live.editPreferences({ excluded: selectedExclusions, schedule: checked === true })} />Sync automatically on the profile's schedule</label>
+                <p className="text-sm text-muted-foreground">Apply the profile in Sync before using its schedule. If saving the schedule fails, apply the profile, then try saving these preferences again.</p>
+                <Button type="button" disabled={live.state.loading} onClick={() => void live.savePreferences(selectedExclusions, useSchedule)}>Save this machine's preferences</Button>
+                {live.followerState.kind === "preferences-failed" && <p>Some preferences may already be saved. Select Save this machine's preferences to check what was saved and retry the remaining changes.</p>}
+                {live.preferencesSaved && <p role="status">This machine's preferences saved.</p>}
               </>}
             </div>}
           </Finished>
         ) : undefined
       }
     >
-      {live?.state.error && <ErrorNotice error={live.state.error} />}
+      {live?.state.error && <ErrorNotice error={live.state.error} title="This machine could not join the Source" recovery="Follow the instructions above, then read the invitation or try joining again. If it was used or expired, create a new invitation on the Source. Never bypass an identity mismatch." />}
       {step === 0 && (
         <div className="space-y-4">
           <p className="leading-relaxed text-muted-foreground">
-            On {sourceName}, create a single-use invitation file (<Mono>canonfig source invite</Mono> does the same), then copy it to this machine, for example with scp.
+            An invitation gives this machine permission to copy the Source's setup. On {sourceName}, open Machines and create an invitation, or run <Mono>canonfig source invite</Mono> in a terminal. Copy the invitation file to this machine.
           </p>
           {invite === null ? (
             paste ? (
@@ -1185,7 +1186,8 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
                 <Field
                   label="Invitation contents"
                   htmlFor="ob-paste"
-                  error={pasteTried && !pasteValid ? live ? "Paste the complete invitation contents." : "That isn't the example invitation. In this demo, pasted invitations start with canonfig-invite-v1:" : null}
+                  hint={live ? "Copy the entire invitation file, including its final EOF line." : "This demo accepts example contents starting with canonfig-invite-v1:."}
+                  error={pasteTried && !pasteValid ? live ? "Paste the complete invitation contents, including the final EOF line." : "This demo accepts example invitations starting with canonfig-invite-v1:. Use the example file instead, or paste that prefix." : null}
                 >
                   <Textarea
                     id="ob-paste"
@@ -1197,7 +1199,7 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
                         readPasted();
                       }
                     }}
-                    placeholder={live ? "Paste the complete envelope, including EOF" : "canonfig-invite-v1:…"}
+                    placeholder={live ? "eyJ…\nEOF" : "canonfig-invite-v1:…"}
                     spellCheck={false}
                     aria-invalid={pasteTried && !pasteValid}
                     aria-describedby={pasteTried && !pasteValid ? "ob-paste-error" : undefined}
@@ -1218,7 +1220,7 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
                 <div className={cn("flex flex-col items-center rounded-lg border border-dashed px-6 py-8 text-center", shown("invite") ? "border-bad/60" : "border-border-strong")}>
                   <FileArrowUp className="size-5 text-muted-foreground" />
                   <p className="mt-3 font-medium">Add the invitation file</p>
-                  <p className="mt-1 text-sm text-muted-foreground">Usually named canonfig-invite.{DEMO && " This demo uses an example file."}</p>
+                  <p className="mt-1 text-sm text-muted-foreground">Choose the file copied from the Source.{DEMO && " This demo uses an example file."}</p>
                   <div className="mt-4 flex flex-wrap justify-center gap-2">
                     {live ? <Input type="file" aria-label="Invitation file" onChange={async (event) => {
                       const file = event.target.files?.[0];
@@ -1238,24 +1240,25 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
             <div className="rounded-lg border border-border bg-raised/40 px-4 py-4">
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 <Check className="size-4 text-ok" />
-                <span className="font-medium">{live ? "Invitation inspected" : "Example invitation from atlas"}</span>
+                <span className="font-medium">{live ? "Invitation read" : "Example invitation from atlas"}</span>
                 <Button type="button" variant="ghost" size="xs" className="ml-auto text-muted-foreground" onClick={() => { setInvite(null); live?.clearInvitation(); setSourceTrusted(false); setTrusted(false); }}>
-                  Use another
+                  Choose another invitation
                 </Button>
               </div>
               <Facts
                 items={[
                   ["File", <Mono className="text-foreground">{invite === "(pasted)" ? "Pasted" : invite}</Mono>],
-                  ["Endpoint", <Mono className="text-foreground">{live?.inspection?.endpoint ?? data.endpoint}</Mono>],
+                  ["Source address", <Mono className="text-foreground">{live?.inspection?.endpoint ?? data.endpoint}</Mono>],
                   ["Expires", live?.inspection?.expiresAt ?? "In 52 minutes, or once used"],
                   [
                     <Term term="Follower Group">Groups</Term>,
                     live ? live.inspection?.groups.join(", ") || "Base profile only" : <>
-                      Can receive secrets <Mono>canonfig:secrets</Mono>
+                      Allowed to receive shared passwords and tokens through <Mono>canonfig:secrets</Mono>
                     </>,
                   ],
                 ]}
               />
+              <p className="mt-3 text-sm text-muted-foreground">Groups allow extra configuration beyond the shared setup. This invitation can be used once. Keep its contents private.</p>
             </div>
           )}
         </div>
@@ -1263,24 +1266,25 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
       {step === 1 && (
         <div className="space-y-5">
           <p className="leading-relaxed text-muted-foreground">
-            {live ? "Use an SSH tunnel when the Source is on another machine and its invitation uses a loopback address. Turn it off only when this machine can already reach the endpoint." : "The invitation's address, 127.0.0.1, means this machine. An SSH tunnel forwards that port on this machine to atlas, so the address reaches atlas from here."}
+            {live ? "Check that you are connecting to the right Source before joining. Use an SSH tunnel, a secure connection between machines, if the Source address starts with 127.0.0.1 or localhost. Turn it off only if you already have a connection to that address." : "Connect securely to atlas before joining. The invitation uses 127.0.0.1, an address that normally points to this machine. An SSH tunnel forwards that connection to atlas instead."}
           </p>
           {live?.inspection && <>
+            <p className="text-sm text-muted-foreground">These fingerprints identify the Source and its secure connection. Compare both with the values shown on the Source through a separate trusted connection, such as an existing SSH session. If either differs, stop and request a new invitation.</p>
             <Facts items={[["Source fingerprint", <Mono className="break-all">{live.inspection.sourceFingerprint}</Mono>], ["TLS fingerprint", <Mono className="break-all">{live.inspection.tlsFingerprint}</Mono>]]} />
-            <label className={CHECK_ROW}><Checkbox checked={sourceTrusted} onCheckedChange={(checked) => setSourceTrusted(checked === true)} />I verified both fingerprints through a trusted channel.</label>
+            <label className={CHECK_ROW}><Checkbox checked={sourceTrusted} onCheckedChange={(checked) => setSourceTrusted(checked === true)} />I compared both fingerprints with the Source and they match.</label>
             {shown("sourceTrusted") && <FieldError>{shown("sourceTrusted")}</FieldError>}
           </>}
           <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-border px-3.5 py-3 hover:bg-raised/50">
             <Switch checked={tunnel} onCheckedChange={setTunnel} />
             <span>
               <span className="font-medium">Connect through an SSH tunnel</span>
-              <span className="mt-0.5 block text-sm text-muted-foreground">Uses the SSH access you already have to {sourceName}. Canonfig opens the tunnel before each sync.</span>
+              <span className="mt-0.5 block text-sm text-muted-foreground">Requires working SSH access to {sourceName}. Canonfig opens this secure connection before each sync.</span>
             </span>
           </label>
           {tunnel && (
             <>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <Field label="SSH host" htmlFor="ob-host" error={shown("host")}>
+                <Field label="Source SSH address" htmlFor="ob-host" hint="The Source's hostname or IP address, such as atlas.local." error={shown("host")}>
                   <Input
                     id="ob-host"
                     value={sshHost}
@@ -1295,7 +1299,7 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
                     aria-describedby={shown("host") ? "ob-host-error" : undefined}
                   />
                 </Field>
-                <Field label="SSH user" htmlFor="ob-user" error={shown("user")}>
+                <Field label="Source SSH username" htmlFor="ob-user" hint="The account you use to sign in to the Source through SSH." error={shown("user")}>
                   <Input
                     id="ob-user"
                     value={sshUser}
@@ -1313,12 +1317,12 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
               <div className={cn("rounded-lg border px-3.5 py-3", shown("trusted") ? "border-bad/60" : "border-border")}>
                 <div className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
                   {sourceName}'s SSH host key, from <Mono>{hostKey}</Mono>
-                  <Hint label="checking the SSH host key">Compare this file with the Source's SSH host public key through a trusted channel. Change the file under Advanced.</Hint>
+                  <Hint label="checking the SSH host key">The SSH host key identifies the Source. Compare this file with the Source's SSH host public key through a separate trusted connection. Change the file path under Advanced.</Hint>
                 </div>
                 {!live && <Mono className="mt-1 block text-foreground">ED25519 SHA256:Jx7qL2c9…vR0wPq4sE</Mono>}
                 <label className="mt-3 flex min-h-11 cursor-pointer items-center gap-2.5 sm:min-h-10">
                   <Checkbox checked={trusted} onCheckedChange={(c) => setTrusted(c === true)} aria-invalid={!!shown("trusted")} aria-describedby={shown("trusted") ? "ob-trusted-error" : undefined} />
-                  This matches {sourceName}
+                  I checked this SSH host key against {sourceName} and it matches
                 </label>
               </div>
               {shown("trusted") && <FieldError id="ob-trusted-error">{shown("trusted")}</FieldError>}
@@ -1328,7 +1332,7 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
                   <Field
                     label="Source SSH host public key file"
                     htmlFor="ob-hostkey"
-                    hint="A verified copy of the Source's /etc/ssh/ssh_host_ed25519_key.pub on this machine."
+                    hint="Copy /etc/ssh/ssh_host_ed25519_key.pub from the Source to this machine through a trusted connection. Enter the path to that copy. Never copy the private key."
                     error={shown("hostKey")}
                   >
                     <Input
@@ -1360,7 +1364,8 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
         <div className="space-y-5">
           {progress === null ? (
             <>
-              <Field label="Name for this machine" htmlFor="ob-mname" hint={`Shown on ${sourceName}.`} error={shown("name")} className="sm:max-w-80">
+              <p className="text-muted-foreground">Name this follower so you can recognize it on the Source, then join to give it access to the shared setup.</p>
+              <Field label="Name for this machine" htmlFor="ob-mname" hint={`Shown in Machines on ${sourceName}.`} error={shown("name")} className="sm:max-w-80">
                 <Input
                   id="ob-mname"
                   value={name}
@@ -1375,10 +1380,10 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
               </Field>
               {!live && <section aria-labelledby="ob-harnesses" className="space-y-2">
                 <h3 id="ob-harnesses" className="text-sm font-medium">
-                  Harnesses atlas lists
+                  AI coding tools in atlas's profile
                 </h3>
                 <p className="text-sm text-muted-foreground">
-                  Canonfig syncs each one that's installed here, unless you exclude it on this machine. One that isn't installed is reported as not installed and gets nothing.
+                  The profile is the setup atlas shares. Choose which installed AI coding tools should use it here. Clear a tool to leave it out. Tools that aren't installed receive nothing.
                   {DEMO && " In this demo, what's installed here is an example."}
                 </p>
                 <ul className="divide-y divide-border rounded-lg border border-border">
@@ -1403,7 +1408,7 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
                   })}
                 </ul>
                 <p className="text-sm text-muted-foreground">
-                  Before the first sync writes into a harness, Canonfig copies the harness's files into a <Term term="Takeover Snapshot" /> in <Mono>~/.canonfig/.backups/</Mono>.
+                  With the Backups setting on, the first sync saves replaced tool settings in a <Term term="Takeover Snapshot" /> at <Mono>~/.canonfig/.backups/</Mono>. With Backups off, replaced content is not saved.
                 </p>
               </section>}
               {!live && <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border px-3.5 py-3 hover:bg-raised/50">
@@ -1411,9 +1416,9 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
                 <span className="font-medium">Sync daily at 09:00, the profile's default schedule</span>
               </label>}
               <p className="text-sm text-muted-foreground">
-                {live ? "Joining records this machine's enrollment. Review actual synchronization evidence in Sync. Local harness and schedule preferences are available after joining." : <>Joining downloads <Term term="Profile Revision">revision 7</Term>, the latest setup atlas published, but changes no files. Before the first sync, you'll see exactly what would change.</>}
+                {live ? "Joining registers this machine with the Source so it can copy the published setup. It does not apply the setup to your AI coding tools. Open Sync afterwards to review and apply the changes. You can choose tools and a sync schedule after joining." : <>Joining downloads <Term term="Profile Revision">revision 7</Term>, the version of the setup atlas published. It does not apply that setup to your AI coding tools. Open Sync afterwards to review and apply the changes.</>}
               </p>
-              {live?.session.role === "follower" && <label className={CHECK_ROW}><Checkbox checked={replace} onCheckedChange={(checked) => setReplace(checked === true)} />Replace this machine's current enrollment with this invitation.</label>}
+              {live?.session.role === "follower" && <label className={CHECK_ROW}><Checkbox checked={replace} onCheckedChange={(checked) => setReplace(checked === true)} />Replace this machine's current connection to its Source with this invitation. It will follow the Source and groups in this invitation instead.</label>}
               {shown("replace") && <FieldError>{shown("replace")}</FieldError>}
             </>
           ) : (

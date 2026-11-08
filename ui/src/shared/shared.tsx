@@ -19,11 +19,11 @@ export const GLOSSARY = {
   },
   "Follower Machine": {
     plain: "follower",
-    meaning: "A machine that copies your setup from the Source and adds its own items from its local folder.",
+    meaning: "A machine that copies the Source's published setup. It can keep its own configuration in a local folder, within the Source's rules.",
   },
   "Machine Profile": {
     plain: "profile",
-    meaning: "Everything your machines should have, written in the ~/.canonfig folder on the Source: instructions, rules, skills, MCP servers, settings and tools.",
+    meaning: "The setup you share with other machines. You edit its instructions, skills, settings and tool requirements in ~/.canonfig/ on the Source.",
   },
   "Canonical Folder": {
     plain: "Canonfig folder",
@@ -31,11 +31,11 @@ export const GLOSSARY = {
   },
   "Target Harness": {
     plain: "harness",
-    meaning: "An AI agent app, like Codex or Claude Code, whose own global settings Canonfig writes from your folder.",
+    meaning: "An AI coding tool, such as Codex or Claude Code. Canonfig writes the shared setup into that tool's own configuration files.",
   },
   "Takeover Snapshot": {
     plain: "backup",
-    meaning: "A copy of what a harness had before Canonfig first wrote to it, kept in ~/.canonfig/.backups so you can put it back.",
+    meaning: "A copy of settings Canonfig is about to replace, kept in ~/.canonfig/.backups/ so you can restore them. The Backups setting must be on to save this copy.",
   },
   "Profile Revision": {
     plain: "revision",
@@ -43,7 +43,7 @@ export const GLOSSARY = {
   },
   "Profile Resource": {
     plain: "item",
-    meaning: "One thing in the profile, like a skill, an MCP server or a tool to install.",
+    meaning: "One part of the shared setup, such as a skill, a connection to an external service through MCP, or a tool to install.",
   },
   "Local folder": {
     plain: "local folder",
@@ -83,7 +83,7 @@ export const GLOSSARY = {
   },
   "Configuration Agent": {
     plain: "AI agent",
-    meaning: "An optional AI agent Canonfig can ask when no recipe covers a job. Its rules limit the folders, programs and sites it can use.",
+    meaning: "An optional AI agent that helps Canonfig resolve configuration tasks it cannot complete with fixed instructions. Its rules limit the folders, programs and sites it can use.",
   },
   "Synchronization Run": {
     plain: "sync",

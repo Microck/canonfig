@@ -69,14 +69,14 @@ async function search(container: Element, value: string) {
 }
 
 async function choose(container: Element, label: string) {
-  const trigger = button(container, "Choose source for AGENTS.md");
+  const trigger = button(container, "Choose version for AGENTS.md");
   await act(async () => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
   const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent === label);
   assert.ok(option, `Missing source ${label}`);
   await act(async () => option.click());
 }
 
-it("different-content collisions submit only the chosen source and treat Don't import as a decision", async () => {
+it("different-content collisions submit only the chosen source and treat Skip import as a decision", async () => {
   const app = await fixture();
   try {
     assert.deepEqual(app.selection, []);
@@ -86,10 +86,10 @@ it("different-content collisions submit only the chosen source and treat Don't i
     assert.ok(button(app.container, "Needs a choice (0)"));
     await choose(app.container, "Claude Code");
     assert.deepEqual(app.selection, [instructions[1]!.id]);
-    await choose(app.container, "Don't import");
+    await choose(app.container, "Skip import");
     assert.deepEqual(app.selection, []);
     await act(async () => button(app.container, "Needs a choice (0)").click());
-    assert.equal(app.container.querySelector('[aria-label="Choose source for AGENTS.md"]'), null);
+    assert.equal(app.container.querySelector('[aria-label="Choose version for AGENTS.md"]'), null);
     await act(async () => button(app.container, "Needs a choice (0)").click());
     await choose(app.container, "OpenAI Codex");
     assert.deepEqual(app.selection, [instructions[0]!.id], "A later source replaces the skip");
@@ -100,11 +100,11 @@ it("bulk selection keeps collisions, existing folder content and literal secrets
   const app = await fixture();
   try {
     assert.equal(app.selection.length, 0);
-    await act(async () => button(app.container, "Select all").click());
+    await act(async () => button(app.container, "Select available").click());
     assert.equal(app.selection.length, 320);
     assert.ok(app.selection.every((id) => id.startsWith("codex/skills/skill-")));
     assert.ok(app.container.textContent?.includes("320 selected"));
-    await act(async () => button(app.container, "Select none").click());
+    await act(async () => button(app.container, "Clear selection").click());
     assert.equal(app.selection.length, 0);
   } finally { await app.close(); }
 });
@@ -141,10 +141,10 @@ it("search matches names and home-relative paths without losing selections", asy
   try {
     await search(app.container, "~/.agents/skills/skill-319");
     assert.equal(app.container.querySelectorAll("li").length, 1);
-    await act(async () => button(app.container, "Select all").click());
+    await act(async () => button(app.container, "Select available").click());
     assert.deepEqual(app.selection, ["codex/skills/skill-319"]);
     await search(app.container, "no-such-item");
-    assert.ok(app.container.textContent?.includes("No items match these filters."));
+    assert.ok(app.container.textContent?.includes("No items match. Clear the search"));
     await search(app.container, "");
     assert.equal(app.selection.length, 1);
   } finally { await app.close(); }
@@ -154,7 +154,7 @@ it("a retained choice cannot count content now blocked by the Canonical Folder",
   const app = await fixture([held.id]);
   try {
     assert.ok(app.container.textContent?.includes("0 selected"));
-    assert.ok(app.container.textContent?.includes("Already in Canonical Folder"));
+    assert.ok(app.container.textContent?.includes("Already in ~/.canonfig/; kept unchanged"));
   } finally { await app.close(); }
 });
 
@@ -162,7 +162,7 @@ it("skips start collapsed and disclose one counted reason before listing paths",
   const app = await fixture();
   try {
     assert.equal(app.container.textContent?.includes("unfinished-0"), false);
-    await act(async () => button(app.container, "13 can't be imported").click());
+    await act(async () => button(app.container, "Review items that can't be imported (13)").click());
     assert.ok(app.container.textContent?.includes("Has no SKILL.md (13)"));
     assert.equal(app.container.textContent?.includes("unfinished-0"), false);
     await act(async () => button(app.container, "Has no SKILL.md (13)").click());

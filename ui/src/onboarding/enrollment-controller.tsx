@@ -48,13 +48,13 @@ export interface EnrollmentController {
 }
 
 const ITEM_LABELS: Record<GuiSetupJournal["items"][number]["kind"], string> = {
-  "source-init": "Initialize the Source", "ensure-directory": "Create directory", "tool-verify": "Verify tool",
-  "recipe-install": "Install tool", "toolchain-verify": "Verify toolchain", "folder-scaffold": "Create Canonical Folder", "harness-import": "Import harness items",
+  "source-init": "Create the Source identity", "ensure-directory": "Create folder", "tool-verify": "Check tool",
+  "recipe-install": "Install tool", "toolchain-verify": "Check required tools", "folder-scaffold": "Create the shared setup folder", "harness-import": "Import selected AI tool settings",
 };
 
 const RECORD_LABELS: Record<string, string> = { ...ITEM_LABELS, "canonfig-folder": ITEM_LABELS["folder-scaffold"], "ensure-directories": ITEM_LABELS["ensure-directory"] };
 const FIELD_LABELS: Record<string, string> = {
-  id: "Identifier", dir: "Directory", fromEnv: "Environment reference", detected: "Detected harnesses", target: "Destination", secrets: "Credential references",
+  id: "Identifier", dir: "Folder", fromEnv: "Environment variable", detected: "Installed AI coding tools", target: "Destination", secrets: "Required environment variables",
 };
 
 export function useEnrollmentController(backend: WorkspaceBackend, session: GuiSession, statusState?: readonly [
@@ -234,8 +234,9 @@ function setupRecordEvidence(record: GuiSetupStatus["items"][number]): string | 
 export function SetupEvidence({ controller: c, approval = false }: { controller: EnrollmentController; approval?: boolean }) {
   const records: GuiSetupStatus["items"] = c.status?.items ?? c.plan?.records ?? [];
   return <div className="space-y-4">
+    <p className="text-muted-foreground">Review the changes setup will make on this machine. Approval gives permission for these changes. Applying the plan runs them; approval alone does not.</p>
     <Facts items={[
-      ["Plan digest", <Mono className="break-all">{c.plan?.planDigest ?? c.status?.planDigest ?? "No plan"}</Mono>],
+      ["Plan identifier", <Mono className="break-all">{c.plan?.planDigest ?? c.status?.planDigest ?? "No plan created"}</Mono>],
       ["Status", c.status?.stage ?? (c.approved ? "Approved" : "Awaiting approval")],
     ]} />
     <ul className="divide-y divide-border rounded-lg border border-border">
@@ -256,11 +257,11 @@ export function SetupEvidence({ controller: c, approval = false }: { controller:
     </ul>
     {c.plan && [...c.plan.decisions, ...c.plan.exclusions, ...c.plan.evidence].map((entry, index) => <p key={index} className="text-sm text-muted-foreground">{entry}</p>)}
     {approval && <>
-      <Field label="Approver name" htmlFor="setup-approver"><Input id="setup-approver" value={c.approver} onChange={(event) => c.setApprover(event.target.value)} /></Field>
-      <Button type="button" disabled={c.state.loading || !c.approver.trim() || c.approved} onClick={() => void c.approveSetup()}>{c.approved ? "Plan approved" : "I reviewed and approve this plan"}</Button>
+      <Field label="Your name" htmlFor="setup-approver" hint="Canonfig records who approved these changes. Enter a name, then approve the plan to continue."><Input id="setup-approver" value={c.approver} onChange={(event) => c.setApprover(event.target.value)} /></Field>
+      <Button type="button" disabled={c.state.loading || !c.approver.trim() || c.approved} onClick={() => void c.approveSetup()}>{c.approved ? "Plan approved" : "Approve setup plan"}</Button>
     </>}
-    <p className="text-sm text-muted-foreground">Service installation and tool scanning are separate operations after setup. Approval applies only to this exact plan.</p>
-    {c.state.loading && <p role="status">Setup operation running…</p>}
+    <p className="text-sm text-muted-foreground">After setup, open Settings, Source service to let other machines connect. To find tools this setup needs, open Profile and select Discover tools. Approval covers only the changes listed in this plan.</p>
+    {c.state.loading && <p role="status">Running setup…</p>}
   </div>;
 }
 

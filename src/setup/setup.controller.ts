@@ -298,15 +298,15 @@ export const runSetupPreflight = (
     const keyStorageBlocked = (recovery: string | undefined, detail: string) =>
       fail(
         "setup preflight",
-        `this machine cannot be a Source: ${detail}. Canonfig stores the Source signing key, `
-        + "the TLS key, and the TLS certificate before initialization, so setup stops here.",
+        `This machine cannot be a Source yet. ${detail}. Canonfig needs to save keys that identify `
+        + `the Source and protect its connections before setup can continue. ${recovery ?? "Unlock or configure this machine's credential storage, then try setup again."}`,
         "prerequisite",
         recovery,
       );
     if (needsKeyStorage && capability.kind === "unavailable") {
       return yield* keyStorageBlocked(
         capability.recovery,
-        `key storage is unavailable (${capability.recovery ?? "no recovery reported"})`,
+        "Key storage is unavailable",
       );
     }
     // Provider presence is not proven access: secret-tool on PATH and a
@@ -321,11 +321,11 @@ export const runSetupPreflight = (
         Effect.as({ ...capability, verification: "session-probe" }),
         Effect.catch((cause) =>
           Effect.fail(keyStorageBlocked(
-            "Start and unlock the platform credential provider for this user (on Linux a Secret Service "
-              + "provider such as gnome-keyring on the session bus), or explicitly select the local-file "
-              + "credential policy, then plan again.",
-            `the ${capability.provider ?? "native"} credential provider is installed but did not accept a `
-              + `disposable write and read-back in this session (${cause})`,
+            "Start and unlock this user's credential storage, then try setup again. On Linux, use a Secret Service "
+              + "provider such as gnome-keyring with a session bus. For a headless machine without a keyring, "
+              + "choose Canonfig's local-file credential storage explicitly, then plan again.",
+            `The ${capability.provider ?? "native"} credential store is installed, but Canonfig could not save `
+              + `and read a test value in this session (${cause})`,
           ))
         ),
       )
@@ -966,20 +966,20 @@ export const planSetup = (
       inventory,
       items: [...items],
       decisions: [
-        `role ${role} established before inspection`,
+        `Setup role: ${role}. The role was checked before inspecting this machine.`,
         inventory.transport.initialized
-          ? "source enrollment found; transport identity taken from stored enrollment"
-          : "no source enrollment found; transport recorded as uninitialized loopback",
+          ? "This machine already has a Source identity. Setup keeps its existing connection identity."
+          : "No Source identity was found on this machine. Connections use a loopback address, which is reachable only on the machine itself.",
         catalog.length > 0
-          ? `${catalog.length} qualified tool provenance record(s) reused`
-          : "no prior qualified tool provenance to reuse",
+          ? `Previously verified tool installation records reused: ${catalog.length}.`
+          : "No previously verified tool installations were found.",
         ...folder?.decisions ?? [],
       ],
       exclusions,
       imports: decision.imports,
       evidence: [
-        `inventory: ${inventory.platform} ${inventory.osRelease}, ${inventory.tools.length} tool(s), `
-        + `${discovery.files} discovery file(s), ${discovery.evidence} evidence record(s)`,
+        `Machine checked: ${inventory.platform} ${inventory.osRelease}. Tools found: ${inventory.tools.length}. `
+        + `Files checked for required tools: ${discovery.files}. Tool findings: ${discovery.evidence}.`,
       ],
       approvals: [],
       catalog: [...catalog],

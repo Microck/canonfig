@@ -295,19 +295,19 @@ const repositoryError = (
   if (error instanceof EnrollmentStateConflictError) {
     switch (error.reason) {
       case "invitation-not-found":
-        return new InvitationNotFoundError({ message: "the invitation is unknown" });
+        return new InvitationNotFoundError({ message: "The Source does not recognize this invitation. Create a new invitation on the intended Source and try again." });
       case "invitation-used":
-        return new InvitationReplayError({ message: "the invitation was already used" });
+        return new InvitationReplayError({ message: "This invitation has already been used. Create a new invitation on the Source and try again." });
       case "invitation-expired":
-        return new InvitationExpiredError({ message: "the invitation has expired" });
+        return new InvitationExpiredError({ message: "This invitation has expired. Create a new invitation on the Source and try again." });
       case "invitation-mismatch":
         return new EnrollmentSourceMismatchError({
-          message: "the invitation does not match this source",
+          message: "This invitation belongs to a different Source. Check the Source address and create a new invitation on the Source you intend to follow.",
         });
       case "follower-identity-conflict":
       case "credential-conflict":
         return new DuplicateFollowerIdentityError({
-          message: "the follower identity is already enrolled",
+          message: "This follower identity is already registered. Check this machine's enrollment before trying again; use a new invitation if it needs to join again.",
         });
     }
   }

@@ -99,19 +99,20 @@ export function ImportReview({ data, listed, selected, onSelect, choices, onChoo
   const hasCredentials = model.rows.some((row) => row.kind === "item" ? row.offers[0]!.secrets.length : row.kind === "candidates" && row.offers.some((offer) => offer.secrets.length));
 
   return <section aria-label="Review imports" className="space-y-3">
+    <p className="text-muted-foreground">Bring existing instructions, skills and settings into the shared profile. Select what to copy now, or continue without importing anything. MCP servers connect AI coding tools to other services.</p>
     <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-      <p role="status" className="tabular-nums">{model.rows.length} items from {harnessCount} harnesses · {selectedCount} selected</p>
+      <p role="status" className="tabular-nums">Items: {model.rows.length} · AI coding tools: {harnessCount} · {selectedCount} selected</p>
       <div className="flex items-center gap-1">
-        <Button type="button" variant="ghost" size="sm" onClick={() => selectRows(visible, true)}>Select all</Button>
+        <Button type="button" variant="ghost" size="sm" onClick={() => selectRows(visible, true)}>Select available</Button>
         <Button type="button" variant="ghost" size="sm" onClick={() => {
           const ids = new Set(visible.flatMap((row) => row.offers.map((offer) => offer.id)));
           onSelect(selected.filter((id) => !ids.has(id)));
           for (const row of visible) if (row.kind === "candidates") onChoose(row.target, null);
-        }}>Select none</Button>
+        }}>Clear selection</Button>
       </div>
     </div>
     <div className="flex flex-wrap items-center gap-2">
-      <Input aria-label="Search imports" type="search" placeholder="Search name or path…" value={search} onChange={(event) => setSearch(event.target.value)} className="min-w-40 flex-1" />
+      <Input aria-label="Search imports by name or path" type="search" placeholder="review or ~/.claude/skills" value={search} onChange={(event) => setSearch(event.target.value)} className="min-w-40 flex-1" />
       <Select value={category} onValueChange={setCategory}>
         <SelectTrigger aria-label="Filter import category" className="min-h-10 w-44 pointer-coarse:min-h-11"><SelectValue /></SelectTrigger>
         <SelectContent>
@@ -123,8 +124,9 @@ export function ImportReview({ data, listed, selected, onSelect, choices, onChoo
     </div>
     {hasCredentials && <label className="flex min-h-10 cursor-pointer items-center gap-3 text-sm text-muted-foreground pointer-coarse:min-h-11">
       <Checkbox checked={allowCredentials} onCheckedChange={(value) => onAllowCredentials(value === true)} />
-      Allow literal secrets to be replaced by environment references
+      Replace saved passwords and tokens with environment variable references when importing
     </label>}
+    {hasCredentials && <p className="text-sm text-muted-foreground">The secret values are not copied. Set the named environment variables on each machine before using these MCP servers. Enable this option to select them.</p>}
     <div aria-label="Import items" className="max-h-[52dvh] scroll-pt-10 overflow-y-auto overscroll-contain rounded-lg border border-border">
       {groups.filter((group) => group.rows.length).map((group) => {
         const selectable = eligible(group.rows);
@@ -158,14 +160,14 @@ export function ImportReview({ data, listed, selected, onSelect, choices, onChoo
                   <span className="col-start-1 row-span-3 row-start-1 w-4 md:row-span-1" aria-hidden />
                   <OfferText offer={offer} sources={sources} paths={paths} />
                   <div className="col-start-2 row-start-4 mt-1 min-w-0 md:col-start-5 md:row-start-1 md:mt-0">
-                    {row.kind === "folder" ? <span className="text-sm text-muted-foreground">Already in Canonical Folder</span> : <Select value={chosen?.id ?? (choices.get(row.target) === null ? "none" : "")} onValueChange={(value) => {
+                    {row.kind === "folder" ? <span className="text-sm text-muted-foreground">Already in ~/.canonfig/; kept unchanged</span> : <Select value={chosen?.id ?? (choices.get(row.target) === null ? "none" : "")} onValueChange={(value) => {
                       onChoose(row.target, value === "none" ? null : value);
                       // Every explicit decision leaves this filter, so keep keyboard focus in the review.
                       if (needsChoice) requestAnimationFrame(() => choiceFilter.current?.focus());
                     }}>
-                      <SelectTrigger aria-label={`Choose source for ${row.target}`} className="min-h-10 w-full text-sm pointer-coarse:min-h-11"><SelectValue placeholder="Choose source" /></SelectTrigger>
+                      <SelectTrigger aria-label={`Choose version for ${row.target}`} className="min-h-10 w-full text-sm pointer-coarse:min-h-11"><SelectValue placeholder="Choose version" /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="none">Don't import</SelectItem>
+                        <SelectItem value="none">Skip import</SelectItem>
                         {row.offers.map((item) => <SelectItem key={item.id} value={item.id} disabled={!allowCredentials && !!item.secrets.length}>{sourceName(item.source)}</SelectItem>)}
                       </SelectContent>
                     </Select>}
@@ -176,13 +178,14 @@ export function ImportReview({ data, listed, selected, onSelect, choices, onChoo
           </CollapsibleContent>
         </Collapsible>;
       })}
-      {!visible.length && <p className="px-3 py-5 text-sm text-muted-foreground">{model.rows.length ? "No items match these filters." : "Nothing to import."}</p>}
+      {!visible.length && <p className="px-3 py-5 text-sm text-muted-foreground">{model.rows.length ? "No items match. Clear the search, choose All categories, or turn off Needs a choice to see more items." : "No items to import from the selected AI coding tools. Continue to create the profile without imports, or go Back to choose other tools."}</p>}
     </div>
-    <p className="text-sm text-muted-foreground">Copies selected items into <Mono>~/.canonfig/</Mono> once. Nothing is selected by default.{model.rows.some((row) => row.kind === "candidates") && " Choose a source for items with different content."}</p>
-    {missing.length > 0 && <p className="text-sm text-muted-foreground">Nothing to import from {missing.map((id) => HARNESS_NAMES[id]).join(", ")}.</p>}
+    <p className="text-sm text-muted-foreground">Selected items will be copied into <Mono>~/.canonfig/</Mono>, the shared setup folder, once. Nothing is selected by default. Select available selects only visible items that need no extra choice.{model.rows.some((row) => row.kind === "candidates") && " Different versions exist for some items. Choose which tool's version to copy, or select Skip import."}</p>
+    {missing.length > 0 && <p className="text-sm text-muted-foreground">No new items found in {missing.map((id) => HARNESS_NAMES[id]).join(", ")}. You can continue without importing from these tools.</p>}
     {model.skippedCount > 0 && <Collapsible>
-      <DisclosureTrigger>{model.skippedCount} can't be imported</DisclosureTrigger>
+      <DisclosureTrigger>Review items that can't be imported ({model.skippedCount})</DisclosureTrigger>
       <CollapsibleContent className="space-y-1 pl-4">
+        <p className="text-sm text-muted-foreground">These items will not be copied. Review the reasons below and fix the original files, then go Back and Continue to scan again, or continue without them.</p>
         {model.skipped.map(([reason, skips]) => <Collapsible key={reason}>
           <DisclosureTrigger>{reason.charAt(0).toUpperCase() + reason.slice(1)} ({skips.length})</DisclosureTrigger>
           <CollapsibleContent><ul className="space-y-1 pb-2 pl-4 text-sm text-muted-foreground">
@@ -196,11 +199,11 @@ export function ImportReview({ data, listed, selected, onSelect, choices, onChoo
 
 /** Desktop columns share one grid; narrow rows stack their source and path beneath the name. */
 function OfferText({ offer, sources, paths }: { offer: ImportOffer; sources: string; paths: readonly string[] }) {
-  const notes = [...offer.secrets.map((secret) => `Environment reference: ${secret}`), ...offer.notes].join("; ");
+  const notes = [...offer.secrets.map((secret) => `Set this environment variable on each machine: ${secret}`), ...offer.notes].join("; ");
   return <>
     <span className="col-start-2 row-start-1 flex min-w-0 items-center gap-2" title={[offer.name, notes].filter(Boolean).join("\n")}>
       <Mono className="min-w-0 truncate text-foreground">{offer.name}</Mono>
-      {notes && <span className="shrink-0 text-sm text-muted-foreground"><span aria-hidden>† </span>{offer.secrets.length ? "Env refs" : "Converted"}<span className="sr-only">: {notes}</span></span>}
+      {notes && <span className="shrink-0 text-sm text-muted-foreground"><span aria-hidden>† </span>{offer.secrets.length ? "Needs variables" : "Format changed"}<span className="sr-only">: {notes}</span></span>}
     </span>
     <span className="col-start-2 row-start-2 min-w-0 break-words text-sm text-muted-foreground md:col-start-3 md:row-start-1 md:truncate" title={sources}>{sources}</span>
     <span className="col-start-2 row-start-3 flex min-w-0 items-center gap-1 font-mono text-sm text-muted-foreground md:col-start-4 md:row-start-1" title={paths.join("\n")}>

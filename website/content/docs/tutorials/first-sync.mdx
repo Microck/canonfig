@@ -80,8 +80,8 @@ Setup detects which harnesses are installed and lists them. Among the
 decisions in the output you see:
 
 ```text
-harnesses from detection: codex, claude-code
-installed harnesses detected: codex, claude-code
+AI coding tools selected from detection: codex, claude-code.
+Installed AI coding tools found: codex, claude-code.
 ```
 
 To manage a different set, name each harness with `--harness`, for example
@@ -405,9 +405,9 @@ projections. To add something to B only, use its local folder; see
 | "this machine is a Source (signing key ...), so it cannot enroll as a Follower: a machine is either a Source or a Follower, never both. ..." (`follower enroll`, exit 2) | You ran the enrollment on A, or B was made a Source earlier. A machine holds one role. | Enroll on B. If B should stop being a Source, run `canonfig source service remove` on B, move B's `~/.canonfig/` aside, then enroll again. The invitation is still valid. |
 | "this machine follows the Source at https://127.0.0.1:17342 (signing key ...) as laptop (...), so it cannot publish a revision: ..." (`source init`, `source publish` and the other `source` commands, exit 2) | You ran a Source command on B. | Run it on A. To make B a Source instead, run `canonfig follower unenroll` on B first. |
 | "Invitation duration must not exceed 24h" (`source invite`, exit 2) | `--expires` is longer than 24 hours. | Pick a value such as `15m`, `1h`, or `24h`. |
-| "the invitation has expired; ask the Source Machine for a new one" (exit 5) | B used the invitation after its `--expires` time. | Run `canonfig source invite` on A again, copy the file, and enroll with it. |
-| "the invitation was already used; ask the Source Machine for a new one" (exit 5) | Each invitation enrolls one machine once. | Issue another invitation on A. |
-| "the Source Machine's certificate fingerprint does not match the invitation" | B reached a server whose TLS certificate is not the one in the invitation: another Source Machine on the same port, or an invitation from an earlier setup. | On A, run `canonfig source service status` to confirm which Source Machine is serving, then issue an invitation from it. Do not enroll until the fingerprints match. |
+| "This invitation has expired. Create a new invitation on the Source and try again." (exit 5) | B used the invitation after its `--expires` time. | Run `canonfig source invite` on A again, copy the file, and enroll with it. |
+| "This invitation has already been used. Create a new invitation on the Source and try again." (exit 5) | Each invitation enrolls one machine once. | Issue another invitation on A. |
+| "The Source's certificate fingerprint does not match this invitation." | B reached a server whose TLS certificate is not the one in the invitation: another Source Machine on the same port, or an invitation from an earlier setup. | On A, run `canonfig source service status` to confirm which Source Machine is serving, then issue an invitation from it. Do not enroll until the fingerprints match. |
 | "SSH host identity for a.example did not match its pin" (`tunnel start`) | The host key file does not belong to the host you connected to. | Copy `/etc/ssh/ssh_host_ed25519_key.pub` from A again, reading it on A itself, and check that `--ssh-host` names A. |
 | "nothing answered at the Source endpoint" (exit 6) | Nothing listens on `127.0.0.1:17342`: A is not serving, or the tunnel is down. | On A, run `canonfig source service status` and expect `running`. On B, run `canonfig tunnel status`, then `canonfig tunnel start`. If A serves on another port, use that port in `--endpoint` and in `tunnel start --local-port`. |
 | "source/follower version mismatch" (exit 2) | A and B run different `major.minor` releases. The message names both. | Install the same release on both machines, as in step 1. |

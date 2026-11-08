@@ -224,9 +224,9 @@ describe("setup controller decisions", () => {
           _tag: "SetupError",
           category: "prerequisite",
         });
-        expect(error.message).toContain("Source signing key");
-        expect(error.message).toContain("TLS key");
-        expect(error.message).toContain("before initialization");
+        expect(error.message).toContain("keys that identify the Source");
+        expect(error.message).toContain("protect its connections");
+        expect(error.message).toContain("before setup can continue");
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
@@ -303,8 +303,8 @@ process.exit(2);
           const error = await Effect.runPromise(Effect.flip(runSetupPreflight("source").pipe(Effect.provide(layer))));
           expect(error).toMatchObject({ _tag: "SetupError", category: "prerequisite" });
           expect(error.message).toContain("cannot be a Source");
-          expect(error.message).toContain("did not accept a disposable write");
-          expect(error.message).toContain("before initialization");
+          expect(error.message).toContain("could not save and read a test value");
+          expect(error.message).toContain("before setup can continue");
           expect(error.recovery).toContain("Secret Service provider");
           // Narrow scopes create no keys and do not need the probe.
           const narrow = await Effect.runPromise(runSetupPreflight("source", "cli-only").pipe(Effect.provide(layer)));
@@ -906,7 +906,7 @@ describe.runIf(process.platform === "linux")("Source harness selection and impor
         exclusions: planned.exclusions, discoveryInputs: planned.discoveryInputs,
       });
       expect(replanned.imports.skipped).toContainEqual({
-        source: "claude-code", path: "~/.claude/skills/unfinished", reason: "has no SKILL.md",
+        source: "claude-code", path: "~/.claude/skills/unfinished", reason: "Missing SKILL.md. Add a SKILL.md file with a name and description to import this skill.",
       });
       expect(replanned.planDigest).not.toBe(planned.planDigest);
       expect(replanned.approvals).toEqual([]);
