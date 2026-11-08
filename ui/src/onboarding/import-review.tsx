@@ -25,11 +25,13 @@ interface ReviewRow {
 }
 
 /** One display model per scan, not one regrouping pass per row or keystroke. */
-export function ImportReview({ data, listed, selected, onSelect, allowCredentials, onAllowCredentials }: {
+export function ImportReview({ data, listed, selected, onSelect, choices, onChoose, allowCredentials, onAllowCredentials }: {
   data: OnboardingData;
   listed: readonly HarnessId[];
   selected: readonly string[];
   onSelect: (ids: string[]) => void;
+  choices: ReadonlyMap<string, string | null>;
+  onChoose: (target: string, id: string | null) => void;
   allowCredentials: boolean;
   onAllowCredentials: (allow: boolean) => void;
 }) {
@@ -74,15 +76,16 @@ export function ImportReview({ data, listed, selected, onSelect, allowCredential
     return { rows, offered, skipped: [...skipped], skippedCount: [...skipped.values()].reduce((count, group) => count + group.length, 0) };
   }, [data.offers, data.collisions, data.present, data.skipped, listed]);
   const selectedIds = useMemo(() => new Set(selected), [selected]);
-  const unresolved = model.rows.filter((row) => row.kind === "candidates" && !row.offers.some((offer) => selectedIds.has(offer.id))).length;
+  const unresolvedTargets = useMemo(() => new Set(model.rows.filter((row) => row.kind === "candidates" && choices.get(row.target) !== null && !row.offers.some((offer) => selectedIds.has(offer.id))).map((row) => row.target)), [model.rows, choices, selectedIds]);
+  const unresolved = unresolvedTargets.size;
   const selectedCount = model.rows.filter((row) => row.kind !== "folder" && row.offers.some((offer) => selectedIds.has(offer.id))).length;
   const groups = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
     return CATEGORIES.map((id) => ({ id, rows: model.rows.filter((row) => row.category === id
       && (category === "all" || category === id)
-      && (!needsChoice || (row.kind === "candidates" && !row.offers.some((offer) => selectedIds.has(offer.id))))
+      && (!needsChoice || unresolvedTargets.has(row.target))
       && (!query || row.offers.some((offer) => `${offer.name} ${offer.path}`.toLocaleLowerCase().includes(query)))) }));
-  }, [model.rows, search, category, needsChoice, selectedIds]);
+  }, [model.rows, search, category, needsChoice, unresolvedTargets]);
   const visible = groups.flatMap((group) => group.rows);
   const eligible = (rows: readonly ReviewRow[]) => rows.filter((row) => row.kind === "item" && (allowCredentials || !row.offers[0]!.secrets.length));
   // Bulk selection never decides a collision or overrides existing Canonical Folder content.
@@ -103,6 +106,7 @@ export function ImportReview({ data, listed, selected, onSelect, allowCredential
         <Button type="button" variant="ghost" size="sm" onClick={() => {
           const ids = new Set(visible.flatMap((row) => row.offers.map((offer) => offer.id)));
           onSelect(selected.filter((id) => !ids.has(id)));
+          for (const row of visible) if (row.kind === "candidates") onChoose(row.target, null);
         }}>Select none</Button>
       </div>
     </div>
@@ -154,13 +158,12 @@ export function ImportReview({ data, listed, selected, onSelect, allowCredential
                   <span className="col-start-1 row-span-3 row-start-1 w-4 md:row-span-1" aria-hidden />
                   <OfferText offer={offer} sources={sources} paths={paths} />
                   <div className="col-start-2 row-start-4 mt-1 min-w-0 md:col-start-5 md:row-start-1 md:mt-0">
-                    {row.kind === "folder" ? <span className="text-sm text-muted-foreground">Already in Canonical Folder</span> : <Select value={chosen?.id ?? "none"} onValueChange={(value) => {
-                      const ids = new Set(row.offers.map((item) => item.id));
-                      onSelect([...selected.filter((id) => !ids.has(id)), ...(value === "none" ? [] : [value])]);
-                      // A resolved row leaves this filter, so keep keyboard focus in the review.
-                      if (needsChoice && value !== "none") requestAnimationFrame(() => choiceFilter.current?.focus());
+                    {row.kind === "folder" ? <span className="text-sm text-muted-foreground">Already in Canonical Folder</span> : <Select value={chosen?.id ?? (choices.get(row.target) === null ? "none" : "")} onValueChange={(value) => {
+                      onChoose(row.target, value === "none" ? null : value);
+                      // Every explicit decision leaves this filter, so keep keyboard focus in the review.
+                      if (needsChoice) requestAnimationFrame(() => choiceFilter.current?.focus());
                     }}>
-                      <SelectTrigger aria-label={`Choose source for ${row.target}`} className="min-h-10 w-full text-sm pointer-coarse:min-h-11"><SelectValue /></SelectTrigger>
+                      <SelectTrigger aria-label={`Choose source for ${row.target}`} className="min-h-10 w-full text-sm pointer-coarse:min-h-11"><SelectValue placeholder="Choose source" /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="none">Don't import</SelectItem>
                         {row.offers.map((item) => <SelectItem key={item.id} value={item.id} disabled={!allowCredentials && !!item.secrets.length}>{sourceName(item.source)}</SelectItem>)}

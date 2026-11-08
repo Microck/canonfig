@@ -35,6 +35,8 @@ The API supports Source authoring/publication, enrollment, synchronization, loca
 
 Source setup sends one structured import review to both clients: offers include source, category, name and home-relative display path; skips include their reason; collisions distinguish competing harness content from an occupied Canonical Folder target. Only the CLI formats command-line guidance. The browser groups a dense, searchable list by category. Identical targets share one row listing all sources and select the first sorted candidate id, matching `selectImports`; different content keeps an explicit source choice. Rows share aligned columns on desktop and stack source and path below the name on phones. Skipped paths fold under counted reasons. Scans have no item-count cap; file, config-byte and skill-tree bounds still apply.
 
+Collision decisions are keyed by target, so replacing a source also replaces a retained choice from an unlisted harness. Each target starts undecided and imports nothing. Choosing a source or Don't import resolves the row and removes it from Needs a choice; a later source choice replaces the skip.
+
 Unauthenticated browser page navigations receive a small HTML sign-in guide with the original 401 or 403 status and security headers. API requests retain the JSON diagnostic contract.
 
 The structured review uses setup journal v3. Earlier v2 journals are not decoded or migrated. Both clients ask the person to preserve the earlier journal, inspect any setup side effects, move the journal aside and start setup again without removing `state.sqlite`.

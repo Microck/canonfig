@@ -778,8 +778,8 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
   // Setup lists the installed harnesses until the person edits the list, as `setup plan` does without --harness.
   // Any harness can be listed, installed or not, as `--harness` allows.
   const [listed, setListed] = useState<HarnessId[]>(() => (live ? harnesses.filter((h) => h.listed) : INSTALLED).map((h) => h.id));
-  // One selection list includes ordinary items and the explicitly chosen candidate for each collision.
-  const [checked, setChecked] = useState<string[]>([]);
+  // A target owns one decision, including an explicit skip (null), even while its harness is unlisted.
+  const [choices, setChoices] = useState<ReadonlyMap<string, string | null>>(() => new Map());
   const [allowCredentials, setAllowCredentials] = useState(false);
   const [scan, setScan] = useState(true);
   const [service, setService] = useState<"service" | "manual">("service");
@@ -794,22 +794,22 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
     && !data.collisions.some((collision) => collision.kind === "folder" && collision.candidates.some((candidate) => candidate.id === offer.id)))
     .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
   [data.offers, data.present, data.collisions, listed]);
-  const offeredIds = useMemo(() => new Set(offered.map((offer) => offer.id)), [offered]);
+  const collisionTargets = useMemo(() => new Set(data.collisions.filter((collision) => collision.kind === "candidates").map((collision) => collision.target)), [data.collisions]);
   const imported = useMemo(() => {
-    const selectedIds = new Set(checked);
-    const collisions = new Set(data.collisions.filter((collision) => collision.kind === "candidates").map((collision) => collision.target));
+    const offeredIds = new Set(offered.map((offer) => offer.id));
     const primary = new Map<string, ImportOffer>();
     const chosen = new Map<string, string>();
-    // Harness changes retain prior choices, but one target must still submit only one id.
+    // Plain identical items keep their canonical first id; collisions keep the person's chosen source.
     for (const offer of offered) if (!primary.has(offer.target)) primary.set(offer.target, offer);
     for (const offer of offered) {
-      if (selectedIds.has(offer.id) && !chosen.has(offer.target)) {
-        const candidate = collisions.has(offer.target) ? offer : primary.get(offer.target)!;
+      const choice = choices.get(offer.target);
+      if ((collisionTargets.has(offer.target) ? choice === offer.id : choice != null && offeredIds.has(choice)) && !chosen.has(offer.target)) {
+        const candidate = collisionTargets.has(offer.target) ? offer : primary.get(offer.target)!;
         if (allowCredentials || !candidate.secrets.length) chosen.set(offer.target, candidate.id);
       }
     }
     return [...chosen.values()];
-  }, [offered, checked, data.collisions, allowCredentials]);
+  }, [offered, choices, collisionTargets, allowCredentials]);
 
   // Validated as typed, never rewritten: stripping characters would turn "1.5" into a different port.
   const portNumber = Number(port);
@@ -943,14 +943,23 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
       {step === SOURCE_STEP.import && (
         <div className="space-y-5">
           <ImportReview data={data} listed={listed} selected={imported} onSelect={(ids) => {
-            setChecked((previous) => [...previous.filter((id) => !offeredIds.has(id)), ...ids]);
+            setChoices((previous) => {
+              const next = new Map(previous);
+              const byId = new Map(offered.map((offer) => [offer.id, offer]));
+              for (const offer of offered) if (!collisionTargets.has(offer.target)) next.delete(offer.target);
+              for (const id of ids) {
+                const offer = byId.get(id);
+                if (offer && !collisionTargets.has(offer.target)) next.set(offer.target, id);
+              }
+              return next;
+            });
           }}
+            choices={choices} onChoose={(target, id) => setChoices((previous) => new Map(previous).set(target, id))}
             allowCredentials={allowCredentials} onAllowCredentials={(allow) => {
               setAllowCredentials(allow);
               if (!allow) {
                 const deniedTargets = new Set(data.offers.filter((offer) => offer.secrets.length && imported.includes(offer.id)).map((offer) => offer.target));
-                const deniedIds = new Set(data.offers.filter((offer) => deniedTargets.has(offer.target)).map((offer) => offer.id));
-                setChecked((ids) => ids.filter((id) => !deniedIds.has(id)));
+                setChoices((previous) => new Map([...previous].filter(([target]) => !deniedTargets.has(target))));
               }
             }} />
           <p className="text-sm text-muted-foreground">

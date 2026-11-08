@@ -38,10 +38,18 @@ async function fixture(initialSelected: string[] = []) {
   let selection: readonly string[] = initialSelected;
   function TestReview() {
     const [selected, setSelected] = useState<string[]>(initialSelected);
+    const [choices, setChoices] = useState<ReadonlyMap<string, string | null>>(() => new Map());
     const [allow, setAllow] = useState(false);
     return <ImportReview data={data} listed={listed} selected={selected} onSelect={(ids) => {
       selection = ids;
       setSelected(ids);
+    }} choices={choices} onChoose={(target, id) => {
+      setChoices((previous) => new Map(previous).set(target, id));
+      setSelected((previous) => {
+        const ids = [...previous.filter((selectedId) => !data.offers.some((offer) => offer.target === target && offer.id === selectedId)), ...(id === null ? [] : [id])];
+        selection = ids;
+        return ids;
+      });
     }} allowCredentials={allow} onAllowCredentials={setAllow} />;
   }
   const container = document.createElement("div"); document.body.append(container);
@@ -59,6 +67,34 @@ async function search(container: Element, value: string) {
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set; assert.ok(setter);
   await act(async () => { setter.call(input, value); input.dispatchEvent(new Event("input", { bubbles: true })); });
 }
+
+async function choose(container: Element, label: string) {
+  const trigger = button(container, "Choose source for AGENTS.md");
+  await act(async () => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+  const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent === label);
+  assert.ok(option, `Missing source ${label}`);
+  await act(async () => option.click());
+}
+
+it("different-content collisions submit only the chosen source and treat Don't import as a decision", async () => {
+  const app = await fixture();
+  try {
+    assert.deepEqual(app.selection, []);
+    assert.ok(button(app.container, "Needs a choice (1)"));
+    await choose(app.container, "OpenAI Codex");
+    assert.deepEqual(app.selection, [instructions[0]!.id]);
+    assert.ok(button(app.container, "Needs a choice (0)"));
+    await choose(app.container, "Claude Code");
+    assert.deepEqual(app.selection, [instructions[1]!.id]);
+    await choose(app.container, "Don't import");
+    assert.deepEqual(app.selection, []);
+    await act(async () => button(app.container, "Needs a choice (0)").click());
+    assert.equal(app.container.querySelector('[aria-label="Choose source for AGENTS.md"]'), null);
+    await act(async () => button(app.container, "Needs a choice (0)").click());
+    await choose(app.container, "OpenAI Codex");
+    assert.deepEqual(app.selection, [instructions[0]!.id], "A later source replaces the skip");
+  } finally { await app.close(); }
+});
 
 it("bulk selection keeps collisions, existing folder content and literal secrets out", async () => {
   const app = await fixture();

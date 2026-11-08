@@ -162,6 +162,66 @@ for (const literal of [false, true]) it(`harness changes keep canonical ids and 
   } finally { await app.close(); }
 });
 
+for (const retainedCollision of [false, true]) it(`a replacement collision choice survives removing and re-adding the earlier harness (collision retained: ${retainedCollision})`, async () => {
+  const first = { id: "claude-code/instructions/AGENTS.md", source: "claude-code", harnesses: ["claude-code"], category: "instructions", name: "AGENTS.md", target: "AGENTS.md", path: "~/.claude/CLAUDE.md", secrets: [], notes: [] };
+  const second = { ...first, id: "codex/instructions/AGENTS.md", source: "codex", harnesses: ["codex"], path: "~/.codex/AGENTS.md" };
+  let submitted: readonly string[] | null = null;
+  const app = await fixture((path, _method, out, body) => {
+    if (path !== "/api/setup/plan") {
+      respond(out, { stage: "role", approved: false, approvals: [], stages: [], items: [], catalog: [], discoveryPaths: [] });
+      return;
+    }
+    const input = Schema.decodeUnknownSync(GuiSetupPlanInput)(JSON.parse(body));
+    const harnesses = input.harnesses ?? ["claude-code", "codex"];
+    if (input.imports.kind !== "offer") submitted = input.imports.kind === "some" ? input.imports.requested : [];
+    const offered = [first, second].filter((offer) => harnesses.includes(offer.source));
+    respond(out, { ...journal, items: [{
+      id: "canonfig-folder", kind: "folder-scaffold", scope: "machine", optional: false, dependsOn: [],
+      detail: { harnesses, detected: ["claude-code", "codex"] },
+    }], imports: {
+      request: input.imports.kind, offered, present: [], skipped: [],
+      collisions: offered.length > 1 || retainedCollision ? [{ kind: "candidates", target: "AGENTS.md", candidates: offered.map(({ id, source, path }) => ({ id, source, path })) }] : [],
+    } });
+  }, true);
+  const press = async (label: string) => {
+    const button = [...app.container.querySelectorAll("button")].find((node) => node.textContent?.trim() === label);
+    assert.ok(button, `Missing ${label}`);
+    await act(async () => button.click());
+  };
+  const choose = async (label: string) => {
+    const trigger = app.container.querySelector<HTMLButtonElement>('[aria-label="Choose source for AGENTS.md"]'); assert.ok(trigger);
+    await act(async () => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent === label);
+    assert.ok(option, `Missing source ${label}`);
+    await act(async () => option.click());
+  };
+  const toggleClaude = async () => {
+    const label = [...app.container.querySelectorAll('ul[aria-label="Installed harnesses"] label')].find((node) => node.textContent?.includes("Claude Code"));
+    const checkbox = label?.querySelector<HTMLButtonElement>('[role="checkbox"]'); assert.ok(checkbox);
+    await act(async () => checkbox.click());
+  };
+  try {
+    const source = [...app.container.querySelectorAll("button")].find((node) => node.textContent?.includes("Make this the Source"));
+    assert.ok(source); await act(async () => source.click());
+    await until(() => !!app.container.querySelector("form"));
+    await press("Continue"); await press("Continue");
+    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
+    await choose("Claude Code");
+    await press("Back"); await toggleClaude(); await press("Continue");
+    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
+    if (retainedCollision) await choose("OpenAI Codex");
+    else {
+      const checkbox = app.container.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label^="AGENTS.md from"]'); assert.ok(checkbox);
+      await act(async () => checkbox.click());
+    }
+    await press("Back"); await toggleClaude(); await press("Continue");
+    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
+    await press("Continue");
+    await until(() => submitted !== null);
+    assert.deepEqual(submitted, [second.id]);
+  } finally { await app.close(); }
+});
+
 it("join success followed by report failure retains explicit joined recovery state", async () => {
   const app = await fixture((path, _method, out) => {
     if (path === "/api/enrollment/inspect") respond(out, inspection);
