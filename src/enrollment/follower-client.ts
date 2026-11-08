@@ -183,7 +183,7 @@ const inspectCertificate = (
         operation: "inspect source certificate",
         message: code === "ECONNREFUSED" || code === "ECONNRESET" || code === "EPIPE"
           ? `nothing answered at the Source endpoint ${endpoint.host} (${code}); start the Source, or run \`canonfig tunnel start\` if it is reached through a managed tunnel`
-          : "the source TLS certificate could not be inspected",
+          : "Canonfig could not read the Source's connection certificate. Check that the Source service and SSH tunnel are running, then try again.",
       });
     },
   });
@@ -272,7 +272,7 @@ const requestJson = (
         ? cause
         : new EnrollmentTransportError({
           operation: "request source enrollment endpoint",
-          message: "the source enrollment endpoint could not be reached",
+          message: "This machine could not reach the Source. Check that the Source service and SSH tunnel are running, then try again.",
         }),
   });
 
@@ -390,7 +390,7 @@ const enrollmentPhase = <A, E>(
         ? Effect.succeed(option.value)
         : Effect.fail(new EnrollmentTransportError({
           operation: "enroll follower",
-          message: "follower enrollment timed out",
+          message: "Joining the Source timed out. Check this machine's enrollment before retrying. If the invitation was used, create a new one on the Source.",
         }))
     ),
   );
@@ -428,7 +428,7 @@ export const enrollFollower = (
     );
     if (certificate.fingerprint !== input.invitation.tlsFingerprint) {
       return yield* new EnrollmentFingerprintMismatchError({
-        message: "the source TLS fingerprint does not match the invitation",
+        message: "The Source's certificate fingerprint does not match this invitation. Stop and verify the Source through a trusted connection, then request a new invitation. Do not bypass this check.",
       });
     }
     const response = yield* enrollmentPhase(requestJson(
@@ -459,12 +459,12 @@ export const enrollFollower = (
     );
     if (enrolled.source.publicKeyFingerprint !== input.invitation.sourceFingerprint) {
       return yield* new EnrollmentSourceMismatchError({
-        message: "the enrolled source identity does not match the invitation",
+        message: "The Source identity returned while joining does not match this invitation. Stop and verify the intended Source through a trusted connection, then request a new invitation.",
       });
     }
     if (enrolled.tlsFingerprint !== input.invitation.tlsFingerprint) {
       return yield* new EnrollmentFingerprintMismatchError({
-        message: "the enrolled TLS fingerprint does not match the invitation",
+        message: "The connection certificate returned while joining does not match this invitation. Stop and verify the Source through a trusted connection, then request a new invitation.",
       });
     }
     // A fresh item per enrollment: rotating or replacing an identity must not

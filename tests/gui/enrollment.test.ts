@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Effect, Schema } from "effect";
 import { withRunLock } from "../../src/synchronization/run-lock.ts";
 import { GuiOperation } from "../../src/gui/contract/operations.ts";
-import { GuiSetupStatus } from "../../src/gui/contract/enrollment.ts";
+import { GuiSetupJournal, GuiSetupStatus } from "../../src/gui/contract/enrollment.ts";
 
 const entry = resolve(import.meta.dirname, "../../src/runtime/main.ts");
 const homes: string[] = [];
@@ -75,6 +75,76 @@ afterEach(async () => {
 });
 
 describe("real enrollment and setup endpoints", () => {
+  it("explains the preserved 7.1.0 setup journal shape in both clients without changing it", async () => {
+    const machine = fixture();
+    mkdirSync(join(machine.home, ".codex"), { recursive: true });
+    writeFileSync(join(machine.home, ".codex", "AGENTS.md"), "Keep these instructions.\n");
+    const server = await gui(machine.env);
+    const input = { role: "source", scope: "full", mode: "simple", files: [], harnesses: ["codex"], imports: { kind: "offer" } };
+    const planned = await server.request("/api/setup/plan", input);
+    expect(planned.status).toBe(200);
+    const journal = Schema.decodeUnknownSync(GuiSetupJournal)(planned.body);
+    if (!journal.imports) throw new Error("Source plan did not contain an import review");
+    // The preserved 7.1.0 repro has only request, offered and present, with four fields per offer.
+    const legacy = JSON.stringify({ ...journal, schema: "canonfig.setup/v2", imports: {
+      request: "offer", present: [], offered: journal.imports.offered.map(({ id, target, secrets, notes }) => ({ id, target, secrets, notes })),
+    } });
+    const path = join(machine.home, ".canonfig", "setup.json");
+    writeFileSync(path, legacy);
+    for (const [endpoint, body] of [["/api/setup", undefined], ["/api/setup/plan", input]] as const) {
+      const response = await server.request(endpoint, body);
+      expect(response.status).toBe(400);
+      expect(response.body).toMatchObject({ category: "human-action-required", exitCode: 3 });
+      expect(response.body.message).toContain(`The setup journal at ${path} was written by an earlier Canonfig`);
+      expect(response.body.message).toContain("move it aside and start setup again");
+      expect(readFileSync(path, "utf8")).toBe(legacy);
+    }
+    const cli = machine.invoke(["setup", "status"]);
+    expect(cli.status).toBe(3);
+    expect(cli.stderr).toContain("was written by an earlier Canonfig");
+    expect(cli.stderr).toContain("move it aside and start setup again");
+    expect(readFileSync(path, "utf8")).toBe(legacy);
+  }, 60_000);
+
+  it("carries structured skips and collisions with home-relative source paths", async () => {
+    const machine = fixture();
+    for (const harness of [".codex", ".claude"]) mkdirSync(join(machine.home, harness), { recursive: true });
+    writeFileSync(join(machine.home, ".codex", "AGENTS.md"), "Codex instructions.\n");
+    writeFileSync(join(machine.home, ".claude", "CLAUDE.md"), "Claude instructions.\n");
+    mkdirSync(join(machine.home, ".claude", "skills", "unfinished"), { recursive: true });
+    for (const root of [".canonfig", ".claude"]) {
+      mkdirSync(join(machine.home, root, "skills", "held"), { recursive: true });
+      writeFileSync(join(machine.home, root, "skills", "held", "SKILL.md"), `---\nname: held\ndescription: ${root} copy\n---\n${root}\n`);
+    }
+    const server = await gui(machine.env);
+    const plan = await server.request("/api/setup/plan", {
+      role: "source", scope: "full", mode: "simple", files: [],
+      harnesses: ["codex", "claude-code"], imports: { kind: "offer" },
+    });
+    expect(plan.status).toBe(200);
+    expect(plan.body.imports.offered).toContainEqual(expect.objectContaining({
+      id: "codex/instructions/AGENTS.md", source: "codex", category: "instructions",
+      name: "AGENTS.md", path: "~/.codex/AGENTS.md",
+    }));
+    expect(plan.body.imports.skipped).toContainEqual({
+      source: "claude-code", path: "~/.claude/skills/unfinished", reason: "Missing SKILL.md. Add a SKILL.md file with a name and description to import this skill.",
+    });
+    expect(plan.body.imports.collisions).toContainEqual({
+      kind: "candidates", target: "AGENTS.md", candidates: [
+        { id: "claude-code/instructions/AGENTS.md", source: "claude-code", path: "~/.claude/CLAUDE.md" },
+        { id: "codex/instructions/AGENTS.md", source: "codex", path: "~/.codex/AGENTS.md" },
+      ],
+    });
+    expect(plan.body.imports.collisions).toContainEqual({
+      kind: "folder", target: "skills/held", candidates: [
+        { id: "claude-code/skills/held", source: "claude-code", path: "~/.claude/skills/held" },
+      ],
+    });
+    expect(JSON.stringify(plan.body.imports)).not.toContain(machine.home);
+    expect(JSON.stringify(plan.body)).not.toContain("import skipped:");
+    expect(JSON.stringify(plan.body)).not.toContain("--import");
+  }, 60_000);
+
   it("refuses CLI setup writers while another process owns the setup journal lock", async () => {
     const machine = fixture();
     const planned = machine.invoke(["setup", "plan", "--role", "follower", "--scope", "cli-only"]);

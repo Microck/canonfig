@@ -131,7 +131,7 @@ export function OnboardingShell({ hostname, backdrop, children }: { hostname: st
             <span className="truncate text-[13px] text-muted-foreground">{hostname}</span>
           </div>
           <SheetTrigger asChild>
-            <Button variant="ghost" size="icon-sm" aria-label="Glossary" className="size-11 shrink-0 text-muted-foreground sm:size-10">
+            <Button variant="ghost" size="icon-sm" aria-label="Open glossary" className="size-11 shrink-0 text-muted-foreground sm:size-10">
               <Question />
             </Button>
           </SheetTrigger>

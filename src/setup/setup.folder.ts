@@ -16,7 +16,6 @@ import {
   scanImports,
   selectImports,
   type ImportCandidate,
-  type ImportChoice,
   type ImportContent,
   type ImportScan,
   type ImportSelection,
@@ -66,7 +65,6 @@ const contextFor = (environment: Environment) =>
 export interface SourceFolderPlan {
   readonly harnesses: ReadonlyArray<TargetId>;
   readonly items: ReadonlyArray<SetupPlanItem>;
-  readonly exclusions: ReadonlyArray<string>;
   readonly decisions: ReadonlyArray<string>;
   readonly imports: SetupImportReview;
   readonly stage: Omit<SetupStageRecord, "completedAt">;
@@ -113,10 +111,6 @@ const importSelection = (request: SetupImportRequest): ImportSelection => {
   }
 };
 
-const collisionText = (folder: string, collision: ImportChoice["collisions"][number]) =>
-  collision.folder
-    ? `import collision: ${collision.target} already exists in ${folder} with different content (${collision.candidates.join(", ")}); edit or remove it there to import`
-    : `import collision: ${collision.target} differs between ${collision.candidates.join(", ")}; choose one with --import <id>`;
 
 /** Scan the harnesses not yet taken over and apply the operator's import choice. */
 const reviewImports = (input: SourceFolderInput, selected: ReadonlyArray<TargetId>) =>
@@ -125,9 +119,8 @@ const reviewImports = (input: SourceFolderInput, selected: ReadonlyArray<TargetI
     if (input.imports.kind === "none") {
       return {
         chosen: nothing,
-        exclusions: [],
-        decisions: ["harness import declined (--no-import); harness files were not read"],
-        review: { request: "none", offered: [], present: [] } satisfies SetupImportReview,
+        decisions: ["No imports selected. Canonfig did not read your AI coding tools' files for import."],
+        review: { request: "none", offered: [], present: [], skipped: [], collisions: [] } satisfies SetupImportReview,
       };
     }
     const repository = yield* StateRepository;
@@ -151,28 +144,44 @@ const reviewImports = (input: SourceFolderInput, selected: ReadonlyArray<TargetI
       );
     }
     const chosen = input.imports.kind === "offer" ? [] : choice.chosen;
+    const displayPath = (path: string) =>
+      path === context.home ? "~" : path.startsWith(`${context.home}/`) || path.startsWith(`${context.home}\\`)
+        ? `~/${path.slice(context.home.length + 1).replaceAll("\\", "/")}` : path;
+    const candidates = new Map(scan.candidates.map((candidate) => [candidate.id, candidate]));
     return {
       chosen,
-      exclusions: [
-        ...scan.skipped.map((skip) => `import skipped: ${skip.path}: ${skip.reason}`),
-        ...choice.collisions.map((collision) => collisionText(input.folder, collision)),
-      ],
       decisions: [
         ...selected.filter((harness) => takenOver.has(harness))
-          .map((harness) => `harness import not offered for ${harness}: Canonfig already took it over`),
+          .map((harness) => `No import offered for ${harness}. Canonfig already manages its settings; edit the shared setup in ~/.canonfig/ instead.`),
         input.imports.kind === "offer"
-          ? `harness import offered: ${scan.candidates.length} item(s), none chosen; choose with --import <harness|id> or --import-all`
-          : `harness import: ${chosen.length} item(s) chosen`,
+          ? `Available imports: ${scan.candidates.length}. No items selected yet.`
+          : `Selected imports: ${chosen.length}.`,
       ],
       review: {
         request: input.imports.kind,
         offered: scan.candidates.map((candidate) => ({
           id: candidate.id,
+          source: candidate.source,
+          harnesses: candidate.harnesses,
+          category: candidate.category,
+          name: candidate.name,
+          path: displayPath(candidate.path),
           target: candidate.target,
           secrets: candidate.secrets.map((secret) => `${secret.field} -> fromEnv ${secret.fromEnv}`),
           notes: candidate.notes,
         })),
         present: choice.present,
+        skipped: scan.skipped.map((skip) => ({
+          ...skip, path: displayPath(skip.path), reason: skip.reason.replaceAll(context.home, "~"),
+        })),
+        collisions: choice.collisions.map((collision) => ({
+          kind: collision.folder ? "folder" : "candidates",
+          target: collision.target,
+          candidates: collision.candidates.map((id) => {
+            const candidate = candidates.get(id)!;
+            return { id, source: candidate.source, path: displayPath(candidate.path) };
+          }),
+        })),
       } satisfies SetupImportReview,
     };
   });
@@ -236,13 +245,12 @@ export const planSourceFolder = (input: SourceFolderInput) =>
     return {
       harnesses,
       items,
-      exclusions: imports.exclusions,
       decisions: [
-        `harnesses from ${origin}: ${harnesses.join(", ") || "none"}`,
-        `installed harnesses detected: ${detected.join(", ") || "none"}`,
+        `AI coding tools selected from ${origin}: ${harnesses.join(", ") || "none"}.`,
+        `Installed AI coding tools found: ${detected.join(", ") || "none"}.`,
         profile === undefined
-          ? `profile kept from the existing canonfig.jsonc: ${current?.profile?.id}`
-          : `profile proposed from the hostname: ${profile.id} (${profile.name}); edit canonfig.jsonc to rename it`,
+          ? `The profile keeps its name from canonfig.jsonc: ${current?.profile?.id}.`
+          : `The profile uses this machine's name: ${profile.name} (${profile.id}). Edit the profile in canonfig.jsonc to rename it.`,
         ...imports.decisions,
       ],
       imports: imports.review,

@@ -4,6 +4,7 @@ import { canonicalJson, sha256Hex } from "../profile/profile-codec.ts";
 import { SetupError } from "./setup.errors.ts";
 import type {
   SetupDiscoveryInput,
+  SetupImportReview,
   SetupInventory,
   SetupItemRecord,
   SetupItemStatus,
@@ -20,8 +21,8 @@ const asJson = <Value>(value: Value) =>
 
 /**
  * The plan digest covers intent, decisions, exclusions, bounded inventory,
- * authoring-file fingerprints and exact executable items. Runtime evidence
- * and qualified provenance are apply outputs, not approval inputs.
+ * authoring-file fingerprints, the structured import review and exact executable
+ * items. Runtime evidence and qualified provenance are apply outputs, not approval inputs.
  */
 export const setupPlanDigest = (input: {
   readonly role: SetupRole;
@@ -31,6 +32,7 @@ export const setupPlanDigest = (input: {
   readonly inventory: SetupInventory;
   readonly items: ReadonlyArray<SetupPlanItem>;
   readonly discoveryInputs: ReadonlyArray<SetupDiscoveryInput>;
+  readonly imports?: SetupImportReview;
 }): string => {
   return sha256Hex(canonicalJson(asJson({
     role: input.role,
@@ -40,6 +42,7 @@ export const setupPlanDigest = (input: {
     inventory: input.inventory,
     items: input.items,
     discoveryInputs: input.discoveryInputs,
+    imports: input.imports,
   })));
 };
 
@@ -184,6 +187,7 @@ export const validateSetupJournal = (journal: SetupJournal): Effect.Effect<void,
       role: journal.role, scope: journal.scope, intent: journal.intent,
       exclusions: journal.exclusions, inventory: journal.inventory, items: journal.items,
       discoveryInputs: journal.discoveryInputs,
+      imports: journal.imports,
     }) !== journal.planDigest) return yield* invalid("stale plan digest");
     const stages = new Map(journal.stages.map((stage) => [stage.stage, stage]));
     const planning = journal.role === "source" && journal.scope === "full"

@@ -22,12 +22,15 @@ import {
   transitionSetup,
   setupItemVerdicts,
   setupPlanDigest,
+  validateSetupJournal,
 } from "../src/setup/setup.plan.ts";
 import {
   maxSetupDiscoveryFileBytes,
+  maxSetupJournalBytes,
   SetupItemSummary,
   SetupItemRecord,
   type SetupInventory,
+  type SetupImportReview,
   type SetupJournal,
   type SetupPlanItem,
 } from "../src/setup/setup.types.ts";
@@ -87,12 +90,12 @@ const journal = (overrides: Partial<SetupJournal> = {}): SetupJournal => {
   const currentItems = overrides.items ?? items;
   const planDigest = setupPlanDigest({
     role: "follower", scope: "full", intent: "prepare follower", exclusions: [],
-    inventory, discoveryInputs: [], items: currentItems,
+    inventory, discoveryInputs: [], items: currentItems, imports: overrides.imports,
   });
   const timestamp = "2026-08-17T00:00:00.000Z";
   const approvals = overrides.approvals ?? [{ digest: planDigest, approver: "operator", approvedAt: timestamp }];
   return {
-    schema: "canonfig.setup/v2", role: "follower", scope: "full", planDigest,
+    schema: "canonfig.setup/v3", role: "follower", scope: "full", planDigest,
     intent: "prepare follower", inventory, items: [...currentItems], decisions: [],
     exclusions: [], evidence: [], approvals, catalog: [], discoveryPaths: [], discoveryInputs: [],
     stages: [
@@ -221,9 +224,9 @@ describe("setup controller decisions", () => {
           _tag: "SetupError",
           category: "prerequisite",
         });
-        expect(error.message).toContain("Source signing key");
-        expect(error.message).toContain("TLS key");
-        expect(error.message).toContain("before initialization");
+        expect(error.message).toContain("keys that identify the Source");
+        expect(error.message).toContain("protect its connections");
+        expect(error.message).toContain("before setup can continue");
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
@@ -300,8 +303,8 @@ process.exit(2);
           const error = await Effect.runPromise(Effect.flip(runSetupPreflight("source").pipe(Effect.provide(layer))));
           expect(error).toMatchObject({ _tag: "SetupError", category: "prerequisite" });
           expect(error.message).toContain("cannot be a Source");
-          expect(error.message).toContain("did not accept a disposable write");
-          expect(error.message).toContain("before initialization");
+          expect(error.message).toContain("could not save and read a test value");
+          expect(error.message).toContain("before setup can continue");
           expect(error.recovery).toContain("Secret Service provider");
           // Narrow scopes create no keys and do not need the probe.
           const narrow = await Effect.runPromise(runSetupPreflight("source", "cli-only").pipe(Effect.provide(layer)));
@@ -420,6 +423,24 @@ process.exit(2);
       discoveryInputs: [],
       items,
     })).not.toBe(digest);
+  });
+
+  it("changes the plan digest when only the structured import review changes", () => {
+    const imports: SetupImportReview = { request: "offer", offered: [], present: [], skipped: [], collisions: [] };
+    const initial = journal({ imports });
+    const changed: SetupImportReview = { ...imports, skipped: [{ source: "codex", path: "~/.agents/skills/unfinished", reason: "has no SKILL.md" }] };
+    expect(setupPlanDigest({ ...initial, imports: changed })).not.toBe(initial.planDigest);
+  });
+
+  it("rejects a journal whose import review differs from its approved digest", async () => {
+    const imports: SetupImportReview = { request: "offer", offered: [], present: [], skipped: [], collisions: [] };
+    const initial = journal({ imports });
+    await Effect.runPromise(validateSetupJournal(initial));
+    const failure = await Effect.runPromise(validateSetupJournal({
+      ...initial,
+      imports: { ...imports, skipped: [{ source: "codex", path: "~/.agents/skills/unfinished", reason: "has no SKILL.md" }] },
+    }).pipe(Effect.flip));
+    expect(failure).toMatchObject({ _tag: "SetupError", category: "prerequisite", message: expect.stringContaining("stale plan digest") });
   });
 
   it("resumes required work without blocking on an independent optional failure", () => {
@@ -834,6 +855,67 @@ describe.runIf(process.platform === "linux")("Source harness selection and impor
     readdirSync(root, { withFileTypes: true }).flatMap((entry) =>
       entry.isDirectory() ? filesBelow(join(root, entry.name)) : [join(root, entry.name)]);
 
+  it("plans and reloads more than 2,000 import offers and selected candidates", async () => {
+    const test = fixture();
+    const journalPath = join(test.home, ".canonfig", "setup.json");
+    const environment = (name: string) => name === "HOME" ? test.home : name === "PATH" ? join(test.home, "bin") : undefined;
+    const run = <A, E>(effect: Effect.Effect<A, E, MachineState | Enrollment | StateRepository>) =>
+      Effect.runPromise(effect.pipe(
+        Effect.provide(EnrollmentLive),
+        Effect.provide(stateRepositoryLayer(join(test.home, ".canonfig", "state.sqlite"))),
+        Effect.provide(linuxMachineStateLayer({
+          environment: [{ name: "HOME", value: test.home }, { name: "PATH", value: join(test.home, "bin") }],
+          credentialPolicy: { kind: "local-file", path: join(test.home, "credentials") },
+        })),
+      ));
+    try {
+      mkdirSync(dirname(journalPath));
+      for (let index = 0; index < 2_000; index++) {
+        const name = `many-skill-${index}`;
+        write(join(test.home, ".claude", "skills", name, "SKILL.md"), `---\nname: ${name}\ndescription: Skill ${index}\n---\nUse ${name}.\n`);
+      }
+      const offered = await run(planSetup({
+        roleText: "source", files: [], harnesses: ["claude-code"], imports: { kind: "offer" }, environment,
+      }, journalPath));
+      expect(offered.imports?.offered).toHaveLength(2_003);
+      expect(statSync(journalPath).size).toBeGreaterThan(256 * 1024);
+      expect((await run(setupStatus(journalPath))).planDigest).toBe(offered.planDigest);
+
+      const selected = await run(planSetup({
+        roleText: "source", files: [], harnesses: ["claude-code"], imports: { kind: "all" }, environment,
+      }, journalPath));
+      expect(test.imported(selected)).toHaveLength(2_003);
+      expect(statSync(journalPath).size).toBeLessThan(maxSetupJournalBytes);
+      expect((await run(setupStatus(journalPath))).planDigest).toBe(selected.planDigest);
+    } finally {
+      test.cleanup();
+    }
+  }, 60_000);
+
+  it("replanning a changed import review invalidates approval without changing executable items", () => {
+    const test = fixture();
+    try {
+      const planned = test.setup(["plan", "--role", "source", "--harness", "claude-code"]);
+      test.setup(["approve", "--approver", "operator"]);
+      expect(test.setup(["status"]).approved).toBe(true);
+      mkdirSync(join(test.home, ".claude", "skills", "unfinished"));
+      const replanned = test.setup(["plan", "--role", "source", "--harness", "claude-code"]);
+      expect(replanned).toMatchObject({
+        role: planned.role, scope: planned.scope, intent: planned.intent,
+        inventory: planned.inventory, items: planned.items,
+        exclusions: planned.exclusions, discoveryInputs: planned.discoveryInputs,
+      });
+      expect(replanned.imports.skipped).toContainEqual({
+        source: "claude-code", path: "~/.claude/skills/unfinished", reason: "Missing SKILL.md. Add a SKILL.md file with a name and description to import this skill.",
+      });
+      expect(replanned.planDigest).not.toBe(planned.planDigest);
+      expect(replanned.approvals).toEqual([]);
+      expect(test.setup(["status"]).approved).toBe(false);
+    } finally {
+      test.cleanup();
+    }
+  }, 180_000);
+
   it("preselects installed harnesses, ignores a generic agent without ~/.cursor, and binds approval to the list", () => {
     const test = fixture();
     try {
@@ -913,7 +995,7 @@ describe.runIf(process.platform === "linux")("Source harness selection and impor
       // Codex reads skills from the shared ~/.agents/skills/.
       write(join(test.home, ".agents", "skills", "deploy", "SKILL.md"), "---\nname: deploy\ndescription: Another deploy\n---\nDifferent.\n");
       const all = test.setup(["plan", "--role", "source", "--import-all"]);
-      expect(all.exclusions).toContainEqual(expect.stringContaining("import collision: skills/deploy differs between"));
+      expect(all.imports.collisions).toContainEqual(expect.objectContaining({ kind: "candidates", target: "skills/deploy" }));
       const allTargets = test.imported(all).map((entry) => entry.target);
       expect(allTargets).not.toContain("skills/deploy");
 
@@ -921,7 +1003,7 @@ describe.runIf(process.platform === "linux")("Source harness selection and impor
       expect(test.imported(named).map((entry) => entry.id)).toEqual(["claude-code/skills/deploy"]);
 
       const declined = test.setup(["plan", "--role", "source", "--no-import"]);
-      expect(declined.imports).toEqual({ request: "none", offered: [], present: [] });
+      expect(declined.imports).toEqual({ request: "none", offered: [], present: [], skipped: [], collisions: [] });
       expect(test.item(declined, "harness-import")).toBeUndefined();
 
       rmSync(join(test.home, ".canonfig", "setup.json"));

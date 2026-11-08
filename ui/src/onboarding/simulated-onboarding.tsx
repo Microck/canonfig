@@ -24,13 +24,13 @@ const IMPORT_OFFERS: ImportOffer[] = [
   offer("claude-code", "rules", "typescript", "~/.claude/rules/typescript.md"),
   offer("claude-code", "skills", "review", "~/.claude/skills/review"),
   offer("claude-code", "agents", "researcher", "~/.claude/agents/researcher.md", {
-    notes: ["Its tools list isn't copied: Claude Code's tool names don't match Canonfig's capabilities, so it starts read-only."],
+    notes: ["Canonfig does not copy the metadata field tools because this tool names permissions differently. Review the imported agent's permissions before use."],
   }),
   offer("claude-code", "commands", "ship", "~/.claude/commands/ship.md"),
-  offer("claude-code", "mcp", "github", "~/.claude.json", { secrets: [{ field: "env.GITHUB_TOKEN", fromEnv: "GITHUB_TOKEN" }] }),
+  offer("claude-code", "mcp", "github", "~/.claude.json", { secrets: ["env.GITHUB_TOKEN -> fromEnv GITHUB_TOKEN"] }),
   offer("codex", "instructions", "AGENTS.md", "~/.codex/AGENTS.md"),
   offer("codex", "mcp", "linear", "~/.codex/config.toml", {
-    secrets: [{ field: "headers.Authorization", fromEnv: "LINEAR_AUTHORIZATION" }],
+    secrets: ["headers.Authorization -> fromEnv LINEAR_AUTHORIZATION"],
     notes: ["Its X-Timeout header isn't copied, because its value isn't text."],
   }),
   offer("opencode", "commands", "review-pr", "~/.config/opencode/commands/review-pr.md"),
@@ -42,14 +42,19 @@ const IMPORT_OFFERS: ImportOffer[] = [
  * these for review; they stay in the harness until Canonfig takes it over, and in its backup after that.
  */
 const IMPORT_SKIPPED: { source: HarnessId; path: string; reason: string }[] = [
-  { source: "claude-code", path: "~/.claude/skills/scratch", reason: "It has no SKILL.md." },
-  { source: "opencode", path: "~/.config/opencode/agents/helper.yaml", reason: "Only .md agents are imported." },
+  { source: "claude-code", path: "~/.claude/skills/scratch", reason: "Missing SKILL.md. Add a SKILL.md file with a name and description to import this skill." },
+  { source: "opencode", path: "~/.config/opencode/agents/helper.yaml", reason: "Only .md agent files can be imported. Convert this agent to Markdown, or continue without it." },
 ];
 
 export function SimulatedOnboarding({ onDone }: { onDone: (setup: Setup) => void }) {
   return <Onboarding onDone={onDone} data={{
     hostname: machine.hostname, endpoint: machine.endpoint, profileName: profile.name,
     harnesses, offers: IMPORT_OFFERS, skipped: IMPORT_SKIPPED,
+    present: [],
+    collisions: [{
+      kind: "candidates", target: "AGENTS.md",
+      candidates: IMPORT_OFFERS.filter((item) => item.category === "instructions").map(({ id, source, path }) => ({ id, source, path })),
+    }],
     followerInstalled: ["codex", "claude-code", "oh-my-pi", "opencode"],
   }} />;
 }

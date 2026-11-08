@@ -93,6 +93,17 @@ function claudeHome(home: string): void {
 }
 
 describe("scanImports", () => {
+  it("keeps every item when a machine has more than 256 candidates", async () => {
+    const home = makeHome();
+    for (let index = 0; index < 320; index++) {
+      const name = `skill-${index}`;
+      put(`${home}/.claude/skills/${name}/SKILL.md`, skill(name, `Skill ${index}`));
+    }
+    const scan = await scanImports({ context: context(home), harnesses: ["claude-code"], folder: `${home}/.canonfig` });
+    expect(scan.candidates).toHaveLength(320);
+    expect(scan.skipped).toEqual([]);
+  });
+
   it("imports a Claude Code home, redacting MCP credentials and refusing leaky servers", async () => {
     const home = makeHome();
     claudeHome(home);
@@ -140,8 +151,8 @@ describe("scanImports", () => {
 
     const reviewer = candidate(scan, "claude-code/agents/reviewer");
     expect(reviewer.notes).toEqual([
-      "dropped frontmatter name",
-      "dropped frontmatter tools (native tool names do not map to Canonfig capabilities)",
+      "Canonfig does not copy the metadata field name",
+      "Canonfig does not copy the metadata field tools because this tool names permissions differently. Review the imported agent's permissions before use.",
     ]);
     expect(await readImportContent(reviewer, ctx)).toEqual({
       kind: "text", content: "---\ndescription: Reviews code\n---\nReview carefully.\n",

@@ -78,6 +78,18 @@ const json = (response: ServerResponse, status: number, body: Schema.Json): void
   response.end(JSON.stringify(body));
 };
 
+/** Browser navigations need recovery instructions, while API clients keep the diagnostic contract. */
+const authenticationFailure = (request: IncomingMessage, response: ServerResponse, status: 401 | 403, message: string): void => {
+  const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+  if (request.method !== "GET" || pathname === "/api" || pathname.startsWith("/api/")
+    || !request.headers.accept?.toLowerCase().includes("text/html")) {
+    json(response, status, failureBody("authentication-or-revocation", message));
+    return;
+  }
+  response.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
+  response.end(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sign in to Canonfig</title><body><main><h1>Sign in to Canonfig</h1><p>Open the sign-in link printed by <code>canonfig ui</code> in your terminal.</p><p>Restart <code>canonfig ui</code> for a new link if the old one has expired or already been used.</p></main></body></html>`);
+};
+
 const sameSecret = (actual: string | undefined, expected: string): boolean => {
   if (actual === undefined) return false;
   const actualBytes = Buffer.from(actual);
@@ -120,11 +132,11 @@ const openBrowser = (url: string, io: CliIo): void => {
   child.unref();
 };
 
-const serveAsset = async (root: string, pathname: string, response: ServerResponse): Promise<void> => {
+const serveAsset = async (root: string, pathname: string, request: IncomingMessage, response: ServerResponse): Promise<void> => {
   const requested = resolve(root, `.${pathname}`);
   const local = relative(root, requested);
   if (local.startsWith(`..${sep}`) || local === ".." || local.startsWith(sep)) {
-    json(response, 403, failureBody("authentication-or-revocation", "The requested path is outside the browser application."));
+    authenticationFailure(request, response, 403, "The requested path is outside the browser application.");
     return;
   }
   // Only extensionless browser routes fall back to index; missing assets stay 404.
@@ -139,7 +151,7 @@ const serveAsset = async (root: string, pathname: string, response: ServerRespon
   }
   const resolved = relative(root, actual);
   if (resolved.startsWith(`..${sep}`) || resolved === ".." || resolved.startsWith(sep)) {
-    json(response, 403, failureBody("authentication-or-revocation", "The requested path is outside the browser application."));
+    authenticationFailure(request, response, 403, "The requested path is outside the browser application.");
     return;
   }
   const body = await readFile(actual);
@@ -193,17 +205,17 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
     // else, a rebound DNS name included, is refused, as is a request whose Origin names another site.
     const origin = origins.find((candidate) => sameAuthority(candidate, request.headers.host));
     if (origin === undefined || (request.headers.origin !== undefined && request.headers.origin !== origin)) {
-      json(response, 403, failureBody("authentication-or-revocation", "This request must come from a Canonfig browser origin."));
+      authenticationFailure(request, response, 403, "This request must come from a Canonfig browser origin.");
       return;
     }
     const url = new URL(request.url ?? "/", origin);
     if (url.origin !== origin) {
-      json(response, 403, failureBody("authentication-or-revocation", "This request must use a Canonfig browser origin."));
+      authenticationFailure(request, response, 403, "This request must use a Canonfig browser origin.");
       return;
     }
     if (url.searchParams.has("token")) {
       if (request.method !== "GET" || url.pathname !== "/" || tokenUsed || url.searchParams.getAll("token").length !== 1 || !sameSecret(url.searchParams.get("token") ?? undefined, token)) {
-        json(response, 401, failureBody("authentication-or-revocation", "This browser sign-in link is invalid or has already been used. Restart canonfig ui for a new link."));
+        authenticationFailure(request, response, 401, "This browser sign-in link is invalid or has already been used. Restart canonfig ui for a new link.");
         return;
       }
       // Consume synchronously before any await so concurrent exchanges cannot both win.
@@ -215,7 +227,7 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
       return;
     }
     if (!sameSecret(sessionCookie(request, cookieName), session)) {
-      json(response, 401, failureBody("authentication-or-revocation", "Open the sign-in URL printed by canonfig ui to start this browser session."));
+      authenticationFailure(request, response, 401, "Open the sign-in URL printed by canonfig ui to start this browser session.");
       return;
     }
     if (request.method !== "GET") {
@@ -224,7 +236,7 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
         return;
       }
       if (request.headers[guiMutationHeader] !== guiMutationValue) {
-        json(response, 403, failureBody("authentication-or-revocation", "Mutations require the Canonfig browser request header."));
+        authenticationFailure(request, response, 403, "Mutations require the Canonfig browser request header.");
         return;
       }
       if (request.headers["content-type"]?.split(";")[0]?.trim().toLowerCase() !== "application/json") {
@@ -271,7 +283,7 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
       json(response, 405, failureBody("usage-or-configuration", "Browser assets accept GET requests only."));
       return;
     }
-    await serveAsset(root, decodeURIComponent(url.pathname), response);
+    await serveAsset(root, decodeURIComponent(url.pathname), request, response);
   };
 
   const server = createServer((request, response) => {

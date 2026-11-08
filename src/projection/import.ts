@@ -105,7 +105,6 @@ const MAX_FILE_BYTES = MIB;
 // passes 1 MiB; a config file is parsed whole anyway, so it gets a wider bound.
 const MAX_CONFIG_BYTES = 16 * MIB;
 const MAX_SKILL_FILES = 512;
-const MAX_CANDIDATES = 256;
 
 const DOCUMENT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/u;
 const SKILL_NAME = /^[a-z0-9][a-z0-9-]*$/u;
@@ -283,7 +282,7 @@ const patternList = (value: ConfigValue): ReadonlyArray<string> | undefined => {
   return items.map((item) => item.trim()).filter((item) => item !== "");
 };
 
-const dropped = (key: string): string => `dropped frontmatter ${key}`;
+const dropped = (key: string): string => `Canonfig does not copy the metadata field ${key}`;
 
 const convertRule = (document: MarkdownDocument): Converted => {
   const notes: Array<string> = [];
@@ -314,7 +313,7 @@ const convertAgent = (document: MarkdownDocument): Converted => {
     if (key === "description") continue;
     if (key === "model" && Predicate.isString(value) && value.trim() === "inherit") continue;
     if (key === "model" && nonEmptyText(value) !== undefined) kept.push(["model", nonEmptyText(value)!]);
-    else if (key === "tools") notes.push(`${dropped(key)} (native tool names do not map to Canonfig capabilities)`);
+    else if (key === "tools") notes.push(`${dropped(key)} because this tool names permissions differently. Review the imported agent's permissions before use.`);
     else notes.push(dropped(key));
   }
   return { kind: "converted", text: markdownWithFrontmatter(Object.fromEntries(kept), document.content), notes };
@@ -424,7 +423,7 @@ const readSkill = async (scope: ReadScope, path: string): Promise<Outcome> => {
   const problem = await collectTree(scope, path, "", files);
   if (problem !== undefined) return skip(problem);
   const manifest = files.find((file) => file.path === "SKILL.md");
-  if (manifest === undefined) return skip("has no SKILL.md");
+  if (manifest === undefined) return skip("Missing SKILL.md. Add a SKILL.md file with a name and description to import this skill.");
   const invalid = manifestProblem(manifest, name);
   if (invalid !== undefined) return skip(invalid);
   return ready("skills", name, { kind: "tree", files }, [], []);
@@ -659,9 +658,6 @@ class ScanCollector {
     const id = `${source}/${category}/${outcome.name}`;
     const earlier = this.candidates.get(id);
     if (earlier !== undefined) return this.skip(source, path, `duplicates ${id} from ${earlier.path}`);
-    if (this.candidates.size >= MAX_CANDIDATES) {
-      return this.skip(source, path, `more than ${MAX_CANDIDATES} import candidates; import the rest by hand`);
-    }
     this.candidates.set(id, {
       id, source, harnesses, category, name: outcome.name, path, target: targetOf(category, outcome.name),
       digest: outcome.digest, secrets: outcome.secrets, notes: outcome.notes,

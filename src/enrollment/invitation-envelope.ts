@@ -125,8 +125,8 @@ export const readInvitationEnvelope = (
       deliveryFailure(
         "read invitation",
         cause instanceof Error && cause.message === "invitation envelope is incomplete"
-          ? "the invitation delivery is incomplete (missing EOF); request a fresh delivery"
-          : "the invitation envelope is missing, oversized, or malformed",
+          ? "The invitation is missing its final EOF line. Copy the entire invitation file from the Source again."
+          : "Canonfig could not read the invitation. Choose an unmodified invitation file from the Source, or copy its entire contents including the final EOF line.",
       ),
   });
 

@@ -178,8 +178,8 @@ The sync exits 3 and the message names the step only you can take:
 | --- | --- | --- |
 | "this follower's credential has been revoked" | The Source Machine revoked this Follower Identity. | Ask for an invitation on the Source Machine and enroll again. |
 | "the follower credential is invalid" | The Source Machine does not accept this credential. | Enroll again with another invitation. |
-| "the invitation has expired; ask the Source Machine for a new one" | The invitation passed its `--expires` time. | Create another invitation on the Source Machine. |
-| "the invitation was already used; ask the Source Machine for a new one" | Each invitation enrolls one machine once. | Create another invitation on the Source Machine. |
+| "This invitation has expired. Create a new invitation on the Source and try again." | The invitation passed its `--expires` time. | Create another invitation on the Source Machine. |
+| "This invitation has already been used. Create a new invitation on the Source and try again." | Each invitation enrolls one machine once. | Create another invitation on the Source Machine. |
 | "source TLS pin validation failed" (from `doctor`) | The Source Machine's certificate does not match the one this Follower Machine pinned. Canonfig never resets trust on its own. | Enroll again with another invitation. |
 
 ### Exit 6: Source Machine unreachable

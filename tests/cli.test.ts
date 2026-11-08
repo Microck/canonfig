@@ -613,6 +613,27 @@ describe("CLI rendering and exit semantics", () => {
     );
   });
 
+  it("formats structured import review as CLI guidance without changing the wire data", () => {
+    const data = {
+      role: "source", items: [{ id: "canonfig-folder", kind: "folder-scaffold", detail: { folder: "~/.canonfig" } }],
+      exclusions: [], decisions: ["harness import offered: 2 item(s), none chosen"],
+      imports: {
+        request: "offer",
+        skipped: [{ source: "codex", path: "~/.agents/skills/unfinished", reason: "has no SKILL.md" }],
+        collisions: [{ kind: "candidates", target: "AGENTS.md", candidates: [
+          { id: "claude-code/instructions/AGENTS.md" }, { id: "codex/instructions/AGENTS.md" },
+        ] }, { kind: "folder", target: "skills/held", candidates: [{ id: "codex/skills/held" }] }],
+      },
+    };
+    const result = { command: "setup.plan", message: "setup.plan completed", exitCode: CliExitCode.success, data };
+    const human = renderCliResult(result, "human");
+    expect(human).toContain("import skipped: ~/.agents/skills/unfinished: has no SKILL.md");
+    expect(human).toContain("import collision: AGENTS.md differs between claude-code/instructions/AGENTS.md, codex/instructions/AGENTS.md; choose one with --import <id>");
+    expect(human).toContain("import collision: skills/held already exists in ~/.canonfig with different content (codex/skills/held); edit or remove it there to import");
+    expect(human).toContain("choose with --import <harness|id> or --import-all");
+    expect(renderCliResult(result, "json")).not.toContain("import collision:");
+  });
+
   it("summarizes a sync plan as actions and the next command", () => {
     const rendered = renderCliResult({
       command: "sync.plan",

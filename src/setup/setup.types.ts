@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { TARGET_IDS } from "../projection/model.ts";
 
 /** The machine role setup establishes before any role-specific inspection. */
 export const SetupRole = Schema.Literals(["source", "follower"]);
@@ -40,7 +41,10 @@ export type SetupStage = typeof setupStages[number];
 export const maxSetupTools = 16;
 export const maxSetupDiscoveryFiles = 32;
 export const maxSetupDiscoveryFileBytes = 256 * 1024;
-export const maxSetupJournalBytes = 256 * 1024;
+// Import offers and chosen candidates duplicate metadata, not file or skill bytes.
+// Budgeting 2 KiB per item leaves room for several thousand items and evidence
+// within 16 MiB, matching MAX_CONFIG_BYTES in projection/import.ts.
+export const maxSetupJournalBytes = 16 * 1024 * 1024;
 export const maxSetupProcessBytes = 16 * 1024;
 export const setupProcessTimeoutMilliseconds = 5_000;
 export const setupRecipeTimeoutMilliseconds = 5 * 60_000;
@@ -241,9 +245,34 @@ export const SetupDiscoveryInput = Schema.Struct({
 });
 export type SetupDiscoveryInput = typeof SetupDiscoveryInput.Type;
 
+export const SetupImportSource = Schema.Literals([...TARGET_IDS, "agents"]);
+export const SetupImportCategory = Schema.Literals(["instructions", "rules", "skills", "agents", "commands", "mcp"]);
+export const SetupImportLocation = Schema.Struct({
+  id: Schema.String,
+  source: SetupImportSource,
+  path: Schema.String,
+});
+export const SetupImportSkip = Schema.Struct({
+  source: SetupImportSource,
+  path: Schema.String,
+  reason: Schema.String,
+});
+export const SetupImportCollision = Schema.Struct({
+  kind: Schema.Literals(["candidates", "folder"]),
+  target: Schema.String,
+  candidates: Schema.Array(SetupImportLocation),
+});
+export type SetupImportCollision = typeof SetupImportCollision.Type;
+
 /** One importable item a selected harness holds, as the plan lists it for review. */
 export const SetupImportOffer = Schema.Struct({
   id: Schema.String,
+  source: SetupImportSource,
+  harnesses: Schema.Array(Schema.Literals(TARGET_IDS)),
+  category: SetupImportCategory,
+  name: Schema.String,
+  /** Display path, relative to the machine's home where possible. */
+  path: Schema.String,
   target: Schema.String,
   /** Literal credentials the import turns into `fromEnv` references: `env.TOKEN -> fromEnv TOKEN`. */
   secrets: Schema.Array(Schema.String),
@@ -252,15 +281,16 @@ export const SetupImportOffer = Schema.Struct({
 export type SetupImportOffer = typeof SetupImportOffer.Type;
 
 /**
- * The harness import review of a Source plan. Chosen items are the
- * `harness-import` item's detail; collisions and skipped entries are plan
- * exclusions. Both are covered by the plan digest; this listing is not.
+ * The structured harness import review shared by CLI and GUI. The CLI alone
+ * formats skipped items and collisions as command-line guidance.
  */
 export const SetupImportReview = Schema.Struct({
   request: Schema.Literals(["offer", "none", "all", "some"]),
   offered: Schema.Array(SetupImportOffer),
   /** Offered ids identical to what the folder already holds. */
   present: Schema.Array(Schema.String),
+  skipped: Schema.Array(SetupImportSkip),
+  collisions: Schema.Array(SetupImportCollision),
 });
 export type SetupImportReview = typeof SetupImportReview.Type;
 
@@ -270,7 +300,7 @@ export type SetupImportReview = typeof SetupImportReview.Type;
  * stale approvals instead of reusing them.
  */
 export const SetupJournal = Schema.Struct({
-  schema: Schema.Literal("canonfig.setup/v2"),
+  schema: Schema.Literal("canonfig.setup/v3"),
   role: SetupRole,
   scope: SetupRequestScope,
   // Recorded only once the operator chooses one.

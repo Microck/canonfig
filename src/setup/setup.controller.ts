@@ -132,6 +132,9 @@ export const establishSetupMode = (value: string): Effect.Effect<SetupMode, Setu
     ),
   );
 
+// Read only the version tag for recovery guidance, never an earlier journal's executable contents.
+const isEarlierSetupJournal = Schema.is(Schema.Struct({ schema: Schema.Literal("canonfig.setup/v2") }));
+
 const readJournal = (
   machine: MachineState["Service"],
   journalPath: string,
@@ -163,8 +166,19 @@ const readJournal = (
       catch: () => fail("setup journal", "the setup journal is not valid UTF-8", "state"),
     });
     const journal = yield* Effect.try({
-      try: () => decodeSetupJournal(JSON.parse(text)),
-      catch: () =>
+      try: () => {
+        const document = JSON.parse(text);
+        if (isEarlierSetupJournal(document)) {
+          throw fail(
+            "setup journal",
+            `The setup journal at ${journalPath} was written by an earlier Canonfig. Inspect any setup side effects first, then move it aside and start setup again. Do not remove state.sqlite.`,
+            "prerequisite",
+            "Preserve the earlier journal, move it aside, then start setup again.",
+          );
+        }
+        return decodeSetupJournal(document);
+      },
+      catch: (cause) => cause instanceof SetupError ? cause :
         fail(
           "setup journal",
           `The setup journal is invalid. Inspect any setup side effects first, then back up and remove ${journalPath} and run setup plan again. Do not remove state.sqlite.`,
@@ -284,15 +298,15 @@ export const runSetupPreflight = (
     const keyStorageBlocked = (recovery: string | undefined, detail: string) =>
       fail(
         "setup preflight",
-        `this machine cannot be a Source: ${detail}. Canonfig stores the Source signing key, `
-        + "the TLS key, and the TLS certificate before initialization, so setup stops here.",
+        `This machine cannot be a Source yet. ${detail}. Canonfig needs to save keys that identify `
+        + `the Source and protect its connections before setup can continue. ${recovery ?? "Unlock or configure this machine's credential storage, then try setup again."}`,
         "prerequisite",
         recovery,
       );
     if (needsKeyStorage && capability.kind === "unavailable") {
       return yield* keyStorageBlocked(
         capability.recovery,
-        `key storage is unavailable (${capability.recovery ?? "no recovery reported"})`,
+        "Key storage is unavailable",
       );
     }
     // Provider presence is not proven access: secret-tool on PATH and a
@@ -307,11 +321,11 @@ export const runSetupPreflight = (
         Effect.as({ ...capability, verification: "session-probe" }),
         Effect.catch((cause) =>
           Effect.fail(keyStorageBlocked(
-            "Start and unlock the platform credential provider for this user (on Linux a Secret Service "
-              + "provider such as gnome-keyring on the session bus), or explicitly select the local-file "
-              + "credential policy, then plan again.",
-            `the ${capability.provider ?? "native"} credential provider is installed but did not accept a `
-              + `disposable write and read-back in this session (${cause})`,
+            "Start and unlock this user's credential storage, then try setup again. On Linux, use a Secret Service "
+              + "provider such as gnome-keyring with a session bus. For a headless machine without a keyring, "
+              + "choose Canonfig's local-file credential storage explicitly, then plan again.",
+            `The ${capability.provider ?? "native"} credential store is installed, but Canonfig could not save `
+              + `and read a test value in this session (${cause})`,
           ))
         ),
       )
@@ -920,7 +934,7 @@ export const planSetup = (
       imports: folder?.imports,
     };
     const intent = input.intent ?? defaultSetupIntent(role, requestScope);
-    const exclusions = [...discovery.exclusions, ...folder?.exclusions ?? []];
+    const exclusions = discovery.exclusions;
     const planDigest = setupPlanDigest({
       role,
       scope: requestScope,
@@ -929,6 +943,7 @@ export const planSetup = (
       inventory,
       items,
       discoveryInputs: discovery.inputs,
+      imports: folder?.imports,
     });
     if (previous?.records.some((record) => record.status === "running" || record.status === "interrupted")) {
       return yield* fail("setup plan", "An interrupted setup item still owns possible machine changes. Run setup apply to verify its result first. If verification cannot resolve it, inspect the named side effects, back up and remove setup.json, then plan again.", "prerequisite",
@@ -940,7 +955,7 @@ export const planSetup = (
     }
     const timestamp = new Date().toISOString();
     const journal: SetupJournal = {
-      schema: "canonfig.setup/v2",
+      schema: "canonfig.setup/v3",
       role,
       scope: requestScope,
       mode: decision.mode,
@@ -951,20 +966,20 @@ export const planSetup = (
       inventory,
       items: [...items],
       decisions: [
-        `role ${role} established before inspection`,
+        `Setup role: ${role}. Canonfig checked the role before inspecting this machine.`,
         inventory.transport.initialized
-          ? "source enrollment found; transport identity taken from stored enrollment"
-          : "no source enrollment found; transport recorded as uninitialized loopback",
+          ? "This machine already has a Source identity. Setup keeps its existing connection identity."
+          : "Canonfig found no Source identity on this machine. Connections use a loopback address, which only this machine can reach.",
         catalog.length > 0
-          ? `${catalog.length} qualified tool provenance record(s) reused`
-          : "no prior qualified tool provenance to reuse",
+          ? `Previously verified tool installation records reused: ${catalog.length}.`
+          : "Canonfig found no previously verified tool installations.",
         ...folder?.decisions ?? [],
       ],
       exclusions,
       imports: decision.imports,
       evidence: [
-        `inventory: ${inventory.platform} ${inventory.osRelease}, ${inventory.tools.length} tool(s), `
-        + `${discovery.files} discovery file(s), ${discovery.evidence} evidence record(s)`,
+        `Machine checked: ${inventory.platform} ${inventory.osRelease}. Tools found: ${inventory.tools.length}. `
+        + `Files checked for required tools: ${discovery.files}. Tool findings: ${discovery.evidence}.`,
       ],
       approvals: [],
       catalog: [...catalog],

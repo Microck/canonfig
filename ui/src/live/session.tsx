@@ -17,7 +17,7 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
 }
 
 
-export function ErrorNotice({ error, title = "Operation failed" }: { error: GuiRequestError; title?: string }) {
+export function ErrorNotice({ error, title = "Operation failed", recovery = "Use Reload after resolving the error. If the session has expired, restart canonfig ui and open its new URL." }: { error: GuiRequestError; title?: string; recovery?: string }) {
   return (
     <section role="alert" className="rounded-lg border border-bad/40 p-4">
       <h2 className="flex items-center gap-2 font-medium"><WarningCircle className="size-4 text-bad" />{title}</h2>
@@ -27,7 +27,7 @@ export function ErrorNotice({ error, title = "Operation failed" }: { error: GuiR
         <Fact label="CLI exit code"><span className="font-mono">{error.failure.exitCode}</span></Fact>
         {error.httpStatus !== undefined && <Fact label="HTTP status"><span className="font-mono">{error.httpStatus}</span></Fact>}
       </dl>
-      <p className="mt-3 text-sm text-muted-foreground">Use Reload after resolving the error. If the session has expired, restart canonfig ui and open its new URL.</p>
+      <p className="mt-3 text-sm text-muted-foreground">{recovery}</p>
     </section>
   );
 }

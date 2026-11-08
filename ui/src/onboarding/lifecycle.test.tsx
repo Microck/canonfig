@@ -6,8 +6,9 @@ import { after, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
+import { Schema } from "effect";
 import { request, type WorkspaceBackend } from "../gui-client";
-import { GuiOperation, GuiSession, GuiStatus } from "../../../src/gui/contract";
+import { GuiOperation, GuiSession, GuiSetupPlanInput, GuiStatus } from "../../../src/gui/contract";
 import type { EnrollmentController } from "./enrollment-controller";
 
 GlobalRegistrator.register({ url: "http://localhost/setup", settings: { device: { prefersReducedMotion: "reduce" } } });
@@ -19,21 +20,23 @@ const { EnrollmentOnboarding, useEnrollmentController } = await import("./enroll
 const { TooltipProvider } = await import("../components/ui/tooltip");
 after(async () => { await GlobalRegistrator.unregister(); });
 const session = GuiSession.make({ role: "unconfigured", machineName: "Isolated test", folderPath: "/tmp/onboarding-test", version: "7.1.0" });
-const journal = { schema: "canonfig.setup/v2", scope: "full", discoveryPaths: [], discoveryInputs: [], role: "source", planDigest: "digest", intent: "Test", inventory: { schema: "canonfig.setup-inventory/v1", platform: "linux", home: "/tmp/onboarding-test", account: "test", osRelease: "test", nodeRuntime: "24", credentialStorage: { kind: "local-file" }, transport: { policy: "loopback", initialized: false }, tools: [], discoveryFiles: 0, discoveryEvidence: 0, discoveryDigest: "" }, items: [], records: [], approvals: [], decisions: [], exclusions: [], evidence: [], catalog: [], stages: [], createdAt: "", updatedAt: "" };
+const journal = { schema: "canonfig.setup/v3", scope: "full", discoveryPaths: [], discoveryInputs: [], role: "source", planDigest: "digest", intent: "Test", inventory: { schema: "canonfig.setup-inventory/v1", platform: "linux", home: "/tmp/onboarding-test", account: "test", osRelease: "test", nodeRuntime: "24", credentialStorage: { kind: "local-file" }, transport: { policy: "loopback", initialized: false }, tools: [], discoveryFiles: 0, discoveryEvidence: 0, discoveryDigest: "" }, items: [], records: [], approvals: [], decisions: [], exclusions: [], evidence: [], catalog: [], stages: [], createdAt: "", updatedAt: "" };
 const inspection = { endpoint: "https://127.0.0.1:17342", sourceFingerprint: "source", tlsFingerprint: "tls", expiresAt: "2099-01-01T00:00:00Z", groups: [] };
 let current: EnrollmentController;
 function Probe({ backend }: { backend: WorkspaceBackend }) {
   current = useEnrollmentController(backend, session);
   return <div>{current.joined ? "Joined" : "Not joined"}</div>;
 }
-async function fixture(handler: (path: string, method: string, out: ServerResponse) => void, wizard = false) {
+async function fixture(handler: (path: string, method: string, out: ServerResponse, body: string) => void, wizard = false) {
   const server = createServer((req, out) => {
     out.setHeader("Content-Type", "application/json");
     out.setHeader("Access-Control-Allow-Origin", "http://localhost");
     out.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS");
     out.setHeader("Access-Control-Allow-Headers", "content-type, x-canonfig-request, cache-control");
     if (req.method === "OPTIONS") { out.end(); return; }
-    req.resume(); req.on("end", () => handler(req.url ?? "/", req.method ?? "GET", out));
+    let body = "";
+    req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+    req.on("end", () => handler(req.url ?? "/", req.method ?? "GET", out, body));
   });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   const address = server.address(); assert.ok(address && typeof address !== "string");
@@ -74,6 +77,148 @@ it("Source discovery cannot replace a newer Follower choice", async () => {
     await until(() => !app.container.textContent?.includes("Inspecting this machine"));
     if (choseFollower) assert.ok(app.container.textContent?.includes("Add the invitation file"), "Older Source discovery replaced Follower");
     else assert.ok(follower.disabled || follower.closest("[inert]"), "Source inspection must own the choice until it settles");
+  } finally { await app.close(); }
+});
+
+it("Source discovery shows actionable earlier-journal guidance", async () => {
+  const message = "The setup journal at ~/.canonfig/setup.json was written by an earlier Canonfig. Inspect any setup side effects first, then move it aside and start setup again. Do not remove state.sqlite.";
+  const app = await fixture((_path, _method, out) => {
+    out.statusCode = 400;
+    respond(out, { category: "human-action-required", exitCode: 3, message });
+  }, true);
+  try {
+    const source = [...app.container.querySelectorAll("button")].find((button) => button.textContent?.includes("Make this the Source"));
+    assert.ok(source);
+    await act(async () => source.click());
+    await until(() => !!app.container.textContent?.includes(message));
+    assert.ok(app.container.textContent?.includes("Do not remove state.sqlite."));
+  } finally { await app.close(); }
+});
+
+for (const literal of [false, true]) it(`harness changes keep canonical ids and consent (primary literal: ${literal})`, async () => {
+  const category = literal ? "mcp" : "skills";
+  const first = { id: `codex/${category}/shared`, source: "codex", harnesses: ["codex"], category, name: "shared", path: literal ? "~/.codex/config.toml" : "~/.agents/skills/shared", target: literal ? "canonfig.jsonc#mcp.shared" : "skills/shared", secrets: literal ? ["env.TOKEN -> fromEnv TOKEN"] : [], notes: [] };
+  const second = { ...first, id: `opencode/${category}/shared`, source: "opencode", harnesses: ["opencode"], path: literal ? "~/.config/opencode/opencode.json" : "~/.config/opencode/skills/shared", secrets: [] };
+  let submitted: readonly string[] | null = null;
+  const app = await fixture((path, _method, out, body) => {
+    if (path !== "/api/setup/plan") {
+      respond(out, { stage: "role", approved: false, approvals: [], stages: [], items: [], catalog: [], discoveryPaths: [] });
+      return;
+    }
+    const input = Schema.decodeUnknownSync(GuiSetupPlanInput)(JSON.parse(body));
+    const harnesses = input.harnesses ?? ["codex", "opencode"];
+    if (input.imports.kind !== "offer") submitted = input.imports.kind === "some" ? input.imports.requested : [];
+    respond(out, { ...journal, items: [{
+      id: "canonfig-folder", kind: "folder-scaffold", scope: "machine", optional: false, dependsOn: [],
+      detail: { harnesses, detected: ["codex", "opencode"] },
+    }], imports: {
+      request: input.imports.kind, offered: [first, second].filter((offer) => harnesses.includes(offer.source)),
+      present: [], skipped: [], collisions: [],
+    } });
+  }, true);
+  const press = async (label: string) => {
+    const button = [...app.container.querySelectorAll("button")].find((node) => node.textContent?.trim() === label);
+    assert.ok(button, `Missing ${label}`);
+    await act(async () => button.click());
+  };
+  const codex = () => {
+    const label = [...app.container.querySelectorAll('ul[aria-label="Installed AI coding tools"] label')].find((node) => node.textContent?.includes("Codex"));
+    const checkbox = label?.querySelector<HTMLButtonElement>('[role="checkbox"]');
+    assert.ok(checkbox);
+    return checkbox;
+  };
+  const shared = () => {
+    const checkbox = app.container.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label^="shared from"]');
+    assert.ok(checkbox);
+    return checkbox;
+  };
+  try {
+    const source = [...app.container.querySelectorAll("button")].find((node) => node.textContent?.includes("Make this the Source"));
+    assert.ok(source); await act(async () => source.click());
+    await until(() => !!app.container.querySelector("form"));
+    await press("Continue"); await press("Continue");
+    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
+    if (!literal) await act(async () => shared().click());
+    await press("Back"); await act(async () => codex().click()); await press("Continue");
+    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
+    await act(async () => shared().click());
+    await press("Back"); await act(async () => codex().click()); await press("Continue");
+    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
+    assert.equal(shared().getAttribute("aria-checked"), literal ? "false" : "true");
+    if (literal) {
+      const label = [...app.container.querySelectorAll("label")].find((node) => node.textContent?.includes("Replace saved passwords and tokens"));
+      const allow = label?.querySelector<HTMLButtonElement>('[role="checkbox"]'); assert.ok(allow);
+      await act(async () => allow.click());
+      assert.equal(shared().getAttribute("aria-checked"), "true");
+      await act(async () => allow.click());
+      assert.equal(shared().getAttribute("aria-checked"), "false");
+      await act(async () => allow.click());
+      assert.equal(shared().getAttribute("aria-checked"), "false", "Revoked choices must not reappear when consent returns");
+      await act(async () => allow.click());
+    }
+    await press("Continue");
+    await until(() => submitted !== null);
+    assert.deepEqual(submitted, literal ? [] : ["codex/skills/shared"]);
+  } finally { await app.close(); }
+});
+
+for (const retainedCollision of [false, true]) it(`a replacement collision choice survives removing and re-adding the earlier harness (collision retained: ${retainedCollision})`, async () => {
+  const first = { id: "claude-code/instructions/AGENTS.md", source: "claude-code", harnesses: ["claude-code"], category: "instructions", name: "AGENTS.md", target: "AGENTS.md", path: "~/.claude/CLAUDE.md", secrets: [], notes: [] };
+  const second = { ...first, id: "codex/instructions/AGENTS.md", source: "codex", harnesses: ["codex"], path: "~/.codex/AGENTS.md" };
+  let submitted: readonly string[] | null = null;
+  const app = await fixture((path, _method, out, body) => {
+    if (path !== "/api/setup/plan") {
+      respond(out, { stage: "role", approved: false, approvals: [], stages: [], items: [], catalog: [], discoveryPaths: [] });
+      return;
+    }
+    const input = Schema.decodeUnknownSync(GuiSetupPlanInput)(JSON.parse(body));
+    const harnesses = input.harnesses ?? ["claude-code", "codex"];
+    if (input.imports.kind !== "offer") submitted = input.imports.kind === "some" ? input.imports.requested : [];
+    const offered = [first, second].filter((offer) => harnesses.includes(offer.source));
+    respond(out, { ...journal, items: [{
+      id: "canonfig-folder", kind: "folder-scaffold", scope: "machine", optional: false, dependsOn: [],
+      detail: { harnesses, detected: ["claude-code", "codex"] },
+    }], imports: {
+      request: input.imports.kind, offered, present: [], skipped: [],
+      collisions: offered.length > 1 || retainedCollision ? [{ kind: "candidates", target: "AGENTS.md", candidates: offered.map(({ id, source, path }) => ({ id, source, path })) }] : [],
+    } });
+  }, true);
+  const press = async (label: string) => {
+    const button = [...app.container.querySelectorAll("button")].find((node) => node.textContent?.trim() === label);
+    assert.ok(button, `Missing ${label}`);
+    await act(async () => button.click());
+  };
+  const choose = async (label: string) => {
+    const trigger = app.container.querySelector<HTMLButtonElement>('[aria-label="Choose version for AGENTS.md"]'); assert.ok(trigger);
+    await act(async () => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent === label);
+    assert.ok(option, `Missing source ${label}`);
+    await act(async () => option.click());
+  };
+  const toggleClaude = async () => {
+    const label = [...app.container.querySelectorAll('ul[aria-label="Installed AI coding tools"] label')].find((node) => node.textContent?.includes("Claude Code"));
+    const checkbox = label?.querySelector<HTMLButtonElement>('[role="checkbox"]'); assert.ok(checkbox);
+    await act(async () => checkbox.click());
+  };
+  try {
+    const source = [...app.container.querySelectorAll("button")].find((node) => node.textContent?.includes("Make this the Source"));
+    assert.ok(source); await act(async () => source.click());
+    await until(() => !!app.container.querySelector("form"));
+    await press("Continue"); await press("Continue");
+    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
+    await choose("Claude Code");
+    await press("Back"); await toggleClaude(); await press("Continue");
+    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
+    if (retainedCollision) await choose("OpenAI Codex");
+    else {
+      const checkbox = app.container.querySelector<HTMLButtonElement>('[role="checkbox"][aria-label^="AGENTS.md from"]'); assert.ok(checkbox);
+      await act(async () => checkbox.click());
+    }
+    await press("Back"); await toggleClaude(); await press("Continue");
+    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
+    await press("Continue");
+    await until(() => submitted !== null);
+    assert.deepEqual(submitted, [second.id]);
   } finally { await app.close(); }
 });
 

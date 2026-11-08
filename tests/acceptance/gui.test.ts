@@ -113,6 +113,34 @@ describe("canonfig ui command", () => {
       expect(evaluateCli(["ui", ...args])).toMatchObject({ _tag: "InvalidInput", exitCode: 2 });
     }
   });
+  it("serves sign-in guidance as HTML only for browser page navigation", async () => {
+    const machine = fixture();
+    const server = await start(machine.env);
+    const browser = await fetch(`${server.origin}/setup`, { headers: { Accept: "text/html,application/xhtml+xml" } });
+    expect(browser.status).toBe(401);
+    expect(browser.headers.get("content-type")).toContain("text/html");
+    const page = await browser.text();
+    expect(page).toContain("Open the sign-in link");
+    expect(page).toContain("Restart");
+    expect(page).toContain("canonfig ui");
+    expect(browser.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    expect(browser.headers.get("cache-control")).toBe("no-store");
+    expect(browser.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(browser.headers.get("x-content-type-options")).toBe("nosniff");
+    for (const [path, headers] of [
+      ["/api/session", { Accept: "text/html" }],
+      ["/setup", { Accept: "application/json" }],
+    ] as const) {
+      const api = await fetch(`${server.origin}${path}`, { headers });
+      expect(api.status).toBe(401);
+      expect(api.headers.get("content-type")).toContain("application/json");
+      expect(await api.json()).toMatchObject({ category: "authentication-or-revocation" });
+    }
+    const forbidden = await fetch(`${server.origin}/setup`, { headers: { Accept: "text/html", Origin: "https://example.invalid" } });
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.headers.get("content-type")).toContain("text/html");
+  }, 60_000);
+
 
   it.each(["SIGINT", "SIGTERM"] as const)("authenticates once, guards every resource and frees the port on %s", async (signal) => {
     const machine = fixture();
