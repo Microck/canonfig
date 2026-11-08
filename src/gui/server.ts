@@ -132,11 +132,11 @@ const openBrowser = (url: string, io: CliIo): void => {
   child.unref();
 };
 
-const serveAsset = async (root: string, pathname: string, response: ServerResponse): Promise<void> => {
+const serveAsset = async (root: string, pathname: string, request: IncomingMessage, response: ServerResponse): Promise<void> => {
   const requested = resolve(root, `.${pathname}`);
   const local = relative(root, requested);
   if (local.startsWith(`..${sep}`) || local === ".." || local.startsWith(sep)) {
-    json(response, 403, failureBody("authentication-or-revocation", "The requested path is outside the browser application."));
+    authenticationFailure(request, response, 403, "The requested path is outside the browser application.");
     return;
   }
   // Only extensionless browser routes fall back to index; missing assets stay 404.
@@ -151,7 +151,7 @@ const serveAsset = async (root: string, pathname: string, response: ServerRespon
   }
   const resolved = relative(root, actual);
   if (resolved.startsWith(`..${sep}`) || resolved === ".." || resolved.startsWith(sep)) {
-    json(response, 403, failureBody("authentication-or-revocation", "The requested path is outside the browser application."));
+    authenticationFailure(request, response, 403, "The requested path is outside the browser application.");
     return;
   }
   const body = await readFile(actual);
@@ -283,7 +283,7 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
       json(response, 405, failureBody("usage-or-configuration", "Browser assets accept GET requests only."));
       return;
     }
-    await serveAsset(root, decodeURIComponent(url.pathname), response);
+    await serveAsset(root, decodeURIComponent(url.pathname), request, response);
   };
 
   const server = createServer((request, response) => {

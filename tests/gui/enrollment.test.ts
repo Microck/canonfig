@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Effect, Schema } from "effect";
 import { withRunLock } from "../../src/synchronization/run-lock.ts";
 import { GuiOperation } from "../../src/gui/contract/operations.ts";
-import { GuiSetupStatus } from "../../src/gui/contract/enrollment.ts";
+import { GuiSetupJournal, GuiSetupStatus } from "../../src/gui/contract/enrollment.ts";
 
 const entry = resolve(import.meta.dirname, "../../src/runtime/main.ts");
 const homes: string[] = [];
@@ -75,6 +75,37 @@ afterEach(async () => {
 });
 
 describe("real enrollment and setup endpoints", () => {
+  it("explains the preserved 7.1.0 setup journal shape in both clients without changing it", async () => {
+    const machine = fixture();
+    mkdirSync(join(machine.home, ".codex"), { recursive: true });
+    writeFileSync(join(machine.home, ".codex", "AGENTS.md"), "Keep these instructions.\n");
+    const server = await gui(machine.env);
+    const input = { role: "source", scope: "full", mode: "simple", files: [], harnesses: ["codex"], imports: { kind: "offer" } };
+    const planned = await server.request("/api/setup/plan", input);
+    expect(planned.status).toBe(200);
+    const journal = Schema.decodeUnknownSync(GuiSetupJournal)(planned.body);
+    if (!journal.imports) throw new Error("Source plan did not contain an import review");
+    // The preserved 7.1.0 repro has only request, offered and present, with four fields per offer.
+    const legacy = JSON.stringify({ ...journal, schema: "canonfig.setup/v2", imports: {
+      request: "offer", present: [], offered: journal.imports.offered.map(({ id, target, secrets, notes }) => ({ id, target, secrets, notes })),
+    } });
+    const path = join(machine.home, ".canonfig", "setup.json");
+    writeFileSync(path, legacy);
+    for (const [endpoint, body] of [["/api/setup", undefined], ["/api/setup/plan", input]] as const) {
+      const response = await server.request(endpoint, body);
+      expect(response.status).toBe(400);
+      expect(response.body).toMatchObject({ category: "human-action-required", exitCode: 3 });
+      expect(response.body.message).toContain(`The setup journal at ${path} was written by an earlier Canonfig`);
+      expect(response.body.message).toContain("move it aside and start setup again");
+      expect(readFileSync(path, "utf8")).toBe(legacy);
+    }
+    const cli = machine.invoke(["setup", "status"]);
+    expect(cli.status).toBe(3);
+    expect(cli.stderr).toContain("was written by an earlier Canonfig");
+    expect(cli.stderr).toContain("move it aside and start setup again");
+    expect(readFileSync(path, "utf8")).toBe(legacy);
+  }, 60_000);
+
   it("carries structured skips and collisions with home-relative source paths", async () => {
     const machine = fixture();
     for (const harness of [".codex", ".claude"]) mkdirSync(join(machine.home, harness), { recursive: true });

@@ -132,6 +132,9 @@ export const establishSetupMode = (value: string): Effect.Effect<SetupMode, Setu
     ),
   );
 
+// Read only the version tag for recovery guidance, never an earlier journal's executable contents.
+const isEarlierSetupJournal = Schema.is(Schema.Struct({ schema: Schema.Literal("canonfig.setup/v2") }));
+
 const readJournal = (
   machine: MachineState["Service"],
   journalPath: string,
@@ -163,8 +166,19 @@ const readJournal = (
       catch: () => fail("setup journal", "the setup journal is not valid UTF-8", "state"),
     });
     const journal = yield* Effect.try({
-      try: () => decodeSetupJournal(JSON.parse(text)),
-      catch: () =>
+      try: () => {
+        const document = JSON.parse(text);
+        if (isEarlierSetupJournal(document)) {
+          throw fail(
+            "setup journal",
+            `The setup journal at ${journalPath} was written by an earlier Canonfig. Inspect any setup side effects first, then move it aside and start setup again. Do not remove state.sqlite.`,
+            "prerequisite",
+            "Preserve the earlier journal, move it aside, then start setup again.",
+          );
+        }
+        return decodeSetupJournal(document);
+      },
+      catch: (cause) => cause instanceof SetupError ? cause :
         fail(
           "setup journal",
           `The setup journal is invalid. Inspect any setup side effects first, then back up and remove ${journalPath} and run setup plan again. Do not remove state.sqlite.`,
@@ -941,7 +955,7 @@ export const planSetup = (
     }
     const timestamp = new Date().toISOString();
     const journal: SetupJournal = {
-      schema: "canonfig.setup/v2",
+      schema: "canonfig.setup/v3",
       role,
       scope: requestScope,
       mode: decision.mode,

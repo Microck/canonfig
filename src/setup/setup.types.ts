@@ -297,7 +297,7 @@ export type SetupImportReview = typeof SetupImportReview.Type;
  * stale approvals instead of reusing them.
  */
 export const SetupJournal = Schema.Struct({
-  schema: Schema.Literal("canonfig.setup/v2"),
+  schema: Schema.Literal("canonfig.setup/v3"),
   role: SetupRole,
   scope: SetupRequestScope,
   // Recorded only once the operator chooses one.

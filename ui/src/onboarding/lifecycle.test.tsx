@@ -19,7 +19,7 @@ const { EnrollmentOnboarding, useEnrollmentController } = await import("./enroll
 const { TooltipProvider } = await import("../components/ui/tooltip");
 after(async () => { await GlobalRegistrator.unregister(); });
 const session = GuiSession.make({ role: "unconfigured", machineName: "Isolated test", folderPath: "/tmp/onboarding-test", version: "7.1.0" });
-const journal = { schema: "canonfig.setup/v2", scope: "full", discoveryPaths: [], discoveryInputs: [], role: "source", planDigest: "digest", intent: "Test", inventory: { schema: "canonfig.setup-inventory/v1", platform: "linux", home: "/tmp/onboarding-test", account: "test", osRelease: "test", nodeRuntime: "24", credentialStorage: { kind: "local-file" }, transport: { policy: "loopback", initialized: false }, tools: [], discoveryFiles: 0, discoveryEvidence: 0, discoveryDigest: "" }, items: [], records: [], approvals: [], decisions: [], exclusions: [], evidence: [], catalog: [], stages: [], createdAt: "", updatedAt: "" };
+const journal = { schema: "canonfig.setup/v3", scope: "full", discoveryPaths: [], discoveryInputs: [], role: "source", planDigest: "digest", intent: "Test", inventory: { schema: "canonfig.setup-inventory/v1", platform: "linux", home: "/tmp/onboarding-test", account: "test", osRelease: "test", nodeRuntime: "24", credentialStorage: { kind: "local-file" }, transport: { policy: "loopback", initialized: false }, tools: [], discoveryFiles: 0, discoveryEvidence: 0, discoveryDigest: "" }, items: [], records: [], approvals: [], decisions: [], exclusions: [], evidence: [], catalog: [], stages: [], createdAt: "", updatedAt: "" };
 const inspection = { endpoint: "https://127.0.0.1:17342", sourceFingerprint: "source", tlsFingerprint: "tls", expiresAt: "2099-01-01T00:00:00Z", groups: [] };
 let current: EnrollmentController;
 function Probe({ backend }: { backend: WorkspaceBackend }) {
@@ -74,6 +74,21 @@ it("Source discovery cannot replace a newer Follower choice", async () => {
     await until(() => !app.container.textContent?.includes("Inspecting this machine"));
     if (choseFollower) assert.ok(app.container.textContent?.includes("Add the invitation file"), "Older Source discovery replaced Follower");
     else assert.ok(follower.disabled || follower.closest("[inert]"), "Source inspection must own the choice until it settles");
+  } finally { await app.close(); }
+});
+
+it("Source discovery shows actionable earlier-journal guidance", async () => {
+  const message = "The setup journal at ~/.canonfig/setup.json was written by an earlier Canonfig. Inspect any setup side effects first, then move it aside and start setup again. Do not remove state.sqlite.";
+  const app = await fixture((_path, _method, out) => {
+    out.statusCode = 400;
+    respond(out, { category: "human-action-required", exitCode: 3, message });
+  }, true);
+  try {
+    const source = [...app.container.querySelectorAll("button")].find((button) => button.textContent?.includes("Make this the Source"));
+    assert.ok(source);
+    await act(async () => source.click());
+    await until(() => !!app.container.textContent?.includes(message));
+    assert.ok(app.container.textContent?.includes("Do not remove state.sqlite."));
   } finally { await app.close(); }
 });
 

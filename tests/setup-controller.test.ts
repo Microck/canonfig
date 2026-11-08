@@ -92,7 +92,7 @@ const journal = (overrides: Partial<SetupJournal> = {}): SetupJournal => {
   const timestamp = "2026-08-17T00:00:00.000Z";
   const approvals = overrides.approvals ?? [{ digest: planDigest, approver: "operator", approvedAt: timestamp }];
   return {
-    schema: "canonfig.setup/v2", role: "follower", scope: "full", planDigest,
+    schema: "canonfig.setup/v3", role: "follower", scope: "full", planDigest,
     intent: "prepare follower", inventory, items: [...currentItems], decisions: [],
     exclusions: [], evidence: [], approvals, catalog: [], discoveryPaths: [], discoveryInputs: [],
     stages: [
