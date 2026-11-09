@@ -1,24 +1,22 @@
-# Canonfig v7.1.3
+# Canonfig v7.1.4
 
-Source setup includes `~/.codex/skills` and other supported tool folders when
-scanning for skills.
+Source setup shows fewer technical details and separates reviewing changes from
+creating the Source.
 
-## Import existing skills
+## Review and approve setup
 
-- Import follows supported skill-folder links without changing the originals.
-- Expand "Shared skills" to see its folder path and the selected tools that
-  read it.
-- Tree branches open and close with a short animation. Reduced-motion settings
-  disable it.
-
-## Import safeguards
-
-- Skills containing hard-linked files or aliases of protected configuration
-  files are skipped.
-- The 1 MiB file limit also applies to generated `SKILL.md` files. Batch limits
-  count the converted content, not its original text.
-- Selected content above 64 MiB stops the import before any writes. Select fewer
-  items or reduce file sizes, then scan, review and approve again.
+- Review planned changes in a compact list. Full diagnostics remain in Settings,
+  Setup.
+- "Approve setup" expands into a name field on the same line without changing
+  the card's height. Continue records your approval; creating the Source remains
+  a separate action.
+- Returning from Import clears the previous approval name, so a changed plan
+  requires you to enter it again.
+- The Create step shows who approved the plan instead of repeating the list.
+- Different local import versions have a warning button that shows their source
+  paths. Opening it does not change your selection.
+- The dithered background shows activity while Canonfig checks the machine.
+  Reduced-motion settings keep it still.
 
 ## Known limitation
 
@@ -29,7 +27,7 @@ during import.
 
 ## Upgrading
 
-Install with `npm install --global @microck/canonfig@7.1.3` on every machine,
+Install with `npm install --global @microck/canonfig@7.1.4` on every machine,
 or run `canonfig self-update apply`. Stop `canonfig ui` first, and on a Source
 run `canonfig source service remove` before installing and
 `canonfig source service install` afterwards.
