@@ -402,7 +402,7 @@ describe("command logging", () => {
       );
 
       expect(result.status, result.stderr).toBe(0);
-      expect(result.stdout.trim()).toBe("7.1.2");
+      expect(result.stdout.trim()).toBe("7.1.3");
       expect(await readEntries(logPath)).toEqual([
         expect.objectContaining({
           event: "command.started",

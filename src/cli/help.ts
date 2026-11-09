@@ -7,7 +7,7 @@ import { CliExitCode } from "./exit-codes.ts";
 
 export const programName = "canonfig";
 export const programDisplayName = "Canonfig";
-export const programVersion = "7.1.2";
+export const programVersion = "7.1.3";
 
 const helpHeader = `${programDisplayName} ${programVersion}`;
 

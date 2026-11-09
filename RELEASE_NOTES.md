@@ -1,38 +1,35 @@
-# Canonfig v7.1.2
+# Canonfig v7.1.3
 
-Source setup's Import step is now a tree of your AI coding tools, and the AI
-tools step asks one plain question.
+Source setup includes `~/.codex/skills` and other supported tool folders when
+scanning for skills.
 
-## Import step
+## Import existing skills
 
-- Each tool, plus the shared `~/.agents` folder, is a collapsed row that opens
-  into categories and then items. Tool and category rows have a checkbox that
-  selects everything under them, and a search opens every branch with a match.
-- Checking an item under a tool imports that tool's copy. A copy that is
-  identical in another tool is checked there too. When the content differs,
-  the other tools show which version is used, and checking it there switches
-  to that version.
-- Checking a whole tool or category takes only items nobody has decided yet:
-  it never replaces a version you picked from another tool, and never selects
-  an MCP server that needs a password or token.
-- An MCP server that needs a password or token names the environment variable
-  on its row ("Needs `$TOKEN`"), and checking it is your consent to replace the
-  value with that variable. The separate "Replace saved passwords..." switch is
-  gone.
-- A choice made under a tool you then remove on the AI tools step is kept and
-  comes back when you add the tool again.
-- Each tool lists what it can't import under one line, grouped by reason.
-- The explanatory paragraphs above and below the list are gone.
+- Import follows supported skill-folder links without changing the originals.
+- Expand "Shared skills" to see its folder path and the selected tools that
+  read it.
+- Tree branches open and close with a short animation. Reduced-motion settings
+  disable it.
 
-## AI tools step
+## Import safeguards
 
-The step asks "Which tools sync with `~/.canonfig/`?" and says that syncing
-replaces their instructions, skills and MCP servers, and that unchecked tools
-are left alone except for skills in the shared `~/.agents/skills/` folder.
+- Skills containing hard-linked files or aliases of protected configuration
+  files are skipped.
+- The 1 MiB file limit also applies to generated `SKILL.md` files. Batch limits
+  count the converted content, not its original text.
+- Selected content above 64 MiB stops the import before any writes. Select fewer
+  items or reduce file sizes, then scan, review and approve again.
+
+## Known limitation
+
+Import assumes trusted local processes and source folders that stay unchanged.
+A concurrent parent-folder swap can bypass path checks and cause private
+configuration to be read. Keep other programs from changing the source folders
+during import.
 
 ## Upgrading
 
-Install with `npm install --global @microck/canonfig@7.1.2` on every machine,
+Install with `npm install --global @microck/canonfig@7.1.3` on every machine,
 or run `canonfig self-update apply`. Stop `canonfig ui` first, and on a Source
 run `canonfig source service remove` before installing and
 `canonfig source service install` afterwards.
