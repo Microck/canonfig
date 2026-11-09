@@ -147,11 +147,24 @@ config files and their aliases, and the Canonical Folder. Import copies
 regular-file content, not links; broken links, cycles and unsafe targets are
 reported as skipped paths. This read policy does not expand the positive
 ownership allowlist for writes or backups.
+Regular skill files must have exactly one hard link. If a file has another
+name, Canonfig cannot verify that it is separate from protected state and
+skips the skill. Leave it out, or use an independent copy of non-private
+content before scanning again.
 
-Discovery skips skills above 64 MiB or with a file above 1 MiB. Applying the
-approved import has a shared 64 MiB content budget. If the selected items
-exceed that budget, the import stops before any writes. Remove large skill
-resources or select fewer items, then scan, review and approve again.
+Import assumes trusted local processes and source folders that stay unchanged.
+Path and opened-file checks do not prevent a process from swapping a parent
+directory between checks. A matching SHA-256 verifies content, not its origin.
+See the [import threat model](adr/0003-global-canonfig-folder.md#9-security).
+
+Discovery skips skills above 64 MiB or with a file above 1 MiB. Flat skills
+must fit the 1 MiB file limit both before and after conversion. The batch
+budget counts their converted payload, not discarded whitespace.
+
+Applying the approved import has a shared 64 MiB content budget. If the
+selected items exceed that budget, the import stops before any writes.
+Remove large skill resources or select fewer items, then scan, review and
+approve again.
 
 ## Takeover snapshots
 

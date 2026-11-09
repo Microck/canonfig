@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, posix } from "node:path";
@@ -6,13 +6,14 @@ import { dirname, posix } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { RootContext } from "../src/projection/harness.ts";
-import { parseMarkdownDocument } from "../src/projection/frontmatter.ts";
+import { markdownWithFrontmatter, parseMarkdownDocument } from "../src/projection/frontmatter.ts";
 import { SkillReader } from "../src/projection/import-skills.ts";
 import {
   existingFolderItems,
   type ImportContent,
   ImportChangedError,
   type ImportScan,
+  ImportSizeLimitError,
   readImportContent,
   scanImports,
   selectImports,
@@ -350,6 +351,31 @@ describe("scanImports", () => {
     expect(document.data).toMatchObject({ name: "flat", description: "Shared flat skill" });
     expect(document.content).toBe("Use flat.");
     expect(selectImports(scan, new Map(), { kind: "some", sources: ["qwen"], items: [] }).chosen.map((entry) => entry.name)).toEqual(["lint"]);
+  });
+
+  it("refuses a flat skill whose generated SKILL.md exceeds 1 MiB in UTF-8", async () => {
+    const home = makeHome();
+    const path = `${home}/.agents/skills/flat.md`;
+    const maximum = 1024 * 1024;
+    const framingBytes = Buffer.byteLength(markdownWithFrontmatter({ description: "Boundary", name: "flat" }, ""), "utf8");
+    // The added name and final newline push the output one byte over the cap.
+    // A two-byte character makes its UTF-16 length fit while its UTF-8 bytes do not.
+    const body = `é${"x".repeat(maximum - framingBytes - 1)}`;
+    const source = `---\ndescription: Boundary\n---\n${body}\n`;
+    expect(Buffer.byteLength(source, "utf8")).toBeLessThanOrEqual(maximum);
+    put(path, source);
+    const scan = await scanImports({ context: context(home), harnesses: ["opencode"], folder: `${home}/.canonfig` });
+    expect(scan.candidates).toEqual([]);
+    expect(scan.skipped.map((entry) => entry.path)).toEqual([path]);
+  });
+
+  it("keeps the 1 MiB raw flat-skill limit before normalization", async () => {
+    const home = makeHome();
+    const path = `${home}/.agents/skills/flat.md`;
+    put(path, `${skill("flat", "Small converted payload")}${" ".repeat(1024 * 1024)}`);
+    const scan = await scanImports({ context: context(home), harnesses: ["opencode"], folder: `${home}/.canonfig` });
+    expect(scan.candidates).toEqual([]);
+    expect(scan.skipped.map((entry) => entry.path)).toEqual([path]);
   });
 
   it.each<[TargetId, string]>([
@@ -699,9 +725,56 @@ describe("selectImports", () => {
     expect(choice.present).toEqual(["claude-code/mcp/github", "claude-code/skills/deploy"]);
     expect(choice.chosen).toEqual([]);
   });
+
+  it("roundtrips a flat skill whose generated SKILL.md is exactly 1 MiB", async () => {
+    const home = makeHome();
+    const folder = `${home}/.canonfig`;
+    const maximum = 1024 * 1024;
+    const framingBytes = Buffer.byteLength(markdownWithFrontmatter({ description: "Boundary", name: "flat" }, ""), "utf8");
+    const body = `é${"x".repeat(maximum - framingBytes - 2)}`;
+    put(`${home}/.agents/skills/flat.md`, `---\ndescription: Boundary\n---\n${body}\n`);
+    const ctx = context(home);
+    const scan = await scanImports({ context: ctx, harnesses: ["opencode"], folder });
+    expect(scan.skipped).toEqual([]);
+    const flat = await readImportContent(candidate(scan, "agents/skills/flat"), ctx, folder, maximum);
+    if (flat.kind !== "tree") throw new Error("Expected a portable flat-skill tree");
+    expect(flat.files.map((file) => [file.path, file.content.byteLength])).toEqual([["SKILL.md", maximum]]);
+    for (const file of flat.files) {
+      put(`${folder}/skills/flat/${file.path}`, new TextDecoder().decode(file.content));
+    }
+    const choice = selectImports(scan, await existingFolderItems(folder), { kind: "all" });
+    expect(choice).toEqual({ chosen: [], present: ["agents/skills/flat"], collisions: [], unknown: [] });
+  });
 });
 
 describe("readImportContent", () => {
+  it("budgets a flat skill's normalized UTF-8 payload instead of its larger source", async () => {
+    const home = makeHome();
+    const path = `${home}/.agents/skills/flat.md`;
+    const folder = `${home}/.canonfig`;
+    const normalized = "---\nname: flat\ndescription: Normalized flat skill\n---\nUse é🚀.\n";
+    const source = `${normalized}${" \r\n".repeat(1024)}`;
+    const quota = Buffer.byteLength(normalized, "utf8");
+    put(path, source);
+    const input = { context: context(home), harnesses: ["opencode"] as const, folder };
+    const scan = await scanImports(input);
+    expect(scan.skipped).toEqual([]);
+    const flat = candidate(scan, "agents/skills/flat");
+    expect(Buffer.byteLength(source, "utf8")).toBeGreaterThan(quota);
+    const content = await readImportContent(flat, input.context, folder, quota);
+    expect(content).toEqual({
+      kind: "tree",
+      files: [{ path: "SKILL.md", content: new TextEncoder().encode(normalized), executable: false }],
+    });
+
+    // Keep the reviewed source and digest unchanged so a changed-source error cannot pass.
+    const overQuota = readImportContent(flat, input.context, folder, quota - 1);
+    await expect(overQuota).rejects.toBeInstanceOf(ImportSizeLimitError);
+    await expect(overQuota).rejects.toMatchObject({ path, maximumBytes: quota - 1 });
+    expect(readFileSync(path, "utf8")).toBe(source);
+    expect(candidate(await scanImports(input), flat.id).digest).toBe(flat.digest);
+  });
+
   it("throws ImportChangedError when the source changed after the scan", async () => {
     const home = makeHome();
     put(`${home}/.claude/CLAUDE.md`, "Before.\n");

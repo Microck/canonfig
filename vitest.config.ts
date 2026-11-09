@@ -21,6 +21,7 @@ export default defineProject({
       "tests/gui-plumbing.test.ts",
       "tests/gui/**/*.test.ts",
       "tests/projection-import.test.ts",
+      "tests/projection-import-safety.test.ts",
       "tests/projection-translation.test.ts",
       "tests/discovery.test.ts",
       "tests/publication.test.ts",

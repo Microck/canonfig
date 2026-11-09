@@ -40,7 +40,7 @@ const failure = (error: Error): Refused | Missing => {
 };
 
 const sameFile = (left: Stats, right: Stats): boolean => left.dev === right.dev && left.ino === right.ino
-  && left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
+  && left.nlink === right.nlink && left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
 
 /** Resolve even a not-yet-created exclusion through its nearest existing ancestor. */
 const exclusionAlias = async (path: string): Promise<string> => {
@@ -58,8 +58,9 @@ const exclusionAlias = async (path: string): Promise<string> => {
 };
 
 /**
- * Skill-only link policy. Other import reads still refuse links. Resolve each
- * component before use so links cannot hide a protected path behind an alias.
+ * Skill-only component checks. Other import reads still refuse links.
+ * Pathname and inode rechecks assume stable source directories; they do not
+ * prevent adversarial parent-directory swaps between checks and reads.
  * No skill body, script or resource is executed.
  */
 export class SkillReader {
@@ -203,6 +204,7 @@ export class SkillReader {
   /** Reuse the tree walk's inspection; opened-inode and source rechecks still guard the read. */
   private async bytesFromResolved(path: string, before: Resolved, maximumBytes: number): Promise<Bytes | Refused | Missing | ImportReadLimit> {
     if (!before.status.isFile()) return refused("is a directory, not a file");
+    if (before.status.nlink !== 1) return refused("has unverified hard links; leave it out, or replace it with an independent copy of non-private content and scan again");
     if (before.status.size > MAX_FILE_BYTES) return refused("is larger than 1 MiB");
     if (before.status.size > maximumBytes) return limited(path, maximumBytes);
     try {

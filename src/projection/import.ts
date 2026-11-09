@@ -470,9 +470,9 @@ const readFlatSkill = async (
   scope: ReadScope,
   reader: SkillReader,
   path: string,
-  maximumBytes = maxImportContentBytes,
 ): Promise<Outcome> => {
-  const read = await reader.bytes(path, maximumBytes);
+  // Raw-source safety is independent of the remaining converted-payload budget.
+  const read = await reader.bytes(path);
   if (read.kind !== "bytes") return read;
   let document;
   try {
@@ -484,9 +484,10 @@ const readFlatSkill = async (
   if (!Predicate.isString(name) || !SKILL_NAME.test(name)) return skip("skill names are lowercase letters, digits and '-'");
   const description = document.data.description ?? document.content.split("\n").find((line) => line.trim() !== "")?.slice(0, 240);
   if (!Predicate.isString(description) || description.trim() === "") return skip("flat skill has no description or body");
-  const content = markdownWithFrontmatter({ ...document.data, name, description }, document.content);
+  const content = new TextEncoder().encode(markdownWithFrontmatter({ ...document.data, name, description }, document.content));
+  if (content.byteLength > MAX_FILE_BYTES) return skip("converted SKILL.md is larger than 1 MiB; shorten the skill text or description and scan again");
   return ready("skills", name, {
-    kind: "tree", files: [{ path: "SKILL.md", content: new TextEncoder().encode(content), executable: read.executable }],
+    kind: "tree", files: [{ path: "SKILL.md", content, executable: read.executable }],
   }, ["Converted a native flat skill to skills/<name>/SKILL.md; neighboring files are not copied."], []);
 };
 
@@ -856,7 +857,7 @@ const readCandidate = async (
   if (candidate.category === "skills") {
     const reader = await SkillReader.create(context, scope.neverTouch, scope.folder, scope.configPaths);
     return candidate.path.endsWith(".md")
-      ? readFlatSkill(scope, reader, candidate.path, maximumBytes)
+      ? readFlatSkill(scope, reader, candidate.path)
       : readSkill(scope, candidate.path, reader, maximumBytes);
   }
   if (candidate.category !== "mcp") return readDocument(scope, candidate.category, candidate.path);
