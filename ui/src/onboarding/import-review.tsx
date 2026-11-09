@@ -1,8 +1,9 @@
 import { useId, useMemo, useState, type ReactNode } from "react";
-import { CaretRight } from "@/components/icons";
+import { CaretRight, WarningCircle } from "@/components/icons";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { HARNESS_NAMES, type HarnessId } from "@/shared/metadata";
 import { Mono } from "@/shared/shared";
 import { cn } from "cn";
@@ -45,7 +46,7 @@ export function ImportReview({ data, listed, choices, onChoices }: {
   const model = useMemo(() => {
     const present = new Set(data.present);
     const held = new Set(data.collisions.filter((collision) => collision.kind === "folder").map((collision) => collision.target));
-    const differing = new Set(data.collisions.filter((collision) => collision.kind === "candidates").map((collision) => collision.target));
+    const differing = new Map(data.collisions.filter((collision) => collision.kind === "candidates").map((collision) => [collision.target, collision.candidates]));
     const offered = data.offers.filter((offer) => offer.harnesses.some((harness) => listed.includes(harness)) && !present.has(offer.id));
     const byId = new Map(offered.map((offer) => [offer.id, offer]));
     const manualCopies = new Set<string>();
@@ -163,7 +164,8 @@ export function ImportReview({ data, listed, choices, onChoices }: {
                 <CollapsibleContent asChild><ul>{group.map((offer) => {
                   const chosen = choices.get(offer.target);
                   const readers = node.source === "agents" ? node.readers.filter((reader) => offer.harnesses.includes(reader)) : undefined;
-                  return <OfferRow key={offer.id} offer={offer} state={state(offer)} chosen={chosen} chosenOffer={model.byId.get(chosen ?? "")} differs={model.differing.has(offer.target)} showPath={duplicateNames.has(offer.name)}
+                  return <OfferRow key={offer.id} offer={offer} state={state(offer)} chosen={chosen} chosenOffer={model.byId.get(chosen ?? "")} showPath={duplicateNames.has(offer.name)}
+                    copies={model.differing.get(offer.target)}
                     readers={readers && readers.length < node.readers.length ? readers : undefined}
                     onToggle={(value) => toggle(offer, value)} />;
                 })}</ul></CollapsibleContent>
@@ -195,11 +197,13 @@ function Branch({ depth, open, name, check, label, count }: {
 }
 
 /** One source's copy of a target. Only ambiguous names need a visible path. */
-function OfferRow({ offer, state, chosen, chosenOffer, differs, showPath, readers, onToggle }: {
+function OfferRow({ offer, state, chosen, chosenOffer, copies, showPath, readers, onToggle }: {
   offer: ImportOffer; state: RowState; chosen: string | undefined; chosenOffer: ImportOffer | undefined;
-  differs: boolean; showPath: boolean; readers: readonly HarnessId[] | undefined; onToggle: (on: boolean) => void;
+  copies: OnboardingData["collisions"][number]["candidates"] | undefined; showPath: boolean; readers: readonly HarnessId[] | undefined; onToggle: (on: boolean) => void;
 }) {
   const describedBy = useId();
+  const versionDescription = useId();
+  const showVersions = copies !== undefined && state !== "held";
   // Only the source/ prefix is meaningful; the rest of an offer id is opaque.
   const chosenTool = chosen && sourceName(chosen.slice(0, chosen.indexOf("/")) as Source);
   let status: string | null = null;
@@ -208,26 +212,46 @@ function OfferRow({ offer, state, chosen, chosenOffer, differs, showPath, reader
     if (!chosenOffer) status = `Chosen from ${chosenTool}, which isn't listed`;
     else if (chosenOffer.source === offer.source || chosenOffer.source === "agents") status = `Using ${chosenOffer.path}`;
     else status = `Using ${chosenTool}'s`;
-  } else if (differs) status = "Differs in other copies";
+  }
   const details = [
     ...(readers ? [`Read by ${readers.map((reader) => HARNESS_NAMES[reader]).join(", ")}`] : []),
     ...(offer.secrets.length ? [`Needs ${offer.secrets.map((secret) => `$${variable(secret)}`).join(", ")}`] : []),
     ...(status ? [status] : []),
     ...offer.notes,
   ];
+  const description = `${details.length ? describedBy : ""} ${showVersions ? versionDescription : ""}`.trim() || undefined;
   return <li>
+    <div className="flex items-start pr-3">
     <label title={offer.path}
-      className={cn("flex min-h-10 items-start gap-3 rounded-md py-2.5 pr-3 pointer-coarse:min-h-11", INDENT[2], state === "held" ? "cursor-default" : "cursor-pointer hover:bg-raised/50")}>
-      <Checkbox aria-label={`${offer.name} from ${sourceName(offer.source)}${showPath ? ` at ${offer.path}` : ""}`} aria-describedby={details.length ? describedBy : undefined}
+      className={cn("flex min-h-10 min-w-0 flex-1 items-start gap-3 rounded-md py-2.5 pointer-coarse:min-h-11", INDENT[2], state === "held" ? "cursor-default" : "cursor-pointer hover:bg-raised/50")}>
+      <Checkbox aria-label={`${offer.name} from ${sourceName(offer.source)}${showPath ? ` at ${offer.path}` : ""}`} aria-describedby={description}
         checked={state === "on"} disabled={state === "held"} onCheckedChange={(value) => onToggle(value === true)} className="mt-0.5" />
       <span className="min-w-0 flex-1">
         <Mono className="block break-all text-foreground">{offer.name}</Mono>
         {showPath && <Mono className="mt-0.5 block break-all text-xs text-faint">{offer.path}</Mono>}
         {details.length > 0 && <span id={describedBy} className="mt-0.5 flex flex-wrap gap-x-3 text-sm text-faint">
-          {details.map((detail) => <span key={detail} className={cn(detail === status && state === "on" && differs && "text-warn")}>{detail}</span>)}
+          {details.map((detail) => <span key={detail}>{detail}</span>)}
         </span>}
       </span>
     </label>
+    {showVersions && <Popover>
+      <span id={versionDescription} className="sr-only">Different local versions found.</span>
+      <PopoverTrigger asChild>
+        <button type="button" aria-label={`Review different versions of ${offer.name} from ${sourceName(offer.source)}${showPath ? ` at ${offer.path}` : ""}`}
+          className="inline-flex size-10 shrink-0 items-center justify-center rounded-sm text-warn hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring pointer-coarse:size-11">
+          <WarningCircle className="size-3.5" aria-hidden="true" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-80 max-w-[calc(100vw-2rem)]" aria-labelledby={`${versionDescription}-title`} aria-describedby={`${versionDescription}-body`}>
+        <p id={`${versionDescription}-title`} className="font-medium">Different versions found</p>
+        <p id={`${versionDescription}-body`}>Local copies have different contents or settings. Only the version you select is imported.</p>
+        <ul className="space-y-2">{copies?.map((copy) => <li key={copy.id}>
+          <span>{sourceName(copy.source)}{copy.id === chosen ? " (selected)" : ""}</span>
+          <Mono className="block break-all text-xs text-muted-foreground">{copy.path}</Mono>
+        </li>)}</ul>
+      </PopoverContent>
+    </Popover>}
+    </div>
   </li>;
 }
 

@@ -309,3 +309,25 @@ it("same-name copies within one source have distinct path labels and preserve th
     assert.equal(app.choices.size, 0);
   } finally { await app.close(); }
 });
+
+it("reviewing version warnings does not replace the selected import", async () => {
+  const initial = new Map([["AGENTS.md", instructions[1]!.id]]);
+  const app = await fixture(initial);
+  try {
+    await search(app.container, "AGENTS.md");
+    const box = control(app.container, "AGENTS.md from OpenAI Codex");
+    await click(app.container, "Review different versions of AGENTS.md from OpenAI Codex");
+    const dialog = document.querySelector('[role="dialog"]');
+    assert.ok(dialog, "the warning must expose the competing local source paths");
+    for (const copy of instructions) assert.ok(dialog.textContent?.includes(copy.path));
+    const chosenPath = [...dialog.querySelectorAll("li")].find((node) => node.textContent?.includes(instructions[1]!.path));
+    assert.ok(chosenPath?.textContent?.includes("(selected)"));
+    assert.deepEqual([...app.choices], [...initial]);
+    await act(async () => {
+      dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+    assert.deepEqual([...app.choices], [...initial]);
+    assert.equal(box.getAttribute("aria-checked"), "false");
+  } finally { await app.close(); }
+});
