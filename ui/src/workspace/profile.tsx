@@ -555,9 +555,10 @@ export function ProfileView() {
                   </RowPresence>
                 </div>
               ))}
+              {/* Scroll room under the list only; an empty state needs the bottom edge for its dither. */}
+              <div className="h-16" />
             </>
           )}
-          <div className="h-16" />
         </Body>
       )}
       {tab === "harnesses" && <HarnessesTab />}

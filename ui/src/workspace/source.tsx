@@ -67,6 +67,11 @@ function SectionLink({ onClick, children }: { onClick: () => void; children: str
 function OverviewState() {
   const ws = useWorkspace();
   const onLatest = ws.followers.filter((f) => f.revision === ws.latest).length;
+  // The service state outranks publishing: a fully published Source that nobody can reach is not "fine".
+  const service = ws.admin.service.data;
+  if (service && !service.serving) {
+    return <StateHeader tone="bad" title="Other machines can't reach this Source" body="They keep the revision they have until the Source service is serving again. The bar at the top shows how to fix it." />;
+  }
   if (!ws.capabilities.simulatedTelemetry || ws.latest === undefined) {
     return <StateHeader tone="muted" title={ws.session?.machineName ?? ws.machineName} body="Source Machine. Publish the Canonical Folder to share configuration with enrolled followers." />;
   }
@@ -641,9 +646,10 @@ export function RevisionsView() {
                 </AnimatedRow>
               ))}
             </RowPresence>
+            {/* Scroll room under the list only; an empty state needs the bottom edge for its dither. */}
+            <div className="pb-16" />
           </>
         )}
-        <div className="pb-16" />
       </Body>
     </>
   );
@@ -836,9 +842,10 @@ export function SecretsView() {
                 </AnimatedRow>
               ))}
             </RowPresence>
+            {/* Scroll room under the list only; an empty state needs the bottom edge for its dither. */}
+            <div className="pb-16" />
           </>
         )}
-        <div className="pb-16" />
       </Body>
 
       <Dialog open={open} onOpenChange={setOpen}>

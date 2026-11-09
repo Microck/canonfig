@@ -168,7 +168,9 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
   return {
     service: {
       data: service.data?.report ?? null, loading: service.loading, busy: service.busy,
-      error: service.error ?? (service.data?.error ? new GuiRequestError(service.data.error) : null),
+      // A reported service state (drifted, not serving, ...) is not a failed request: ServiceNotice shows it once
+      // for the whole workspace. Only a request that could not read or change the service is an error here.
+      error: service.error,
       reload: service.reload, action: serviceAction,
       install: (hostname, port) => changeService("install", hostname, port), remove: () => changeService("remove"),
     },

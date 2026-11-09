@@ -17,11 +17,12 @@ import { isRouteForRole } from "./nav";
 /** Dependencies are page-specific; status remains shared local machine evidence. */
 export function livePageResources(session: GuiSession, route: WorkspaceRoute): readonly string[] {
   if (!isRouteForRole(route, session.role)) return [];
-  const shared = ["/api/status"];
+  // The Source service state drives the workspace-wide notice bar, so every Source page reads it.
+  const shared = session.role === "source" ? ["/api/status", "/api/source-service"] : ["/api/status"];
   const pages: Partial<Record<Workspace["view"], readonly string[]>> = {
     profile: ["/api/profile/items", "/api/revisions", ...(route.profileTab === "items" ? ["/api/skills"] : []), ...(route.profileTab === "harnesses" ? ["/api/harnesses"] : []), ...(route.profileTab === "groups" ? ["/api/machines"] : [])],
     revisions: ["/api/revisions"],
-    machines: session.role === "source" ? ["/api/machines", "/api/profile/items", "/api/source-service"] : ["/api/enrollment"],
+    machines: session.role === "source" ? ["/api/machines", "/api/profile/items"] : ["/api/enrollment"],
     secrets: session.role === "source" ? ["/api/secrets", "/api/machines"] : ["/api/secrets", "/api/tunnel"],
     sync: ["/api/tunnel"],
     schedule: ["/api/schedule"],
@@ -29,7 +30,6 @@ export function livePageResources(session: GuiSession, route: WorkspaceRoute): r
     backups: ["/api/backups", "/api/local/items"],
     tunnel: ["/api/tunnel"],
     machine: ["/api/enrollment", "/api/tunnel", "/api/local/items"],
-    service: ["/api/source-service"],
     agent: ["/api/agent/policy", "/api/agent/harness"],
     installers: ["/api/installers"],
     version: ["/api/self-update"],
