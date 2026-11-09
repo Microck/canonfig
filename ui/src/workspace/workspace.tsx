@@ -30,6 +30,7 @@ import { useWorkspace, type View } from "./store";
 import { ErrorNotice } from "../live/session";
 import { cn } from "@/lib/utils";
 import type { GuiSourceServiceStatus } from "../../../src/gui/contract/administration";
+import type { Workspace } from "./workspace-types";
 
 const SOURCE_SCREENS: Partial<Record<View, React.ComponentType>> = {
   overview: SourceOverview,
@@ -143,29 +144,54 @@ function serviceNoticeCopy(report: ServiceReport): { message: string; action: "i
   }
 }
 
-/** Reinstalling keeps the address and port the service already uses. */
+/**
+ * Reinstalling keeps the address and port the service already uses. URL drops a scheme's default port
+ * (https://127.0.0.1:443 parses with port ""), so fall back to the scheme's port instead of hiding the action.
+ */
 function currentAddress(endpoint: string): { hostname: "127.0.0.1" | "::1"; port: number } | null {
   if (!URL.canParse(endpoint)) return null;
   const url = new URL(endpoint);
-  const port = Number(url.port);
+  const port = url.port ? Number(url.port) : url.protocol === "https:" ? 443 : url.protocol === "http:" ? 80 : 0;
   return port >= 1 && port <= 65535 ? { hostname: url.hostname === "[::1]" ? "::1" : "127.0.0.1", port } : null;
+}
+
+interface Notice {
+  urgent: boolean;
+  message: string;
+  action?: { label: string; run: () => void };
+  /** Set when the user may close the notice; it stays closed until this key changes. */
+  dismissKey?: string;
+}
+
+/** The single workspace notice for the Source service, or null when there is nothing to say. */
+function serviceNotice(ws: Workspace): Notice | null {
+  const service = ws.admin.service;
+  // A failed read or change outranks the last report, which may be stale. Settings, Source service shows the
+  // full error with its own Reload, so the bar stays out of the way there.
+  if (service.error) {
+    return ws.view === "service" ? null : { urgent: true, message: "Canonfig couldn't check the Source service.", action: { label: "Open service", run: () => ws.go("service") } };
+  }
+  const report = service.data;
+  if (!report) return null;
+  const copy = serviceNoticeCopy(report);
+  if (!copy) return null;
+  const address = currentAddress(report.endpoint);
+  const action = copy.action === "install"
+    ? address && { label: copy.actionLabel, run: () => service.install(address.hostname, address.port) }
+    : ws.view !== "service" && { label: copy.actionLabel, run: () => ws.go("service") };
+  return { urgent: !report.serving, message: copy.message, action: action || undefined, dismissKey: report.serving ? report.state : undefined };
 }
 
 function ServiceNotice() {
   const ws = useWorkspace();
   const service = ws.admin.service;
-  // Dismissing hides only a condition that still serves revisions, and only until the state changes.
   const [dismissed, setDismissed] = useState<string | null>(null);
-  const report = service.data;
   if (service.action === "install") {
     return <div role="status" className="flex min-h-9 shrink-0 items-center justify-center border-b border-border bg-raised px-10 text-sm text-muted-foreground">Installing the Source service…</div>;
   }
-  if (!report) return null;
-  const copy = serviceNoticeCopy(report);
-  if (!copy || (report.serving && dismissed === report.state)) return null;
-  const address = currentAddress(report.endpoint);
-  const urgent = !report.serving;
-  const showAction = copy.action === "install" ? address !== null : ws.view !== "service";
+  const notice = serviceNotice(ws);
+  if (!notice || (notice.dismissKey !== undefined && dismissed === notice.dismissKey)) return null;
+  const { urgent, message, action, dismissKey } = notice;
   return (
     <div
       role={urgent ? "alert" : "status"}
@@ -175,19 +201,10 @@ function ServiceNotice() {
       )}
     >
       <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", urgent ? "bg-bad" : "bg-warn")} />
-      <span className="min-w-0 text-pretty">{copy.message}</span>
-      {showAction && (
-        <Button
-          size="xs"
-          variant="outline"
-          disabled={service.busy}
-          onClick={() => copy.action === "install" && address ? service.install(address.hostname, address.port) : ws.go("service")}
-        >
-          {copy.actionLabel}
-        </Button>
-      )}
-      {!urgent && (
-        <Button size="icon-xs" variant="ghost" aria-label="Dismiss service notice" className="absolute right-2" onClick={() => setDismissed(report.state)}>
+      <span className="min-w-0 text-pretty">{message}</span>
+      {action && <Button size="xs" variant="outline" disabled={service.busy} onClick={action.run}>{action.label}</Button>}
+      {dismissKey !== undefined && (
+        <Button size="icon-xs" variant="ghost" aria-label="Dismiss service notice" className="absolute right-2" onClick={() => setDismissed(dismissKey)}>
           <X />
         </Button>
       )}

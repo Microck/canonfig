@@ -74,7 +74,8 @@ function LiveWorkspace({ backend, session, route, cache, paths, onInstalled, chi
     overview: overview.overviewState,
     profile: resourceState([profile.profileState, follower.followerStates.harnesses, machines.machineStates.inventory]), revisions: profile.profileStates.revisions,
     secrets: session.role === "follower" ? follower.followerState : resourceState([profile.profileStates.secrets, machines.machineStates.inventory]),
-    machines: resourceState([machines.machinesState, admin.service, profile.profileStates.items]),
+    // The service resource is not part of Machines: its state and request failures show once, in ServiceNotice.
+    machines: resourceState([machines.machinesState, profile.profileStates.items]),
     sync: follower.followerState, schedule: follower.followerStates.schedule,
     local: follower.followerStates.local,
     backups: resourceState([follower.followerStates.backups, follower.followerStates.local]),
