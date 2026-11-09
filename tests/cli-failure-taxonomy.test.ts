@@ -156,6 +156,7 @@ describe("CLI failure taxonomy", () => {
         "DuplicateFollowerIdentityError",
         "DiscoveryFilesystemError",
         "ImportChangedError",
+        "ImportSizeLimitError",
         "PublicationSigningError",
         "RecoveryIntegrityError",
       ]

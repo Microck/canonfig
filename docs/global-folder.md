@@ -138,6 +138,7 @@ never-touch paths. Non-skill config and instruction reads reject links. MCP
 import reads owned keys and turns credential-looking literals into `fromEnv`
 references only within those keys, before digesting them. A source that
 changes between scan and import fails with `ImportChangedError`.
+Size-budget refusals use the separate `ImportSizeLimitError` type.
 
 Skill discovery reads the adapters' explicit native skill sources, including
 locations Canonfig does not own for writes. Skill reads may follow links only
