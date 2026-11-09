@@ -13,21 +13,21 @@ import type { EnrollmentController } from "./enrollment-controller";
 
 GlobalRegistrator.register({ url: "http://localhost/setup", settings: { device: { prefersReducedMotion: "reduce" } } });
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-// Motion must detect the registered DOM, not the Node-only module-loading environment.
+// Static imports run too early: Motion and Radix must detect the registered DOM, not Node's loading environment.
 const { MotionConfig } = await import("motion/react");
 const { createRoot } = await import("react-dom/client");
-const { EnrollmentOnboarding, useEnrollmentController } = await import("./enrollment-controller");
+const { EnrollmentOnboarding, SetupEvidence, useEnrollmentController } = await import("./enrollment-controller");
 const { TooltipProvider } = await import("../components/ui/tooltip");
 after(async () => { await GlobalRegistrator.unregister(); });
 const session = GuiSession.make({ role: "unconfigured", machineName: "Isolated test", folderPath: "/tmp/onboarding-test", version: "7.1.0" });
 const journal = { schema: "canonfig.setup/v3", scope: "full", discoveryPaths: [], discoveryInputs: [], role: "source", planDigest: "digest", intent: "Test", inventory: { schema: "canonfig.setup-inventory/v1", platform: "linux", home: "/tmp/onboarding-test", account: "test", osRelease: "test", nodeRuntime: "24", credentialStorage: { kind: "local-file" }, transport: { policy: "loopback", initialized: false }, tools: [], discoveryFiles: 0, discoveryEvidence: 0, discoveryDigest: "" }, items: [], records: [], approvals: [], decisions: [], exclusions: [], evidence: [], catalog: [], stages: [], createdAt: "", updatedAt: "" };
 const inspection = { endpoint: "https://127.0.0.1:17342", sourceFingerprint: "source", tlsFingerprint: "tls", expiresAt: "2099-01-01T00:00:00Z", groups: [] };
 let current: EnrollmentController;
-function Probe({ backend }: { backend: WorkspaceBackend }) {
+function Probe({ backend, evidenceView }: { backend: WorkspaceBackend; evidenceView?: "journal" }) {
   current = useEnrollmentController(backend, session);
-  return <div>{current.joined ? "Joined" : "Not joined"}</div>;
+  return evidenceView ? <SetupEvidence controller={current} view={evidenceView} /> : <div>{current.joined ? "Joined" : "Not joined"}</div>;
 }
-async function fixture(handler: (path: string, method: string, out: ServerResponse, body: string) => void, wizard = false) {
+async function fixture(handler: (path: string, method: string, out: ServerResponse, body: string) => void, wizard = false, evidenceView?: "journal") {
   const server = createServer((req, out) => {
     out.setHeader("Content-Type", "application/json");
     out.setHeader("Access-Control-Allow-Origin", "http://localhost");
@@ -49,7 +49,7 @@ async function fixture(handler: (path: string, method: string, out: ServerRespon
   };
   const container = document.createElement("div"); document.body.append(container);
   const root = createRoot(container);
-  await act(async () => root.render(wizard ? <MotionConfig skipAnimations><TooltipProvider><EnrollmentOnboarding backend={backend} session={session} /></TooltipProvider></MotionConfig> : <Probe backend={backend} />));
+  await act(async () => root.render(wizard ? <MotionConfig skipAnimations><TooltipProvider><EnrollmentOnboarding backend={backend} session={session} /></TooltipProvider></MotionConfig> : <Probe backend={backend} evidenceView={evidenceView} />));
   return { container, async close() { await act(async () => root.unmount()); container.remove(); server.closeAllConnections(); const stopped = once(server, "close"); server.close(); await stopped; } };
 }
 async function until(check: () => boolean) {
@@ -80,7 +80,7 @@ it("Source discovery cannot replace a newer Follower choice", async () => {
     if (!follower.disabled && !follower.closest("[inert]")) await act(async () => follower.click());
     const choseFollower = app.container.textContent?.includes("Add the invitation file");
     await act(async () => respond(pending!, journal));
-    await until(() => !app.container.textContent?.includes("Inspecting this machine"));
+    await until(() => !app.container.querySelector('[role="status"]'));
     if (choseFollower) assert.ok(app.container.textContent?.includes("Add the invitation file"), "Older Source discovery replaced Follower");
     else assert.ok(follower.disabled || follower.closest("[inert]"), "Source inspection must own the choice until it settles");
   } finally { await app.close(); }
@@ -335,5 +335,151 @@ it("preference retry preserves its draft and rechecks partial server progress", 
     await act(async () => { await current.savePreferences(["amp", "antigravity"], false); });
     assert.equal(writes, 3, "Retry should skip the already committed harness");
     assert.equal(current.preferencesSaved, true);
+  } finally { await app.close(); }
+});
+
+it("the Settings journal keeps an unapproved plan reviewable and approvable", async () => {
+  const plan = { ...journal, items: [{
+    id: "source-init", kind: "source-init", scope: "machine", optional: false, dependsOn: [], detail: {},
+  }] };
+  let approvals = 0;
+  const app = await fixture((path, _method, out, body) => {
+    if (path === "/api/setup/plan") respond(out, plan);
+    else if (path === "/api/setup/approve") {
+      assert.deepEqual(JSON.parse(body), { approver: "Reviewer", planDigest: "digest" });
+      approvals++;
+      respond(out, { ...plan, approvals: [{ digest: "digest", approver: "Reviewer", approvedAt: "" }] });
+    } else respond(out, { planDigest: "digest", stage: "approved", approved: true, items: [], approvals: [], discoveryPaths: [], stages: [], catalog: [] });
+  }, false, "journal");
+  try {
+    await act(async () => { await current.planSetup([], [], () => {}); });
+    assert.ok(app.container.textContent?.includes("source-init"), "the recorded step must remain available before approval");
+    const start = [...app.container.querySelectorAll("button")].find((button) => button.textContent === "Approve setup");
+    assert.ok(start && !start.disabled);
+    await act(async () => start.click());
+    const name = app.container.querySelector<HTMLInputElement>("#setup-approver");
+    assert.ok(name, "Settings must still let the operator approve its pending plan");
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    assert.ok(setter);
+    await act(async () => {
+      setter.call(name, "Reviewer");
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const approve = [...app.container.querySelectorAll("button")].find((button) => button.textContent === "Confirm");
+    assert.ok(approve && !approve.disabled);
+    await act(async () => approve.click());
+    await until(() => current.approved);
+    assert.equal(approvals, 1);
+    assert.equal(app.container.querySelector("#setup-approver"), null);
+    assert.ok(app.container.textContent?.includes("source-init"), "approval must not remove the journal evidence");
+  } finally { await app.close(); }
+});
+
+it("Continue on Approve records the named approval and only then moves to Create", async () => {
+  let pending: ServerResponse | undefined;
+  let approvals = 0;
+  const plan = { ...journal, items: [{
+    id: "canonfig-folder", kind: "folder-scaffold", scope: "machine", optional: false, dependsOn: [],
+    detail: { folder: "/tmp/onboarding-test", harnesses: ["codex"], detected: ["codex"] },
+  }] };
+  const app = await fixture((path, _method, out, body) => {
+    if (path === "/api/setup/plan") respond(out, plan);
+    else if (path === "/api/setup/approve") {
+      assert.deepEqual(JSON.parse(body), { approver: "Reviewer", planDigest: "digest" });
+      approvals++;
+      pending = out;
+    } else respond(out, { planDigest: "digest", stage: "approved", approved: true, items: [], approvals: [], discoveryPaths: [], stages: [], catalog: [] });
+  }, true);
+  const button = (label: string) => {
+    const found = [...app.container.querySelectorAll("button")].find((node) => node.textContent?.trim() === label);
+    assert.ok(found, `Missing button: ${label}`);
+    return found;
+  };
+  const press = async (label: string) => { await act(async () => button(label).click()); };
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  assert.ok(setter);
+  const type = async (input: HTMLInputElement, value: string) => {
+    await act(async () => { setter.call(input, value); input.dispatchEvent(new Event("input", { bubbles: true })); });
+  };
+  try {
+    const source = [...app.container.querySelectorAll("button")].find((node) => node.textContent?.includes("Make this the Source"));
+    assert.ok(source);
+    await act(async () => source.click());
+    await until(() => !!app.container.textContent?.includes("Profile name"));
+    await press("Continue");
+    await press("Continue");
+    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
+    await press("Continue");
+    await until(() => !!app.container.textContent?.includes("Approve setup"));
+    // Without a name, neither Continue nor a direct form submission can approve.
+    assert.equal(button("Continue").disabled, true);
+    await act(async () => app.container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    assert.equal(approvals, 0);
+    await press("Approve setup");
+    let name = app.container.querySelector<HTMLInputElement>("#setup-approver");
+    assert.ok(name);
+    assert.equal(document.activeElement, name);
+    assert.ok(![...app.container.querySelectorAll("button")].some((node) => node.textContent?.trim() === "Confirm"), "the wizard's Continue is the only confirmation");
+    await type(name, "Reviewer");
+    assert.equal(approvals, 0, "typing must not approve the plan");
+    assert.equal(button("Continue").disabled, false);
+    // Replanning invalidates the draft, including when the approval field remounts closed.
+    await press("Back");
+    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
+    await press("Continue");
+    await until(() => !!app.container.textContent?.includes("Approve setup"));
+    assert.equal(app.container.querySelector("#setup-approver"), null);
+    assert.equal(button("Continue").disabled, true);
+    assert.equal(approvals, 0);
+    await press("Approve setup");
+    name = app.container.querySelector<HTMLInputElement>("#setup-approver");
+    assert.ok(name);
+    assert.equal(name.value, "");
+    await type(name, "Reviewer");
+    // Cancelling discards the name, so Continue cannot approve behind a closed field.
+    await act(async () => name.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    assert.equal(app.container.querySelector("#setup-approver"), null);
+    assert.equal(document.activeElement, button("Approve setup"));
+    assert.equal(button("Continue").disabled, true);
+    await press("Approve setup");
+    const reopened = app.container.querySelector<HTMLInputElement>("#setup-approver");
+    assert.equal(reopened?.value, "");
+    await type(reopened!, "Reviewer");
+    await press("Continue");
+    await until(() => !!pending);
+    assert.equal(button("Continue").disabled, true);
+    assert.ok(!app.container.textContent?.includes("Approved by"), "Create waits for the approval to be recorded");
+    await act(async () => respond(pending!, { ...plan, approvals: [{ digest: "digest", approver: "Reviewer", approvedAt: "" }] }));
+    await until(() => !!app.container.textContent?.includes("Approved by Reviewer."));
+    assert.equal(app.container.querySelector('[aria-label="Setup changes"]'), null, "Create must not repeat the Approve step's list");
+    assert.equal(approvals, 1);
+    assert.equal(app.container.querySelector("#setup-approver"), null);
+  } finally { await app.close(); }
+});
+
+it("failed approval keeps the entered name available for an explicit retry", async () => {
+  let approvals = 0;
+  const app = await fixture((path, _method, out) => {
+    if (path === "/api/setup/plan") respond(out, journal);
+    else if (path === "/api/setup/approve") {
+      if (++approvals === 1) failure(out);
+      else respond(out, { ...journal, approvals: [{ digest: "digest", approver: "Reviewer", approvedAt: "" }] });
+    } else respond(out, { planDigest: "digest", stage: "approved", approved: true, items: [], approvals: [], discoveryPaths: [], stages: [], catalog: [] });
+  }, false, "journal");
+  const press = async (label: string) => {
+    const button = [...app.container.querySelectorAll("button")].find((node) => node.textContent === label);
+    assert.ok(button && !button.disabled);
+    await act(async () => button.click());
+  };
+  try {
+    await act(async () => { await current.planSetup([], [], () => {}); });
+    await press("Approve setup");
+    await act(async () => current.setApprover("Reviewer"));
+    await press("Confirm");
+    await until(() => current.sourceState.kind === "failed");
+    assert.equal(app.container.querySelector<HTMLInputElement>("#setup-approver")?.value, "Reviewer");
+    await press("Confirm");
+    await until(() => current.approved);
+    assert.equal(approvals, 2);
   } finally { await app.close(); }
 });

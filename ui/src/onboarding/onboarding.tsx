@@ -34,6 +34,8 @@ import { ImportReview } from "./import-review";
 //   ripple: 1 the moment a step completes, falling to 0. One lit ring runs out from the card,
 //     fading as it goes, so each tick of the list shows in the room around it.
 //   settled: 1 once the job succeeded. Rings turn fully green and wobble half as much.
+// Inspection has no measurable percentage. A travelling band uses the shader's existing
+// clock while the request is pending, without inventing progress or another frame loop.
 const CONVERGE_FIELD = /* glsl */ `
 float field(vec2 uv, vec2 res, float t) {
   vec2 p = (uv - vec2(0.5, 0.48)) * vec2(res.x / res.y, 1.0);
@@ -45,7 +47,8 @@ float field(vec2 uv, vec2 res, float t) {
   float level = 0.7 + 0.2 * energy * progress + 0.3 * settled;
   float front = (0.3 + 0.9 * (1.0 - ripple) - r) / 0.05;
   float wave = 0.6 * ripple * ripple * exp(-front * front);
-  return clamp(ring * halo * level + halo * 0.05 + wave, 0.0, 1.0);
+  float scan = inspecting * (1.0 - smoothstep(0.0, 0.18, abs(fract(r * 1.4 + t * 0.12) - 0.5)));
+  return clamp(ring * halo * level + halo * 0.05 + wave + scan * halo * 0.35, 0.0, 1.0);
 }
 `;
 
@@ -60,6 +63,7 @@ interface Job {
 
 type JobUniforms = { energy: number; progress: number; ripple: number; settled: number };
 const JOB_IDLE: JobUniforms = { energy: 0, progress: 0, ripple: 0, settled: 0 };
+const JOB_INSPECTING: JobUniforms = { ...JOB_IDLE, energy: 1 };
 // Reduced motion: one still frame per phase, held while progress ticks.
 const JOB_STILL = {
   running: { energy: 1, progress: 0.6, ripple: 0, settled: 0 },
@@ -79,7 +83,7 @@ const snap = cubicBezier(...SNAP);
  * shader's own 15fps, only while something moves: the job, a ripple or the settle.
  * Reduced motion: one still frame per phase (idle, running, done).
  */
-function SetupBackdrop({ job }: { job: Job | null }) {
+function SetupBackdrop({ job, busy }: { job: Job | null; busy: boolean }) {
   const reduced = useReducedMotion();
   const [live, setLive] = useState(JOB_IDLE);
   // When the job started, its latest step completed and it finished (performance.now() ms), and how many steps are done.
@@ -117,11 +121,13 @@ function SetupBackdrop({ job }: { job: Job | null }) {
     return () => cancelAnimationFrame(frame);
   }, [job, reduced]);
 
-  const uniforms = !job ? JOB_IDLE : reduced ? JOB_STILL[job.done ? "done" : "running"] : live;
+  const phase = !job ? busy ? JOB_INSPECTING : JOB_IDLE : reduced ? JOB_STILL[job.done ? "done" : "running"] : live;
+  const uniforms = { ...phase, inspecting: busy ? 1 : 0 };
   return (
     <>
       <DitherShader
         field={CONVERGE_FIELD}
+        data-activity={busy ? "working" : "idle"}
         uniforms={uniforms}
         palette={["--dither-paper", "--dither-color-grey", "--dither-color-green"]}
         cell={3}
@@ -232,7 +238,7 @@ export function Onboarding({ onDone, data, live, onCancel }: { onDone: (setup: S
   };
 
   return (
-    <OnboardingShell hostname={data.hostname} backdrop={<SetupBackdrop job={live ? live.applied ? { progress: 100, steps: 1, done: true } : null : job} />}>
+    <OnboardingShell hostname={data.hostname} backdrop={<SetupBackdrop busy={!!live?.state.loading} job={live ? live.applied ? { progress: 100, steps: 1, done: true } : null : job} />}>
       {/* In the demo, md:pb-40 clears the fixed demo panel (220px wide and about 122px tall, 12px
           from the left and from the bottom, App.tsx) at the end of the scroll, where the cards can
           reach under it. From xl the cards start right of it, so normal padding returns and a
@@ -254,7 +260,7 @@ export function Onboarding({ onDone, data, live, onCancel }: { onDone: (setup: S
           {stage === "source" && <SourceWizard key="source" data={data} live={live} job={job} onRun={run} onBack={() => back("source")} onDone={onDone} />}
           {stage === "follower" && <FollowerWizard key="follower" data={data} live={live} job={job} onRun={run} onBack={() => back("follower")} onDone={onDone} />}
         </AnimatePresence>
-        {stage === "choose" && live?.state.loading && <p role="status">Inspecting this machine…</p>}
+        {stage === "choose" && live?.state.loading && <p role="status">Checking this machine…</p>}
         {stage === "choose" && live?.state.error && <ErrorNotice error={live.state.error} title="This machine could not be checked" recovery="Follow the instructions above, then choose a role again to retry. If you need to restart the browser session, run canonfig ui in a terminal and open its new sign-in link." />}
       </div>
     </OnboardingShell>
@@ -500,9 +506,9 @@ const WIZARD_SCREEN = {
 } satisfies Record<string, Variants>;
 
 /**
- * One form for every step, so Enter continues from any field. A step that is
- * not complete keeps Continue enabled: submitting it calls `onBlocked`, and the
- * step then shows its errors next to the fields that need attention.
+ * One form for every step. Ordinary validation keeps Continue enabled so a
+ * submission can reveal field errors. An approval gate instead keeps it disabled
+ * (and unfilled) until the step has what approval needs; Continue then performs it.
  */
 function Wizard({
   role,
@@ -516,6 +522,7 @@ function Wizard({
   onFinish,
   blocked = false,
   onBlocked,
+  awaitingApproval = false,
   busy = false,
   done,
   wide = false,
@@ -532,6 +539,7 @@ function Wizard({
   onFinish: () => void;
   blocked?: boolean;
   onBlocked?: () => void;
+  awaitingApproval?: boolean;
   busy?: boolean;
   done?: ReactNode;
   wide?: boolean;
@@ -575,7 +583,7 @@ function Wizard({
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (busy || done) return;
+    if (busy || done || awaitingApproval) return;
     if (blocked) {
       const form = event.currentTarget;
       // Errors already on screen shake once, so a repeated Continue visibly registers.
@@ -656,7 +664,7 @@ function Wizard({
                 </span>
               </Button>
             ) : (
-              <Button type="submit" variant="secondary" className="min-w-24" disabled={busy}>
+              <Button type="submit" variant={awaitingApproval ? "ghost" : "secondary"} className="min-w-24" disabled={busy || awaitingApproval}>
                 Continue
               </Button>
             )}
@@ -835,13 +843,15 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
         setTried(false);
         if (live && s === SOURCE_STEP.import && step === SOURCE_STEP.harnesses) void live.planSetup(selected, undefined, () => setStep(s));
         else if (live && s === SOURCE_STEP.service && step === SOURCE_STEP.import) void live.planSetup(selected, imported, () => setStep(s));
-        else if (live && s === SOURCE_STEP.create && !live.approved) setTried(true);
+        // Continue on Approve is the approval itself: record it, then move to Create.
+        else if (live && s === SOURCE_STEP.create && !live.approved) void live.approveSetup(() => setStep(s));
         else setStep(s);
       }}
       onBack={onBack}
       finalLabel={live?.sourceState.kind === "needs-human-action" ? "Resume approved setup" : `Make ${data.hostname} the Source`}
       busyLabel="Creating…"
-      blocked={live ? !live.approved && (step === SOURCE_STEP.service || step === SOURCE_STEP.create) : (step === SOURCE_STEP.profile && !name.trim()) || (step === SOURCE_STEP.service && !portValid)}
+      blocked={live ? !live.approved && step === SOURCE_STEP.create : (step === SOURCE_STEP.profile && !name.trim()) || (step === SOURCE_STEP.service && !portValid)}
+      awaitingApproval={!!live && step === SOURCE_STEP.service && !live.approved && !live.approver.trim()}
       onBlocked={() => {
         setTried(true);
         // The port lives under Advanced; its error must be visible.
@@ -937,7 +947,7 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
           </label>}
         </div>
       )}
-      {step === SOURCE_STEP.service && (live ? <><SetupEvidence controller={live} approval />{tried && !live.approved && <FieldError>Enter your name and approve this plan before continuing.</FieldError>}</> :
+      {step === SOURCE_STEP.service && (live ? <><SetupEvidence controller={live} view="approve" />{tried && !live.approved && <FieldError>Enter your name and approve this plan before continuing.</FieldError>}</> :
         <div className="space-y-5">
           <p className="leading-relaxed text-muted-foreground">
             Other machines need a connection to {data.hostname} to copy its setup. Choose when the Source service runs. They connect through SSH, a secure connection you configure when each machine joins.
@@ -980,7 +990,7 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
       )}
       {step === SOURCE_STEP.create && (
         <div>
-          {live ? <SetupEvidence controller={live} /> : progress === null ? (
+          {live ? <SetupEvidence controller={live} view="create" /> : progress === null ? (
             <>
               <p className="mb-3 leading-relaxed text-muted-foreground">Review what Canonfig will create on {data.hostname}, then make it the Source.</p>
               <ul className="space-y-2">
@@ -1000,7 +1010,7 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
           )}
           {/* Stays put while creating, so nothing on the card swaps places. */}
           <p className="mt-5 text-sm text-muted-foreground">
-            Creating the Source does not change your AI coding tools' files. Sync applies the setup to tools; publishing a <Term term="Profile Revision" /> makes a version available to other machines.
+            Creating the Source does not sync or publish the setup.
           </p>
         </div>
       )}
