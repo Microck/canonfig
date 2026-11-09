@@ -55,6 +55,8 @@ npm ci
 npm ci --prefix ui
 npm audit --audit-level=low
 npm audit --omit=dev --audit-level=low
+npm --prefix ui audit --audit-level=low
+npm --prefix ui audit --omit=dev --audit-level=low
 npm run typecheck
 npm run lint
 npm run build:cli
@@ -171,7 +173,7 @@ rerun publication or reuse the version. Verification can also be run independent
 with Node.js 24 and npm on the release runner:
 
 ```bash
-node tools/release/verify-published.mjs 7.1.2
+node tools/release/verify-published.mjs 7.1.3
 ```
 
 The verification helper only reads from npm and installs into a disposable local
