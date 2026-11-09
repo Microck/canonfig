@@ -128,7 +128,7 @@ export function useEnrollmentController(backend: WorkspaceBackend, session: GuiS
       followerInstalled: [],
     },
     planSetup(harnesses, imports, next) {
-      assertIdle(); sendSource({ kind: "plan" });
+      assertIdle(); setApprover(""); sendSource({ kind: "plan" });
       return run(async (signal) => {
         const journal = await backend.request("/api/setup/plan", GuiSetupJournal, signal, { method: "POST", body: {
           role: "source", scope: "full", mode: "simple", files: [], ...(harnesses === undefined ? {} : { harnesses }),

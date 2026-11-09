@@ -416,13 +416,26 @@ it("Continue on Approve records the named approval and only then moves to Create
     await act(async () => app.container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
     assert.equal(approvals, 0);
     await press("Approve setup");
-    const name = app.container.querySelector<HTMLInputElement>("#setup-approver");
+    let name = app.container.querySelector<HTMLInputElement>("#setup-approver");
     assert.ok(name);
     assert.equal(document.activeElement, name);
     assert.ok(![...app.container.querySelectorAll("button")].some((node) => node.textContent?.trim() === "Confirm"), "the wizard's Continue is the only confirmation");
     await type(name, "Reviewer");
     assert.equal(approvals, 0, "typing must not approve the plan");
     assert.equal(button("Continue").disabled, false);
+    // Replanning invalidates the draft, including when the approval field remounts closed.
+    await press("Back");
+    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
+    await press("Continue");
+    await until(() => !!app.container.textContent?.includes("Approve setup"));
+    assert.equal(app.container.querySelector("#setup-approver"), null);
+    assert.equal(button("Continue").disabled, true);
+    assert.equal(approvals, 0);
+    await press("Approve setup");
+    name = app.container.querySelector<HTMLInputElement>("#setup-approver");
+    assert.ok(name);
+    assert.equal(name.value, "");
+    await type(name, "Reviewer");
     // Cancelling discards the name, so Continue cannot approve behind a closed field.
     await act(async () => name.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
     assert.equal(app.container.querySelector("#setup-approver"), null);
