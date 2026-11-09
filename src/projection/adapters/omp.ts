@@ -66,6 +66,11 @@ export const ompAdapter: HarnessAdapter = {
         ...under(context, base, ["logs", "install-id"]),
       ],
       sharedSkills: false,
+      // discovery/agents.ts also reads the shared user directory, independently of native writes.
+      skillSources: [
+        { path: context.join(root, "skills"), depth: 64 },
+        { path: context.join(context.home, ".agents", "skills"), depth: 64, shared: true },
+      ],
     };
   },
   project(model, _layout, runtime) {

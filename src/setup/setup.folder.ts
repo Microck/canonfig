@@ -12,6 +12,8 @@ import { CanonicalFolderError, readFolderConfig } from "../projection/folder.ts"
 import {
   existingFolderItems,
   ImportChangedError,
+  ImportSizeLimitError,
+  importContentBytes,
   readImportContent,
   scanImports,
   selectImports,
@@ -21,6 +23,7 @@ import {
   type ImportSelection,
   type ImportSource,
 } from "../projection/import.ts";
+import { maxImportContentBytes } from "../projection/import-skills.ts";
 import { TARGET_IDS, type TargetId } from "../projection/model.ts";
 import { rootContext, sharedSkillsOwner } from "../projection/plan.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
@@ -440,26 +443,37 @@ const writeMcp = (folder: string, servers: ReadonlyArray<readonly [string, Confi
 
 /**
  * Import the approved items. Every source is re-read and checked against its
- * approved digest before anything is written, so a changed harness file stops
- * the import as a whole.
+ * approved digest within one bounded batch before anything is written, so a
+ * changed harness file or an oversized batch stops the import as a whole.
  */
 export const executeHarnessImport = (item: SetupPlanItem, environment: Environment) =>
   Effect.gen(function*() {
     const detail = yield* decodeDetail(ImportDetail, item);
     const context = yield* contextFor(environment);
     const contents: Array<readonly [CandidateRecord, ImportContent]> = [];
+    let remainingBytes = maxImportContentBytes;
     for (const candidate of detail.items) {
       const content = yield* Effect.tryPromise({
-        try: () => readImportContent(candidate, context),
-        catch: (error) =>
-          error instanceof ImportChangedError
-            ? applyFailure(
+        try: () => readImportContent(candidate, context, detail.folder, remainingBytes),
+        catch: (error) => {
+          if (error instanceof ImportSizeLimitError) {
+            return applyFailure(
+              `the selected imports exceed the ${maxImportContentBytes / (1024 * 1024)} MiB content limit`,
+              "prerequisite",
+              "Select fewer items to import, then run setup plan again, review the import, and approve the new plan.",
+            );
+          }
+          if (error instanceof ImportChangedError) {
+            return applyFailure(
               `${candidate.id} changed since the plan was approved (${error.message})`,
               "prerequisite",
               "Run setup plan again, review the import, and approve the new plan.",
-            )
-            : applyFailure(`${candidate.id} could not be read: ${String(error)}`),
+            );
+          }
+          return applyFailure(`${candidate.id} could not be read: ${String(error)}`);
+        },
       });
+      remainingBytes -= importContentBytes(content);
       yield* assertFree(detail.folder, candidate);
       contents.push([candidate, content]);
     }

@@ -110,6 +110,13 @@ export function openCodeFamilyAdapter(family: OpenCodeFamily): HarnessAdapter {
         ],
         neverTouch: [...family.state(context)],
         sharedSkills: family.id === "kilo",
+        // Native global directories, not mutation surfaces. Both tools also read shared skills.
+        skillSources: [
+          { path: context.join(root, "skills"), depth: 6, flat: family.id === "opencode" },
+          ...(family.id === "kilo" ? [{ path: context.join(context.home, ".kilo", "skills"), depth: 6 }] : []),
+          { path: context.join(context.home, ".agents", "skills"), depth: 6, shared: true, flat: family.id === "opencode" },
+          { path: context.join(context.home, ".claude", "skills"), depth: 6 },
+        ],
       };
     },
     project(model, _layout, runtime) {

@@ -83,6 +83,21 @@ export type OwnedSurface =
     readonly settings?: { readonly reserved: ReadonlyArray<string> } | undefined;
   };
 
+/**
+ * A native, global skill reader, not a write/takeover/deletion surface.
+ * Depth counts directories below `path`; shared readers are scanned once.
+ */
+export interface SkillReadSource {
+  readonly path: string;
+  readonly depth: number;
+  readonly shared?: boolean;
+  readonly flat?: boolean;
+  readonly includeHidden?: boolean;
+  readonly excludedDirectories?: ReadonlyArray<string>;
+  /** Hermes continues below a skill, except for these support directories. */
+  readonly pruneWithinSkill?: ReadonlyArray<string>;
+}
+
 export interface HarnessLayout {
   /** The root pinned at takeover; it must resolve inside the home directory. */
   readonly root: string;
@@ -95,6 +110,8 @@ export interface HarnessLayout {
   readonly neverTouch: ReadonlyArray<string>;
   /** Skills go to the shared `~/.agents/skills/` instead of a private surface. */
   readonly sharedSkills: boolean;
+  /** Explicit native skill discovery, independent of Canonfig's write layout. */
+  readonly skillSources: ReadonlyArray<SkillReadSource>;
 }
 
 export interface ProjectedFile {

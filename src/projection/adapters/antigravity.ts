@@ -94,6 +94,12 @@ export const antigravityAdapter: HarnessAdapter = {
       ],
       neverTouch: [context.join(root, "antigravity-cli", "brain"), ...under(context, root, ["antigravity", "antigravity-ide"])],
       sharedSkills: false,
+      // CLI-only roots outrank config/skills at runtime. Import preserves distinct copies.
+      skillSources: [
+        { path: context.join(root, "antigravity-cli", "skills"), depth: 1 },
+        { path: context.join(root, "skills"), depth: 1 },
+        { path: context.join(config, "skills"), depth: 1 },
+      ],
     };
   },
   project(model, _layout, runtime) {

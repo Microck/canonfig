@@ -14,7 +14,7 @@ import { EnrollmentLive } from "../src/enrollment/enrollment.layer.ts";
 import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
 import type { Enrollment } from "../src/enrollment/enrollment.service.ts";
 import type { StateRepository } from "../src/state/state-repository.service.ts";
-import { executeFolderScaffold, scaffoldProfile, verifyFolderSetupItem } from "../src/setup/setup.folder.ts";
+import { executeFolderScaffold, executeHarnessImport, planSourceFolder, scaffoldProfile, verifyFolderSetupItem } from "../src/setup/setup.folder.ts";
 
 import {
   nextEligibleSetupStage,
@@ -887,6 +887,58 @@ describe.runIf(process.platform === "linux")("Source harness selection and impor
       expect(test.imported(selected)).toHaveLength(2_003);
       expect(statSync(journalPath).size).toBeLessThan(maxSetupJournalBytes);
       expect((await run(setupStatus(journalPath))).planDigest).toBe(selected.planDigest);
+    } finally {
+      test.cleanup();
+    }
+  }, 60_000);
+
+  it.each([
+    { scenario: "within", filesPerSkill: 2, bytesPerFile: 16 },
+    { scenario: "above", filesPerSkill: 32, bytesPerFile: 1024 * 1024 },
+  ] as const)("validates two individually valid skills $scenario the batch content limit before writing", async ({ scenario, filesPerSkill, bytesPerFile }) => {
+    const test = fixture();
+    const folder = join(test.home, ".canonfig");
+    const names = ["batch-a", "batch-b"];
+    const payload = Buffer.alloc(bytesPerFile, 0xa5);
+    const manifest = (name: string) => `---\nname: ${name}\ndescription: Batch import ${name}\n---\nUse ${name}.\n`;
+    const environment = (name: string) => name === "HOME" ? test.home : undefined;
+    const run = <A, E>(effect: Effect.Effect<A, E, MachineState | StateRepository>) =>
+      Effect.runPromise(effect.pipe(
+        Effect.provide(stateRepositoryLayer(join(test.home, "state.sqlite"))),
+        Effect.provide(linuxMachineStateLayer({ environment: [{ name: "HOME", value: test.home }] })),
+      ));
+    try {
+      for (const name of names) {
+        const skill = join(test.home, ".claude", "skills", name);
+        write(join(skill, "SKILL.md"), manifest(name));
+        for (let index = 0; index < filesPerSkill; index++) {
+          writeFileSync(join(skill, `resource-${index}.bin`), payload);
+        }
+      }
+      // Each large skill is 32 MiB plus its manifest, so both scan as valid
+      // individually but their combined payload exceeds the real 64 MiB cap.
+      // The fixture uses only 64 MiB of resources, never a raised test limit.
+      const planned = await run(planSourceFolder({
+        folder, environment, harnesses: ["claude-code"],
+        imports: { kind: "some", requested: names.map((name) => `claude-code/skills/${name}`) },
+      }));
+      expect(test.imported(planned).map((entry) => entry.target)).toEqual(names.map((name) => `skills/${name}`));
+      const item = test.item(planned, "harness-import");
+      if (item === undefined) throw new Error("expected the planned harness import");
+      if (scenario === "above") {
+        const failure = await run(executeHarnessImport(item, environment).pipe(Effect.flip));
+        expect(failure).toMatchObject({ _tag: "SetupError", category: "prerequisite" });
+        expect(existsSync(folder)).toBe(false);
+      } else {
+        await run(executeHarnessImport(item, environment));
+        for (const name of names) {
+          const destination = join(folder, "skills", name);
+          expect(readFileSync(join(destination, "SKILL.md"), "utf8")).toBe(manifest(name));
+          for (let index = 0; index < filesPerSkill; index++) {
+            expect(readFileSync(join(destination, `resource-${index}.bin`))).toEqual(payload);
+          }
+        }
+      }
     } finally {
       test.cleanup();
     }

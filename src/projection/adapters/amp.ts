@@ -59,6 +59,13 @@ export const ampAdapter: HarnessAdapter = {
         context.join(xdgCacheHome(context), "amp"),
       ],
       sharedSkills: true,
+      // https://ampcode.com/docs/markdown/customize/skills, local source precedence.
+      skillSources: [
+        { path: context.join(context.home, ".config", "agents", "skills"), depth: 5 },
+        { path: context.join(context.home, ".agents", "skills"), depth: 5, shared: true },
+        { path: context.join(root, "skills"), depth: 5 },
+        { path: context.join(context.home, ".claude", "skills"), depth: 5 },
+      ],
     };
   },
   project(model, _layout, runtime) {

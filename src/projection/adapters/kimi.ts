@@ -108,6 +108,11 @@ export const kimiAdapter: HarnessAdapter = {
       ],
       neverTouch: under(context, root, ["credentials", "sessions", "session_index.jsonl", "user-history", "logs", "bin"]),
       sharedSkills: true,
+      // KIMI_CODE_HOME relocates private skills, but not the generic shared root.
+      skillSources: [
+        { path: context.join(root, "skills"), depth: 64, flat: true },
+        { path: context.join(context.home, ".agents", "skills"), depth: 64, shared: true, flat: true },
+      ],
     };
   },
   project(model, _layout, runtime) {

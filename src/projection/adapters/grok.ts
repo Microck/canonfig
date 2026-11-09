@@ -74,6 +74,19 @@ export const grokAdapter: HarnessAdapter = {
       ],
       neverTouch: under(context, root, ["sessions", "logs", "crash", "mcp_credentials.json", "trusted_folders.toml"]),
       sharedSkills: true,
+      // Native global root plus documented default-on compatibility readers.
+      skillSources: [
+        { path: context.join(root, "skills"), depth: 64 },
+        { path: context.join(context.home, ".agents", "skills"), depth: 64, shared: true },
+        ...(context.environment("GROK_CLAUDE_SKILLS_ENABLED") === "0"
+          || context.environment("GROK_CLAUDE_SKILLS_ENABLED") === "false" ? [] : [
+          { path: context.join(context.home, ".claude", "skills"), depth: 64 },
+        ]),
+        ...(context.environment("GROK_CURSOR_SKILLS_ENABLED") === "0"
+          || context.environment("GROK_CURSOR_SKILLS_ENABLED") === "false" ? [] : [
+          { path: context.join(context.home, ".cursor", "skills"), depth: 64 },
+        ]),
+      ],
     };
   },
   project(model, _layout, runtime) {

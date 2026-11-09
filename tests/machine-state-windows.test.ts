@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { execFile, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
@@ -41,6 +41,7 @@ import { machineStateContract } from "./contract/machine-state.contract.ts";
 import { adapterFor } from "../src/projection/adapters/index.ts";
 import type { CanonicalModel, TargetId } from "../src/projection/model.ts";
 import { rootContext } from "../src/projection/plan.ts";
+import { SkillReader } from "../src/projection/import-skills.ts";
 
 // Windows adapter paths must stay Windows-shaped while still addressing real
 // host storage. Each contract test supplies its own temporary root; keep a
@@ -417,6 +418,124 @@ describe.skipIf(process.platform !== "win32")("Windows file permission ownership
       await rm(root, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+describe.skipIf(process.platform !== "win32")("Windows native skill import boundaries", () => {
+  const contextFor = (home: string) => {
+    const variables = [
+      { name: "USERPROFILE", value: home },
+      { name: "APPDATA", value: join(home, "AppData", "Roaming") },
+      { name: "LOCALAPPDATA", value: join(home, "AppData", "Local") },
+    ];
+    return Effect.runSync(rootContext((name) => variables.find((entry) => entry.name === name)?.value).pipe(
+      Effect.provide(windowsMachineStateLayer({ environment: variables })),
+    ));
+  };
+
+  it("rejects a raw forward slash in a link target before path normalization", async () => {
+    const home = await mkdtemp(join(tmpdir(), "canonfig-import-raw-windows-link-"));
+    const skill = join(home, "demo");
+    const resource = join(skill, "resources", "entry.txt");
+    const link = join(skill, "linked.txt");
+    const target = "resources/entry.txt";
+    try {
+      await mkdir(dirname(resource), { recursive: true });
+      await writeFile(join(skill, "SKILL.md"), "---\nname: demo\ndescription: Native link fixture\n---\n");
+      await writeFile(resource, "public skill resource");
+
+      // Node's symlink API replaces '/' with '\'. Call the native API in a
+      // disposable child, then prove readlink preserved the malformed target.
+      // If Windows normalizes it too, fail the fixture rather than claim the
+      // reader's raw-target guard was exercised.
+      const powershell = join(process.env.SystemRoot ?? "C:\\Windows",
+        "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+      await promisify(execFile)(powershell, ["-NoProfile", "-NonInteractive", "-Command", `
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+public static class NativeSkillLink {
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.U1)]
+  public static extern bool CreateSymbolicLinkW(string link, string target, uint flags);
+}
+'@
+if (-not [NativeSkillLink]::CreateSymbolicLinkW($env:CANONFIG_TEST_LINK, $env:CANONFIG_TEST_TARGET, 2)) {
+  throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
+}
+      `], {
+        cwd: home,
+        env: { ...process.env, CANONFIG_TEST_LINK: link, CANONFIG_TEST_TARGET: target },
+        timeout: 30_000,
+      });
+      expect(await readlink(link)).toBe(target);
+
+      const reader = await SkillReader.create(contextFor(home), [], join(home, ".canonfig"), []);
+      const ordinary = await reader.bytes(resource);
+      expect(ordinary.kind).toBe("bytes");
+      if (ordinary.kind === "bytes") {
+        expect(Buffer.from(ordinary.content).toString("utf8")).toBe("public skill resource");
+      }
+      expect((await reader.bytes(link)).kind).toBe("skip");
+      expect((await reader.tree(skill)).kind).toBe("skip");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("refuses linked skill resources that case-alias a protected config file", async () => {
+    const home = await mkdtemp(join(tmpdir(), "canonfig-import-windows-config-case-"));
+    const config = join(home, "harness", "settings.json");
+    const caseAlias = join(home, "HARNESS", "SETTINGS.JSON");
+    const skill = join(home, "demo");
+    const link = join(skill, "resource.json");
+    const content = '{"owned":{},"privateFixture":"must stay outside skills"}';
+    try {
+      await mkdir(dirname(config), { recursive: true });
+      await mkdir(skill);
+      await writeFile(config, content);
+      await writeFile(join(skill, "SKILL.md"), "---\nname: demo\ndescription: Config alias fixture\n---\n");
+      // This observation requires the real case-insensitive Windows fixture,
+      // not a path spelling that happens to name a missing file.
+      expect(await readFile(caseAlias, "utf8")).toBe(content);
+      await symlink(caseAlias, link, "file");
+      expect(await readFile(link, "utf8")).toBe(content);
+
+      const reader = await SkillReader.create(contextFor(home), [], join(home, ".canonfig"), [config]);
+      expect((await reader.bytes(link)).kind).toBe("skip");
+      expect((await reader.tree(skill)).kind).toBe("skip");
+      expect(await readFile(config, "utf8")).toBe(content);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects case-aliased protected ancestors before resolving parent segments", async () => {
+    const home = await mkdtemp(join(tmpdir(), "canonfig-import-windows-ancestor-"));
+    const protectedDirectory = join(home, "protected");
+    const skill = join(home, "demo");
+    const resource = join(home, "public-resource.txt");
+    const link = join(skill, "resource.txt");
+    const target = "..\\PROTECTED\\..\\public-resource.txt";
+    try {
+      await mkdir(protectedDirectory);
+      await mkdir(skill);
+      await writeFile(resource, "public skill resource");
+      await writeFile(join(skill, "SKILL.md"), "---\nname: demo\ndescription: Protected ancestor fixture\n---\n");
+      expect(await readdir(join(home, "PROTECTED"))).toEqual([]);
+      await symlink(target, link, "file");
+      expect(await readlink(link)).toBe(target);
+      const reader = await SkillReader.create(contextFor(home), [protectedDirectory], join(home, ".canonfig"), []);
+      const ordinary = await reader.bytes(resource);
+      expect(ordinary.kind).toBe("bytes");
+      if (ordinary.kind === "bytes") {
+        expect(Buffer.from(ordinary.content).toString("utf8")).toBe("public skill resource");
+      }
+      expect((await reader.bytes(link)).kind).toBe("skip");
+      expect((await reader.tree(skill)).kind).toBe("skip");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("Windows long path limit", () => {

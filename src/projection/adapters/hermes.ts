@@ -92,6 +92,18 @@ export const hermesAdapter: HarnessAdapter = {
         ...under(context, skills, [".hub", ".bundled_manifest"]),
       ],
       sharedSkills: false,
+      // agent/skill_utils.py: categories recurse, including below skills, but not support dirs.
+      skillSources: [{
+        path: skills,
+        depth: 64,
+        includeHidden: true,
+        excludedDirectories: [
+          ".git", ".github", ".hub", ".archive", ".curator_backups", ".locks", ".hermes-dist",
+          ".venv", "venv", "node_modules", "site-packages", "__pycache__",
+          ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+        ],
+        pruneWithinSkill: ["references", "templates", "assets", "scripts"],
+      }],
     };
   },
   project(model, _layout, runtime) {

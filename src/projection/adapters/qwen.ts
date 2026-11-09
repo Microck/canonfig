@@ -96,6 +96,11 @@ export const qwenAdapter: HarnessAdapter = {
         "projects", "tmp", "memory.md", "file-history", "ide",
       ]),
       sharedSkills: true,
+      // SkillManager user roots from SKILL_PROVIDER_CONFIG_DIRS in config/storage.ts.
+      skillSources: [
+        { path: context.join(root, "skills"), depth: 1 },
+        { path: context.join(context.home, ".agents", "skills"), depth: 1, shared: true },
+      ],
     };
   },
   project(model, _layout, runtime) {

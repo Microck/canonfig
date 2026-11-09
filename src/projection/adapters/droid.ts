@@ -53,6 +53,10 @@ export const droidAdapter: HarnessAdapter = {
       // The OAuth fallback file beside the keyring is not documented by name.
       neverTouch: under(context, root, ["projects", "sessions", "logs"]),
       sharedSkills: false,
+      skillSources: [
+        { path: context.join(root, "skills"), depth: 64 },
+        { path: context.join(context.home, ".agents", "skills"), depth: 64, shared: true },
+      ],
     };
   },
   project(model, _layout, runtime) {

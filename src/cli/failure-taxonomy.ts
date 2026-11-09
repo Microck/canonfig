@@ -473,6 +473,10 @@ export const failureTaxonomy = {
     "conflict-or-drift",
     (error) => `${text(error.path)}: ${error.message}; run 'canonfig setup plan' again and approve the new plan`,
   ),
+  ImportSizeLimitError: describe(
+    "usage-or-configuration",
+    (error) => `${text(error.path)} exceeds the ${count(error.maximumBytes)} byte import budget; select fewer items, then run 'canonfig setup plan' again and approve the new plan`,
+  ),
   SnapshotNotFoundError: declared(
     "usage-or-configuration",
     (error) => `takeover snapshot ${text(error.snapshot)} does not exist`,

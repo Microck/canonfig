@@ -79,6 +79,11 @@ export const devinAdapter: HarnessAdapter = {
       ],
       neverTouch: state,
       sharedSkills: true,
+      // Global roots from cli/extensibility/skills. No inferred channel-specific ~/.codeium roots.
+      skillSources: [
+        { path: context.join(context.home, ".agents", "skills"), depth: 64, shared: true },
+        { path: context.join(root, "skills"), depth: 64 },
+      ],
     };
   },
   project(model, _layout, runtime) {
