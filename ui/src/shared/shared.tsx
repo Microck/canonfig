@@ -454,3 +454,15 @@ export function Logo({ className }: { className?: string }) {
 export function Mono({ children, className }: { children: ReactNode; className?: string }) {
   return <span className={cn("font-mono text-xs text-muted-foreground", className)}>{children}</span>;
 }
+
+/**
+ * CLI messages mark commands and paths with backticks ("run `rustup default stable`"). Show those spans as
+ * code instead of literal backticks. Odd split indexes are the quoted parts; an unpaired backtick stays text.
+ */
+export function CliText({ children }: { children: string }) {
+  const parts = children.split("`");
+  if (parts.length % 2 === 0) return children;
+  return parts.map((part, index) => index % 2 === 1
+    ? <code key={index} className="inline-block max-w-full rounded-[4px] bg-raised px-1 py-px align-baseline font-mono text-[0.9em] text-foreground [overflow-wrap:anywhere]">{part}</code>
+    : part);
+}

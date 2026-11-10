@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isCoarsePointer } from "@/lib/utils";
 import { AnimatedNumber, DitherProgress, Hint, Mono, StateCell, StateLabel, Term } from "@/shared/shared";
-import { DEMO, PLAIN, SECRETS_GROUP, STATE_META, type Revision } from "@/shared/metadata";
+import { DEMO, SECRETS_GROUP, STATE_META, type Revision } from "@/shared/metadata";
 import { ErrorNotice } from "../live/session";
 import { GuiRequestError } from "../gui-client";
 import { useSharedState, useWorkspace, type PendingChange, type Workspace } from "./store";
@@ -786,12 +786,7 @@ export function SecretsView() {
       <ProfileActionNotice />
       <Body>
         <p data-tour="secrets-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
-          Canonfig keeps these in this machine's credential store and sends them only to machines that{" "}
-          <Term term="Follower Group">
-            <span className="lowercase">{PLAIN.secretsGroup}</span>
-          </Term>{" "}
-          (group <Mono className="text-foreground">{SECRETS_GROUP}</Mono>): {receivers.length ? receivers.map((f) => f.name).join(", ") : "none yet"}. A value can't be viewed
-          again after you set it.{DEMO && " This demo keeps only each secret's name and discards the value."}
+          Sent to: {receivers.length ? receivers.map((f) => f.name).join(", ") : "no machines yet"}
         </p>
         {ws.secrets.length === 0 ? (
           <EmptyState
