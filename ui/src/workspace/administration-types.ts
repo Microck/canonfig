@@ -1,6 +1,6 @@
 import type { Schema } from "effect";
 import type { UpdateLifecycle } from "./live/self-update";
-import type { GuiAgentPolicy, GuiSourceServiceStatus, GuiSelfUpdateCheck, GuiSelfUpdateStatus, GuiSelfUpdateProgress } from "../../../src/gui/contract/administration";
+import type { GuiAgentPolicy, GuiInstallerMethod, GuiSourceServiceStatus, GuiSelfUpdateCheck, GuiSelfUpdateStatus, GuiSelfUpdateProgress } from "../../../src/gui/contract/administration";
 import type { GuiRequestError } from "../gui-client";
 
 export interface AdministrationResource<T> {
@@ -9,6 +9,12 @@ export interface AdministrationResource<T> {
   busy: boolean;
   error: GuiRequestError | null;
   reload: () => void;
+}
+
+export interface InstallerChoice {
+  method: typeof GuiInstallerMethod.Type;
+  executable: string;
+  arguments: readonly string[];
 }
 
 interface HarnessBounds {
@@ -74,8 +80,12 @@ export interface AdministrationSlice {
   }[]> & {
     checking: string | null;
     checked: string | null;
-    suggestions: readonly { method: string; command: string }[];
+    /** Unbound methods whose executable PATH provides, ready to add in one click. */
+    detected: readonly InstallerChoice[];
     check: (method: string) => void;
+    /** Records a binding after the same --version check `canonfig installer set` runs; resolves true on success. */
+    add: (choice: InstallerChoice) => Promise<boolean>;
+    remove: (method: string) => void;
   };
   doctor: AdministrationResource<readonly DoctorCheck[]> & {
     status: string | null;

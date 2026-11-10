@@ -15,12 +15,12 @@ import { updateDirectory, type ManagedCommandLease } from "../../runtime/self-up
 import { readSettings } from "../../runtime/self-update/settings.ts";
 import { StateRepository } from "../../state/state-repository.service.ts";
 import {
-  checkInstallerBinding, listInstallerBindings, loadInstallerState,
-  unboundInstallerRecovery, windowsNodeBinding,
+  checkInstallerBinding, detectInstaller, listInstallerBindings, loadInstallerState,
+  removeInstallerBinding, saveInstallerBinding, unboundInstallerRecovery,
 } from "../../synchronization/installer-bindings.ts";
 import {
   GuiAgentHarness, GuiAgentPolicy, type GuiAgentHarnessRead, type GuiAgentPolicyRead,
-  GuiSelfUpdateEnable, GuiSourceServiceInput,
+  GuiInstallerSetInput, GuiSelfUpdateEnable, GuiSourceServiceInput,
 } from "../contract/administration.ts";
 import { GuiQueries } from "../queries.ts";
 import { EmptyBody, commandFailure, failureBody, mutationRoute, queryRoute, type GuiRoute } from "../routing.ts";
@@ -130,13 +130,18 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
       () => report(follower.doctor({ noInput: true, timeoutMilliseconds: 10_000 }))),
     queryRoute("/api/installers", () => Effect.gen(function*() {
       const bindings = yield* listInstallerBindings();
-      const suggestions = (yield* Effect.forEach(
-        ["npm", "pnpm"].filter((method) => !bindings.some((binding) => binding.method === method)),
-        (method) => windowsNodeBinding(method).pipe(Effect.map((binding) =>
-          binding === undefined ? undefined : { method, shim: binding.shim, command: binding.command })),
-      )).filter((suggestion) => suggestion !== undefined);
-      return toJson({ bindings, suggestions });
+      // Every unbound method PATH can satisfy, already shaped as a valid binding (Windows shims included).
+      const detected = (yield* Effect.forEach(
+        installerMethods.filter((method) => !bindings.some((binding) => binding.method === method)),
+        detectInstaller,
+      )).filter((candidate) => candidate !== undefined);
+      return toJson({ bindings, detected });
     }).pipe(Effect.provideService(MachineState, machine), Effect.mapError(installerFailure))),
+    // The same operation as `canonfig installer set`: it resolves links, runs the --version check, then writes.
+    mutationRoute("POST", "/api/installers", GuiInstallerSetInput, (input) =>
+      saveInstallerBinding(input.method, input.executable, input.arguments).pipe(
+        Effect.map((binding) => toJson({ binding })),
+        Effect.provideService(MachineState, machine), Effect.mapError(installerFailure))),
     queryRoute("/api/self-update", () => Effect.try({ try: status, catch: updateFailure })),
     mutationRoute("POST", "/api/self-update/check", EmptyBody,
       () => Effect.tryPromise({
@@ -185,6 +190,10 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
         });
         return toJson(yield* checkInstallerBinding(state.binding));
       }).pipe(Effect.provideService(MachineState, machine), Effect.mapError(installerFailure))));
+    routes.push(mutationRoute("DELETE", `/api/installers/${method}`, EmptyBody,
+      () => removeInstallerBinding(method).pipe(
+        Effect.map((removed) => toJson({ removed })),
+        Effect.provideService(MachineState, machine), Effect.mapError(installerFailure))));
   }
   return routes;
 });

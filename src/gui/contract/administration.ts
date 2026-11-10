@@ -71,10 +71,17 @@ export const GuiInstallerBinding = Schema.Struct({
   executable: Schema.String,
   arguments: Schema.Array(Schema.String),
 });
+/** A PATH executable that would make a valid binding; the GUI offers it as a one-click choice. */
+export const GuiDetectedInstaller = Schema.Struct({
+  method: GuiInstallerMethod, executable: Schema.String, arguments: Schema.Array(Schema.String),
+});
 export const GuiInstallers = Schema.Struct({
   bindings: Schema.Array(GuiInstallerBinding),
-  suggestions: Schema.Array(Schema.Struct({ method: Schema.String, shim: Schema.String, command: Schema.String })),
+  detected: Schema.Array(GuiDetectedInstaller),
 });
+export const GuiInstallerSetInput = GuiDetectedInstaller;
+export const GuiInstallerSet = Schema.Struct({ binding: GuiInstallerBinding });
+export const GuiInstallerRemoval = Schema.Struct({ removed: Schema.Boolean });
 export const GuiInstallerCheck = Schema.Struct({
   binding: GuiInstallerBinding,
   verified: Schema.Literal(true),

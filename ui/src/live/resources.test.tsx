@@ -53,7 +53,7 @@ for (const role of ["source", "follower"] as const) {
     const responses: Record<string, unknown> = {
       "/api/session": { role, machineName: "Navigation fixture", folderPath: "/tmp/navigation-fixture", version: "7.1.0" },
       "/api/status": { machineRole: { role }, lifecycle: {}, tunnel: null },
-      "/api/installers": { bindings: [], suggestions: [] },
+      "/api/installers": { bindings: [], detected: [] },
       "/api/agent/policy": { configured: false, default: "deterministic-only" },
       "/api/agent/harness": { configured: false },
       "/api/setup": setup,

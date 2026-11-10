@@ -121,6 +121,48 @@ export const windowsNodeBinding = (
   return yield* nodeBindingForShim(method, found.value.path.absolute);
 });
 
+/** An executable and fixed arguments that would make a valid binding for one method. */
+export interface DetectedInstaller {
+  readonly method: InstallerBinding["method"];
+  readonly executable: string;
+  readonly arguments: ReadonlyArray<string>;
+}
+
+/**
+ * What PATH offers for `method`, shaped the way a binding must be: apt is `apt-get`, npm and pnpm scripts
+ * become Node plus their JavaScript entrypoint, and Windows command shims use `nodeBindingForShim`.
+ * Only a candidate that passes the binding rules is returned; saving still runs the --version check.
+ */
+export const detectInstaller = (
+  method: InstallerBinding["method"],
+): Effect.Effect<DetectedInstaller | undefined, never, MachineState> => Effect.gen(function*() {
+  const machine = yield* MachineState;
+  const found = yield* machine.findExecutable({ name: method === "apt" ? "apt-get" : method }).pipe(Effect.option);
+  if (Option.isNone(found)) return undefined;
+  const { absolute, platform } = found.value.path;
+  let candidate: { executable: string; arguments: string[] } | undefined;
+  if (platform === "windows" && isWindowsShim(absolute)) {
+    const shim = yield* nodeBindingForShim(method, absolute);
+    candidate = shim && { executable: shim.executable, arguments: [shim.entrypoint] };
+  } else if (method === "npm" || method === "pnpm") {
+    // On Linux and macOS PATH holds a link to npm-cli.js or pnpm.cjs; run it with the Node beside it.
+    const target = yield* Effect.tryPromise(() => realpath(absolute)).pipe(Effect.option);
+    const node = yield* machine.findExecutable({ name: "node" }).pipe(Effect.option);
+    candidate = Option.isSome(target) && /\.c?js$/u.test(target.value) && Option.isSome(node)
+      ? { executable: node.value.path.absolute, arguments: [target.value] }
+      : { executable: absolute, arguments: [] };
+  } else {
+    candidate = { executable: absolute, arguments: [] };
+  }
+  if (candidate === undefined) return undefined;
+  try {
+    installerBindingFor(method, platform, candidate.executable, candidate.arguments);
+  } catch {
+    return undefined;
+  }
+  return { method, ...candidate };
+});
+
 /**
  * `lead` names where the shim came from; the rest says what to run instead.
  * The command gets a line of its own so a shortened human rendering keeps it.

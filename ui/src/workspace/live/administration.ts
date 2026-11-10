@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  GuiAgentHarness, GuiAgentHarnessRead, GuiAgentPolicy, GuiAgentPolicyRead, GuiDoctorResult, GuiInstallerCheck, GuiInstallers,
+  GuiAgentHarness, GuiAgentHarnessRead, GuiAgentPolicy, GuiAgentPolicyRead, GuiDoctorResult, GuiInstallerCheck, GuiInstallerRemoval, GuiInstallerSet, GuiInstallers,
   GuiSourceServiceChange, GuiSourceServiceRemoval, GuiSourceServiceReport,
 } from "../../../../src/gui/contract/administration";
 import type { GuiSession } from "../../../../src/gui/contract/session";
@@ -185,7 +185,21 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
     installers: {
       data: installers.data?.bindings.map((binding) => ({ name: binding.method, path: binding.executable, status: "bound" as const, arguments: binding.arguments })) ?? null,
       loading: installers.loading, busy: installers.busy, error: installers.error, reload: installers.reload,
-      checking: checkingInstaller, checked: checkedInstaller, suggestions: installers.data?.suggestions ?? [],
+      checking: checkingInstaller, checked: checkedInstaller, detected: installers.data?.detected ?? [],
+      // Each change re-reads the list, so bindings and detected choices come from the machine, not a local guess.
+      add: (choice) => installers.run(async (signal) => {
+        await backend.request("/api/installers", GuiInstallerSet, signal, { method: "POST", body: { method: choice.method, executable: choice.executable, arguments: [...choice.arguments] } });
+        const next = await installersLoad(signal);
+        if (!signal.aborted) { installers.setData(next); setCheckedInstaller(choice.method); }
+      }),
+      remove: (method) => {
+        if (installers.busy) return;
+        void installers.run(async (signal) => {
+          await backend.request(`/api/installers/${encodeURIComponent(method)}`, GuiInstallerRemoval, signal, { method: "DELETE", body: {} });
+          const next = await installersLoad(signal);
+          if (!signal.aborted) installers.setData(next);
+        });
+      },
       check: (method) => {
         if (installers.busy) return;
         void installers.run(async (signal) => {
