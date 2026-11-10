@@ -23,7 +23,7 @@ import {
   writeFile,
   type FileHandle,
 } from "node:fs/promises";
-import { constants as filesystemConstants, statSync } from "node:fs";
+import { constants as filesystemConstants, readFileSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import {
   basename,
@@ -102,6 +102,23 @@ import type {
   UserDirectories,
   ValidatePathWithinRootInput,
 } from "./machine-state.types.ts";
+
+/**
+ * The one install command for this distribution's Secret Service client and keyring, in backticks so the GUI
+ * offers it to copy. An unknown distribution gets the package names instead of a guessed command.
+ */
+const secretToolInstallAdvice = (): string => {
+  let release = "";
+  try { release = readFileSync("/etc/os-release", "utf8"); } catch { /* not a standard Linux layout */ }
+  const ids = (/^ID_LIKE=(.*)$/mu.exec(release)?.[1] ?? "") + " " + (/^ID=(.*)$/mu.exec(release)?.[1] ?? "");
+  const command = /\b(?:debian|ubuntu)\b/u.test(ids) ? "sudo apt install libsecret-tools gnome-keyring"
+    : /\b(?:fedora|rhel)\b/u.test(ids) ? "sudo dnf install libsecret gnome-keyring"
+    : /\barch\b/u.test(ids) ? "sudo pacman -S libsecret gnome-keyring"
+    : undefined;
+  return command === undefined
+    ? "Install the Secret Service client (Debian and Ubuntu: libsecret-tools; Fedora and RHEL: libsecret; Arch: libsecret) and a keyring such as gnome-keyring, or use the local-file credential policy."
+    : `Install it with \`${command}\`, or use the local-file credential policy.`;
+};
 
 const decode = Schema.decodeUnknownSync;
 const defaultDirectoryMode = 0o700;
@@ -1711,8 +1728,7 @@ export const linuxMachineStateLayer = (
           ? [{ name: "DBUS_SESSION_BUS_ADDRESS", value: sessionBus.address }]
           : [];
       const busName = sessionBus.kind === "missing" ? "no session bus" : sessionBus.address;
-      const secretToolMissing =
-        `secret-tool is not on PATH (${environmentValue(environment, "PATH") ?? "PATH is unset"}). Install the Secret Service client (Debian and Ubuntu: libsecret-tools; Fedora and RHEL: libsecret; Arch: libsecret) and a provider such as gnome-keyring, or explicitly select the local-file credential policy.`;
+      const secretToolMissing = `secret-tool isn't installed. ${secretToolInstallAdvice()}`;
 
       const normalizePath = Effect.fn("MachineState.normalizePath")(
         function*(input: NormalizePathInput): Effect.fn.Return<MachinePath, MachineStateError> {
