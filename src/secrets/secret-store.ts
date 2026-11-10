@@ -263,9 +263,13 @@ const readManifest = (): Effect.Effect<
         Schema.decodeUnknownSync(SecretManifestSchema)(
           JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
         ),
-      // Name the file and the first mismatch so the owner can repair it; there is no automatic migration.
+      // Name the file and the shape it must have so the owner can repair it; there is no automatic migration.
+      // Never echo parser or schema messages: they can quote file content, which may include a credential.
       catch: (cause) =>
-        secretError("state", "read secret manifest", `\`${paths.manifest.absolute}\` is not a valid secret manifest: ${String(cause instanceof Error ? cause.message : cause).split("\n").slice(0, 2).join(" ").trim()}`),
+        // TextDecoder rejects invalid UTF-8 with a TypeError; JSON.parse rejects bad syntax with a SyntaxError.
+        secretError("state", "read secret manifest", cause instanceof SyntaxError || cause instanceof TypeError
+          ? `\`${paths.manifest.absolute}\` is not valid JSON`
+          : `\`${paths.manifest.absolute}\` does not match the secret manifest format: it needs \`schemaVersion\` 1, a \`secrets\` list and a \`retiredReferences\` list`),
     });
     yield* validateUniqueNames(
       manifest.secrets.map((secret) => secret.name),
