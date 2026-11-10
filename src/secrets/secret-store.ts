@@ -263,8 +263,9 @@ const readManifest = (): Effect.Effect<
         Schema.decodeUnknownSync(SecretManifestSchema)(
           JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
         ),
-      catch: () =>
-        secretError("state", "read secret manifest", "the secret manifest is invalid"),
+      // Name the file and the first mismatch so the owner can repair it; there is no automatic migration.
+      catch: (cause) =>
+        secretError("state", "read secret manifest", `\`${paths.manifest.absolute}\` is not a valid secret manifest: ${String(cause instanceof Error ? cause.message : cause).split("\n").slice(0, 2).join(" ").trim()}`),
     });
     yield* validateUniqueNames(
       manifest.secrets.map((secret) => secret.name),

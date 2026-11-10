@@ -55,7 +55,7 @@ import {
   useLeaveGuard,
   copy,
 } from "./kit";
-import { Column, ConfirmDialog, Lede } from "./settings";
+import { Column, ConfirmDialog } from "./settings";
 import { ScheduleFields, nextCheck, scheduleError, scheduleSummary, type Schedule } from "./schedule";
 import { FollowerOperationEvidence, TunnelEvidence } from "./follower-evidence";
 import { LocalAuthoringEditor } from "./follower-authoring";
@@ -920,12 +920,7 @@ function ScheduleForm() {
       />
       <Body>
         <Column>
-          <Lede>
-            On this <Term term="Synchronization Schedule">schedule</Term>, the system's scheduler checks for a new revision and applies it. You can still update by hand from Sync.
-            {stopped
-              ? ` ${stopped} Its schedule was removed.`
-              : saved === null && " No schedule is set yet, so this machine only updates when you apply from Sync. Save one to turn it on."}
-          </Lede>
+          {(stopped || saved === null) && <p role="status" className="mb-6 text-sm text-muted-foreground">{stopped ? `${stopped} Its schedule was removed.` : "No schedule is set, so this machine only updates when you apply from Sync."}</p>}
           <ScheduleFields idPrefix="sch" value={draft} onChange={setDraft} defaultLabel={defaultLabel} allowCustom={!!ws.followerLive} />
           {ws.followerLive ? <div className={cn("mt-8", settingsGroup)}>
             <SettingRow title="Native schedule" description={text(ws.followerLive.schedule?.detail)}>{text(ws.followerLive.schedule?.state)?.replaceAll("-", " ") ?? "Not reported"}</SettingRow>
@@ -1977,10 +1972,6 @@ function TunnelForm() {
       />
       <Body>
         <Column>
-          <Lede>
-            This machine reaches the <Term term="Source Machine">Source</Term> through an SSH tunnel: it connects to 127.0.0.1 here, and the tunnel carries that to {ws.sourceMachine.hostname}. So the
-            source service never has to listen on the network.
-          </Lede>
           <SectionLabel>Status</SectionLabel>
           {ws.followerLive ? <TunnelEvidence report={ws.followerLive.tunnel ?? {}} /> : <div data-tour="tunnel-status" className={cn("mt-1", settingsGroup)}>
             <SettingRow title="State">

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { WarningCircle } from "@/components/icons";
+import { CliText } from "@/shared/shared";
 import type { GuiRequestError, GuiSession } from "../gui-client";
 
 export function overviewPath(role: GuiSession["role"]) {
@@ -17,17 +18,21 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
 }
 
 
-export function ErrorNotice({ error, title = "Operation failed", recovery = "Use Reload after resolving the error. If the session has expired, restart canonfig ui and open its new URL." }: { error: GuiRequestError; title?: string; recovery?: string }) {
+export function ErrorNotice({ error, title = "Operation failed", recovery }: { error: GuiRequestError; title?: string; recovery?: string }) {
   return (
     <section role="alert" className="rounded-lg border border-bad/40 p-4">
       <h2 className="flex items-center gap-2 font-medium"><WarningCircle className="size-4 text-bad" />{title}</h2>
-      <p className="mt-2 whitespace-pre-wrap [overflow-wrap:anywhere]">{error.message}</p>
-      <dl className="mt-3 text-sm">
-        <Fact label="Category"><span className="font-mono">{error.failure.category}</span></Fact>
-        <Fact label="CLI exit code"><span className="font-mono">{error.failure.exitCode}</span></Fact>
-        {error.httpStatus !== undefined && <Fact label="HTTP status"><span className="font-mono">{error.httpStatus}</span></Fact>}
-      </dl>
-      <p className="mt-3 text-sm text-muted-foreground">{recovery}</p>
+      <p className="mt-2 whitespace-pre-wrap [overflow-wrap:anywhere]"><CliText>{error.message}</CliText></p>
+      {recovery && <p className="mt-2 text-sm text-muted-foreground">{recovery}</p>}
+      {/* Category and exit code help when reporting a bug, not when deciding what to do next. */}
+      <details className="mt-3 text-sm">
+        <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
+        <dl className="mt-1">
+          <Fact label="Category"><span className="font-mono">{error.failure.category}</span></Fact>
+          <Fact label="CLI exit code"><span className="font-mono">{error.failure.exitCode}</span></Fact>
+          {error.httpStatus !== undefined && <Fact label="HTTP status"><span className="font-mono">{error.httpStatus}</span></Fact>}
+        </dl>
+      </details>
     </section>
   );
 }

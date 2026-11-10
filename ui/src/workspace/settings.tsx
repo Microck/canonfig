@@ -9,15 +9,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { DitherProgress, Hint, Mono, StatusMark, Term } from "@/shared/shared";
-import { DEMO } from "@/shared/metadata";
+import { CliText, DitherProgress, Hint, Mono, StatusMark, Term } from "@/shared/shared";
 import { shq } from "@/shared/shell";
 import { ErrorNotice } from "@/live/session";
 import { SetupJournal } from "@/onboarding/enrollment-controller";
 import { useWorkspace } from "./store";
 import type { SavedPolicy } from "./administration-types";
 export type { SavedPolicy } from "./administration-types";
-import { Body, CommandBox, Field, ListHead, ListRow, PageHeader, SectionLabel, SettingRow, settingsGroup, useDialogReturnFocus, useLeaveGuard } from "./kit";
+import { Body, CommandBox, EmptyState, Field, ListHead, ListRow, PageHeader, SectionLabel, SettingRow, settingsGroup, useDialogReturnFocus, useLeaveGuard } from "./kit";
 import { focusPageHeading } from "./routes";
 
 
@@ -34,10 +33,6 @@ export function warningName(d: { check: string; detail: string }) {
 /** Settings share an 880px outer cap; list columns keep their own readable caps. Follower forms (follower.tsx) use it too. */
 export function Column({ children }: { children: React.ReactNode }) {
   return <div className="max-w-[880px] px-4 pt-6 pb-20 sm:px-8">{children}</div>;
-}
-
-export function Lede({ children }: { children: React.ReactNode }) {
-  return <p className="mb-6 max-w-[70ch] text-base text-pretty text-muted-foreground">{children}</p>;
 }
 
 
@@ -110,21 +105,17 @@ export function ServiceView() {
       } />
       <Body reloading={service.loading}>
         <Column>
-          <Lede>Your other machines fetch signed revisions from this <Term term="Source Machine">Source</Term> through the source service. It runs in the background under your user account.</Lede>
           {service.error && <ErrorNotice error={service.error} />}
           <SectionLabel>Status</SectionLabel>
           <div data-tour="service-status" className={cn("mt-1", settingsGroup)}>
-            <SettingRow title="State" description={report?.detail}>
+            {/* The detail only helps when something is wrong; a running service needs no explanation. */}
+            <SettingRow title="State" description={report && report.state !== "running" ? <CliText>{report.detail}</CliText> : undefined}>
               <span className="inline-flex items-center gap-1.5 text-base">
                 <StatusMark kind={!report || !installed ? "off" : report.state === "running" ? "ok" : "warn"} />
                 {service.since && report?.state === "running" ? `Running since ${service.since}` : report?.state.replaceAll("-", " ") ?? "Status unavailable"}
               </span>
             </SettingRow>
-            <SettingRow title="Endpoint" description="Other machines fetch revisions from this address."><Mono className="text-foreground">{report?.endpoint ?? "Not loaded"}</Mono></SettingRow>
-            <SettingRow title="Managed by" description={report?.mechanism}><Mono className="text-foreground">{report?.serviceName ?? "Not loaded"}</Mono></SettingRow>
-            {report && !service.restart && <SettingRow title="Native manager" description={report.manager.state}>
-              {report.manager.active ? "Active" : "Inactive"} · {report.manager.enabled ? "Enabled" : "Disabled"} · {report.manager.matches ? "Definition matches" : "Definition differs"}
-            </SettingRow>}
+            <SettingRow title="Endpoint"><Mono className="text-foreground">{report?.endpoint ?? "Not loaded"}</Mono></SettingRow>
             {installed && report?.linger !== undefined && <SettingRow title="Keeps running">
               <span className={cn("inline-flex items-center gap-1.5 text-base", !report.linger && "text-warn")}>
                 <StatusMark kind={report.linger ? "ok" : "warn"} />
@@ -147,12 +138,17 @@ export function ServiceView() {
             {capabilities.serviceRestart && service.restart && <Button variant="outline" size="sm" disabled={service.busy} onClick={service.restart}>{service.action === "restart" ? "Restarting…" : "Restart"}</Button>}
             <Button variant="destructive" size="sm" disabled={service.busy} onClick={() => setConfirm(true)}>Remove service…</Button>
           </div>}
-          {report && !service.restart && <div className={cn("mt-5", settingsGroup)}>
-            {report.definitionPath && <SettingRow title="Service definition"><Mono>{report.definitionPath}</Mono></SettingRow>}
-            <SettingRow title="Serving revisions">{report.serving ? "Yes" : "No"}</SettingRow>
-            <SettingRow title="Supported modes">{report.supportedModes}</SettingRow>
-            <SettingRow title="Logs"><Mono>{report.logs}</Mono></SettingRow>
-          </div>}
+          {report && !service.restart && <details className="mt-6 text-sm">
+            <summary className="min-h-6 cursor-pointer text-muted-foreground">Technical details</summary>
+            <div className={cn("mt-2", settingsGroup)}>
+              <SettingRow title="Managed by" description={report.mechanism}><Mono className="text-foreground">{report.serviceName}</Mono></SettingRow>
+              <SettingRow title="Native manager" description={report.manager.state}>
+                {report.manager.active ? "Active" : "Inactive"} · {report.manager.enabled ? "Enabled" : "Disabled"} · {report.manager.matches ? "Definition matches" : "Definition differs"}
+              </SettingRow>
+              {report.definitionPath && <SettingRow title="Service definition"><Mono>{report.definitionPath}</Mono></SettingRow>}
+              <SettingRow title="Logs"><Mono>{report.logs}</Mono></SettingRow>
+            </div>
+          </details>}
         </Column>
       </Body>
       <ConfirmDialog open={confirm} onOpenChange={setConfirm} title="Remove the source service?"
@@ -213,7 +209,6 @@ export function AgentPolicyView() {
     <PageHeader crumbs={["Settings", "Agent policy"]} actions={<Button size="sm" variant="outline" disabled={agent.busy} onClick={agent.reload}>Reload settings</Button>} />
     <Body reloading={agent.loading || agent.harnessLoading}><Column>
       {agent.error && <ErrorNotice error={agent.error} />}
-      <Lede>Choose whether an AI agent may help when Canonfig has no exact recipe.</Lede>
       <div className={settingsGroup}><SettingRow title="Agent policy">Not loaded</SettingRow><SettingRow title="Harness bounds">Not loaded</SettingRow></div>
     </Column></Body>
   </>;
@@ -325,9 +320,6 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
       />
       <Body reloading={agent.loading || agent.harnessLoading}>
         <Column>
-          <Lede>
-            Choose whether an <Term term="Configuration Agent">AI agent</Term> may help when Canonfig has no exact recipe.
-          </Lede>
           {!agent.configured && saved && <p role="status" className="mb-4 text-sm text-muted-foreground">Not configured yet. These are the CLI defaults. Save policy to create the configuration.</p>}
           {agent.error && <ErrorNotice error={agent.error} />}
           {agent.harnessError && <ErrorNotice title="Harness unavailable" error={agent.harnessError} />}
@@ -511,18 +503,16 @@ export function InstallersView() {
     <>
       <PageHeader crumbs={["Settings", "Installers"]} actions={<Button size="sm" variant="outline" disabled={installers.busy} onClick={installers.reload}>Reload installers</Button>} />
       <Body reloading={installers.loading}>
-        <div className="flex items-center gap-1.5 border-b border-border px-[18px] py-3 text-sm text-muted-foreground">
-          Installer bindings point tool recipes at a package manager on this machine.
-          <Hint label="installer bindings">{"Tools in canonfig.jsonc carry an installation recipe per platform, like brew on macOS or apt on Linux.\nA binding points that recipe at a real executable."}</Hint>
-        </div>
         {installers.error && <div className="px-[18px] py-3"><ErrorNotice error={installers.error} /></div>}
-        {installers.data?.length === 0 && <p className="px-[18px] py-3 text-sm text-muted-foreground">No installer bindings are configured. Use canonfig installer set in a terminal.</p>}
-        <ListHead cols={cols} data-tour="installers-list">
+        {installers.data?.length === 0 && installers.suggestions.length === 0 && (
+          <EmptyState title="No installers set up" body={<>Point a tool recipe at a package manager with <CliText>{"`canonfig installer set`"}</CliText>.</>} />
+        )}
+        {!!installers.data?.length && <ListHead cols={cols} data-tour="installers-list">
           <span>Installer</span>
           <span>Executable</span>
           <span>Status</span>
           <span />
-        </ListHead>
+        </ListHead>}
         {installers.data?.map((r) => (
           <ListRow key={r.name} cols={cols} data-tour="installers-list">
             <span className="font-medium">{r.name}</span>
@@ -558,10 +548,8 @@ export function SetupView() {
   const ws = useWorkspace();
   const setup = ws.admin.setup;
   const installed = ws.admin.service.data?.manager.installed;
-  if (ws.enrollmentBackend && ws.session) return <>
-    <PageHeader crumbs={["Settings", "Setup"]} />
-    <Body><Column><SetupJournal backend={ws.enrollmentBackend} session={ws.session} /></Column></Body>
-  </>;
+  if (ws.enrollmentBackend && ws.session) return <SetupJournal backend={ws.enrollmentBackend} session={ws.session}
+    frame={(actions, content) => <><PageHeader crumbs={["Settings", "Setup"]} actions={actions} /><Body><Column>{content}</Column></Body></>} />;
   if (!setup) return null;
   const { phase, at } = setup.journal;
   const steps = setup.steps;
@@ -581,10 +569,6 @@ export function SetupView() {
       <PageHeader crumbs={["Settings", "Setup"]} actions={primary} />
       <Body>
         <Column>
-          <Lede>
-            The setup command writes each step to a journal before running it, so an interrupted setup resumes where it stopped.
-            {DEMO && " In this demo, progress carries on while you visit other pages, and is lost on reload or when you switch roles."}
-          </Lede>
           <SectionLabel action={<span className="text-xs text-faint tabular-nums">{setup.journalLabel}</span>}>
             {phase === "planned" ? "Plan" : phase === "complete" ? "Done" : "Approved plan"}
           </SectionLabel>
@@ -668,6 +652,11 @@ export function DoctorView() {
     run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus]);
+  // A fresh page has no result to show, so check once on open instead of showing an empty page.
+  useEffect(() => {
+    if (!doctor.data && !doctor.error && !running && focus !== "run") run();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   return (
     <>
       <PageHeader
@@ -680,12 +669,11 @@ export function DoctorView() {
       />
       <Body reloading={doctor.loading}>
         <Column>
-          <Lede>The health check (Canonfig calls it doctor) tests whether this machine can run Canonfig. Copying a recovery command does not run it.</Lede>
           {doctor.error && <ErrorNotice error={doctor.error} />}
           {doctor.status && <p role="status" className="mb-4 text-sm">Health: {doctor.status}</p>}
-          {!doctor.data && <p className="mb-4 text-sm text-muted-foreground">{running ? "Running checks…" : "Run checks to read this machine's current health."}</p>}
+          {!doctor.data && running && <p className="mb-4 text-sm text-muted-foreground">Running checks…</p>}
           <div className="mb-4 h-1.5">{running && progress !== undefined && <DitherProgress label="Running health check" value={progress} />}</div>
-          <div data-tour="doctor-results" className="border-t border-border" aria-live="polite">
+          <div data-tour="doctor-results" className={cn(checks.length > 0 && "border-t border-border")} aria-live="polite">
             {checks.map((d, i) => {
               const shown = !running || progress === undefined || progress > (i / checks.length) * 100;
               return (
@@ -697,11 +685,11 @@ export function DoctorView() {
                       <StatusMark kind={d.result} />
                     )}
                     <span>{d.check}</span>
-                    <span className="col-start-2 text-sm text-muted-foreground sm:col-start-3 sm:text-right">{shown ? d.detail : "Waiting"}</span>
+                    <span className="col-start-2 text-sm text-muted-foreground sm:col-start-3 sm:text-right">{shown ? <CliText>{d.detail}</CliText> : "Waiting"}</span>
                   </div>
                   {shown && d.fix && (
                     <div className="mt-2 ml-6.5 grid gap-1.5">
-                      <p className="text-sm text-pretty text-muted-foreground">{d.fix.why}</p>
+                      <p className="text-sm text-pretty text-muted-foreground"><CliText>{d.fix.why}</CliText></p>
                       <CommandBox>{d.fix.command}</CommandBox>
                     </div>
                   )}
@@ -731,7 +719,6 @@ export function VersionView() {
   const closeConfirmation = (open: boolean) => { if (!open) setConfirmation({ kind: "none" }); };
   const enableFocus = useDialogReturnFocus(focusPageHeading);
   const on = version.data?.enabled;
-  const releaseMajor = version.current.split(".")[0];
   const available = !!on && version.checked?.status === "available";
   const updated = version.checked?.status === "updated";
   return <>
@@ -742,7 +729,6 @@ export function VersionView() {
     </>} />
     <Body reloading={version.loading}>
       <Column>
-        <Lede>Check and install the newest stable release in major {releaseMajor} here. Automatic updates install patches in the current minor line or a newer major, never an in-major minor upgrade. Source and Followers only pair on the same major.minor, so update every machine after a minor or major change.</Lede>
         {version.error && <ErrorNotice error={version.error} />}
         {version.lifecycle.kind === "observation-lost" && <div className="mt-3"><p>The update may still be running. Resume observing it before starting another command.</p><Button variant="outline" size="sm" onClick={version.resume}>Resume update observation</Button></div>}
         <SectionLabel>This machine</SectionLabel>

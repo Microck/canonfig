@@ -200,7 +200,6 @@ function ServiceNotice() {
         urgent ? "border-bad/40 bg-bad/15" : "border-warn/40 bg-warn/10",
       )}
     >
-      <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", urgent ? "bg-bad" : "bg-warn")} />
       <span className="min-w-0 text-pretty">{message}</span>
       {action && <Button size="xs" variant="outline" disabled={service.busy} onClick={action.run}>{action.label}</Button>}
       {dismissKey !== undefined && (

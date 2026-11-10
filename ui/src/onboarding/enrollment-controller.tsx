@@ -4,11 +4,12 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Schema } from "effect";
 import { Button } from "@/components/ui/button";
 import { cn } from "cn";
-import { Check, Question, X } from "@/components/icons";
+import { Check, Circle, HourglassMedium, Question, Warning, X } from "@/components/icons";
+import { SectionLabel, settingsGroup } from "@/workspace/kit";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { isCoarsePointer, SNAP } from "@/lib/utils";
 import { HARNESS_NAMES, type HarnessId } from "@/shared/metadata";
-import { Mono } from "@/shared/shared";
+import { CliText, Mono } from "@/shared/shared";
 import { ErrorNotice } from "@/live/session";
 import type { GuiRequestError, GuiSession, WorkspaceBackend } from "@/gui-client";
 import { LiveResourcesContext, requestError, useLiveActions, useLiveResource } from "@/workspace/live/resource";
@@ -263,7 +264,7 @@ const APPROVAL_PILL_PX = 360;
  * is entered. Settings has no Continue, so `confirm` adds its own Confirm button.
  * The one help button beside the pill explains the planned changes and why the name is kept.
  */
-function SetupApproval({ controller: c, confirm: inlineConfirm }: { controller: EnrollmentController; confirm: boolean }) {
+export function SetupApproval({ controller: c, confirm: inlineConfirm }: { controller: EnrollmentController; confirm: boolean }) {
   const [editing, setEditing] = useState(false);
   const [tried, setTried] = useState(false);
   // Measured at the click, so the morph runs between two real pixel widths.
@@ -405,60 +406,23 @@ function SetupChangeSummary({ plan }: { plan: GuiSetupJournal | null }) {
   </div>;
 }
 
-export function SetupEvidence({ controller: c, view }: { controller: EnrollmentController; view: "approve" | "create" | "journal" }) {
+export function SetupEvidence({ controller: c, view }: { controller: EnrollmentController; view: "approve" | "create" }) {
   const records: GuiSetupStatus["items"] = c.status?.items ?? c.plan?.records ?? [];
   // Create names who approved this exact plan instead of repeating the Approve step's list.
   const digest = c.plan?.planDigest ?? c.status?.planDigest;
   const approvedBy = view === "create" ? [...(c.status?.approvals ?? []), ...(c.plan?.approvals ?? [])].find((approval) => approval.digest === digest)?.approver : undefined;
-  const technicalDetails = view === "journal" && <>
-    <Facts items={[
-      ["Plan identifier", <Mono className="break-all">{c.plan?.planDigest ?? c.status?.planDigest ?? "No plan created"}</Mono>],
-      ["Status", c.status?.stage ?? (c.approved ? "Approved" : "Awaiting approval")],
-    ]} />
-    {c.plan?.imports && <Facts items={[
-      ["Skipped local items", c.plan.imports.skipped.length.toLocaleString()],
-      ["Items with other versions", c.plan.imports.collisions.length.toLocaleString()],
-    ]} />}
-    <ul className="divide-y divide-border rounded-lg border border-border">
-      {(c.plan?.items ?? records).map((item) => {
-        const record = records.find((entry) => entry.id === item.id);
-        const evidence = record ? setupRecordEvidence(record) : undefined;
-        return <li key={item.id} className="px-3.5 py-3">
-          <div className="flex flex-wrap justify-between gap-2"><span>{"kind" in item ? ITEM_LABELS[item.kind] : RECORD_LABELS[item.id.split(":")[0]] ?? item.id}</span><span className="text-muted-foreground capitalize">{record?.status ?? "Pending"}</span></div>
-          <Mono className="block break-all text-xs">{item.id}</Mono>
-          {"scope" in item && <p className="text-sm text-muted-foreground">{item.scope === "machine" ? "This machine" : item.scope.replace(/^resource:tool:/, "Tool: ")}</p>}
-          {"detail" in item && Object.keys(item.detail).length > 0 && <details className="mt-2 text-sm">
-            <summary className="cursor-pointer text-muted-foreground">Review planned changes</summary>
-            <div className="mt-2"><SetupFields value={item.detail} /></div>
-          </details>}
-          {evidence && <p className="mt-1 text-sm text-muted-foreground">{evidence}</p>}
-        </li>;
-      })}
-    </ul>
-    {c.plan && [...c.plan.decisions, ...c.plan.exclusions, ...c.plan.evidence].map((entry, index) => <p key={index} className="text-sm text-muted-foreground">{entry}</p>)}
-    {c.plan?.imports && <details className="text-sm">
-      <summary className="min-h-6 cursor-pointer text-muted-foreground">Import review</summary>
-      <div className="mt-2"><SetupFields value={c.plan.imports} /></div>
-    </details>}
-    <p className="text-sm text-muted-foreground">After setup, open Settings, Source service to let other machines connect. To find tools this setup needs, open Profile and select Discover tools. Approval covers only the changes listed in this plan.</p>
-  </>;
   return <div className="space-y-4">
-    {view === "journal" ? <>
-      <p className="text-muted-foreground">Review the changes setup will make on this machine. Approving them changes nothing yet. Setup makes the changes when you apply the plan.</p>
-      {technicalDetails}
-    </> : <>
-      {view === "create" ? <p className="text-muted-foreground">
-        {approvedBy && <>Approved by <span className="text-foreground">{approvedBy}</span>. </>}Making {c.session.machineName} the Source applies the approved changes on this machine now. Go back to review them.
-      </p> : <SetupChangeSummary plan={c.plan} />}
-      {records.filter((record) => record.status === "failed" || record.status === "interrupted" || record.status === "skipped").map((record) => {
-        const evidence = setupRecordEvidence(record);
-        return <div key={record.id} className="space-y-1 text-sm">
-          <p>{RECORD_LABELS[record.id.split(":")[0]] ?? record.id}: {record.status}.</p>
-          {evidence && <p>{evidence}</p>}
-        </div>;
-      })}
-    </>}
-    {(view === "approve" || (view === "journal" && !c.approved)) && <SetupApproval key={c.plan?.planDigest ?? c.status?.planDigest} controller={c} confirm={view === "journal"} />}
+    {view === "create" ? <p className="text-muted-foreground">
+      {approvedBy && <>Approved by <span className="text-foreground">{approvedBy}</span>. </>}Making {c.session.machineName} the Source applies the approved changes on this machine now. Go back to review them.
+    </p> : <SetupChangeSummary plan={c.plan} />}
+    {records.filter((record) => record.status === "failed" || record.status === "interrupted" || record.status === "skipped").map((record) => {
+      const evidence = setupRecordEvidence(record);
+      return <div key={record.id} className="space-y-1 text-sm">
+        <p>{RECORD_LABELS[record.id.split(":")[0]] ?? record.id}: {record.status}.</p>
+        {evidence && <p><CliText>{evidence}</CliText></p>}
+      </div>;
+    })}
+    {view === "approve" && <SetupApproval key={c.plan?.planDigest ?? c.status?.planDigest} controller={c} confirm={false} />}
     {c.state.loading && <p role="status">Running setup…</p>}
   </div>;
 }
@@ -474,20 +438,66 @@ function SetupFields({ value }: { value: unknown }) {
   return <span>{typeof value === "boolean" ? value ? "Yes" : "No" : String(value)}</span>;
 }
 
-export function SetupJournal({ backend, session }: { backend: WorkspaceBackend; session: GuiSession }) {
+const STEP_MARK: Record<GuiSetupStatus["items"][number]["status"], ReactNode> = {
+  completed: <Check className="size-3.5 text-ok" aria-label="Done" />,
+  skipped: <Check className="size-3.5 text-faint" aria-label="Skipped" />,
+  running: <HourglassMedium className="size-3.5 text-muted-foreground" aria-label="Running" />,
+  interrupted: <Warning className="size-3.5 text-act" aria-label="Interrupted" />,
+  failed: <Warning className="size-3.5 text-bad" aria-label="Failed" />,
+  pending: <Circle className="size-3 text-faint" aria-label="Pending" />,
+};
+
+/**
+ * Settings, Setup on a real machine: the recorded steps as one list, like the rest of Settings. The plan's
+ * identifiers, decisions and field-level detail stay in a closed "Technical details" section.
+ * `frame` places the page actions in the page header and the content in the page body.
+ */
+export function SetupJournal({ backend, session, frame }: { backend: WorkspaceBackend; session: GuiSession; frame: (actions: ReactNode, content: ReactNode) => ReactNode }) {
   const resources = useContext(LiveResourcesContext);
   if (!resources) throw new Error("Setup settings require a live workspace.");
   const status = useLiveResource(backend, "/api/setup", GuiSetupStatus, true);
-  const controller = useEnrollmentController(backend, session, [
+  const c = useEnrollmentController(backend, session, [
     status.data, (value) => resources.cache.set("/api/setup", value),
   ]);
-  const error = status.error ?? controller.state.error;
-  return <div className="space-y-4" aria-busy={status.loading || controller.state.loading}>
-    {error && <ErrorNotice error={error} />}
-    <Button variant="outline" disabled={status.loading || controller.state.loading} onClick={controller.reloadStatus}>Reload setup status</Button>
-    {controller.status?.planDigest ? <>
-      <SetupEvidence controller={controller} view="journal" />
-      {controller.status.approved && <Button disabled={controller.state.loading} onClick={() => void controller.applySetup()}>Apply approved setup</Button>}
-    </> : <p>No setup plan has been recorded on this machine.</p>}
-  </div>;
+  const error = status.error ?? c.state.error;
+  const busy = status.loading || c.state.loading;
+  const current = c.status;
+  const complete = current?.stage === "complete";
+  const records = current?.items ?? [];
+  const actions = <>
+    <Button size="sm" variant="outline" disabled={busy} onClick={c.reloadStatus}>Reload</Button>
+    {current?.approved && !complete && <Button size="sm" variant="primary" disabled={c.state.loading} onClick={() => void c.applySetup()}>Apply approved setup</Button>}
+  </>;
+  return frame(actions,
+    <div className="space-y-4" aria-busy={busy}>
+      {error && <ErrorNotice error={error} />}
+      {current?.planDigest ? <>
+        <SectionLabel action={<span className="text-xs text-faint">{complete ? "Done" : current.approved ? "Approved, not applied" : "Waiting for approval"}</span>}>Steps</SectionLabel>
+        <ol aria-label="Setup steps" className={cn("mt-1", settingsGroup)}>
+          {records.map((record) => {
+            // Ids are "<kind>:<target>"; the target names the tool, so "tool-verify:pnpm" reads "Check pnpm".
+            const [kind, target] = record.id.split(/:(.*)/s);
+            const label = (kind === "tool-verify" || kind === "recipe-install") && target ? `${kind === "tool-verify" ? "Check" : "Install"} ${target}` : RECORD_LABELS[kind] ?? record.id;
+            // Evidence repeats the id ("tool-verify:pnpm failed: …"); the row already names it.
+            const evidence = setupRecordEvidence(record)?.replace(`${record.id} ${record.status}: `, "");
+            const problem = record.status === "failed" || record.status === "interrupted";
+            return <li key={record.id} className="grid min-h-10 grid-cols-[16px_minmax(0,1fr)] items-center gap-x-3 px-4 py-2 text-base">
+              <span className="flex justify-center">{STEP_MARK[record.status]}</span>
+              <span>{label}</span>
+              {problem && evidence && <p className="col-start-2 text-sm text-pretty text-muted-foreground"><CliText>{evidence}</CliText></p>}
+            </li>;
+          })}
+        </ol>
+        {!current.approved && <SetupApproval key={current.planDigest} controller={c} confirm />}
+        {c.state.loading && <p role="status" className="text-sm text-muted-foreground">Running setup…</p>}
+        <details className="text-sm">
+          <summary className="min-h-6 cursor-pointer text-muted-foreground">Technical details</summary>
+          <div className="mt-3 space-y-3">
+            <Facts items={[["Plan identifier", <Mono className="break-all">{current.planDigest}</Mono>], ["Stage", current.stage]]} />
+            {c.plan && <SetupFields value={{ decisions: c.plan.decisions, exclusions: c.plan.exclusions, evidence: c.plan.evidence, imports: c.plan.imports }} />}
+          </div>
+        </details>
+      </> : !busy && <p className="text-muted-foreground">No setup has been recorded on this machine.</p>}
+    </div>,
+  );
 }

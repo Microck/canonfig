@@ -53,7 +53,7 @@ function Fixture({ backend, session }: { backend: WorkspaceBackend; session: Gui
   if (route.kind !== "workspace") return null;
   return <TooltipProvider><LiveWorkspaceProvider backend={backend} session={session} route={route} onInstalled={() => assert.fail("Unexpected installation")}>
     <Probe />
-    {route.view === "setup" && <SetupJournal backend={backend} session={session} />}
+    {route.view === "setup" && <SetupJournal backend={backend} session={session} frame={(actions, content) => <>{actions}{content}</>} />}
     {route.view === "profile" && route.profileTab === "items" && <ProfileView />}
     {route.view === "local" && <LocalView />}
     {route.view === "secrets" && <SecretsView />}

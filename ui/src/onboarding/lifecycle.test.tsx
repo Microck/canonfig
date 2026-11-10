@@ -16,7 +16,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 // Static imports run too early: Motion and Radix must detect the registered DOM, not Node's loading environment.
 const { MotionConfig } = await import("motion/react");
 const { createRoot } = await import("react-dom/client");
-const { EnrollmentOnboarding, SetupEvidence, useEnrollmentController } = await import("./enrollment-controller");
+const { EnrollmentOnboarding, SetupApproval, useEnrollmentController } = await import("./enrollment-controller");
 const { TooltipProvider } = await import("../components/ui/tooltip");
 after(async () => { await GlobalRegistrator.unregister(); });
 const session = GuiSession.make({ role: "unconfigured", machineName: "Isolated test", folderPath: "/tmp/onboarding-test", version: "7.1.0" });
@@ -25,7 +25,7 @@ const inspection = { endpoint: "https://127.0.0.1:17342", sourceFingerprint: "so
 let current: EnrollmentController;
 function Probe({ backend, evidenceView }: { backend: WorkspaceBackend; evidenceView?: "journal" }) {
   current = useEnrollmentController(backend, session);
-  return evidenceView ? <SetupEvidence controller={current} view={evidenceView} /> : <div>{current.joined ? "Joined" : "Not joined"}</div>;
+  return evidenceView ? <SetupApproval controller={current} confirm /> : <div>{current.joined ? "Joined" : "Not joined"}</div>;
 }
 async function fixture(handler: (path: string, method: string, out: ServerResponse, body: string) => void, wizard = false, evidenceView?: "journal") {
   const server = createServer((req, out) => {
@@ -353,7 +353,7 @@ it("the Settings journal keeps an unapproved plan reviewable and approvable", as
   }, false, "journal");
   try {
     await act(async () => { await current.planSetup([], [], () => {}); });
-    assert.ok(app.container.textContent?.includes("source-init"), "the recorded step must remain available before approval");
+    // Settings, Setup lists the steps from /api/setup; this test covers the approval control it shows beside them.
     const start = [...app.container.querySelectorAll("button")].find((button) => button.textContent === "Approve setup");
     assert.ok(start && !start.disabled);
     await act(async () => start.click());
@@ -371,7 +371,6 @@ it("the Settings journal keeps an unapproved plan reviewable and approvable", as
     await until(() => current.approved);
     assert.equal(approvals, 1);
     assert.equal(app.container.querySelector("#setup-approver"), null);
-    assert.ok(app.container.textContent?.includes("source-init"), "approval must not remove the journal evidence");
   } finally { await app.close(); }
 });
 

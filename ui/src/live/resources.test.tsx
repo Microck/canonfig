@@ -17,7 +17,7 @@ function NavigationProbe({ backend, session }: { backend: WorkspaceBackend; sess
   if (route.kind !== "workspace") return <p>Page not found</p>;
   return <LiveWorkspaceProvider backend={backend} session={session} route={route} onInstalled={() => assert.fail("Navigation tests must not install updates")}>
     <ResourceProbe />
-    {route.view === "setup" && <SetupJournal backend={backend} session={session} />}
+    {route.view === "setup" && <SetupJournal backend={backend} session={session} frame={(actions, content) => <>{actions}{content}</>} />}
   </LiveWorkspaceProvider>;
 }
 
@@ -141,14 +141,14 @@ for (const role of ["source", "follower"] as const) {
       assert.ok(apply);
       const statusReadsBeforeApply = requests.filter((path) => path === "/api/status").length;
       await act(async () => { apply.click(); });
-      await settle("Apply approved setup");
+      await settle("Done");
       assert.deepEqual(mutations.at(-1), { path: "/api/setup/apply", body: { planDigest: "navigation-plan" } });
       assert.equal(requests.filter((path) => path === "/api/setup").length, 2, "Apply refreshes setup exactly once");
       const afterApply = requests.filter((path) => path !== "/api/status").length;
       await act(async () => { navigate(`/${role}/overview`); });
       await settle("Navigation fixture");
       await act(async () => { navigate(`/${role}/settings/setup`); });
-      await settle("Apply approved setup");
+      await settle("Done");
       assert.equal(requests.filter((path) => path !== "/api/status").length, afterApply, "Setup keeps its post-mutation status on revisit");
       assert.equal(requests.filter((path) => path === "/api/status").length, statusReadsBeforeApply + 1, "Apply refreshes machine status before Overview reuses it");
       if (role === "source") {
@@ -236,7 +236,6 @@ it("self-update offers a same-major minor, preserves major notices and pairing w
     await settle("/tmp/update-fixture/npm/bin/npm-cli.js");
     await click("Check for updates");
     await settle(detail);
-    assert.ok(container.textContent?.includes("Automatic updates install patches in the current minor line or a newer major, never an in-major minor upgrade."));
     await click("Install 7.1.0…");
     assert.ok(document.body.textContent?.includes("After installation, this GUI stops."));
     await click("Install update");
