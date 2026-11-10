@@ -1138,9 +1138,10 @@ function HarnessesTab() {
   const ws = useWorkspace();
   return (
     <Body>
-      {/* The one consequence a person can't see in the table: unlisting cleans up on every machine. */}
+      {/* The one consequence a person can't see in the table: unlisting cleans up where Canonfig manages the harness.
+          A machine that excluded it keeps what it has, and a backup may not exist, so neither is promised here. */}
       <p data-tour="profile-harnesses" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
-        Unlisting a harness removes what Canonfig wrote into it on every machine. Its backup stays.
+        Unlisting a harness removes what Canonfig wrote into it on each machine that manages it.
       </p>
       <HarnessTable
         edit="listed"

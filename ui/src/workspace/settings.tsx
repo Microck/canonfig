@@ -701,12 +701,17 @@ const CHECK_LABEL: Record<string, string> = {
   scheduler: "Update schedule", "package-managers": "Package managers", "agent-adapter": "AI agent", harnesses: "AI coding tools",
 };
 
-/** Where a problem can be fixed in the GUI. Checks without an entry are fixed in a terminal (their message says how). */
+/**
+ * Where a problem can be fixed in the GUI, keyed by the CLI probe name or the demo's display name (lowercased,
+ * spaces as dashes). Checks without an entry are fixed in a terminal (their message says how).
+ */
 const CHECK_ACTION: Record<string, { label: string; open: (ws: Workspace) => void }> = {
   harnesses: { label: "Edit list", open: (ws) => ws.role === "source" ? ws.navigate(workspaceHref("source", "profile", { profileTab: "harnesses" })) : ws.go("local") },
   "agent-adapter": { label: "Open agent policy", open: (ws) => ws.go("agent") },
+  "configuration-agent": { label: "Open agent policy", open: (ws) => ws.go("agent") },
   "package-managers": { label: "Open installers", open: (ws) => ws.go("installers") },
   scheduler: { label: "Open schedule", open: (ws) => ws.go("schedule") },
+  "native-scheduler": { label: "Open schedule", open: (ws) => ws.go("schedule") },
   source: { label: "Open sync", open: (ws) => ws.go("sync") },
 };
 
@@ -759,7 +764,7 @@ export function DoctorView() {
             {relevant.map((d, i) => {
               const shown = !running || progress === undefined || progress > (i / relevant.length) * 100;
               const problem = shown && (d.result === "warn" || d.result === "bad");
-              const action = problem ? CHECK_ACTION[d.check] : undefined;
+              const action = problem ? CHECK_ACTION[d.check.toLowerCase().replaceAll(" ", "-")] : undefined;
               return (
                 <div key={d.check} className="border-b border-border/70 py-2.5">
                   <div className="grid grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-x-3 text-base">
