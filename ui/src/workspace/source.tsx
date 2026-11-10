@@ -441,7 +441,8 @@ export function WorkspaceEvidence() {
           </div>
         </section>
         <Button variant="outline" size="sm" onClick={() => setView("sync")}>Open synchronization details</Button>
-        <section><SectionLabel>SSH tunnel</SectionLabel><TunnelEvidence report={tunnel} /></section>
+        {/* A follower that joined without a tunnel has nothing to show here. */}
+        {(tunnel as { lifecycle?: unknown } | null)?.lifecycle !== "not-configured" && <section><SectionLabel>SSH tunnel</SectionLabel><TunnelEvidence report={tunnel} /></section>}
       </>}
     </>
   );

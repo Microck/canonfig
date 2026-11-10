@@ -254,7 +254,7 @@ export function FollowerOverview() {
         }
       />
       <Body>
-        {!ws.capabilities.simulatedTelemetry ? <StateHeader tone="muted" title={ws.session?.machineName ?? ws.machineName} body="Follower Machine. Status below reflects the recorded synchronization and enrollment evidence." /> : <StateHeader
+        {!ws.capabilities.simulatedTelemetry ? <StateHeader tone="muted" title={ws.session?.machineName ?? ws.machineName} body="Open Sync to check for updates." /> : <StateHeader
           tone={tone}
           running={running}
           title={
@@ -549,14 +549,13 @@ function SyncForm() {
       >
         {live ? <>
           <InterruptedNotice />
-          {!live.operation && <EmptyState title="Check for a revision" body="Check for updates to read the real plan. Nothing changes until you apply." />}
+          {!live.operation && <EmptyState title="Check for a revision" body="Nothing changes until you apply." />}
           <FollowerOperationEvidence />
           <div className="space-y-3 border-t border-border px-[18px] py-5">
             <SectionLabel>Held items and local changes</SectionLabel>
-            <p className="max-w-prose text-sm text-muted-foreground">Canonfig leaves drifted items as they are. Move your edit into the Local folder, ask the Source to publish it, or restore the published content. Resolve local name collisions with an overlay or by renaming your item.</p>
             <Button variant="outline" size="sm" onClick={() => ws.go("local")}>Open Local settings</Button>
             <SectionLabel className="pt-4">Private adoption review</SectionLabel>
-            <p className="max-w-prose text-sm text-muted-foreground">Create the CLI's private review files before first adoption. Their text stays on this machine and cannot be read or deleted in the browser.</p>
+            <p className="max-w-prose text-sm text-muted-foreground">Create the CLI's private review files before first adoption.</p>
             <Button variant="outline" size="sm" disabled={running || blocks.blocked !== null} onClick={live.createReview}>Create private review</Button>
           </div>
         </> : <>
@@ -923,7 +922,8 @@ function ScheduleForm() {
           {(stopped || saved === null) && <p role="status" className="mb-6 text-sm text-muted-foreground">{stopped ? `${stopped} Its schedule was removed.` : "No schedule is set, so this machine only updates when you apply from Sync."}</p>}
           <ScheduleFields idPrefix="sch" value={draft} onChange={setDraft} defaultLabel={defaultLabel} allowCustom={!!ws.followerLive} />
           {ws.followerLive ? <div className={cn("mt-8", settingsGroup)}>
-            <SettingRow title="Native schedule" description={text(ws.followerLive.schedule?.detail)}>{text(ws.followerLive.schedule?.state)?.replaceAll("-", " ") ?? "Not reported"}</SettingRow>
+            {/* "Not selected" tells you to run a CLI command; Save schedule above does that. */}
+            <SettingRow title="Native schedule" description={text(ws.followerLive.schedule?.state) === "not-selected" ? undefined : text(ws.followerLive.schedule?.detail)}>{text(ws.followerLive.schedule?.state)?.replaceAll("-", " ") ?? "Not reported"}</SettingRow>
             {text(ws.followerLive.schedule?.nextRun) && <SettingRow title="Next check">{text(ws.followerLive.schedule?.nextRun)}</SettingRow>}
             {text(ws.followerLive.schedule?.platform) && <SettingRow title="Platform">{text(ws.followerLive.schedule?.platform)}</SettingRow>}
             {text(ws.followerLive.schedule?.unattendedRuns) && <SettingRow title="Recorded runs">{text(ws.followerLive.schedule?.unattendedRuns)}</SettingRow>}
@@ -1057,6 +1057,7 @@ export function LocalView() {
 function LocalForm() {
   const ws = useWorkspace();
   const allowed = ws.followerLive?.allowed ?? ws.profile.localAllow;
+  const shownCategories = LOCAL_CATEGORIES.filter((c) => allowed.includes(c) || ws.local.some((l) => l.category === c));
   const selected = ws.focus;
   const adding = selected === "new";
   const current = ws.local.find((l) => l.id === selected);
@@ -1120,15 +1121,16 @@ function LocalForm() {
         ? <LocalAuthoringEditor live={ws.followerLive} key={`${adding ? "new" : selected}:${ws.followerLive.local?.items.find((entry) => entry.path === (adding || current?.category === "mcp" || current?.category === "settings" ? "local.jsonc" : current?.path))?.digest ?? ""}`} item={adding ? null : current!} onClose={() => ws.go("local")} />
         : <LocalEditor key={adding ? "new" : selected} item={adding ? null : current!} onClose={() => ws.go("local")} />)}>
         <p className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
-          Items here live in <Mono className="text-foreground">~/.canonfig/local</Mono> on this machine. Canonfig adds them to what {ws.sourceMachine.hostname} publishes, never replaces them and
-          never sends them to the Source. {ws.sourceMachine.hostname} decides which kinds a machine may add. Canonfig calls this the <Term term="Local folder">local folder</Term>.
+          Items in <Mono className="text-foreground">~/.canonfig/local</Mono> add to what the Source publishes and stay on this machine.
         </p>
-        <ListHead cols={cols} minWidth={colsMin} data-tour="local-list">
+        {/* A kind the Source does not allow, with nothing in it, is a row with nothing to do; list only usable or occupied kinds. */}
+        {shownCategories.length === 0 && <EmptyState title="No local items allowed" body="The Source chooses which kinds a machine may add, in its Profile defaults." />}
+        {shownCategories.length > 0 && <ListHead cols={cols} minWidth={colsMin} data-tour="local-list">
           <span>Name</span>
           <span>In ~/.canonfig/local</span>
           <span>Status</span>
-        </ListHead>
-        {LOCAL_CATEGORIES.map((c) => {
+        </ListHead>}
+        {shownCategories.map((c) => {
           const items = ws.local.filter((l) => l.category === c);
           const ok = allowed.includes(c);
           return (
@@ -1167,8 +1169,7 @@ function LocalForm() {
             <Term term="Local Overlay">Replacing published items</Term>
           </SectionLabel>
           <p className="pb-2 text-sm text-pretty text-muted-foreground">
-            A local item with the same name as one {ws.sourceMachine.hostname} publishes stops every update, because Canonfig won't pick one. Rename or remove yours, or let it replace{" "}
-            {ws.sourceMachine.hostname}'s on this machine. These choices live in local.jsonc and never go to {ws.sourceMachine.hostname}.
+            A local item named like a published one stops updates until you rename or remove it, or let it replace the published one here.
           </p>
           <div data-tour="local-overlays" className={cn("mt-1 max-w-[880px]", settingsGroup)}>
             {ws.followerLive && <form className="flex flex-wrap gap-2 px-4 py-3" onSubmit={(event) => { event.preventDefault(); if (overlayDraft.trim()) ws.setOverlays((current) => [...current, overlayDraft.trim()]); }}>
@@ -1872,6 +1873,7 @@ export function FollowerSecretsView() {
   const [refresh, setRefresh] = useSharedState(SECRETS_KEY, ws.secretsRefresh);
   const { blocked, unreachable } = useSyncBlocks();
   const cols = "minmax(180px,240px) minmax(140px,1fr)";
+  const secretRows = ws.followerLive ? ws.followerLive.secrets : ws.secrets;
   const colsMin = 180 + 140 + 12 + 20;
   return (
     <>
@@ -1903,15 +1905,15 @@ export function FollowerSecretsView() {
         }
       />
       <Body reloading={refresh.busy}>
-        <p data-tour="secrets-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
-          {ws.capabilities.simulatedTelemetry ? <>This machine <Term term="Follower Group"><span className="lowercase">{PLAIN.secretsGroup}</span></Term> (group <Mono className="text-foreground">{SECRETS_GROUP}</Mono>), so it gets shared secrets from {ws.sourceMachine.hostname} into the macOS Keychain. Last updated {refresh.updated}.{blocked && ` ${blocked}`}</> : "Secret values stay in the native credential store. Only metadata is shown here."}
+        {(ws.capabilities.simulatedTelemetry || (ws.followerLive && ws.secretsRefresh.updated)) && <p data-tour="secrets-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
+          {ws.capabilities.simulatedTelemetry ? <>This machine <Term term="Follower Group"><span className="lowercase">{PLAIN.secretsGroup}</span></Term> (group <Mono className="text-foreground">{SECRETS_GROUP}</Mono>), so it gets shared secrets from {ws.sourceMachine.hostname} into the macOS Keychain. Last updated {refresh.updated}.{blocked && ` ${blocked}`}</> : null}
           {ws.followerLive && ws.secretsRefresh.updated && <span role="status"> {ws.secretsRefresh.updated}</span>}
-        </p>
-        <ListHead cols={cols} minWidth={colsMin} data-tour="secrets-list">
+        </p>}
+        {secretRows.length === 0 ? <EmptyState title="No shared secrets" body="Update secrets fetches any the Source shares with this machine." /> : <ListHead cols={cols} minWidth={colsMin} data-tour="secrets-list">
           <span>Name</span>
           <span>{ws.followerLive ? "Origin" : "Updated at Source"}</span>
-        </ListHead>
-        {(ws.followerLive ? ws.followerLive.secrets : ws.secrets).map((s) => (
+        </ListHead>}
+        {secretRows.map((s) => (
           <ListRow key={s.name} cols={cols} minWidth={colsMin} data-tour="secrets-list">
             <span className="flex min-w-0 items-center gap-2">
               <Key className="size-3.5 shrink-0 text-faint" />
@@ -1955,7 +1957,7 @@ function TunnelForm() {
       <>
         <PageHeader crumbs={["Settings", "SSH tunnel"]} actions={ws.followerLive && <Button size="sm" variant="outline" onClick={ws.reload}>Reload</Button>} />
         <Body>
-          <EmptyState title="No SSH tunnel" body={`This machine joined without a tunnel, so it connects to ${ws.sourceMachine.hostname}'s source service directly.`} />
+          <EmptyState title="No SSH tunnel" body="This machine connects to the Source directly." />
         </Body>
       </>
     );
@@ -2028,7 +2030,7 @@ export function MachineView() {
               {ws.tunnelConfigured ? " (via SSH tunnel)" : ""}
             </SettingRow>
             <SettingRow title="Identity">{ws.unenrolled ? "Deleted" : <Mono className="text-foreground">{ws.selfFollower?.id ?? "Not reported"}</Mono>}</SettingRow>
-            <SettingRow title={<Term term="Machine Profile">Profile</Term>} description={`${ws.sourceMachine.hostname} publishes one profile, and this machine follows it.`}>
+            <SettingRow title={<Term term="Machine Profile">Profile</Term>} >
               {ws.followerLive ? text(record(ws.followerLive.local?.canonicalConfig.profile).name) ?? "Not reported" : ws.profile.name || "Not reported"}
             </SettingRow>
             <SettingRow title={PLAIN.groups} description={`Groups come from the invitation. To change them, ${ws.sourceMachine.hostname} makes a new invitation and this machine joins again with it.`}>

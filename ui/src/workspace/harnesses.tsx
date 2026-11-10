@@ -5,7 +5,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { HARNESS_NAMES, DEMO, SURFACE_CATEGORIES, SURFACE_NAMES, SURFACE_SUPPORT, type Harness, type HarnessId, type Snapshot, type SurfaceCategory } from "@/shared/metadata";
-import { Mono, StatusMark, Term, type StatusKind } from "@/shared/shared";
+import { Mono, StatusMark, type StatusKind } from "@/shared/shared";
 import { useWorkspace } from "./store";
 import { AnimatedRow, Body, EmptyState, ListHead, ListRow, PageHeader, RowPresence } from "./kit";
 import { ConfirmDialog } from "./settings";
@@ -190,9 +190,7 @@ export function BackupsView() {
       <PageHeader crumbs={["Backups"]} actions={ws.followerLive && <Button size="sm" variant="outline" onClick={ws.reload}>Reload</Button>} />
       <Body>
         <p data-tour="backups-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
-          Before Canonfig first writes to a harness, it copies what that harness had into <Mono className="text-foreground">~/.canonfig/.backups</Mono>. It keeps the first
-          snapshot, from before it ever wrote, and the {RECENT_KEPT} most recent; a new one replaces the oldest of those {RECENT_KEPT}. Canonfig calls each one a{" "}
-          <Term term="Takeover Snapshot">takeover snapshot</Term>. Snapshots never leave this machine.
+          Canonfig keeps the first snapshot and the {RECENT_KEPT} most recent.
         </p>
         {ws.backups === false && (
           <p className="flex items-center gap-2 border-b border-border px-[18px] py-3 text-sm text-pretty text-warn">

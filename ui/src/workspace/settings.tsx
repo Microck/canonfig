@@ -341,7 +341,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
             ))}
           </RadioGroup>
 
-                    {agent.harnessWritable && !agent.harnessConfigured && !agent.harnessError && <p className="mt-4 text-sm text-muted-foreground">Harness not configured yet. The fields below show defaults, not saved settings.</p>}
+                    {agent.harnessWritable && !agent.harnessConfigured && !agent.harnessError && <p className="mt-4 text-sm text-muted-foreground">Harness not saved yet.</p>}
           {/* inert keeps the disabled bounds out of the tab order, not just greyed out. */}
           {/* A Source shows the bounds greyed out: they are set on each Follower, where the agent runs. */}
           {harness !== null && <div className={cn("mt-8 grid gap-4", (off || !agent.harnessWritable) && "opacity-40")} inert={off || !agent.harnessWritable || agent.busy}>
@@ -418,7 +418,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
                       className="h-[28px] w-40 font-mono text-sm"
                     />
                   </SettingRow>
-                  <SettingRow title="Executable" htmlFor="ap-exec" description={<>Leave empty to run <Mono>{harness}</Mono> from your PATH.</>}>
+                  <SettingRow title="Executable" htmlFor="ap-exec" description={<>Blank runs <Mono>{harness}</Mono> from your PATH.</>}>
                     <Input
                       id="ap-exec"
                       value={executable}
