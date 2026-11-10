@@ -149,18 +149,32 @@ it("enforces Source role and keeps unsupported operations absent", async () => {
   }
 }, 60_000);
 
-it("lists and checks real installer bindings and preserves doctor failure evidence", async () => {
+it("adds, lists, checks and removes real installer bindings and preserves doctor failure evidence", async () => {
   const machine = fixture();
   const npmCli = process.platform === "win32"
     ? join(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js")
     : realpathSync(join(dirname(process.execPath), "npm"));
-  const bound = machine.invoke(["installer", "set", "npm", "--executable", process.execPath, "--arg", npmCli]);
-  expect(bound.status, bound.stderr).toBe(0);
   const api = await start(machine.env);
-  expect((await api("/api/installers")).body).toMatchObject({ bindings: [{ method: "npm", executable: process.execPath }], suggestions: [] });
+  // A relative path is refused before anything is written.
+  expect((await api("/api/installers", "POST", { method: "npm", executable: "node", arguments: [] })).body)
+    .toMatchObject({ category: "human-action-required", exitCode: 3 });
+  expect((await api("/api/installers")).body.bindings).toEqual([]);
+  const added = await api("/api/installers", "POST", { method: "npm", executable: process.execPath, arguments: [npmCli] });
+  expect(added.status, JSON.stringify(added.body)).toBe(200);
+  expect(added.body).toMatchObject({ binding: { method: "npm", executable: process.execPath } });
+  const listed = (await api("/api/installers")).body;
+  expect(listed).toMatchObject({ bindings: [{ method: "npm", executable: process.execPath }] });
+  // A bound method is no longer offered as a detected choice.
+  expect(listed.detected.map((choice: { method: string }) => choice.method)).not.toContain("npm");
+  // The CLI reads the binding the GUI wrote.
+  expect(JSON.parse(machine.invoke(["installer", "list"]).stdout).data.bindings).toMatchObject([{ method: "npm" }]);
   expect((await api("/api/installers/npm/check", "POST")).body).toMatchObject({ verified: true, scope: "current-process" });
   expect((await api("/api/installers/brew/check", "POST")).body).toMatchObject({ category: "human-action-required", exitCode: 3 });
   expect((await api("/api/installers/npm/check", "POST", { extra: true })).body).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  expect((await api("/api/installers/npm", "DELETE")).body).toEqual({ removed: true });
+  expect((await api("/api/installers")).body.bindings).toEqual([]);
+  expect((await api("/api/installers/npm/check", "POST")).body).toMatchObject({ category: "human-action-required", exitCode: 3 });
+  expect((await api("/api/installers/npm", "DELETE")).body).toEqual({ removed: false });
   const doctor = await api("/api/doctor", "POST");
   expect(doctor.status).toBe(200);
   expect(doctor.body.report).toMatchObject({ schema: "canonfig.doctor/v1", noInput: true });

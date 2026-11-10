@@ -14,7 +14,7 @@ import { shq } from "@/shared/shell";
 import { ErrorNotice } from "@/live/session";
 import { SetupJournal } from "@/onboarding/enrollment-controller";
 import { useWorkspace } from "./store";
-import type { SavedPolicy } from "./administration-types";
+import type { InstallerChoice, SavedPolicy } from "./administration-types";
 export type { SavedPolicy } from "./administration-types";
 import { Body, CommandBox, EmptyState, Field, ListHead, ListRow, PageHeader, SectionLabel, SettingRow, settingsGroup, useDialogReturnFocus, useLeaveGuard } from "./kit";
 import { focusPageHeading } from "./routes";
@@ -495,50 +495,112 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
   );
 }
 
+/** Package managers a binding can name; mirrors the CLI's installer methods. */
+const INSTALLER_METHODS: readonly InstallerChoice["method"][] = ["apt", "brew", "bun", "cargo", "npm", "pnpm", "uv", "winget"];
+
+/**
+ * Add an installer by hand: the method plus the exact executable, and for npm or pnpm run through Node, the
+ * JavaScript entrypoint. Saving runs the same --version check as `canonfig installer set` before anything is written.
+ */
+function AddInstallerDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const installers = useWorkspace().admin.installers;
+  const [method, setMethod] = useState<InstallerChoice["method"]>(installers.detected[0]?.method ?? "brew");
+  const found = installers.detected.find((choice) => choice.method === method);
+  // Untouched fields follow the chosen method's detected path; typing takes over.
+  const [executable, setExecutable] = useState<string | null>(null);
+  const [entrypoint, setEntrypoint] = useState<string | null>(null);
+  const executableValue = executable ?? found?.executable ?? "";
+  const entrypointValue = entrypoint ?? found?.arguments[0] ?? "";
+  const save = async () => {
+    const saved = await installers.add({ method, executable: executableValue.trim(), arguments: entrypointValue.trim() ? [entrypointValue.trim()] : [] });
+    if (saved) onOpenChange(false);
+  };
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Add installer</DialogTitle>
+          <DialogDescription>Canonfig checks it runs before saving.</DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4">
+          <Field label="Package manager" htmlFor="installer-method">
+            <Select value={method} onValueChange={(value) => { const next = INSTALLER_METHODS.find((entry) => entry === value); if (next) { setMethod(next); setExecutable(null); setEntrypoint(null); } }}>
+              <SelectTrigger id="installer-method" className="w-40"><SelectValue /></SelectTrigger>
+              <SelectContent>{INSTALLER_METHODS.map((entry) => <SelectItem key={entry} value={entry}>{entry}</SelectItem>)}</SelectContent>
+            </Select>
+          </Field>
+          <Field label="Executable" htmlFor="installer-executable">
+            <Input id="installer-executable" className="font-mono text-sm" spellCheck={false} autoComplete="off" placeholder="/usr/bin/apt-get" value={executableValue} onChange={(event) => setExecutable(event.target.value)} />
+          </Field>
+          {(method === "npm" || method === "pnpm") && <Field label="Entrypoint" htmlFor="installer-entrypoint" hint="When the executable is Node: the npm-cli.js or pnpm.cjs file it runs.">
+            <Input id="installer-entrypoint" className="font-mono text-sm" spellCheck={false} autoComplete="off" value={entrypointValue} onChange={(event) => setEntrypoint(event.target.value)} />
+          </Field>}
+          {installers.error && <ErrorNotice title="Not added" error={installers.error} />}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" disabled={installers.busy} onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button variant="primary" disabled={installers.busy || !executableValue.trim()} onClick={() => void save()}>{installers.busy ? "Checking…" : "Add installer"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function InstallersView() {
   const installers = useWorkspace().admin.installers;
   const checking = installers.checking;
-  const cols = "120px minmax(200px,360px) 160px minmax(90px,1fr)";
+  const [adding, setAdding] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const cols = "120px minmax(200px,360px) 160px minmax(150px,1fr)";
+  const bound = installers.data ?? [];
+  const addButton = <Button size="sm" variant="primary" disabled={installers.busy} onClick={() => setAdding(true)}>Add installer</Button>;
   return (
     <>
-      <PageHeader crumbs={["Settings", "Installers"]} actions={<Button size="sm" variant="outline" disabled={installers.busy} onClick={installers.reload}>Reload installers</Button>} />
+      <PageHeader crumbs={["Settings", "Installers"]} actions={<>
+        <Button size="sm" variant="outline" disabled={installers.busy} onClick={installers.reload}>Reload</Button>
+        {bound.length > 0 && addButton}
+      </>} />
       <Body reloading={installers.loading}>
-        {installers.error && <div className="px-[18px] py-3"><ErrorNotice error={installers.error} /></div>}
-        {installers.data?.length === 0 && installers.suggestions.length === 0 && (
-          <EmptyState title="No installers set up" body={<>Point a tool recipe at a package manager with <CliText>{"`canonfig installer set`"}</CliText>.</>} />
+        {installers.error && !adding && <div className="px-[18px] py-3"><ErrorNotice error={installers.error} /></div>}
+        {installers.data && bound.length === 0 && installers.detected.length === 0 && (
+          <EmptyState title="No installers set up" body="Add the package managers Canonfig may use to install tools on this machine." action={addButton} />
         )}
-        {!!installers.data?.length && <ListHead cols={cols} data-tour="installers-list">
+        {bound.length > 0 && <ListHead cols={cols} data-tour="installers-list">
           <span>Installer</span>
           <span>Executable</span>
           <span>Status</span>
           <span />
         </ListHead>}
-        {installers.data?.map((r) => (
+        {bound.map((r) => (
           <ListRow key={r.name} cols={cols} data-tour="installers-list">
             <span className="font-medium">{r.name}</span>
             <div className="min-w-0"><Mono className={r.path === "-" ? "text-faint" : "text-foreground"}>{r.path === "-" ? "None" : r.path}</Mono>
               {r.arguments.length > 0 && <p className="break-all font-mono text-xs text-muted-foreground">{r.arguments.map(shq).join(" ")}</p>}
             </div>
             <span className={cn("text-sm", r.status === "bound" ? "text-ok" : "text-faint")}>{installers.checked === r.name ? "Verified this session" : r.status === "bound" ? "Bound" : "Not on this platform"}</span>
-            {r.status === "bound" ? (
-              <Button
-                variant="outline"
-                size="xs"
-                className="justify-self-end"
-                disabled={installers.busy}
-                onClick={() => installers.check(r.name)}
-              >
+            <span className="flex justify-end gap-1">
+              {r.status === "bound" && <Button variant="outline" size="xs" disabled={installers.busy} onClick={() => installers.check(r.name)}>
                 {checking === r.name ? "Checking…" : "Check"}
-              </Button>
-            ) : (
-              <span />
-            )}
+              </Button>}
+              <Button variant="ghost" size="xs" disabled={installers.busy} onClick={() => setRemoving(r.name)}>Remove</Button>
+            </span>
           </ListRow>
         ))}
-        {installers.suggestions.length > 0 && <Column><SectionLabel>Suggested bindings</SectionLabel>
-          {installers.suggestions.map((suggestion) => <CommandBox key={suggestion.method}>{suggestion.command}</CommandBox>)}
+        {installers.detected.length > 0 && <Column>
+          <SectionLabel action={bound.length === 0 ? addButton : undefined}>Found on this machine</SectionLabel>
+          <div className={cn("mt-1", settingsGroup)}>
+            {installers.detected.map((choice) => (
+              <SettingRow key={choice.method} title={choice.method} description={<Mono className="break-all">{[choice.executable, ...choice.arguments].join(" ")}</Mono>}>
+                <Button variant="outline" size="xs" disabled={installers.busy} onClick={() => void installers.add(choice)}>Add</Button>
+              </SettingRow>
+            ))}
+          </div>
         </Column>}
       </Body>
+      {adding && <AddInstallerDialog open onOpenChange={setAdding} />}
+      <ConfirmDialog open={removing !== null} onOpenChange={(open) => { if (!open) setRemoving(null); }} title={`Remove the ${removing ?? ""} installer?`}
+        body="Canonfig stops using it to install tools here until you add it again. Nothing is uninstalled."
+        confirm="Remove" onConfirm={() => { if (removing) installers.remove(removing); }} />
     </>
   );
 }

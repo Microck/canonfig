@@ -4,7 +4,7 @@ import { APP_VERSION, DEMO } from "../shared/metadata";
 import { LATEST_PATCH, agentPolicy, doctor, installers, selfUpdateSeed } from "../shared/data";
 import { useSharedReader, useSharedState } from "./store";
 import type { Workspace } from "./workspace-types";
-import type { AdministrationSlice, DoctorCheck, SavedPolicy, SetupJournal } from "./administration-types";
+import type { AdministrationSlice, DoctorCheck, InstallerChoice, SavedPolicy, SetupJournal } from "./administration-types";
 import { updateGate } from "./update-gate";
 import { transitionUpdate, type UpdateEvent, type UpdateLifecycle } from "./live/self-update";
 import { TransitionError } from "../lib/state-machine";
@@ -27,7 +27,7 @@ const SETUP_STEPS = [
   { id: "service", label: "Install source service", detail: "systemd user unit" },
   { id: "linger", label: "You turn on linger", detail: LINGER_FIX },
 ];
-const INSTALLERS = installers.map((installer) => ({
+const INSTALLERS: readonly { name: string; path: string; status: "bound" | "not on this platform"; arguments: readonly string[] }[] = installers.map((installer) => ({
   ...installer, status: installer.status === "bound" ? "bound" as const : "not on this platform" as const, arguments: [],
 }));
 
@@ -37,6 +37,7 @@ function startedNow() {
 
 export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): AdministrationSlice {
   const [installed, setInstalled] = useSharedState("service-installed", true);
+  const [boundInstallers, setBoundInstallers] = useSharedState("installers", INSTALLERS);
   const [serviceAction, setServiceAction] = useSharedState<"install" | "remove" | "restart" | null>("service-busy", null);
   const readServiceAction = useSharedReader<"install" | "remove" | "restart" | null>("service-busy", null);
   const [since, setSince] = useSharedState("service-since", "Monday 08:12");
@@ -130,8 +131,18 @@ export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): Admini
       save: async (next) => { setPolicy(next); setSavedMessage("Policy and harness saved."); toast.success(`Agent policy saved${IN_DEMO}`); return true; },
     },
     installers: {
-      data: INSTALLERS, loading: false, busy: checkingInstaller !== null, error: null,
-      checking: checkingInstaller, checked: checkedInstaller, suggestions: [],
+      data: boundInstallers, loading: false, busy: checkingInstaller !== null, error: null,
+      checking: checkingInstaller, checked: checkedInstaller,
+      // The demo "finds" any method it lists as unbound, at a plausible path.
+      detected: INSTALLERS.filter((installer) => !boundInstallers.some((bound) => bound.name === installer.name) && installer.status === "bound")
+        .map((installer) => ({ method: installer.name as InstallerChoice["method"], executable: installer.path, arguments: [] })),
+      add: async (choice) => {
+        setBoundInstallers([...boundInstallers.filter((bound) => bound.name !== choice.method), { name: choice.method, path: choice.executable, status: "bound", arguments: choice.arguments }]);
+        setCheckedInstaller(choice.method);
+        toast.success(`${choice.method} installer added${IN_DEMO}`);
+        return true;
+      },
+      remove: (method) => { setBoundInstallers(boundInstallers.filter((bound) => bound.name !== method)); toast.success(`${method} installer removed${IN_DEMO}`); },
       reload: () => toast("Installer bindings refreshed", { description: "This demo uses simulated installer bindings." }),
       check: (method) => {
         if (checkingInstaller) return;
