@@ -1,6 +1,6 @@
 ---
 name: operate-canonfig
-description: Operate Canonfig 7.1.4 Source and Follower Machines safely. Use for editing the ~/.canonfig/ folder and its publication, tool discovery, the Source service and tunnel, follower invitations, groups or revocation, unenrollment, harness selection and exclusions, takeover snapshots and restore, local/ items, synchronization planning or apply, no-input automation, agent policy and harness bounds, schedules, status or doctor diagnostics, client trust after apply, Follower Drift, Human Action Required, and interrupted-run recovery.
+description: Operate Canonfig 7.1.5 Source and Follower Machines safely. Use for editing the ~/.canonfig/ folder and its publication, tool discovery, the Source service and tunnel, follower invitations, groups or revocation, unenrollment, harness selection and exclusions, takeover snapshots and restore, local/ items, synchronization planning or apply, no-input automation, agent policy and harness bounds, schedules, status or doctor diagnostics, client trust after apply, Follower Drift, Human Action Required, and interrupted-run recovery.
 ---
 
 # Operate Canonfig

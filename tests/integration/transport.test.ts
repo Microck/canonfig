@@ -882,7 +882,7 @@ describe("authenticated content-addressed transport", () => {
 describe("Source/follower version handshake", () => {
   it("accepts the 7.1 release line but rejects mismatched minor and major peers", () => {
     expect(peerVersionCompatible("7.1.0")).toBe(true);
-    expect(peerVersionCompatible("7.1.4")).toBe(true);
+    expect(peerVersionCompatible("7.1.5")).toBe(true);
     expect(peerVersionCompatible("7.0.0")).toBe(false);
     expect(peerVersionCompatible("7.2.0")).toBe(false);
     expect(peerVersionCompatible("6.1.1")).toBe(false);

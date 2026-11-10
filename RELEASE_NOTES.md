@@ -1,22 +1,22 @@
-# Canonfig v7.1.4
+# Canonfig v7.1.5
 
-Source setup shows fewer technical details and separates reviewing changes from
-creating the Source.
+The browser interface reports Source service problems once, at the top of the
+window, instead of as an error on each page.
 
-## Review and approve setup
+## Source service bar
 
-- Review planned changes in a compact list. Full diagnostics remain in Settings,
-  Setup.
-- "Approve setup" expands into a name field on the same line without changing
-  the card's height. Continue records your approval; creating the Source remains
-  a separate action.
-- Returning from Import clears the previous approval name, so a changed plan
-  requires you to enter it again.
-- The Create step shows who approved the plan instead of repeating the list.
-- Different local import versions have a warning button that shows their source
-  paths. Opening it does not change your selection.
-- The dithered background shows activity while Canonfig checks the machine.
-  Reduced-motion settings keep it still.
+- A bar above the workspace names the problem and offers the fix. It is red
+  when other machines cannot get new revisions and yellow when the service is
+  only out of date and still serving. You can close a yellow bar.
+- Reinstall keeps the address and port the service already uses.
+- Overview turns red when other machines cannot reach the Source.
+- Category and exit-code details no longer appear on every page. Settings,
+  Source service still shows the full status.
+
+## Fixes
+
+- Empty Revisions, Secrets, Profile and Machines lists place their dithered
+  background on the bottom edge of the page.
 
 ## Known limitation
 
@@ -27,7 +27,7 @@ during import.
 
 ## Upgrading
 
-Install with `npm install --global @microck/canonfig@7.1.4` on every machine,
+Install with `npm install --global @microck/canonfig@7.1.5` on every machine,
 or run `canonfig self-update apply`. Stop `canonfig ui` first, and on a Source
 run `canonfig source service remove` before installing and
 `canonfig source service install` afterwards.
