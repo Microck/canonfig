@@ -254,7 +254,8 @@ function SourceMachinesView() {
               </div>
             )}
             <Invitations />
-            <div className="shrink-0 pb-16" />
+            {/* Scroll room under the list only; an empty state needs the bottom edge for its dither. */}
+            {ws.followers.length > 0 && <div className="shrink-0 pb-16" />}
           </div>
         )}
       </Body>

@@ -28,6 +28,9 @@ const TunnelView = lazy(() => follower().then((m) => ({ default: m.TunnelView })
 const UnenrollDialog = lazy(() => follower().then((m) => ({ default: m.UnenrollDialog })));
 import { useWorkspace, type View } from "./store";
 import { ErrorNotice } from "../live/session";
+import { cn } from "@/lib/utils";
+import type { GuiSourceServiceStatus } from "../../../src/gui/contract/administration";
+import type { Workspace } from "./workspace-types";
 
 const SOURCE_SCREENS: Partial<Record<View, React.ComponentType>> = {
   overview: SourceOverview,
@@ -81,23 +84,28 @@ export function Frame() {
   }, [ws.view]);
   if (!Screen) return <NotFound />;
   return (
-    // Below md (768px) the 244px sidebar would leave ~140px for content, so it moves into a left Sheet behind a
-    // menu button in a slim top bar. From md up the layout is unchanged.
-    <div className="flex h-svh flex-col bg-canvas text-foreground md:flex-row">
+    // The notice bar spans the whole window above the sidebar and content, so a machine condition shows once
+    // instead of as an error on every page.
+    <div className="flex h-svh flex-col bg-canvas text-foreground">
       <a
         href="#workspace-content"
         className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-md focus:bg-panel focus:px-4 focus:py-3 focus:text-sm focus:font-medium focus:text-foreground focus:outline-2 focus:outline-offset-2 focus:outline-ring"
       >
         Skip to content
       </a>
-      <MobileNav />
-      <Sidebar className="hidden md:flex" />
-      <main id="workspace-content" tabIndex={-1} data-tour="main" className="mx-2 mb-2 flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-panel focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring md:my-2 md:ml-0">
-        {ws.pageError && <div className="px-4 pt-4 sm:px-8"><ErrorNotice error={ws.pageError} /></div>}
-        <Suspense fallback={null}>
-          <Screen key={ws.view} />
-        </Suspense>
-      </main>
+      {ws.role === "source" && <ServiceNotice />}
+      {/* Below md (768px) the 244px sidebar would leave ~140px for content, so it moves into a left Sheet behind a
+          menu button in a slim top bar. From md up the layout is unchanged. */}
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        <MobileNav />
+        <Sidebar className="hidden md:flex" />
+        <main id="workspace-content" tabIndex={-1} data-tour="main" className="mx-2 mb-2 flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-panel focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring md:my-2 md:ml-0">
+          {ws.pageError && <div className="px-4 pt-4 sm:px-8"><ErrorNotice error={ws.pageError} /></div>}
+          <Suspense fallback={null}>
+            <Screen key={ws.view} />
+          </Suspense>
+        </main>
+      </div>
       <Palette />
       {/* Keyed by tour, so moving to the next chapter starts a fresh tour at its first stop. */}
       {ws.tour && <TourHost key={ws.tour} />}
@@ -115,6 +123,90 @@ export function Frame() {
         <Suspense fallback={null}>
           <UnenrollDialog />
         </Suspense>
+      )}
+    </div>
+  );
+}
+
+type ServiceReport = typeof GuiSourceServiceStatus.Type;
+
+/** One line per reported Source service state; running shows nothing. */
+function serviceNoticeCopy(report: ServiceReport): { message: string; action: "install" | "open"; actionLabel: string } | null {
+  const cut = "Other machines can't get new revisions.";
+  switch (report.state) {
+    case "running": return null;
+    case "drifted": return { message: report.serving ? "The Source service is out of date for this version of Canonfig." : `${cut} The Source service is out of date.`, action: "install", actionLabel: "Reinstall" };
+    case "not-installed": return report.serving
+      ? { message: "This Source runs outside the service manager and stops when that process ends.", action: "open", actionLabel: "Open service" }
+      : { message: `${cut} The Source service isn't installed.`, action: "install", actionLabel: "Install" };
+    case "not-running": return { message: `${cut} The Source service isn't running.`, action: "open", actionLabel: "Open service" };
+    case "not-serving": return { message: `${cut} The Source service isn't answering.`, action: "open", actionLabel: "Open service" };
+  }
+}
+
+/**
+ * Reinstalling keeps the address and port the service already uses. URL drops a scheme's default port
+ * (https://127.0.0.1:443 parses with port ""), so fall back to the scheme's port instead of hiding the action.
+ */
+function currentAddress(endpoint: string): { hostname: "127.0.0.1" | "::1"; port: number } | null {
+  if (!URL.canParse(endpoint)) return null;
+  const url = new URL(endpoint);
+  const port = url.port ? Number(url.port) : url.protocol === "https:" ? 443 : url.protocol === "http:" ? 80 : 0;
+  return port >= 1 && port <= 65535 ? { hostname: url.hostname === "[::1]" ? "::1" : "127.0.0.1", port } : null;
+}
+
+interface Notice {
+  urgent: boolean;
+  message: string;
+  action?: { label: string; run: () => void };
+  /** Set when the user may close the notice; it stays closed until this key changes. */
+  dismissKey?: string;
+}
+
+/** The single workspace notice for the Source service, or null when there is nothing to say. */
+function serviceNotice(ws: Workspace): Notice | null {
+  const service = ws.admin.service;
+  // A failed read or change outranks the last report, which may be stale. Settings, Source service shows the
+  // full error with its own Reload, so the bar stays out of the way there.
+  if (service.error) {
+    return ws.view === "service" ? null : { urgent: true, message: "Canonfig couldn't check the Source service.", action: { label: "Open service", run: () => ws.go("service") } };
+  }
+  const report = service.data;
+  if (!report) return null;
+  const copy = serviceNoticeCopy(report);
+  if (!copy) return null;
+  const address = currentAddress(report.endpoint);
+  const action = copy.action === "install"
+    ? address && { label: copy.actionLabel, run: () => service.install(address.hostname, address.port) }
+    : ws.view !== "service" && { label: copy.actionLabel, run: () => ws.go("service") };
+  return { urgent: !report.serving, message: copy.message, action: action || undefined, dismissKey: report.serving ? report.state : undefined };
+}
+
+function ServiceNotice() {
+  const ws = useWorkspace();
+  const service = ws.admin.service;
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  if (service.action === "install") {
+    return <div role="status" className="flex min-h-9 shrink-0 items-center justify-center border-b border-border bg-raised px-10 text-sm text-muted-foreground">Installing the Source service…</div>;
+  }
+  const notice = serviceNotice(ws);
+  if (!notice || (notice.dismissKey !== undefined && dismissed === notice.dismissKey)) return null;
+  const { urgent, message, action, dismissKey } = notice;
+  return (
+    <div
+      role={urgent ? "alert" : "status"}
+      className={cn(
+        "relative flex min-h-9 shrink-0 items-center justify-center gap-3 border-b px-10 py-1 text-sm",
+        urgent ? "border-bad/40 bg-bad/15" : "border-warn/40 bg-warn/10",
+      )}
+    >
+      <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", urgent ? "bg-bad" : "bg-warn")} />
+      <span className="min-w-0 text-pretty">{message}</span>
+      {action && <Button size="xs" variant="outline" disabled={service.busy} onClick={action.run}>{action.label}</Button>}
+      {dismissKey !== undefined && (
+        <Button size="icon-xs" variant="ghost" aria-label="Dismiss service notice" className="absolute right-2" onClick={() => setDismissed(dismissKey)}>
+          <X />
+        </Button>
       )}
     </div>
   );
