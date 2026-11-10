@@ -29,7 +29,7 @@ const embedded = substituted === undefined
   ? { sourceDigest: "unbuilt", commit: null }
   : (JSON.parse(substituted) as { sourceDigest: string; commit: string | null });
 
-export const packageVersion = "7.1.5";
+export const packageVersion = "7.1.6";
 
 export const minimumSupportedNodeMajor = 24;
 

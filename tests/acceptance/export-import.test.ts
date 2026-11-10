@@ -163,7 +163,7 @@ describe("canonfig export and import", () => {
     expect(entries[0]!.path).toBe("manifest.json");
     const manifest = JSON.parse(entries[0]!.content.toString("utf8"));
     expect(exported.envelope.data.manifestSha256).toBe(sha256(entries[0]!.content));
-    expect(manifest).toMatchObject({ format: "canonfig-export", version: 1, canonfigVersion: "7.1.5", role: "standalone" });
+    expect(manifest).toMatchObject({ format: "canonfig-export", version: 1, canonfigVersion: "7.1.6", role: "standalone" });
     const expected = authoredFiles(join(source, ".canonfig")).map((path) => `folder/${path}`);
     expect(entries.slice(1).map((entry) => entry.path)).toEqual(expected);
     expect(manifest.files.map((file: { path: string }) => file.path)).toEqual(expected);
