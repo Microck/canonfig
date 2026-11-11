@@ -43,7 +43,7 @@ to date without a resident follower daemon.
 requires Node.js 24+ and npm. install the same release on the source and every follower:
 
 ```sh
-npm install --global @microck/canonfig@7.1.6
+npm install --global @microck/canonfig@7.1.7
 canonfig --version
 canonfig doctor --no-input
 ```

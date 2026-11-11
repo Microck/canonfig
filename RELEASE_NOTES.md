@@ -1,29 +1,26 @@
-# Canonfig v7.1.6
+# Canonfig v7.1.7
 
-Settings pages show less text, and installers can be set up from the browser.
+The browser UI has shorter copy and more direct ways to fix setup problems.
 
-## Installers in the browser
+## Health checks and recovery
 
-- Settings, Installers lists the package managers it finds on this machine,
-  each with an Add button. Add installer opens a form for any other path.
-- Canonfig checks an installer runs before it saves it, the same check as
-  `canonfig installer set`. Each installer can be removed from its row.
+- Health check hides skipped checks and shows passing checks by name. Problems
+  explain what to do, with buttons to edit the tool list, open installers, or
+  open agent policy where the browser can help.
+- A missing Linux Secret Service client now includes a distribution-specific
+  install command. Image-based Fedora and RHEL systems get an rpm-ostree
+  command that accepts packages already installed, plus reboot guidance.
 
-## Cleaner settings
+## Less clutter
 
-- Explanatory paragraphs are gone from Version, Health check, Source service,
-  Agent policy, Setup and the Follower tunnel and schedule pages.
-- Health check runs when the page opens.
-- Setup shows one list of steps, named after the tool they check, with the
-  reason under any step that failed.
-- Error boxes keep the message and fold category and exit code into
-  Technical details. Source service folds its manager details the same way.
-- Commands inside messages are shown as code.
-
-## Fixes
-
-- An invalid `~/.canonfig/secrets.json` now names the file and the fields it
-  needs, without showing any of its content.
+- Source and Follower pages remove repeated explanations while keeping scope,
+  consequences, and recovery instructions. Groups and Follower secrets have
+  clearer empty states.
+- Fingerprints fold into technical details. Source pages no longer show
+  Follower lifecycle and tunnel sections.
+- Harness bounds remain visible but disabled on a Source, labeled
+  "Set on each Follower". They remain editable on Followers when agent policy
+  allows it.
 
 ## Known limitation
 
@@ -34,7 +31,7 @@ during import.
 
 ## Upgrading
 
-Install with `npm install --global @microck/canonfig@7.1.6` on every machine,
+Install with `npm install --global @microck/canonfig@7.1.7` on every machine,
 or run `canonfig self-update apply`. Stop `canonfig ui` first, and on a Source
 run `canonfig source service remove` before installing and
 `canonfig source service install` afterwards.
