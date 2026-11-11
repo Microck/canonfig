@@ -115,7 +115,7 @@ const secretToolInstallAdvice = (): string => {
   // dnf there only changes a toolbox, not the host.
   const ostree = existsSync("/run/ostree-booted");
   const command = /\b(?:debian|ubuntu)\b/u.test(ids) ? "sudo apt install libsecret-tools gnome-keyring"
-    : ostree && /\b(?:fedora|rhel)\b/u.test(ids) ? "sudo rpm-ostree install libsecret gnome-keyring"
+    : ostree && /\b(?:fedora|rhel)\b/u.test(ids) ? "sudo rpm-ostree install --allow-inactive --idempotent libsecret gnome-keyring"
     : /\b(?:fedora|rhel)\b/u.test(ids) ? "sudo dnf install libsecret gnome-keyring"
     : /\barch\b/u.test(ids) ? "sudo pacman -S libsecret gnome-keyring"
     : undefined;
