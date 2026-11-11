@@ -13,11 +13,11 @@ import { CliText, DitherProgress, Hint, Mono, StatusMark, Term } from "@/shared/
 import { shq } from "@/shared/shell";
 import { ErrorNotice } from "@/live/session";
 import { SetupJournal } from "@/onboarding/enrollment-controller";
-import { useWorkspace } from "./store";
+import { useWorkspace, type Workspace } from "./store";
 import type { InstallerChoice, SavedPolicy } from "./administration-types";
 export type { SavedPolicy } from "./administration-types";
 import { Body, CommandBox, EmptyState, Field, ListHead, ListRow, PageHeader, SectionLabel, SettingRow, settingsGroup, useDialogReturnFocus, useLeaveGuard } from "./kit";
-import { focusPageHeading } from "./routes";
+import { focusPageHeading, workspaceHref } from "./routes";
 
 
 /**
@@ -108,8 +108,9 @@ export function ServiceView() {
           {service.error && <ErrorNotice error={service.error} />}
           <SectionLabel>Status</SectionLabel>
           <div data-tour="service-status" className={cn("mt-1", settingsGroup)}>
-            {/* The detail only helps when something is wrong; a running service needs no explanation. */}
-            <SettingRow title="State" description={report && report.state !== "running" ? <CliText>{report.detail}</CliText> : undefined}>
+            {/* Running needs no explanation, and the header button fixes not-installed and drifted, so only the
+                states it can't fix in one click keep the detail (they name the logs to read). */}
+            <SettingRow title="State" description={report && (report.state === "not-running" || report.state === "not-serving") ? <CliText>{report.detail}</CliText> : undefined}>
               <span className="inline-flex items-center gap-1.5 text-base">
                 <StatusMark kind={!report || !installed ? "off" : report.state === "running" ? "ok" : "warn"} />
                 {service.since && report?.state === "running" ? `Running since ${service.since}` : report?.state.replaceAll("-", " ") ?? "Status unavailable"}
@@ -163,7 +164,7 @@ function modes(source: boolean) {
     {
       value: "deterministic-only",
       label: "Deterministic only",
-      body: "Canonfig never calls an agent. Anything without an exact recipe waits for a person (Canonfig calls this Human Action Required).",
+      body: "Canonfig never calls an agent. Anything without an exact recipe waits for a person.",
     },
     {
       value: "agent-propose",
@@ -175,7 +176,7 @@ function modes(source: boolean) {
     {
       value: "agent-apply",
       label: "Agent applies",
-      body: "An agent may apply fixes on this machine within the bounds below. Each job it does is recorded.",
+      body: source ? "An agent may apply fixes on this machine. Each job it does is recorded." : "An agent may apply fixes on this machine within the bounds below. Each job it does is recorded.",
     },
   ] as const;
 }
@@ -320,7 +321,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
       />
       <Body reloading={agent.loading || agent.harnessLoading}>
         <Column>
-          {!agent.configured && saved && <p role="status" className="mb-4 text-sm text-muted-foreground">Not configured yet. These are the CLI defaults. Save policy to create the configuration.</p>}
+          {!agent.configured && saved && <p role="status" className="mb-4 text-sm text-muted-foreground">Not saved yet.</p>}
           {agent.error && <ErrorNotice error={agent.error} />}
           {agent.harnessError && <ErrorNotice title="Harness unavailable" error={agent.harnessError} />}
           {agent.savedMessage && <p role="status" className="mb-4 text-sm">{agent.savedMessage}</p>}
@@ -340,13 +341,13 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
             ))}
           </RadioGroup>
 
-          {!agent.harnessWritable && <p className="mt-4 text-sm text-muted-foreground">Harness settings apply only to enrolled Followers. Saving here changes the Source policy.</p>}
-          {agent.harnessWritable && !agent.harnessConfigured && !agent.harnessError && <p className="mt-4 text-sm text-muted-foreground">Harness not configured yet. The fields below show defaults, not saved settings.</p>}
+                    {agent.harnessWritable && !agent.harnessConfigured && !agent.harnessError && <p className="mt-4 text-sm text-muted-foreground">Harness not saved yet.</p>}
           {/* inert keeps the disabled bounds out of the tab order, not just greyed out. */}
-          {harness !== null && <div className={cn("mt-8 grid gap-4", off && "opacity-40")} inert={off || agent.busy}>
-            <SectionLabel>Harness bounds</SectionLabel>
+          {/* A Source shows the bounds greyed out: they are set on each Follower, where the agent runs. */}
+          {harness !== null && <div className={cn("mt-8 grid gap-4", (off || !agent.harnessWritable) && "opacity-40")} inert={off || !agent.harnessWritable || agent.busy}>
+            <SectionLabel action={!agent.harnessWritable ? <span className="text-xs text-muted-foreground">Set on each Follower</span> : undefined}>Harness bounds</SectionLabel>
             <div className={cn(settingsGroup, "max-sm:[&>div]:flex-col max-sm:[&>div]:items-start max-sm:[&>div]:gap-2")}>
-              <SettingRow title="Agent harness" htmlFor="ap-harness" description="The agent CLI Canonfig starts for each job.">
+              <SettingRow title="Agent harness" htmlFor="ap-harness">
                 <Select value={harness} onValueChange={(value) => { if (value === "codex" || value === "claude" || value === "custom") setHarness(value); }}>
                   <SelectTrigger id="ap-harness" className="w-40" data-tour="agent-harness">
                     <SelectValue />
@@ -404,7 +405,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
                 </>
               ) : (
                 <>
-                  <SettingRow title="Model" htmlFor="ap-model" description="Leave empty to use the agent's own default." error={modelError}>
+                  <SettingRow title="Model" htmlFor="ap-model" description="Blank uses the agent's default." error={modelError}>
                     <Input
                       id="ap-model"
                       value={model}
@@ -417,7 +418,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
                       className="h-[28px] w-40 font-mono text-sm"
                     />
                   </SettingRow>
-                  <SettingRow title="Executable" htmlFor="ap-exec" description={<>Leave empty to run <Mono>{harness}</Mono> from your PATH.</>}>
+                  <SettingRow title="Executable" htmlFor="ap-exec" description={<>Blank runs <Mono>{harness}</Mono> from your PATH.</>}>
                     <Input
                       id="ap-exec"
                       value={executable}
@@ -430,7 +431,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
                   </SettingRow>
                 </>
               )}
-              <SettingRow title="Max evidence per task" htmlFor="ap-max" description="How much observed state Canonfig may hand the agent." error={maxError}>
+              <SettingRow title="Max evidence per task" htmlFor="ap-max" error={maxError}>
                 <Input
                   id="ap-max"
                   value={maximumInputBytes}
@@ -444,7 +445,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
                 <span className="text-sm text-muted-foreground">bytes</span>
               </SettingRow>
             </div>
-            <Field label="Writable paths" htmlFor="ap-path" hint="The agent's sandbox can write only here. Everything else is read-only." error={pathError}>
+            <Field label="Writable paths" htmlFor="ap-path" hint="Everything else is read-only." error={pathError}>
               <div data-tour="agent-paths" className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1">
                 {paths.map((p) => (
                   <div key={p} title={p} className="flex h-8 items-center gap-2 rounded-md border border-border pr-1 pl-2.5">
@@ -694,6 +695,26 @@ export function SetupView() {
   );
 }
 
+/** Plain names for the CLI's doctor probes; the demo's names are already plain and pass through. */
+const CHECK_LABEL: Record<string, string> = {
+  runtime: "Node.js runtime", state: "Local database", credentials: "Credential storage", source: "Connection to the Source",
+  scheduler: "Update schedule", "package-managers": "Package managers", "agent-adapter": "AI agent", harnesses: "AI coding tools",
+};
+
+/**
+ * Where a problem can be fixed in the GUI, keyed by the CLI probe name or the demo's display name (lowercased,
+ * spaces as dashes). Checks without an entry are fixed in a terminal (their message says how).
+ */
+const CHECK_ACTION: Record<string, { label: string; open: (ws: Workspace) => void }> = {
+  harnesses: { label: "Edit list", open: (ws) => ws.role === "source" ? ws.navigate(workspaceHref("source", "profile", { profileTab: "harnesses" })) : ws.go("local") },
+  "agent-adapter": { label: "Open agent policy", open: (ws) => ws.go("agent") },
+  "configuration-agent": { label: "Open agent policy", open: (ws) => ws.go("agent") },
+  "package-managers": { label: "Open installers", open: (ws) => ws.go("installers") },
+  scheduler: { label: "Open schedule", open: (ws) => ws.go("schedule") },
+  "native-scheduler": { label: "Open schedule", open: (ws) => ws.go("schedule") },
+  source: { label: "Open sync", open: (ws) => ws.go("sync") },
+};
+
 /** Overview uses the same result rows as the health screen. */
 export function useChecks() {
   return useWorkspace().admin.doctor.data ?? [];
@@ -704,7 +725,9 @@ export function DoctorView() {
   const doctor = ws.admin.doctor;
   const running = doctor.busy;
   const progress = doctor.progress;
-  const checks = doctor.data ?? [];
+  // A skipped check does not apply to this machine (a Source has no tunnel or schedule), so it is not shown.
+  const relevant = (doctor.data ?? []).filter((check) => check.result !== "off");
+  const issues = relevant.filter((check) => check.result === "warn" || check.result === "bad").length;
   const run = doctor.run;
   // Opened from ⌘K "Run doctor" or the guide: start immediately, even if this page is already open.
   const { focus, go } = ws;
@@ -732,30 +755,33 @@ export function DoctorView() {
       <Body reloading={doctor.loading}>
         <Column>
           {doctor.error && <ErrorNotice error={doctor.error} />}
-          {doctor.status && <p role="status" className="mb-4 text-sm">Health: {doctor.status}</p>}
           {!doctor.data && running && <p className="mb-4 text-sm text-muted-foreground">Running checks…</p>}
+          {doctor.data && <p role="status" className="mb-4 text-base font-medium">
+            {issues === 0 ? "Everything checks out" : `${issues} ${issues === 1 ? "thing needs" : "things need"} attention`}
+          </p>}
           <div className="mb-4 h-1.5">{running && progress !== undefined && <DitherProgress label="Running health check" value={progress} />}</div>
-          <div data-tour="doctor-results" className={cn(checks.length > 0 && "border-t border-border")} aria-live="polite">
-            {checks.map((d, i) => {
-              const shown = !running || progress === undefined || progress > (i / checks.length) * 100;
+          <div data-tour="doctor-results" className={cn(relevant.length > 0 && "border-t border-border")} aria-live="polite">
+            {relevant.map((d, i) => {
+              const shown = !running || progress === undefined || progress > (i / relevant.length) * 100;
+              const problem = shown && (d.result === "warn" || d.result === "bad");
+              const action = problem ? CHECK_ACTION[d.check.toLowerCase().replaceAll(" ", "-")] : undefined;
               return (
                 <div key={d.check} className="border-b border-border/70 py-2.5">
-                  <div className="grid grid-cols-[14px_minmax(0,1fr)] items-center gap-x-3 gap-y-1 text-base sm:grid-cols-[14px_auto_minmax(0,1fr)]">
-                    {!shown ? (
-                      <Circle className="size-3 text-faint" aria-label="Waiting" />
-                    ) : (
-                      <StatusMark kind={d.result} />
-                    )}
-                    <span>{d.check}</span>
-                    <span className="col-start-2 text-sm text-muted-foreground sm:col-start-3 sm:text-right">{shown ? <CliText>{d.detail}</CliText> : "Waiting"}</span>
+                  <div className="grid grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-x-3 text-base">
+                    {!shown ? <Circle className="size-3 text-faint" aria-label="Waiting" /> : <StatusMark kind={d.result} />}
+                    <span>{CHECK_LABEL[d.check] ?? d.check}</span>
+                    {action && <Button variant="outline" size="xs" onClick={() => action.open(ws)}>{action.label}</Button>}
                   </div>
-                  {shown && d.fix && (
+                  {/* A passing check needs no sentence; a problem says what is wrong and what to do. */}
+                  {/* Commands get their own copy box below, so the sentence points at it instead of repeating it. */}
+                  {problem && <p className="mt-1 ml-6.5 text-sm text-pretty text-muted-foreground"><CliText>{d.commands?.length ? d.detail.replace(/`[^`]+`/gu, d.commands.length === 1 ? "the command below" : "the commands below") : d.detail}</CliText></p>}
+                  {problem && d.fix && (
                     <div className="mt-2 ml-6.5 grid gap-1.5">
                       <p className="text-sm text-pretty text-muted-foreground"><CliText>{d.fix.why}</CliText></p>
                       <CommandBox>{d.fix.command}</CommandBox>
                     </div>
                   )}
-                  {shown && d.commands?.map((command, index) => <div className="mt-2 ml-6.5" key={index}><CommandBox>{command}</CommandBox></div>)}
+                  {problem && d.commands?.map((command, index) => <div className="mt-2 ml-6.5" key={index}><CommandBox>{command}</CommandBox></div>)}
                 </div>
               );
             })}
@@ -792,14 +818,14 @@ export function VersionView() {
     <Body reloading={version.loading}>
       <Column>
         {version.error && <ErrorNotice error={version.error} />}
-        {version.lifecycle.kind === "observation-lost" && <div className="mt-3"><p>The update may still be running. Resume observing it before starting another command.</p><Button variant="outline" size="sm" onClick={version.resume}>Resume update observation</Button></div>}
+        {version.lifecycle.kind === "observation-lost" && <div className="mt-3"><p>The update may still be running.</p><Button variant="outline" size="sm" onClick={version.resume}>Resume update observation</Button></div>}
         <SectionLabel>This machine</SectionLabel>
         <div className={cn("mt-1", settingsGroup)}>
           <SettingRow title="Version"><Mono className="text-foreground">{version.current}</Mono></SettingRow>
-          <SettingRow title="Updates" description={on ? "Manual updates stay in this major. Run self-update auto to install current-line patches or newer majors automatically." : "Opt in to stable updates from npm. Enabling does not start automatic updates."}>
+          <SettingRow title="Updates">
             <span className="inline-flex items-center gap-1.5 text-base"><StatusMark kind={on ? "ok" : "off"} />{version.data ? on ? "On" : "Off" : "Not loaded"}</span>
           </SettingRow>
-          {version.npmCli && <SettingRow title="npm" description={<><Mono className="break-all">{version.npmCli}</Mono><br />Canonfig fetches only its own package from registry.npmjs.org, with install scripts off.</>} />}
+          {version.npmCli && <SettingRow title="npm" description={<><Mono className="break-all">{version.npmCli}</Mono></>} />}
           {(on || version.checked) && <SettingRow title="Newest same-major release">
             <span className="inline-flex items-center gap-1.5 text-base" aria-live="polite">
               <StatusMark kind={available ? "warn" : version.checked?.status === "current" || updated ? "ok" : "off"} />

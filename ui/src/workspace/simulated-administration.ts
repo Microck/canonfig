@@ -123,7 +123,7 @@ export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): Admini
     },
     agent: {
       configured: true,
-      harnessWritable: true,
+      harnessWritable: ws.role === "follower",
       harnessConfigured: true,
       data: policy, loading: false, busy: false, error: null, harnessLoading: false, harnessError: null, savedMessage, saveState: { kind: "Idle" },
       harnessLabels: { codex: "codex 0.62", claude: "claude 2.1" },

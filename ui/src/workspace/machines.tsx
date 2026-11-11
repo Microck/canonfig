@@ -197,7 +197,7 @@ function SourceMachinesView() {
             {ws.followers.length === 0 ? (
               <EmptyState
                 title="No other machines yet"
-                body="Add a machine to start sending it your profile. It gets a single-use invitation file."
+                body="Each machine you add gets your profile."
                 action={
                   <Button variant="outline" size="sm" onClick={() => ws.setInviteOpen(true)}>
                     Add machine

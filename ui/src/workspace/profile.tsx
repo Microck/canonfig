@@ -1138,10 +1138,10 @@ function HarnessesTab() {
   const ws = useWorkspace();
   return (
     <Body>
+      {/* The one consequence a person can't see in the table: unlisting cleans up where Canonfig manages the harness.
+          A machine that excluded it keeps what it has, and a backup may not exist, so neither is promised here. */}
       <p data-tour="profile-harnesses" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
-        Canonfig writes this folder into each listed <Term term="Target Harness">harness</Term> on every machine where it's installed, this one included. Any machine can exclude
-        one for itself. Removing a harness from the list stops Canonfig managing it and removes what it wrote there, unless someone edited it; its backup stays, so you can restore
-        it from Backups. Use Gets to give a harness only some of the folder, such as only its MCP servers; Canonfig leaves the rest of that harness alone.
+        Unlisting a harness removes what Canonfig wrote into it on each machine that manages it.
       </p>
       <HarnessTable
         edit="listed"
@@ -1185,35 +1185,28 @@ function GroupsTab() {
   const current = groups.find((g) => g.name === selected);
   // Only an open dialog holds a draft: Cancel, Escape and Add group all close it, and reopening starts blank.
   const { dialog: leaveDialog } = useLeaveGuard(open && (name !== "" || desc !== ""), "this new group");
+  const startGroup = () => {
+    setName("");
+    setDesc("");
+    setTried(false);
+    setOpen(true);
+  };
 
   return (
     <Body detail={current && <GroupDetail key={current.name} group={current} onClose={() => ws.navigate(workspaceHref("source", "profile", { profileTab: "groups" }))} />}>
-      <div data-tour="profile-groups" className="flex items-center gap-3 border-b border-border px-[18px] py-2.5 text-sm text-muted-foreground">
-        <span className="text-pretty">
-          A <Term term="Follower Group">group</Term> gets extra items on top of the base profile; canonfig.jsonc <Mono>groups</Mono> lists them. A machine's groups come from its
-          invitation; open a group to add machines.
-        </span>
-        <Button
-          variant="outline"
-          size="sm"
-          className="ml-auto shrink-0"
-          disabled={!ws.capabilities.profileWrite}
-          onClick={() => {
-            setName("");
-            setDesc("");
-            setTried(false);
-            setOpen(true);
-          }}
-        >
-          New group
-        </Button>
-      </div>
-      <ListHead cols={cols} minWidth={colsMin} data-tour="profile-groups">
+      {groups.length > 0 && <div data-tour="profile-groups" className="flex items-center justify-end border-b border-border px-[18px] py-2.5">
+        <Button variant="outline" size="sm" disabled={!ws.capabilities.profileWrite} onClick={startGroup}>New group</Button>
+      </div>}
+      {groups.length === 0 ? (
+        <EmptyState title="No groups yet" body="A group gets extra items for the machines in it." action={
+          <Button variant="outline" size="sm" disabled={!ws.capabilities.profileWrite} onClick={startGroup}>New group</Button>
+        } />
+      ) : <ListHead cols={cols} minWidth={colsMin} data-tour="profile-groups">
         <span>Group</span>
         <span>What it's for</span>
         <span>Machines</span>
         <span>Items</span>
-      </ListHead>
+      </ListHead>}
       <RowPresence>
         {groups.map((g) => (
           <AnimatedRow key={g.name}>
@@ -1430,24 +1423,21 @@ function DefaultsTab() {
           <Field label="Display name" htmlFor="p-name" error={nameError}>
             <Input id="p-name" value={name} onChange={(e) => setName(e.target.value)} aria-invalid={!!nameError} aria-describedby={nameError ? "p-name-note" : undefined} autoComplete="off" />
           </Field>
-          <Field label="Profile id" description="Every revision carries this id, and Canonfig needs it to publish.">
+          <Field label="Profile id">
             {ws.profileLive && !ws.profile.id ? <Input aria-label="Profile id" value={profileId} onChange={(event) => setProfileId(event.target.value)} required /> : <Mono className="text-sm text-foreground">{ws.profile.id}</Mono>}
           </Field>
         </div>
         <SectionLabel className="mt-6">
           <Term term="Synchronization Schedule">Default schedule</Term>
         </SectionLabel>
-        <p className="mb-3 text-sm text-pretty text-muted-foreground">New machines check for revisions at this time unless they set their own. Times are each machine's local time.</p>
+        <p className="mb-3 text-sm text-pretty text-muted-foreground">In each machine's local time. A machine can set its own.</p>
         {ws.profileLive && <Label className="mb-3 flex min-h-8 items-center gap-2"><Checkbox checked={scheduleEnabled} onCheckedChange={(checked) => setScheduleEnabled(checked === true)} />Set a default schedule</Label>}
         {scheduleEnabled && <ScheduleFields idPrefix="def" value={schedule} onChange={setSchedule} />}
 
         <SectionLabel className="mt-6">
           <Term term="Local folder">What machines may add locally</Term>
         </SectionLabel>
-        <p className="mb-3 text-sm text-pretty text-muted-foreground">
-          Each machine can add its own items in ~/.canonfig/local. Canonfig uses only the kinds you tick here and reports the rest on that machine. Backups and excluded
-          harnesses are always the machine's own choice.
-        </p>
+        <p className="mb-3 text-sm text-pretty text-muted-foreground">Kinds a machine may add in <Mono>~/.canonfig/local</Mono>.</p>
         <div className="grid gap-0.5 sm:grid-cols-2">
           {LOCAL_CATEGORIES.map((c) => (
             <Label key={c} htmlFor={`allow-${c}`} className="flex h-7 cursor-pointer items-center gap-2 text-base font-normal">
@@ -1462,9 +1452,7 @@ function DefaultsTab() {
           <Term term="Append-local">What machines keep of their own</Term>
         </SectionLabel>
         <p className="mb-3 text-sm text-pretty text-muted-foreground">
-          Ticked, Canonfig owns only its marked section at the top of each harness's instructions file, or only the skills it writes in each skills folder, on every
-          machine including this one. The text and skills a machine has there stay. Unticked, Canonfig owns the whole file or folder, and a machine with its own content
-          there has to move it into ~/.canonfig/local before its next update.
+          Ticked, a machine keeps its own text and skills beside Canonfig's. Unticked, Canonfig replaces the whole file or folder.
         </p>
         <div className="grid gap-0.5 sm:grid-cols-2">
           {APPEND_LOCAL_CATEGORIES.map((c) => (
@@ -1476,24 +1464,6 @@ function DefaultsTab() {
           ))}
         </div>
 
-        {/* The defaults are canonfig.jsonc keys, not a command. An incomplete schedule has no valid value, so its line waits for a complete one. */}
-        <div className="mt-6 grid gap-2">
-          <pre
-            aria-label="The defaults as written in canonfig.jsonc"
-            className="rounded-md border border-border bg-canvas/70 p-3 font-mono text-xs leading-relaxed break-words whitespace-pre-wrap text-muted-foreground"
-          >
-            <span className="text-faint">// ~/.canonfig/canonfig.jsonc{"\n"}</span>
-            {[
-              `"profile": ${JSON.stringify({ id: profileId, name: trimmed || saved.name })},`,
-              ...(!scheduleEnabled || scheduleProblem ? [] : [`"scheduleDefault": ${JSON.stringify(scheduleDefaultOf(schedule))},`]),
-              `"local": { "allow": [${allowed.map((c) => JSON.stringify(c)).join(", ")}]${shared.length ? `, "appendLocal": [${shared.map((c) => JSON.stringify(c)).join(", ")}]` : ""} }`,
-            ].join("\n")}
-          </pre>
-          <p className="text-sm text-pretty text-faint">
-            Canonfig writes these into canonfig.jsonc when you save{DEMO && "; this demo keeps them in the browser session and writes no file"}. A machine follows the schedule
-            while its Schedule page is set to follow the Source's default.
-          </p>
-        </div>
         {/* Same pattern as the item editor: nothing to save or discard until the form differs from what was saved. */}
         <div className="mt-8 flex gap-2">
           <Button type="submit" variant="primary" size="sm" disabled={!dirty || scheduleProblem !== null || ws.profileLive?.busy}>

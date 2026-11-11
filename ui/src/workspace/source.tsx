@@ -8,7 +8,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isCoarsePointer } from "@/lib/utils";
-import { AnimatedNumber, DitherProgress, Hint, Mono, StateCell, StateLabel, Term } from "@/shared/shared";
+import { AnimatedNumber, CliText, DitherProgress, Hint, Mono, StateCell, StateLabel, Term } from "@/shared/shared";
 import { DEMO, SECRETS_GROUP, STATE_META, type Revision } from "@/shared/metadata";
 import { ErrorNotice } from "../live/session";
 import { GuiRequestError } from "../gui-client";
@@ -70,10 +70,10 @@ function OverviewState() {
   // The service state outranks publishing: a fully published Source that nobody can reach is not "fine".
   const service = ws.admin.service.data;
   if (service && !service.serving) {
-    return <StateHeader tone="bad" title="Other machines can't reach this Source" body="They keep the revision they have until the Source service is serving again. The bar at the top shows how to fix it." />;
+    return <StateHeader tone="bad" title="Other machines can't reach this Source" body="They keep their current revision until the Source service runs again." />;
   }
   if (!ws.capabilities.simulatedTelemetry || ws.latest === undefined) {
-    return <StateHeader tone="muted" title={ws.session?.machineName ?? ws.machineName} body="Source Machine. Publish the Canonical Folder to share configuration with enrolled followers." />;
+    return <StateHeader tone="muted" title={ws.session?.machineName ?? ws.machineName} body="Publish the profile to send it to your other machines." />;
   }
   const unreachable = ws.followers.filter((f) => f.state === "offline" && f.revision !== ws.latest);
   const reachable = ws.followers.length - unreachable.length;
@@ -418,24 +418,32 @@ export function WorkspaceEvidence() {
           <Prop label="Canonfig version"><Mono>{session.version}</Mono></Prop>
           <Prop label="Canonical Folder"><Mono>{session.folderPath}</Mono></Prop>
           {machineRole.follower !== undefined && <Prop label="Follower identity"><Mono>{machineRole.follower}</Mono></Prop>}
-          {machineRole.sourceFingerprint !== undefined && <Prop label="Source fingerprint"><Mono>{machineRole.sourceFingerprint}</Mono></Prop>}
-          {machineRole.tlsFingerprint !== undefined && <Prop label="TLS fingerprint"><Mono>{machineRole.tlsFingerprint}</Mono></Prop>}
         </div>
+        {(machineRole.sourceFingerprint !== undefined || machineRole.tlsFingerprint !== undefined) && <details className="mt-3 text-sm">
+          <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
+          <div className="mt-1 border-t border-border">
+            {machineRole.sourceFingerprint !== undefined && <Prop label="Source fingerprint"><Mono>{machineRole.sourceFingerprint}</Mono></Prop>}
+            {machineRole.tlsFingerprint !== undefined && <Prop label="TLS fingerprint"><Mono>{machineRole.tlsFingerprint}</Mono></Prop>}
+          </div>
+        </details>}
       </section>
-      <section>
-        <SectionLabel>Follower lifecycle</SectionLabel>
-        {session.role !== "follower" && <p className="py-2 text-sm text-muted-foreground">These checks describe follower enrollment, not Source service health.</p>}
-        <div className="border-t border-border">
-          {Object.entries(lifecycle).map(([name, { reached, detail }]) => (
-            <div key={name} className="border-b border-border/70 py-2">
-              <div className="flex gap-3 text-base"><span className="font-medium">{name}</span><span className="text-muted-foreground">{reached ? "Reached" : "Not reached"}</span></div>
-              <p className="text-sm text-muted-foreground">{detail}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-      {session.role === "follower" && <Button variant="outline" size="sm" onClick={() => setView("sync")}>Open synchronization details</Button>}
-      <section><SectionLabel>SSH tunnel</SectionLabel><TunnelEvidence report={tunnel} /></section>
+      {/* Enrollment lifecycle and the tunnel belong to a Follower; a Source has neither. */}
+      {session.role === "follower" && <>
+        <section>
+          <SectionLabel>Follower lifecycle</SectionLabel>
+          <div className="border-t border-border">
+            {Object.entries(lifecycle).map(([name, { reached, detail }]) => (
+              <div key={name} className="border-b border-border/70 py-2">
+                <div className="flex gap-3 text-base"><span className="font-medium">{name}</span><span className="text-muted-foreground">{reached ? "Reached" : "Not reached"}</span></div>
+                {!reached && <p className="text-sm text-muted-foreground"><CliText>{detail}</CliText></p>}
+              </div>
+            ))}
+          </div>
+        </section>
+        <Button variant="outline" size="sm" onClick={() => setView("sync")}>Open synchronization details</Button>
+        {/* A follower that joined without a tunnel has nothing to show here. */}
+        {(tunnel as { lifecycle?: unknown } | null)?.lifecycle !== "not-configured" && <section><SectionLabel>SSH tunnel</SectionLabel><TunnelEvidence report={tunnel} /></section>}
+      </>}
     </>
   );
 }
@@ -608,7 +616,7 @@ export function RevisionsView() {
       <ProfileActionNotice />
       <Body detail={current && <RevisionDetail key={current.sequence} revision={current} onClose={() => ws.go("revisions")} />}>
         {ws.revisions.length === 0 && ws.pending.length === 0 ? (
-          <EmptyState title="No revisions yet" body="Each time you publish the profile, it becomes a numbered revision here that machines can apply." />
+          <EmptyState title="No revisions yet" body="Publish the profile to create revision 1." />
         ) : (
           <>
             <ListHead cols={cols} minWidth={colsMin} data-tour="revisions-list">
@@ -785,13 +793,13 @@ export function SecretsView() {
       />
       <ProfileActionNotice />
       <Body>
-        <p data-tour="secrets-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
+        {ws.secrets.length > 0 && <p data-tour="secrets-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
           Sent to: {receivers.length ? receivers.map((f) => f.name).join(", ") : "no machines yet"}
-        </p>
+        </p>}
         {ws.secrets.length === 0 ? (
           <EmptyState
             title="No shared secrets"
-            body="Set one to make it available to the machines that can receive secrets."
+            body="Machines that can receive secrets get each one you set."
             action={
               <Button variant="outline" size="sm" disabled={!ws.capabilities.profileWrite} onClick={() => openSet()}>
                 Set secret
