@@ -23,7 +23,7 @@ import {
   writeFile,
   type FileHandle,
 } from "node:fs/promises";
-import { constants as filesystemConstants, readFileSync, statSync } from "node:fs";
+import { constants as filesystemConstants, existsSync, readFileSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import {
   basename,
@@ -111,13 +111,17 @@ const secretToolInstallAdvice = (): string => {
   let release = "";
   try { release = readFileSync("/etc/os-release", "utf8"); } catch { /* not a standard Linux layout */ }
   const ids = (/^ID_LIKE=(.*)$/mu.exec(release)?.[1] ?? "") + " " + (/^ID=(.*)$/mu.exec(release)?.[1] ?? "");
+  // Image-based Fedora (Silverblue, Kinoite, CoreOS) boots from ostree and layers host packages with rpm-ostree;
+  // dnf there only changes a toolbox, not the host.
+  const ostree = existsSync("/run/ostree-booted");
   const command = /\b(?:debian|ubuntu)\b/u.test(ids) ? "sudo apt install libsecret-tools gnome-keyring"
+    : ostree && /\b(?:fedora|rhel)\b/u.test(ids) ? "sudo rpm-ostree install libsecret gnome-keyring"
     : /\b(?:fedora|rhel)\b/u.test(ids) ? "sudo dnf install libsecret gnome-keyring"
     : /\barch\b/u.test(ids) ? "sudo pacman -S libsecret gnome-keyring"
     : undefined;
   return command === undefined
     ? "Install the Secret Service client (Debian and Ubuntu: libsecret-tools; Fedora and RHEL: libsecret; Arch: libsecret) and a keyring such as gnome-keyring, or use the local-file credential policy."
-    : `Install it with \`${command}\`, or use the local-file credential policy.`;
+    : `Install it with \`${command}\`${command.startsWith("sudo rpm-ostree") ? " and reboot" : ""}, or use the local-file credential policy.`;
 };
 
 const decode = Schema.decodeUnknownSync;
