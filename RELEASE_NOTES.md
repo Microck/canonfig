@@ -31,6 +31,9 @@ during import.
 
 ## Upgrading
 
+Before upgrading, finish or recover any unfinished run with the CLI build that
+created it.
+
 Install with `npm install --global @microck/canonfig@7.1.7` on every machine,
 or run `canonfig self-update apply`. Stop `canonfig ui` first, and on a Source
 run `canonfig source service remove` before installing and
