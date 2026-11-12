@@ -54,7 +54,7 @@ function Fixture({ backend, session }: { backend: WorkspaceBackend; session: Gui
   return <TooltipProvider><LiveWorkspaceProvider backend={backend} session={session} route={route} onInstalled={() => assert.fail("Unexpected installation")}>
     <Probe />
     {route.view === "setup" && <SetupJournal backend={backend} session={session} frame={(actions, content) => <>{actions}{content}</>} />}
-    {route.view === "profile" && route.profileTab === "items" && <ProfileView />}
+    {route.view === "profile" && (route.profileTab === "items" || route.profileTab === "harnesses") && <ProfileView />}
     {route.view === "local" && <LocalView />}
     {route.view === "secrets" && <SecretsView />}
     {route.role === "follower" && <FollowerOperationEvidence />}
@@ -223,6 +223,45 @@ for (const state of ["succeeded", "failed"] as const) {
     } finally { await app.close(); }
   });
 }
+
+it("saves a harness's Gets choices once when the menu closes", async () => {
+  const items = {
+    items: [{ path: "canonfig.jsonc", digest: "config-digest", files: [] }],
+    config: { ...profile.config, harnesses: ["codex"] },
+    supportedSurfaces: { codex: ["instructions", "rules", "skills", "hooks"] },
+  };
+  const responses: Record<string, unknown> = {
+    ...sourceResponses(),
+    "/api/profile/items": items,
+    "/api/harnesses": {
+      folder: "/tmp/review-fixture", configured: true, listed: ["codex"], excluded: [], detected: ["codex"], notInstalled: [], snapshots: 0,
+      harnesses: [{ harness: "codex", name: "OpenAI Codex", installed: true, root: "/tmp/review-fixture/.codex", rootExists: false, status: "selected", listed: true, excluded: false }],
+    },
+  };
+  const app = await fixture("/source/profile/harnesses", responses, (path, method, _body, outgoing) => {
+    if (path === "/api/profile/config" && method === "PUT") { outgoing.end('{"saved":true}'); return true; }
+    return false;
+  });
+  try {
+    const trigger = () => document.querySelector<HTMLButtonElement>('button[aria-label^="What OpenAI Codex gets"]');
+    await until(() => trigger() !== null && !app.container.querySelector('[aria-busy="true"]'), "Harness list did not load");
+    await act(async () => { trigger()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+    await until(() => document.querySelectorAll('[role="menuitemcheckbox"]').length > 0, "Gets menu did not open");
+    for (const name of ["Rules", "Skills", "Hooks"]) {
+      const item = [...document.querySelectorAll<HTMLElement>('[role="menuitemcheckbox"]')].find((candidate) => candidate.textContent === name);
+      assert.ok(item, `Missing ${name}`);
+      await act(async () => { item.click(); });
+    }
+    assert.equal(app.mutations.filter((mutation) => mutation.path === "/api/profile/config").length, 0, "Ticking must not write while the menu is open");
+    const menu = document.querySelector('[role="menu"]');
+    assert.ok(menu);
+    await act(async () => { menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    await until(() => app.mutations.some((mutation) => mutation.path === "/api/profile/config"), "Closing the menu did not save");
+    const writes = app.mutations.filter((mutation) => mutation.path === "/api/profile/config");
+    assert.equal(writes.length, 1);
+    assert.deepEqual(writes[0]!.body, { expectedDigest: "config-digest", edits: [{ path: ["surfaces"], value: { codex: ["instructions"] } }], changes: [] });
+  } finally { await app.close(); }
+});
 
 async function fill(selector: string, value: string) {
   const input = document.querySelector(selector);
