@@ -24,7 +24,7 @@ List what you ran and what happened. Tick only what you actually ran.
 
 ## AI assistance disclosure
 
-Required for AI-assisted changes; see [CONTRIBUTING.md](../CONTRIBUTING.md#ai-assisted-contributions). Delete this section if no AI was used.
+Required for AI-assisted changes; see [CONTRIBUTING.md](https://github.com/Microck/canonfig/blob/main/CONTRIBUTING.md#ai-assisted-contributions). Delete this section if no AI was used.
 
 - `agent_name`:
 - `agent_version`:

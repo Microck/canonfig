@@ -50,7 +50,7 @@ For browser UI changes, also run:
 ```sh
 npm --prefix ui run typecheck
 npm --prefix ui run lint
-TSX_TSCONFIG_PATH=ui/tsconfig.app.json node --import tsx --test $(git ls-files 'ui/src/**/*.test.ts' 'ui/src/**/*.test.tsx')
+TSX_TSCONFIG_PATH=ui/tsconfig.app.json node --import tsx --test 'ui/src/**/*.test.ts' 'ui/src/**/*.test.tsx'
 ```
 
 The full suite is slow. While you work, run the focused test files, then run
