@@ -90,7 +90,6 @@ const sourceHome = (): string => {
   write(join(folder, "installers", "bindings.json"), "{}");
   write(join(folder, "credentials", "follower"), SECRET);
   write(join(folder, "setup.json"), "{}");
-  write(join(folder, "policy.json"), "{}");
   write(join(folder, "skills-sources.json"), "{}");
   return home;
 };
@@ -196,7 +195,7 @@ describe("canonfig export and import", () => {
       expect(readFileSync(join(target, ".canonfig", ...parts)).equals(readFileSync(join(source, ".canonfig", ...parts))), path).toBe(true);
     }
     if (posix) expect(statSync(join(target, ".canonfig", "hooks", "format.sh")).mode & 0o100).toBe(0o100);
-    for (const excluded of [".backups", ".runtime", "installers", "credentials", "setup.json", "policy.json", "skills-sources.json", "state.sqlite-wal"]) {
+    for (const excluded of [".backups", ".runtime", "installers", "credentials", "setup.json", "skills-sources.json", "state.sqlite-wal"]) {
       expect(existsSync(join(target, ".canonfig", excluded)), excluded).toBe(false);
     }
     // Both commands are in each machine's command journal.

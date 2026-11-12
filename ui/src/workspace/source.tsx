@@ -15,7 +15,7 @@ import { GuiRequestError } from "../gui-client";
 import { useSharedState, useWorkspace, type PendingChange, type Workspace } from "./store";
 import { GetStarted } from "./guide";
 import { whyBehind } from "./machines";
-import { useAgentPolicy, useChecks, warningName } from "./settings";
+import { useChecks, warningName } from "./settings";
 import { workspaceHref } from "./routes";
 import { ProfileActionNotice } from "./profile-authoring-controls";
 import { object } from "./profile-authoring";
@@ -41,8 +41,6 @@ import {
   useLeaveGuard,
 } from "./kit";
 import { TunnelEvidence } from "./follower-evidence";
-
-const AGENT_MODE_LABEL: Record<string, string> = { "deterministic-only": "Off", "agent-propose": "Proposes only", "agent-apply": "Applies fixes" };
 
 /** How one unpublished change reads in review lists, and where it is edited: items in their editor, the rest on their Profile tab. */
 function pendingRow(ws: Workspace, p: PendingChange): { icon: IconComponent; name: string; what: React.ReactNode; open: () => void } {
@@ -150,7 +148,6 @@ export function SourceOverview() {
   const behind = ws.followers.map((f) => ({ f, why: whyBehind(f, ws.latest, ws.syncing.includes(f.id)) })).filter((x) => x.why !== null);
   // The same checks the Health page shows, so a removed service or resolved linger reads the same here.
   const warn = useChecks().filter((d) => d.result === "warn");
-  const [agent] = useAgentPolicy();
   const gridResources = ws.resources.filter((r) => r.change !== "added");
   const [serviceInstalled] = useSharedState("service-installed", ws.serviceInstalled);
 
@@ -378,11 +375,6 @@ export function SourceOverview() {
                   title="Canonfig calls this doctor (canonfig doctor)."
                   value={warn.length ? warn.map(warningName).join(", ") : "All checks pass"}
                   onClick={() => ws.setView("doctor")}
-                />
-                <StatusRow
-                  label="AI agent"
-                  value={!agent ? "Not reported" : agent.mode === "deterministic-only" ? AGENT_MODE_LABEL[agent.mode] : `${AGENT_MODE_LABEL[agent.mode]} (${agent.harness})`}
-                  onClick={() => ws.setView("agent")}
                 />
                 <StatusRow
                   label="Harnesses"

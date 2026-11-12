@@ -92,16 +92,8 @@ export interface DoctorInput {
   readonly timeoutMilliseconds: number;
   readonly statePath: string;
   /**
-   * Where an unenrolled machine keeps its agent policy. Enrollment stops using
-   * this file, so an enrolled machine passes `agentPolicy` instead and the file
-   * is not consulted.
-   */
-  readonly policyPath: string;
-  /**
-   * The policy this machine actually synchronizes under, when it is enrolled.
-   * The probe used to read `policyPath` regardless, so an enrolled follower
-   * with policy `agent-apply` and no harness reported a skipped probe rather
-   * than the failure a run would hit.
+   * The policy this machine synchronizes under. Only an enrolled Follower
+   * Machine has one; elsewhere it is undefined and the agent probe is skipped.
    */
   readonly agentPolicy?: typeof AgentPolicy.Type | undefined;
   /**
@@ -127,10 +119,6 @@ export interface DoctorInput {
   /** The environment harness roots resolve from. */
   readonly environment: (name: string) => string | undefined;
 }
-
-const PolicyFile = Schema.Struct({
-  policy: Schema.Literals(["deterministic-only", "agent-propose", "agent-apply"]),
-});
 
 const pass = (
   name: DoctorProbeName,
@@ -501,46 +489,28 @@ const executableAvailable = (
       Effect.catch(() => Effect.succeed(false)),
     );
 
-const readPolicy = (
-  policyPath: string,
-): Effect.Effect<typeof PolicyFile.Type | undefined> =>
-  Effect.tryPromise({
-    try: async () => {
-      const { readFile } = await import("node:fs/promises");
-      return Schema.decodeUnknownSync(PolicyFile)(
-        JSON.parse(await readFile(policyPath, "utf8")),
-      );
-    },
-    catch: (error) => error,
-  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
-
 const agentProbe = Effect.fn("Doctor.agentAdapter")(function*(
   machine: MachineState["Service"],
-  policyPath: string,
-  enrolledPolicy: typeof AgentPolicy.Type | undefined,
+  policy: typeof AgentPolicy.Type | undefined,
   agent: DoctorAgentConfiguration | undefined,
 ): Effect.fn.Return<DoctorProbe> {
-  // An enrolled follower's policy lives in its follower configuration, which is
-  // what a run reads. Fall back to the policy file only when this machine is
-  // not enrolled and that file is still the authority.
-  const configuredPolicy = enrolledPolicy === undefined
-    ? yield* readPolicy(policyPath)
-    : { policy: enrolledPolicy };
+  // Only follower runs call an agent, so a Source or an unenrolled machine has
+  // no agent policy for this probe to check.
+  if (policy === undefined) {
+    return skipped("agent-adapter", "agent policy applies only to an enrolled Follower Machine");
+  }
   if (agent === undefined) {
-    if (configuredPolicy?.policy === "deterministic-only") {
+    if (policy === "deterministic-only") {
       return pass("agent-adapter", "deterministic-only policy requires no adapter", {
-        policy: configuredPolicy.policy,
+        policy,
         configured: false,
       });
-    }
-    if (configuredPolicy === undefined) {
-      return skipped("agent-adapter", "agent policy and adapter are not configured");
     }
     return failed(
       "agent-adapter",
       "usage-or-configuration",
       "configured agent policy requires an adapter",
-      { policy: configuredPolicy.policy, configured: false },
+      { policy, configured: false },
     );
   }
   if (!["codex", "claude", "custom"].includes(agent.adapter)) {
@@ -675,7 +645,7 @@ export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
     isolated(
       "agent-adapter",
       timeout,
-      agentProbe(machine, input.policyPath, input.agentPolicy, input.agent),
+      agentProbe(machine, input.agentPolicy, input.agent),
       () => failed("agent-adapter", "internal", "agent adapter capability check failed"),
       "internal",
     ),

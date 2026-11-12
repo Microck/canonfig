@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  GuiAgentHarness, GuiAgentHarnessRead, GuiAgentPolicy, GuiAgentPolicyRead, GuiDoctorResult, GuiInstallerCheck, GuiInstallerRemoval, GuiInstallerSet, GuiInstallers,
+  GuiAgentHarness, GuiAgentHarnessRead, GuiAgentPolicy, GuiDoctorReport, GuiInstallerCheck, GuiInstallerRemoval, GuiInstallerSet, GuiInstallers,
   GuiSourceServiceChange, GuiSourceServiceRemoval, GuiSourceServiceReport,
 } from "../../../../src/gui/contract/administration";
 import type { GuiSession } from "../../../../src/gui/contract/session";
@@ -78,13 +78,15 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
   const configured = session.role !== "unconfigured";
   const sourceLoad = useCallback((signal: AbortSignal) => backend.request("/api/source-service", GuiSourceServiceReport, signal), [backend]);
   const service = useAdministrationResource(session.role === "source" ? sourceLoad : null, paths.includes("/api/source-service"));
-  const policyLoad = useCallback((signal: AbortSignal) => backend.request("/api/agent/policy", GuiAgentPolicyRead, signal), [backend]);
+  // Agent policy and harness exist only on an enrolled Follower Machine.
+  const follower = session.role === "follower";
+  const policyLoad = useCallback((signal: AbortSignal) => backend.request("/api/agent/policy", GuiAgentPolicy, signal), [backend]);
   const harnessLoad = useCallback((signal: AbortSignal) => backend.request("/api/agent/harness", GuiAgentHarnessRead, signal), [backend]);
-  const policy = useAdministrationResource(configured ? policyLoad : null, paths.includes("/api/agent/policy"));
-  const harness = useAdministrationResource(configured ? harnessLoad : null, paths.includes("/api/agent/harness"));
+  const policy = useAdministrationResource(follower ? policyLoad : null, paths.includes("/api/agent/policy"));
+  const harness = useAdministrationResource(follower ? harnessLoad : null, paths.includes("/api/agent/harness"));
   const installersLoad = useCallback((signal: AbortSignal) => backend.request("/api/installers", GuiInstallers, signal), [backend]);
   const installers = useAdministrationResource(configured ? installersLoad : null, paths.includes("/api/installers"));
-  const doctor = useAdministrationResource<typeof GuiDoctorResult.Type>(null);
+  const doctor = useAdministrationResource<typeof GuiDoctorReport.Type>(null);
   const version = useLiveSelfUpdate(backend, configured && paths.includes("/api/self-update"), onInstalled);
   const [serviceAction, setServiceAction] = useState<"install" | "remove" | null>(null);
   const [checkingInstaller, setCheckingInstaller] = useState<string | null>(null);
@@ -114,7 +116,7 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
 
   const savedHarness = harness.data?.configured ? harness.data.value : null;
   const savedPolicy: SavedPolicy | null = policy.data === null ? null : {
-    mode: policy.data.configured ? policy.data.value : policy.data.default,
+    mode: policy.data,
     harness: {
       executable: savedHarness?.executable === savedHarness?.kind ? "" : savedHarness?.executable ?? "",
       paths: [...(savedHarness?.allowedPaths ?? [])], maximumInputBytes: savedHarness?.maximumInputBytes ?? 1024 * 1024,
@@ -128,11 +130,11 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
       return false;
     }
     policyEvent({ kind: "Save", draft: next });
-    const draftHarness = session.role === "follower" && next.mode !== "deterministic-only" ? next.harness : null;
+    const draftHarness = next.mode !== "deterministic-only" ? next.harness : null;
     const policySaved = await policy.run(async (signal) => {
       try {
         const saved = await backend.request("/api/agent/policy", GuiAgentPolicy, signal, { method: "PUT", body: next.mode });
-        if (!signal.aborted) { policy.setData({ configured: true, value: saved }); policyEvent({ kind: "PolicyCommitted", harness: draftHarness }); }
+        if (!signal.aborted) { policy.setData(saved); policyEvent({ kind: "PolicyCommitted", harness: draftHarness }); }
       } catch (cause) { policyEvent({ kind: "Failed", error: requestError(cause) }); throw cause; }
     });
     if (!policySaved || !draftHarness) return policySaved;
@@ -155,7 +157,7 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
     });
   };
   const runDoctor = () => { void doctor.run(async (signal) => {
-    const report = await backend.request("/api/doctor", GuiDoctorResult, signal, { method: "POST", body: {} });
+    const report = await backend.request("/api/doctor", GuiDoctorReport, signal, { method: "POST", body: {} });
     if (!signal.aborted) doctor.setData(report);
   }); };
   const settings = version.data?.settings;
@@ -175,8 +177,6 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
       install: (hostname, port) => changeService("install", hostname, port), remove: () => changeService("remove"),
     },
     agent: {
-      configured: policy.data?.configured ?? false,
-      harnessWritable: session.role === "follower",
       harnessConfigured: harness.data?.configured ?? false,
       data: savedPolicy, loading: policy.loading, busy: policy.busy || harness.busy || saveState.kind === "SavingPolicy" || saveState.kind === "SavingHarness", error: policy.error,
       harnessLoading: harness.loading, harnessError: harness.error, savedMessage, saveState, save: savePolicy,
@@ -212,12 +212,13 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
       },
     },
     doctor: {
-      data: doctor.data?.report.probes.map((probe) => ({
+      data: doctor.data?.probes.map((probe) => ({
         check: probe.name, result: probe.status === "pass" ? "ok" : probe.status === "warning" ? "warn" : probe.status === "fail" ? "bad" : "off",
         detail: probe.message, evidence: { ...probe }, commands: [...probe.message.matchAll(/`([^`]+)`/g)].map((match) => match[1]!),
       })) ?? null,
-      loading: doctor.loading, busy: doctor.busy, error: doctor.error ?? (doctor.data?.error ? new GuiRequestError(doctor.data.error) : null),
-      reload: runDoctor, status: doctor.data?.report.status ?? null, run: runDoctor,
+      // Failed probes are shown in the list itself; only a request that could not run the checks is an error.
+      loading: doctor.loading, busy: doctor.busy, error: doctor.error,
+      reload: runDoctor, status: doctor.data?.status ?? null, run: runDoctor,
     },
     version: {
       ...version,

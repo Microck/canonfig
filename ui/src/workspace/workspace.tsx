@@ -40,7 +40,6 @@ const SOURCE_SCREENS: Partial<Record<View, React.ComponentType>> = {
   backups: BackupsView,
   secrets: SecretsView,
   service: ServiceView,
-  agent: AgentPolicyView,
   installers: InstallersView,
   setup: SetupView,
   doctor: DoctorView,

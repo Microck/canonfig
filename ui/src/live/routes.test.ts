@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import { isRouteForRole, navigationForRole, navItem } from "../workspace/nav";
 import { parseRoute, workspaceHref } from "../workspace/routes";
 
-const source = ["overview", "profile", "machines", "revisions", "secrets", "service", "agent", "installers", "setup", "doctor", "version"];
+const source = ["overview", "profile", "machines", "revisions", "secrets", "service", "installers", "setup", "doctor", "version"];
 const follower = ["overview", "machines", "sync", "schedule", "local", "backups", "secrets", "tunnel", "agent", "doctor", "machine", "version", "installers", "setup"];
 
 describe("shared live workspace navigation", () => {

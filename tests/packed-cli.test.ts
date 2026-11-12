@@ -636,12 +636,14 @@ describe("packed Canonfig executable", () => {
       data: { revisions: [] },
     });
 
+    // Agent policy belongs to an enrolled Follower; an unenrolled machine gets a stable usage error.
     const policy = invoke(bare, ["agent", "policy", "deterministic-only", "--json"]);
-    expect(policy).toMatchObject({ status: 0, stderr: "" });
-    expect(JSON.parse(policy.stdout)).toMatchObject({
+    expect(policy).toMatchObject({ status: 2, stdout: "" });
+    expect(JSON.parse(policy.stderr)).toMatchObject({
       command: "agent.policy.set",
-      exitCode: 0,
-      data: "deterministic-only",
+      status: "error",
+      exitCode: 2,
+      message: "agent policy is set on each Follower Machine; this machine is not an enrolled Follower Machine",
     });
   });
 
@@ -834,11 +836,8 @@ describe("packed Canonfig executable", () => {
   });
 
   it("probes the agent policy the enrolled follower actually runs under", () => {
-    // `agent policy` writes to the follower configuration once enrolled, and a
-    // run reads it from there. The doctor probe read ~/.canonfig/policy.json,
-    // which enrollment stops using, so an enrolled follower with an agent
-    // policy and no harness reported a skipped probe instead of the failure a
-    // run would hit.
+    // `agent policy` writes to the follower configuration, and a run reads it
+    // from there, so doctor must report the failure such a run would hit.
     requireSuccess(invoke(transport, ["agent", "policy", "agent-apply", "--json"]), "set agent-apply");
 
     const result = invoke(

@@ -223,7 +223,6 @@ describe("doctor source probe response lifecycle", () => {
       noInput: true,
       timeoutMilliseconds,
       statePath,
-      policyPath: join(home, "policy.json"),
       environment: () => undefined,
       source: {
         endpoint: `https://127.0.0.1:${address.port}`,
@@ -276,7 +275,6 @@ describe("doctor local credential evidence", () => {
       noInput: true,
       timeoutMilliseconds,
       statePath,
-      policyPath: join(home, "policy.json"),
       environment: () => undefined,
       source: unreachableSource,
     }).pipe(

@@ -24,12 +24,6 @@ export const GuiAgentHarness = Schema.Struct({
   allowedCapabilities: Schema.Array(Schema.Literals(["elevation", "login", "restart", "reboot"])),
 }) satisfies Schema.Codec<FollowerAgentHarnessConfiguration>;
 
-/** Absence is a normal read result, not a saved default or a CLI failure. */
-export const GuiAgentPolicyRead = Schema.Union([
-  Schema.Struct({ configured: Schema.Literal(false), default: Schema.Literal("deterministic-only") }),
-  Schema.Struct({ configured: Schema.Literal(true), value: GuiAgentPolicy }),
-]);
-export type GuiAgentPolicyRead = typeof GuiAgentPolicyRead.Type;
 export const GuiAgentHarnessRead = Schema.Union([
   Schema.Struct({ configured: Schema.Literal(false) }),
   Schema.Struct({ configured: Schema.Literal(true), value: GuiAgentHarness }),
@@ -100,10 +94,6 @@ export const GuiDoctorReport = Schema.Struct({
     category: Schema.optionalKey(GuiError.fields.category),
     details: Schema.optionalKey(Schema.Record(Schema.String, Schema.Union([Schema.Boolean, Schema.Number, Schema.String]))),
   })),
-});
-export const GuiDoctorResult = Schema.Struct({
-  report: GuiDoctorReport,
-  error: Schema.NullOr(GuiError),
 });
 export const GuiSelfUpdateStatus = Schema.Struct({
   platform: Schema.String,

@@ -50,7 +50,7 @@ export function tourChapters(ws: Workspace, live: () => Workspace): TourChapter[
   };
   const chapters = ws.capabilities.simulatedTelemetry
     ? ws.role === "source" ? sourceChapters(ws) : followerChapters(ws)
-    : [agentsChapter(ws)];
+    : ws.role === "follower" ? [agentsChapter(ws)] : [];
   const linked = chapters.map((chapter, i) => {
     const next = chapters[i + 1];
     if (!next) return chapter;
@@ -122,7 +122,7 @@ function tourSteps(ws: Workspace, live: () => Workspace): TourStep[] {
   ];
 }
 
-/** Both roles have the same Agent policy page, so they share one chapter. */
+/** The Agent policy page exists only on a Follower, where runs call the agent. */
 function agentsChapter(ws: Workspace): TourChapter {
   return {
     id: "agents",
@@ -321,7 +321,6 @@ function sourceChapters(ws: Workspace): TourChapter[] {
         },
       ],
     },
-    agentsChapter(ws),
     {
       id: "health",
       title: "Service and health",

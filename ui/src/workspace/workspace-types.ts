@@ -22,7 +22,6 @@ export type SourceView =
   | "backups"
   | "secrets"
   | "service"
-  | "agent"
   | "installers"
   | "setup"
   | "doctor"

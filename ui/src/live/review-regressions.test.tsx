@@ -447,7 +447,7 @@ it("a secret submission freezes its draft and cannot close as if it cancelled th
 it("a failed harness save retains the committed policy as an explicit partial success", async () => {
   const responses: Record<string, unknown> = {
     "/api/status": { machineRole: { role: "follower" }, lifecycle: {}, tunnel: null },
-    "/api/agent/policy": { configured: false, default: "deterministic-only" },
+    "/api/agent/policy": "deterministic-only",
     "/api/agent/harness": { configured: false },
   };
   const app = await fixture("/follower/settings/agent", responses, (path, method, _body, outgoing) => {

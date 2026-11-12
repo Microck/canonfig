@@ -159,27 +159,23 @@ export function ServiceView() {
   );
 }
 
-function modes(source: boolean) {
-  return [
-    {
-      value: "deterministic-only",
-      label: "Deterministic only",
-      body: "Canonfig never calls an agent. Anything without an exact recipe waits for a person.",
-    },
-    {
-      value: "agent-propose",
-      label: "Agent proposes",
-      body: source
-        ? "An agent may draft a fix as a proposed profile change. Nothing changes until you publish it."
-        : "An agent may draft a fix as a proposed profile change. Nothing changes until the Source publishes it.",
-    },
-    {
-      value: "agent-apply",
-      label: "Agent applies",
-      body: source ? "An agent may apply fixes on this machine. Each job it does is recorded." : "An agent may apply fixes on this machine within the bounds below. Each job it does is recorded.",
-    },
-  ] as const;
-}
+const MODES = [
+  {
+    value: "deterministic-only",
+    label: "Deterministic only",
+    body: "Canonfig never calls an agent. Anything without an exact recipe waits for a person.",
+  },
+  {
+    value: "agent-propose",
+    label: "Agent proposes",
+    body: "An agent may draft a fix as a proposed profile change. Nothing changes until the Source publishes it.",
+  },
+  {
+    value: "agent-apply",
+    label: "Agent applies",
+    body: "An agent may apply fixes on this machine within the bounds below. Each job it does is recorded.",
+  },
+] as const;
 
 const MAX_EVIDENCE_BYTES = 1024 * 1024;
 const MODEL_EXAMPLE: Record<string, string> = { codex: "gpt-5-codex", claude: "opus" };
@@ -198,11 +194,6 @@ function joinArguments(args: string[]): string {
   return JSON.stringify(args);
 }
 
-/** Shared summaries read the same saved policy as the editor. */
-export function useAgentPolicy() {
-  return [useWorkspace().admin.agent.data] as const;
-}
-
 export function AgentPolicyView() {
   const { admin } = useWorkspace();
   const agent = admin.agent;
@@ -217,8 +208,7 @@ export function AgentPolicyView() {
 }
 
 function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
-  const ws = useWorkspace();
-  const agent = ws.admin.agent;
+  const agent = useWorkspace().admin.agent;
   // No policy is selected until the CLI reports one or the person chooses one.
   const initial = saved ?? { mode: null, harness: null };
   const initialHarness = initial.harness;
@@ -245,7 +235,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
     paths.some((path, i) => path !== initialHarness?.paths[i]);
   // Errors show only after a Save attempt, then follow the fields as they change.
   const [tried, setTried] = useState(false);
-  const off = mode === "deterministic-only" || harness === null || !agent.harnessWritable;
+  const off = mode === "deterministic-only" || harness === null;
   const bytes = Number(maximumInputBytes);
   const maxInvalid = !Number.isInteger(bytes) || bytes < 1 || bytes > MAX_EVIDENCE_BYTES;
   const typedPath = newPath.trim();
@@ -315,18 +305,17 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
           <>
             <Button size="sm" variant="outline" disabled={agent.busy || hasChanges} onClick={agent.reload}>Reload settings</Button>
             {hasChanges && <Button size="sm" variant="ghost" disabled={agent.busy} onClick={discard}>Discard</Button>}
-            <Button size="sm" variant="primary" disabled={(!hasChanges && agent.configured && (off || agent.harnessConfigured)) || mode === null || agent.busy} onClick={() => void save()}>{agent.busy ? "Saving…" : "Save policy"}</Button>
+            <Button size="sm" variant="primary" disabled={(!hasChanges && (off || agent.harnessConfigured)) || mode === null || agent.busy} onClick={() => void save()}>{agent.busy ? "Saving…" : "Save policy"}</Button>
           </>
         }
       />
       <Body reloading={agent.loading || agent.harnessLoading}>
         <Column>
-          {!agent.configured && saved && <p role="status" className="mb-4 text-sm text-muted-foreground">Not saved yet.</p>}
           {agent.error && <ErrorNotice error={agent.error} />}
           {agent.harnessError && <ErrorNotice title="Harness unavailable" error={agent.harnessError} />}
           {agent.savedMessage && <p role="status" className="mb-4 text-sm">{agent.savedMessage}</p>}
           <RadioGroup value={mode ?? ""} onValueChange={(value) => { if (value === "deterministic-only" || value === "agent-propose" || value === "agent-apply") setMode(value); }} disabled={agent.busy} aria-label="Agent policy" className={settingsGroup} data-tour="agent-mode">
-            {modes(ws.role === "source").map((m) => (
+            {MODES.map((m) => (
               <Label
                 key={m.value}
                 htmlFor={`mode-${m.value}`}
@@ -341,11 +330,10 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
             ))}
           </RadioGroup>
 
-                    {agent.harnessWritable && !agent.harnessConfigured && !agent.harnessError && <p className="mt-4 text-sm text-muted-foreground">Harness not saved yet.</p>}
+          {!agent.harnessConfigured && !agent.harnessError && <p className="mt-4 text-sm text-muted-foreground">Harness not saved yet.</p>}
           {/* inert keeps the disabled bounds out of the tab order, not just greyed out. */}
-          {/* A Source shows the bounds greyed out: they are set on each Follower, where the agent runs. */}
-          {harness !== null && <div className={cn("mt-8 grid gap-4", (off || !agent.harnessWritable) && "opacity-40")} inert={off || !agent.harnessWritable || agent.busy}>
-            <SectionLabel action={!agent.harnessWritable ? <span className="text-xs text-muted-foreground">Set on each Follower</span> : undefined}>Harness bounds</SectionLabel>
+          {harness !== null && <div className={cn("mt-8 grid gap-4", off && "opacity-40")} inert={off || agent.busy}>
+            <SectionLabel>Harness bounds</SectionLabel>
             <div className={cn(settingsGroup, "max-sm:[&>div]:flex-col max-sm:[&>div]:items-start max-sm:[&>div]:gap-2")}>
               <SettingRow title="Agent harness" htmlFor="ap-harness">
                 <Select value={harness} onValueChange={(value) => { if (value === "codex" || value === "claude" || value === "custom") setHarness(value); }}>
