@@ -636,12 +636,14 @@ describe("packed Canonfig executable", () => {
       data: { revisions: [] },
     });
 
+    // Agent policy belongs to an enrolled Follower; an unenrolled machine gets a stable usage error.
     const policy = invoke(bare, ["agent", "policy", "deterministic-only", "--json"]);
-    expect(policy).toMatchObject({ status: 0, stderr: "" });
-    expect(JSON.parse(policy.stdout)).toMatchObject({
+    expect(policy).toMatchObject({ status: 2, stdout: "" });
+    expect(JSON.parse(policy.stderr)).toMatchObject({
       command: "agent.policy.set",
-      exitCode: 0,
-      data: "deterministic-only",
+      status: "error",
+      exitCode: 2,
+      message: "agent policy is set on each Follower Machine; this machine is not an enrolled Follower Machine",
     });
   });
 
