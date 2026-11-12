@@ -74,8 +74,11 @@ for (const role of ["source", "follower"] as const) {
         incoming.on("end", () => {
           const parsed: unknown = JSON.parse(body);
           mutations.push({ path, body: parsed });
-          if (path === "/api/agent/policy" || path === "/api/agent/harness") {
-            responses[path] = path === "/api/agent/policy" ? parsed : { configured: true, value: parsed };
+          if (path === "/api/agent/policy") {
+            responses[path] = parsed;
+            outgoing.end(JSON.stringify(parsed));
+          } else if (path === "/api/agent/harness") {
+            responses[path] = { configured: true, value: parsed };
             outgoing.end(JSON.stringify(parsed));
           } else {
             if (path === "/api/setup/apply") setup.stage = "complete";

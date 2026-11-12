@@ -133,8 +133,10 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
       return toJson(harnessResponse(yield* follower.setAgentHarness(configuration)));
     }))),
     // A failed probe is part of the report, not a failed request: the report's status and probes say what is wrong.
-    mutationRoute("POST", "/api/doctor", EmptyBody,
-      () => report(follower.doctor({ noInput: true, timeoutMilliseconds: 10_000 })).pipe(Effect.map((result) => result.report))),
+    mutationRoute("POST", "/api/doctor", EmptyBody, () => follower.doctor({ noInput: true, timeoutMilliseconds: 10_000 }).pipe(
+      Effect.map(toJson),
+      Effect.catch((error) => error.details === undefined ? Effect.fail(error) : Effect.succeed(toJson(error.details))),
+    )),
     queryRoute("/api/installers", () => Effect.gen(function*() {
       const bindings = yield* listInstallerBindings();
       // Every unbound method PATH can satisfy, already shaped as a valid binding (Windows shims included).
