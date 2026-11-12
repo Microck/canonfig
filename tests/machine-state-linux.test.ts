@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
@@ -54,6 +54,26 @@ machineStateContract("Linux", {
       credentialPolicy: { kind: "secure-store" },
       environment: environment(root),
     }),
+});
+
+describe("npm executable discovery", () => {
+  // A service manager or scheduler starts Canonfig without the shell's PATH,
+  // so an npm-installed tool next to an nvm Node is not on PATH. The npm
+  // destination must still find it beside the Node running Canonfig.
+  it("finds a tool installed beside the running Node without PATH or an npm binding", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-npm-discovery-"));
+    try {
+      const found = await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        return yield* machine.findExecutable({
+          name: basename(process.execPath), installMethods: [{ method: "npm" }], searchPath: [],
+        });
+      }).pipe(Effect.provide(linuxMachineStateLayer({
+        credentialPolicy: { kind: "local-file", path: join(root, "credentials") }, environment: environment(root),
+      }))));
+      expect(found.path.absolute).toBe(process.execPath);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
 });
 
 describe("credential staging ownership", () => {

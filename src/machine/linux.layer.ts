@@ -2005,6 +2005,7 @@ export const linuxMachineStateLayer = (
               home,
               environment: (name) => environmentValue(environment, name),
               methods: query.installMethods ?? [],
+              runtimeExecutable: process.execPath,
             }).map(linuxPath),
             ...(query.searchPath ?? (environmentValue(environment, "PATH") ?? "").split(":")
               .filter((entry) => entry.length > 0)
