@@ -1723,6 +1723,7 @@ export const windowsMachineStateLayer = (
               home,
               environment: (name) => environmentValue(environment, name),
               methods: query.installMethods ?? [],
+              runtimeExecutable: process.execPath,
             }).map(windowsPath),
             ...(query.searchPath
               ?? (environmentValue(environment, "PATH") ?? "")

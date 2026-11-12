@@ -19,6 +19,8 @@ export const installDestinationDirectories = (input: {
   readonly home: string;
   readonly environment: (name: string) => string | undefined;
   readonly methods: ReadonlyArray<InstallDestinationHint>;
+  /** The Node executable running Canonfig; its npm installs into the same prefix. */
+  readonly runtimeExecutable: string;
 }): ReadonlyArray<string> => {
   if (input.methods.length === 0) return [];
   const windows = input.platform === "windows";
@@ -48,9 +50,14 @@ export const installDestinationDirectories = (input: {
         // npm's global prefix is PREFIX, or the prefix of the Node that runs
         // it: the npm (or node) executable's own directory on POSIX, and the
         // prefix itself on Windows, where installers also default to %APPDATA%\npm.
+        // Without a bound npm, the Node running Canonfig is the one whose npm
+        // most likely installed the tool (nvm, fnm, Volta): a scheduled run or
+        // `canonfig ui` started by a service manager does not have that
+        // directory on PATH, so tools installed there read as missing.
         const prefix = variable("PREFIX");
         if (prefix !== undefined) directories.push(windows ? prefix : path.join(prefix, "bin"));
         if (installerDirectory !== undefined) directories.push(installerDirectory);
+        if (!windows) directories.push(path.dirname(input.runtimeExecutable));
         const appData = variable("APPDATA");
         if (windows && appData !== undefined) directories.push(path.join(appData, "npm"));
         break;

@@ -674,6 +674,7 @@ export const macosMachineStateLayer = (
               home,
               environment: (name) => environmentValue(environment, name),
               methods: query.installMethods ?? [],
+              runtimeExecutable: process.execPath,
             }),
             ...(query.searchPath?.map((path) => path.absolute)
               ?? (environmentValue(environment, "PATH") ?? "").split(":").filter((entry) => entry.length > 0)),
