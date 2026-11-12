@@ -1517,7 +1517,7 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="grid-cols-[minmax(0,1fr)] sm:max-w-lg"
+        className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] overflow-y-auto sm:max-w-lg"
         onOpenAutoFocus={() => {
           const active = document.activeElement;
           if (active instanceof HTMLElement && !active.closest('[role="dialog"]')) returnFocus.current = active;

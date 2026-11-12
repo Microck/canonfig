@@ -253,6 +253,10 @@ const stripEnvironmentPrefix = (tokens: ReadonlyArray<string>): ReadonlyArray<st
   return tokens.slice(index);
 };
 
+/** Keywords that come before a command in the same segment, such as `if` in `if rg --version; then`. */
+const GUARD_WORDS: Readonly<Record<string, true>> = Object.fromEntries(
+  ["if", "then", "else", "elif", "while", "until", "do", "time", "!", "{"].map((word) => [word, true]),
+);
 /** Shell keywords and builtins: words that start a command but are never a program to install. */
 const SHELL_WORDS: Readonly<Record<string, true>> = Object.fromEntries([
   "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "in", "function",
@@ -347,9 +351,12 @@ const shellCommands = (
     if (/^esac\b/u.test(logical)) caseDepth = Math.max(0, caseDepth - 1);
     // Inside `case`, `pattern|other)` opens an arm; only what follows it can be a command.
     if (caseDepth > 0) logical = logical.replace(/^\(?[^()\s]*\)\s*/u, "");
-    heredoc = /<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/u.exec(logical)?.[1];
+    // `<<<word` is a here-string, not a heredoc: it ends on the same line.
+    heredoc = /(?<!<)<<(?!<)-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/u.exec(logical)?.[1];
     for (const part of splitShellLine(logical)) {
-      const invocation = tokenize(part.text);
+      // A control keyword guards the command after it: `if npm install tool; then` still runs npm.
+      let invocation = tokenize(part.text);
+      while (invocation[0] !== undefined && GUARD_WORDS[invocation[0]] === true) invocation = invocation.slice(1);
       const words = stripEnvironmentPrefix(invocation);
       const executable = words[0];
       if (
