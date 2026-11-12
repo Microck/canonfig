@@ -14,6 +14,7 @@ import { disable, enable, update, type UpdateProgress } from "../../runtime/self
 import { updateDirectory, type ManagedCommandLease } from "../../runtime/self-update/coordination.ts";
 import { readSettings } from "../../runtime/self-update/settings.ts";
 import { StateRepository } from "../../state/state-repository.service.ts";
+import type { FollowerSynchronizationConfiguration } from "../../synchronization/follower-sync-config.ts";
 import {
   checkInstallerBinding, detectInstaller, listInstallerBindings, loadInstallerState,
   removeInstallerBinding, saveInstallerBinding, unboundInstallerRecovery,
@@ -63,13 +64,17 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
     });
     return yield* operation;
   });
-  // Agent policy and harness exist only on an enrolled Follower Machine, where runs call the agent.
-  const followerOnly = <A>(operation: Effect.Effect<A, CliCommandFailure>) => Effect.gen(function*() {
-    if ((yield* queries.session()).role !== "follower") return yield* new CliCommandFailure({
-      category: "usage-or-configuration", message: "Agent settings require an enrolled Follower Machine.",
-    });
-    return yield* operation;
-  });
+  // Agent policy and harness exist only on an enrolled Follower Machine, where runs call the agent. The configuration
+  // read here is the role check and the route's own read, so no agent route reads it twice.
+  const withFollower = <A>(operation: (configuration: FollowerSynchronizationConfiguration) => Effect.Effect<A, CliCommandFailure>) =>
+    repository.getFollowerSynchronizationConfiguration().pipe(
+      Effect.mapError(commandFailure),
+      Effect.flatMap((configuration) => configuration === undefined
+        ? Effect.fail(new CliCommandFailure({
+          category: "usage-or-configuration", message: "Agent settings require an enrolled Follower Machine.",
+        }))
+        : operation(configuration)),
+    );
   const root = fileURLToPath(new URL("../../../", import.meta.url));
   const updateFailure = (cause: unknown) => new CliCommandFailure({
     category: "human-action-required", message: cause instanceof Error ? cause.message : String(cause),
@@ -88,16 +93,13 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
       (input) => sourceOnly(source.installService(input)).pipe(Effect.map(toJson))),
     mutationRoute("DELETE", "/api/source-service", EmptyBody,
       () => sourceOnly(source.removeService()).pipe(Effect.map(toJson))),
-    queryRoute("/api/agent/policy", () => followerOnly(follower.getAgentPolicy()).pipe(Effect.map(toJson))),
-    mutationRoute("PUT", "/api/agent/policy", GuiAgentPolicy, (input) => followerOnly(follower.setAgentPolicy(input)).pipe(Effect.map(toJson))),
-    queryRoute("/api/agent/harness", () => followerOnly(repository.getFollowerSynchronizationConfiguration().pipe(
-      Effect.mapError(commandFailure),
-    )).pipe(
-      Effect.map((configuration): GuiAgentHarnessRead => configuration?.agentHarness === undefined
-        ? { configured: false } : { configured: true, value: harnessResponse(configuration.agentHarness) }),
-      Effect.map(toJson),
-    )),
-    mutationRoute("PUT", "/api/agent/harness", GuiAgentHarness, (input) => followerOnly(Effect.gen(function*() {
+    queryRoute("/api/agent/policy", () => withFollower((configuration) => Effect.succeed(toJson(configuration.agentPolicy)))),
+    mutationRoute("PUT", "/api/agent/policy", GuiAgentPolicy, (input) => withFollower(() => follower.setAgentPolicy(input)).pipe(Effect.map(toJson))),
+    queryRoute("/api/agent/harness", () => withFollower((configuration) => Effect.succeed(toJson(
+      (configuration.agentHarness === undefined
+        ? { configured: false } : { configured: true, value: harnessResponse(configuration.agentHarness) }) satisfies GuiAgentHarnessRead,
+    )))),
+    mutationRoute("PUT", "/api/agent/harness", GuiAgentHarness, (input) => withFollower((stored) => Effect.gen(function*() {
       if (JSON.stringify(input).includes("[REDACTED]")) return yield* new CliCommandFailure({
         category: "usage-or-configuration", message: "Redaction markers are not harness values. Reload settings and supply replacements only for fields you want to change.",
       });
@@ -121,7 +123,7 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
         message = `${unclassifiable.executable} launches nested commands that cannot be bounded by an execution model; remove it from the agent harness allowlist`;
       }
       if (message !== undefined) return yield* new CliCommandFailure({ category: "usage-or-configuration", message });
-      const previous = (yield* repository.getFollowerSynchronizationConfiguration().pipe(Effect.mapError(commandFailure)))?.agentHarness;
+      const previous = stored.agentHarness;
       const configuration = {
         ...input,
         // An omitted write-only collection keeps its stored value. An explicit array replaces it.
