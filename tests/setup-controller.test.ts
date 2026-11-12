@@ -35,6 +35,19 @@ import {
   type SetupPlanItem,
 } from "../src/setup/setup.types.ts";
 import { canonicalJson, sha256Hex } from "../src/profile/profile-codec.ts";
+import { adapterFor } from "../src/projection/adapters/index.ts";
+import { TARGET_IDS, type TargetId } from "../src/projection/model.ts";
+
+/**
+ * Harnesses whose program sits beside the Node running these tests. Detection searches that folder
+ * (npm's global bin for the running Node), and the CLI the fixture spawns runs on this Node, so on a
+ * machine with npm-installed agent CLIs those harnesses are installed too. On CI the set is empty.
+ */
+const besideNode = TARGET_IDS.filter((id) => {
+  const { executables, genericExecutables = [] } = adapterFor(id).descriptor;
+  return executables.some((name) => !genericExecutables.includes(name) && existsSync(join(dirname(process.execPath), name)));
+});
+const withNodeHarnesses = (ids: ReadonlyArray<TargetId>) => TARGET_IDS.filter((id) => ids.includes(id) || besideNode.includes(id));
 
 const inventory: SetupInventory = {
   schema: "canonfig.setup-inventory/v1",
@@ -973,8 +986,8 @@ describe.runIf(process.platform === "linux")("Source harness selection and impor
     try {
       const planned = test.setup(["plan", "--role", "source"]);
       expect(test.item(planned, "canonfig-folder")?.detail).toMatchObject({
-        harnesses: ["codex", "claude-code"],
-        detected: ["codex", "claude-code"],
+        harnesses: withNodeHarnesses(["codex", "claude-code"]),
+        detected: withNodeHarnesses(["codex", "claude-code"]),
       });
       expect(planned.stages.map((stage: { readonly stage: string }) => stage.stage))
         .toEqual(["role", "preflight", "inventory", "harnesses", "plan"]);
@@ -1001,7 +1014,7 @@ describe.runIf(process.platform === "linux")("Source harness selection and impor
       mkdirSync(join(test.home, ".cursor"));
       const withCursor = test.setup(["plan", "--role", "source"]);
       expect(test.item(withCursor, "canonfig-folder")?.detail).toMatchObject({
-        harnesses: ["codex", "claude-code", "cursor"],
+        harnesses: withNodeHarnesses(["codex", "claude-code", "cursor"]),
       });
     } finally {
       test.cleanup();
@@ -1020,7 +1033,7 @@ describe.runIf(process.platform === "linux")("Source harness selection and impor
 
       const folder = join(test.home, ".canonfig");
       const config = parseJsonc(readFileSync(join(folder, "canonfig.jsonc"), "utf8"));
-      expect(config.harnesses).toEqual(["codex", "claude-code"]);
+      expect(config.harnesses).toEqual(withNodeHarnesses(["codex", "claude-code"]));
       // The scaffold proposes the profile `source publish` requires.
       expect(config.profile).toEqual(scaffoldProfile(hostname()));
       expect(test.item(planned, "canonfig-folder")?.detail).toMatchObject({ profile: scaffoldProfile(hostname()) });
