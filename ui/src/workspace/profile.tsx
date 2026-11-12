@@ -1152,7 +1152,7 @@ function HarnessesTab() {
           if (!on) ws.setSurfaces(({ [id]: _dropped, ...rest }) => rest);
           ws.markProfileEdit({ area: "harnesses", id: "harnesses", change: "modified" });
           toast(on ? `Listed ${HARNESS_NAMES[id]}` : `Removed ${HARNESS_NAMES[id]} from the list`, {
-            description: `Goes out with revision ${ws.nextSequence}.${on ? "\nMachines that have it installed back it up, then take it over." : ""}${DEMO ? "\nSaved in this demo workspace." : ""}`,
+            description: `Goes out with revision ${ws.nextSequence}.${on ? "\nMachines that have it installed back it up, then sync into it." : ""}${DEMO ? "\nSaved in this demo workspace." : ""}`,
           });
         }}
       />

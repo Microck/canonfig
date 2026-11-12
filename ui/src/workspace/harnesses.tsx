@@ -17,7 +17,7 @@ function harnessStatus(h: Harness): { kind: StatusKind; label: string; hint: str
   if (!h.listed && h.installed) return { kind: "off", label: "Installed, not listed", hint: "Canonfig ignores it until canonfig.jsonc lists it." };
   if (!h.listed) return { kind: "off", label: "Not installed", hint: "Not on this machine and not in the list." };
   if (h.excluded) return { kind: "off", label: "Excluded here", hint: "Listed, but this machine's local/local.jsonc excludes it, so Canonfig leaves it alone." };
-  if (!h.installed) return { kind: "warn", label: "Listed, not installed", hint: "Reported as not installed.\nCanonfig takes it over, with a backup, once it's installed." };
+  if (!h.installed) return { kind: "warn", label: "Listed, not installed", hint: "Reported as not installed.\nCanonfig backs it up and starts syncing into it once it's installed." };
   return { kind: "ok", label: "Managed here", hint: "Listed, installed and not excluded, so Canonfig writes the folder into it." };
 }
 
@@ -41,6 +41,8 @@ function surfacesLabel(selected: SurfaceCategory[] | undefined): string {
  * Which categories a listed harness gets, out of the ones it supports (canonfig.jsonc refuses the rest).
  * Ticking every supported category drops the harness's entry, so the file keeps the default
  * ("everything") rather than a list that would miss a category the harness gains later.
+ * Ticks are a draft while the menu is open and are saved once when it closes: each canonfig.jsonc
+ * write validates the whole folder, about a second on a large profile, and blocks the page meanwhile.
  */
 function SurfacesMenu({ harness }: { harness: Harness }) {
   const ws = useWorkspace();
@@ -50,6 +52,12 @@ function SurfacesMenu({ harness }: { harness: Harness }) {
   // Radix puts focus back on the trigger when the menu closes, which draws its focus ring even after a
   // mouse click outside. Return focus only when the menu was driven from the keyboard.
   const closedByPointer = useRef(false);
+  // `null` means no change since the menu opened; `{ value: undefined }` is a pending "Everything".
+  // The ref lets the close handler read a draft set in the same event, such as choosing Everything.
+  const [draft, setDraftState] = useState<{ value: SurfaceCategory[] | undefined } | null>(null);
+  const draftRef = useRef(draft);
+  const setDraft = (next: { value: SurfaceCategory[] | undefined } | null) => { draftRef.current = next; setDraftState(next); };
+  const shown = draft === null ? selected : draft.value;
   const change = (next: SurfaceCategory[] | undefined) => {
     ws.setSurfaces((prev) => {
       const { [harness.id]: _dropped, ...rest } = prev;
@@ -58,12 +66,22 @@ function SurfacesMenu({ harness }: { harness: Harness }) {
     if (!ws.profileLive) ws.markProfileEdit({ area: "harnesses", id: "harnesses", change: "modified" });
   };
   const toggle = (category: SurfaceCategory, on: boolean) => {
-    const current = selected ?? supported;
+    const current = shown ?? supported;
     const next = on ? [...current, category] : current.filter((c) => c !== category);
-    change(next.length === supported.length ? undefined : next);
+    setDraft({ value: next.length === supported.length ? undefined : next });
+  };
+  const commit = (open: boolean) => {
+    if (open) return;
+    const pending = draftRef.current;
+    setDraft(null);
+    if (pending === null) return;
+    const unchanged = pending.value === undefined || selected === undefined
+      ? pending.value === selected
+      : pending.value.length === selected.length && pending.value.every((category) => selected.includes(category));
+    if (!unchanged) change(pending.value);
   };
   return (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={commit}>
       <DropdownMenuTrigger asChild>
         {/* -ml-[7px] cancels px-1.5 plus the button's 1px border so the label lines up with "Not listed" and the column heading; the hover fill bleeds into the gutter. */}
         <Button variant="ghost" size="sm" disabled={ws.profileLive?.busy} className="-ml-[7px] min-w-0 justify-between gap-1 px-1.5 font-normal" title={label} aria-label={`What ${harness.name} gets: ${label}`}>
@@ -89,7 +107,7 @@ function SurfacesMenu({ harness }: { harness: Harness }) {
             <DropdownMenuCheckboxItem
               key={category}
               disabled={!available || ws.profileLive?.busy}
-              checked={available && (selected === undefined || selected.includes(category))}
+              checked={available && (shown === undefined || shown.includes(category))}
               // Keep the menu open so several categories can be changed in one go.
               onSelect={(event) => event.preventDefault()}
               onCheckedChange={(on) => toggle(category, on)}
@@ -99,7 +117,7 @@ function SurfacesMenu({ harness }: { harness: Harness }) {
           );
         })}
         <DropdownMenuSeparator />
-        <DropdownMenuItem disabled={selected === undefined || ws.profileLive?.busy} onSelect={() => change(undefined)}>
+        <DropdownMenuItem disabled={shown === undefined || ws.profileLive?.busy} onSelect={() => setDraft({ value: undefined })}>
           Everything
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -159,7 +177,9 @@ export function HarnessTable({ edit, onToggle }: { edit?: "listed" | "managed"; 
               <StatusMark kind={status.kind} />
               <span className="truncate">{status.label}</span>
             </span>
-            <Mono className="truncate">{h.root ?? "Not taken over yet"}</Mono>
+            {/* The root is recorded the first time a sync writes into the harness; later syncs refuse any other folder. */}
+            {h.root ? <Mono className="truncate">{h.root}</Mono>
+              : <span className="truncate text-sm text-faint" title="Canonfig records this harness's folder the first time a sync writes into it.">Not synced here yet</span>}
             <Mono className="truncate">{h.snapshot ?? "None"}</Mono>
           </ListRow>
         );
