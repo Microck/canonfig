@@ -53,6 +53,13 @@ npm --prefix ui run lint
 TSX_TSCONFIG_PATH=ui/tsconfig.app.json node --import tsx --test 'ui/src/**/*.test.ts' 'ui/src/**/*.test.tsx'
 ```
 
+On Windows PowerShell, set the variable first:
+
+```powershell
+$env:TSX_TSCONFIG_PATH = "ui/tsconfig.app.json"
+node --import tsx --test "ui/src/**/*.test.ts" "ui/src/**/*.test.tsx"
+```
+
 The full suite is slow. While you work, run the focused test files, then run
 the full suite once before you open the pull request. CI runs everything on
 Linux, macOS, Windows and Windows ARM.
