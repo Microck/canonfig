@@ -72,7 +72,6 @@ describe("profile discovery", () => {
       reviewStatus: "accepted",
     });
 
-    // Inline code is a tool only when its first word is an installed program.
     const prose = result.tools.find((tool) => tool.id === "prose-tool");
     expect(prose).toMatchObject({ recipes: [], reviewStatus: "needs-review" });
     expect(prose?.evidence[0]).toMatchObject({

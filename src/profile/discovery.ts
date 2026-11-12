@@ -111,21 +111,31 @@ const executableMatches = async (
 };
 
 /**
- * Whether a word names an installed program. Inline code in prose and commands after a pipe count
- * only when it does: skills and rules use inline code for plenty that is not a command (`middleware`,
- * `--modal-ease`, `mix-blend-mode: multiply`), and usage text in shell blocks writes alternatives as
- * `auto|full`. The search adds the running Node's directory and ~/.local/bin to PATH, because a
- * service-started Canonfig often lacks them on PATH.
+ * Whether a word names an installed program, cached for one scan. Inline code in prose and commands
+ * after a pipe count only when it does: skills and rules use inline code for plenty that is not a
+ * command (`middleware`, `--modal-ease`, `mix-blend-mode: multiply`), and usage text in shell blocks
+ * writes alternatives as `auto|full`. The same words recur across files, so each is looked up once.
  */
-const executableInstalled = async (executable: string, pathValue: string): Promise<boolean> => {
-  const searchPath = [pathValue, dirname(process.execPath), join(homedir(), ".local", "bin")].join(delimiter);
-  const names = process.platform === "win32" && extname(executable) === ""
-    ? [executable, ...(process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter((extension) => extension.length > 0).map((extension) => `${executable}${extension.toLowerCase()}`)]
-    : [executable];
-  for (const name of names) {
-    if ((await executableMatches(name, searchPath)).length > 0) return true;
-  }
-  return false;
+const installedLookup = (pathValue: string): ((executable: string) => Promise<boolean>) => {
+  const windowsExtensions = process.platform === "win32"
+    ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter((extension) => extension.length > 0).map((extension) => extension.toLowerCase())
+    : [];
+  const cache = new Map<string, Promise<boolean>>();
+  const lookup = async (executable: string): Promise<boolean> => {
+    const names = extname(executable) === "" ? [executable, ...windowsExtensions.map((extension) => `${executable}${extension}`)] : [executable];
+    for (const name of names) {
+      if ((await executableMatches(name, pathValue)).length > 0) return true;
+    }
+    return false;
+  };
+  return (executable) => {
+    let installed = cache.get(executable);
+    if (installed === undefined) {
+      installed = lookup(executable);
+      cache.set(executable, installed);
+    }
+    return installed;
+  };
 };
 
 const maximumDigestBytes = 64 * 1024 * 1024;
@@ -263,8 +273,20 @@ const splitShellLine = (line: string): ReadonlyArray<{ readonly text: string; re
   let current = "";
   let afterPipe = false;
   let quote: "'" | '"' | null = null;
+  let escaped = false;
   for (let index = 0; index < line.length; index += 1) {
     const character = line[index]!;
+    // Quotes and escapes follow `tokenize`: a backslash outside single quotes makes the next character literal.
+    if (escaped) {
+      escaped = false;
+      current += character;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      current += character;
+      continue;
+    }
     if (quote !== null) {
       if (character === quote) quote = null;
       current += character;
@@ -275,12 +297,13 @@ const splitShellLine = (line: string): ReadonlyArray<{ readonly text: string; re
       current += character;
       continue;
     }
-    const pair = line.slice(index, index + 2);
-    if (pair === "&&" || pair === "||" || character === ";" || character === "|") {
+    const next = line[index + 1];
+    const doubled = (character === "&" || character === "|") && next === character;
+    if (doubled || character === ";" || character === "|") {
       parts.push({ text: current, afterPipe });
       current = "";
-      afterPipe = character === "|" && pair !== "||";
-      if (pair === "&&" || pair === "||") index += 1;
+      afterPipe = character === "|" && !doubled;
+      if (doubled) index += 1;
       continue;
     }
     current += character;
@@ -300,8 +323,8 @@ const splitShellLine = (line: string): ReadonlyArray<{ readonly text: string; re
 const shellCommands = (
   lines: ReadonlyArray<{ readonly text: string; readonly line: number }>,
   functions: Readonly<Record<string, true>>,
-): ReadonlyArray<{ readonly line: number; readonly invocation: ReadonlyArray<string>; readonly afterPipe: boolean }> => {
-  const commands: Array<{ line: number; invocation: ReadonlyArray<string>; afterPipe: boolean }> = [];
+): ReadonlyArray<{ readonly line: number; readonly invocation: ReadonlyArray<string>; readonly executable: string; readonly afterPipe: boolean }> => {
+  const commands: Array<{ line: number; invocation: ReadonlyArray<string>; executable: string; afterPipe: boolean }> = [];
   let pending = "";
   let start = 0;
   let heredoc: string | undefined;
@@ -333,7 +356,7 @@ const shellCommands = (
         executable === undefined || !/^[A-Za-z][A-Za-z0-9._+-]*$/u.test(executable)
         || SHELL_WORDS[executable] === true || functions[executable] === true || words[1]?.startsWith("=") === true
       ) continue;
-      commands.push({ line: start, invocation, afterPipe: part.afterPipe });
+      commands.push({ line: start, invocation, executable, afterPipe: part.afterPipe });
     }
   }
   return commands;
@@ -534,6 +557,7 @@ interface EvidenceContext {
   readonly sourcePath: string;
   readonly fileKind: DiscoveryFileKind;
   readonly pathValue: string;
+  readonly installed: (executable: string) => Promise<boolean>;
 }
 
 const invocationEvidence = async (
@@ -571,6 +595,22 @@ const invocationEvidence = async (
   };
 };
 
+/** Evidence for the commands in shell text; a command after a pipe counts only when it is installed. */
+const shellEvidence = async (
+  context: EvidenceContext,
+  lines: ReadonlyArray<{ readonly text: string; readonly line: number }>,
+  functions: Readonly<Record<string, true>>,
+  kindOverride?: DiscoverySourceKind,
+): Promise<ReadonlyArray<ToolDiscoveryEvidence>> => {
+  const records: Array<ToolDiscoveryEvidence> = [];
+  for (const { line, invocation, executable, afterPipe } of shellCommands(lines, functions)) {
+    if (afterPipe && !(await context.installed(executable))) continue;
+    const record = await invocationEvidence(context, invocation, { kind: "line", line }, true, kindOverride);
+    if (record !== undefined) records.push(record);
+  }
+  return records;
+};
+
 const scanMarkdown = async (
   context: EvidenceContext,
   text: string,
@@ -587,11 +627,7 @@ const scanMarkdown = async (
   // A function one shell block defines may be called from another block in the same document.
   const functions = shellFunctionNames(text);
   const flushShellBlock = async (): Promise<void> => {
-    for (const { line, invocation, afterPipe } of shellCommands(shellBlock, functions)) {
-      if (afterPipe && !(await executableInstalled(stripEnvironmentPrefix(invocation)[0]!, context.pathValue))) continue;
-      const record = await invocationEvidence(context, invocation, { kind: "line", line }, true);
-      if (record !== undefined) evidence.push(record);
-    }
+    evidence.push(...await shellEvidence(context, shellBlock, functions));
     shellBlock = [];
   };
   const lines = text.split(/\r?\n/u);
@@ -619,7 +655,12 @@ const scanMarkdown = async (
       for (const match of line.matchAll(/`([^`\r\n]+)`/gu)) {
         const invocation = tokenize(match[1] ?? "");
         const executable = stripEnvironmentPrefix(invocation)[0];
-        if (executable === undefined || SHELL_WORDS[executable] === true || !(await executableInstalled(executable, context.pathValue))) continue;
+        // Unlike a shell command, inline code may name a script by path (`./run.sh`), so only characters no
+        // command name or path holds rule a span out before the filesystem lookup.
+        if (
+          executable === undefined || !/^[A-Za-z0-9._+~/\\-]+$/u.test(executable) || SHELL_WORDS[executable] === true
+          || !(await context.installed(executable))
+        ) continue;
         const record = await invocationEvidence(
           context,
           invocation,
@@ -1140,25 +1181,14 @@ const scanShell = async (
   context: EvidenceContext,
   text: string,
 ): Promise<ReadonlyArray<ToolDiscoveryEvidence>> => {
-  const records: Array<ToolDiscoveryEvidence> = [];
   const lines = text.split(/\r?\n/u).map((line, index) => ({ text: line, line: index + 1 }));
-  for (const { line, invocation, afterPipe } of shellCommands(lines, shellFunctionNames(text))) {
-    if (afterPipe && !(await executableInstalled(stripEnvironmentPrefix(invocation)[0]!, context.pathValue))) continue;
-    const record = await invocationEvidence(
-      context,
-      invocation,
-      { kind: "line", line },
-      true,
-      context.fileKind === "hooks" ? "hook" : undefined,
-    );
-    if (record !== undefined) records.push(record);
-  }
-  return records;
+  return shellEvidence(context, lines, shellFunctionNames(text), context.fileKind === "hooks" ? "hook" : undefined);
 };
 
 const scanOne = (
   file: DiscoveryFile,
   pathValue: string,
+  installed: (executable: string) => Promise<boolean>,
 ): Effect.Effect<{
   readonly path: string;
   readonly evidence: ReadonlyArray<ToolDiscoveryEvidence>;
@@ -1168,7 +1198,7 @@ const scanOne = (
     const path = resolve(file.path);
     const text = yield* readDiscoveryFile(path);
     const fileKind = file.kind ?? inferFileKind(path);
-    const context: EvidenceContext = { sourcePath: path, fileKind, pathValue };
+    const context: EvidenceContext = { sourcePath: path, fileKind, pathValue, installed };
     if (fileKind === "agents" || extname(path).toLowerCase() === ".md") {
       const result = yield* Effect.promise(() => scanMarkdown(context, text));
       return { path, ...result };
@@ -1205,9 +1235,12 @@ export const scanDiscovery = (
   if (input.files.length === 0) {
     return Effect.fail(new InvalidDiscoveryInputError({ reason: "at least one discovery file is required" }));
   }
-  const pathValue = input.path ?? process.env.PATH ?? "";
+  // Without an explicit PATH, also search the running Node's folder and ~/.local/bin, where npm and uv install
+  // tools: a Canonfig started by a service manager often lacks them on PATH. An explicit PATH is used as given.
+  const pathValue = input.path ?? [process.env.PATH ?? "", dirname(process.execPath), join(homedir(), ".local", "bin")].join(delimiter);
+  const installed = installedLookup(pathValue);
   const files = [...input.files].sort((left, right) => compareText(resolve(left.path), resolve(right.path)));
-  return Effect.forEach(files, (file) => scanOne(file, pathValue), { concurrency: 4 }).pipe(
+  return Effect.forEach(files, (file) => scanOne(file, pathValue, installed), { concurrency: 4 }).pipe(
     Effect.map((scans) => {
       const catalog = buildToolCatalog(
         scans.flatMap((scan) => scan.evidence),
