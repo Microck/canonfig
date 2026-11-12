@@ -18,9 +18,9 @@ import { listSnapshots } from "./takeover.ts";
  * Installed means one of the adapter's executables resolves through the same
  * search a tool verifier uses (Canonfig's install destinations, including the
  * npm folder of the Node running Canonfig, ~/.local/bin, then PATH), without
- * running it. A scheduled run has a narrower PATH than a
- * shell, so it can see fewer harnesses than setup did; projection holds such
- * a harness instead of retiring it (`plan.ts`). A config root alone is only
+ * running it. A scheduled run has a narrower PATH than a shell, so it can see
+ * fewer harnesses than setup did; projection holds such a harness instead of
+ * retiring it (`plan.ts`). A config root alone is only
  * evidence: `~/.gemini` is shared by the Antigravity CLI, App and IDE.
  */
 

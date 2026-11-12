@@ -19,7 +19,7 @@ export const installDestinationDirectories = (input: {
   readonly home: string;
   readonly environment: (name: string) => string | undefined;
   readonly methods: ReadonlyArray<InstallDestinationHint>;
-  /** The Node executable running Canonfig; its npm installs into the same prefix. */
+  /** On POSIX, the Node executable running Canonfig; its npm installs global tools into this directory. */
   readonly runtimeExecutable: string;
 }): ReadonlyArray<string> => {
   if (input.methods.length === 0) return [];
@@ -50,10 +50,10 @@ export const installDestinationDirectories = (input: {
         // npm's global prefix is PREFIX, or the prefix of the Node that runs
         // it: the npm (or node) executable's own directory on POSIX, and the
         // prefix itself on Windows, where installers also default to %APPDATA%\npm.
-        // Without a bound npm, the Node running Canonfig is the one whose npm
-        // most likely installed the tool (nvm, fnm, Volta): a scheduled run or
-        // `canonfig ui` started by a service manager does not have that
-        // directory on PATH, so tools installed there read as missing.
+        // On POSIX, also search the directory of the Node running Canonfig. Its
+        // npm (nvm, fnm, Volta) most likely installed the tool, and a scheduled
+        // run or a `canonfig ui` started by a service manager lacks that
+        // directory on PATH. Under Homebrew Node it is the Cellar and adds nothing.
         const prefix = variable("PREFIX");
         if (prefix !== undefined) directories.push(windows ? prefix : path.join(prefix, "bin"));
         if (installerDirectory !== undefined) directories.push(installerDirectory);
