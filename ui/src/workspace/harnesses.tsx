@@ -37,6 +37,12 @@ function surfacesLabel(selected: SurfaceCategory[] | undefined): string {
   return SURFACE_CATEGORIES.filter((c) => selected.includes(c)).map((c) => SURFACE_NAMES[c]).join(", ");
 }
 
+/** Whether two Gets choices pick the same categories, in any order; `undefined` is "Everything". */
+function sameSurfaces(a: SurfaceCategory[] | undefined, b: SurfaceCategory[] | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return a.length === b.length && a.every((category) => b.includes(category));
+}
+
 /**
  * Which categories a listed harness gets, out of the ones it supports (canonfig.jsonc refuses the rest).
  * Ticking every supported category drops the harness's entry, so the file keeps the default
@@ -75,10 +81,7 @@ function SurfacesMenu({ harness }: { harness: Harness }) {
     const pending = draftRef.current;
     setDraft(null);
     if (pending === null) return;
-    const unchanged = pending.value === undefined || selected === undefined
-      ? pending.value === selected
-      : pending.value.length === selected.length && pending.value.every((category) => selected.includes(category));
-    if (!unchanged) change(pending.value);
+    if (!sameSurfaces(pending.value, selected)) change(pending.value);
   };
   return (
     <DropdownMenu onOpenChange={commit}>
@@ -177,7 +180,7 @@ export function HarnessTable({ edit, onToggle }: { edit?: "listed" | "managed"; 
               <StatusMark kind={status.kind} />
               <span className="truncate">{status.label}</span>
             </span>
-            {/* The root is recorded the first time a sync writes into the harness; later syncs refuse any other folder. */}
+            {/* Later syncs refuse any folder other than the recorded root. */}
             {h.root ? <Mono className="truncate">{h.root}</Mono>
               : <span className="truncate text-sm text-faint" title="Canonfig records this harness's folder the first time a sync writes into it.">Not synced here yet</span>}
             <Mono className="truncate">{h.snapshot ?? "None"}</Mono>

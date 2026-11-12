@@ -1316,7 +1316,7 @@ function LocalForm() {
           </div>
         </div>
       </Body>
-      <ConfirmDialog open={disableBackups} onOpenChange={setDisableBackups} title="Turn off takeover backups?" body="Future takeovers will not preserve the prior harness content. Existing snapshots remain." confirm="Turn off backups" onConfirm={() => ws.setBackups(false)} />
+      <ConfirmDialog open={disableBackups} onOpenChange={setDisableBackups} title="Turn off takeover backups?" body="When Canonfig first syncs into a harness, it will no longer back up what was there. Existing snapshots remain." confirm="Turn off backups" onConfirm={() => ws.setBackups(false)} />
       <ConfirmDialog
         open={removingOverlay !== null}
         onOpenChange={(o) => !o && setRemovingOverlay(null)}
