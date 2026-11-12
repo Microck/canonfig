@@ -131,8 +131,9 @@ describe("profile discovery", () => {
       "builtin cd -- \"$PWD\"",
       "rg -n '(TODO|FIXME|HACK)' notes.md",
       "read -r value <<<sample",
+      "rg '<<END' templates",
       "if rg --version; then true; fi",
-      "cat <<EOF",
+      "cat <<'EOF'",
       "not-a-command --flag",
       "EOF",
       "",
@@ -154,7 +155,7 @@ describe("profile discovery", () => {
     }));
     // Only real programs remain: rg from the continued and guarded commands, and the heredoc's cat.
     expect(result.tools.map((tool) => tool.id).sort()).toEqual(["cat", "rg"]);
-    const guarded = result.tools.find((tool) => tool.id === "rg")?.evidence.find((evidence) => evidence.sourcePath === script && evidence.location.kind === "line" && evidence.location.line === 12);
+    const guarded = result.tools.find((tool) => tool.id === "rg")?.evidence.find((evidence) => evidence.sourcePath === script && evidence.location.kind === "line" && evidence.location.line === 13);
     expect(guarded).toMatchObject({ invocation: ["rg", "--version"] });
     const continued = result.tools.find((tool) => tool.id === "rg")?.evidence.find((evidence) => evidence.sourcePath === doc);
     expect(continued).toMatchObject({ location: { kind: "line", line: 2 }, invocation: ["rg", "--app", "$APP_ID", "--access-type", "$ACCESS_TYPE", "2>", "$DIR/requests.stderr"] });
