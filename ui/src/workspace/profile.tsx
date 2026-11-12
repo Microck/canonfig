@@ -1543,7 +1543,8 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
           </div>
         ) : (
           <>
-            <div className="-mx-4 border-y border-border">
+            {/* A large folder can propose many tools; the list scrolls so the title and buttons stay on screen. */}
+            <div className="-mx-4 max-h-[min(50vh,440px)] overflow-y-auto overscroll-contain border-y border-border">
               {ws.scannedTools.map((f) => (
                 <label key={f.id} className="flex h-11 cursor-pointer items-center gap-3 border-b border-border/70 px-4 last:border-b-0 hover:bg-raised/50">
                   {ws.capabilities.selectiveScanWrite && <Checkbox checked={picked.includes(f.id)} onCheckedChange={(c) => setPicked((p) => (c ? [...p, f.id] : p.filter((x) => x !== f.id)))} />}

@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
-import { basename, delimiter, extname, join, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { basename, delimiter, dirname, extname, join, resolve, sep } from "node:path";
 
 import { Effect, Schema } from "effect";
 import { parse as parseToml } from "smol-toml";
@@ -107,6 +108,24 @@ const executableMatches = async (
     if (!matches.includes(candidate) && await isExecutableFile(candidate)) matches.push(candidate);
   }
   return matches;
+};
+
+/**
+ * Whether a word names an installed program. Inline code in prose and commands after a pipe count
+ * only when it does: skills and rules use inline code for plenty that is not a command (`middleware`,
+ * `--modal-ease`, `mix-blend-mode: multiply`), and usage text in shell blocks writes alternatives as
+ * `auto|full`. The search adds the running Node's directory and ~/.local/bin to PATH, because a
+ * service-started Canonfig often lacks them on PATH.
+ */
+const executableInstalled = async (executable: string, pathValue: string): Promise<boolean> => {
+  const searchPath = [pathValue, dirname(process.execPath), join(homedir(), ".local", "bin")].join(delimiter);
+  const names = process.platform === "win32" && extname(executable) === ""
+    ? [executable, ...(process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter((extension) => extension.length > 0).map((extension) => `${executable}${extension.toLowerCase()}`)]
+    : [executable];
+  for (const name of names) {
+    if ((await executableMatches(name, searchPath)).length > 0) return true;
+  }
+  return false;
 };
 
 const maximumDigestBytes = 64 * 1024 * 1024;
@@ -222,6 +241,102 @@ const stripEnvironmentPrefix = (tokens: ReadonlyArray<string>): ReadonlyArray<st
   if (tokens[index] === "env") index += 1;
   while (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(tokens[index] ?? "")) index += 1;
   return tokens.slice(index);
+};
+
+/** Shell keywords and builtins: words that start a command but are never a program to install. */
+const SHELL_WORDS: Readonly<Record<string, true>> = Object.fromEntries([
+  "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "in", "function",
+  "select", "time", "return", "exit", "export", "local", "readonly", "declare", "typeset", "set", "unset", "shift",
+  "source", "eval", "exec", "builtin", "command", "cd", "pushd", "popd", "echo", "printf", "read", "test", "true",
+  "false", "trap", "alias", "unalias", "let", "wait", "break", "continue", "type", "hash", "getopts", "umask", "ulimit",
+].map((word) => [word, true]));
+
+/** Functions a shell text defines (`name() {` or `function name`): calling one does not run a program. */
+const shellFunctionNames = (text: string): Readonly<Record<string, true>> => Object.fromEntries(
+  [...text.matchAll(/^\s*(?:function\s+([A-Za-z_][A-Za-z0-9_-]*)|([A-Za-z_][A-Za-z0-9_-]*)\s*\(\s*\))/gmu)]
+    .map((match) => [match[1] ?? match[2]!, true]),
+);
+
+/** Splits a shell line on `&&`, `||`, `;` and `|` outside quotes, noting which parts follow a pipe. */
+const splitShellLine = (line: string): ReadonlyArray<{ readonly text: string; readonly afterPipe: boolean }> => {
+  const parts: Array<{ text: string; afterPipe: boolean }> = [];
+  let current = "";
+  let afterPipe = false;
+  let quote: "'" | '"' | null = null;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index]!;
+    if (quote !== null) {
+      if (character === quote) quote = null;
+      current += character;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      current += character;
+      continue;
+    }
+    const pair = line.slice(index, index + 2);
+    if (pair === "&&" || pair === "||" || character === ";" || character === "|") {
+      parts.push({ text: current, afterPipe });
+      current = "";
+      afterPipe = character === "|" && pair !== "||";
+      if (pair === "&&" || pair === "||") index += 1;
+      continue;
+    }
+    current += character;
+  }
+  parts.push({ text: current, afterPipe });
+  return parts;
+};
+
+/**
+ * The commands in shell text, one per logical line, with the line each starts on. A trailing
+ * backslash joins the next line, heredoc bodies are skipped, and a `case` arm's pattern is not a
+ * command. A command counts only when its first word could name a program: it starts with a letter,
+ * has no `$`, `>` or `[`, is not a shell keyword, builtin or function the text defines, and is not
+ * followed by `=`. Without this, `--app "$ID" \`, `case "$1" in`, `2> err.log`, `die "msg"` and
+ * `rg '(TODO|FIXME)'` became tools. `afterPipe` marks a command the caller must find installed.
+ */
+const shellCommands = (
+  lines: ReadonlyArray<{ readonly text: string; readonly line: number }>,
+  functions: Readonly<Record<string, true>>,
+): ReadonlyArray<{ readonly line: number; readonly invocation: ReadonlyArray<string>; readonly afterPipe: boolean }> => {
+  const commands: Array<{ line: number; invocation: ReadonlyArray<string>; afterPipe: boolean }> = [];
+  let pending = "";
+  let start = 0;
+  let heredoc: string | undefined;
+  let caseDepth = 0;
+  for (const { text, line } of lines) {
+    if (heredoc !== undefined) {
+      if (text.trim() === heredoc) heredoc = undefined;
+      continue;
+    }
+    if (pending.length === 0) start = line;
+    const trimmed = text.trim();
+    if (trimmed.endsWith("\\")) {
+      pending += `${trimmed.slice(0, -1)} `;
+      continue;
+    }
+    let logical = `${pending}${trimmed}`;
+    pending = "";
+    if (logical.length === 0 || logical.startsWith("#")) continue;
+    if (/^case\s/u.test(logical)) caseDepth += 1;
+    if (/^esac\b/u.test(logical)) caseDepth = Math.max(0, caseDepth - 1);
+    // Inside `case`, `pattern|other)` opens an arm; only what follows it can be a command.
+    if (caseDepth > 0) logical = logical.replace(/^\(?[^()\s]*\)\s*/u, "");
+    heredoc = /<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/u.exec(logical)?.[1];
+    for (const part of splitShellLine(logical)) {
+      const invocation = tokenize(part.text);
+      const words = stripEnvironmentPrefix(invocation);
+      const executable = words[0];
+      if (
+        executable === undefined || !/^[A-Za-z][A-Za-z0-9._+-]*$/u.test(executable)
+        || SHELL_WORDS[executable] === true || functions[executable] === true || words[1]?.startsWith("=") === true
+      ) continue;
+      commands.push({ line: start, invocation, afterPipe: part.afterPipe });
+    }
+  }
+  return commands;
 };
 
 interface ParsedPackageSpecification {
@@ -467,12 +582,25 @@ const scanMarkdown = async (
   const skills = new Map<string, DiscoveredSkill>();
   let fenced = false;
   let executableFence = false;
+  // A shell fence is parsed whole when it closes, so continued lines and heredocs read as the shell reads them.
+  let shellBlock: Array<{ text: string; line: number }> = [];
+  // A function one shell block defines may be called from another block in the same document.
+  const functions = shellFunctionNames(text);
+  const flushShellBlock = async (): Promise<void> => {
+    for (const { line, invocation, afterPipe } of shellCommands(shellBlock, functions)) {
+      if (afterPipe && !(await executableInstalled(stripEnvironmentPrefix(invocation)[0]!, context.pathValue))) continue;
+      const record = await invocationEvidence(context, invocation, { kind: "line", line }, true);
+      if (record !== undefined) evidence.push(record);
+    }
+    shellBlock = [];
+  };
   const lines = text.split(/\r?\n/u);
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
     const fence = /^\s*```([A-Za-z0-9_-]*)/u.exec(line);
     if (fence !== null) {
       if (fenced) {
+        await flushShellBlock();
         fenced = false;
         executableFence = false;
       } else {
@@ -484,24 +612,14 @@ const scanMarkdown = async (
       continue;
     }
     if (fenced && executableFence) {
-      const commands = line
-        .split(/\s*(?:&&|\|\||;|\|)\s*/u)
-        .map(tokenize)
-        .filter((tokens) => tokens.length > 0 && !tokens[0]!.startsWith("#"));
-      for (const invocation of commands) {
-        const record = await invocationEvidence(
-          context,
-          invocation,
-          { kind: "line", line: index + 1 },
-          true,
-        );
-        if (record !== undefined) evidence.push(record);
-      }
+      shellBlock.push({ text: line, line: index + 1 });
       continue;
     }
     if (!fenced) {
       for (const match of line.matchAll(/`([^`\r\n]+)`/gu)) {
         const invocation = tokenize(match[1] ?? "");
+        const executable = stripEnvironmentPrefix(invocation)[0];
+        if (executable === undefined || SHELL_WORDS[executable] === true || !(await executableInstalled(executable, context.pathValue))) continue;
         const record = await invocationEvidence(
           context,
           invocation,
@@ -531,6 +649,7 @@ const scanMarkdown = async (
       }
     }
   }
+  await flushShellBlock();
   return { evidence, skills: [...skills.values()] };
 };
 
@@ -1022,24 +1141,17 @@ const scanShell = async (
   text: string,
 ): Promise<ReadonlyArray<ToolDiscoveryEvidence>> => {
   const records: Array<ToolDiscoveryEvidence> = [];
-  const lines = text.split(/\r?\n/u);
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]?.trim() ?? "";
-    if (line.length === 0 || line.startsWith("#")) continue;
-    const invocations = line
-      .split(/\s*(?:&&|\|\||;|\|)\s*/u)
-      .map(tokenize)
-      .filter((tokens) => tokens.length > 0);
-    for (const invocation of invocations) {
-      const record = await invocationEvidence(
-        context,
-        invocation,
-        { kind: "line", line: index + 1 },
-        true,
-        context.fileKind === "hooks" ? "hook" : undefined,
-      );
-      if (record !== undefined) records.push(record);
-    }
+  const lines = text.split(/\r?\n/u).map((line, index) => ({ text: line, line: index + 1 }));
+  for (const { line, invocation, afterPipe } of shellCommands(lines, shellFunctionNames(text))) {
+    if (afterPipe && !(await executableInstalled(stripEnvironmentPrefix(invocation)[0]!, context.pathValue))) continue;
+    const record = await invocationEvidence(
+      context,
+      invocation,
+      { kind: "line", line },
+      true,
+      context.fileKind === "hooks" ? "hook" : undefined,
+    );
+    if (record !== undefined) records.push(record);
   }
   return records;
 };
