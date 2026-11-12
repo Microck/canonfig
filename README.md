@@ -265,6 +265,9 @@ the browser frontend lives in [`ui/`](ui/README.md). its development server runs
 the simulated demo (`npm --prefix ui ci`, then `npm run ui:dev`). see the
 [release runbook](docs/release-runbook.md) for every release gate.
 
+to report a bug or send a pull request, read [CONTRIBUTING.md](CONTRIBUTING.md).
+ai-assisted pull requests are welcome, with the disclosure it describes.
+
 ## license
 
 [MIT](LICENSE)
