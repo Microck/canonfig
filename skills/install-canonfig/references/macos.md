@@ -11,7 +11,7 @@
 Install the exact public package version.
 
 ```bash
-npm install --global @microck/canonfig@7.1.7
+npm install --global @microck/canonfig@7.1.8
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```

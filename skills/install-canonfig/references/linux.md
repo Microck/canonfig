@@ -13,7 +13,7 @@
 Install the exact public package version for the current Node installation.
 
 ```bash
-npm install --global @microck/canonfig@7.1.7
+npm install --global @microck/canonfig@7.1.8
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```
