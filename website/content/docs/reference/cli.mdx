@@ -731,7 +731,9 @@ canonfig agent harness custom --executable /opt/review-agent/bin/agent --argumen
 ```
 
 `agent policy` without an argument prints the policy. Policies are
-`deterministic-only`, `agent-propose`, and `agent-apply`.
+`deterministic-only`, `agent-propose`, and `agent-apply`. Agent policy and
+harness are set on each Follower Machine, where runs call the agent; on a
+Source Machine or an unenrolled machine both commands exit 2.
 
 `agent harness` without arguments prints the configured harness. To set one:
 

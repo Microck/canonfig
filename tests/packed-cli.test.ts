@@ -834,11 +834,8 @@ describe("packed Canonfig executable", () => {
   });
 
   it("probes the agent policy the enrolled follower actually runs under", () => {
-    // `agent policy` writes to the follower configuration once enrolled, and a
-    // run reads it from there. The doctor probe read ~/.canonfig/policy.json,
-    // which enrollment stops using, so an enrolled follower with an agent
-    // policy and no harness reported a skipped probe instead of the failure a
-    // run would hit.
+    // `agent policy` writes to the follower configuration, and a run reads it
+    // from there, so doctor must report the failure such a run would hit.
     requireSuccess(invoke(transport, ["agent", "policy", "agent-apply", "--json"]), "set agent-apply");
 
     const result = invoke(

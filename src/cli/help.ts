@@ -271,6 +271,9 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
       "  [--allow-origin <https-origin>...] [--allow-capability <capability>...]",
       "  [--maximum-input-bytes <bytes>]",
     ],
+    notes: [
+      "Agent policy and harness are set on each Follower Machine, where runs call the agent.",
+    ],
   },
   {
     title: "Journaled setup",

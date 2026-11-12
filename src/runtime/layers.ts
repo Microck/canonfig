@@ -7,7 +7,7 @@ import {
   sign as signPayload,
   verify as verifyPayload,
 } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -16,7 +16,6 @@ import { Effect, Layer, Option, Redacted, Schema } from "effect";
 import { ProfileId, SourceSignature } from "../domain/brand.ts";
 import { guiQueriesLayer } from "../gui/queries.ts";
 import { localProjectionFollower } from "../domain/synchronization.ts";
-import { AgentPolicy } from "../domain/identity.ts";
 import { AgentResolutionWithSecretsLive } from "../agent/agent-resolution.layer.ts";
 import { AgentResolution } from "../agent/agent-resolution.service.ts";
 import { EnrollmentLive } from "../enrollment/enrollment.layer.ts";
@@ -134,7 +133,6 @@ import {
 
 export interface RuntimeLayerOptions {
   readonly statePath?: string | undefined;
-  readonly policyPath?: string | undefined;
   readonly doctorSource?: DoctorSourceConfiguration | undefined;
   readonly doctorAgent?: DoctorAgentConfiguration | undefined;
 }
@@ -555,82 +553,18 @@ const runtimeProfileCatalogLayer: Layer.Layer<
   }),
 );
 
-interface PolicyFile {
-  readonly read: () => Effect.Effect<typeof AgentPolicy.Type | undefined, CliCommandFailure>;
-  readonly get: () => Effect.Effect<typeof AgentPolicy.Type, CliCommandFailure>;
-  readonly set: (
-    policy: typeof AgentPolicy.Type,
-  ) => Effect.Effect<typeof AgentPolicy.Type, CliCommandFailure>;
-}
-
-const policyFile = (
-  path: string,
-): PolicyFile => {
-  const read = () => Effect.tryPromise({
-    try: async () => {
-      try {
-        return await readFile(path, "utf8");
-      } catch (error) {
-        if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
-        throw error;
-      }
-    },
-    catch: () => new CliCommandFailure({
-      category: "usage-or-configuration",
-      message: "agent policy configuration could not be read",
-    }),
-  }).pipe(
-    Effect.flatMap((text) => {
-      if (text === undefined) return Effect.succeed(undefined);
-      let decodedJson: unknown;
-      try {
-        decodedJson = JSON.parse(text);
-      } catch {
-        return Effect.fail(new CliCommandFailure({
-          category: "usage-or-configuration",
-          message: "agent policy configuration is malformed",
-        }));
-      }
-      const decoded = Schema.decodeUnknownOption(
-        Schema.Struct({ policy: AgentPolicy }),
-      )(decodedJson);
-      return Option.isSome(decoded)
-        ? Effect.succeed(decoded.value.policy)
-        : Effect.fail(new CliCommandFailure({
-          category: "usage-or-configuration",
-          message: "agent policy configuration is invalid",
-        }));
-    }),
-  );
-  return {
-    read,
-    get: () => read().pipe(Effect.flatMap((policy) => policy === undefined
-      ? Effect.fail(new CliCommandFailure({
-        category: "usage-or-configuration",
-        message: "agent policy is not configured",
-      }))
-      : Effect.succeed(policy))),
-    set: (policy) =>
-      Effect.tryPromise({
-        try: async () => {
-          await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-          await writeFile(path, `${JSON.stringify({ policy })}\n`, {
-            encoding: "utf8",
-            mode: 0o600,
-          });
-          return policy;
-        },
-        catch: () => new CliCommandFailure({
-          category: "usage-or-configuration",
-          message: "agent policy configuration could not be written",
-        }),
-      }),
-  };
-};
+/**
+ * Agent policy belongs to an enrolled Follower Machine: only follower runs
+ * call an agent, and they read the policy from the follower configuration.
+ * A Source or an unenrolled machine has no policy to read or set.
+ */
+const agentPolicyRequiresFollower = () => new CliCommandFailure({
+  category: "usage-or-configuration",
+  message: "agent policy is set on each Follower Machine; this machine is not an enrolled Follower Machine",
+});
 
 const followerCommandsLayer = (
   statePath: string,
-  policyPath: string,
   doctorSource: DoctorSourceConfiguration | undefined,
   doctorAgent: DoctorAgentConfiguration | undefined,
 ): Layer.Layer<
@@ -648,7 +582,6 @@ const followerCommandsLayer = (
     const synchronization = yield* Synchronization;
     const agentResolution = yield* AgentResolution;
     const tunnel = yield* Tunnel;
-    const policies = policyFile(policyPath);
     const withEnrollmentLock = <A>(operation: Effect.Effect<A, CliCommandFailure>) =>
       withRunLock(statePath, "change follower enrollment", operation).pipe(
         Effect.mapError((error) => error instanceof CliCommandFailure ? error : commandFailure(error)),
@@ -1485,9 +1418,7 @@ const followerCommandsLayer = (
       setAgentPolicy: (policy) =>
         mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
           Effect.flatMap((configuration) => {
-            if (configuration === undefined) {
-              return policies.set(policy).pipe(Effect.map(payload));
-            }
+            if (configuration === undefined) return Effect.fail(agentPolicyRequiresFollower());
             return mapFailure(repository.loadState(configuration.follower.id)).pipe(
               Effect.flatMap((state) =>
                 state.sourceIdentity === undefined
@@ -1515,7 +1446,7 @@ const followerCommandsLayer = (
         mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
           Effect.flatMap((configuration) =>
             configuration === undefined
-              ? policies.get()
+              ? Effect.fail(agentPolicyRequiresFollower())
               : Effect.succeed(configuration.agentPolicy)
           ),
           Effect.map(payload),
@@ -1704,10 +1635,9 @@ const followerCommandsLayer = (
           forget: input.forget,
         })).pipe(Effect.map(payload)),
       doctor: (input) =>
-        // Probe the configuration a run would actually use. Enrollment moves
-        // the agent policy and harness into the follower configuration and
-        // stops writing the policy file, so reading that file reported an
-        // enrolled follower as unconfigured.
+        // Probe the configuration a run would actually use: the agent policy
+        // and harness live in the follower configuration, so a machine
+        // without one has no agent policy to check.
         Effect.all([
           mapFailure(repository.getFollowerSynchronizationConfiguration()),
           effectiveScheduleInput(repository),
@@ -1727,7 +1657,6 @@ const followerCommandsLayer = (
             return runDoctorProbes({
               ...input,
               statePath,
-              policyPath,
               environment: (name) => process.env[name],
               agentPolicy: configuration?.agentPolicy,
               schedule,
@@ -1810,7 +1739,6 @@ export const runtimeLayer = (
 ) => {
   const root = join(homedir(), ".canonfig");
   const statePath = options.statePath ?? join(root, "state.sqlite");
-  const policyPath = options.policyPath ?? join(root, "policy.json");
   const state = runtimeStateLayer(statePath);
   const enrollment = EnrollmentLive.pipe(Layer.provide(Layer.merge(state, machine)));
   const profiles = runtimeProfileCatalogLayer.pipe(
@@ -1842,11 +1770,10 @@ export const runtimeLayer = (
   return Layer.mergeAll(
     machine,
     state,
-    guiQueriesLayer(dirname(statePath), policyFile(policyPath).read).pipe(Layer.provide(state)),
+    guiQueriesLayer(dirname(statePath)).pipe(Layer.provide(state)),
     sourceCommandsLayer(dirname(statePath)).pipe(Layer.provide(dependencies)),
     followerCommandsLayer(
       statePath,
-      policyPath,
       options.doctorSource ?? doctorSourceFromEnvironment(),
       options.doctorAgent ?? doctorAgentFromEnvironment(),
     ).pipe(

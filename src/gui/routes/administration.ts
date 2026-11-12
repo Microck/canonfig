@@ -19,7 +19,7 @@ import {
   removeInstallerBinding, saveInstallerBinding, unboundInstallerRecovery,
 } from "../../synchronization/installer-bindings.ts";
 import {
-  GuiAgentHarness, GuiAgentPolicy, type GuiAgentHarnessRead, type GuiAgentPolicyRead,
+  GuiAgentHarness, GuiAgentPolicy, type GuiAgentHarnessRead,
   GuiInstallerSetInput, GuiSelfUpdateEnable, GuiSourceServiceInput,
 } from "../contract/administration.ts";
 import { GuiQueries } from "../queries.ts";
@@ -63,6 +63,13 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
     });
     return yield* operation;
   });
+  // Agent policy and harness exist only on an enrolled Follower Machine, where runs call the agent.
+  const followerOnly = <A>(operation: Effect.Effect<A, CliCommandFailure>) => Effect.gen(function*() {
+    if ((yield* queries.session()).role !== "follower") return yield* new CliCommandFailure({
+      category: "usage-or-configuration", message: "Agent settings require an enrolled Follower Machine.",
+    });
+    return yield* operation;
+  });
   const root = fileURLToPath(new URL("../../../", import.meta.url));
   const updateFailure = (cause: unknown) => new CliCommandFailure({
     category: "human-action-required", message: cause instanceof Error ? cause.message : String(cause),
@@ -81,19 +88,16 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
       (input) => sourceOnly(source.installService(input)).pipe(Effect.map(toJson))),
     mutationRoute("DELETE", "/api/source-service", EmptyBody,
       () => sourceOnly(source.removeService()).pipe(Effect.map(toJson))),
-    queryRoute("/api/agent/policy", () => queries.agentPolicy().pipe(
-      Effect.map((policy): GuiAgentPolicyRead => policy === undefined
-        ? { configured: false, default: "deterministic-only" } : { configured: true, value: policy }),
-      Effect.map(toJson),
-    )),
-    mutationRoute("PUT", "/api/agent/policy", GuiAgentPolicy, (input) => follower.setAgentPolicy(input).pipe(Effect.map(toJson))),
-    queryRoute("/api/agent/harness", () => repository.getFollowerSynchronizationConfiguration().pipe(
+    queryRoute("/api/agent/policy", () => followerOnly(follower.getAgentPolicy()).pipe(Effect.map(toJson))),
+    mutationRoute("PUT", "/api/agent/policy", GuiAgentPolicy, (input) => followerOnly(follower.setAgentPolicy(input)).pipe(Effect.map(toJson))),
+    queryRoute("/api/agent/harness", () => followerOnly(repository.getFollowerSynchronizationConfiguration().pipe(
       Effect.mapError(commandFailure),
+    )).pipe(
       Effect.map((configuration): GuiAgentHarnessRead => configuration?.agentHarness === undefined
         ? { configured: false } : { configured: true, value: harnessResponse(configuration.agentHarness) }),
       Effect.map(toJson),
     )),
-    mutationRoute("PUT", "/api/agent/harness", GuiAgentHarness, (input) => Effect.gen(function*() {
+    mutationRoute("PUT", "/api/agent/harness", GuiAgentHarness, (input) => followerOnly(Effect.gen(function*() {
       if (JSON.stringify(input).includes("[REDACTED]")) return yield* new CliCommandFailure({
         category: "usage-or-configuration", message: "Redaction markers are not harness values. Reload settings and supply replacements only for fields you want to change.",
       });
@@ -125,9 +129,10 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
         environment: input.environment ?? previous?.environment,
       };
       return toJson(harnessResponse(yield* follower.setAgentHarness(configuration)));
-    })),
+    }))),
+    // A failed probe is part of the report, not a failed request: the report's status and probes say what is wrong.
     mutationRoute("POST", "/api/doctor", EmptyBody,
-      () => report(follower.doctor({ noInput: true, timeoutMilliseconds: 10_000 }))),
+      () => report(follower.doctor({ noInput: true, timeoutMilliseconds: 10_000 })).pipe(Effect.map((result) => result.report))),
     queryRoute("/api/installers", () => Effect.gen(function*() {
       const bindings = yield* listInstallerBindings();
       // Every unbound method PATH can satisfy, already shaped as a valid binding (Windows shims included).

@@ -27,7 +27,7 @@ function ResourceProbe() {
   return <div aria-busy={busy}>
     {workspace.machineName}
     {workspace.view === "installers" && "Installers"}
-    {workspace.view === "agent" && !workspace.admin.agent.configured && "Not configured yet"}
+    {workspace.view === "agent" && workspace.admin.agent.data && "Agent policy loaded"}
     <button onClick={workspace.reload}>Reload</button>
     {workspace.view === "agent" && workspace.admin.agent.data && <button onClick={() => {
       const saved = workspace.admin.agent.data;
@@ -54,7 +54,7 @@ for (const role of ["source", "follower"] as const) {
       "/api/session": { role, machineName: "Navigation fixture", folderPath: "/tmp/navigation-fixture", version: "7.1.0" },
       "/api/status": { machineRole: { role }, lifecycle: {}, tunnel: null },
       "/api/installers": { bindings: [], detected: [] },
-      "/api/agent/policy": { configured: false, default: "deterministic-only" },
+      "/api/agent/policy": "deterministic-only",
       "/api/agent/harness": { configured: false },
       "/api/setup": setup,
       "/api/setup/apply": { id: "setup-operation" },
@@ -74,8 +74,8 @@ for (const role of ["source", "follower"] as const) {
         incoming.on("end", () => {
           const parsed: unknown = JSON.parse(body);
           mutations.push({ path, body: parsed });
-          if (path === "/api/agent/policy") {
-            responses[path] = { configured: true, value: parsed };
+          if (path === "/api/agent/policy" || path === "/api/agent/harness") {
+            responses[path] = path === "/api/agent/policy" ? parsed : { configured: true, value: parsed };
             outgoing.end(JSON.stringify(parsed));
           } else {
             if (path === "/api/setup/apply") setup.stage = "complete";
@@ -114,9 +114,15 @@ for (const role of ["source", "follower"] as const) {
       await act(async () => { navigate(`/${role}/settings/installers`); });
       await settle("Installers");
       assert.deepEqual(requests, ["/api/session", "/api/status", "/api/installers"]);
+      // Only a Follower has an Agent policy page; on a Source the route does not exist and reads nothing.
       await act(async () => { navigate(`/${role}/settings/agent`); });
-      await settle("Not configured yet");
-      assert.deepEqual(requests.slice(3).sort(), ["/api/agent/harness", "/api/agent/policy"]);
+      if (role === "follower") {
+        await settle("Agent policy loaded");
+        assert.deepEqual(requests.slice(3).sort(), ["/api/agent/harness", "/api/agent/policy"]);
+      } else {
+        await act(async () => { await delay(25); });
+        assert.deepEqual(requests.slice(3), []);
+      }
       const count = requests.length;
       await act(async () => { navigate(`/${role}/settings/installers`); });
       await settle("Installers");
@@ -151,14 +157,16 @@ for (const role of ["source", "follower"] as const) {
       await settle("Done");
       assert.equal(requests.filter((path) => path !== "/api/status").length, afterApply, "Setup keeps its post-mutation status on revisit");
       assert.equal(requests.filter((path) => path === "/api/status").length, statusReadsBeforeApply + 1, "Apply refreshes machine status before Overview reuses it");
-      if (role === "source") {
-        await act(async () => { navigate("/source/settings/agent"); });
-        await settle("Not configured yet");
+      if (role === "follower") {
+        await act(async () => { navigate("/follower/settings/agent"); });
+        await settle("Agent policy loaded");
         const save = [...container.querySelectorAll("button")].find((button) => button.textContent === "Save proposed policy");
         assert.ok(save);
         await act(async () => { save.click(); });
-        await settle("Policy saved.");
-        assert.deepEqual(mutations.filter(({ path }) => path.startsWith("/api/agent/")), [{ path: "/api/agent/policy", body: "agent-propose" }]);
+        await settle("Policy and harness saved.");
+        const agentWrites = mutations.filter(({ path }) => path.startsWith("/api/agent/"));
+        assert.deepEqual(agentWrites.map(({ path }) => path), ["/api/agent/policy", "/api/agent/harness"]);
+        assert.equal(agentWrites[0]!.body, "agent-propose");
       }
     } finally {
       await act(async () => { root.unmount(); });

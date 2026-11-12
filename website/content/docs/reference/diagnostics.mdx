@@ -73,7 +73,7 @@ A probe that runs past `--timeout-ms` fails with `<probe> probe timed out`.
 | pass | `credential-load` | The `source` probe read the follower credential from the store in this session. Write access is not proven. |
 | warning | `provider-presence` | The store exists. Write access and access from a scheduled run are not proven. |
 | warning | `configuration` | The local-file policy is in use; credentials are stored unencrypted. |
-| warning | `not-verified` | `noninteractive credential storage is unavailable: <what to do>`. The same text is in `details.recovery`. |
+| warning | `not-verified` | What is missing and what to do, for example `secret-tool was not found on PATH. Install it with ...`. The same text is in `details.recovery`. |
 | fail, Human Action Required | | `credential capability check failed: <detail>` |
 
 On a Source Machine, or on a Follower Machine whose `source` probe cannot read
@@ -131,7 +131,7 @@ The probe honors installer bindings set with `canonfig installer set`.
 | --- | --- |
 | pass | `deterministic-only policy requires no adapter` |
 | pass | `configured agent adapter executable is available` |
-| skipped | `agent policy and adapter are not configured` |
+| skipped | `agent policy applies only to an enrolled Follower Machine` |
 | fail, configuration | `configured agent policy requires an adapter`: the policy is `agent-propose` or `agent-apply` and no harness is set. |
 | fail, configuration | `configured agent adapter is unsupported`: the harness is not `codex`, `claude`, or `custom`. |
 | fail, configuration | `configured agent adapter executable is unavailable` |

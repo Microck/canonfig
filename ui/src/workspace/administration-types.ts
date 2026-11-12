@@ -65,8 +65,6 @@ export interface AdministrationSlice {
     restart?: () => void;
   };
   agent: AdministrationResource<SavedPolicy> & {
-    configured: boolean;
-    harnessWritable: boolean;
     harnessConfigured: boolean;
     harnessLoading: boolean;
     harnessError: GuiRequestError | null;

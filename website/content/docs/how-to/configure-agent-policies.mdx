@@ -16,9 +16,11 @@ It is separate from the harnesses Canonfig projects `~/.canonfig/` into.
 
 ## Before you start
 
-- Run every command on the Follower Machine, after it is enrolled. On a
-  machine that is not enrolled, `canonfig agent harness` fails with "follower
-  synchronization configuration is not enrolled".
+- Run every command on the Follower Machine, after it is enrolled. On a Source
+  Machine or a machine that is not enrolled, `canonfig agent policy` fails with
+  "agent policy is set on each Follower Machine; this machine is not an
+  enrolled Follower Machine", and `canonfig agent harness` fails with
+  "follower synchronization configuration is not enrolled".
 - Install the agent CLI on the Follower Machine and sign in to it: Codex CLI
   for `codex`, Claude Code for `claude`, or your own program for `custom`.
 - The agent policy and agent harness belong to this Follower Machine only.

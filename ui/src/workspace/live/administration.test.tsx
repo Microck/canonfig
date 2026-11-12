@@ -44,7 +44,7 @@ it("keeps undisclosed harness collections absent on save and sends explicit repl
     status: async () => ({ machineRole: { role: "follower" }, lifecycle: {}, tunnel: null }),
     operation: async () => assert.fail("No operation ticket expected"),
     request: async (path, schema, _signal, mutation) => {
-      if (path === "/api/agent/policy") return Schema.decodeUnknownSync(schema)(mutation ? "agent-propose" : { configured: true, value: "agent-propose" });
+      if (path === "/api/agent/policy") return Schema.decodeUnknownSync(schema)("agent-propose");
       assert.equal(path, "/api/agent/harness");
       if (!mutation) return Schema.decodeUnknownSync(schema)({ configured: true, value: harness });
       harness = Schema.decodeUnknownSync(GuiAgentHarness)(mutation.body);

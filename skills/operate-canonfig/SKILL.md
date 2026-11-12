@@ -89,7 +89,7 @@ tunnel is left stopped.
 
 ## Agent policy
 
-Inspect policy and harness separately:
+Agent policy and harness exist only on a Follower Machine. Inspect them separately:
 
 ```bash
 canonfig agent policy

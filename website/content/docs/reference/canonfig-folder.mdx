@@ -25,7 +25,7 @@ in each harness is in the [harness reference](/reference/harnesses).
   local/                  this machine's own items, never published
   .backups/               takeover snapshots
   .runtime/               the generated hook runner
-  state.sqlite  setup.json  policy.json  canonfig.log  installers/  skills-sources.json  tunnel/  cache/
+  state.sqlite  setup.json  canonfig.log  installers/  skills-sources.json  tunnel/  cache/
 ```
 
 The first eight entries are the **authoring allowlist**. Publication reads only
@@ -46,7 +46,6 @@ it.
 | `.runtime/` | No | `hook-runner.mjs`, which every projected hook calls. |
 | `state.sqlite` | No | Enrollment, Profile Revisions, run journal, Applied Resource Records, and the export and import journal. |
 | `setup.json` | No | The `canonfig setup` plan, approval, and progress. |
-| `policy.json` | No | The agent policy of a machine that is not enrolled. |
 | `canonfig.log` | No | The command log. |
 | `installers/` | No | Installer bindings. |
 | `skills-sources.json` | No | Where tracked upstream skills came from. |

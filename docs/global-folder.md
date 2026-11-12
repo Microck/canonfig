@@ -23,7 +23,7 @@ https://canonfig.micr.dev/docs/reference/harnesses/.
 | `files/` | content of the authored resources in `canonfig.jsonc` `resources` |
 | `local/` | machine-local items, never published |
 
-Everything else (`state.sqlite`, `setup.json`, `policy.json`, `.runtime/`,
+Everything else (`state.sqlite`, `setup.json`, `.runtime/`,
 `.backups/`, `canonfig.log`, `installers/`, `skills-sources.json`) is
 machine-local. The loader never reads it. Every file must resolve inside the
 folder, and authored trees hold regular files and directories only;

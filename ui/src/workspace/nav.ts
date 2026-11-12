@@ -41,7 +41,6 @@ const SOURCE_NAV: NavItem[] = [
 
 const SOURCE_SETTINGS: NavItem[] = [
   { view: "service", label: "Source service", icon: HardDrives },
-  { view: "agent", label: "Agent policy", icon: Robot },
   { view: "installers", label: "Installers", icon: Package },
   { view: "setup", label: "Setup", icon: ListChecks },
   { view: "doctor", label: "Health check", icon: Stethoscope },

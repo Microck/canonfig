@@ -38,7 +38,7 @@ function machineRuntime(home: string) {
   // the database, while Layer.merge builds siblings concurrently, so a second bare repository layer could open
   // state.sqlite before the folder exists ("unable to open database file"). A layer reference is built once per
   // runtime, so this also keeps one connection to the database.
-  const runtime = runtimeLayer({ statePath, policyPath: join(folder, "policy.json") }, machine);
+  const runtime = runtimeLayer({ statePath }, machine);
   return ManagedRuntime.make(Layer.merge(runtime, EnrollmentLive.pipe(Layer.provide(runtime))));
 }
 

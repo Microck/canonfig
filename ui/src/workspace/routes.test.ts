@@ -12,7 +12,6 @@ const pages: [WorkspaceRole, View, string][] = [
   ["source", "backups", "backups"],
   ["source", "secrets", "secrets"],
   ["source", "service", "settings/service"],
-  ["source", "agent", "settings/agent"],
   ["source", "installers", "settings/installers"],
   ["source", "setup", "settings/setup"],
   ["source", "doctor", "settings/health"],
@@ -86,7 +85,7 @@ describe("canonical workspace routes", () => {
 
   it("rejects unknown pages and pages belonging to the other role", () => {
     for (const href of [
-      "/source/sync", "/source/settings/tunnel", "/source/settings/enrollment", "/source/profile/items",
+      "/source/sync", "/source/settings/tunnel", "/source/settings/enrollment", "/source/settings/agent", "/source/profile/items",
       "/source/machines/map", "/source/doctor", "/source/profile/", "/source", "/source/no-such-page", "/source/local-settings",
       "/follower/profile", "/follower/profile/groups", "/follower/profile/harnesses", "/follower/revisions", "/follower/settings/service",
       "/follower/local", "/follower/machine",
@@ -101,6 +100,7 @@ describe("canonical workspace routes", () => {
     }
     assert.throws(() => workspaceHref("follower", "profile"), /No follower route/);
     assert.throws(() => workspaceHref("source", "sync"), /No source route/);
+    assert.throws(() => workspaceHref("source", "agent"), /No source route/);
   });
 
   it("gives the demo switcher canonical role entry points", () => {

@@ -1732,8 +1732,8 @@ export const linuxMachineStateLayer = (
           ? [{ name: "DBUS_SESSION_BUS_ADDRESS", value: sessionBus.address }]
           : [];
       const busName = sessionBus.kind === "missing" ? "no session bus" : sessionBus.address;
-      // Discovery searches only PATH, so "not found" may mean installed elsewhere; name the PATH so that case is visible.
-      const secretToolMissing = `secret-tool was not found on PATH (${environmentValue(environment, "PATH") ?? "PATH is unset"}). ${secretToolInstallAdvice()}`;
+      // Discovery searches only PATH, so say "on PATH": the tool may be installed somewhere PATH does not reach.
+      const secretToolMissing = `secret-tool was not found on PATH. ${secretToolInstallAdvice()}`;
 
       const normalizePath = Effect.fn("MachineState.normalizePath")(
         function*(input: NormalizePathInput): Effect.fn.Return<MachinePath, MachineStateError> {

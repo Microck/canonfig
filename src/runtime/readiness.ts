@@ -69,7 +69,8 @@ export const credentialReadiness = (
       return {
         name: "credentials",
         status: "warning",
-        message: `noninteractive credential storage is unavailable: ${capability.recovery}`,
+        // The probe name already says this is credential storage; the recovery says what is missing and what to do.
+        message: capability.recovery,
         details: {
           kind: capability.kind,
           verification: "not-verified",
