@@ -33,7 +33,7 @@ export interface SourcePublishInput {
 }
 
 export interface SourceServeInput {
-  readonly hostname: "127.0.0.1" | "::1";
+  readonly hostname: "127.0.0.1" | "::1" | "tailnet";
   readonly port: number;
 }
 

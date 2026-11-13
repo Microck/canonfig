@@ -1,0 +1,125 @@
+---
+title: Connect over Tailscale or Headscale
+description: Enroll and sync Followers over MagicDNS without an SSH tunnel.
+---
+
+Connect the Source Machine and Follower Machines to the same Tailscale or
+Headscale network. Enable MagicDNS and kernel networking on the Source. Keep
+the Tailscale CLI installed; Canonfig uses it to inspect the local client.
+Canonfig does not change your login, network policy, Serve or Funnel settings.
+
+## Start the Source
+
+Check detection, then start an initialized Source:
+
+```bash
+canonfig doctor --no-input --json
+canonfig source serve --tailnet --port 17342
+```
+
+The Source prints its HTTPS MagicDNS endpoint, such as
+`https://atlas.tail-example.ts.net:17342`. Keep the terminal open. For unattended
+operation, use `canonfig source service install --tailnet --port 17342` instead,
+then check `canonfig source service status`. The service redetects its address
+when it starts. Existing credential-store and logged-in-session requirements
+still apply; see [Run unattended](/how-to/run-unattended).
+
+In the browser interface, open **Settings, Source service**, select
+**Tailscale (recommended)** under **Connection**, then choose **Install service**.
+Detection does not change an existing listener until you install or update it.
+Setup planning also reports whether this path is available.
+
+## Invite a Follower
+
+Use the endpoint the Source printed:
+
+```bash
+canonfig source invite --endpoint https://atlas.tail-example.ts.net:17342 --output ./canonfig-invite
+```
+
+Transfer the invitation privately. On the Follower:
+
+```bash
+cat ./canonfig-invite | canonfig follower enroll --stdin --name laptop
+canonfig sync --plan
+canonfig sync --apply
+canonfig status
+```
+
+Do not start an SSH tunnel for this invitation. The browser enrollment wizard
+recognizes its direct endpoint and omits SSH setup. Invitations remain
+single-use; certificate pins, Follower credentials and signed revisions remain
+required. A changed Source certificate is refused even when MagicDNS resolves.
+
+## Open the browser interface remotely
+
+```bash
+canonfig ui --tailnet --port 5317 --no-open
+```
+
+Open the printed single-use sign-in URL from an allowed tailnet device. Keep
+that URL private. The GUI uses HTTP inside WireGuard, not a browser-trusted
+HTTPS certificate. Source-to-Follower transfer still uses pinned HTTPS.
+`--tailnet` cannot be combined with `--host` or `--origin`.
+
+## Restrict network access
+
+Have your tailnet administrator assign the tags and merge rules like these into
+the network policy. Source access and GUI access are separate:
+
+```json
+{
+  "tagOwners": {
+    "tag:canonfig-source": ["autogroup:admin"],
+    "tag:canonfig-follower": ["autogroup:admin"]
+  },
+  "groups": {
+    "group:canonfig-operators": ["dana@example.com"]
+  },
+  "grants": [
+    { "src": ["tag:canonfig-follower"], "dst": ["tag:canonfig-source"], "ip": ["tcp:17342"] },
+    { "src": ["group:canonfig-operators"], "dst": ["tag:canonfig-source"], "ip": ["tcp:5317"] }
+  ]
+}
+```
+
+Choose the ports you actually use. Remove or narrow broader existing allow
+rules; these grants do not override them. For an ACL-based policy, the
+corresponding entries are:
+
+```json
+{
+  "acls": [
+    { "action": "accept", "src": ["tag:canonfig-follower"], "dst": ["tag:canonfig-source:17342"] },
+    { "action": "accept", "src": ["group:canonfig-operators"], "dst": ["tag:canonfig-source:5317"] }
+  ]
+}
+```
+
+Use either the grants or ACL representation supported by your control server.
+See [Tailscale policy syntax](https://tailscale.com/docs/reference/syntax/policy-file)
+and [Headscale policy](https://headscale.net/stable/ref/policy/).
+
+## Fix detection or connection failures
+
+- **Client not found:** install the native client. For a nonstandard location,
+  set `CANONFIG_TAILSCALE_EXECUTABLE` to its executable. Canonfig also checks the
+  standard macOS app bundle and Windows installation directory.
+- **LocalAPI unavailable:** start the client and check local permissions. A
+  custom daemon socket can be selected with `CANONFIG_TAILSCALE_SOCKET`. The
+  client must support `tailscale debug localapi`.
+- **Stopped, logged out or expired:** start or authenticate the client, approve
+  the machine or renew its node key, then retry. Canonfig never does this for you.
+- **Userspace networking:** use a kernel-mode client to host the Source or GUI.
+- **MagicDNS unavailable:** enable MagicDNS on the control server and make sure
+  the Follower's OS resolver uses it. Headscale's custom base domain is supported;
+  `.ts.net` is not required.
+- **Source cannot be reached:** check that its service runs, the selected port is
+  allowed, and DNS resolves only to tailnet addresses. Public or LAN addresses
+  are refused. An exit node does not change the listener's selected address.
+- **Public HTTPS certificates disabled:** this does not block pinned Source
+  HTTPS or the tailnet GUI. No certificate issuance or Serve setup is needed.
+
+Native services preserve the custom executable/socket settings on Linux and
+macOS. On Windows, set them in your persistent user environment before service
+installation so Task Scheduler sees the same values.

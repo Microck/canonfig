@@ -1033,7 +1033,10 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
   const [paste, setPaste] = useState(false);
   const [pasted, setPasted] = useState("");
   const [pasteTried, setPasteTried] = useState(false);
-  const [tunnel, setTunnel] = useState(true);
+  const [useTunnel, setTunnel] = useState(true);
+  const invitationHost = live?.inspection ? new URL(live.inspection.endpoint).hostname : undefined;
+  const directTailnet = invitationHost !== undefined && !["127.0.0.1", "[::1]", "localhost"].includes(invitationHost);
+  const tunnel = !directTailnet && useTunnel;
   const [sshHost, setSshHost] = useState(live ? "" : "atlas.local");
   const [sshUser, setSshUser] = useState(live ? "" : "maria");
   const [hostKey, setHostKey] = useState("./source-host-key.pub");
@@ -1242,7 +1245,7 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
       {step === 1 && (
         <div className="space-y-5">
           <p className="leading-relaxed text-muted-foreground">
-            {live ? "Check that you are connecting to the right Source before joining. Use an SSH tunnel, a secure connection between machines, if the Source address starts with 127.0.0.1 or localhost. Turn it off only if you already have a connection to that address." : "Connect securely to atlas before joining. The invitation uses 127.0.0.1, an address that normally points to this machine. An SSH tunnel forwards that connection to atlas instead."}
+            {directTailnet ? "This invitation connects directly over your tailnet. No SSH tunnel is needed. Both machines must be connected to the same Tailscale or Headscale network." : live ? "Check that you are connecting to the right Source before joining. This loopback invitation needs an SSH tunnel unless you already have a connection to that address." : "Connect securely to atlas before joining. The invitation uses 127.0.0.1, an address that normally points to this machine. An SSH tunnel forwards that connection to atlas instead."}
           </p>
           {live?.inspection && <>
             <p className="text-sm text-muted-foreground">These fingerprints identify the Source and its secure connection. Compare both with the values shown on the Source through a separate trusted connection, such as an existing SSH session. If either differs, stop and request a new invitation.</p>
@@ -1250,13 +1253,13 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
             <label className={CHECK_ROW}><Checkbox checked={sourceTrusted} onCheckedChange={(checked) => setSourceTrusted(checked === true)} />I compared both fingerprints with the Source and they match.</label>
             {shown("sourceTrusted") && <FieldError>{shown("sourceTrusted")}</FieldError>}
           </>}
-          <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-border px-3.5 py-3 hover:bg-raised/50">
+          {!directTailnet && <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-border px-3.5 py-3 hover:bg-raised/50">
             <Switch checked={tunnel} onCheckedChange={setTunnel} />
             <span>
               <span className="font-medium">Connect through an SSH tunnel</span>
               <span className="mt-0.5 block text-sm text-muted-foreground">Requires working SSH access to {sourceName}. Canonfig opens this secure connection before each sync.</span>
             </span>
-          </label>
+          </label>}
           {tunnel && (
             <>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

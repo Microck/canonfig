@@ -60,7 +60,7 @@ export interface AdministrationSlice {
     since?: string;
     lingerMarked?: boolean;
     action: "install" | "remove" | "restart" | null;
-    install: (hostname: "127.0.0.1" | "::1", port: number) => void;
+    install: (hostname: "127.0.0.1" | "::1" | "tailnet", port: number) => void;
     remove: () => void;
     restart?: () => void;
   };

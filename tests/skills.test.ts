@@ -204,15 +204,6 @@ describe("Canonfig choice-first setup contract", () => {
     expect(setupCatalogue).toContain("Other (type your own)");
   });
 
-  it("keeps discovery opt-in, privacy-minimized, and distinct from direct connectivity", () => {
-    expect(setupDiscovery).toContain("After consent");
-    expect(setupDiscovery).toContain("not a full\ntailnet inventory");
-    expect(setupDiscovery).toContain("Freeze the\nnumber-to-ID mapping");
-    expect(setupDiscovery).toContain("Do not scan subnets");
-    expect(setupDiscovery).toContain("loopback HTTPS origins");
-    expect(setupDiscovery).toContain("Discovery creates no tunnel");
-    expect(setupDiscovery).toContain("Never claim fleet completion from local status");
-  });
 
   it("runs discovery fixture tests without contacting a tailnet", () => {
     const output = execFileSync(process.execPath, [

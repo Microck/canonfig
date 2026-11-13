@@ -83,11 +83,7 @@ export interface SourceCredentials {
 }
 
 export interface StartSourceServerInput {
-  /**
-   * Runtime input is validated as an unambiguous loopback host by the server
-   * boundary. Keep this as a string so callers cannot mistake the type for
-   * the security check.
-   */
+  /** Loopback address or `tailnet`, resolved against the running native client's exact local address. */
   readonly hostname?: string | undefined;
   readonly port?: number | undefined;
   /** Source limit must be a safe integer >= the 1 MiB publication limit. */

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, sep } from "node:path";
 
 import { Effect, Option, Schema } from "effect";
+import { sourceEndpointUrl } from "../enrollment/tailnet.ts";
 
 import {
   AgentResolution,
@@ -147,27 +148,10 @@ export const loadFollowerSynchronizationConfiguration = Effect.fn(
       "follower synchronization configuration belongs to another state repository",
     );
   }
-  let endpoint: URL;
   try {
-    endpoint = new URL(configuration.source.endpoint);
+    sourceEndpointUrl(configuration.source.endpoint);
   } catch {
-    return yield* configurationError(
-      "stale",
-      "configured source endpoint is malformed",
-    );
-  }
-  if (
-    endpoint.protocol !== "https:"
-    || (
-      endpoint.hostname !== "127.0.0.1"
-      && endpoint.hostname !== "[::1]"
-      && endpoint.hostname !== "::1"
-    )
-  ) {
-    return yield* configurationError(
-      "stale",
-      "configured source endpoint is not pinned loopback HTTPS",
-    );
+    return yield* configurationError("stale", "Configured Source endpoint must be pinned loopback or tailnet HTTPS.");
   }
   const state = yield* repository.loadState(configuration.follower.id).pipe(
     Effect.mapError(() =>

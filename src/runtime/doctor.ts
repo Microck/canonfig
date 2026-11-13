@@ -39,6 +39,7 @@ import {
 import { StateRepository } from "../state/state-repository.service.ts";
 import type { TunnelStatusReport } from "../enrollment/tunnel.types.ts";
 import { checkSourceServerIdentity } from "../enrollment/tls-identity.ts";
+import { detectTailnet, resolveSourceEndpoint } from "../enrollment/tailnet.ts";
 
 export const doctorProbeNames = [
   "runtime",
@@ -49,6 +50,7 @@ export const doctorProbeNames = [
   "package-managers",
   "agent-adapter",
   "harnesses",
+  "tailscale",
 ] as const;
 
 export type DoctorProbeName = typeof doctorProbeNames[number];
@@ -301,26 +303,17 @@ const sourceProbe = (
       new DoctorSourceProbeError("local-credential", credentialFailureDetail(error))
     ));
     yield* Ref.set(stage, "credential-loaded");
+    const endpoint = yield* Effect.tryPromise({
+      try: () => resolveSourceEndpoint(source.endpoint),
+      catch: () => new DoctorSourceProbeError("configuration"),
+    });
     yield* Effect.tryPromise({
       try: (signal) =>
         new Promise<void>((resolveProbe, rejectProbe) => {
-          let endpoint: URL;
-          try {
-            endpoint = new URL(source.endpoint);
-            const loopback = endpoint.hostname === "127.0.0.1"
-              || endpoint.hostname === "[::1]"
-              || endpoint.hostname === "::1";
-            if (endpoint.protocol !== "https:" || !loopback) {
-              throw new Error("invalid endpoint");
-            }
-          } catch {
-            rejectProbe(new DoctorSourceProbeError("configuration"));
-            return;
-          }
           const host = endpoint.hostname.replaceAll("[", "").replaceAll("]", "");
           const socket = tlsConnect({
             host,
-            port: Number(endpoint.port),
+            port: Number(endpoint.port || "443"),
             rejectUnauthorized: false,
             minVersion: "TLSv1.2",
           });
@@ -351,7 +344,7 @@ const sourceProbe = (
               method: "GET",
               ca: certificate,
               rejectUnauthorized: true,
-              checkServerIdentity: checkSourceServerIdentity,
+              checkServerIdentity: checkSourceServerIdentity(tlsFingerprint),
               minVersion: "TLSv1.2",
               headers: {
                 authorization: `Bearer ${Redacted.value(credential)}`,
@@ -660,6 +653,18 @@ export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
         failed("harnesses", "usage-or-configuration", `harness selection could not be read: ${error.message}`),
       "internal",
     ),
+    isolated("tailscale", timeout, detectTailnet().pipe(Effect.map((report): DoctorProbe => ({
+      name: "tailscale",
+      status: report.ready ? "pass" : "skipped",
+      message: report.detail,
+      details: {
+        installed: report.installed, backendState: report.backendState,
+        addresses: report.addresses.join(", "), dnsName: report.dnsName ?? "",
+        tailnet: report.tailnet ?? "", controlUrl: report.controlUrl ?? "",
+        httpsAvailable: report.httpsAvailable, userspace: report.userspace,
+      },
+    }))), () => skipped("tailscale", "Tailscale discovery failed"), "transport",
+    Effect.succeed(skipped("tailscale", "Tailscale LocalAPI discovery timed out"))),
   ], { concurrency: "unbounded" });
   const failedCount = probes.filter((probe) => probe.status === "fail").length;
   const degraded = probes.some((probe) =>

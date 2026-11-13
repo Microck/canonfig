@@ -97,7 +97,7 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
   const savedMessage = saveState.kind === "SavingHarness" || saveState.kind === "HarnessFailed" ? "Policy saved. Harness has not been saved."
     : saveState.kind === "Saved" ? saveState.harness ? "Policy and harness saved." : "Policy saved." : "";
 
-  const changeService = (action: "install" | "remove", hostname?: "127.0.0.1" | "::1", port?: number) => {
+  const changeService = (action: "install" | "remove", hostname?: "127.0.0.1" | "::1" | "tailnet", port?: number) => {
     if (service.busy) return;
     void service.run(async (signal) => {
       setServiceAction(action);

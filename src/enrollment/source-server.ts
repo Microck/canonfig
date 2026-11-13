@@ -1,11 +1,11 @@
 import { defaultMaximumMetadataBytes } from "../domain/transport-limits.ts";
 import type { ServerResponse } from "node:http";
 import { createServer } from "node:https";
-import { isIP } from "node:net";
-import type { AddressInfo } from "node:net";
+import { isIP, Socket, type AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
 
 import { Effect, Exit, Redacted, Schema, Scope } from "effect";
+import { detectTailnet, isTailnetAddress, tailnetBinding } from "./tailnet.ts";
 
 import { MachineState } from "../machine/machine-state.service.ts";
 import { CredentialStorageError } from "../machine/machine-state.errors.ts";
@@ -252,14 +252,23 @@ const startSourceServerScoped = (
     const requestedHostname = input.hostname === undefined
       ? "127.0.0.1"
       : input.hostname;
-    const decodedHostname = Schema.decodeUnknownOption(Schema.String)(requestedHostname);
-    const hostname = decodedHostname._tag === "Some"
-      ? canonicalLoopbackHostname(decodedHostname.value)
+    const tailnet = requestedHostname === "tailnet"
+      ? yield* detectTailnet().pipe(Effect.flatMap((report) => Effect.try({
+        try: () => tailnetBinding(report),
+        catch: (cause) => new EnrollmentConfigurationError({
+          operation: "start tailnet Source",
+          message: cause instanceof Error ? cause.message : "Tailscale is unavailable.",
+        }),
+      })))
       : undefined;
+    const decodedHostname = Schema.decodeUnknownOption(Schema.String)(requestedHostname);
+    const hostname = tailnet?.address ?? (decodedHostname._tag === "Some"
+      ? canonicalLoopbackHostname(decodedHostname.value)
+      : undefined);
     if (hostname === undefined) {
       return yield* new EnrollmentConfigurationError({
         operation: "start enrollment server",
-        message: "the source server host must be an unambiguous loopback address",
+        message: "The Source host must be loopback, or use --tailnet for a verified Tailscale interface.",
       });
     }
     yield* enrollment.startServerSession().pipe(Effect.mapError((error) =>
@@ -541,6 +550,10 @@ const startSourceServerScoped = (
       },
     );
     server.on("connection", (socket) => {
+      if (tailnet !== undefined && (!(socket instanceof Socket) || !isTailnetAddress(socket.remoteAddress ?? ""))) {
+        socket.destroy();
+        return;
+      }
       connections.add(socket);
       socket.once("close", () => connections.delete(socket));
     });
@@ -564,7 +577,7 @@ const startSourceServerScoped = (
       catch: () =>
         new EnrollmentConfigurationError({
           operation: "start enrollment server",
-          message: "the loopback HTTPS server could not start",
+          message: `The HTTPS Source could not bind ${hostname}; no other address was used.`,
         }),
     }), () => Effect.promise(async () => {
       closing = true;
@@ -589,9 +602,9 @@ const startSourceServerScoped = (
         await Promise.allSettled(requestEffects);
       }
     }));
-    const host = address.family === "IPv6"
+    const host = tailnet?.dnsName ?? (address.family === "IPv6"
       ? `[${address.address}]`
-      : address.address;
+      : address.address);
     return {
       endpoint: `https://${host}:${address.port}`,
       fingerprint: source.tlsFingerprint,

@@ -51,6 +51,7 @@ tell a refusal from a crash.
 ```bash
 canonfig ui
 canonfig ui --port 5317 --no-open
+canonfig ui --tailnet --port 5317 --no-open
 canonfig ui --host 100.101.102.103
 canonfig ui --port 5317 --origin https://atlas.tailnet.ts.net
 ```
@@ -63,6 +64,7 @@ The public interactive demo uses made-up machines instead.
 | Option | Effect |
 | --- | --- |
 | `--port <n>` | Choose the server's port. Without it, the operating system selects a free port. |
+| `--tailnet` | Detect the local Tailscale or Headscale client, bind only its interface and print a MagicDNS sign-in URL. Requires kernel networking and MagicDNS. Cannot be combined with `--host` or `--origin`. |
 | `--host <address>` | Listen on a loopback or Tailscale address instead of `127.0.0.1`: `::1`, `100.64.0.0/10` or `fd7a:115c:a1e0::/48`. Other addresses are refused. |
 | `--origin <https-url>` | Also accept an HTTPS proxy in front of the server, such as `tailscale serve`, and print the sign-in URL on it. Needs `--port`. |
 | `--no-open` | Print the launch URL without opening the browser. |
@@ -72,21 +74,16 @@ same machine. Its token can establish a browser session only once; the
 browser then uses a session cookie. Keep the launch URL private. Requests
 with the wrong Host or Origin are rejected.
 
-To use the interface from another device on your tailnet, either bind this
-machine's Tailscale address with `--host` (find it with `tailscale ip`) and
-open the printed `http://` URL, or keep the default address and put
-`tailscale serve` in front of it:
+To use the interface from another device on your tailnet, run
+`canonfig ui --tailnet --port 5317 --no-open` and open its printed URL there.
+The connection uses HTTP inside Tailscale's encrypted network. The single-use
+sign-in link still controls browser access. This mode never changes your
+Tailscale Serve or Funnel settings and refuses to start if detection cannot
+prove a usable local tailnet interface.
 
-```bash
-tailscale serve --bg 5317
-canonfig ui --port 5317 --no-open --origin https://atlas.tailnet.ts.net
-```
-
-`tailscale serve` prints this machine's `https://` address; pass it as
-`--origin`, then open the sign-in URL `canonfig ui` prints on the other
-device. Everyone on the tailnet can reach the port, so the single-use link
-is still what admits a browser. Remove the proxy with
-`tailscale serve --https=443 off` when you are done.
+You can also manage an HTTPS proxy yourself with `--origin`, outside tailnet
+mode. Check existing proxy settings first; Canonfig does not configure or
+remove them. See [Connect over Tailscale or Headscale](/how-to/connect-over-tailnet).
 
 Keep the terminal open while using the interface. Ctrl-C stops it with
 exit 130; SIGTERM stops it with exit 143. The command holds a self-update
@@ -224,17 +221,23 @@ See [Publish changes from the folder](/how-to/publish-from-the-folder).
 ```bash
 canonfig source serve --host 127.0.0.1 --port 17342
 canonfig source service install --host 127.0.0.1 --port 17342
+canonfig source serve --tailnet --port 17342
+canonfig source service install --tailnet --port 17342
 canonfig source service status
 canonfig source service remove
 ```
 
 `source serve` runs the Source Machine's HTTPS endpoint in the foreground.
 `--host` is `127.0.0.1` (default) or `::1`; `--port` defaults to `17342`.
+Use `--tailnet` instead of `--host` to detect the local Tailscale interface and
+advertise its MagicDNS HTTPS endpoint. Followers connect directly without SSH.
+TLS pins and signed revisions remain required. `canonfig doctor --json` reports
+Tailscale availability and recovery guidance. Headscale uses the same client.
 
 `source service install` runs `source serve` as a user service: a systemd user
 unit `canonfig-source.service` on Linux, a LaunchAgent `dev.canonfig.source` on
 macOS, or a Task Scheduler at-logon task `Canonfig\canonfig-source` on Windows.
-It takes the same `--host` and `--port`. It needs `source init` first, refuses
+It takes the same `--tailnet`, `--host` and `--port` options. It needs `source init` first, refuses
 when another `source serve` already answers on the port, and waits up to 20
 seconds for the endpoint. If the endpoint does not answer, it exits 7 and
 leaves the service installed so you can inspect it. On Linux it does not enable
@@ -261,7 +264,7 @@ canonfig source invite --endpoint https://127.0.0.1:17342 --output ./canonfig-in
 
 | Option | Value |
 | --- | --- |
-| `--endpoint <https-url>` | Required. An `https://` URL on `127.0.0.1` or `::1`. |
+| `--endpoint <https-url>` | Required. A loopback or tailnet HTTPS origin. MagicDNS names must resolve only to tailnet addresses. Use the Source's printed endpoint. |
 | `--output <path>` | Required. Written with mode `0600`. |
 | `--expires <duration>` | A whole number plus `ms`, `s`, `m`, or `h`. Default `15m`, at most `24h`. |
 | `--group <name>` | Follower Group to grant. Repeat for more. `canonfig:secrets` enables shared secrets. |

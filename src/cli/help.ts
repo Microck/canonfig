@@ -32,7 +32,7 @@ export interface HelpGroup {
   readonly notes?: ReadonlyArray<string> | undefined;
 }
 
-export const uiUsage = "ui [--port <n>] [--host <address>] [--origin <https-url>] [--no-open]";
+export const uiUsage = "ui [--port <n>] [--tailnet | --host <address>] [--origin <https-url>] [--no-open]";
 
 export const helpGroups: ReadonlyArray<HelpGroup> = [
   {
@@ -42,6 +42,8 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     notes: [
       "Open the local browser interface with live Overview status for this machine.",
       "Runs in the foreground on 127.0.0.1 with a random port by default.",
+      "--tailnet detects Tailscale or Headscale and binds only its local interface, with a MagicDNS sign-in URL.",
+      "It requires kernel networking and MagicDNS, refuses --host/--origin, and never changes Serve or Funnel.",
       "--host binds a loopback or Tailscale address (100.64.0.0/10, fd7a:115c:a1e0::/48) to reach it over your tailnet.",
       "--origin also accepts an https proxy origin, such as tailscale serve's, and prints its sign-in URL; it needs --port.",
       "The printed sign-in URL works once. --no-open leaves opening it to you.",
@@ -61,8 +63,8 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
       "source init",
       "source scan [--write]",
       "source publish --reviewer <name>",
-      "source serve [--host <127.0.0.1|::1>] [--port <port>]",
-      "source service install [--host <127.0.0.1|::1>] [--port <port>]",
+      "source serve [--tailnet | --host <127.0.0.1|::1>] [--port <port>]",
+      "source service install [--tailnet | --host <127.0.0.1|::1>] [--port <port>]",
       "source service status",
       "source service remove",
       "source invite --endpoint <https-url> --output <path> [--expires <duration>] [--group <name>...]",
@@ -80,6 +82,10 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
       "~/.canonfig/canonfig.jsonc, keeping its comments.",
       "service installs a native user service that runs source serve (systemd user",
       "unit, launchd agent, or Task Scheduler at-logon task); serve runs in the foreground.",
+      "--tailnet uses the detected Tailscale interface and MagicDNS. Loopback remains the default.",
+      "doctor and setup plan detect this option. Headscale works through the same native client.",
+      "Use the printed HTTPS endpoint in invitations; Followers enroll and sync directly, retaining TLS pins and Source signatures.",
+      "CANONFIG_TAILSCALE_EXECUTABLE and CANONFIG_TAILSCALE_SOCKET select a nonstandard client or socket.",
       "invite writes a mode-0600 single-use envelope; move it over a private channel.",
     ],
   },
@@ -94,6 +100,7 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
       "Pipe the invitation envelope: cat ./canonfig-invite | canonfig follower enroll --stdin ...",
       "The invitation is never accepted as an argument. A Source publishes one profile;",
       "the follower follows it.",
+      "Tailnet invitations connect directly over MagicDNS; no SSH tunnel or Serve proxy is needed.",
       "Enrolling hands this machine's own projection records to the follower identity, so",
       "later syncs update those harness surfaces from the Source.",
       "--timeout-ms bounds each enrollment network phase (default 10000; maximum 300000).",
