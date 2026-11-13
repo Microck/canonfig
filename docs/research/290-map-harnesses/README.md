@@ -8,7 +8,7 @@ The film shows a machine enclosing its Canonical Folder and a row of harness car
 
 The product currently has one React Flow node per machine. Keep that unit: harnesses need semantic controls, not independent drag positions or React Flow edges. Use one memoized machine component with nested HTML. This avoids multiplying the graph by the harness count and makes each harness a native keyboard target.
 
-The prototype uses the product's Manrope and Ioskeley Mono fonts, Ender tokens, Button and StatusMark components, Solar icons, and React Flow. Its data is explicitly synthetic. Nothing in production imports it. The production machine map is intentionally unchanged, not silently replaced with the film interpretation.
+The prototype uses the product's Manrope and Ioskeley Mono fonts, Ender tokens, Button and StatusMark components, Solar icons, and React Flow. Its data is explicitly synthetic. Round 2 adds marked, DEV-only call-site mounts; the production MachineMap implementation still imports no prototype code and remains unchanged.
 
 ## Directions
 
@@ -21,6 +21,39 @@ The prototype uses the product's Manrope and Ioskeley Mono fonts, Ender tokens, 
 All three retain search, Map/List, a focus action, explicit evidence, and empty/error states. At distant fleet zoom they show a larger machine label and status mark instead of mounting tiny logos and metadata. Film opens its folder and harness cards for small fleets, collapses them at fleet zoom, and expands an inspected machine in larger fleets. Focus expands only the selected machine. Rail keeps details outside the scaled graph. At narrow widths, an inspected machine also has an unscaled inventory below the map. Lists are paginated rather than rendering 320 expanded machine inventories.
 
 Recommended invariant, not a chosen variant: show details at a legible size, keep one graph node per machine, and never imply verification from enrollment or detection. The user's choice between the three disclosure models remains open.
+
+### Round 2 contract
+
+The user wants to judge Film and Focus against the real app shell, sidebar, header and neighboring sections. The isolated page only imitates that context. Development-only mounts now compare Current, Film and Focus at `/source/machines` and `/follower/machines`; Rail remains on `/proto/map-harnesses` only. Current uses the unchanged real map and existing demo records. Stress scenarios and appearance controls affect the prototype variants, not Current.
+
+Source Overview has no MachineMap call site in this checkout. Its Current variant preserves the existing page. Film and Focus add a temporary comparison section below the status header at `/source/overview`, above the existing columns. This is explicitly new prototype placement, not a claim about the current product.
+
+Variants remain in `ui/src/proto/map-harnesses/`. Fences named `proto:map-harnesses start` and `proto:map-harnesses end` identify every temporary declaration and mount in `ui/src/workspace/machines.tsx` and `ui/src/workspace/source.tsx`. The import gate is `import.meta.env.DEV`, not a shippable feature flag. The prototype also rejects a provider without `simulatedTelemetry`. No live endpoint is used.
+
+The neutral, fixed control panel compares original film colours, monochrome glyphs, dithered glyphs and brand-coloured tiles, combined with no card colour, brand tint or a dithered gradient. A 0-50% tint slider writes CSS variables directly instead of rerendering the graph. Settings persist in the URL and can be copied. Brand treatments are design experiments, not approved trademark usage. See [brand-research.md](brand-research.md) for official assets, restrictions and status-colour collisions.
+
+| Key | Variant | Axis | When it wins | Cost |
+| --- | --- | --- | --- | --- |
+| 1 | Current | Unchanged production map | Compare against the real baseline and its existing controls | No per-harness view; Overview has no map |
+| 2 | Film | Nested folder and harness cards | Inspect a small fleet with the film's visual hierarchy | Large cards need zoom or disclosure |
+| 3 | Focus | Expand the inspected machine | Read one inventory while retaining compact neighbors | Other harness details stay collapsed; selection changes layout |
+
+Open `/source/machines?v=1`, `/source/overview?v=1` or `/follower/machines?v=1` on the existing server. Number keys and Left/Right switch; R resets. Open **Map prototype controls** for scenario, logo, card colour, tint and Copy config. Current ignores these appearance and scenario controls. On `/proto/map-harnesses`, keys 1/2/3 still mean Film/Focus/Rail.
+
+Round-2 agent checks:
+
+- All three in-place variants rendered on both Machines screens and Source Overview. The isolated Film/Focus/Rail picker also passed number and arrow switching.
+- All 72 Film/Focus combinations of four logo styles, three card styles and tint strengths 0%, 18% and 50% passed computed text contrast checks. Lowest name contrast: 14.91:1. Lowest state-text contrast: 7.86:1. This is not a claim that every stylized logo satisfies a brand policy.
+- Native controls changed styles and URL state. Home/End set the tint endpoints without switching variants. Copy config reported Copied and selected the complete config.
+- Native Tab reached a harness; Enter opened its evidence dialog; Escape restored focus to that harness. Client loaded stayed Not verified.
+- Fresh-tab captures of Source, Follower, Overview and the isolated picker had no console warnings or errors. The contrast probe's separate tab emitted Canvas2D readback diagnostics; those were probe-generated, not suppressed application errors.
+- UI typecheck passed. Scoped lint passed with four warnings in unchanged workspace code: two fast-refresh export warnings, one ref-during-render warning, and one effect state-update warning. The prototype has no lint diagnostics.
+- Browser inspection caught Overview's flex basis overriding its 620px height, and Gemini's opaque colour icon producing a solid mask. The map now measures 620px; Gemini's supplied transparent monochrome SVG keeps its glyph visible in every treatment.
+- The simplification reuse, quality and efficiency passes ran inline under the no-subagent constraint. Reuse and quality needed no further changes. The efficiency pass reduced the new Gemini PNG from 2048px to 128px, 6,249 bytes. No independent review claimed.
+
+Evidence: [browser checks](round-2-browser-checks.json), [Current](round-2-source-current.png), [Film](round-2-source-film.png), [Focus](round-2-source-focus.png), [Overview Current](round-2-overview-current.png), [Overview Film](round-2-overview-film.png), [Overview Focus](round-2-overview-focus.png), [original logos](round-2-treatment-original.png), [monochrome](round-2-treatment-mono.png), [dither](round-2-treatment-dither.png), and [brand tiles](round-2-treatment-tile.png). These repository copies are resized to 1600 x 1100; browser originals are 3200 x 2200.
+
+Pan timings below are the round-1 measurements, not a new round-2 performance claim. No winner, promotion or PR yet.
 
 ## Prior art
 

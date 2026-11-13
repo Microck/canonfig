@@ -42,3 +42,13 @@ Record these exact disclosure values when preparing that PR:
 - `human_testing`: `none yet; maintainer to test before merge`
 
 Use a conventional PR title, never `chore(release): ...`. Tick only verification boxes whose exact checks ran. The scoped UI lint run does not prove the broader root or UI lint commands, and browser automation does not count as human testing. Re-read the template and observe any later checks before filing. Link the created PR through the T3 tool immediately. No merge, release or deployment is authorized.
+
+## Round 2
+
+Authorized: in-place Current/Film/Focus comparison in the demo app, four logo styles, three card-colour styles, tint slider, official brand research, contrast and keyboard checks, real-shell screenshots, separate research/prototype commits and push. No promotion, PR, live state, Source service or schedule changes. Same single child and model; no purchased-credit spending or subagents.
+
+The user wants the real shell and neighboring sections, which the isolated page only imitates. Variants stay in `ui/src/proto/map-harnesses/`; production MachineMap remains untouched. Gates use `import.meta.env.DEV` and demo telemetry. Source and Follower Machines have map call sites. Source Overview has no map in this checkout: Current preserves the page, while a fenced dev-only section below its status header hosts Film/Focus.
+
+Existing preview is listening on `0.0.0.0:5290`, Vite PID 3407538. Reused without restart. User-supplied log: `/tmp/canonfig-map-prototype.UcLmBS/vite.log`. LSP has no configured server; semantic find previously failed with HTTP 402. Bounded exact searches and the UI typechecker are the fallback.
+
+Round-2 browser verification is complete. `round-2-browser-checks.json` records 72 appearance combinations, contrast minima, number/arrow switching, native dialog focus, tint endpoints, Copy config, route readiness and clean-console evidence. Ten `round-2-*.png` files show the real shell and treatments. Typecheck and scoped lint passed; four lint warnings remain in unchanged workspace code. No broad suite, live provider or human test was run. Simplification ran inline, not as independent review. Commit and push outcomes are recorded in the task tracker and VCS.

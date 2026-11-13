@@ -32,3 +32,7 @@ All repository links below pin the researched main commit.
 ## Unavailable evidence
 
 Octen design search had no configured key in this session. No beta access or paid upgrade was requested. The supplied film is the visual source of truth. Fly's live dashboard and private machine data were intentionally not accessed.
+
+## Round 2 brand evidence
+
+[brand-research.md](brand-research.md) records every official palette/asset URL, the logo alteration restrictions, neutral entries without a verified accent, and collisions with status colours. Kagi subscriber search found primary pages; direct page, PDF and raw source reads supplied the claims. No search snippet is treated as a usage grant.

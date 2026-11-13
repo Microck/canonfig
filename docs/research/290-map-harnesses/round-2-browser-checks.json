@@ -1,0 +1,1067 @@
+{
+  "scope": "Round 2, demo-only in-place Current/Film/Focus and isolated Film/Focus/Rail; no live provider",
+  "viewport": {
+    "width": 1600,
+    "height": 1100,
+    "devicePixelRatio": 2
+  },
+  "httpTitleChecks": [
+    {
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/",
+      "curl_exit": 0,
+      "title": "Canonfig"
+    },
+    {
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/machines",
+      "curl_exit": 0,
+      "title": "Canonfig"
+    },
+    {
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/overview",
+      "curl_exit": 0,
+      "title": "Canonfig"
+    },
+    {
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/follower/machines",
+      "curl_exit": 0,
+      "title": "Canonfig"
+    },
+    {
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/proto/map-harnesses",
+      "curl_exit": 0,
+      "title": "Harness map prototypes \u00b7 Canonfig"
+    }
+  ],
+  "keyboardVariantSwitching": [
+    {
+      "pressed": "1",
+      "key": "Current",
+      "variant": "ghost",
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/machines?v=1&case=worst&logo=original&card=tint&tint=50"
+    },
+    {
+      "pressed": "2",
+      "key": "Film",
+      "variant": "ghost",
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/machines?v=2&case=worst&logo=original&card=tint&tint=50"
+    },
+    {
+      "pressed": "3",
+      "key": "Focus",
+      "variant": "ghost",
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/machines?v=3&case=worst&logo=original&card=tint&tint=50"
+    },
+    {
+      "pressed": "ArrowLeft",
+      "key": "Film",
+      "variant": "ghost",
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/machines?v=2&case=worst&logo=original&card=tint&tint=50"
+    },
+    {
+      "pressed": "ArrowRight",
+      "key": "Focus",
+      "variant": "ghost",
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/machines?v=3&case=worst&logo=original&card=tint&tint=50"
+    },
+    {
+      "pressed": "r",
+      "key": "Focus",
+      "variant": "ghost",
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/machines?v=3&case=worst&logo=original&card=tint&tint=50"
+    }
+  ],
+  "sourceMachinesReadyChecks": [
+    {
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/machines?v=1",
+      "variant": "Current",
+      "graphs": 1,
+      "nodes": 6,
+      "prototypes": 1,
+      "rootHeight": 994,
+      "overflow": false
+    },
+    {
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/machines?v=2",
+      "variant": "Film",
+      "graphs": 1,
+      "nodes": 3,
+      "prototypes": 1,
+      "rootHeight": 994,
+      "overflow": false
+    },
+    {
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/machines?v=3",
+      "variant": "Focus",
+      "graphs": 1,
+      "nodes": 5,
+      "prototypes": 1,
+      "rootHeight": 994,
+      "overflow": false
+    }
+  ],
+  "routeChecksBeforeOverviewHeightFix": [
+    {
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/overview?v=1",
+      "variant": "Current",
+      "graphs": 0,
+      "nodes": 0,
+      "prototypes": 1,
+      "rootHeight": 0,
+      "overflow": false
+    },
+    {
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/overview?v=2",
+      "variant": "Film",
+      "graphs": 1,
+      "nodes": 5,
+      "prototypes": 1,
+      "rootHeight": 359.890625,
+      "overflow": false
+    },
+    {
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/overview?v=3",
+      "variant": "Focus",
+      "graphs": 1,
+      "nodes": 5,
+      "prototypes": 1,
+      "rootHeight": 359.890625,
+      "overflow": false
+    },
+    {
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/follower/machines?v=1",
+      "variant": "Current",
+      "graphs": 1,
+      "nodes": 2,
+      "prototypes": 1,
+      "rootHeight": 994,
+      "overflow": false
+    },
+    {
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/follower/machines?v=2",
+      "variant": "Film",
+      "graphs": 1,
+      "nodes": 2,
+      "prototypes": 1,
+      "rootHeight": 994,
+      "overflow": false
+    },
+    {
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/follower/machines?v=3",
+      "variant": "Focus",
+      "graphs": 1,
+      "nodes": 2,
+      "prototypes": 1,
+      "rootHeight": 994,
+      "overflow": false
+    }
+  ],
+  "overviewHeightFix": {
+    "before": [
+      {
+        "tag": "SECTION",
+        "className": "relative isolate overflow-hidden border-b border-border",
+        "height": 114.6484375,
+        "flex": "0 1 auto",
+        "cssHeight": "114.648px"
+      },
+      {
+        "tag": "DIV",
+        "className": "flex min-h-0 flex-1 flex-col mx-4 mt-4 h-[620px] shrink-0 border border-border",
+        "height": 359.890625,
+        "flex": "1 0 0%",
+        "cssHeight": "359.891px"
+      },
+      {
+        "tag": "DIV",
+        "className": "grid grid-cols-[minmax(0,1fr)] gap-8 px-4 pt-6 pb-20 @3xl:grid-cols-[minmax(0,1fr)_320px] @3xl:gap-12 @3xl:px-8",
+        "height": 1374.484375,
+        "flex": "0 1 auto",
+        "cssHeight": "1374.48px"
+      }
+    ],
+    "after": {
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/overview?v=2",
+      "variant": "Film",
+      "graphs": 1,
+      "nodes": 5,
+      "prototypes": 1,
+      "rootHeight": 620,
+      "overflow": false
+    }
+  },
+  "appearanceMatrix": [
+    {
+      "variant": "film",
+      "rows": [
+        {
+          "logo": "original",
+          "card": "none",
+          "tint": 0,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "original",
+          "card": "none",
+          "tint": 18,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "original",
+          "card": "none",
+          "tint": 50,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "original",
+          "card": "tint",
+          "tint": 0,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "original",
+          "card": "tint",
+          "tint": 18,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 8
+        },
+        {
+          "logo": "original",
+          "card": "tint",
+          "tint": 50,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 8
+        },
+        {
+          "logo": "original",
+          "card": "dither",
+          "tint": 0,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "original",
+          "card": "dither",
+          "tint": 18,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "original",
+          "card": "dither",
+          "tint": 50,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "mono",
+          "card": "none",
+          "tint": 0,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "mono",
+          "card": "none",
+          "tint": 18,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "mono",
+          "card": "none",
+          "tint": 50,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "mono",
+          "card": "tint",
+          "tint": 0,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "mono",
+          "card": "tint",
+          "tint": 18,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 8
+        },
+        {
+          "logo": "mono",
+          "card": "tint",
+          "tint": 50,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 8
+        },
+        {
+          "logo": "mono",
+          "card": "dither",
+          "tint": 0,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "mono",
+          "card": "dither",
+          "tint": 18,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "mono",
+          "card": "dither",
+          "tint": 50,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "dither",
+          "card": "none",
+          "tint": 0,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "dither",
+          "card": "none",
+          "tint": 18,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "dither",
+          "card": "none",
+          "tint": 50,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "dither",
+          "card": "tint",
+          "tint": 0,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "dither",
+          "card": "tint",
+          "tint": 18,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 8
+        },
+        {
+          "logo": "dither",
+          "card": "tint",
+          "tint": 50,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 8
+        },
+        {
+          "logo": "dither",
+          "card": "dither",
+          "tint": 0,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "dither",
+          "card": "dither",
+          "tint": 18,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "dither",
+          "card": "dither",
+          "tint": 50,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "tile",
+          "card": "none",
+          "tint": 0,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "tile",
+          "card": "none",
+          "tint": 18,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "tile",
+          "card": "none",
+          "tint": 50,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "tile",
+          "card": "tint",
+          "tint": 0,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "tile",
+          "card": "tint",
+          "tint": 18,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 8
+        },
+        {
+          "logo": "tile",
+          "card": "tint",
+          "tint": 50,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 8
+        },
+        {
+          "logo": "tile",
+          "card": "dither",
+          "tint": 0,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "tile",
+          "card": "dither",
+          "tint": 18,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "tile",
+          "card": "dither",
+          "tint": 50,
+          "count": 52,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        }
+      ]
+    },
+    {
+      "variant": "focus",
+      "rows": [
+        {
+          "logo": "original",
+          "card": "none",
+          "tint": 0,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "original",
+          "card": "none",
+          "tint": 18,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "original",
+          "card": "none",
+          "tint": 50,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "original",
+          "card": "tint",
+          "tint": 0,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "original",
+          "card": "tint",
+          "tint": 18,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 8
+        },
+        {
+          "logo": "original",
+          "card": "tint",
+          "tint": 50,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 8
+        },
+        {
+          "logo": "original",
+          "card": "dither",
+          "tint": 0,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "original",
+          "card": "dither",
+          "tint": 18,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "original",
+          "card": "dither",
+          "tint": 50,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "mono",
+          "card": "none",
+          "tint": 0,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "mono",
+          "card": "none",
+          "tint": 18,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "mono",
+          "card": "none",
+          "tint": 50,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "mono",
+          "card": "tint",
+          "tint": 0,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "mono",
+          "card": "tint",
+          "tint": 18,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 8
+        },
+        {
+          "logo": "mono",
+          "card": "tint",
+          "tint": 50,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 8
+        },
+        {
+          "logo": "mono",
+          "card": "dither",
+          "tint": 0,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "mono",
+          "card": "dither",
+          "tint": 18,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "mono",
+          "card": "dither",
+          "tint": 50,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "dither",
+          "card": "none",
+          "tint": 0,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "dither",
+          "card": "none",
+          "tint": 18,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "dither",
+          "card": "none",
+          "tint": 50,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "dither",
+          "card": "tint",
+          "tint": 0,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "dither",
+          "card": "tint",
+          "tint": 18,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 8
+        },
+        {
+          "logo": "dither",
+          "card": "tint",
+          "tint": 50,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 8
+        },
+        {
+          "logo": "dither",
+          "card": "dither",
+          "tint": 0,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "dither",
+          "card": "dither",
+          "tint": 18,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "dither",
+          "card": "dither",
+          "tint": 50,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "tile",
+          "card": "none",
+          "tint": 0,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "tile",
+          "card": "none",
+          "tint": 18,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "tile",
+          "card": "none",
+          "tint": 50,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "tile",
+          "card": "tint",
+          "tint": 0,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "tile",
+          "card": "tint",
+          "tint": 18,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 8
+        },
+        {
+          "logo": "tile",
+          "card": "tint",
+          "tint": 50,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 8
+        },
+        {
+          "logo": "tile",
+          "card": "dither",
+          "tint": 0,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "tile",
+          "card": "dither",
+          "tint": 18,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        },
+        {
+          "logo": "tile",
+          "card": "dither",
+          "tint": 50,
+          "count": 26,
+          "minLabel": 14.914654582829039,
+          "minState": 7.861505451124461,
+          "oneGlyph": true,
+          "paletteCount": 1
+        }
+      ]
+    }
+  ],
+  "nativeControls": [
+    {
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/machines?v=3&case=worst&logo=original&card=none&tint=50",
+      "logo": "original",
+      "card": "none",
+      "config": "logo: original \u00b7 card: none \u00b7 tint: 50%"
+    },
+    {
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/machines?v=3&case=worst&logo=mono&card=none&tint=50",
+      "logo": "mono",
+      "card": "none",
+      "config": "logo: mono \u00b7 card: none \u00b7 tint: 50%"
+    },
+    {
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/machines?v=3&case=worst&logo=dither&card=dither&tint=50",
+      "logo": "dither",
+      "card": "dither",
+      "config": "logo: dither \u00b7 card: dither \u00b7 tint: 50%"
+    },
+    {
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/machines?v=3&case=worst&logo=tile&card=tint&tint=50",
+      "logo": "tile",
+      "card": "tint",
+      "config": "logo: tile \u00b7 card: tint \u00b7 tint: 50%"
+    }
+  ],
+  "nativeSliderMinimum": {
+    "value": "0",
+    "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/machines?v=3&case=worst&logo=tile&card=tint&tint=0",
+    "variant": "Focus"
+  },
+  "nativeCopyConfig": {
+    "config": "logo: tile \u00b7 card: tint \u00b7 tint: 50%",
+    "feedback": "Copied",
+    "selected": 35,
+    "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/source/machines?v=3&case=worst&logo=tile&card=tint&tint=50"
+  },
+  "nativeTabPath": [
+    {
+      "tag": "BUTTON",
+      "harness": null,
+      "label": null
+    },
+    {
+      "tag": "BUTTON",
+      "harness": null,
+      "label": "Inspect buildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhost, 2 of 10 up to date"
+    },
+    {
+      "tag": "BUTTON",
+      "harness": "codex",
+      "label": "OpenAI Codex configured for the distributed infrastructure team on buildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhost: Up to date. View evidence"
+    }
+  ],
+  "nativeEnterDialog": {
+    "dialog": "OpenAI Codex configured for the distributed infrastructure team\n\nbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhost \u00b7 example report\n\nUp to date\n\nManaged files match revision 8. Independent read-back verification passed.\n\nObservation\n2 minutes ago\nClient loaded\nNot verified\nClose",
+    "focusInside": true
+  },
+  "nativeEscapeRestoresFocus": {
+    "dialog": false,
+    "harness": "codex",
+    "label": "OpenAI Codex configured for the distributed infrastructure team on buildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhost: Up to date. View evidence"
+  },
+  "isolatedVariantChecks": [
+    {
+      "key": "1",
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/proto/map-harnesses?v=1",
+      "variant": "Film",
+      "graphs": 1,
+      "nodes": 4,
+      "prototypes": 1,
+      "rootHeight": 968.890625,
+      "overflow": false
+    },
+    {
+      "key": "2",
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/proto/map-harnesses?v=2",
+      "variant": "Focus",
+      "graphs": 1,
+      "nodes": 4,
+      "prototypes": 1,
+      "rootHeight": 968.890625,
+      "overflow": false
+    },
+    {
+      "key": "3",
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/proto/map-harnesses?v=3",
+      "variant": "Rail",
+      "graphs": 1,
+      "nodes": 4,
+      "prototypes": 1,
+      "rootHeight": 968.890625,
+      "overflow": false
+    },
+    {
+      "key": "ArrowLeft",
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/proto/map-harnesses?v=2",
+      "variant": "Focus",
+      "graphs": 1,
+      "nodes": 4,
+      "prototypes": 1,
+      "rootHeight": 968.890625,
+      "overflow": false
+    },
+    {
+      "key": "ArrowRight",
+      "url": "http://yoga-ashburn-local-1.tailc896c6.ts.net:5290/proto/map-harnesses?v=3",
+      "variant": "Rail",
+      "graphs": 1,
+      "nodes": 4,
+      "prototypes": 1,
+      "rootHeight": 968.890625,
+      "overflow": false
+    }
+  ],
+  "finalConsoleIssues": [],
+  "isolatedConsoleIssues": [],
+  "routeConsoleIssues": {
+    "/source/overview": [],
+    "/follower/machines": []
+  },
+  "screenshots": {
+    "source-current": "docs/research/290-map-harnesses/round-2-source-current.png",
+    "source-film": "docs/research/290-map-harnesses/round-2-source-film.png",
+    "source-focus": "docs/research/290-map-harnesses/round-2-source-focus.png",
+    "overview-current": "docs/research/290-map-harnesses/round-2-overview-current.png",
+    "overview-film": "docs/research/290-map-harnesses/round-2-overview-film.png",
+    "overview-focus": "docs/research/290-map-harnesses/round-2-overview-focus.png",
+    "treatment-original": "docs/research/290-map-harnesses/round-2-treatment-original.png",
+    "treatment-mono": "docs/research/290-map-harnesses/round-2-treatment-mono.png",
+    "treatment-dither": "docs/research/290-map-harnesses/round-2-treatment-dither.png",
+    "treatment-tile": "docs/research/290-map-harnesses/round-2-treatment-tile.png"
+  },
+  "verification": {
+    "typecheck": "npm --prefix ui run typecheck: exit 0",
+    "lint": "npm --prefix ui run lint -- src/proto/map-harnesses src/workspace/machines.tsx src/workspace/source.tsx: exit 0, four warnings in unchanged workspace code"
+  },
+  "limits": [
+    "Synthetic observations only; no human testing",
+    "Contrast probe generated Canvas2D readback diagnostics in its own tab; clean-console proof used a fresh tab without that probe",
+    "Early captures before lazy-component readiness were discarded",
+    "Pan benchmarks remain the round-1 measurements in benchmarks-final.json; no new performance claim"
+  ]
+}
