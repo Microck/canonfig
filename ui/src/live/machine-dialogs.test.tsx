@@ -30,7 +30,7 @@ function Fixture({ backend }: { backend: WorkspaceBackend }) {
 }
 function Controls() {
   const ws = useWorkspace();
-  return <><output data-testid="followers">{ws.followers.map((entry) => entry.id).join(",")}</output><button onClick={ws.reload}>Reload page</button><button onClick={() => ws.setChangeGroups({ followerId: "dialog-follower" })}>Open groups</button></>;
+  return <><output data-testid="followers">{ws.followers.map((entry) => entry.id).join(",")}</output><output data-testid="endpoint">{ws.endpoint}</output><button onClick={ws.reload}>Reload page</button><button onClick={() => ws.setChangeGroups({ followerId: "dialog-follower" })}>Open groups</button></>;
 }
 const follower = { id: "dialog-follower", name: "Original laptop", groups: ["work"], enrolledAt: "2026-11-06T00:00:00Z", revoked: false, pending: false, credentialPresent: true, credentialLifecycle: { _tag: "Active" } };
 type Handler = (path: string, body: unknown, outgoing: ServerResponse) => boolean;
@@ -204,5 +204,25 @@ it("ordinary invitation captures its submitted values and starts a fresh invitat
     await click("Cancel");
     await click("Add machine");
     assert.ok(!document.querySelector('[role="dialog"]')?.textContent?.includes("captured.json"));
+  } finally { await app.close(); }
+});
+
+it("invitation address starts as the Source service's address once it has loaded", async () => {
+  // The invitation dialog is mounted before the service report arrives, as on a real page load.
+  const app = await fixture((path, _body, outgoing) => {
+    if (path !== "/api/source-service") return false;
+    outgoing.end(JSON.stringify({ report: { state: "running", platform: "linux", mechanism: "systemd-user-service", serviceName: "dialog-fixture", endpoint: "https://127.0.0.1:17342", manager: { installed: true, matches: true, enabled: true, active: true, state: "running" }, serving: true, supportedModes: "", logs: "", detail: "" }, error: null }));
+    return true;
+  });
+  try {
+    // The address applies once the service report arrives; open the dialog only after that so the assertion is not a race.
+    await until(() => document.querySelector('[data-testid="endpoint"]')?.textContent === "https://127.0.0.1:17342", "Service report did not apply");
+    await click("Add machine");
+    assert.equal(document.querySelector<HTMLInputElement>("#inv-ep")?.value, "https://127.0.0.1:17342");
+    await fill("#inv-ep", "https://source.example");
+    await click("Cancel");
+    await click("Add machine");
+    // What was typed last time is kept.
+    assert.equal(document.querySelector<HTMLInputElement>("#inv-ep")?.value, "https://source.example");
   } finally { await app.close(); }
 });
