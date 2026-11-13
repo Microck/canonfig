@@ -2,7 +2,7 @@
 
 ## Scope and evidence
 
-Research against Canonfig `7070b8487191ec813e6405ab53d5591e9459a1df` and a fresh temporary checkout of upstream T3 Code at `9a455f02e2ddf35cc78c21757a96d3ffc3491622`. Existing T3 checkouts and live Canonfig installations were not changed. Sources and their limits are in [sources.md](sources.md). The implementation and isolated proof are separate deliverables; this document does not claim they have passed.
+Research against Canonfig `7070b8487191ec813e6405ab53d5591e9459a1df` and a fresh temporary checkout of upstream T3 Code at `9a455f02e2ddf35cc78c21757a96d3ffc3491622`. Existing T3 checkouts and live Canonfig installations were not changed. Sources and their limits are in [sources.md](sources.md). Recorded implementation evidence follows below.
 
 ## What T3 actually does
 
@@ -123,3 +123,30 @@ sequenceDiagram
 The first release containing this protocol must be installed on each follower before it can consume directives. Unsupported install methods and state-format changes remain explicit operator work. No immediate push or atomic filesystem rollback is claimed. Package dependencies remain a separate supply-chain trust surface.
 
 Required proof: separate disposable Source/Follower HOMEs and N/N+1 packages; show `--version`, `status` and Source rollout status. Also exercise unsigned/tampered directives, active-run deferral and failed-health rollout halt. A local artifact proof cannot establish public Sigstore publisher verification; run that verifier separately against a real published release. Keep raw commands/output here and remove this entire research directory before merging.
+
+## Recorded implementation evidence
+
+The proof ran in task-owned Raft workspace `paris:rf-d458f921d2ac4f42` with separate disposable Source and Follower HOMEs, private credentials and npm prefixes. No operator enrollment, native schedule, service or harness directory was used.
+
+```sh
+npm run build:cli
+node docs/research/304-fleet-update/prove-fleet.mjs
+node --import tsx docs/research/304-fleet-update/verify-publisher.mjs
+```
+
+- [Installed CLI proof](proof-output.txt): Source upgraded from fixture 7.1.9 to 7.1.10; the canary reached 7.1.10 and recorded a fresh Converged receipt. The output includes `--version`, `status --json` and Source rollout status.
+- The same proof refused unsigned and tampered directives, deferred while a real sync held the run lock, halted after a follower's post-update drift failure, and left the next follower on 7.1.9.
+- [Publisher proof](publisher-output.txt): the production verifier accepted the public 7.1.9 npm signature and Sigstore release-workflow provenance. The downloader accepted its SHA-512 digest and rejected a wrong digest.
+- The local packages use signed fixture publisher metadata through a replacement verifier module inside temporary packages only. The installed CLI, TLS enrollment, downloader, staging, activation and convergence path remain real. This is not a claim that a local fixture has public Sigstore provenance; no bypass flag or environment variable ships.
+- [Browser evidence](gui-output.txt), [running rollout](gui-rollout.png) and [stopped rollout](gui-stopped.png): selected `canary-ui`, confirmed Start rollout, saw both queued followers, then confirmed Stop rollout and observed `stopped`. This used `prove-gui.ts`, a loopback GUI and a task-private Raft relay. No follower package was installed by this separate GUI check.
+- [Focused checks](checks-output.txt): 52 tests passed across fleet integration and existing updater/GUI acceptance cases. Project, website and UI typechecks passed. Root and website lint had no warnings or errors; UI lint had 73 warnings and no errors. Command validation covered 449 examples and skill validation covered 3 structures.
+- [Full UI run](ui-checks-output.txt): 148 of 149 tests passed. The remaining Version test had an incomplete fixture without the new `fleet` field. Its corrected fixture passed all [3 tests in that file](ui-regression-output.txt). The resource-navigation and self-update transport file also passed 3/3 after adding fleet responses and the reduced-motion preference used by adjacent fixtures. No assertions were removed.
+- The interrupted full Vitest run had no retained completion output. Only the recorded focused results are claimed; native macOS and Windows checks remain for CI.
+
+The browser, private tunnel and disposable GUI stopped after verification. Raft confirmed destruction of `paris:rf-d458f921d2ac4f42`; downloaded private bootstrap material was removed.
+
+Earlier proof attempts are retained as [version refusal](proof-version-refusal.txt) and [health refusal](proof-health-refusal.txt). The former exposed inconsistent fixture version metadata. The latter exposed a real lineage bug: a projection receipt names a follower-specific revision, not the Source publication. The fix reads the stored `sourceRevision`; the TLS/projection regression failed before the fix and passed afterward.
+
+Simplification reviewed reuse, quality and efficiency inline because this child task forbids further delegation. No behavior-preserving cleanup was warranted; activation continues to use the existing updater and locks. No independent reviewer or human testing is claimed.
+
+All research files and screenshots must be removed before merge. They are committed separately from the implementation.
