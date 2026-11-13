@@ -111,6 +111,23 @@ and [joined Follower](gui-enrolled.redacted.png). Screenshot labels and hostname
 are redacted. Shared browser helpers failed to launch; direct Playwright with
 the installed native Chromium executable supplied the actual browser proof.
 
+## Verification results
+
+- `npm run typecheck`, `npm run lint`, UI typecheck/lint and
+  `npm run build:cli` passed in the task-owned Raft workspace. Documentation
+  validation covered 451 command examples and three skills. UI lint reported
+  73 warnings and no errors.
+- The focused CLI, doctor and tailnet tests passed: 158 tests. Earlier
+  enrollment and secret-transfer suites also passed.
+- The complete UI run passed 148 tests and failed one self-update test with
+  Happy DOM `AbortError: The animation was canceled.` The same resources test
+  file on pristine base `7070b84` reproduced that failure, with two tests passed
+  and one failed. The isolated self-update test passed unchanged. No test was
+  skipped or weakened, and the unrelated animation code remains unchanged.
+- The complete backend suite's output was lost when the session was
+  interrupted. Its process had exited, but no result artifact was available.
+  This report does not claim that suite passed.
+- The research folder passed `gitleaks dir --redact --no-banner` without leaks.
 
 ## Open risks
 
