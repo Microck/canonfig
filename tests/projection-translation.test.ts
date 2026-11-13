@@ -71,6 +71,7 @@ function model(overrides: Partial<CanonicalModel> = {}): CanonicalModel {
     harnesses: [],
     rules: [],
     skills: [],
+    plugins: [],
     agents: [],
     commands: [],
     hooks: [],
@@ -293,10 +294,12 @@ describe("generated hook runtime", () => {
     await mkdir(path.dirname(plugin), { recursive: true });
     await writeFile(plugin, openCodePluginSource("opencode", runner, [{ hook, event: "tool.execute.before" }]));
 
+    // The generated module has a per-test temporary path, so it must be loaded at runtime.
     const child = spawnSync(process.execPath, ["--input-type=module", "-e", [
       `Object.defineProperty(process, "execPath", { value: ${JSON.stringify(path.join(root, "embedded-client"))} });`,
-      `const { CanonfigPlugin } = await import(${JSON.stringify(pathToFileURL(plugin).href)});`,
-      'await (await CanonfigPlugin())["tool.execute.before"]({ tool: "bash" }, { args: { command: "git push" } });',
+      `const { default: plugin } = await import(${JSON.stringify(pathToFileURL(plugin).href)});`,
+      'const hooks = new Map(); await plugin.setup({ tool: { hook: async (name, handler) => { hooks.set(name, handler); } } });',
+      'await hooks.get("execute.before")({ tool: "bash", input: { command: "git push" } });',
     ].join("\n")], { cwd: root, encoding: "utf8", timeout: 10_000 });
 
     expect(child.status, child.stderr).toBe(0);

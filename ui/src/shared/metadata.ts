@@ -16,7 +16,7 @@ export const DEMO = import.meta.env?.DEV === true || import.meta.env?.MODE === "
  * are files under their folders, and the rest are keys of canonfig.jsonc. `resources` are files, folders and
  * config files outside every harness (`resources.<id>`, with their content under files/).
  */
-export type ItemCategory = "instructions" | "rules" | "skills" | "agents" | "commands" | "mcp" | "hooks" | "settings" | "tools" | "credentials" | "resources";
+export type ItemCategory = "instructions" | "rules" | "skills" | "plugins" | "agents" | "commands" | "mcp" | "hooks" | "settings" | "tools" | "credentials" | "resources";
 
 export type FollowerState =
   | "converged"
@@ -75,6 +75,7 @@ export const CATEGORY_LABEL: Record<ItemCategory, { label: string; hint: string;
   instructions: { label: "Instructions", where: "AGENTS.md", hint: "Global instructions every harness reads, written as its own instructions file." },
   rules: { label: "Rules", where: "rules/", hint: "One rule per file, with an optional description, paths and activation." },
   skills: { label: "Skills", where: "skills/", hint: "Agent Skills: a folder with its SKILL.md and the files it uses." },
+  plugins: { label: "Native plugins", where: "plugins/", hint: "Harness-specific packages. Changing their files requires a new digest review before activation or publication." },
   agents: { label: "Agents", where: "agents/", hint: "Subagents, one per file, with a description, model, tools and whether they may write." },
   commands: { label: "Commands", where: "commands/", hint: "Slash commands, one per file, with a description and argument hint." },
   mcp: { label: "MCP servers", where: "canonfig.jsonc mcp", hint: "Servers each harness starts, by command or URL. Secrets stay environment variable references." },
@@ -89,14 +90,14 @@ export const CATEGORY_LABEL: Record<ItemCategory, { label: string; hint: string;
 export function itemPath(category: ItemCategory, name: string): string {
   if (category === "instructions") return "AGENTS.md";
   if (category === "hooks") return "canonfig.jsonc hooks";
-  if (category === "skills") return `skills/${name}/`;
+  if (category === "skills" || category === "plugins") return `${category}/${name}/`;
   if (category === "rules" || category === "agents" || category === "commands") return `${category}/${name}.md`;
   return `canonfig.jsonc ${category}.${name}`;
 }
 
 /** Categories a follower's ~/.canonfig/local/ may add to, as canonfig.jsonc `local.allow` names them (LOCAL_CATEGORIES). */
-export type LocalCategory = "instructions" | "rules" | "skills" | "agents" | "commands" | "mcp" | "settings";
-export const LOCAL_CATEGORIES: LocalCategory[] = ["instructions", "rules", "skills", "agents", "commands", "mcp", "settings"];
+export type LocalCategory = "instructions" | "rules" | "skills" | "plugins" | "agents" | "commands" | "mcp" | "settings";
+export const LOCAL_CATEGORIES: LocalCategory[] = ["instructions", "rules", "skills", "plugins", "agents", "commands", "mcp", "settings"];
 
 /**
  * Harness outputs canonfig.jsonc `local.appendLocal` can share with every machine (APPEND_LOCAL_CATEGORIES in
@@ -206,12 +207,13 @@ export const RESERVED_PATHS: ReadonlyArray<readonly [path: string, owner: string
 ];
 
 /** canonfig.jsonc `surfaces` categories, in the order of SURFACE_CATEGORIES in src/projection/model.ts. */
-export const SURFACE_CATEGORIES = ["instructions", "rules", "skills", "agents", "commands", "hooks", "mcp", "settings"] as const;
+export const SURFACE_CATEGORIES = ["instructions", "rules", "skills", "plugins", "agents", "commands", "hooks", "mcp", "settings"] as const;
 export type SurfaceCategory = (typeof SURFACE_CATEGORIES)[number];
 export const SURFACE_NAMES: Record<SurfaceCategory, string> = {
   instructions: "AGENTS.md",
   rules: "Rules",
   skills: "Skills",
+  plugins: "Native plugins",
   agents: "Subagents",
   commands: "Commands",
   hooks: "Hooks",
@@ -232,16 +234,16 @@ export const SURFACE_SUPPORT: Record<HarnessId, SurfaceCategory[]> = {
   amp: allBut(),
   "oh-my-pi": allBut(),
   pi: allBut("agents"),
-  "factory-droid": allBut(),
-  cursor: allBut("instructions", "rules", "commands"),
-  devin: allBut("commands"),
+  "factory-droid": allBut("plugins"),
+  cursor: allBut("instructions", "rules", "commands", "plugins"),
+  devin: allBut("commands", "plugins"),
   opencode: allBut(),
-  "grok-build": allBut("commands"),
-  antigravity: allBut("commands"),
-  "copilot-cli": allBut("commands"),
-  kimi: allBut("commands"),
+  "grok-build": allBut("commands", "plugins"),
+  antigravity: allBut("commands", "plugins"),
+  "copilot-cli": allBut("commands", "plugins"),
+  kimi: allBut("commands", "plugins"),
   kilo: allBut(),
-  hermes: allBut("instructions", "rules", "agents", "commands", "settings"),
+  hermes: allBut("instructions", "rules", "agents", "commands", "settings", "plugins"),
   qwen: allBut(),
 };
 

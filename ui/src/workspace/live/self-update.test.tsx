@@ -20,7 +20,7 @@ async function fixture() {
   let pollingFailed = false;
   const backend: WorkspaceBackend = {
     session: async () => session,
-    status: async () => ({ machineRole: { role: "follower" }, lifecycle: {}, tunnel: null }),
+    status: async () => ({ machineRole: { role: "follower" }, lifecycle: {}, tunnel: null, shield: { enabled: false, hard: false, scope: "local", destination: "/tmp/update-fixture/local", projected: false, excludedPlugins: [], note: "" } }),
     operation: async (id) => {
       if (pollingFailed) throw new GuiRequestError({ category: "internal", exitCode: 1, message: "Lost observation" });
       pollingFailed = true;

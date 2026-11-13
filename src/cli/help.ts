@@ -49,6 +49,27 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     ],
   },
   {
+    title: "Shield",
+    areas: ["shield"],
+    usage: [
+      "shield enable [--hard] | disable | status | ingest",
+      "shield install -- <installer> [arguments...]",
+      "shield run -- <command> [arguments...]",
+      "shield add-plugin <directory> --harness <id> [--entry <module>]",
+      "shield review <id> --digest <sha256> --reviewer <name>",
+      "shield exclude|include <id>",
+    ],
+    notes: [
+      "Redirect installations into the Canonical Folder, or the Local folder on a Follower.",
+      "Run sync --apply and reload clients after enabling or disabling Shield.",
+      "install uses a private staging HOME and never copies live credentials or publishes changes.",
+      "Native plugins require an explicit digest review before activation or publication.",
+      "run scopes installer interception to its child processes; --hard adds Linux bubblewrap protection.",
+      "Hard protection covers dedicated configuration paths, not mixed auth/config files or other processes.",
+      "Put Canonfig's --json before --; arguments after -- belong to the child command.",
+    ],
+  },
+  {
     title: "Self-update",
     areas: ["self-update"],
     usage: ["self-update enable|disable|status|check|apply|auto [--apply]"],
@@ -71,7 +92,7 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     ],
     notes: [
       "publish compiles ~/.canonfig/ (canonfig.jsonc, AGENTS.md, rules/, skills/,",
-      "agents/, commands/, hooks/, files/) into the next signed revision; nothing else",
+      "plugins/, agents/, commands/, hooks/, files/) into the next signed revision; nothing else",
       "in the folder is published. Republishing content equal to the latest revision",
       "returns that revision; any other content, including an older revision's, becomes",
       "the next sequence.",
@@ -416,10 +437,12 @@ export type HelpOrVersionOutcome =
 export const helpOrVersion = (
   arguments_: ReadonlyArray<string>,
 ): HelpOrVersionOutcome | undefined => {
-  if (arguments_.length === 0 || arguments_.includes("--help") || arguments_.includes("-h")) {
+  const separator = arguments_.indexOf("--");
+  const ownArguments = separator < 0 ? arguments_ : arguments_.slice(0, separator);
+  if (ownArguments.length === 0 || ownArguments.includes("--help") || ownArguments.includes("-h")) {
     return { _tag: "Help", text: helpFor(arguments_), exitCode: CliExitCode.success };
   }
-  if (arguments_.includes("--version") || arguments_.includes("-V")) {
+  if (ownArguments.includes("--version") || ownArguments.includes("-V")) {
     // The plain form stays the user-facing release version; --json adds the
     // immutable build identity so two installs of the same release can be
     // told apart by the sources that produced them.

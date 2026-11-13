@@ -113,6 +113,7 @@ import {
   FollowerCommands,
   type FollowerCommandsService,
 } from "../cli/follower-commands.ts";
+import { runShield, shieldStatus } from "../cli/shield.ts";
 import {
   describeRuntimeError,
   type TaggedRuntimeError,
@@ -1298,6 +1299,10 @@ const followerCommandsLayer = (
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),
         )).pipe(Effect.map(payload)),
+      shield: (input) => mapFailure(runShield(statePath, input).pipe(
+        Effect.provideService(StateRepository, repository),
+        Effect.provideService(MachineState, machine),
+      )).pipe(Effect.map(payload)),
       overlays: (input) =>
         mapFailure(overlaysLocal(statePath, (name) => process.env[name], input.change).pipe(
           Effect.provideService(MachineState, machine),
@@ -1323,6 +1328,7 @@ const followerCommandsLayer = (
                 const tunnelReport = yield* mapFailure(tunnel.tunnelStatus({
                   stateDirectory: join(dirname(statePath), "tunnel"),
                 }));
+                const shield = yield* mapFailure(shieldStatus(statePath).pipe(Effect.provideService(StateRepository, repository)));
                 if (configuration === undefined) {
                   const notReached = (detail: string) => ({
                     reached: false,
@@ -1330,6 +1336,7 @@ const followerCommandsLayer = (
                   });
                   return {
                     machineRole,
+                    shield,
                     lifecycle: {
                       discovered: notReached("no Source endpoint is configured"),
                       selected: notReached("no profile is selected"),
@@ -1386,6 +1393,7 @@ const followerCommandsLayer = (
                     ),
                   },
                   tunnel: tunnelReport,
+                  shield,
                   completionReceipt: receipt,
                 };
               })

@@ -27,6 +27,15 @@ export const GuiStatus = Schema.StructWithRest(
     }),
     lifecycle: Schema.Record(Schema.String, LifecycleStep),
     tunnel: Schema.Json,
+    shield: Schema.Struct({
+      enabled: Schema.Boolean,
+      hard: Schema.Boolean,
+      scope: Schema.Literals(["canonical", "local"]),
+      destination: Schema.String,
+      projected: Schema.Boolean,
+      excludedPlugins: Schema.Array(Schema.String),
+      note: Schema.String,
+    }),
   }),
   [Schema.Record(Schema.String, Schema.Json)],
 );

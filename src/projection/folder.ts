@@ -11,6 +11,8 @@ import { AgentInstallBounds, ConfigValue, LoginRequirement, ToolRecipeRef } from
 import { TaggedError } from "../domain/tagged-error.ts";
 import { canonicalJson, sha256BytesHex, sha256Hex } from "../profile/profile-codec.ts";
 import { parseMarkdownDocument } from "./frontmatter.ts";
+import { NativePluginManifest, nativePluginDigest, nativePluginIssue, type NativePlugin } from "./native-plugin.ts";
+import { ShieldPolicy } from "./shield.ts";
 import {
   APPEND_LOCAL_CATEGORIES,
   CAPABILITIES,
@@ -35,7 +37,7 @@ import {
  * Loads the Canonical Folder (`~/.canonfig/`) into the Canonical Model.
  *
  * Only the authoring allowlist is read: `canonfig.jsonc`, `AGENTS.md`,
- * `rules/`, `skills/`, `agents/`, `commands/`, `hooks/` and `files/`, plus `local/`.
+ * `rules/`, `skills/`, `plugins/`, `agents/`, `commands/`, `hooks/` and `files/`, plus `local/`.
  * Everything else in the folder (state, backups, logs) is machine-local and
  * never read here. Every file read must resolve inside the folder, and the
  * authored trees hold regular files and directories only.
@@ -74,7 +76,7 @@ const positiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 
 /** Categories whose items `groups` can name, as `<category>/<name>`, plus `instructions`. */
 export const GROUPABLE_CATEGORIES = [
-  "rules", "skills", "agents", "commands", "hooks", "mcp", "settings", "tools", "credentials", "resources",
+  "rules", "skills", "plugins", "agents", "commands", "hooks", "mcp", "settings", "tools", "credentials", "resources",
 ] as const;
 const itemReference = Schema.String.check(Schema.isPattern(
   new RegExp(`^(?:instructions|(?:${GROUPABLE_CATEGORIES.join("|")})/[A-Za-z0-9][A-Za-z0-9_-]*)$`, "u"),
@@ -147,7 +149,7 @@ const ScheduleInput = Schema.String.check(Schema.isPattern(
 ));
 
 /** Categories `local/` may add to, named by `local.allow`. */
-export const LOCAL_CATEGORIES = ["instructions", "rules", "skills", "agents", "commands", "mcp", "settings"] as const;
+export const LOCAL_CATEGORIES = ["instructions", "rules", "skills", "plugins", "agents", "commands", "mcp", "settings"] as const;
 type LocalCategory = (typeof LOCAL_CATEGORIES)[number];
 
 const LocalAllow = Schema.Struct({
@@ -157,7 +159,7 @@ const LocalAllow = Schema.Struct({
 });
 
 /** Categories a Local Overlay can name: an item `local/` holds under a published item's name. */
-export const OVERLAY_CATEGORIES = ["rules", "skills", "agents", "commands", "mcp", "settings"] as const;
+export const OVERLAY_CATEGORIES = ["rules", "skills", "plugins", "agents", "commands", "mcp", "settings"] as const;
 
 /**
  * One `overlays` entry in `local/local.jsonc`:
@@ -192,7 +194,7 @@ export const parseOverlay = (entry: string): ParsedOverlay => {
   }
   const item = overlayItemPattern.exec(entry);
   if (item === null) {
-    return invalid(`invalid overlay ${entry}: expected rules|skills|agents|commands|mcp/<name>, settings/<harness>, or settings/<harness>#<key>`);
+    return invalid(`invalid overlay ${entry}: expected rules|skills|plugins|agents|commands|mcp/<name>, settings/<harness>, or settings/<harness>#<key>`);
   }
   if (entry.startsWith("settings/") && !TARGET_IDS.some((candidate) => candidate === item[1])) {
     return invalid(`overlay ${entry} names unknown harness ${item[1]!}`);
@@ -255,9 +257,12 @@ const LocalJsonc = Schema.Struct({
   excludeHarnesses: Schema.optional(Schema.Array(Schema.Literals(TARGET_IDS))),
   /** Authored resources this machine never projects; `restore` adds the ones it gives back. */
   excludeResources: Schema.optional(Schema.Array(identifier)),
+  /** Native Plugins this machine declines, without editing the Source's mirror. */
+  excludePlugins: Schema.optional(Schema.Array(identifier)),
   /** Local Overlays and key claims; `parseOverlay` reads each entry. */
   overlays: Schema.optional(Schema.Array(Schema.String)),
   backups: Schema.optional(Schema.Boolean),
+  shield: Schema.optional(ShieldPolicy),
 });
 
 const RuleFrontmatter = Schema.Struct({
@@ -296,6 +301,7 @@ export interface LocalPolicy {
   readonly claims: ReadonlyArray<KeyClaim>;
   /** False turns takeover snapshots off on this machine. */
   readonly backups: boolean;
+  readonly shield?: ShieldPolicy | undefined;
 }
 
 /**
@@ -632,6 +638,30 @@ const loadSkills = async <File>(
   return skills;
 };
 
+const loadPlugins = async (source: FolderSource, directory: string): Promise<ReadonlyArray<NativePlugin>> => {
+  const plugins: Array<NativePlugin> = [];
+  for (const entry of await source.entries(directory)) {
+    const path = join(directory, entry.name);
+    if (!entry.directory || !/^[a-z0-9][a-z0-9-]*$/u.test(entry.name)) {
+      throw failure(path, "every plugin must be a directory named with lowercase letters, digits and '-'");
+    }
+    const manifestPath = join(path, "plugin.jsonc");
+    const manifest = await readJsonc(source, manifestPath, NativePluginManifest);
+    if (manifest === undefined) throw failure(path, "has no plugin.jsonc");
+    const files = await loadFiles(source, path);
+    try {
+      const issue = nativePluginIssue(manifest, files);
+      if (issue !== undefined) throw failure(manifestPath, issue);
+    } catch (error) {
+      if (error instanceof CanonicalFolderError) throw error;
+      throw failure(manifestPath, String(error));
+    }
+    const digest = nativePluginDigest(manifest, files);
+    plugins.push({ id: entry.name, manifest, files, digest, reviewed: manifest.review?.digest === digest });
+  }
+  return plugins;
+};
+
 const mcpServer = (input: FolderMcpServer): McpServer =>
   input.transport === "stdio"
     ? {
@@ -824,6 +854,7 @@ const modelDigest = (model: CanonicalModel, local: LocalPolicy): ContentDigest =
     description: skill.description,
     files: skill.files.map(fileIdentity),
   }));
+  const plugins = model.plugins.map((plugin) => ({ ...plugin, files: plugin.files.map(fileIdentity) }));
   const resources = model.resources.map((resource) =>
     resource.kind === "file"
       ? { ...resource, file: fileIdentity(resource.file) }
@@ -831,7 +862,7 @@ const modelDigest = (model: CanonicalModel, local: LocalPolicy): ContentDigest =
       ? { ...resource, files: resource.files.map(fileIdentity) }
       : resource
   );
-  const value = JSON.parse(JSON.stringify({ ...model, skills, resources, local }));
+  const value = JSON.parse(JSON.stringify({ ...model, skills, plugins, resources, local }));
   return sha256Hex(canonicalJson(value));
 };
 
@@ -872,7 +903,7 @@ export const listFolderFiles = (folder: string, directory: string): Promise<Read
   listFiles(diskSource(folder), join(folder, directory));
 
 /** The authoring allowlist: the only top-level entries of `~/.canonfig/` that are published or mirrored. */
-export const AUTHORING_ENTRIES = ["canonfig.jsonc", "AGENTS.md", "rules", "skills", "agents", "commands", "hooks", "files"] as const;
+export const AUTHORING_ENTRIES = ["canonfig.jsonc", "AGENTS.md", "rules", "skills", "plugins", "agents", "commands", "hooks", "files"] as const;
 
 /**
  * Whether a path holds something: any file, and any directory with something
@@ -915,6 +946,7 @@ export interface AuthoredFolder<File = SkillFile> {
   readonly instructions?: string | undefined;
   readonly rules: ReadonlyArray<RuleDocument>;
   readonly skills: ReadonlyArray<LoadedSkill<File>>;
+  readonly plugins: ReadonlyArray<NativePlugin>;
   readonly agents: ReadonlyArray<AgentDocument>;
   readonly commands: ReadonlyArray<CommandDocument>;
   /** Enabled hooks only, scripts resolved to absolute paths. */
@@ -1014,6 +1046,7 @@ const loadAuthored = async <File extends { readonly executable: boolean }>(
     instructions: await readText(source, join(folder, "AGENTS.md")),
     rules: await loadRules(source, join(folder, "rules")),
     skills: await loadSkills(source, join(folder, "skills"), reader.tree),
+    plugins: await loadPlugins(source, join(folder, "plugins")),
     agents: await loadAgents(source, join(folder, "agents")),
     commands: await loadCommands(source, join(folder, "commands")),
     hooks: await loadHooks(source, config.hooks ?? [], configPath),
@@ -1079,10 +1112,13 @@ const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => 
 
   const localRules = await localItems("rules", (directory) => loadRules(source, directory));
   const localSkills = await localItems("skills", (directory) => loadSkills(source, directory, loadFiles));
+  const localPlugins = await localItems("plugins", (directory) => loadPlugins(source, directory));
   const localAgents = await localItems("agents", (directory) => loadAgents(source, directory));
   const localCommands = await localItems("commands", (directory) => loadCommands(source, directory));
   const rules = addLocal(authored.rules, localRules, (rule) => rule.id, "rules", "rule", localDirectory, overlays);
   const skills = addLocal(authored.skills, localSkills, (skill) => skill.name, "skills", "skill", localDirectory, overlays);
+  const plugins = addLocal(authored.plugins, localPlugins, (plugin) => plugin.id, "plugins", "Native Plugin", localDirectory, overlays)
+    .filter((plugin) => !localConfig.excludePlugins?.includes(plugin.id));
   const agents = addLocal(authored.agents, localAgents, (agent) => agent.id, "agents", "agent", localDirectory, overlays);
   const commands = addLocal(authored.commands, localCommands, (command) => command.id, "commands", "command", localDirectory, overlays);
 
@@ -1123,6 +1159,7 @@ const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => 
   const publishedItems = itemsOf({
     rules: authored.rules.map((rule) => rule.id),
     skills: authored.skills.map((skill) => skill.name),
+    plugins: authored.plugins.map((plugin) => plugin.id),
     agents: authored.agents.map((agent) => agent.id),
     commands: authored.commands.map((command) => command.id),
     mcp: publishedMcp.map(([name]) => name),
@@ -1131,6 +1168,7 @@ const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => 
   const localItemNames = itemsOf({
     rules: localRules.map((rule) => rule.id),
     skills: localSkills.map((skill) => skill.name),
+    plugins: localPlugins.map((plugin) => plugin.id),
     agents: localAgents.map((agent) => agent.id),
     commands: localCommands.map((command) => command.id),
     mcp: localMcp.map(([name]) => name),
@@ -1158,6 +1196,7 @@ const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => 
     instructions: withLocalInstructions(authored.instructions, localInstructions),
     rules,
     skills,
+    plugins,
     agents,
     commands,
     hooks: authored.hooks,
@@ -1169,11 +1208,12 @@ const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => 
     appendLocal: [...new Set(config.local?.appendLocal ?? [])].sort(),
     resources: authored.resources.filter((resource) => !excludedResources.has(resource.id)),
   };
-  const local: LocalPolicy = {
+  const basePolicy: LocalPolicy = {
     excludeHarnesses: localConfig.excludeHarnesses ?? [],
     excludeResources: [...excludedResources].sort(),
     claims,
     backups: localConfig.backups ?? true,
   };
+  const local = localConfig.shield === undefined ? basePolicy : { ...basePolicy, shield: localConfig.shield };
   return { model, authoredResources: authored.resources, local, digest: modelDigest(model, local), ignoredLocal, overlays: overlayStatus };
 };

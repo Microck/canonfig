@@ -33,6 +33,7 @@ import type {
 } from "../enrollment/enrollment.types.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { detectHarnesses } from "../projection/detect.ts";
+import { ingestShield } from "../projection/shield-ingest.ts";
 import {
   CanonicalFolderError,
   LocalItemCollisionError,
@@ -388,6 +389,7 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
   configuration: FollowerSynchronizationConfiguration,
   appliedResources: ReadonlyArray<AppliedResourceRecord>,
   environment: (name: string) => string | undefined,
+  ingest: boolean,
 ) {
   const machine = yield* MachineState;
   const repository = yield* StateRepository;
@@ -457,7 +459,7 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
   built.push(fileResource(mirrorConfigResource, yield* inFolder("canonfig.jsonc"), "replace-if-unmodified", configContent, false));
   mirrored.push(mirrorConfigResource);
 
-  const loaded = yield* Effect.tryPromise({
+  let loaded = yield* Effect.tryPromise({
     try: () => loadCanonicalFolder(folder, mirrorFiles),
     catch: (error) =>
       error instanceof CanonicalFolderError || error instanceof LocalItemCollisionError
@@ -465,6 +467,13 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
         : new CanonicalFolderError({ path: folder, message: String(error) }),
   });
   const context = yield* rootContext(environment);
+  if (ingest && loaded.local.shield?.enabled) {
+    const report = yield* ingestShield({ target: { folder, scope: "local", statePath: configuration.stateLocation }, context, loaded, applied: appliedResources });
+    if (report.imported.length > 0) loaded = yield* Effect.tryPromise({
+      try: () => loadCanonicalFolder(folder, mirrorFiles),
+      catch: (error) => new CanonicalFolderError({ path: folder, message: String(error) }),
+    });
+  }
   const takeovers = yield* repository.loadHarnessTakeovers();
   // A listed harness projects only once installed; until then it is reported
   // and its earlier outputs are held, and the run can still converge.
@@ -472,7 +481,7 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
     .filter((entry) => entry.installed)
     .map((entry) => entry.harness));
   const notInstalled = loaded.model.harnesses.filter((harness) => !installed.has(harness));
-  const projection = yield* buildProjection(loaded, context, takeovers, appliedResources, notInstalled);
+  const projection = yield* buildProjection(loaded, context, takeovers, appliedResources, notInstalled, "local");
   const authorized = new Set<string>(built.map((item) => item.resource.id));
   const requiredTools = entries.flatMap((entry) =>
     entry.key.startsWith("mcp.")
@@ -482,7 +491,11 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
       })
       : []
   ).filter((id) => authorized.has(id));
-  const prerequisites = [...new Set([...mirrored, ...requiredTools.map((id) => Schema.decodeUnknownSync(ResourceId)(id))])].sort();
+  const pluginTools = loaded.model.plugins.filter((plugin) => plugin.reviewed).flatMap((plugin) => plugin.manifest.variants
+    .filter((variant) => variant.platforms.includes(context.platform) && loaded.model.harnesses.includes(variant.harness))
+    .flatMap((variant) => (variant.requires ?? []).map((reference) => reference.replace("/", ":"))));
+  for (const id of pluginTools) if (!authorized.has(id)) return yield* configurationError("invalid-profile", `Native Plugin requires ${id}, which this follower is not authorized to receive`);
+  const prerequisites = [...new Set([...mirrored, ...[...requiredTools, ...pluginTools].map((id) => Schema.decodeUnknownSync(ResourceId)(id))])].sort();
   built.push(...projection.built.map((item) => ({
     ...item,
     resource: { ...item.resource, dependsOn: [...new Set([...item.resource.dependsOn, ...prerequisites])] },
@@ -968,7 +981,7 @@ export const synchronizeFollower = Effect.fn(
   const appliedResources = yield* repository.loadAppliedResources(
     configuration.follower.id,
   );
-  const followerPlan = yield* planFollowerRun(fetched, configuration, appliedResources, projection.environment);
+  const followerPlan = yield* planFollowerRun(fetched, configuration, appliedResources, projection.environment, mode === "apply");
   // `sync --plan` must not accept a target this machine cannot write; the
   // apply repeats the check before it records the run.
   yield* preflightPathLengths(followerPlan.plan.actions, followerPlan.revision.desired);

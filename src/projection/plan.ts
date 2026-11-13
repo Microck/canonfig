@@ -47,6 +47,8 @@ import type {
   SynchronizationArtifact,
 } from "../synchronization/synchronization.types.ts";
 import { adapterFor } from "./adapters/index.ts";
+import { NATIVE_PLUGIN_HARNESSES, projectNativePlugins } from "./native-plugin.ts";
+import { shieldModel } from "./shield.ts";
 import { CanonicalFolderError, type KeyClaim, type LoadedFolder } from "./folder.ts";
 import type {
   ConfigFormat,
@@ -69,9 +71,11 @@ import { canonicalFolderOwner, snapshotCopy } from "./takeover.ts";
  */
 export const supportedCategories = (adapter: HarnessAdapter, layout: HarnessLayout): ReadonlyArray<SurfaceCategory> =>
   SURFACE_CATEGORIES.filter((category) =>
-    category === "settings"
-      ? layout.surfaces.some((surface) => surface.kind === "config" && surface.settings !== undefined)
-      : adapter.descriptor.capabilities[category] !== "unsupported"
+    category === "plugins"
+      ? NATIVE_PLUGIN_HARNESSES.some((harness) => harness === adapter.descriptor.id)
+      : category === "settings"
+        ? layout.surfaces.some((surface) => surface.kind === "config" && surface.settings !== undefined)
+        : adapter.descriptor.capabilities[category] !== "unsupported"
   );
 
 /**
@@ -420,11 +424,15 @@ export const projectSurfaces = (
     for (const harness of model.harnesses) {
       const adapter = adapterFor(harness);
       const scoped = modelFor(model, harness);
-      const layout = adapter.layout(context, scoped);
+      const baseLayout = adapter.layout(context, scoped);
+      const native = yield* Effect.try({
+        try: () => projectNativePlugins(scoped, harness, context, baseLayout, adapter.project(scoped, baseLayout, runtime)),
+        catch: (error) => new CanonicalFolderError({ path: configPath, message: String(error) }),
+      });
+      const { layout, projection } = native;
       yield* checkRoot(harness, layout.root);
       harnesses.push({ harness, layout });
       if (layout.sharedSkills && scoped.skills.length > 0) sharesSkills = true;
-      const projection = adapter.project(scoped, layout, runtime);
       diagnostics.push(...projection.diagnostics);
       const contents = yield* Effect.try({
         try: () => withSettings(harness, layout, projection.contents, scoped.settings[harness] ?? [], configPath),
@@ -749,8 +757,15 @@ export const buildProjection = (
   takeovers: ReadonlyArray<HarnessTakeover>,
   appliedResources: ReadonlyArray<AppliedResourceRecord>,
   held: ReadonlyArray<TargetId> = [],
+  redirectScope: "canonical" | "local" = "canonical",
 ) =>
   Effect.gen(function*() {
+    if (loaded.local.shield?.enabled) {
+      loaded = { ...loaded, model: yield* Effect.try({
+        try: () => shieldModel(loaded.model, context, redirectScope),
+        catch: (error) => new CanonicalFolderError({ path: loaded.model.folder, message: String(error) }),
+      }) };
+    }
     const pendingTakeover = takeovers.find((takeover) => takeover._tag !== "Owned");
     if (pendingTakeover !== undefined) {
       return yield* new ProjectionHumanActionError({
@@ -886,13 +901,23 @@ export const buildProjection = (
         message: `overlay settings/${claim.harness}#${claim.key} covers no key Canonfig writes in ${claim.harness}'s settings file, so it changes nothing; run 'canonfig overlay remove settings/${claim.harness}#${claim.key}' if you no longer need it`,
       })),
     ];
+    // A native loader must never see registration before its reviewed package.
+    const payloads = projected.surfaces.filter(({ surface }) => surface.id.startsWith("native-plugin-") && surface.kind === "directory");
+    for (let index = 0; index < built.length; index++) {
+      const item = built[index]!;
+      const owner = parseSurfaceResourceId(item.resource.id);
+      if (owner === undefined) continue;
+      const dependencies = payloads.filter((payload) => payload.harness === owner.harness)
+        .map((payload) => surfaceResourceId(payload.harness, payload.surface.id));
+      if (!dependencies.includes(item.resource.id)) built[index] = { ...item, resource: { ...item.resource, dependsOn: [...item.resource.dependsOn, ...dependencies] } };
+    }
     if (loaded.model.hooks.length > 0) {
       // Install the runtime before any harness output can begin referring to it.
       const version = projected.runtimeVersion;
       const runtimeDependencies = [`runtime:hook-runner:${version}`, `runtime:hooks:${version}`].map((id) => Schema.decodeUnknownSync(ResourceId)(id));
       for (let index = 0; index < built.length; index += 1) {
         const item = built[index]!;
-        built[index] = { ...item, resource: { ...item.resource, dependsOn: runtimeDependencies } };
+        built[index] = { ...item, resource: { ...item.resource, dependsOn: [...item.resource.dependsOn, ...runtimeDependencies] } };
       }
       built.push(
         fileResource(runtimeDependencies[0]!, projected.runtime.hookRunner, "replace", encoder.encode(hookRunnerSource(`hooks.${version}.json`)), false),

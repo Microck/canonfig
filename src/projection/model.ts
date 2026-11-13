@@ -1,4 +1,5 @@
 import type { ConfigValue } from "../domain/resource.ts";
+import type { NativePlugin } from "./native-plugin.ts";
 
 /**
  * The Canonical Model: everything `~/.canonfig/` says, after `local/` is
@@ -28,7 +29,7 @@ export type Capability = (typeof CAPABILITIES)[number];
 
 /** What a harness can be given; `surfaces.<harness>` in canonfig.jsonc picks from these. */
 export const SURFACE_CATEGORIES = [
-  "instructions", "rules", "skills", "agents", "commands", "hooks", "mcp", "settings",
+  "instructions", "rules", "skills", "plugins", "agents", "commands", "hooks", "mcp", "settings",
 ] as const;
 
 export type SurfaceCategory = (typeof SURFACE_CATEGORIES)[number];
@@ -176,6 +177,7 @@ export interface CanonicalModel {
   readonly instructions?: string | undefined;
   readonly rules: ReadonlyArray<RuleDocument>;
   readonly skills: ReadonlyArray<SkillTree>;
+  readonly plugins: ReadonlyArray<NativePlugin>;
   readonly agents: ReadonlyArray<AgentDocument>;
   readonly commands: ReadonlyArray<CommandDocument>;
   /** Enabled hooks only. */
@@ -209,6 +211,7 @@ export const modelFor = (model: CanonicalModel, harness: TargetId): CanonicalMod
     instructions: has("instructions") ? model.instructions : undefined,
     rules: has("rules") ? model.rules : [],
     skills: has("skills") ? model.skills : [],
+    plugins: has("plugins") ? model.plugins : [],
     agents: has("agents") ? model.agents : [],
     commands: has("commands") ? model.commands : [],
     hooks: has("hooks") ? model.hooks : [],

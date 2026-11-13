@@ -54,7 +54,7 @@ const runtimeDir = path.dirname(fileURLToPath(import.meta.url));
 const folder = path.dirname(runtimeDir);
 let registry;
 try { registry = JSON.parse(fs.readFileSync(path.join(runtimeDir, ${JSON.stringify(registryFile)}), "utf8")); }
-catch { process.exit(0); }
+catch (error) { console.error("Cannot read Canonfig hook registry: " + error.message); process.exit(2); }
 const hooks = Array.isArray(registry?.hooks) ? registry.hooks : [];
 const args = process.argv.slice(2);
 const arg = (name) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
@@ -68,8 +68,8 @@ let rawText = "";
 try { rawText = fs.readFileSync(0, "utf8"); } catch { rawText = ""; }
 let raw;
 try { raw = rawText.trim() ? JSON.parse(rawText) : {}; } catch { raw = { raw: rawText }; }
-const toolName = String(raw.tool_name ?? raw.toolName ?? raw.tool ?? raw.name ?? raw.input?.tool ?? raw.input?.toolName ?? "");
-const toolInput = raw.tool_input ?? raw.toolInput ?? raw.input ?? raw.args ?? {};
+const toolName = String(raw.tool_name ?? raw.toolName ?? raw.toolCall?.name ?? raw.tool ?? raw.name ?? raw.input?.tool ?? raw.input?.toolName ?? "");
+const toolInput = raw.tool_input ?? raw.toolInput ?? raw.toolCall?.args ?? raw.toolArgs ?? raw.input ?? raw.args ?? {};
 const serialized = JSON.stringify({ toolName, toolInput, raw });
 
 const capabilityPatterns = {
@@ -128,12 +128,26 @@ const reason = String(output?.reason ?? result.stderr?.trim() ?? result.error?.m
 const denied = result.status === 2 || output?.decision === "deny" || output?.permission === "deny" || output?.block === true;
 const failed = result.error || result.status === null || (result.status !== 0 && result.status !== 2);
 if (denied || (failed && hook.onFailure === "block")) {
+  if (target === "copilot-cli" && event === "before_tool") {
+    console.log(JSON.stringify({ permissionDecision: "deny", permissionDecisionReason: reason }));
+    process.exit(0);
+  }
+  if (target === "antigravity" && event === "before_tool") {
+    console.log(JSON.stringify({ decision: "deny", reason }));
+    process.exit(0);
+  }
+  if (target === "cursor" && event === "before_tool") {
+    console.log(JSON.stringify({ permission: "deny", user_message: reason, agent_message: reason }));
+    process.exit(0);
+  }
   console.error(reason);
   process.exit(2);
 }
 if (failed && hook.onFailure === "warn") console.error(reason);
 if (output?.message) console.log(String(output.message));
 else if (result.stdout && !output) process.stdout.write(result.stdout);
+if (target === "cursor" && event === "before_tool") console.log(JSON.stringify({ permission: "allow" }));
+if (target === "antigravity" && event === "before_tool") console.log(JSON.stringify({ decision: "allow" }));
 process.exit(0);
 `;
 }
@@ -264,6 +278,13 @@ export function piPluginSource(target: "pi" | "oh-my-pi", runner: string, hooks:
 
 /** OpenCode or Kilo plugin carrying tool hooks. */
 export function openCodePluginSource(target: "opencode" | "kilo", runner: string, hooks: ReadonlyArray<NativeHook>): string {
+  if (target === "opencode") {
+    const registrations = hooks.map(({ hook, event }) => {
+      const name = event === "tool.execute.before" ? "execute.before" : "execute.after";
+      return `    await context.tool.hook(${JSON.stringify(name)}, async (payload) => { ${runCall(hook)} if (result.blocked) throw new Error(result.reason); });`;
+    });
+    return `${pluginPreamble(target, runner, [])}\nexport default {\n  id: "canonfig",\n  async setup(context) {\n${registrations.join("\n")}\n  },\n};\n`;
+  }
   const handler = (nativeEvent: string): string => hooks
     .filter(({ event }) => event === nativeEvent)
     .map(({ hook }) => `      { const payload = { ...input, ...output }; ${runCall(hook)} if (result.blocked) throw new Error(result.reason); }`)

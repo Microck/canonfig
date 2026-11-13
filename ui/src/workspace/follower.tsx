@@ -943,13 +943,13 @@ function ScheduleForm() {
 }
 
 /** Singular names as Canonfig's collision message uses them (src/projection/folder.ts addLocal). */
-const LOCAL_ONE: Record<LocalCategory, string> = { instructions: "instructions", rules: "rule", skills: "skill", agents: "agent", commands: "command", mcp: "MCP server", settings: "setting" };
+const LOCAL_ONE: Record<LocalCategory, string> = { instructions: "instructions", rules: "rule", skills: "skill", plugins: "plugin", agents: "agent", commands: "command", mcp: "MCP server", settings: "setting" };
 
 /** Where a local item lives, relative to ~/.canonfig/local/. */
 function localPath(category: LocalCategory, name: string) {
   if (category === "instructions") return "AGENTS.md";
   if (category === "mcp" || category === "settings") return `local.jsonc ${category}.${name}`;
-  return category === "skills" ? `skills/${name}/` : `${category}/${name}.md`;
+  return category === "skills" || category === "plugins" ? `${category}/${name}/` : `${category}/${name}.md`;
 }
 
 

@@ -194,6 +194,26 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
     });
   }
 
+  // One manifest owns every payload file, so group filtering cannot expose a
+  // partial package. The existing blob digests and revision signature cover code.
+  const pluginFileUsers = new Map<string, ReadonlyArray<string>>();
+  for (const plugin of authored.plugins) {
+    if (!plugin.reviewed) throw refuse(`plugins/${plugin.id} needs review of digest ${plugin.digest}; run 'canonfig shield review ${plugin.id} --digest ${plugin.digest} --reviewer <name>' after inspecting its files`);
+    const requires = [...new Set(plugin.manifest.variants.flatMap((variant) => variant.requires ?? []))];
+    for (const reference of requires) {
+      if (config.tools?.[reference.slice("tools/".length)] === undefined) throw refuse(`plugins/${plugin.id} requires undeclared ${reference}`);
+    }
+    const dependencies: Array<string> = requires.map(itemResourceId);
+    for (const file of plugin.files) {
+      if (file.path === "plugin.jsonc") continue;
+      const id = `plugin-files:${plugin.id}:${Buffer.from(file.path).toString("base64url")}`;
+      resources.push(fileItem(id, `plugins/${plugin.id}/${file.path}`, file.executable));
+      dependencies.push(id);
+      pluginFileUsers.set(id, [`plugins:${plugin.id}`]);
+    }
+    resources.push({ ...fileItem(`plugins:${plugin.id}`, `plugins/${plugin.id}/plugin.jsonc`, false), dependsOn: dependencies });
+  }
+
   // Hooks: the definition is a JSON item, the script it runs a file item.
   const scripts = new Map((await listFolderFiles(folder, "hooks")).map((file) => [`hooks/${file.path}`, file.executable]));
   const scriptUsers = new Map<string, Array<string>>();
@@ -325,6 +345,7 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
   for (const [id, users] of [
     ...[...scriptUsers].map(([script, users]) => [hookScriptId(script, configPath), users] as const),
     ...[...fileUsers].map(([path, users]) => [pathItemId("files", "files", path, configPath), users] as const),
+    ...pluginFileUsers,
   ]) {
     if (users.some((user) => !groupsOf.has(user))) continue;
     groupsOf.set(id, [...new Set(users.flatMap((user) => groupsOf.get(user)!))].sort(compareText));
