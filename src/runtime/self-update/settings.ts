@@ -6,7 +6,6 @@ import { regular, assertPrivateDirectory } from "./coordination.ts";
 const Settings = Schema.Struct({
   version: Schema.Literal(1), root: Schema.NonEmptyString, prefix: Schema.NonEmptyString,
   npmCli: Schema.NonEmptyString, node: Schema.NonEmptyString, line: Schema.NonEmptyString, state: Schema.NonEmptyString,
-  followSource: Schema.optionalKey(Schema.Boolean),
 });
 export function readSettings(directory: string) {
   assertPrivateDirectory(directory);

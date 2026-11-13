@@ -164,7 +164,7 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
     mutationRoute("POST", "/api/self-update/enable", GuiSelfUpdateEnable,
       (input) => Effect.tryPromise({
         try: (signal) => lease.selfUpdate(
-          () => enable(root, input.npmCli, input.confirmIdle, undefined, undefined, signal, input.followSource),
+          () => enable(root, input.npmCli, input.confirmIdle, undefined, undefined, signal),
           () => true,
         ).finally(onSettled),
         catch: updateFailure,

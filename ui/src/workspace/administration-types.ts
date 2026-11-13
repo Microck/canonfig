@@ -101,7 +101,7 @@ export interface AdministrationSlice {
     checked: typeof GuiSelfUpdateCheck.Type | null;
     checking: boolean;
     check: () => void;
-    enable: (npmCli: string, confirmIdle: boolean, followSource: boolean) => void;
+    enable: (npmCli: string, confirmIdle: boolean) => void;
     disable: () => void;
     apply: () => void;
     progress: typeof GuiSelfUpdateProgress.Type | null;

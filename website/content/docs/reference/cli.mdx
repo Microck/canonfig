@@ -130,8 +130,8 @@ first.
 
 | Command | Options |
 | --- | --- |
-| `enable` | `--apply`, `--confirm-idle`, and `--npm-cli <absolute path to npm-cli.js>`, all required. Optional `--follow-source` authorizes signed Source-directed releases on followers. Stop every Canonfig process and schedule first. |
-| `disable` | `--apply` required. |
+| `enable` | `--apply`, `--confirm-idle`, and `--npm-cli <absolute path to npm-cli.js>`, all required. Configures standalone self-updates only. Stop every Canonfig process and schedule first. |
+| `disable` | `--apply` required. Disables standalone self-updates, not Source-driven Fleet Updates. |
 | `status` | Prints settings and any interrupted update. Read-only. |
 | `check` | Asks the official npm registry for the newest stable release in this major. Reports newer majors without selecting them. Read-only. |
 | `apply` | `--apply` required. Installs, verifies, and activates that same-major release only when Canonfig is idle. |
@@ -289,9 +289,9 @@ canonfig source update stop --apply
 ```
 
 Rolls out the Source's exact stable Canonfig release to its enrolled followers.
-The canary goes first. Each follower must opt in locally with
-`self-update enable --follow-source` and checks on its next CLI `sync --apply`,
-including native schedules. No follower daemon or immediate push is installed.
+The canary goes first. Every enrolled follower accepts Fleet Updates automatically
+and checks on its next CLI `sync --apply`, including native schedules. No local
+enablement, follower daemon or immediate push is required.
 Start and stop preview unless you pass `--apply`.
 
 Every follower verifies the Source signature and the official package's publisher

@@ -16,7 +16,6 @@ import { buildIdentity } from "./build-identity.ts";
 import { downloadFleetRelease, verifyFleetRelease, type FleetReleaseVerifier } from "./fleet-release.ts";
 import { regular, updateDirectory, type ManagedCommandLease } from "./self-update/coordination.ts";
 import { assertNoUnfinishedRun, update } from "./self-update/core.ts";
-import { readSettings } from "./self-update/settings.ts";
 
 const FollowerFleetRecord = Schema.Struct({
   signed: SignedFleetDirective, startedAt: Schema.String,
@@ -45,9 +44,6 @@ export const prepareFleetSync = Effect.fn("Fleet.prepareSync")(function*(
   const configuration = yield* repository.getFollowerSynchronizationConfiguration().pipe(Effect.mapError(fleetFailure));
   if (configuration === undefined || configuration.lifecycle._tag !== "Active") return false;
   const directory = updateDirectory(root);
-  if (!existsSync(join(directory, "settings.json"))) return false;
-  const settings = yield* Effect.try({ try: () => readSettings(directory), catch: fleetFailure });
-  if (settings.followSource !== true) return false;
   const state = configuration.stateLocation;
   const transport: FollowerTransportInput = {
     endpoint: configuration.source.endpoint, tlsFingerprint: configuration.source.tlsFingerprint,

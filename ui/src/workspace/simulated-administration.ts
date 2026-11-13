@@ -185,10 +185,10 @@ export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): Admini
         sendVersion({ kind: "start", action: "check" });
         ws.later(() => sendVersion({ kind: "checked", checked: { current: APP_VERSION, candidate: LATEST_PATCH, status: LATEST_PATCH === APP_VERSION ? "current" : "available", detail: "Manual updates install the newest stable release in the current major, never a newer major." } }), 900);
       },
-      enable: (npmCli, confirmIdle, followSource) => {
+      enable: (npmCli, confirmIdle) => {
         if (!confirmIdle || gate.unfinished) throw new TransitionError("Demo update", version.kind, "enable without idle confirmation");
         sendVersion({ kind: "start", action: "enable" });
-        sendVersion({ kind: "status", status: { enabled: true, pending: false, platform: ws.role === "source" ? "linux" : "darwin", settings: { npmCli, followSource } } });
+        sendVersion({ kind: "status", status: { enabled: true, pending: false, platform: ws.role === "source" ? "linux" : "darwin", settings: { npmCli } } });
         toast.success("Updates turned on");
       },
       disable: () => {

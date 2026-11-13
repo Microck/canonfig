@@ -795,8 +795,6 @@ export function VersionView() {
   const closeConfirmation = (open: boolean) => { if (!open) setConfirmation({ kind: "none" }); };
   const enableFocus = useDialogReturnFocus(focusPageHeading);
   const on = version.data?.enabled;
-  const settings = version.data?.settings;
-  const followsSource = settings !== null && typeof settings === "object" && !Array.isArray(settings) && "followSource" in settings && settings.followSource === true;
   const available = !!on && version.checked?.status === "available";
   const updated = version.checked?.status === "updated";
   return <>
@@ -812,10 +810,9 @@ export function VersionView() {
         <SectionLabel>This machine</SectionLabel>
         <div className={cn("mt-1", settingsGroup)}>
           <SettingRow title="Version"><Mono className="text-foreground">{version.current}</Mono></SettingRow>
-          <SettingRow title="Updates">
+          <SettingRow title="Self-updates">
             <span className="inline-flex items-center gap-1.5 text-base"><StatusMark kind={on ? "ok" : "off"} />{version.data ? on ? "On" : "Off" : "Not loaded"}</span>
           </SettingRow>
-          {ws.role === "follower" && <SettingRow title="Follow Source releases"><span>{followsSource ? "On" : "Off"}</span></SettingRow>}
           {version.npmCli && <SettingRow title="npm" description={<><Mono className="break-all">{version.npmCli}</Mono></>} />}
           {(on || version.checked) && <SettingRow title="Newest same-major release">
             <span className="inline-flex items-center gap-1.5 text-base" aria-live="polite">
@@ -838,11 +835,11 @@ export function VersionView() {
     </Body>
     <Dialog open={confirmation.kind === "enable"} onOpenChange={closeConfirmation}>
       <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md" {...enableFocus}>
-        <EnableUpdatesForm unfinished={version.unfinished} onCancel={() => setConfirmation({ kind: "none" })} onEnable={(npmCli, confirmIdle, followSource) => { version.enable(npmCli, confirmIdle, followSource); setConfirmation({ kind: "none" }); }} />
+        <EnableUpdatesForm unfinished={version.unfinished} onCancel={() => setConfirmation({ kind: "none" })} onEnable={(npmCli, confirmIdle) => { version.enable(npmCli, confirmIdle); setConfirmation({ kind: "none" }); }} />
       </DialogContent>
     </Dialog>
     <ConfirmDialog open={confirmation.kind === "disable"} onOpenChange={closeConfirmation} title="Turn off Canonfig updates?"
-      body="Canonfig stops checking for and installing updates on this machine. The backups of earlier versions and the update records stay."
+      body="Manual and periodic self-updates stop on this machine. Source-driven Fleet Updates remain automatic. Backups and update records stay."
       confirm="Turn off updates" onConfirm={version.disable} />
     <ConfirmDialog open={confirmation.kind === "install"} onOpenChange={closeConfirmation} title={`Install Canonfig ${confirmation.kind === "install" ? confirmation.candidate : ""}?`}
       body="Stop every other Canonfig process and pause its schedules first. After installation, this GUI stops. Start canonfig ui again to use the installed version. Canonfig restarts nothing."
@@ -854,15 +851,14 @@ export function VersionView() {
 const NPM_CLI_SHAPE = /^(?:\/|[A-Za-z]:[\\/]|\\\\)[\s\S]*[\\/]npm-cli\.js$/;
 
 /**
- * The opt-in form (`self-update enable --apply --confirm-idle --npm-cli <path>`). It lives inside the dialog's content,
- * so closing the dialog resets it. Canonfig can't see processes started before opting in, so the person confirms
- * they're stopped; an interrupted sync refuses the opt-in, as the CLI does.
+ * The standalone opt-in form (`self-update enable --apply --confirm-idle --npm-cli <path>`).
+ * Closing the dialog resets it. Older builds may lack command leases, so the person
+ * confirms other processes are stopped; unfinished syncs still block enablement.
  */
-function EnableUpdatesForm({ unfinished, onCancel, onEnable }: { unfinished: boolean; onCancel: () => void; onEnable: (npmCli: string, confirmIdle: boolean, followSource: boolean) => void }) {
+function EnableUpdatesForm({ unfinished, onCancel, onEnable }: { unfinished: boolean; onCancel: () => void; onEnable: (npmCli: string, confirmIdle: boolean) => void }) {
   const ws = useWorkspace();
   const [path, setPath] = useState("");
   const [idle, setIdle] = useState(false);
-  const [followSource, setFollowSource] = useState(false);
   const [tried, setTried] = useState(false);
   const example = ws.admin.version.data?.platform === "win32"
     ? "C:\\Users\\you\\npm\\node_modules\\npm\\bin\\npm-cli.js"
@@ -879,14 +875,13 @@ function EnableUpdatesForm({ unfinished, onCancel, onEnable }: { unfinished: boo
         setTried(true);
         if (!NPM_CLI_SHAPE.test(path.trim())) return e.currentTarget.querySelector<HTMLElement>("#npm-cli")?.focus();
         if (!idle) return e.currentTarget.querySelector<HTMLElement>("#npm-idle")?.focus();
-        if (!unfinished) onEnable(path.trim(), idle, followSource);
+        if (!unfinished) onEnable(path.trim(), idle);
       }}
     >
       <DialogHeader>
         <DialogTitle>Turn on Canonfig updates</DialogTitle>
         <DialogDescription className="text-base text-pretty">
-          Canonfig updates itself with the npm you name here, in a global npm folder inside your home. Stop every other Canonfig process and pause its schedules first:
-          ones started earlier can't tell an update they're running.
+          Canonfig updates itself with the npm you name here, in a global npm folder inside your home. Stop every other Canonfig process and pause its schedules first.
         </DialogDescription>
       </DialogHeader>
       <div className="grid gap-4">
@@ -915,10 +910,6 @@ function EnableUpdatesForm({ unfinished, onCancel, onEnable }: { unfinished: boo
             </p>
           )}
         </div>
-        {ws.role === "follower" && <Label htmlFor="follow-source" className="flex cursor-pointer items-start gap-2.5 text-base font-normal">
-          <Checkbox id="follow-source" checked={followSource} onCheckedChange={(checked) => setFollowSource(checked === true)} className="mt-0.5" />
-          Follow signed Source releases on the next sync, including release-line changes. Each package must have verified official publisher provenance.
-        </Label>}
         {refusal && (
           <p role="alert" className="flex items-start gap-1.5 text-sm text-pretty text-bad">
             <StatusMark kind="bad" className="mt-0.5" />
@@ -969,7 +960,7 @@ function FleetUpdates() {
       </SettingRow>)}</div>
     </div>}
     <ConfirmDialog open={confirmation === "start"} onOpenChange={(open) => { if (!open) setConfirmation(null); }} title={`Roll out Canonfig ${ws.admin.version.current}?`}
-      body={`${selected?.name ?? "The canary"} updates first, then the other enrolled followers. Each must opt in locally. A failed health check halts the rollout; rollback is manual.`}
+      body={`${selected?.name ?? "The canary"} updates first, then the other enrolled followers. A failed health check halts the rollout; rollback is manual.`}
       confirm="Start rollout" onConfirm={() => fleet.start(canary)} />
     <ConfirmDialog open={confirmation === "stop"} onOpenChange={(open) => { if (!open) setConfirmation(null); }} title="Stop this rollout?"
       body="No more followers will be admitted. A follower already activating may finish. Installed releases and applied configuration stay in place."

@@ -103,7 +103,7 @@ export function fleetSource(dependencies: FleetSourceDependencies): FleetSource 
           source: keys.material.source.publicKeyFingerprint, version: release.version, integrity: release.integrity,
           stateFormat: stateFormatVersion, startedAt: new Date().toISOString(), status: "running",
           followers: ordered.map((follower) => ({ id: follower.id, name: follower.name, status: "queued", version: null,
-            detail: "Waiting for the follower's next sync and local update opt-in", attempt: null, admittedAt: null, health: null })),
+            detail: "Waiting for the follower's next sync", attempt: null, admittedAt: null, health: null })),
         };
         if (input.apply) yield* write(path, rollout);
         return rollout;

@@ -84,7 +84,7 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
       "service installs a native user service that runs source serve (systemd user",
       "unit, launchd agent, or Task Scheduler at-logon task); serve runs in the foreground.",
       "invite writes a mode-0600 single-use envelope; move it over a private channel.",
-      "update rolls the Source's exact release out to locally opted-in followers on",
+      "update rolls the Source's exact release out to enrolled followers on",
       "their next sync. The canary runs first; failed health halts the rollout.",
       "Preview by omitting --apply. No daemon, forced restart or automatic downgrade.",
     ],
