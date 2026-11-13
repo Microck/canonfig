@@ -163,10 +163,8 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
             <LookIcon look={look} bold={lit} className="relative size-5" />
           </span>
           <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-baseline gap-1.5">
-              <span className="truncate text-lg leading-[18px] font-semibold text-foreground">{look.name}</span>
-              {look.name !== data.hostname && <span className="truncate font-mono text-xs text-faint">{data.hostname}</span>}
-            </div>
+            {/* A renamed machine shows only its chosen name; the hostname commands use stays in the tooltip and the Customize sheet. */}
+            <div className="truncate text-lg leading-[18px] font-semibold text-foreground" title={look.name === data.hostname ? undefined : data.hostname}>{look.name}</div>
             <div className="truncate text-sm text-muted-foreground" title={data.endpoint}>
               {data.endpoint ? <Mono>{data.endpoint}</Mono> : <>{data.platform && <>{PLATFORM[data.platform]} · </>}{look.purpose || <span className="text-faint">No purpose set</span>}</>}
             </div>
