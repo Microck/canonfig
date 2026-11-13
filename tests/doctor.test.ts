@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { createHash, X509Certificate } from "node:crypto";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { accessSync, constants, mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { generate } from "selfsigned";
@@ -14,6 +14,8 @@ import { CredentialReference } from "../src/domain/brand.ts";
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
 import { HumanActionRequiredError } from "../src/machine/machine-state.errors.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
+import { adapterFor } from "../src/projection/adapters/index.ts";
+import { TARGET_IDS } from "../src/projection/model.ts";
 import { doctorProbeNames, runDoctorProbes, schedulerProbe } from "../src/runtime/doctor.ts";
 import { credentialReadiness, describeUnattendedRuns, scheduledDefinitionReadiness } from "../src/runtime/readiness.ts";
 import { scheduleManagerLayer } from "../src/schedule/schedule-manager.layer.ts";
@@ -22,6 +24,23 @@ import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 const runtimeEntrypoint = resolve(projectRoot, "src/runtime/main.ts");
+
+// Detection also searches the running Node's folder (#291), so on a machine with npm-installed agent CLIs
+// those harnesses are detected whatever PATH the test passes; expect them alongside the fixture's.
+const besideNode = TARGET_IDS.filter((id) => {
+  const { executables, genericExecutables = [] } = adapterFor(id).descriptor;
+  // Detection only accepts an executable regular file, so a plain file of the same name does not count.
+  return executables.some((name) => {
+    if (genericExecutables.includes(name)) return false;
+    try {
+      const candidate = join(dirname(process.execPath), name);
+      accessSync(candidate, constants.X_OK);
+      return statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  });
+});
 
 const executeDoctor = (
   home: string,
@@ -94,7 +113,9 @@ describe("doctor probes", () => {
   it("reports detected and listed harnesses, and warns about a listed one that is not installed", () => {
     const home = mkdtempSync(resolve(tmpdir(), "canonfig-doctor-harnesses-"));
     mkdirSync(join(home, ".canonfig"), { recursive: true });
-    writeFileSync(join(home, ".canonfig", "canonfig.jsonc"), "{ \"version\": 1, \"harnesses\": [\"codex\", \"claude-code\"] }\n");
+    // The listed harness that must be missing is one not installed beside Node on this machine.
+    const missing = TARGET_IDS.find((id) => id !== "codex" && !besideNode.includes(id))!;
+    writeFileSync(join(home, ".canonfig", "canonfig.jsonc"), JSON.stringify({ version: 1, harnesses: ["codex", missing] }));
     mkdirSync(join(home, "bin"));
     writeFileSync(join(home, "bin", "codex"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     const result = executeDoctor(home, ["--json", "--no-input", "--timeout-ms", "5000"], { PATH: join(home, "bin") });
@@ -102,8 +123,8 @@ describe("doctor probes", () => {
     expect(envelope.data.probes).toContainEqual({
       name: "harnesses",
       status: "warning",
-      message: "listed but not installed: claude-code",
-      details: { listed: "codex,claude-code", excluded: "", detected: "codex", notInstalled: "claude-code", snapshots: 0 },
+      message: `listed but not installed: ${missing}`,
+      details: { listed: `codex,${missing}`, excluded: "", detected: TARGET_IDS.filter((id) => id === "codex" || besideNode.includes(id)).join(","), notInstalled: missing, snapshots: 0 },
     });
   });
 

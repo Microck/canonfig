@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -45,7 +45,17 @@ import { TARGET_IDS, type TargetId } from "../src/projection/model.ts";
  */
 const besideNode = TARGET_IDS.filter((id) => {
   const { executables, genericExecutables = [] } = adapterFor(id).descriptor;
-  return executables.some((name) => !genericExecutables.includes(name) && existsSync(join(dirname(process.execPath), name)));
+  // Detection only accepts an executable regular file, so a plain file of the same name does not count.
+  return executables.some((name) => {
+    if (genericExecutables.includes(name)) return false;
+    try {
+      const candidate = join(dirname(process.execPath), name);
+      accessSync(candidate, constants.X_OK);
+      return statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  });
 });
 const withNodeHarnesses = (ids: ReadonlyArray<TargetId>) => TARGET_IDS.filter((id) => ids.includes(id) || besideNode.includes(id));
 
