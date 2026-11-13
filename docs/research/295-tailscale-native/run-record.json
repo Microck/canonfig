@@ -1,0 +1,34 @@
+{
+  "issue": "https://github.com/Microck/canonfig/issues/295",
+  "branch": "feat/tailscale-native",
+  "agent": "OMP in T3 Code",
+  "model": "maisa-codex/gpt-6-astra",
+  "agentVersion": "18.18.7",
+  "delegation": "none; child performs implementation and inline simplification review",
+  "scope": "Research, automatic detection, opt-in tailnet-only Source and GUI, direct MagicDNS enrollment and sync, Headscale, docs, isolated proof, commits, push and ready PR. No merge or watch.",
+  "spending": "Existing configured research access and Raft only. Paid upgrades not authorized.",
+  "humanTesting": "none yet; maintainer to test before merge",
+  "submissionAuthorization": "Maintainer explicitly authorized a ready-for-review PR despite no human testing; disclose agent-run checks separately and claim no human verification.",
+  "boundaries": "Live Tailscale inspection only. No Serve, ACL, login or live Canonfig changes. All application execution uses disposable HOME and credentials.",
+  "evidence": [
+    "Branch based on origin/main 7070b84. jj cannot initialize inside this Git worktree; native Git used.",
+    "Live Serve and Whois inspected read-only. LocalAPI reported Running, TUN, MagicDNS and certificate availability.",
+    "Task-owned Raft paris:rf-41f42b8080574481: 1 CPU, 4 GiB, disposable; purpose and owner verified.",
+    "Local focused tests: 158 passed for CLI, doctor and tailnet boundaries after fixes. Earlier enrollment and secret-transfer suites passed.",
+    "Source on new port 27495 with disposable HOME. Raft follower resolved MagicDNS, enrolled, synchronized to Converged, and status verified 3/3 projections. No SSH tunnel configured.",
+    "Raft container reaches tailnet through its host, not its own enrolled node. Native macOS/Windows and a real Headscale server remain untested.",
+    "Real disposable userspace tailscaled: NeedsLogin while running; Unavailable and ready=false after its SIGTERM exit 0. Live daemon untouched.",
+    "Source and GUI reject wildcard/LAN/proxy combinations with exit 2. DNS boundary tests reject public, loopback and mixed answers.",
+    "ce-simplify-code setup and all three rubrics applied inline. LocalAPI parsing takes raw JSON strings and returns the domain report; no unknown values cross this boundary. Review was not independent.",
+    "Raft: npm run typecheck, npm run lint, UI typecheck/lint and npm run build:cli passed. Docs validated 451 examples; 3 skills validated. UI lint reported 73 warnings, zero errors.",
+    "Actual packaged GUI: detected Tailscale, enabled the recommended selection, omitted SSH controls for a MagicDNS invitation, and enrolled a disposable Follower. CLI status Active and tunnel not-configured.",
+    "All three task-owned Canonfig servers and the diagnostic Chromium sessions have been stopped. No native source service was installed."
+  ],
+  "activeJobs": [
+    "bg_21: complete UI tests, then root Vitest suite with maxWorkers=1"
+  ],
+  "blockers": [
+    "No configured LSP/code index; semantic find unavailable due provider credits. Scoped source reads used.",
+    "docs/agents/ absent on origin/main."
+  ]
+}
