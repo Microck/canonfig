@@ -1,22 +1,54 @@
+import { randomUUID } from "node:crypto";
+
+import { Effect, Redacted } from "effect";
+
+import { credentialFailureDetail } from "../machine/machine-state.errors.ts";
+import type { MachineState } from "../machine/machine-state.service.ts";
 import type { CredentialStorageCapability } from "../machine/machine-state.types.ts";
 import type { ScheduleStatus } from "../schedule/schedule-manager.types.ts";
 import type { DoctorProbe } from "./doctor.ts";
 
-export interface CredentialAccessEvidence {
-  /**
-   * The enrolled follower credential was read from the native store by this
-   * process, which proves read access from the current session.
-   */
-  readonly enrolledCredentialLoaded: boolean;
-}
+const credentialProbeValue = "canonfig credential storage probe";
 
-/** Presence is not permission: never turn an executable check into a vault test. */
+/**
+ * Store, read back, and delete a fixed non-secret value under a unique name,
+ * through the same MachineState calls that store real keys and credentials.
+ * The item is removed whatever happens after it was stored; no existing
+ * credential is read or touched. Fails with the reason access is not proven.
+ * Setup runs it before creating a Source, and doctor runs it whenever the
+ * provider is merely present (Secret Service, Credential Manager).
+ */
+export const proveCredentialStorage = (
+  machine: MachineState["Service"],
+): Effect.Effect<void, string> =>
+  Effect.acquireUseRelease(
+    machine.storeCredential({
+      name: `canonfig-probe:${randomUUID()}`,
+      value: Redacted.make(credentialProbeValue),
+    }).pipe(Effect.mapError((cause) => `store: ${credentialFailureDetail(cause)}`)),
+    (reference) =>
+      machine.loadCredential({ reference }).pipe(
+        Effect.mapError((cause) => `read-back: ${credentialFailureDetail(cause)}`),
+        Effect.flatMap((loaded) =>
+          Redacted.value(loaded) === credentialProbeValue
+            ? Effect.void
+            : Effect.fail("read-back: the provider returned different bytes than were stored")
+        ),
+      ),
+    (reference) => machine.removeCredential(reference).pipe(Effect.ignore),
+  );
+
+/**
+ * Presence is not permission: a provider that is only present passes once a
+ * disposable write in this session proved it (`session-probe`). The caller
+ * runs `proveCredentialStorage` and passes its failure as `probeFailure`.
+ */
 export const credentialReadiness = (
   capability: CredentialStorageCapability,
-  evidence: CredentialAccessEvidence = { enrolledCredentialLoaded: false },
+  probeFailure?: string,
 ): DoctorProbe => {
   switch (capability.kind) {
-    case "secure-noninteractive":
+    case "secure-noninteractive": {
       if (capability.verification === "session-probe") {
         return {
           name: "credentials",
@@ -31,33 +63,24 @@ export const credentialReadiness = (
           },
         };
       }
-      if (evidence.enrolledCredentialLoaded) {
-        return {
-          name: "credentials",
-          status: "pass",
-          message: "native credential provider returned the enrolled follower credential in this session; write access is not verified",
-          details: {
-            kind: capability.kind,
-            provider: capability.provider,
-            verification: "credential-load",
-            readAccessVerified: true,
-            writeAccessVerified: false,
-            unattendedAccessVerified: false,
-          },
-        };
-      }
+      // One readable sentence with what to do; the provider's raw error goes to `details.reason`.
+      const recovery = "Canonfig could not save a test value in this machine's credential store. Start and unlock "
+        + "this user's keyring, then run the checks again.";
       return {
         name: "credentials",
         status: "warning",
-        message: "native credential provider is present; write and unattended access are not verified",
+        message: recovery,
         details: {
           kind: capability.kind,
           provider: capability.provider,
-          verification: "provider-presence",
+          verification: "session-probe-failed",
           writeAccessVerified: false,
           unattendedAccessVerified: false,
+          reason: probeFailure ?? "the test write was not attempted",
+          recovery,
         },
       };
+    }
     case "local-file":
       return {
         name: "credentials",

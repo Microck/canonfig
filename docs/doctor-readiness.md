@@ -22,9 +22,14 @@ harmless, and real credential values never take this path. The capability
 reports `secure-noninteractive/keychain` with evidence `session-probe` only
 after the full lifecycle succeeds in the very session that will write
 credentials. The probe item is always deleted, including after a partial
-failure, and existing credentials are never read, modified, or deleted. A
-provider that is merely installed still reports the warning labelled
-`provider-presence`.
+failure, and existing credentials are never read, modified, or deleted.
+
+On Linux (Secret Service) and Windows (Credential Manager) the capability only
+reports presence, so the `credentials` probe itself stores a fixed non-secret
+value under a unique `canonfig-probe:<uuid>` name, reads it back, and deletes
+it, through the same calls that store real credentials. Success reports
+`session-probe`; any failed step reports the warning `session-probe-failed`
+with the recovery as its message and the provider's error in `details.reason`.
 
 ## Keychain access per macOS session
 
