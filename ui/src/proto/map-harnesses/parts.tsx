@@ -1,19 +1,54 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { Handle, Position, useStore, type Node, type NodeProps } from "@xyflow/react";
 import { Desktop, Folder, Laptop } from "@/components/icons";
 import { StatusMark } from "@/shared/shared";
 import { cn } from "@/lib/utils";
 import { states, summary, type Harness, type Machine } from "./fixtures";
 import { useActions } from "./actions";
+import { fillStyle } from "@/lib/dither";
+import geminiMonochrome from "./logos/gemini-monochrome.svg";
+
+// Asset colours are identity, never status. Neutral entries have no selected chromatic accent.
+// Provenance and restrictions: docs/research/290-map-harnesses/brand-research.md.
+const brands: Record<string, string> = {
+  "claude-code": "oklch(0.672 0.131 38.8)",
+  codex: "oklch(1 0 0)",
+  cursor: "oklch(0.944 0.001 17.2)",
+  opencode: "oklch(0.949 0 0)",
+  "copilot-cli": "oklch(1 0 0)",
+  amp: "oklch(0.469 0.047 129.6)",
+  "factory-droid": "oklch(1 0 0)",
+  "grok-build": "oklch(1 0 0)",
+  "oh-my-pi": "oklch(0.705 0.187 47.6)",
+  pi: "oklch(0.751 0.119 29)",
+  kimi: "oklch(1 0 0)",
+  qwen: "oklch(0.479 0.295 264.6)",
+  gemini: "oklch(1 0 0)",
+};
+function brandStyle(id: string): CSSProperties {
+  return { "--brand": brands[id], "--brand-ink": id === "amp" || id === "qwen" ? "oklch(1 0 0)" : "oklch(0 0 0)" } as CSSProperties;
+}
+
+const glyphDither = fillStyle("gradient", { color: "var(--foreground)", cell: 1, edge: "bottom", length: 18, from: 1, to: 0.375 });
+const cardDither = fillStyle("gradient", { color: "var(--brand)", cell: 1.5, edge: "bottom", length: 32, from: 0.5, to: 0 });
 
 export type MapNode = Node<{ machine: Machine; expanded: boolean }, "machine">;
 export type MapNodeProps = NodeProps<MapNode>;
 const logoFiles = import.meta.glob<string>("./logos/*.png", { eager: true, import: "default" });
+// Gemini's colour icon has an opaque backdrop; its supplied monochrome asset preserves the glyph.
+const logoMasks: Record<string, string> = { ...logoFiles, "./logos/gemini.png": geminiMonochrome };
 
 export function HarnessLogo({ harness }: { harness: Harness }) {
-  const src = harness.logo ? logoFiles[`./logos/${harness.logo}.png`] : undefined;
-  return <span aria-hidden="true" className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border-strong bg-raised">
-    {src ? <img src={src} width={22} height={22} alt="" className="size-5.5 object-contain" /> : <span className="font-mono text-sm">Ge</span>}
+  const file = `./logos/${harness.logo}.png`;
+  const src = logoFiles[file];
+  const mask = { maskImage: `url("${logoMasks[file]}")`, maskSize: "contain", maskRepeat: "no-repeat", maskPosition: "center" };
+  return <span aria-hidden="true" className="relative grid size-8 shrink-0 place-items-center overflow-hidden rounded-md border border-border-strong bg-raised" style={brandStyle(harness.id)}>
+    <span style={{ display: "var(--logo-original, block)" }}><img src={src} width={22} height={22} alt="" className="size-5.5 object-contain" /></span>
+    <span className="size-5.5" style={{ ...mask, display: "var(--logo-mono, none)", backgroundColor: "var(--foreground)" }} />
+    <span className="relative size-5.5" style={{ ...mask, display: "var(--logo-dither, none)" }}><span className="absolute inset-0" style={glyphDither} /></span>
+    <span className="absolute inset-0 place-items-center" style={{ display: "var(--logo-tile, none)", backgroundColor: "var(--brand)" }}>
+      <span className="size-5.5" style={{ ...mask, backgroundColor: "var(--brand-ink)" }} />
+    </span>
   </span>;
 }
 export function MachineHeader({ machine, expanded }: { machine: Machine; expanded?: boolean }) {
@@ -48,9 +83,10 @@ export function HarnessCard({ machine, harness, row = false }: { machine: Machin
   const { inspect } = useActions();
   const status = states[harness.state];
   const stale = machine.report === "stale";
-  return <button type="button" className={cn("nodrag nopan flex min-h-[70px] min-w-0 items-center gap-2.5 px-3 text-left hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2", row ? "w-full border-b border-border" : "rounded-lg border border-border-strong bg-raised")} aria-label={`${harness.name} on ${machine.name}: ${stale ? "last reported " : ""}${status.label}. View evidence`} onClick={event => inspect(machine, harness, event.currentTarget)}>
+  return <button type="button" data-harness={harness.id} className={cn("nodrag nopan relative flex min-h-[70px] min-w-0 items-center gap-2.5 overflow-hidden px-3 text-left hover:brightness-110 focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2", row ? "w-full border-b border-border" : "rounded-lg border border-border-strong bg-raised")} style={{ ...brandStyle(harness.id), backgroundColor: "color-mix(in oklab, var(--brand) var(--harness-tint, 0%), var(--raised))", borderColor: "color-mix(in oklab, var(--brand) var(--harness-border-tint, 0%), var(--border-strong))" }} aria-label={`${harness.name} on ${machine.name}: ${stale ? "last reported " : ""}${status.label}. View evidence`} onClick={event => inspect(machine, harness, event.currentTarget)}>
+    <span aria-hidden="true" className="pointer-events-none absolute inset-0" style={{ ...cardDither, display: "var(--card-dither, none)", opacity: "var(--tint-opacity, 0.18)" }} />
     <HarnessLogo harness={harness} />
-    <span className="min-w-0 flex-1"><span className={cn("block font-medium", row ? "[overflow-wrap:anywhere]" : "truncate")}>{harness.name}</span><span className={cn("mt-0.5 flex items-center gap-1.5 text-sm", stale ? "text-muted-foreground" : status.text)}><StatusMark kind={stale ? "offline" : status.kind} />{stale ? "Last: " : ""}{status.label}</span></span>
+    <span className="relative min-w-0 flex-1 rounded-sm px-1" style={{ backgroundColor: "var(--harness-label-fill, transparent)" }}><span className={cn("block font-medium", row ? "[overflow-wrap:anywhere]" : "truncate")}>{harness.name}</span><span data-harness-state={harness.state} className={cn("mt-0.5 flex w-fit items-center gap-1.5 rounded-sm bg-black px-1 text-sm", stale ? "text-muted-foreground" : status.text)}><StatusMark kind={stale ? "offline" : status.kind} />{stale ? "Last: " : ""}{status.label}</span></span>
   </button>;
 }
 export function CanonicalFolder({ source = false }: { source?: boolean }) {

@@ -1,9 +1,8 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import "./picker.css";
 
-const variantNames = ["Film", "Focus", "Rail"];
 
-export function Picker({ current, select, replay }: { current: number; select: (index: number) => void; replay: () => void }) {
+export function Picker({ names, current, select, replay }: { names: string[]; current: number; select: (index: number) => void; replay: () => void }) {
   const picker = useRef<HTMLElement>(null);
   const highlight = useRef<HTMLSpanElement>(null);
   useLayoutEffect(() => {
@@ -28,16 +27,16 @@ export function Picker({ current, select, replay }: { current: number; select: (
       if (target instanceof HTMLElement && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable)) return;
       if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
       const number = parseInt(event.key, 10);
-      if (number >= 1 && number <= variantNames.length) select(number - 1);
-      else if (event.key === "ArrowRight") select((current + 1) % variantNames.length);
-      else if (event.key === "ArrowLeft") select((current - 1 + variantNames.length) % variantNames.length);
+      if (number >= 1 && number <= names.length) select(number - 1);
+      else if (event.key === "ArrowRight") select((current + 1) % names.length);
+      else if (event.key === "ArrowLeft") select((current - 1 + names.length) % names.length);
       else if (event.key === "r" || event.key === "R") replay();
     }
     document.addEventListener("keydown", keydown);
     return () => document.removeEventListener("keydown", keydown);
-  }, [current, select, replay]);
+  }, [current, names, select, replay]);
   return <nav ref={picker} className="proto-picker" aria-label="Prototype variants">
     <span ref={highlight} className="proto-picker-highlight" aria-hidden="true" />
-    {variantNames.map((name, index) => <button key={name} className="proto-picker-item" data-active={index === current ? "" : undefined} aria-current={index === current ? "true" : undefined} onClick={() => select(index)}>{name}</button>)}
+    {names.map((name, index) => <button key={name} className="proto-picker-item" data-active={index === current ? "" : undefined} aria-current={index === current ? "true" : undefined} onClick={() => select(index)}>{name}</button>)}
   </nav>;
 }

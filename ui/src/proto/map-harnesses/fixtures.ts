@@ -48,7 +48,7 @@ export function makeMachines(scenario: string): Machine[] {
     id: `follower-${index + 1}`,
     name: scenario === "worst" && index === 0 ? "buildhost".repeat(18) : `workstation-${String(index + 1).padStart(3, "0")}`,
     platform: ["Linux", "macOS", "Windows"][index % 3], purpose: "Development", report: index % 11 === 10 ? "missing" : index % 7 === 6 ? "stale" : "fresh",
-    harnesses: index % 11 === 10 || index % 9 === 8 ? [] : [...inventory.map((id, n) => ({ ...harness(id, mixedStates[(n + index) % mixedStates.length]), name: scenario === "worst" && n === 0 ? "OpenAI Codex configured for the distributed infrastructure team" : HARNESS_NAMES[id] })), { id: "gemini", name: "Gemini CLI", state: "unsupported" }],
+    harnesses: index % 11 === 10 || index % 9 === 8 ? [] : [...inventory.map((id, n) => ({ ...harness(id, mixedStates[(n + index) % mixedStates.length]), name: scenario === "worst" && n === 0 ? "OpenAI Codex configured for the distributed infrastructure team" : HARNESS_NAMES[id] })), { id: "gemini", name: "Gemini CLI", logo: "gemini", state: "unsupported" }],
   }))];
 }
 export function summary(machine: Machine) {

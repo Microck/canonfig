@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Background, BackgroundVariant, ReactFlow, ReactFlowProvider, useReactFlow, type Edge, type ReactFlowInstance, type Viewport as FlowViewport } from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -57,7 +58,7 @@ async function measurePan(setViewport: ReactFlowInstance["setViewport"], start: 
   return { samples: intervals, median: sorted[Math.floor(sorted.length / 2)], p95: sorted[Math.floor(sorted.length * 0.95)], max: sorted[sorted.length - 1], over33ms: intervals.filter(n => n > 33.34).length };
 }
 
-function Experience({ mode, machines }: { mode: Mode; machines: Machine[] }) {
+function Experience({ mode, machines, embedded = false }: { mode: Mode; machines: Machine[]; embedded?: boolean }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [view, setView] = useState("map");
   const [query, setQuery] = useState("");
@@ -85,13 +86,13 @@ function Experience({ mode, machines }: { mode: Mode; machines: Machine[] }) {
     void fitView({ padding: 0.12, minZoom: 0.025, maxZoom: 0.95, duration: 0 });
   }
   return <Actions value={actions}>
-    <div className="@container flex min-h-[640px] flex-col overflow-hidden rounded-xl border border-border-strong bg-background" data-variant={mode}>
-      <header className="flex flex-wrap items-center gap-2 border-b border-border bg-panel px-4 py-2">
+    <div className={`@container flex flex-col overflow-hidden bg-background ${embedded ? "min-h-0 flex-1" : "min-h-[640px] rounded-xl border border-border-strong"}`} data-variant={mode}>
+      {!embedded && <header className="flex flex-wrap items-center gap-2 border-b border-border bg-panel px-4 py-2">
         <h1 className="mr-3 text-lg font-semibold">Machines</h1>
         <Button variant={view === "map" ? "outline" : "ghost"} className={buttonSize} aria-pressed={view === "map"} onClick={() => setView("map")}>Map</Button>
         <Button variant={view === "list" ? "outline" : "ghost"} className={buttonSize} aria-pressed={view === "list"} onClick={() => setView("list")}>List</Button>
         <p className="ml-auto flex items-center gap-2 text-sm text-muted-foreground"><StatusMark kind={current === machines.length - 1 && current > 0 ? "ok" : "warn"} /><span className="tabular-nums">{current} of {machines.length - 1} followers up to date</span></p>
-      </header>
+      </header>}
       <form className="flex flex-wrap items-end gap-3 border-b border-border px-4 py-3" onSubmit={event => { event.preventDefault(); if (visible[0]) { setSelected(visible[0].id); setView("map"); } }}>
         <label className="min-w-0 flex-1 text-xs text-muted-foreground" htmlFor="machine-search">Find a machine or harness<Input id="machine-search" type="search" value={query} onChange={event => { setQuery(event.target.value); setPage(0); }} autoComplete="off" spellCheck={false} className="mt-1 h-10 text-[16px]" /></label>
         <label className="min-w-0 flex-1 text-xs text-muted-foreground">Inspect machine<select aria-label="Inspect machine" className="mt-1 h-10 w-full rounded-lg border border-input bg-panel px-2 text-[16px] text-foreground focus-visible:outline-2 focus-visible:outline-ring" value={selected ?? ""} onChange={event => { setSelected(event.target.value || null); setView("map"); }}>
@@ -101,7 +102,7 @@ function Experience({ mode, machines }: { mode: Mode; machines: Machine[] }) {
       </form>
       {query && <p role="status" className="border-b border-border px-4 py-2 text-sm text-muted-foreground">{visible.length} matching machines. Search narrows the inspector picker and list; the map keeps fleet context.</p>}
       {view === "map" ? <div className="flex min-h-0 flex-1 flex-col @min-[760px]:flex-row">
-        <div className="relative flex min-w-0 flex-1 flex-col" style={{ height: "min(72vh, 840px)", minHeight: 420 }}>
+        <div className="relative flex min-w-0 flex-1 flex-col" style={{ height: embedded ? undefined : "min(72vh, 840px)", minHeight: embedded ? 240 : 420 }}>
           <div className="min-h-0 flex-1">
           <ReactFlow<MapNode> nodes={graph.nodes} edges={graph.edges} nodeTypes={nodeTypes[mode]} nodesDraggable={false} nodesConnectable={false} nodesFocusable={false} edgesFocusable={false} elementsSelectable={false} minZoom={0.025} maxZoom={1.5} panOnScroll zoomOnScroll={false} preventScrolling={false} onlyRenderVisibleElements colorMode="dark" attributionPosition="top-right">
             <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="var(--border)" />
@@ -140,6 +141,6 @@ function Experience({ mode, machines }: { mode: Mode; machines: Machine[] }) {
     </Dialog>
   </Actions>;
 }
-export function MapExperience(props: { mode: Mode; machines: Machine[] }) {
+export function MapExperience(props: { mode: Mode; machines: Machine[]; embedded?: boolean }) {
   return <ReactFlowProvider><Experience {...props} /></ReactFlowProvider>;
 }

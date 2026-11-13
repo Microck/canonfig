@@ -1,6 +1,6 @@
 // Machines: the map or list, the machine detail panel,
 // adding a machine (invite), changing a machine's groups (new invitation + `enroll --replace`), and revoke.
-import { lazy, Suspense, useEffect, useReducer, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { Fragment, lazy, Suspense, useEffect, useReducer, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { toast } from "sonner";
 import { CaretRight, ListBullets, TreeStructure } from "@/components/icons";
 import { cn, isCoarsePointer } from "@/lib/utils";
@@ -52,6 +52,10 @@ const LazyMachineMap = lazy(() => import("@/shared/machine-map/machine-map").the
 function MachineMap(props: ComponentProps<typeof LazyMachineMap>) {
   return <Suspense fallback={<div className={props.className} />}><LazyMachineMap {...props} /></Suspense>;
 }
+
+// proto:map-harnesses start
+const MapHarnessPrototype = import.meta.env.DEV ? lazy(() => import("@/proto/map-harnesses/in-place").then(m => ({ default: m.InPlace }))) : Fragment;
+// proto:map-harnesses end
 
 const PLATFORM = { macos: "macOS", linux: "Linux", windows: "Windows" } as const;
 
@@ -178,6 +182,8 @@ function SourceMachinesView() {
       <Body page={ws.machinesMode} detail={detail}>
         {map ? (
           <div data-tour="machine-map" className="flex h-full flex-col">
+            {/* proto:map-harnesses start */}
+            <Suspense fallback={<div className="min-h-0 flex-1" />}><MapHarnessPrototype>
             <MachineMap
               role="source"
               followers={ws.followers}
@@ -190,6 +196,8 @@ function SourceMachinesView() {
               onCustomizeChange={setCustomizeId}
               className="min-h-0 flex-1"
             />
+            </MapHarnessPrototype></Suspense>
+            {/* proto:map-harnesses end */}
             <Invitations />
           </div>
         ) : (
@@ -334,6 +342,8 @@ function FollowerMachinesView() {
         ws.navigate(workspaceHref("follower", "machines", { focus: ws.focus }));
       }} /> : undefined}>
         {!self ? <EmptyState title="Enrollment unavailable" body="Reload to read this machine's enrollment." /> : map ? <div data-tour="machine-map" className="flex h-full flex-col">
+          {/* proto:map-harnesses start */}
+          <Suspense fallback={<div className="min-h-0 flex-1" />}><MapHarnessPrototype>
           <MachineMap
             role="follower"
             followers={[self]}
@@ -345,6 +355,8 @@ function FollowerMachinesView() {
             onCustomizeChange={setCustomizeId}
             className="min-h-0 flex-1"
           />
+          </MapHarnessPrototype></Suspense>
+          {/* proto:map-harnesses end */}
         </div> : (
           <div className="min-h-0 overflow-auto">
             <ListHead cols="minmax(112px,240px) 140px minmax(200px,1fr)" minWidth={508}>

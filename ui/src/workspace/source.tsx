@@ -1,5 +1,5 @@
 // Shared Source screens read data and operations from the workspace provider.
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useEffectEvent, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ArrowRight, CalendarDots, Check, Cpu, DotsThree, HourglassMedium, Key, UsersThree, type IconComponent } from "@/components/icons";
 import { Button } from "@/components/ui/button";
@@ -41,6 +41,10 @@ import {
   useLeaveGuard,
 } from "./kit";
 import { TunnelEvidence } from "./follower-evidence";
+
+// proto:map-harnesses start
+const OverviewMapPrototype = import.meta.env.DEV ? lazy(() => import("@/proto/map-harnesses/in-place").then(m => ({ default: m.InPlace }))) : null;
+// proto:map-harnesses end
 
 /** How one unpublished change reads in review lists, and where it is edited: items in their editor, the rest on their Profile tab. */
 function pendingRow(ws: Workspace, p: PendingChange): { icon: IconComponent; name: string; what: React.ReactNode; open: () => void } {
@@ -156,6 +160,9 @@ export function SourceOverview() {
       <PageHeader crumbs={["Overview"]} actions={ws.capabilities.simulatedTelemetry ? <PublishButton /> : <Button size="sm" variant="outline" onClick={ws.reload}>Reload</Button>} />
       <Body>
         <OverviewState />
+        {/* proto:map-harnesses start */}
+        {OverviewMapPrototype && ws.capabilities.simulatedTelemetry && <Suspense fallback={null}><OverviewMapPrototype /></Suspense>}
+        {/* proto:map-harnesses end */}
         {/* Two columns only when the page has room; narrower, the side column moves below instead of squeezing the main one to nothing. */}
         <div className="grid grid-cols-[minmax(0,1fr)] gap-8 px-4 pt-6 pb-20 @3xl:grid-cols-[minmax(0,1fr)_320px] @3xl:gap-12 @3xl:px-8">
           <div className="min-w-0 space-y-8">
