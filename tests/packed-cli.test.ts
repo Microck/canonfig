@@ -907,7 +907,7 @@ describe("packed Canonfig executable", () => {
         status: "unhealthy",
       },
     });
-    expect(envelope.data.probes).toHaveLength(8);
+    expect(envelope.data.probes).toHaveLength(9);
     expect(envelope.data.probes).toContainEqual(expect.objectContaining({
       name: "source",
       status: "fail",
