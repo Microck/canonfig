@@ -1,0 +1,77 @@
+{
+  "focused_initial": {
+    "command": "npm exec vitest run tests/integration/shield.test.ts tests/publication.test.ts tests/projection-adapters.test.ts tests/projection-translation.test.ts tests/cli.test.ts",
+    "passed": 208,
+    "failed": 1,
+    "failure": "Cross-harness patch assertion configured only Claude in its fixture. Added Codex to the declared fixture harnesses; assertion retained."
+  },
+  "shield_follower": {
+    "command": "npm exec -- vitest run tests/integration/shield.test.ts tests/integration/follower-orchestration.test.ts -t Shield",
+    "passed": 6,
+    "filtered_out": 21
+  },
+  "backend_typecheck": {
+    "command": "npm exec -- tsc -p tsconfig.json --noEmit",
+    "exit": 0
+  },
+  "ui_typecheck": {
+    "command": "npm --prefix ui run typecheck",
+    "exit": 0
+  },
+  "ui_lint": {
+    "command": "npm --prefix ui run lint",
+    "exit": 0,
+    "warnings": 73
+  },
+  "gui": {
+    "component": "WorkspaceEvidence",
+    "enabled": "real shield status payload",
+    "pending": "fixture with projected=false, showed sync instruction",
+    "disabled": "fixture with enabled=false, showed Disabled; no horizontal overflow",
+    "screenshot": "shield-status.png",
+    "temporary_files_removed": true,
+    "tab_and_server_closed": true
+  },
+  "focused_final": {
+    "command": "npm exec -- vitest run tests/integration/shield.test.ts tests/integration/follower-orchestration.test.ts tests/publication.test.ts tests/projection-adapters.test.ts tests/projection-translation.test.ts tests/cli.test.ts",
+    "files": 6,
+    "passed": 232,
+    "failed": 0,
+    "seconds": 61.78
+  },
+  "lint": {
+    "command": "npm run lint",
+    "exit": 0,
+    "documentation_examples": 446,
+    "documentation_files": 64,
+    "skills": 3
+  },
+  "ui_tests": {
+    "command": "TSX_TSCONFIG_PATH=ui/tsconfig.app.json node --import tsx --test --test-concurrency=1 ui/src/live/machine-dialogs.test.tsx ui/src/live/resources.test.tsx ui/src/live/review-regressions.test.tsx ui/src/workspace/live/administration.test.tsx ui/src/workspace/live/self-update.test.tsx",
+    "passed": 30,
+    "failed": 0
+  },
+  "website_typecheck": {
+    "command": "npm run website:typecheck",
+    "exit": 127,
+    "error": "fumadocs-mdx: not found",
+    "full_typecheck_pass_claimed": false
+  },
+  "launcher_regression": {
+    "before": "CLI integration test failed because absolute commands were sent to name-only PATH lookup. Inspection also found npx skills install omitted from descendant matching and non-installer forwarding dropping the shim PATH.",
+    "after": "Same regression passed in the 232-test focused run; a nested executable fixture installed only into the Canonical Folder, with no foreign native skill."
+  },
+  "simplification": {
+    "mode": "inline; task prohibits subagents",
+    "reuse": "Shared executable-name/path resolution between shield run and install; existing authoring/import/projection operations retained.",
+    "quality": "No additional behavior-preserving cleanup required.",
+    "efficiency": "No additional behavior-preserving cleanup required.",
+    "independent_review": false
+  },
+  "broad_verification": {
+    "full_suite": "not run locally; Raft hosts lacked headroom",
+    "build": "not run locally; CI requested by PR",
+    "macos_windows_runtime": "not run",
+    "human_testing": "none yet; maintainer to test before merge"
+  }
+}

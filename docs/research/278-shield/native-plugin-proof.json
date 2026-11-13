@@ -1,0 +1,493 @@
+{
+  "steps": [
+    {
+      "command": [
+        "canonfig",
+        "--json",
+        "sync",
+        "--apply"
+      ],
+      "exit": 0,
+      "output": {
+        "schema": "canonfig.cli/v1",
+        "command": "sync.apply",
+        "status": "success",
+        "exitCode": 0,
+        "message": "sync.apply completed",
+        "data": {
+          "diagnostics": [
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "claude-code",
+              "level": "warning",
+              "message": "plugins/claude-code-shield-native-proof is not active; review digest dbe201b0fd4cbd17831ba608b3acf525617007180b7c90283bfaa96be8bf7fe0 first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-cloud-environment is not active; review digest 182c17d35dacc9ad3a34910924950366f552c0db29c1595d1e31b2f596575eed first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-redacted-user-plugin is not active; review digest eac30ef85c16ec57013bf4f3acaecd8e47d8f276b98b2e08f1eb0e60b6c382fa first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-github is not active; review digest 92d221728d7f4a62af43f1ba509db1922d32cc821170a365cf2e1ea32155d2e3 first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-gmail is not active; review digest 5b7ca92f19d8e181003ba785e8059f3b3a441534c1da9a1d372216061fcf49e0 first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-openai-templates is not active; review digest 57639324aa0d6fff2b6d3f9d72e026368df7d8c2c09a44b5a441d2acbf0902c3 first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-pages is not active; review digest dd726deab9d8f6d51495147e26c16df367ed8f009fcd6b57bca212bde61b320b first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-plugin-management is not active; review digest 51a027e77bcb86fda885599c89f1c45d93e981f1d7c80a281b578a6f1fd00357 first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-sites is not active; review digest f60c2c66f9bb8c72315364c15763d7dbb6a0508a25884341015201a0d12b66a8 first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-visualize is not active; review digest f0c36a6adb6f38e271f0b1adcf9f9ab0da83b359a8f209026a24d424a27a7518 first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-work-pets is not active; review digest 1882f4c944b9bc231e702f12f55bc52315c3d116a897669ac6f79c75f7004e6d first"
+            }
+          ],
+          "harnesses": [
+            {
+              "harness": "claude-code",
+              "root": "/tmp/canonfig-shield-278.1PQfGP/shield-proof-dfz8ygmh/.claude"
+            },
+            {
+              "harness": "codex",
+              "root": "/tmp/canonfig-shield-278.1PQfGP/shield-proof-dfz8ygmh/.codex"
+            },
+            {
+              "harness": "opencode",
+              "root": "/tmp/canonfig-shield-278.1PQfGP/shield-proof-dfz8ygmh/.config/opencode"
+            },
+            {
+              "harness": "oh-my-pi",
+              "root": "/tmp/canonfig-shield-278.1PQfGP/shield-proof-dfz8ygmh/.omp/agent"
+            }
+          ],
+          "mode": "apply",
+          "origin": {
+            "digest": "fc6181be7148b376368bbd873411ce3ca829da1d7eac8c78301fca4452b1e6d1",
+            "folder": "/tmp/canonfig-shield-278.1PQfGP/shield-proof-dfz8ygmh/.canonfig"
+          },
+          "outcome": {
+            "outcome": "Converged",
+            "run": "run-9281ea1c-92a6-4144-a689-510e87e5ec9a",
+            "verified": [
+              "harness:agents:skills",
+              "harness:claude-code:instructions",
+              "harness:claude-code:settings",
+              "harness:claude-code:skills",
+              "harness:codex:hooks",
+              "harness:codex:instructions",
+              "harness:oh-my-pi:extension",
+              "harness:oh-my-pi:instructions",
+              "harness:oh-my-pi:skills",
+              "harness:opencode:instructions",
+              "harness:opencode:plugin",
+              "harness:opencode:skills",
+              "runtime:hook-runner:3b838d6c28465ce3ca7c972ea36b57d0928bea3e6bbc3ecaa493a5e014dccd74",
+              "runtime:hook-runner:b4130f2b5bb0629c82f1c706b099d008b8b19c433eaeee189488642e2e39121f",
+              "runtime:hooks:3b838d6c28465ce3ca7c972ea36b57d0928bea3e6bbc3ecaa493a5e014dccd74",
+              "runtime:hooks:b4130f2b5bb0629c82f1c706b099d008b8b19c433eaeee189488642e2e39121f"
+            ]
+          },
+          "shield": {
+            "imported": [
+              "plugins/codex-redacted-user-plugin",
+              "plugins/codex-cloud-environment",
+              "plugins/codex-github",
+              "plugins/codex-gmail",
+              "plugins/codex-openai-templates",
+              "plugins/codex-pages",
+              "plugins/codex-plugin-management",
+              "plugins/codex-sites",
+              "plugins/codex-visualize",
+              "plugins/codex-work-pets"
+            ],
+            "warnings": []
+          },
+          "takeovers": []
+        }
+      },
+      "stderr": ""
+    },
+    {
+      "command": [
+        "canonfig",
+        "--json",
+        "shield",
+        "review",
+        "claude-code-shield-native-proof",
+        "--digest",
+        "dbe201b0fd4cbd17831ba608b3acf525617007180b7c90283bfaa96be8bf7fe0",
+        "--reviewer",
+        "isolated-proof"
+      ],
+      "exit": 0,
+      "output": {
+        "schema": "canonfig.cli/v1",
+        "command": "shield.review",
+        "status": "success",
+        "exitCode": 0,
+        "message": "shield.review completed",
+        "data": {
+          "digest": "dbe201b0fd4cbd17831ba608b3acf525617007180b7c90283bfaa96be8bf7fe0",
+          "next": "canonfig sync --apply",
+          "plugin": "claude-code-shield-native-proof",
+          "published": false,
+          "reviewer": "isolated-proof"
+        }
+      },
+      "stderr": ""
+    },
+    {
+      "command": [
+        "canonfig",
+        "--json",
+        "sync",
+        "--apply"
+      ],
+      "exit": 0,
+      "output": {
+        "schema": "canonfig.cli/v1",
+        "command": "sync.apply",
+        "status": "success",
+        "exitCode": 0,
+        "message": "sync.apply completed",
+        "data": {
+          "diagnostics": [
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-cloud-environment is not active; review digest 182c17d35dacc9ad3a34910924950366f552c0db29c1595d1e31b2f596575eed first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-redacted-user-plugin is not active; review digest eac30ef85c16ec57013bf4f3acaecd8e47d8f276b98b2e08f1eb0e60b6c382fa first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-github is not active; review digest 92d221728d7f4a62af43f1ba509db1922d32cc821170a365cf2e1ea32155d2e3 first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-gmail is not active; review digest 5b7ca92f19d8e181003ba785e8059f3b3a441534c1da9a1d372216061fcf49e0 first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-openai-templates is not active; review digest 57639324aa0d6fff2b6d3f9d72e026368df7d8c2c09a44b5a441d2acbf0902c3 first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-pages is not active; review digest dd726deab9d8f6d51495147e26c16df367ed8f009fcd6b57bca212bde61b320b first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-plugin-management is not active; review digest 51a027e77bcb86fda885599c89f1c45d93e981f1d7c80a281b578a6f1fd00357 first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-sites is not active; review digest f60c2c66f9bb8c72315364c15763d7dbb6a0508a25884341015201a0d12b66a8 first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-visualize is not active; review digest f0c36a6adb6f38e271f0b1adcf9f9ab0da83b359a8f209026a24d424a27a7518 first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-work-pets is not active; review digest 1882f4c944b9bc231e702f12f55bc52315c3d116a897669ac6f79c75f7004e6d first"
+            }
+          ],
+          "harnesses": [
+            {
+              "harness": "claude-code",
+              "root": "/tmp/canonfig-shield-278.1PQfGP/shield-proof-dfz8ygmh/.claude"
+            },
+            {
+              "harness": "codex",
+              "root": "/tmp/canonfig-shield-278.1PQfGP/shield-proof-dfz8ygmh/.codex"
+            },
+            {
+              "harness": "opencode",
+              "root": "/tmp/canonfig-shield-278.1PQfGP/shield-proof-dfz8ygmh/.config/opencode"
+            },
+            {
+              "harness": "oh-my-pi",
+              "root": "/tmp/canonfig-shield-278.1PQfGP/shield-proof-dfz8ygmh/.omp/agent"
+            }
+          ],
+          "mode": "apply",
+          "origin": {
+            "digest": "1b4a748c3c57642393e718250abfc197a11af30c1bbfeab3f9be0a593ac14b68",
+            "folder": "/tmp/canonfig-shield-278.1PQfGP/shield-proof-dfz8ygmh/.canonfig"
+          },
+          "outcome": {
+            "outcome": "Converged",
+            "run": "run-b0826c5c-721b-49a8-bf0a-5b189030860e",
+            "verified": [
+              "harness:agents:skills",
+              "harness:claude-code:instructions",
+              "harness:claude-code:settings",
+              "harness:claude-code:skills",
+              "harness:codex:hooks",
+              "harness:codex:instructions",
+              "harness:oh-my-pi:extension",
+              "harness:oh-my-pi:instructions",
+              "harness:oh-my-pi:skills",
+              "harness:opencode:instructions",
+              "harness:opencode:plugin",
+              "harness:opencode:skills",
+              "runtime:hook-runner:b4130f2b5bb0629c82f1c706b099d008b8b19c433eaeee189488642e2e39121f",
+              "runtime:hooks:b4130f2b5bb0629c82f1c706b099d008b8b19c433eaeee189488642e2e39121f"
+            ]
+          },
+          "shield": {
+            "imported": [],
+            "warnings": []
+          },
+          "takeovers": []
+        }
+      },
+      "stderr": ""
+    },
+    {
+      "command": [
+        "canonfig",
+        "--json",
+        "sync",
+        "--apply"
+      ],
+      "exit": 0,
+      "output": {
+        "schema": "canonfig.cli/v1",
+        "command": "sync.apply",
+        "status": "success",
+        "exitCode": 0,
+        "message": "sync.apply completed",
+        "data": {
+          "diagnostics": [
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-cloud-environment is not active; review digest 182c17d35dacc9ad3a34910924950366f552c0db29c1595d1e31b2f596575eed first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-redacted-user-plugin is not active; review digest eac30ef85c16ec57013bf4f3acaecd8e47d8f276b98b2e08f1eb0e60b6c382fa first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-github is not active; review digest 92d221728d7f4a62af43f1ba509db1922d32cc821170a365cf2e1ea32155d2e3 first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-gmail is not active; review digest 5b7ca92f19d8e181003ba785e8059f3b3a441534c1da9a1d372216061fcf49e0 first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-openai-templates is not active; review digest 57639324aa0d6fff2b6d3f9d72e026368df7d8c2c09a44b5a441d2acbf0902c3 first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-pages is not active; review digest dd726deab9d8f6d51495147e26c16df367ed8f009fcd6b57bca212bde61b320b first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-plugin-management is not active; review digest 51a027e77bcb86fda885599c89f1c45d93e981f1d7c80a281b578a6f1fd00357 first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-sites is not active; review digest f60c2c66f9bb8c72315364c15763d7dbb6a0508a25884341015201a0d12b66a8 first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-visualize is not active; review digest f0c36a6adb6f38e271f0b1adcf9f9ab0da83b359a8f209026a24d424a27a7518 first"
+            },
+            {
+              "code": "PLUGIN_REVIEW_REQUIRED",
+              "harness": "codex",
+              "level": "warning",
+              "message": "plugins/codex-work-pets is not active; review digest 1882f4c944b9bc231e702f12f55bc52315c3d116a897669ac6f79c75f7004e6d first"
+            }
+          ],
+          "harnesses": [
+            {
+              "harness": "claude-code",
+              "root": "/tmp/canonfig-shield-278.1PQfGP/shield-proof-dfz8ygmh/.claude"
+            },
+            {
+              "harness": "codex",
+              "root": "/tmp/canonfig-shield-278.1PQfGP/shield-proof-dfz8ygmh/.codex"
+            },
+            {
+              "harness": "opencode",
+              "root": "/tmp/canonfig-shield-278.1PQfGP/shield-proof-dfz8ygmh/.config/opencode"
+            },
+            {
+              "harness": "oh-my-pi",
+              "root": "/tmp/canonfig-shield-278.1PQfGP/shield-proof-dfz8ygmh/.omp/agent"
+            }
+          ],
+          "mode": "apply",
+          "origin": {
+            "digest": "43c3dc3c6e147281a94232ab31e15a75d97e9b5c53724cca45ffaa0bea70aac5",
+            "folder": "/tmp/canonfig-shield-278.1PQfGP/shield-proof-dfz8ygmh/.canonfig"
+          },
+          "outcome": {
+            "outcome": "Converged",
+            "run": "run-32c0b1a0-21c0-4fec-a15b-bf5c2586489c",
+            "verified": [
+              "harness:agents:skills",
+              "harness:claude-code:instructions",
+              "harness:claude-code:settings",
+              "harness:claude-code:skills",
+              "harness:codex:hooks",
+              "harness:codex:instructions",
+              "harness:oh-my-pi:extension",
+              "harness:oh-my-pi:instructions",
+              "harness:oh-my-pi:skills",
+              "harness:opencode:instructions",
+              "harness:opencode:plugin",
+              "harness:opencode:skills",
+              "runtime:hook-runner:b4130f2b5bb0629c82f1c706b099d008b8b19c433eaeee189488642e2e39121f",
+              "runtime:hooks:b4130f2b5bb0629c82f1c706b099d008b8b19c433eaeee189488642e2e39121f"
+            ]
+          },
+          "shield": {
+            "imported": [
+              "skills/shield-direct-proof"
+            ],
+            "warnings": [
+              "/tmp/canonfig-shield-278.1PQfGP/shield-proof-dfz8ygmh/.claude/skills/shield-native-proof: Missing SKILL.md. Add a SKILL.md file with a name and description to import this skill."
+            ]
+          },
+          "takeovers": []
+        }
+      },
+      "stderr": ""
+    },
+    {
+      "command": [
+        "canonfig",
+        "--json",
+        "shield",
+        "status"
+      ],
+      "exit": 0,
+      "output": {
+        "schema": "canonfig.cli/v1",
+        "command": "shield.status",
+        "status": "success",
+        "exitCode": 0,
+        "message": "shield.status completed",
+        "data": {
+          "destination": "/tmp/canonfig-shield-278.1PQfGP/shield-proof-dfz8ygmh/.canonfig",
+          "enabled": true,
+          "excludedPlugins": [],
+          "hard": false,
+          "note": "Hooks apply after sync and client reload. Hard protection applies only to shield run. Mixed config files stay writable for native authentication.",
+          "projected": true,
+          "scope": "canonical"
+        }
+      },
+      "stderr": ""
+    }
+  ],
+  "inactive_before_review": true,
+  "payload_after_review": "import { writeFileSync } from \"node:fs\";\nwriteFileSync(process.env.HOME + \"/native-hook-proof\", \"reviewed hook executed\\n\");\n",
+  "native_list": {
+    "exit": 0,
+    "stdout": "[\n  {\n    \"id\": \"shield-native-proof@skills-dir\",\n    \"version\": \"1.0.0\",\n    \"scope\": \"user\",\n    \"enabled\": true,\n    \"installPath\": \"/tmp/canonfig-shield-278.1PQfGP/shield-proof-dfz8ygmh/.claude/skills/shield-native-proof\"\n  }\n]\n",
+    "stderr": ""
+  },
+  "session_start_hook": {
+    "exit": 1,
+    "marker_exists": true,
+    "marker": "reviewed hook executed\n",
+    "stderr": ""
+  },
+  "direct_before": {
+    "canonical": false,
+    "native": true
+  },
+  "direct_after": {
+    "canonical": "---\nname: shield-direct-proof\ndescription: Direct-write ingestion proof\n---\nThis is a harmless fixture.\n",
+    "claude": "---\nname: shield-direct-proof\ndescription: Direct-write ingestion proof\n---\nThis is a harmless fixture.\n",
+    "shared_codex_reader": "---\nname: shield-direct-proof\ndescription: Direct-write ingestion proof\n---\nThis is a harmless fixture.\n",
+    "opencode": "---\nname: shield-direct-proof\ndescription: Direct-write ingestion proof\n---\nThis is a harmless fixture.\n",
+    "omp": "---\nname: shield-direct-proof\ndescription: Direct-write ingestion proof\n---\nThis is a harmless fixture.\n"
+  }
+}

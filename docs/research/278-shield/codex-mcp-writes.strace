@@ -1,0 +1,3 @@
+3160126 mkdirat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-codex-mcp/.codex", 0777) = 0
+3160126 openat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-codex-mcp/.codex/.tmpzwXuqv", O_RDWR|O_CREAT|O_EXCL|O_LARGEFILE|O_CLOEXEC, 0600) = 9
+3160126 renameat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-codex-mcp/.codex/.tmpzwXuqv", AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-codex-mcp/.codex/config.toml") = 0
