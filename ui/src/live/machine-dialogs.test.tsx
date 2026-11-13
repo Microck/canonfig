@@ -206,3 +206,21 @@ it("ordinary invitation captures its submitted values and starts a fresh invitat
     assert.ok(!document.querySelector('[role="dialog"]')?.textContent?.includes("captured.json"));
   } finally { await app.close(); }
 });
+
+it("invitation address starts as the Source service's address once it has loaded", async () => {
+  // The invitation dialog is mounted before the service report arrives, as on a real page load.
+  const app = await fixture((path, _body, outgoing) => {
+    if (path !== "/api/source-service") return false;
+    outgoing.end(JSON.stringify({ report: { state: "running", platform: "linux", mechanism: "systemd-user-service", serviceName: "dialog-fixture", endpoint: "https://127.0.0.1:17342", manager: { installed: true, matches: true, enabled: true, active: true, state: "running" }, serving: true, supportedModes: "", logs: "", detail: "" }, error: null }));
+    return true;
+  });
+  try {
+    await click("Add machine");
+    assert.equal(document.querySelector<HTMLInputElement>("#inv-ep")?.value, "https://127.0.0.1:17342");
+    await fill("#inv-ep", "https://source.example");
+    await click("Cancel");
+    await click("Add machine");
+    // What was typed last time is kept.
+    assert.equal(document.querySelector<HTMLInputElement>("#inv-ep")?.value, "https://source.example");
+  } finally { await app.close(); }
+});

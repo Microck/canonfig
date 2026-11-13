@@ -795,7 +795,8 @@ function InviteForm() {
   useEffect(() => () => window.clearTimeout(creating.current), []);
   const { name, endpoint, expiry, groups, outDir, inviteId, tried } = state.draft;
   const edit = (patch: Partial<InviteDraft>) => dispatch({ type: "edit", patch });
-  const reset = () => dispatch({ type: "open", draft: freshDraft(endpoint, outDir) });
+  // The dialog mounts before the service report loads, so an empty address takes the Source's on each open; a typed one is kept.
+  const reset = () => dispatch({ type: "open", draft: freshDraft(endpoint || ws.endpoint, outDir) });
   const busy = state.phase === "submitting";
   const error = state.phase === "failed" ? state.error : null;
   const result = state.phase === "created" ? {
