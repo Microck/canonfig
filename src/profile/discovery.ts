@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
-import { basename, delimiter, extname, join, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { basename, delimiter, dirname, extname, join, resolve, sep } from "node:path";
 
 import { Effect, Schema } from "effect";
 import { parse as parseToml } from "smol-toml";
@@ -107,6 +108,34 @@ const executableMatches = async (
     if (!matches.includes(candidate) && await isExecutableFile(candidate)) matches.push(candidate);
   }
   return matches;
+};
+
+/**
+ * Whether a word names an installed program, cached for one scan. Inline code in prose and commands
+ * after a pipe count only when it does: skills and rules use inline code for plenty that is not a
+ * command (`middleware`, `--modal-ease`, `mix-blend-mode: multiply`), and usage text in shell blocks
+ * writes alternatives as `auto|full`. The same words recur across files, so each is looked up once.
+ */
+const installedLookup = (pathValue: string): ((executable: string) => Promise<boolean>) => {
+  const windowsExtensions = process.platform === "win32"
+    ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter((extension) => extension.length > 0).map((extension) => extension.toLowerCase())
+    : [];
+  const cache = new Map<string, Promise<boolean>>();
+  const lookup = async (executable: string): Promise<boolean> => {
+    const names = extname(executable) === "" ? [executable, ...windowsExtensions.map((extension) => `${executable}${extension}`)] : [executable];
+    for (const name of names) {
+      if ((await executableMatches(name, pathValue)).length > 0) return true;
+    }
+    return false;
+  };
+  return (executable) => {
+    let installed = cache.get(executable);
+    if (installed === undefined) {
+      installed = lookup(executable);
+      cache.set(executable, installed);
+    }
+    return installed;
+  };
 };
 
 const maximumDigestBytes = 64 * 1024 * 1024;
@@ -222,6 +251,128 @@ const stripEnvironmentPrefix = (tokens: ReadonlyArray<string>): ReadonlyArray<st
   if (tokens[index] === "env") index += 1;
   while (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(tokens[index] ?? "")) index += 1;
   return tokens.slice(index);
+};
+
+/** Keywords that come before a command in the same segment, such as `if` in `if rg --version; then`. */
+const GUARD_WORDS: Readonly<Record<string, true>> = Object.fromEntries(
+  ["if", "then", "else", "elif", "while", "until", "do", "time", "!", "{"].map((word) => [word, true]),
+);
+/** Shell keywords and builtins: words that start a command but are never a program to install. */
+const SHELL_WORDS: Readonly<Record<string, true>> = Object.fromEntries([
+  "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "in", "function",
+  "select", "time", "return", "exit", "export", "local", "readonly", "declare", "typeset", "set", "unset", "shift",
+  "source", "eval", "exec", "builtin", "command", "cd", "pushd", "popd", "echo", "printf", "read", "test", "true",
+  "false", "trap", "alias", "unalias", "let", "wait", "break", "continue", "type", "hash", "getopts", "umask", "ulimit",
+].map((word) => [word, true]));
+
+/** Functions a shell text defines (`name() {` or `function name`): calling one does not run a program. */
+const shellFunctionNames = (text: string): Readonly<Record<string, true>> => Object.fromEntries(
+  [...text.matchAll(/^\s*(?:function\s+([A-Za-z_][A-Za-z0-9_-]*)|([A-Za-z_][A-Za-z0-9_-]*)\s*\(\s*\))/gmu)]
+    .map((match) => [match[1] ?? match[2]!, true]),
+);
+
+/** Splits a shell line on `&&`, `||`, `;` and `|` outside quotes, noting which parts follow a pipe. */
+const splitShellLine = (line: string): ReadonlyArray<{ readonly text: string; readonly afterPipe: boolean }> => {
+  const parts: Array<{ text: string; afterPipe: boolean }> = [];
+  let current = "";
+  let afterPipe = false;
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index]!;
+    // Quotes and escapes follow `tokenize`: a backslash outside single quotes makes the next character literal.
+    if (escaped) {
+      escaped = false;
+      current += character;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      current += character;
+      continue;
+    }
+    if (quote !== null) {
+      if (character === quote) quote = null;
+      current += character;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      current += character;
+      continue;
+    }
+    const next = line[index + 1];
+    const doubled = (character === "&" || character === "|") && next === character;
+    if (doubled || character === ";" || character === "|") {
+      parts.push({ text: current, afterPipe });
+      current = "";
+      afterPipe = character === "|" && !doubled;
+      if (doubled) index += 1;
+      continue;
+    }
+    current += character;
+  }
+  parts.push({ text: current, afterPipe });
+  return parts;
+};
+
+/**
+ * The commands in shell text, one per logical line, with the line each starts on. A trailing
+ * backslash joins the next line, heredoc bodies are skipped, and a `case` arm's pattern is not a
+ * command. A command counts only when its first word could name a program: it starts with a letter,
+ * has no `$`, `>` or `[`, is not a shell keyword, builtin or function the text defines, and is not
+ * followed by `=`. Without this, `--app "$ID" \`, `case "$1" in`, `2> err.log`, `die "msg"` and
+ * `rg '(TODO|FIXME)'` became tools. `afterPipe` marks a command the caller must find installed.
+ */
+const shellCommands = (
+  lines: ReadonlyArray<{ readonly text: string; readonly line: number }>,
+  functions: Readonly<Record<string, true>>,
+): ReadonlyArray<{ readonly line: number; readonly invocation: ReadonlyArray<string>; readonly executable: string; readonly afterPipe: boolean }> => {
+  const commands: Array<{ line: number; invocation: ReadonlyArray<string>; executable: string; afterPipe: boolean }> = [];
+  let pending = "";
+  let start = 0;
+  let heredoc: string | undefined;
+  let caseDepth = 0;
+  for (const { text, line } of lines) {
+    if (heredoc !== undefined) {
+      if (text.trim() === heredoc) heredoc = undefined;
+      continue;
+    }
+    if (pending.length === 0) start = line;
+    const trimmed = text.trim();
+    if (trimmed.endsWith("\\")) {
+      pending += `${trimmed.slice(0, -1)} `;
+      continue;
+    }
+    let logical = `${pending}${trimmed}`;
+    pending = "";
+    if (logical.length === 0 || logical.startsWith("#")) continue;
+    if (/^case\s/u.test(logical)) caseDepth += 1;
+    if (/^esac\b/u.test(logical)) caseDepth = Math.max(0, caseDepth - 1);
+    // Inside `case`, `pattern|other)` opens an arm; only what follows it can be a command.
+    if (caseDepth > 0) logical = logical.replace(/^\(?[^()\s]*\)\s*/u, "");
+    // `<<<word` is a here-string, not a heredoc: it ends on the same line. `<<` inside a quoted argument, as in
+    // `rg '<<EOF' templates`, is text; only a quoted delimiter right after `<<` (`<<'EOF'`) stays. A backslash
+    // escape (`\"`) is consumed first so an escaped quote does not open a quoted argument.
+    const unquoted = logical.replace(
+      /(<<-?\s*)?('[^']*'|"(?:\\.|[^"\\])*")|\\./gu,
+      (match, redirect: string | undefined, quoted: string | undefined) => (quoted !== undefined && redirect === undefined ? " " : match),
+    );
+    heredoc = /(?<!<)<<(?!<)-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/u.exec(unquoted)?.[1];
+    for (const part of splitShellLine(logical)) {
+      // A control keyword guards the command after it: `if npm install tool; then` still runs npm.
+      let invocation = tokenize(part.text);
+      while (invocation[0] !== undefined && GUARD_WORDS[invocation[0]] === true) invocation = invocation.slice(1);
+      const words = stripEnvironmentPrefix(invocation);
+      const executable = words[0];
+      if (
+        executable === undefined || !/^[A-Za-z][A-Za-z0-9._+-]*$/u.test(executable)
+        || SHELL_WORDS[executable] === true || functions[executable] === true || words[1]?.startsWith("=") === true
+      ) continue;
+      commands.push({ line: start, invocation, executable, afterPipe: part.afterPipe });
+    }
+  }
+  return commands;
 };
 
 interface ParsedPackageSpecification {
@@ -419,6 +570,7 @@ interface EvidenceContext {
   readonly sourcePath: string;
   readonly fileKind: DiscoveryFileKind;
   readonly pathValue: string;
+  readonly installed: (executable: string) => Promise<boolean>;
 }
 
 const invocationEvidence = async (
@@ -456,6 +608,22 @@ const invocationEvidence = async (
   };
 };
 
+/** Evidence for the commands in shell text; a command after a pipe counts only when it is installed. */
+const shellEvidence = async (
+  context: EvidenceContext,
+  lines: ReadonlyArray<{ readonly text: string; readonly line: number }>,
+  functions: Readonly<Record<string, true>>,
+  kindOverride?: DiscoverySourceKind,
+): Promise<ReadonlyArray<ToolDiscoveryEvidence>> => {
+  const records: Array<ToolDiscoveryEvidence> = [];
+  for (const { line, invocation, executable, afterPipe } of shellCommands(lines, functions)) {
+    if (afterPipe && !(await context.installed(executable))) continue;
+    const record = await invocationEvidence(context, invocation, { kind: "line", line }, true, kindOverride);
+    if (record !== undefined) records.push(record);
+  }
+  return records;
+};
+
 const scanMarkdown = async (
   context: EvidenceContext,
   text: string,
@@ -467,12 +635,21 @@ const scanMarkdown = async (
   const skills = new Map<string, DiscoveredSkill>();
   let fenced = false;
   let executableFence = false;
+  // A shell fence is parsed whole when it closes, so continued lines and heredocs read as the shell reads them.
+  let shellBlock: Array<{ text: string; line: number }> = [];
+  // A function one shell block defines may be called from another block in the same document.
+  const functions = shellFunctionNames(text);
+  const flushShellBlock = async (): Promise<void> => {
+    evidence.push(...await shellEvidence(context, shellBlock, functions));
+    shellBlock = [];
+  };
   const lines = text.split(/\r?\n/u);
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
     const fence = /^\s*```([A-Za-z0-9_-]*)/u.exec(line);
     if (fence !== null) {
       if (fenced) {
+        await flushShellBlock();
         fenced = false;
         executableFence = false;
       } else {
@@ -484,24 +661,19 @@ const scanMarkdown = async (
       continue;
     }
     if (fenced && executableFence) {
-      const commands = line
-        .split(/\s*(?:&&|\|\||;|\|)\s*/u)
-        .map(tokenize)
-        .filter((tokens) => tokens.length > 0 && !tokens[0]!.startsWith("#"));
-      for (const invocation of commands) {
-        const record = await invocationEvidence(
-          context,
-          invocation,
-          { kind: "line", line: index + 1 },
-          true,
-        );
-        if (record !== undefined) evidence.push(record);
-      }
+      shellBlock.push({ text: line, line: index + 1 });
       continue;
     }
     if (!fenced) {
       for (const match of line.matchAll(/`([^`\r\n]+)`/gu)) {
         const invocation = tokenize(match[1] ?? "");
+        const executable = stripEnvironmentPrefix(invocation)[0];
+        // Unlike a shell command, inline code may name a script by path (`./run.sh`), so only characters no
+        // command name or path holds rule a span out before the filesystem lookup.
+        if (
+          executable === undefined || !/^[A-Za-z0-9._+~/\\-]+$/u.test(executable) || SHELL_WORDS[executable] === true
+          || !(await context.installed(executable))
+        ) continue;
         const record = await invocationEvidence(
           context,
           invocation,
@@ -531,6 +703,7 @@ const scanMarkdown = async (
       }
     }
   }
+  await flushShellBlock();
   return { evidence, skills: [...skills.values()] };
 };
 
@@ -1021,32 +1194,14 @@ const scanShell = async (
   context: EvidenceContext,
   text: string,
 ): Promise<ReadonlyArray<ToolDiscoveryEvidence>> => {
-  const records: Array<ToolDiscoveryEvidence> = [];
-  const lines = text.split(/\r?\n/u);
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]?.trim() ?? "";
-    if (line.length === 0 || line.startsWith("#")) continue;
-    const invocations = line
-      .split(/\s*(?:&&|\|\||;|\|)\s*/u)
-      .map(tokenize)
-      .filter((tokens) => tokens.length > 0);
-    for (const invocation of invocations) {
-      const record = await invocationEvidence(
-        context,
-        invocation,
-        { kind: "line", line: index + 1 },
-        true,
-        context.fileKind === "hooks" ? "hook" : undefined,
-      );
-      if (record !== undefined) records.push(record);
-    }
-  }
-  return records;
+  const lines = text.split(/\r?\n/u).map((line, index) => ({ text: line, line: index + 1 }));
+  return shellEvidence(context, lines, shellFunctionNames(text), context.fileKind === "hooks" ? "hook" : undefined);
 };
 
 const scanOne = (
   file: DiscoveryFile,
   pathValue: string,
+  installed: (executable: string) => Promise<boolean>,
 ): Effect.Effect<{
   readonly path: string;
   readonly evidence: ReadonlyArray<ToolDiscoveryEvidence>;
@@ -1056,7 +1211,7 @@ const scanOne = (
     const path = resolve(file.path);
     const text = yield* readDiscoveryFile(path);
     const fileKind = file.kind ?? inferFileKind(path);
-    const context: EvidenceContext = { sourcePath: path, fileKind, pathValue };
+    const context: EvidenceContext = { sourcePath: path, fileKind, pathValue, installed };
     if (fileKind === "agents" || extname(path).toLowerCase() === ".md") {
       const result = yield* Effect.promise(() => scanMarkdown(context, text));
       return { path, ...result };
@@ -1093,9 +1248,12 @@ export const scanDiscovery = (
   if (input.files.length === 0) {
     return Effect.fail(new InvalidDiscoveryInputError({ reason: "at least one discovery file is required" }));
   }
-  const pathValue = input.path ?? process.env.PATH ?? "";
+  // Without an explicit PATH, also search the running Node's folder and ~/.local/bin, where npm and uv install
+  // tools: a Canonfig started by a service manager often lacks them on PATH. An explicit PATH is used as given.
+  const pathValue = input.path ?? [process.env.PATH ?? "", dirname(process.execPath), join(homedir(), ".local", "bin")].join(delimiter);
+  const installed = installedLookup(pathValue);
   const files = [...input.files].sort((left, right) => compareText(resolve(left.path), resolve(right.path)));
-  return Effect.forEach(files, (file) => scanOne(file, pathValue), { concurrency: 4 }).pipe(
+  return Effect.forEach(files, (file) => scanOne(file, pathValue, installed), { concurrency: 4 }).pipe(
     Effect.map((scans) => {
       const catalog = buildToolCatalog(
         scans.flatMap((scan) => scan.evidence),

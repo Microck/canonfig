@@ -38,9 +38,12 @@ describe("profile discovery", () => {
   };
 
   it("scans executable shell blocks while keeping prose as review-only evidence", async () => {
+    const proseTool = join(fixtureBin, "prose-tool");
+    await writeFile(proseTool, "#!/bin/sh\n");
+    await chmod(proseTool, 0o755);
     const agents = await fixture("AGENTS.md", [
       "# Agent instructions",
-      "Run `prose-only --fast` if you happen to have it.",
+      "Run `prose-tool --fast` if you happen to have it, or `prose-only --fast`.",
       "A plain sentence mentioning imaginary-cli is not an invocation.",
       "```sh",
       "rg --files",
@@ -69,13 +72,14 @@ describe("profile discovery", () => {
       reviewStatus: "accepted",
     });
 
-    const prose = result.tools.find((tool) => tool.id === "prose-only");
+    const prose = result.tools.find((tool) => tool.id === "prose-tool");
     expect(prose).toMatchObject({ recipes: [], reviewStatus: "needs-review" });
     expect(prose?.evidence[0]).toMatchObject({
       kind: "prose",
       confidence: "review",
       reviewStatus: "needs-review",
     });
+    expect(result.tools.some((tool) => tool.id === "prose-only")).toBe(false);
     expect(result.tools.some((tool) => tool.id === "imaginary-cli")).toBe(false);
 
     const npmTool = result.tools.find((tool) => tool.id === "real-cli");
@@ -101,6 +105,63 @@ describe("profile discovery", () => {
         reviewStatus: "needs-review",
       }),
     ]);
+  });
+
+  it("ignores inline code in prose that does not name an installed program", async () => {
+    // Words from real skills and rules: none is a program on this PATH.
+    const skill = await fixture("SKILL.md", [
+      "Wrap handlers in `middleware`, animate with `--modal-ease`, and set `mix-blend-mode: multiply`.",
+      "See `MISSION.md` and `Model → Update(Msg) → (Model, Cmd)` for the loop; `mode: auto` stays on.",
+      "",
+    ].join("\n"));
+    const result = await Effect.runPromise(scanDiscovery({ files: [{ path: skill, kind: "agents" }], path: fixtureBin }));
+    expect(result.tools).toEqual([]);
+  });
+
+  it("reads shell the way the shell does: continued lines, heredocs, keywords and expansions are not tools", async () => {
+    const script = await fixture("init.sh", [
+      "#!/bin/sh",
+      "die() { echo \"$1\" >&2; exit 1; }",
+      "case \"$1\" in",
+      "  start) rg --files ;;",
+      "  finite|open-ended) ;;",
+      "esac",
+      "[ -n \"$SLUG\" ] || die \"--slug is required\"",
+      "secs=$(( ${BASH_REMATCH[1]} * 3600 ))",
+      "builtin cd -- \"$PWD\"",
+      "rg -n '(TODO|FIXME|HACK)' notes.md",
+      "read -r value <<<sample",
+      "rg '<<END' templates",
+      "if rg --version; then true; fi",
+      "cat <<'EOF'",
+      "not-a-command --flag",
+      "EOF",
+      "echo \\\"; cat <<EOF; echo \"done\"",
+      "not-a-command --flag",
+      "EOF",
+      "",
+    ].join("\n"));
+    const doc = await fixture("SKILL.md", [
+      "```bash",
+      "rg \\",
+      "  --app \"$APP_ID\" \\",
+      "  --access-type \"$ACCESS_TYPE\" \\",
+      "  2> \"$DIR/requests.stderr\"",
+      "rg --crop auto|full|x,y,w,h",
+      "clean = f.replace('a', 'b')",
+      "```",
+      "",
+    ].join("\n"));
+    const result = await Effect.runPromise(scanDiscovery({
+      files: [{ path: script, kind: "tool-config" }, { path: doc, kind: "agents" }],
+      path: fixtureBin,
+    }));
+    // Only real programs remain: rg from the continued and guarded commands, and the heredoc's cat.
+    expect(result.tools.map((tool) => tool.id).sort()).toEqual(["cat", "rg"]);
+    const guarded = result.tools.find((tool) => tool.id === "rg")?.evidence.find((evidence) => evidence.sourcePath === script && evidence.location.kind === "line" && evidence.location.line === 13);
+    expect(guarded).toMatchObject({ invocation: ["rg", "--version"] });
+    const continued = result.tools.find((tool) => tool.id === "rg")?.evidence.find((evidence) => evidence.sourcePath === doc);
+    expect(continued).toMatchObject({ location: { kind: "line", line: 2 }, invocation: ["rg", "--app", "$APP_ID", "--access-type", "$ACCESS_TYPE", "2>", "$DIR/requests.stderr"] });
   });
 
   it("discovers hook and MCP command fields with field locations", async () => {
