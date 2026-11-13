@@ -1,3 +1,5 @@
+import { buildIdentity } from "../build-identity.ts";
+import { stateFormatVersion } from "../../state/state-schema.ts";
 import { renderCliResult } from "../../cli/render.ts";
 import { toCliPayload } from "../../cli/command-output.ts";
 import { Predicate } from "effect";
@@ -10,11 +12,13 @@ import type { CliIo } from "../../cli/cli.ts";
 import { updateDirectory } from "./coordination.ts";
 import { disable, enable, installation, update } from "./core.ts";
 
-export const selfUpdateHelp = `Usage: canonfig self-update <enable|disable|status|check|apply|auto> [options]
+export const selfUpdateHelp = `Usage: canonfig self-update <enable|disable|status|check|apply|auto|preflight> [options]
 
-enable --apply --confirm-idle --npm-cli /absolute/path/to/npm/bin/npm-cli.js
+enable --apply --confirm-idle --npm-cli /absolute/path/to/npm/bin/npm-cli.js [--follow-source]
   Stop all Canonfig processes and schedules before first opt-in. Only a user-private
   global npm prefix under your home is supported. No service is installed.
+  --follow-source also authorizes signed Source-selected official releases at the
+  start of sync --apply. Without it, a Fleet Update cannot change this machine.
 disable --apply: stop future updates (only when no coordinated commands are active).
 status: print local opt-in settings and any interrupted update.
 check: query the official npm registry for the newest stable release in this major.
@@ -23,6 +27,7 @@ auto --apply [--once] [--interval SECONDS]: foreground periodic updater (24h def
   Installs current-line stable patches or the newest stable release of a newer
   major. Never installs an in-major minor upgrade. Busy installations defer;
   unfinished syncs block. After activation, restart under the new build.
+preflight: report this executable's exact version and supported state format.
 Source and Followers only pair on the same major.minor: update every machine
 after minor or major changes. A new major may refuse older state; follow its
 startup refusal's recovery instructions. No forced takeover, service restart,
@@ -31,32 +36,33 @@ credential changes or removal of retained package backups.
 `;
 export function parseSelfUpdateArguments(args: readonly string[]) {
   const tokens=args.filter(a=>a!=="--json"&&a!=="--no-input");
-  if(tokens.length===0||tokens.includes("--help")||tokens.includes("-h")||tokens[0]==="help")return {help:true,command:"help",apply:false,idle:false,once:false,npmCli:"",interval:86400};
-  const command=tokens[0];if(!["enable","disable","status","check","apply","auto"].includes(command!))throw new Error("Unknown self-update command");
-  let apply=false,idle=false,once=false,npmCli="",interval=86400,hasInterval=false;const seen=new Set<string>();
+  if(tokens.length===0||tokens.includes("--help")||tokens.includes("-h")||tokens[0]==="help")return {help:true,command:"help",apply:false,idle:false,once:false,npmCli:"",interval:86400,followSource:false};
+  const command=tokens[0];if(!["enable","disable","status","check","apply","auto","preflight"].includes(command!))throw new Error("Unknown self-update command");
+  let apply=false,idle=false,once=false,npmCli="",interval=86400,hasInterval=false,followSource=false;const seen=new Set<string>();
   for(let i=1;i<tokens.length;i++){
    const arg=tokens[i]!;if(seen.has(arg))throw new Error(`Repeated option: ${arg}`);seen.add(arg);
-   if(arg==="--apply")apply=true;else if(arg==="--confirm-idle")idle=true;else if(arg==="--once")once=true;
+   if(arg==="--apply")apply=true;else if(arg==="--confirm-idle")idle=true;else if(arg==="--once")once=true;else if(arg==="--follow-source")followSource=true;
    else if(arg==="--npm-cli"||arg==="--interval"){
     const v=tokens[++i];if(!v||v.startsWith("--"))throw new Error(`${arg} requires a value`);
     if(arg==="--npm-cli")npmCli=v;else {hasInterval=true;interval=Number(v);if(!/^\d+$/u.test(v)||!Number.isInteger(interval)||interval<60||interval>604800)throw new Error("Interval must be 60..604800 seconds");}
    }else throw new Error(`Unknown option: ${arg}`);
   }
   if((once||hasInterval)&&command!=="auto")throw new Error("--once/--interval require auto");
-  if((idle||npmCli)&&command!=="enable")throw new Error("--confirm-idle/--npm-cli require enable");
-  if(apply&&(command==="check"||command==="status"))throw new Error("Read-only command does not accept --apply");
+  if((idle||npmCli||followSource)&&command!=="enable")throw new Error("--confirm-idle/--npm-cli/--follow-source require enable");
+  if(apply&&(command==="check"||command==="status"||command==="preflight"))throw new Error("Read-only command does not accept --apply");
   if(command==="enable"&&!npmCli)throw new Error("enable requires --npm-cli");
- return {help:false,command,apply,idle,once,npmCli,interval};
+ return {help:false,command,apply,idle,once,npmCli,interval,followSource};
 }
 export async function runSelfUpdateCli(args: readonly string[],root:string,io:CliIo,signal?:AbortSignal):Promise<void>{
  const json=args.includes("--json");
  type Status = {enabled:boolean;pending:boolean;settings:ReturnType<typeof readSettings>|null};
  let commandName="self-update";let parsing=true;
- const output=(data:string|UpdateResult|Status)=>io.writeStdout(json?renderCliResult({command:commandName,message:Predicate.isString(data)?data:"Self-update result",data:Predicate.isString(data)?undefined:toCliPayload(data),exitCode:0},"json"):`${Predicate.isString(data)?data:JSON.stringify(data,null,2)}\n`);
+ const output=(data:string|UpdateResult|Status|{version:string;stateFormat:number})=>io.writeStdout(json?renderCliResult({command:commandName,message:Predicate.isString(data)?data:"Self-update result",data:Predicate.isString(data)?undefined:toCliPayload(data),exitCode:0},"json"):`${Predicate.isString(data)?data:JSON.stringify(data,null,2)}\n`);
  try{
-  const {help,command,apply,idle,once,npmCli,interval}=parseSelfUpdateArguments(args);
+  const {help,command,apply,idle,once,npmCli,interval,followSource}=parseSelfUpdateArguments(args);
   commandName=`self-update.${help?"help":command}`;parsing=false;
   if(help){output(selfUpdateHelp);return;}
+  if(command==="preflight"){output({version:buildIdentity.packageVersion,stateFormat:stateFormatVersion});return;}
   const directory=updateDirectory(root);
   if(command==="status"){
    output({enabled:existsSync(join(directory,"settings.json")),pending:existsSync(join(directory,"pending.json")),settings:existsSync(join(directory,"settings.json"))?readSettings(directory):null});return;
@@ -64,7 +70,7 @@ export async function runSelfUpdateCli(args: readonly string[],root:string,io:Cl
   if(command==="enable"){
    installation(root);if(!npmCli)throw new Error("enable requires --npm-cli");
    if(!apply){output("Preview: opt in to stable self-updates. Manual updates stay in this major; auto installs current-line patches or newer majors, never an in-major minor. Stop all current Canonfig processes/schedules, then rerun with --apply --confirm-idle.");return;}
-   await enable(root,npmCli,idle,undefined,undefined,signal);output("Self-update enabled. Run self-update auto --apply in foreground or schedule self-update auto --apply --once. Restart prior services only after enabling.");return;
+   await enable(root,npmCli,idle,undefined,undefined,signal,followSource);output(`Self-update enabled${followSource ? "; signed Source releases will be checked at sync --apply" : ""}. Restart prior services only after enabling.`);return;
   }
   if(command==="disable"){
    if(!apply){output("Preview: disable future self-updates. Rerun with --apply.");return;}

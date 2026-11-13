@@ -110,6 +110,7 @@ export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): Admini
     }, 800);
   };
   return {
+    fleet: null,
     service: {
       data: {
         state: installed ? "running" : "not-installed", platform: "linux", mechanism: "systemd-user-service",
@@ -184,10 +185,10 @@ export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): Admini
         sendVersion({ kind: "start", action: "check" });
         ws.later(() => sendVersion({ kind: "checked", checked: { current: APP_VERSION, candidate: LATEST_PATCH, status: LATEST_PATCH === APP_VERSION ? "current" : "available", detail: "Manual updates install the newest stable release in the current major, never a newer major." } }), 900);
       },
-      enable: (npmCli, confirmIdle) => {
+      enable: (npmCli, confirmIdle, followSource) => {
         if (!confirmIdle || gate.unfinished) throw new TransitionError("Demo update", version.kind, "enable without idle confirmation");
         sendVersion({ kind: "start", action: "enable" });
-        sendVersion({ kind: "status", status: { enabled: true, pending: false, platform: ws.role === "source" ? "linux" : "darwin", settings: { npmCli } } });
+        sendVersion({ kind: "status", status: { enabled: true, pending: false, platform: ws.role === "source" ? "linux" : "darwin", settings: { npmCli, followSource } } });
         toast.success("Updates turned on");
       },
       disable: () => {

@@ -113,6 +113,7 @@ export const GuiSelfUpdateCheck = Schema.Struct({
 export const GuiSelfUpdateEnable = Schema.Struct({
   npmCli: Schema.NonEmptyString,
   confirmIdle: Schema.Boolean,
+  followSource: Schema.Boolean,
 });
 export const GuiSelfUpdateProgress = Schema.Struct({
   phase: Schema.Literals(["checking", "staging", "verifying", "activating", "complete"]),

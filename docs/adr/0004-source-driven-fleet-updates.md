@@ -1,0 +1,9 @@
+# Source-driven Fleet Updates without a follower daemon
+
+The Source Machine selects its own exact stable Canonfig release for a staged Fleet Update. Followers opt in locally and check at the start of `sync --apply`, including native scheduled invocations. A canary runs first; the Source admits one follower at a time and advances only after the new executable reports a fresh Converged run. A failed health check halts the rollout. This retains one-way authority and native scheduling at the cost of schedule latency; there is no immediate push or resident follower updater.
+
+Update control is authenticated and pinned to the enrolled Source but independent of the configuration transport's major.minor gate, so an older follower can repair release skew. A Source-signed directive binds the follower, rollout sequence, exact release, digest, state format and expiry. Source signing alone cannot authorize code: each follower independently verifies the official npm registry signature, tarball integrity and Sigstore provenance for Canonfig's main-branch release workflow. Arbitrary packages, registries, URLs, commands and downgrades are not directive inputs.
+
+Activation reuses the existing opted-in self-updater and its gate, command leases, journal and retained prior package. Active or unfinished Synchronization Runs prevent activation. State formats are not migrated. Code rollback after Projection cannot promise configuration rollback, so failure stops admission and retains evidence for the existing explicit recovery procedure rather than automatically reversing packages.
+
+Health identifies both the completed local run and the published Source revision recorded in that run's revision lineage. A follower's content-addressed projection revision is not a Source publication ID; the Source checks the published ID without discarding the local run evidence.

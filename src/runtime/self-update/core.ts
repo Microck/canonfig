@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Predicate, Schema } from "effect";
 import { TaggedError } from "../../domain/tagged-error.ts";
 import { readSettings } from "./settings.ts";
 import { createRequire } from "node:module";
@@ -103,7 +103,7 @@ export function assertNoUnfinishedRun(state: string): void {
 }
 function syncFile(path: string): void {const fd=openSync(path,"r+");try{fsyncSync(fd);}finally{closeSync(fd);}}
 export function syncDirectory(path:string):void {if(process.platform!=="win32"){const fd=openSync(path,"r");try{fsyncSync(fd);}finally{closeSync(fd);}}}
-export async function enable(root: string,npmCli: string,confirmIdle: boolean,runner:Runner=run, home=homedir(), signal?:AbortSignal):Promise<void>{
+export async function enable(root: string,npmCli: string,confirmIdle: boolean,runner:Runner=run, home=homedir(), signal?:AbortSignal, followSource=false):Promise<void>{
   if(signal?.aborted)throw new Error("Self-update cancelled");
   if(!confirmIdle)throw new Error("Stop all existing Canonfig processes and schedules, then explicitly use --confirm-idle when enabling coordination for the first time.");
   const location=installation(root,home);npmCli=realpathSync(npmCli);
@@ -119,7 +119,7 @@ export async function enable(root: string,npmCli: string,confirmIdle: boolean,ru
     if(readersActive(directory))throw new Error("Cannot enable while Canonfig commands are active");
     if(existsSync(join(directory,"settings.json")))throw new Error("Self-updating is already configured; use status or disable first");
     const [major,minor]=parseVersion(location.version);const state=join(home,".canonfig","state.sqlite");assertNoUnfinishedRun(state);
-    writeFileSync(join(directory,"settings.json"),JSON.stringify({version:1,root:location.root,prefix:location.prefix,npmCli,node:process.execPath,line:`${major}.${minor}`,state},null,2)+"\n",{flag:"wx",mode:0o600});
+    writeFileSync(join(directory,"settings.json"),JSON.stringify({version:1,root:location.root,prefix:location.prefix,npmCli,node:process.execPath,line:`${major}.${minor}`,state,followSource},null,2)+"\n",{flag:"wx",mode:0o600});
     syncFile(join(directory,"settings.json"));syncDirectory(directory);
   }finally{release();}
 }
@@ -170,7 +170,13 @@ const writeTransaction = (path: string, state: UpdateTransaction): void => {
   syncFile(temporary); renameSync(temporary, path); syncDirectory(dirname(path));
 };
 export interface UpdateResult {current:string;candidate:string;status:"current"|"available"|"deferred"|"updated";detail:string}
-export async function update(root:string,apply:boolean,mode:"manual"|"auto",runner:Runner=run,signal?:AbortSignal, home=homedir(), onProgress?: (progress: UpdateProgress) => void):Promise<UpdateResult>{
+export interface FleetInstallTarget {
+  readonly version: string;
+  readonly stateFormat: number;
+  readonly prepare: (directory: string, signal?: AbortSignal) => Promise<string>;
+  readonly confirmAdmission: () => Promise<void>;
+}
+export async function update(root:string,apply:boolean,mode:"manual"|"auto"|FleetInstallTarget,runner:Runner=run,signal?:AbortSignal, home=homedir(), onProgress?: (progress: UpdateProgress) => void):Promise<UpdateResult>{
   if(signal?.aborted)throw new Error("Self-update cancelled");
   const location=installation(root,home);const directory=updateDirectory(location.root);const settings=readSettings(directory);
   const [major,minor]=parseVersion(location.version);
@@ -207,14 +213,18 @@ export async function update(root:string,apply:boolean,mode:"manual"|"auto",runn
     return path;
   });
   const common=["--global","--registry=https://registry.npmjs.org/","--@microck:registry=https://registry.npmjs.org/","--userconfig",isolated[0]!,"--globalconfig",isolated[1]!,"--cache",join(directory,"cache")];
-  const raw=await runner({executable:settings.node,args:[settings.npmCli,"view","@microck/canonfig","versions","--json",...common]},signal);
-  const versions=Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.String)))(raw);
-  const selection = mode === "auto"
-    ? { candidate: selectAutomaticRelease(location.version, versions), newMajor: null }
-    : selectManualRelease(location.version, versions);
+  const fleet = Predicate.isString(mode) ? undefined : mode;
+  const selection = fleet === undefined ? await (async () => {
+    const raw = await runner({ executable: settings.node, args: [settings.npmCli, "view", "@microck/canonfig", "versions", "--json", ...common] }, signal);
+    const versions = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.String)))(raw);
+    return mode === "auto" ? { candidate: selectAutomaticRelease(location.version, versions), newMajor: null }
+      : selectManualRelease(location.version, versions);
+  })() : { candidate: fleet.version, newMajor: null };
   const { candidate, newMajor } = selection;
+  if (fleet !== undefined && candidate !== location.version && !newer(parseVersion(candidate), parseVersion(location.version))) throw new Error("Fleet Updates cannot downgrade this installation");
   const [candidateMajor, candidateMinor] = parseVersion(candidate);
-  let detail = mode === "auto"
+  let detail = fleet !== undefined ? "Source-directed exact release; activation requires a fresh Converged run before the next follower is admitted."
+    : mode === "auto"
     ? "Automatic updates install current-line stable patches or the newest stable release of a newer major, never an in-major minor."
     : "Manual updates install the newest stable release in the current major, never a newer major.";
   if (newMajor !== null) detail += ` ${newMajor}: a new major is available; it installs automatically if auto updates are on, or with npm install --global @microck/canonfig@${newMajor}.`;
@@ -240,7 +250,8 @@ export async function update(root:string,apply:boolean,mode:"manual"|"auto",runn
       root: location.root, backup, staged, previous: location.version, candidate };
     try {
     progress({phase:"staging", candidate});
-    await runner({executable:settings.node,args:[settings.npmCli,"install","--global","--prefix",stage,"--install-strategy=nested","--ignore-scripts","--no-audit","--no-fund",`@microck/canonfig@${candidate}`,...common],timeout:900_000},signal);
+    const artifact = fleet === undefined ? `@microck/canonfig@${candidate}` : await fleet.prepare(stage, signal);
+    await runner({executable:settings.node,args:[settings.npmCli,"install","--global","--prefix",stage,"--install-strategy=nested","--ignore-scripts","--no-audit","--no-fund",artifact,...common],timeout:900_000},signal);
     progress({phase:"verifying", candidate});
     const metadata=Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({name:Schema.Literal("@microck/canonfig"),version:Schema.String,dependencies:Schema.Record(Schema.String,Schema.String)})))(readFileSync(join(staged,"package.json"),"utf8"));
     if(metadata.name!=="@microck/canonfig"||metadata.version!==candidate||lstatSync(staged).isSymbolicLink())throw new Error("Staged package identity mismatch");
@@ -253,6 +264,12 @@ export async function update(root:string,apply:boolean,mode:"manual"|"auto",runn
     const printed=(await runner({executable:settings.node,args:[entry,"--version"]},signal)).trim();
     if(printed!==candidate)throw new Error("Staged CLI version verification failed");
     await runner({executable:settings.node,args:[entry,"self-update","--help"]},signal);
+    if (fleet !== undefined) {
+      const preflight = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ data: Schema.Struct({ version: Schema.String, stateFormat: Schema.Int }) })))(
+        await runner({ executable: settings.node, args: [entry, "self-update", "preflight", "--json"] }, signal));
+      if (preflight.data.version !== candidate || preflight.data.stateFormat !== fleet.stateFormat) throw new Error("Fleet candidate cannot read this state format; no package was activated");
+      await fleet.confirmAdmission();
+    }
     if(signal?.aborted)throw new Error("Self-update cancelled before activation");
     assertNoUnfinishedRun(settings.state);
     if(readersActive(directory)||installation(root,home).version!==location.version)throw new Error("Installation became busy or changed before activation");

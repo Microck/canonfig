@@ -1,3 +1,4 @@
+import { FleetStart } from "../../domain/fleet-update.ts";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -88,6 +89,9 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
     });
   };
   const routes: GuiRoute[] = [
+    queryRoute("/api/fleet-update", () => sourceOnly(source.fleetStatus()).pipe(Effect.map(toJson))),
+    mutationRoute("POST", "/api/fleet-update", FleetStart, (input) => sourceOnly(source.startFleetUpdate(input)).pipe(Effect.map(toJson))),
+    mutationRoute("POST", "/api/fleet-update/stop", Schema.Struct({ apply: Schema.Boolean }), (input) => sourceOnly(source.stopFleetUpdate(input.apply)).pipe(Effect.map(toJson))),
     queryRoute("/api/source-service", () => sourceOnly(report(source.serviceStatus()))),
     mutationRoute("POST", "/api/source-service", GuiSourceServiceInput,
       (input) => sourceOnly(source.installService(input)).pipe(Effect.map(toJson))),
@@ -160,7 +164,7 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
     mutationRoute("POST", "/api/self-update/enable", GuiSelfUpdateEnable,
       (input) => Effect.tryPromise({
         try: (signal) => lease.selfUpdate(
-          () => enable(root, input.npmCli, input.confirmIdle, undefined, undefined, signal),
+          () => enable(root, input.npmCli, input.confirmIdle, undefined, undefined, signal, input.followSource),
           () => true,
         ).finally(onSettled),
         catch: updateFailure,

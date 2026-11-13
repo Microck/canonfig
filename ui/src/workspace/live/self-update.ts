@@ -113,7 +113,7 @@ export function useLiveSelfUpdate(backend: WorkspaceBackend, enabled: boolean, o
     loading: state.kind === "loading" || (enabled && state.kind === "unloaded"), busy: ["loading", "changing", "applying"].includes(state.kind),
     error: "error" in state ? state.error : null, checking: state.kind === "changing" && state.action === "check",
     progress: state.kind === "applying" ? state.progress : null, reload,
-    check: () => change("check"), enable: (npmCli: string, confirmIdle: boolean) => change("enable", { npmCli, confirmIdle }), disable: () => change("disable"), apply: () => change("apply"),
+    check: () => change("check"), enable: (npmCli: string, confirmIdle: boolean, followSource: boolean) => change("enable", { npmCli, confirmIdle, followSource }), disable: () => change("disable"), apply: () => change("apply"),
     resume: () => { const next = sendFlow({ kind: "resume" }); if (next.kind === "applying") void run((signal) => observe(next.ticket, signal)); },
   };
 }

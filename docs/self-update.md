@@ -72,9 +72,9 @@ invalid settings and update errors stop the worker. Finish or recover unfinished
 runs using their original build first.
 
 A continuously running Source or watcher deliberately defers self-updates: stop
-it for a maintenance window. This feature does not automatically kill/restart
-services or orchestrate fleet maintenance. Stop other package managers and
-external installation writers too; they do not participate in Canonfig's locks.
+it for a maintenance window. Self-update does not kill or restart services.
+Use a Fleet Update below to bring followers to the Source's release after that
+maintenance. Stop external package managers too; they do not use Canonfig's locks.
 
 After successful activation the updater exits. Restart it under the new build,
 or let your external scheduler invoke `auto --apply --once` again. Existing
@@ -110,6 +110,56 @@ Disable retains backups and receipts. Failed operations show the CLI's exact
 message and Human Action Required exit code 3. In particular, an unfinished sync
 or pending update still requires recovery; the GUI does not bypass it. Stop the
 GUI before using a separate terminal to apply or disable updates.
+
+
+## Roll out the Source's release
+
+Both machines need a release that supports Fleet Updates. First opt each follower
+in locally with `self-update enable --follow-source`, alongside the existing
+`--apply --confirm-idle --npm-cli <path>` options. The Version page offers the same
+choice when you turn updates on. If updates are already enabled, stop other
+Canonfig processes, disable updates, then enable again with `--follow-source`.
+Normal self-update opt-in alone does not authorize Source-directed releases.
+
+Update the Source during its maintenance window and restart its Source service.
+Then select a canary from its enrolled follower IDs:
+
+```sh
+canonfig source update --canary laptop-dana
+canonfig source update --canary laptop-dana --apply
+canonfig source update status --json
+canonfig source update stop --apply
+```
+
+Without `--apply`, start and stop only preview their result. The Source's Version
+page has the canary selector, start/stop actions and per-follower status. Refresh
+followers to read new reports. `canonfig status --json` also includes Fleet Update
+state on the Source and the last local attempt on a follower.
+
+Only the Source's exact stable release is eligible. Each follower independently
+checks the official npm registry signature, SHA-512 package integrity and Sigstore
+provenance from Canonfig's main-branch release workflow. A Source signature cannot
+authorize another package, publisher or registry. Missing provenance stops the
+rollout. Prereleases, downgrades and state-format changes require manual work.
+
+The canary checks at its next `canonfig sync --apply`, including native schedules.
+There is no immediate push or follower daemon. Plan-only syncs and browser syncs
+do not install packages. Keep the Source reachable and allow scheduled followers
+to run. An offline or non-opted-in canary leaves the rest queued.
+
+Active commands defer installation. Active or unfinished Synchronization Runs
+also defer it: finish, recover or abandon the run before retrying. After activation,
+the command restarts under the new executable and performs the requested sync.
+Only a fresh Converged receipt at the target version admits the next follower.
+A failed health check halts the rollout. An admitted follower with no health
+report within one hour halts when it next polls; other followers stay queued.
+
+Stop prevents new admission and cancels staging at its final admission check.
+It cannot undo an activation already past that check. Inspect the failed follower's
+`status`, its Fleet Update record and the retained updater backup. Recover unfinished
+work with the build that created it. If code rollback is needed, stop the rollout
+and follow the manual restore procedure below. Restoring a package does not reverse
+configuration already applied. Start a new reviewed rollout after recovery.
 
 ## Staging, safety and recovery
 

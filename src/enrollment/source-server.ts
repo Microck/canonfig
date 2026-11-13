@@ -1,3 +1,4 @@
+import { FleetReport, type SignedFleetDirective } from "../domain/fleet-update.ts";
 import { defaultMaximumMetadataBytes } from "../domain/transport-limits.ts";
 import type { ServerResponse } from "node:http";
 import { createServer } from "node:https";
@@ -38,7 +39,6 @@ import {
 import { Enrollment } from "./enrollment.service.ts";
 import {
   type AuthenticatedFollower,
-  type EnrollFollowerRequest,
   type EnrollFollowerResponse,
   EnrollFollowerRequestSchema,
   type RevisionList,
@@ -80,6 +80,7 @@ type SourceServerResponse =
   | RevisionList
   | RevisionMetadata
   | TransferredSecrets
+  | { readonly directive: SignedFleetDirective | null }
   | { readonly ok: true }
   | ErrorResponse;
 
@@ -157,9 +158,10 @@ const bearerCredential = (authorization: string | undefined): string => {
   return match[1]!;
 };
 
-const readBody = (
+const readBody = <Body>(
   request: NodeJS.ReadableStream,
-): Promise<EnrollFollowerRequest> =>
+  schema: Schema.Codec<Body, unknown>,
+): Promise<Body> =>
   new Promise((resolveBody, rejectBody) => {
     const chunks: Array<Buffer> = [];
     let bytes = 0;
@@ -173,11 +175,7 @@ const readBody = (
     });
     request.on("end", () => {
       try {
-        resolveBody(
-          Schema.decodeUnknownSync(EnrollFollowerRequestSchema)(
-            JSON.parse(Buffer.concat(chunks).toString("utf8")),
-          ),
-        );
+        resolveBody(Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(JSON.parse(Buffer.concat(chunks).toString("utf8"))));
       } catch {
         rejectBody(new Error("request body is not valid JSON"));
       }
@@ -297,6 +295,21 @@ const startSourceServerScoped = (
             });
             return;
           }
+          // Update control must repair release-line skew without opening profile
+          // transport to incompatible builds. It still requires pinned TLS,
+          // an active follower credential and a separately signed directive.
+          if (request.url === "/v1/fleet-update" && request.method === "GET") {
+            sendJson(response, 200, await runRequestEffect(enrollment.pollFleetUpdate(bearerCredential(request.headers.authorization))));
+            return;
+          }
+          if (request.url === "/v1/fleet-update/report" && request.method === "POST") {
+            const report = await readBody(request, FleetReport).catch(() => {
+              throw new MalformedEnrollmentRequestError({ message: "the Fleet Update report is malformed" });
+            });
+            await runRequestEffect(enrollment.reportFleetUpdate(bearerCredential(request.headers.authorization), report));
+            sendJson(response, 200, { ok: true });
+            return;
+          }
           // The descriptor above stays open to every release, so readiness
           // probes and status can still reach a skewed Source and read its
           // version. Everything else is refused across release lines before
@@ -316,7 +329,7 @@ const startSourceServerScoped = (
             return;
           }
           if (request.method === "POST" && request.url === "/v1/enrollment") {
-            const body = await readBody(request).catch(() => {
+            const body = await readBody(request, EnrollFollowerRequestSchema).catch(() => {
               throw new MalformedEnrollmentRequestError({
                 message: "the enrollment request is malformed",
               });

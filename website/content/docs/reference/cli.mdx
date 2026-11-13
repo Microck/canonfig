@@ -130,12 +130,13 @@ first.
 
 | Command | Options |
 | --- | --- |
-| `enable` | `--apply`, `--confirm-idle`, and `--npm-cli <absolute path to npm-cli.js>`, all required. Stop every Canonfig process and schedule first. |
+| `enable` | `--apply`, `--confirm-idle`, and `--npm-cli <absolute path to npm-cli.js>`, all required. Optional `--follow-source` authorizes signed Source-directed releases on followers. Stop every Canonfig process and schedule first. |
 | `disable` | `--apply` required. |
 | `status` | Prints settings and any interrupted update. Read-only. |
 | `check` | Asks the official npm registry for the newest stable release in this major. Reports newer majors without selecting them. Read-only. |
 | `apply` | `--apply` required. Installs, verifies, and activates that same-major release only when Canonfig is idle. |
 | `auto` | Installs current-line stable patches or the newest stable release of a newer major, never an in-major minor. Without `--apply`, previews once. `--apply` keeps running in the foreground and checks every `--interval <seconds>` (default 86400, from 60 to 604800). `--once` runs one pass, for an external scheduler. |
+| `preflight` | Reports the executable's exact version and state format without opening machine state. Used to verify staged Fleet Update candidates. |
 
 A running command or an unfinished sync blocks activation. The browser's
 Version page in Settings supports the same operations, with the npm CLI path
@@ -277,6 +278,33 @@ canonfig source revoke laptop-dana
 ```
 
 Revokes one Follower Identity. Its next request fails with exit 5.
+
+### `source update`
+
+```bash
+canonfig source update --canary laptop-dana
+canonfig source update --canary laptop-dana --apply
+canonfig source update status --json
+canonfig source update stop --apply
+```
+
+Rolls out the Source's exact stable Canonfig release to its enrolled followers.
+The canary goes first. Each follower must opt in locally with
+`self-update enable --follow-source` and checks on its next CLI `sync --apply`,
+including native schedules. No follower daemon or immediate push is installed.
+Start and stop preview unless you pass `--apply`.
+
+Every follower verifies the Source signature and the official package's publisher
+provenance and integrity. Active commands or unfinished runs defer activation.
+The new executable must complete a fresh Converged run before the next follower
+is admitted. The first failed health check halts the rollout. Offline followers
+stay queued. Downgrades and state-format changes need manual recovery.
+
+The Source's Settings > Version page exposes the same canary, rollout and status
+controls. Stop prevents further admission, but cannot undo an activation already
+in progress. Rollback is manual because restoring code does not reverse applied
+configuration. See the [fleet and recovery guide](https://github.com/Microck/canonfig/blob/main/docs/self-update.md#roll-out-the-sources-release).
+
 
 ## Follower enrollment
 

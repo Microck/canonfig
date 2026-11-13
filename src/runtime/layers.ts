@@ -1,3 +1,5 @@
+import { readFollowerFleet } from "./follower-fleet-update.ts";
+import { readFleetUpdate } from "../enrollment/fleet-update.ts";
 import { runtimeCredentialPolicy } from "./credential-policy.ts";
 import { runtimeStateLayer } from "./state-layer.ts";
 import {
@@ -351,6 +353,9 @@ const sourceCommandsLayer = (folder: string): Layer.Layer<
 
     const service: SourceCommandsService = {
       initialize: () => mapFailure(enrollment.initializeSource()).pipe(Effect.map(payload)),
+      fleetStatus: () => asSource("inspect a Fleet Update", mapFailure(enrollment.fleetStatus()).pipe(Effect.map(payload))),
+      startFleetUpdate: (input) => asSource("start a Fleet Update", mapFailure(enrollment.startFleetUpdate(input)).pipe(Effect.map(payload))),
+      stopFleetUpdate: (apply) => asSource("stop a Fleet Update", mapFailure(enrollment.stopFleetUpdate(apply)).pipe(Effect.map(payload))),
       scan: (input) =>
         asSource("scan its folder for tools", mapFailure(profiles.scan({ folder, write: input.write })).pipe(Effect.map(payload))),
       publish: (input) =>
@@ -1330,6 +1335,7 @@ const followerCommandsLayer = (
                   });
                   return {
                     machineRole,
+                    fleetUpdate: yield* Effect.try({ try: () => readFleetUpdate(statePath), catch: (cause) => new CliCommandFailure({ category: "human-action-required", message: String(cause) }) }),
                     lifecycle: {
                       discovered: notReached("no Source endpoint is configured"),
                       selected: notReached("no profile is selected"),
@@ -1372,6 +1378,7 @@ const followerCommandsLayer = (
                     tlsFingerprint: configuration.source.tlsFingerprint,
                   },
                   ...state,
+                  fleetUpdate: yield* Effect.try({ try: () => readFollowerFleet(statePath), catch: (cause) => new CliCommandFailure({ category: "human-action-required", message: String(cause) }) }),
                   enrollmentLifecycle: configuration.lifecycle._tag,
                   enrollmentRecovery: configuration.lifecycle._tag === "RollbackPending" ? rollbackRecoveryDetail : undefined,
                   activeRecovery: openRun,

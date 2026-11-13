@@ -126,7 +126,7 @@ async function apply(server: GuiServer) {
 }
 
 const enable = async (server: GuiServer, npmCli: string) => {
-  const response = await server.api("/api/self-update/enable", { npmCli, confirmIdle: true });
+  const response = await server.api("/api/self-update/enable", { npmCli, confirmIdle: true, followSource: false });
   expect(response.status, JSON.stringify(response.body)).toBe(200);
   expect(Schema.decodeUnknownSync(GuiSelfUpdateStatus)(response.body)).toMatchObject({ enabled: true, pending: false });
 };
@@ -145,7 +145,7 @@ describe("GUI self-update with a disposable npm installation", () => {
     const diagnostic = Schema.decodeUnknownSync(Schema.Struct({ message: Schema.String }))(JSON.parse(cliFailure.stderr));
     expect(failed.failure).toEqual({ category: "human-action-required", exitCode: 3, message: diagnostic.message });
     expect((await server.api("/api/session")).status).toBe(200);
-    const missingConfirmation = await server.api("/api/self-update/enable", { npmCli: machine.npmCli, confirmIdle: false });
+    const missingConfirmation = await server.api("/api/self-update/enable", { npmCli: machine.npmCli, confirmIdle: false, followSource: false });
     expect(Schema.decodeUnknownSync(GuiError)(missingConfirmation.body)).toMatchObject({ category: "human-action-required", exitCode: 3,
       message: "Stop all existing Canonfig processes and schedules, then explicitly use --confirm-idle when enabling coordination for the first time." });
     // Keep the JSON body incomplete while another connection attempts work.
@@ -171,7 +171,7 @@ describe("GUI self-update with a disposable npm installation", () => {
       await sent.promise;
       await expect.poll(async () => (await server.api("/api/self-update")).status, { timeout: 5_000 }).toBe(409);
       expect((await server.api("/api/self-update")).status).toBe(409);
-      slow.end("true}");
+      slow.end('true,"followSource":false}');
       const response = await enabled.promise;
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       expect(Schema.decodeUnknownSync(GuiSelfUpdateStatus)(response.body)).toMatchObject({ enabled: true });

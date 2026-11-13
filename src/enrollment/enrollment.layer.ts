@@ -1,3 +1,4 @@
+import { fleetSource } from "./fleet-update.ts";
 import { RunLockHeldError } from "../synchronization/synchronization.errors.ts";
 import { acquireRunLockScoped } from "../synchronization/run-lock.ts";
 import {
@@ -1128,6 +1129,7 @@ const makeEnrollment = Effect.gen(function*() {
   });
 
   return Enrollment.of({
+    ...fleetSource({ repository, credentials: sourceCredentials, authenticate }),
     startServerSession,
     initializeSource,
     source,
