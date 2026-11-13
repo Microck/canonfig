@@ -352,8 +352,12 @@ const shellCommands = (
     // Inside `case`, `pattern|other)` opens an arm; only what follows it can be a command.
     if (caseDepth > 0) logical = logical.replace(/^\(?[^()\s]*\)\s*/u, "");
     // `<<<word` is a here-string, not a heredoc: it ends on the same line. `<<` inside a quoted argument, as in
-    // `rg '<<EOF' templates`, is text; only a quoted delimiter right after `<<` (`<<'EOF'`) stays.
-    const unquoted = logical.replace(/(<<-?\s*)?('[^']*'|"(?:\\.|[^"\\])*")/gu, (quoted, redirect) => (redirect === undefined ? " " : quoted));
+    // `rg '<<EOF' templates`, is text; only a quoted delimiter right after `<<` (`<<'EOF'`) stays. A backslash
+    // escape (`\"`) is consumed first so an escaped quote does not open a quoted argument.
+    const unquoted = logical.replace(
+      /(<<-?\s*)?('[^']*'|"(?:\\.|[^"\\])*")|\\./gu,
+      (match, redirect: string | undefined, quoted: string | undefined) => (quoted !== undefined && redirect === undefined ? " " : match),
+    );
     heredoc = /(?<!<)<<(?!<)-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?/u.exec(unquoted)?.[1];
     for (const part of splitShellLine(logical)) {
       // A control keyword guards the command after it: `if npm install tool; then` still runs npm.

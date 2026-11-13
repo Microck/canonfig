@@ -136,6 +136,9 @@ describe("profile discovery", () => {
       "cat <<'EOF'",
       "not-a-command --flag",
       "EOF",
+      "echo \\\"; cat <<EOF; echo \"done\"",
+      "not-a-command --flag",
+      "EOF",
       "",
     ].join("\n"));
     const doc = await fixture("SKILL.md", [
