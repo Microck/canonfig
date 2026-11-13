@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { Effect, Schema } from "effect";
 import { CliCommandFailure } from "../cli/source-commands.ts";
+import { describeRuntimeError } from "../cli/failure-taxonomy.ts";
 import { FleetReport, SignedFleetDirective } from "../domain/fleet-update.ts";
 import { ProfileRevisionId } from "../domain/brand.ts";
 import { verifyFleetDirective, writeFleetRecord } from "../enrollment/fleet-update.ts";
@@ -29,9 +30,12 @@ export function readFollowerFleet(state: string): FollowerFleetRecord | null {
   regular(path);
   return existsSync(path) ? Schema.decodeUnknownSync(Schema.fromJsonString(FollowerFleetRecord), { onExcessProperty: "error" })(readFileSync(path, "utf8")) : null;
 }
-const fleetFailure = (cause: unknown) => new CliCommandFailure({
-  category: "human-action-required", message: cause instanceof Error ? cause.message : String(cause),
-});
+const fleetFailure = (cause: unknown): CliCommandFailure => {
+  if (cause instanceof CliCommandFailure) return cause;
+  return new CliCommandFailure({
+    category: "human-action-required", message: cause instanceof Error ? cause.message : String(cause),
+  });
+};
 
 /** Runs only at a mutating CLI sync boundary, never in a resident follower worker. */
 export const prepareFleetSync = Effect.fn("Fleet.prepareSync")(function*(
@@ -50,7 +54,10 @@ export const prepareFleetSync = Effect.fn("Fleet.prepareSync")(function*(
     sourceFingerprint: configuration.source.signingFingerprint, credentialReference: configuration.credentialReference,
     timeoutMilliseconds: configuration.scheduledInvocation.timeoutMilliseconds,
   };
-  const request = (report?: FleetReport) => Effect.runPromise(requestFleetUpdate(transport, report).pipe(Effect.provideService(MachineState, machine)));
+  // Classify enrollment errors before crossing the updater's Promise boundary.
+  const request = (report?: FleetReport) => Effect.runPromise(requestFleetUpdate(transport, report).pipe(
+    Effect.mapError((cause) => new CliCommandFailure(describeRuntimeError(cause))), Effect.provideService(MachineState, machine),
+  ));
   const polled = yield* Effect.tryPromise({ try: () => request(), catch: fleetFailure });
   if (polled.directive === null) return false;
   const signed = polled.directive;
@@ -155,7 +162,7 @@ export const finishFleetSync = Effect.fn("Fleet.finishSync")(function*(succeeded
     endpoint: configuration.source.endpoint, tlsFingerprint: configuration.source.tlsFingerprint,
     sourceFingerprint: configuration.source.signingFingerprint, credentialReference: configuration.credentialReference,
     timeoutMilliseconds: configuration.scheduledInvocation.timeoutMilliseconds,
-  }, report).pipe(Effect.provideService(MachineState, machine), Effect.mapError(fleetFailure));
+  }, report).pipe(Effect.provideService(MachineState, machine), Effect.mapError((cause) => new CliCommandFailure(describeRuntimeError(cause))));
   yield* Effect.try({ try: () => writeFleetRecord(followerFleetPath(state), { ...record, report, reported: true }), catch: fleetFailure });
   if (!healthy && succeeded) return yield* fleetFailure("Fleet Update health failed: no fresh Converged receipt from the target release");
 });

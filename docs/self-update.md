@@ -149,6 +149,9 @@ There is no immediate push or follower daemon. Plan-only syncs and browser syncs
 do not install packages. Keep the Source reachable and allow scheduled followers
 to run. An offline canary leaves the rest queued.
 
+Fleet checks and health reports retain the normal CLI failure categories: invalid
+or revoked credentials exit with code `5`, and transport failures with code `6`.
+
 Active commands defer installation. Active or unfinished Synchronization Runs
 also defer it: finish, recover or abandon the run before retrying. After activation,
 the command restarts under the new executable and performs the requested sync.
