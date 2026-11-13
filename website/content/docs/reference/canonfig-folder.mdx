@@ -18,6 +18,7 @@ in each harness is in the [harness reference](/reference/harnesses).
   AGENTS.md               global instructions
   rules/<id>.md           rules
   skills/<name>/SKILL.md  Agent Skills, one directory each
+  plugins/<id>/plugin.jsonc  native package variants and digest review
   agents/<id>.md          subagents
   commands/<id>.md        slash commands
   hooks/...               scripts that hooks in canonfig.jsonc run
@@ -28,10 +29,9 @@ in each harness is in the [harness reference](/reference/harnesses).
   state.sqlite  setup.json  canonfig.log  installers/  skills-sources.json  tunnel/  cache/
 ```
 
-The first eight entries are the **authoring allowlist**. Publication reads only
-those, and a Follower Machine writes only those. Everything else in the folder
-belongs to the machine it is on: Canonfig never publishes, mirrors, or replaces
-it.
+The authored files listed below are the **authoring allowlist**. Publication
+reads only those, and a Follower Machine mirrors only those. Machine-local
+entries are never published or replaced by a sync.
 
 | Entry | Published | Contents |
 | --- | --- | --- |
@@ -39,6 +39,7 @@ it.
 | `AGENTS.md` | Yes | Global instructions, in Markdown. |
 | `rules/`, `agents/`, `commands/` | Yes | One `<id>.md` document per item. See [Documents](#documents). |
 | `skills/` | Yes | One directory per skill, each with a `SKILL.md`. |
+| `plugins/` | Yes | Reviewed native packages. See [Native Plugins](#native-plugins). |
 | `hooks/` | Yes | Scripts a hook runs. Every file here must be run by a hook. |
 | `files/` | Yes | Content of [authored resources](/how-to/manage-files-outside-harnesses). Every file here must be read by a resource. |
 | `local/` | No | Items only this machine projects. See [The local folder](#the-local-folder). |
@@ -50,6 +51,7 @@ it.
 | `installers/` | No | Installer bindings. |
 | `skills-sources.json` | No | Where tracked upstream skills came from. |
 | `tunnel/`, `cache/` | No | The managed SSH tunnel record and downloaded revision files. |
+| `.shield/` | No | Last ingestion receipt, with paths and digests only. |
 
 Every file Canonfig reads from the allowlist must be a regular file or
 directory inside the folder. Symbolic links are refused, so neither a link nor
@@ -293,6 +295,68 @@ A skill's `SKILL.md` may carry other Agent Skills fields, such as `license` or
 `metadata`; Canonfig reads only `name` and `description`. Every file in the
 skill directory is published, with its executable bit.
 
+## Native Plugins
+
+A Native Plugin keeps a harness-specific package intact, including its hooks,
+MCP definitions and bundled dependencies. It is not translated into a skill.
+Supported loaders are Claude Code, Codex, Oh My Pi, Pi, OpenCode, Kilo, Amp
+and Qwen. Only a matching harness and platform receives a variant.
+
+```text
+plugins/review-tools/
+  plugin.jsonc
+  package/
+    package.json
+    index.mjs
+```
+
+```jsonc
+{
+  "version": 1,
+  "variants": [
+    {
+      "id": "linux-omp",
+      "harness": "oh-my-pi",
+      "platforms": ["linux"],
+      "directory": "package",
+      "entry": "index.mjs",
+      "requires": ["tools/uv"]
+    }
+  ]
+}
+```
+
+Each variant needs a unique `id`, a supported `harness`, a nonempty `platforms`
+array and a `directory` within the item. Platforms are `linux`, `macos` and
+`windows`. Two variants cannot select the same harness and platform. Use
+separate directories for platform-specific binaries or dependencies.
+
+Claude packages need `.claude-plugin/plugin.json`; Codex packages need
+`.codex-plugin/plugin.json`; Qwen packages need `gemini-extension.json`.
+The other loaders need `package.json` and an `entry` module within the package.
+Bundle file dependencies as regular files. Declare external tools in `requires`
+using `tools/<id>` entries from `canonfig.jsonc`, whose recipes select the platform.
+Projection does not run a package manager to fetch executable dependencies.
+
+Use `canonfig shield add-plugin <directory> --harness <id> --entry <module>`
+to admit a module package, or a supported `shield install` command for an
+installer. Omit `--entry` for Claude, Codex and Qwen. Admission records the
+current platform and removes any claimed review. Inspect the complete package,
+then run `canonfig shield review <id> --digest <sha256> --reviewer <name>` using
+the digest reported by admission or sync. Run `canonfig sync --apply` to activate it.
+
+Review covers variant declarations, file bytes and executable bits. Editing any
+of them makes the item inactive until another review. Publication refuses an
+unreviewed item; accepted payloads use the same signed revisions and digest
+verification as other folder items. Review records an explicit decision, not
+an audit of third-party code. Hooks run with the harness's user privileges.
+
+`groups` can select `plugins/<id>`; the package and its declaration travel
+together. Followers put local packages under `local/plugins/<id>/` when
+`local.allow` includes `plugins`. A matching id needs a Local Overlay. A
+Follower can decline a published package with `canonfig shield exclude <id>`
+and sync, without editing its mirror. `shield include <id>` reverses that choice.
+
 ## The local folder
 
 `~/.canonfig/local/` holds what only this machine projects. It is never
@@ -303,6 +367,7 @@ published and never replaced by a sync.
   rules/<id>.md
   AGENTS.md
   skills/<name>/SKILL.md
+  plugins/<id>/plugin.jsonc
   agents/<id>.md
   commands/<id>.md
   local.jsonc
@@ -317,6 +382,8 @@ takes these keys:
 | `settings` | object: harness id to object of key path to value | Settings keys only this machine adds. |
 | `excludeHarnesses` | array of harness ids | Harnesses this machine never projects, even when listed. `canonfig harnesses exclude` and `canonfig restore` edit it. |
 | `excludeResources` | array of resource ids | Authored resources this machine never projects. `canonfig restore` adds the ones it gives back. |
+| `excludePlugins` | array of plugin ids | Native Plugins this machine declines. `canonfig shield exclude` and `include` edit it. |
+| `shield` | object with `enabled` and `hard` booleans | This machine's install-redirection policy. See [Shield](/reference/cli#shield). |
 | `overlays` | array of `<category>/<name>` or `settings/<harness>#<key>` | Local Overlays: published items this machine's local item replaces. Key claims: settings keys Canonfig never writes, removes, or checks on this machine, while the other keys of that settings file follow the Source. `canonfig overlay set` and `remove` edit it. See [Replace a published item on one machine](/how-to/use-local-overlays). |
 | `backups` | boolean | `false` turns harness takeover snapshots off on this machine; `canonfig import --replace` still snapshots the folder entries it replaces. Default `true`. |
 
@@ -326,8 +393,8 @@ name is skipped and reported in the plan:
 
 > local/skills/ is not admitted by canonfig.jsonc local.allow and was not projected
 
-`excludeHarnesses` and `backups` always apply: a Source Machine cannot turn
-off a Follower Machine's exclusions or backups. On the Source Machine itself,
+`excludeHarnesses`, `excludeResources`, `excludePlugins`, `shield` and `backups`
+always apply: a Source Machine cannot turn off a Follower Machine's local policy.
 `local.allow` applies the same way. See
 [Add items only one machine uses](/how-to/add-machine-local-items).
 
