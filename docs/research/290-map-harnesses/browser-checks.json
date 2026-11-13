@@ -1,0 +1,663 @@
+{
+  "keyboard": [
+    {
+      "key": "1",
+      "variant": "film",
+      "picker": "Film",
+      "url": "?v=1"
+    },
+    {
+      "key": "2",
+      "variant": "focus",
+      "picker": "Focus",
+      "url": "?v=2"
+    },
+    {
+      "key": "3",
+      "variant": "rail",
+      "picker": "Rail",
+      "url": "?v=3"
+    },
+    {
+      "key": "ArrowLeft",
+      "variant": "focus",
+      "picker": "Focus",
+      "url": "?v=2"
+    },
+    {
+      "key": "ArrowRight",
+      "variant": "rail",
+      "picker": "Rail",
+      "url": "?v=3"
+    },
+    {
+      "key": "r",
+      "variant": "rail",
+      "picker": "Rail",
+      "url": "?v=3"
+    }
+  ],
+  "harnessInteractions": [
+    {
+      "variant": "film",
+      "dialog": {
+        "title": "OpenAI Codex",
+        "body": "OpenAI Codexatlas \u00b7 example reportUp to dateManaged files match revision 8. Independent read-back verification passed.Observation2 minutes agoClient loadedNot verifiedClose"
+      },
+      "restoredFocus": "OpenAI Codex on atlas: Up to date. View evidence",
+      "tabTarget": "Claude Code on atlas: Up to date. View evidence",
+      "enterTitle": "Claude Code"
+    },
+    {
+      "variant": "focus",
+      "dialog": {
+        "title": "OpenAI Codex",
+        "body": "OpenAI Codexatlas \u00b7 example reportUp to dateManaged files match revision 8. Independent read-back verification passed.Observation2 minutes agoClient loadedNot verifiedClose"
+      },
+      "restoredFocus": "OpenAI Codex on atlas: Up to date. View evidence",
+      "tabTarget": "Claude Code on atlas: Up to date. View evidence",
+      "enterTitle": "Claude Code"
+    },
+    {
+      "variant": "rail",
+      "dialog": {
+        "title": "OpenAI Codex",
+        "body": "OpenAI Codexatlas \u00b7 example reportUp to dateManaged files match revision 8. Independent read-back verification passed.Observation2 minutes agoClient loadedNot verifiedClose"
+      },
+      "restoredFocus": "OpenAI Codex on atlas: Up to date. View evidence",
+      "tabTarget": "Claude Code on atlas: Up to date. View evidence",
+      "enterTitle": "Claude Code"
+    }
+  ],
+  "longNames": {
+    "name": "buildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhost",
+    "inventory": 13,
+    "states": [
+      "OpenAI Codex configured for the distributed infrastructure team on buildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhost: Up to date. View evidence",
+      "Claude Code on buildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhost: Drift detected. View evidence",
+      "Oh My Pi on buildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhost: Apply failed. View evidence",
+      "Cursor on buildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhost: Needs action. View evidence",
+      "OpenCode on buildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhost: Revision 7. View evidence",
+      "GitHub Copilot CLI on buildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhost: Not verified. View evidence",
+      "Factory Droid CLI on buildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhost: Excluded. View evidence",
+      "Grok Build CLI on buildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhost: Not installed. View evidence",
+      "Amp on buildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhost: Up to date. View evidence",
+      "Pi Coding Agent on buildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhost: Drift detected. View evidence",
+      "Kimi Code CLI on buildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhost: Apply failed. View evidence",
+      "Qwen Code on buildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhost: Needs action. View evidence",
+      "Gemini CLI on buildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhost: Not supported. View evidence"
+    ],
+    "documentOverflow": false,
+    "inspectorOverflow": false
+  },
+  "emptyStates": [
+    {
+      "machine": "empty",
+      "text": "new-laptop\n\nNo harnesses detected\n\n~/.canonfig\nHarnesses 0\n\nNo harnesses detected in this report. Install a supported harness on this machine, then synchronize.\n\nChecked 2 min ago. Client loaded: not verified."
+    },
+    {
+      "machine": "missing",
+      "text": "never-reported\n\nNot reported\n\n~/.canonfig\nHarnesses unknown\n\nThis machine has not reported its harness inventory. Its installed harnesses are unknown.\n\nNo observation received. Client loaded: not verified."
+    },
+    {
+      "machine": "stale",
+      "text": "last-seen-three-days-ago\n\nLast report \u00b7 3 days ago\n\n~/.canonfig\nHarnesses 2\nGrok Build CLI\nLast: Revision 7\nAmp\nLast: Revision 7\n\nLast report 3 days ago. Current state unknown. Client loaded: not verified."
+    }
+  ],
+  "zeroFollowers": {
+    "nodes": 1,
+    "text": "Machines\nMap\nList\n\n0 of 0 followers up to date"
+  },
+  "mobile": [
+    {
+      "variant": "film",
+      "viewport": 390,
+      "width": 318,
+      "bodyOverflow": false,
+      "asideOverflow": false,
+      "asideVisible": true,
+      "inventory": 13,
+      "fields": [
+        "16px",
+        "16px",
+        "16px"
+      ],
+      "dialog": {
+        "text": "OpenAI Codex\n\nworkstation-001 \u00b7 example report\n\nUp to date\n\nManaged files match revision 8. Independent read-back verification passed.\n\nObservation\n2 minutes ago\nClient loaded\nNot verified\nClose",
+        "width": 358,
+        "overflow": false
+      }
+    },
+    {
+      "variant": "focus",
+      "viewport": 390,
+      "width": 318,
+      "bodyOverflow": false,
+      "asideOverflow": false,
+      "asideVisible": true,
+      "inventory": 13,
+      "fields": [
+        "16px",
+        "16px",
+        "16px"
+      ],
+      "dialog": {
+        "text": "OpenAI Codex\n\nworkstation-001 \u00b7 example report\n\nUp to date\n\nManaged files match revision 8. Independent read-back verification passed.\n\nObservation\n2 minutes ago\nClient loaded\nNot verified\nClose",
+        "width": 358,
+        "overflow": false
+      }
+    },
+    {
+      "variant": "rail",
+      "viewport": 390,
+      "width": 318,
+      "bodyOverflow": false,
+      "asideOverflow": false,
+      "asideVisible": true,
+      "inventory": 13,
+      "fields": [
+        "16px",
+        "16px",
+        "16px"
+      ],
+      "dialog": {
+        "text": "OpenAI Codex\n\nworkstation-001 \u00b7 example report\n\nUp to date\n\nManaged files match revision 8. Independent read-back verification passed.\n\nObservation\n2 minutes ago\nClient loaded\nNot verified\nClose",
+        "width": 358,
+        "overflow": false
+      }
+    }
+  ],
+  "longMobileDialog": {
+    "text": "OpenAI Codex configured for the distributed infrastructure team\n\nbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhostbuildhost \u00b7 example report\n\nUp to date\n\nManaged files match revision 8. Independent read-back verification passed.\n\nObservation\n2 minutes ago\nClient loaded\nNot verified\nClose",
+    "overflow": false,
+    "bodyOverflow": false
+  },
+  "search": {
+    "selected": "follower-320",
+    "matches": "1 matching machines. Search narrows the inspector picker and list; the map keeps fleet context.",
+    "inspector": "workstation-320"
+  },
+  "emptySearch": {
+    "disabled": true,
+    "options": 1,
+    "matches": "0 matching machines. Search narrows the inspector picker and list; the map keeps fleet context."
+  },
+  "list": {
+    "page": "Previous\nPage 2 of 17\nNext",
+    "rows": 20,
+    "first": "workstation-020",
+    "inventory": true
+  },
+  "zoom": [
+    {
+      "transform": "translate(-63.8px, -290.6px) scale(1.2)",
+      "selected": "follower-20"
+    },
+    {
+      "transform": "translate(46px, -182px) scale(1)",
+      "selected": "follower-20"
+    },
+    {
+      "transform": "translate(99.4425px, 38px) scale(0.150442)",
+      "selected": ""
+    }
+  ],
+  "console": {
+    "film": [
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:32.975Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:32.990Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:33.110Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:33.150Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:33.204Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:33.237Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:36.598Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:36.625Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:39.981Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:40.014Z"
+      }
+    ],
+    "focus": [
+      {
+        "level": "debug",
+        "text": "[vite] hot updated: /src/proto/map-harnesses/rail.tsx",
+        "timestamp": "2026-11-13T21:11:23.072Z"
+      },
+      {
+        "level": "debug",
+        "text": "[vite] hot updated: /src/proto/map-harnesses/film.tsx",
+        "timestamp": "2026-11-13T21:11:23.072Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:13:55.342Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:13:55.343Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:13:55.948Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:13:56.027Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:13:56.663Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:13:56.691Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:14:01.303Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:14:01.303Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:14:04.575Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:14:04.589Z"
+      },
+      {
+        "level": "debug",
+        "text": "[vite] hot updated: /src/proto/map-harnesses/parts.tsx",
+        "timestamp": "2026-11-13T21:16:52.332Z"
+      },
+      {
+        "level": "debug",
+        "text": "[vite] hot updated: /src/index.css",
+        "timestamp": "2026-11-13T21:16:52.333Z"
+      },
+      {
+        "level": "debug",
+        "text": "[vite] hot updated: /src/proto/map-harnesses/canvas.tsx",
+        "timestamp": "2026-11-13T21:18:50.846Z"
+      },
+      {
+        "level": "debug",
+        "text": "[vite] hot updated: /src/index.css",
+        "timestamp": "2026-11-13T21:18:50.847Z"
+      },
+      {
+        "level": "debug",
+        "text": "[vite] hot updated: /src/proto/map-harnesses/parts.tsx",
+        "timestamp": "2026-11-13T21:20:35.942Z"
+      },
+      {
+        "level": "debug",
+        "text": "[vite] hot updated: /src/index.css",
+        "timestamp": "2026-11-13T21:20:35.943Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:18.151Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:18.348Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:18.873Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:19.006Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:19.224Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:19.516Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:20.510Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:20.615Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:21.429Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:21.478Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:22.037Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:22.059Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:32.975Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:32.990Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:33.110Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:33.150Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:33.204Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:33.237Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:36.598Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:36.625Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:39.981Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:40.014Z"
+      }
+    ],
+    "rail": [
+      {
+        "level": "debug",
+        "text": "[vite] hot updated: /src/proto/map-harnesses/rail.tsx",
+        "timestamp": "2026-11-13T21:11:23.072Z"
+      },
+      {
+        "level": "debug",
+        "text": "[vite] hot updated: /src/proto/map-harnesses/film.tsx",
+        "timestamp": "2026-11-13T21:11:23.072Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:13:55.342Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:13:55.343Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:13:55.948Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:13:56.027Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:13:56.663Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:13:56.691Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:14:01.303Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:14:01.303Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:14:04.575Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:14:04.589Z"
+      },
+      {
+        "level": "debug",
+        "text": "[vite] hot updated: /src/proto/map-harnesses/parts.tsx",
+        "timestamp": "2026-11-13T21:16:52.332Z"
+      },
+      {
+        "level": "debug",
+        "text": "[vite] hot updated: /src/index.css",
+        "timestamp": "2026-11-13T21:16:52.333Z"
+      },
+      {
+        "level": "debug",
+        "text": "[vite] hot updated: /src/proto/map-harnesses/canvas.tsx",
+        "timestamp": "2026-11-13T21:18:50.846Z"
+      },
+      {
+        "level": "debug",
+        "text": "[vite] hot updated: /src/index.css",
+        "timestamp": "2026-11-13T21:18:50.847Z"
+      },
+      {
+        "level": "debug",
+        "text": "[vite] hot updated: /src/proto/map-harnesses/parts.tsx",
+        "timestamp": "2026-11-13T21:20:35.942Z"
+      },
+      {
+        "level": "debug",
+        "text": "[vite] hot updated: /src/index.css",
+        "timestamp": "2026-11-13T21:20:35.943Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:18.151Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:18.348Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:18.873Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:19.006Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:19.224Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:19.516Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:20.510Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:20.615Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:21.429Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:21.478Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:22.037Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:22:22.059Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:32.975Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:32.990Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:33.110Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:33.150Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:33.204Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:33.237Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:36.598Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:36.625Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:39.981Z"
+      },
+      {
+        "level": "warning",
+        "text": "[React Flow]: The parent container needs a width and a height to render the graph. Help: https://reactflow.dev/error#004",
+        "timestamp": "2026-11-13T21:24:40.014Z"
+      }
+    ]
+  }
+}
