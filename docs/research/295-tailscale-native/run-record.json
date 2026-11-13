@@ -1,6 +1,7 @@
 {
   "issue": "https://github.com/Microck/canonfig/issues/295",
   "branch": "feat/tailscale-native",
+  "pullRequest": "https://github.com/Microck/canonfig/pull/305",
   "agent": "OMP in T3 Code",
   "model": "maisa-codex/gpt-6-astra",
   "agentVersion": "18.18.7",
@@ -27,7 +28,12 @@
     "Full UI suite: 148 passed, one self-update test failed with Happy DOM AbortError: The animation was canceled. Its test process remained alive and was terminated in the task-owned Raft workspace. The isolated self-update test then passed unchanged.",
     "After the interruption, the backend test process was absent from the task-owned Raft workspace. The previous background job and its output were unavailable, and no Vitest result artifact was found. No whole-backend-suite success is claimed.",
     "Pristine base 7070b84 reproduced the same self-update failure: resources.test.tsx had 2 passed and 1 failed with Happy DOM AbortError: The animation was canceled. The test and animation code were left untouched.",
-    "Raft confirmed destruction of paris:rf-41f42b8080574481. Both temporary local baseline trees and the diagnostic secret-scan report were removed. No task-owned proof server, browser or workspace remains running."
+    "Raft confirmed destruction of paris:rf-41f42b8080574481. Both temporary local baseline trees and the diagnostic secret-scan report were removed. No task-owned proof server, browser or workspace remains running.",
+    "PR 305 is ready for review and linked to this thread. It is not watched.",
+    "CI on 38f811d completed the backend suite: 2135 passed, 2 failed, 77 skipped. All four packed acceptance jobs failed only the fixed doctor probe-count assertion. The other backend failure was the obsolete IP SAN identity assertion.",
+    "Contract tests now assert missing-client doctor behavior and ADR 0004 certificate-pin identity, including zero HTTP requests for a wrong pin. No runtime code changed in this follow-up.",
+    "Follow-up verification: transport suite 24 passed, 1 existing Windows-only test skipped; scoped Oxlint passed. An isolated real CLI doctor run verified exit 3, missing-client skipped status and credential-reference redaction. Its temporary HOME was removed. Packed/full CI reruns are not claimed as passing.",
+    "ce-simplify-code reviewed the two contract-test edits inline under all three rubrics; no further changes were useful. No independent review was performed."
   ],
   "activeJobs": [],
   "blockers": [

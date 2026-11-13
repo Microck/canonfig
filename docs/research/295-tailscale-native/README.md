@@ -124,9 +124,19 @@ the installed native Chromium executable supplied the actual browser proof.
   file on pristine base `7070b84` reproduced that failure, with two tests passed
   and one failed. The isolated self-update test passed unchanged. No test was
   skipped or weakened, and the unrelated animation code remains unchanged.
-- The complete backend suite's output was lost when the session was
-  interrupted. Its process had exited, but no result artifact was available.
-  This report does not claim that suite passed.
+- [CI on `38f811d`](https://github.com/Microck/canonfig/actions/runs/43519139440)
+  completed the backend suite with 2,135 passed, two failed and 77 skipped.
+  The failures were outdated contract assertions: a fixed doctor probe count
+  and IP SAN identity instead of ADR 0004's exact certificate pin. Both tests
+  now enforce the new contract. The TLS test verifies rejection before HTTP
+  for a wrong pin and successful descriptor retrieval across an address change
+  for the correct pin.
+- After those test updates, `tests/integration/transport.test.ts` passed 24
+  tests, with its existing Windows-only test skipped on Linux. Scoped Oxlint
+  passed. A disposable CLI doctor run returned exit 3 for its invalid local
+  credential, reported the missing Tailscale client as skipped, and did not
+  disclose the injected credential reference. The packed test and whole suite
+  remain for CI to rerun; no success is claimed for those reruns.
 - The research folder passed `gitleaks dir --redact --no-banner` without leaks.
 
 ## Open risks
