@@ -10,6 +10,7 @@ import { Effect, Layer, Redacted, Schema } from "effect";
 import { generate } from "selfsigned";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { CredentialReference } from "../src/domain/brand.ts";
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
 import { HumanActionRequiredError } from "../src/machine/machine-state.errors.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
@@ -320,50 +321,46 @@ describe("doctor local credential evidence", () => {
     });
   });
 
-  it("upgrades provider presence to credential-load evidence once the credential was read", async () => {
+  it("proves a present provider with a disposable write that it then removes", async () => {
     const presence = {
       kind: "secure-noninteractive",
       provider: "secret-service",
       verification: "provider-presence",
     } as const;
-    const loaded = await run({
+    // An in-memory credential store standing in for the Secret Service.
+    const stored = new Map<string, string>();
+    const working = await run({
       credentialCapability: () => Effect.succeed(presence),
-      loadCredential: () => Effect.succeed(Redacted.make("disposable-test-credential")),
+      storeCredential: (input) => Effect.sync(() => {
+        const reference = Schema.decodeUnknownSync(CredentialReference)(`secret-service:${input.name}`);
+        stored.set(reference, Redacted.value(input.value));
+        return reference;
+      }),
+      loadCredential: ({ reference }) => Effect.sync(() => Redacted.make(stored.get(reference) ?? "")),
+      removeCredential: (reference) => Effect.sync(() => void stored.delete(reference)),
     });
-    expect(probe(loaded, "credentials")).toMatchObject({
+    expect(probe(working, "credentials")).toMatchObject({
       status: "pass",
-      details: { verification: "credential-load", writeAccessVerified: false },
+      details: { verification: "session-probe", writeAccessVerified: true },
     });
-    const refused = await run({
+    expect(stored.size).toBe(0);
+
+    const locked = await run({
       credentialCapability: () => Effect.succeed(presence),
-      loadCredential: () => Effect.fail(new HumanActionRequiredError({
-        action: "unlock",
+      storeCredential: () => Effect.fail(new HumanActionRequiredError({
+        action: "unlock the Secret Service collection",
         recovery: "fixture",
       })),
     });
-    expect(probe(refused, "credentials")).toMatchObject({
+    expect(probe(locked, "credentials")).toMatchObject({
       status: "warning",
-      details: { verification: "provider-presence" },
+      message: expect.stringContaining("could not save a test value in this machine's credential store"),
+      details: { verification: "session-probe-failed", reason: expect.stringContaining("store:") },
     });
   });
 });
 
 describe("readiness evidence", () => {
-  it.each(["secret-service", "keychain", "credential-manager"] as const)(
-    "does not equate %s presence with usable unattended storage",
-    (provider) => {
-      const result = credentialReadiness({
-        kind: "secure-noninteractive", provider, verification: "provider-presence",
-      });
-      expect(result.status).toBe("warning");
-      expect(result.details).toMatchObject({
-        verification: "provider-presence",
-        writeAccessVerified: false,
-        unattendedAccessVerified: false,
-      });
-    },
-  );
-
   it.each(["secret-service", "keychain", "credential-manager"] as const)(
     "reports %s as verified when a session probe proved the write",
     (provider) => {

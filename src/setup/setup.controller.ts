@@ -1,16 +1,15 @@
-import { randomUUID } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import { arch, release, userInfo } from "node:os";
 import { basename, dirname, join, posix, win32 } from "node:path";
 
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import { SourceNotInitializedError } from "../enrollment/enrollment.errors.ts";
 import { Enrollment } from "../enrollment/enrollment.service.ts";
 import { refuseOnFollower, refuseOnSource } from "../state/machine-role.ts";
 import { MachineRoleConflictError } from "../state/state-repository.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
-import { credentialFailureDetail, type MachineStateError } from "../machine/machine-state.errors.ts";
+import type { MachineStateError } from "../machine/machine-state.errors.ts";
 import type { MachinePath, ProcessResult } from "../machine/machine-state.types.ts";
 import { canonicalJson, sha256BytesHex, sha256Hex, type JsonValue } from "../profile/profile-codec.ts";
 import { scanDiscovery } from "../profile/discovery.ts";
@@ -19,6 +18,7 @@ import {
   minimumSupportedNodeMajor,
   nodeRuntimeIsSupported,
 } from "../runtime/build-identity.ts";
+import { proveCredentialStorage } from "../runtime/readiness.ts";
 import type { SetupImportRequest } from "../cli/setup-commands.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { runLockHolder, withRunLock } from "../synchronization/run-lock.ts";
@@ -236,34 +236,6 @@ const credentialInventory = (
     }),
   );
 
-const keyStorageProbeValue = "canonfig setup key-storage probe";
-
-/**
- * Store, read back, and delete a fixed non-secret value under a unique name,
- * through the same MachineState calls source-init uses for its keys. The item
- * is removed whatever happens after it was stored; no existing credential is
- * read or touched. Fails with the reason access is not proven.
- */
-const proveKeyStorage = (
-  machine: MachineState["Service"],
-): Effect.Effect<void, string> =>
-  Effect.acquireUseRelease(
-    machine.storeCredential({
-      name: `canonfig-setup-probe:${randomUUID()}`,
-      value: Redacted.make(keyStorageProbeValue),
-    }).pipe(Effect.mapError((cause) => `store: ${credentialFailureDetail(cause)}`)),
-    (reference) =>
-      machine.loadCredential({ reference }).pipe(
-        Effect.mapError((cause) => `read-back: ${credentialFailureDetail(cause)}`),
-        Effect.flatMap((loaded) =>
-          Redacted.value(loaded) === keyStorageProbeValue
-            ? Effect.void
-            : Effect.fail("read-back: the provider returned different bytes than were stored")
-        ),
-      ),
-    (reference) => machine.removeCredential(reference).pipe(Effect.ignore),
-  );
-
 /**
  * Operation-specific preflight, including Source signing/TLS key storage.
  * A fresh headless Source reports the precise missing prerequisites here,
@@ -317,7 +289,7 @@ export const runSetupPreflight = (
     const credentialStorage = needsKeyStorage
         && capability.kind === "secure-noninteractive"
         && capability.verification === "provider-presence"
-      ? yield* proveKeyStorage(machine).pipe(
+      ? yield* proveCredentialStorage(machine).pipe(
         Effect.as({ ...capability, verification: "session-probe" }),
         Effect.catch((cause) =>
           Effect.fail(keyStorageBlocked(

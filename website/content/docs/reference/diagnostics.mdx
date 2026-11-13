@@ -69,16 +69,15 @@ A probe that runs past `--timeout-ms` fails with `<probe> probe timed out`.
 
 | Result | `verification` | Meaning |
 | --- | --- | --- |
-| pass | `session-probe` | Canonfig wrote, read, and deleted a test item in this session (macOS Keychain). |
-| pass | `credential-load` | The `source` probe read the follower credential from the store in this session. Write access is not proven. |
-| warning | `provider-presence` | The store exists. Write access and access from a scheduled run are not proven. |
+| pass | `session-probe` | Canonfig wrote, read, and deleted a test item in this session. |
+| warning | `session-probe-failed` | The Secret Service or Credential Manager is installed, but the test item could not be saved and read back. The message says what to do; `details.reason` has the provider's error. |
 | warning | `configuration` | The local-file policy is in use; credentials are stored unencrypted. |
 | warning | `not-verified` | What is missing and what to do, for example `secret-tool was not found on PATH. Install it with ...`. The same text is in `details.recovery`. |
 | fail, Human Action Required | | `credential capability check failed: <detail>` |
 
-On a Source Machine, or on a Follower Machine whose `source` probe cannot read
-the credential, a working keyring on Linux or Windows reports
-`provider-presence`, so the report is `degraded`, not `healthy`.
+On Linux and Windows the check stores a fixed non-secret test item under a
+unique name, reads it back, and deletes it. Existing credentials are never read
+or changed.
 
 ### source
 

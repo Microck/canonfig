@@ -18,7 +18,7 @@ import {
   nodeRuntimeIsSupported,
 } from "./build-identity.ts";
 import { canonfigVersionHeader } from "../enrollment/version-handshake.ts";
-import { credentialReadiness, scheduledDefinitionReadiness } from "./readiness.ts";
+import { credentialReadiness, proveCredentialStorage, scheduledDefinitionReadiness } from "./readiness.ts";
 import type { ScheduleFireEvidence } from "./readiness.ts";
 import { AgentPolicy } from "../domain/identity.ts";
 import type { CliFailureCategory } from "../cli/exit-codes.ts";
@@ -31,7 +31,6 @@ import {
   type MachineStateError,
 } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
-import type { CredentialStorageCapability } from "../machine/machine-state.types.ts";
 import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
 import {
   type SyncSchedule,
@@ -265,11 +264,16 @@ const stateProbe = (
 
 const credentialProbe = (
   machine: MachineState["Service"],
-  capability: Ref.Ref<Option.Option<CredentialStorageCapability>>,
 ): Effect.Effect<DoctorProbe, MachineStateError> =>
   machine.credentialCapability().pipe(
-    Effect.tap((found) => Ref.set(capability, Option.some(found))),
-    Effect.map((found) => credentialReadiness(found)),
+    Effect.flatMap((found) =>
+      found.kind === "secure-noninteractive" && found.verification === "provider-presence"
+        ? proveCredentialStorage(machine).pipe(
+          Effect.as(credentialReadiness({ ...found, verification: "session-probe" })),
+          Effect.catch((reason) => Effect.succeed(credentialReadiness(found, reason))),
+        )
+        : Effect.succeed(credentialReadiness(found))
+    ),
   );
 
 const sourceProbe = (
@@ -581,7 +585,6 @@ export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
   const repository = yield* StateRepository;
   const timeout = input.timeoutMilliseconds;
   const sourceStage = yield* Ref.make<SourceProbeStage>("not-started");
-  const capability = yield* Ref.make(Option.none<CredentialStorageCapability>());
   const sourceTimedOut = Effect.map(Ref.get(sourceStage), (stage) =>
     stage === "loading-credential"
       ? failed(
@@ -610,7 +613,7 @@ export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
     isolated(
       "credentials",
       timeout,
-      credentialProbe(machine, capability),
+      credentialProbe(machine),
       (error) =>
         failed(
           "credentials",
@@ -658,19 +661,8 @@ export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
       "internal",
     ),
   ], { concurrency: "unbounded" });
-  // Provider presence alone stays a warning, but a native read of the enrolled
-  // credential by this very process proves access from this session.
-  const credentialLoaded = (yield* Ref.get(sourceStage)) === "credential-loaded";
-  const knownCapability = yield* Ref.get(capability);
-  const combined = credentialLoaded && Option.isSome(knownCapability)
-    ? probes.map((probe) =>
-      probe.name === "credentials"
-        ? credentialReadiness(knownCapability.value, { enrolledCredentialLoaded: true })
-        : probe
-    )
-    : probes;
-  const failedCount = combined.filter((probe) => probe.status === "fail").length;
-  const degraded = combined.some((probe) =>
+  const failedCount = probes.filter((probe) => probe.status === "fail").length;
+  const degraded = probes.some((probe) =>
     probe.status === "warning" || probe.status === "skipped"
   );
   return {
@@ -678,7 +670,7 @@ export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
     status: failedCount > 0 ? "unhealthy" : degraded ? "degraded" : "healthy",
     noInput: input.noInput,
     timeoutMilliseconds: timeout,
-    probes: combined,
+    probes,
   };
 });
 
