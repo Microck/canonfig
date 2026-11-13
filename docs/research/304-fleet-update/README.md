@@ -54,11 +54,11 @@ sequenceDiagram
 
 - A **Fleet Update** selects the Source Machine's exact stable Canonfig version, not `latest`, a caller-supplied URL, a package name or a shell command.
 - The Source explicitly starts it from the CLI or Version page, selecting a canary. All currently active enrolled followers participate, canary first, then one at a time. Enrollment after start is not silently added to that immutable target set.
-- Followers explicitly opt in to Source-directed updates in local updater settings. Ordinary manual/automatic self-update policy remains separate. No new resident follower process, inbound listener or native schedule is installed.
+- Enrollment authorizes Source-directed updates automatically. No local setting or enablement step gates Fleet Updates. Ordinary manual/automatic self-update policy remains separate; its off switch does not block fleet activation. No new resident follower process, inbound listener or native schedule is installed.
 - `sync --apply`, including its existing native scheduled invocation, checks for an update before opening a Synchronization Run. The update control endpoint is authenticated and TLS-pinned, but deliberately independent of the profile transport's major.minor gate. Otherwise a minor update could never repair the mismatch it caused.
 - The Source signs a bounded directive using the existing Ed25519 signing identity. It binds protocol, rollout ID, sequence, follower identity, exact version, digest, state format and expiry. Followers pin that key to enrollment, reject stale/foreign/expired directives and do not accept an update from an untrusted signing key.
 - Each follower obtains release evidence directly from the official npm registry. Require exact package/version, registry signature, SHA-512 tarball integrity and Sigstore provenance from `https://github.com/Microck/canonfig/.github/workflows/release.yml@refs/heads/main` with GitHub Actions' OIDC issuer. The registry's `maintainers` or `_npmUser` fields alone are not publisher proof. The current public 7.1.9 release has that provenance identity.
-- Reuse the opted-in updater's gate, command leases, staged nested npm install, disabled lifecycle scripts, candidate smoke checks, journal and retained backup. Do not invent another activation path. The installed old process must not resume ordinary work after its code is replaced.
+- Reuse the updater's gate, command leases, staged nested npm install, disabled lifecycle scripts, candidate smoke checks, journal and retained backup. Supported installed commands hold leases even without standalone self-update settings. Fleet activation discovers npm beside the running Node. The installed old process must not resume ordinary work after its code is replaced.
 - Busy commands defer. An open or interrupted Synchronization Run prevents activation. A mismatched state format is a refusal, not an implicit migration. The candidate must be checked before activation and execute a real Synchronization Run afterward.
 - Completion requires the new executable's exact version and a fresh Converged deployment receipt for this follower. The Source advances only on the matching authenticated report. Failed health halts the entire rollout. Missing health remains pending and never authorizes the next follower.
 - Status distinguishes queued, deferred, updating, healthy and failed followers; Source stop prevents new admissions. An admission already activating cannot be remotely undone.
@@ -75,7 +75,7 @@ sequenceDiagram
     S->>S: Persist immutable signed target set
     F->>S: Scheduled sync checks authenticated update endpoint
     S-->>F: Signed exact-release admission
-    F->>F: Verify enrollment signature, freshness and local opt-in
+    F->>F: Verify enrollment signature and freshness
     alt Active command or Synchronization Run
         F-->>S: Deferred, installation unchanged
     else Idle
@@ -97,7 +97,7 @@ sequenceDiagram
 | Threat | Boundary and mitigation | Remaining risk |
 | --- | --- | --- |
 | Spoofed Source | Enrollment-pinned TLS and Ed25519 signing identity; authenticated per-follower control endpoints | Source keys and follower credentials remain local secrets |
-| Compromised Source requests malicious code | No remote executable, URL, registry or package-name input; follower independently checks official package provenance and digest | Compromise of the trusted release workflow, npm or Sigstore trust roots is outside Source-key protection |
+| Compromised Source requests malicious code | No remote executable, URL, registry or package-name input; follower independently checks official package provenance and digest | Accepted: a compromised Source can start a rollout of an official Canonfig release that passes npm signature and provenance checks. Compromise of the trusted release workflow, npm or Sigstore trust roots is outside Source-key protection |
 | Tampered directive or tarball | Canonical signed payload, exact version and SHA-512 binding; registry signature and provenance subject must agree | A correctly signed official release can contain a defect |
 | Replayed directive/report | Monotonic rollout sequence, bounded expiry, follower binding and current rollout/attempt identity | A compromised follower can lie about its own health; reports are not hardware attestation |
 | Repudiation | Persist signed directive, phase transitions, local update journal and authenticated health outcome | Local administrators can alter local storage |
@@ -111,6 +111,7 @@ sequenceDiagram
 
 - SSH from Source to every follower: new credentials, bidirectional reachability and broader remote command authority.
 - Resident follower updater: would allow immediate push, but violates the specified no-daemon model. Schedule latency is accepted instead.
+- A second per-follower consent setting: the maintainer chose enrollment as the authority boundary. It leaves followers on older releases until someone performs local work and is not retained as a fallback.
 - Merely installing the newest npm release: does not pin the Source's version or establish publisher trust.
 - Signing an arbitrary URL with the Source key: Source compromise would authorize arbitrary code everywhere.
 - Health equals process exit or `--version`: says nothing about continued Convergence.
@@ -124,9 +125,9 @@ The first release containing this protocol must be installed on each follower be
 
 Required proof: separate disposable Source/Follower HOMEs and N/N+1 packages; show `--version`, `status` and Source rollout status. Also exercise unsigned/tampered directives, active-run deferral and failed-health rollout halt. A local artifact proof cannot establish public Sigstore publisher verification; run that verifier separately against a real published release. Keep raw commands/output here and remove this entire research directory before merging.
 
-## Recorded implementation evidence
+## Initial implementation evidence
 
-The proof ran in task-owned Raft workspace `paris:rf-d458f921d2ac4f42` with separate disposable Source and Follower HOMEs, private credentials and npm prefixes. No operator enrollment, native schedule, service or harness directory was used.
+These historical outputs predate the maintainer's automatic-enrollment decision and retain the original status wording. The proof ran in task-owned Raft workspace `paris:rf-d458f921d2ac4f42` with separate disposable Source and Follower HOMEs, private credentials and npm prefixes. No operator enrollment, native schedule, service or harness directory was used.
 
 ```sh
 npm run build:cli
@@ -148,5 +149,22 @@ The browser, private tunnel and disposable GUI stopped after verification. Raft 
 Earlier proof attempts are retained as [version refusal](proof-version-refusal.txt) and [health refusal](proof-health-refusal.txt). The former exposed inconsistent fixture version metadata. The latter exposed a real lineage bug: a projection receipt names a follower-specific revision, not the Source publication. The fix reads the stored `sourceRevision`; the TLS/projection regression failed before the fix and passed afterward.
 
 Simplification reviewed reuse, quality and efficiency inline because this child task forbids further delegation. No behavior-preserving cleanup was warranted; activation continues to use the existing updater and locks. No independent reviewer or human testing is claimed.
+
+## Automatic enrollment verification
+
+After removing per-follower consent, a fresh run used task-owned Raft workspace `paris:rf-92ec80e88114469f`, Node `24.21.0` and npm `11.19.0`.
+
+```sh
+npm run build:cli
+node docs/research/304-fleet-update/prove-fleet.mjs
+node --import tsx docs/research/304-fleet-update/prove-gui.ts
+```
+
+- [Installed CLI proof without opt-in](proof-automatic-output.txt): every follower began with `self-update status` reporting `enabled: false` and `settings: null`. No follower enable command ran. After the Source moved from fixture `7.1.9` to `7.1.10`, the canary activated `7.1.10`, recorded Convergence and still reported standalone updates disabled, with no settings file created.
+- The same run refused unsigned and tampered directives, deferred while a real sync held the run lock, halted on failed post-update health, and left the unadmitted follower on `7.1.9`. Local fixture publisher metadata remains separate from the unchanged production publisher verifier and its recorded [public-registry proof](publisher-output.txt).
+- [Focused checks](checks-automatic-output.txt): CLI build, all 54 tests in the four affected backend files, all six tests in the two affected UI files, and project/website/UI typechecks passed. Root and website lint reported no warnings or errors; UI lint reported 73 warnings and no errors. Documentation validation covered 449 command examples and three skill structures. No fresh full-suite or native macOS/Windows pass is claimed.
+- [Browser transcript](gui-automatic-output.txt), [enrolled follower Version page](gui-automatic-follower.png) and [enable dialog](gui-automatic-enable.png): the real follower showed standalone Self-updates Off. Its enable dialog retained only the npm path and idle confirmation; no Source-following checkbox or local fleet setting remained. The dialog was cancelled without enabling standalone updates.
+
+The browser and private tunnel closed, the GUI exited successfully and removed both disposable HOMEs and its bootstrap URL, and Raft confirmed destruction of the workspace. No live enrollment, schedule, service or harness directory was used. All verification was agent-run; human testing remains for the maintainer before merge.
 
 All research files and screenshots must be removed before merge. They are committed separately from the implementation.

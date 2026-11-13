@@ -9,14 +9,21 @@ import { Effect, Layer, ManagedRuntime } from "effect";
 import { linuxMachineStateLayer } from "../../../src/machine/linux.layer.ts";
 import { runtimeLayer } from "../../../src/runtime/layers.ts";
 import { SourceCommands } from "../../../src/cli/source-commands.ts";
+import { FollowerCommands } from "../../../src/cli/follower-commands.ts";
+import { startSourceServer } from "../../../src/enrollment/source-server.ts";
 import { EnrollmentLive } from "../../../src/enrollment/enrollment.layer.ts";
 import { Enrollment } from "../../../src/enrollment/enrollment.service.ts";
 import { runGui } from "../../../src/gui/server.ts";
 
 const home = mkdtempSync(join(tmpdir(), "canonfig-fleet-gui-"));
-const machine = linuxMachineStateLayer({ environment: [{ name: "HOME", value: home }, { name: "PATH", value: "/usr/bin:/bin" }], credentialPolicy: { kind: "local-file", path: join(home, "credentials") } });
-const base = runtimeLayer({ statePath: join(home, ".canonfig/state.sqlite") }, machine);
-const runtime = ManagedRuntime.make(Layer.merge(base, EnrollmentLive.pipe(Layer.provide(base))));
+const createRuntime = (directory: string) => {
+  const machine = linuxMachineStateLayer({ environment: [{ name: "HOME", value: directory }, { name: "PATH", value: "/usr/bin:/bin" }], credentialPolicy: { kind: "local-file", path: join(directory, "credentials") } });
+  const base = runtimeLayer({ statePath: join(directory, ".canonfig/state.sqlite") }, machine);
+  return ManagedRuntime.make(Layer.merge(base, EnrollmentLive.pipe(Layer.provide(base))));
+};
+const sourceHome = join(home, "source");
+const source = createRuntime(sourceHome);
+const runtime = createRuntime(join(home, "follower"));
 const abort = new AbortController();
 const sockets = new Set<Socket>();
 const proxy = createServer((socket) => {
@@ -26,16 +33,15 @@ const proxy = createServer((socket) => {
   socket.pipe(upstream).pipe(socket);
 });
 let gui: Promise<number> | undefined;
+let closeSource: (() => Promise<void>) | undefined;
 try {
-  await runtime.runPromise(Effect.flatMap(SourceCommands, (commands) => commands.initialize()));
-  await runtime.runPromise(Effect.gen(function*() {
-    const enrollment = yield* Enrollment;
-    for (const name of ["canary-ui", "second-ui"]) {
-      const invitation = yield* enrollment.createInvitation({ endpoint: "https://127.0.0.1:41371", expiresInMilliseconds: 60_000 });
-      const follower = yield* enrollment.enrollFollower({ ...invitation, followerName: name });
-      yield* enrollment.finalizeFollower(follower.credential);
-    }
-  }));
+  await source.runPromise(Effect.flatMap(SourceCommands, (commands) => commands.initialize()));
+  writeFileSync(join(sourceHome, ".canonfig/canonfig.jsonc"), JSON.stringify({ version: 1, profile: { id: "fleet-gui", name: "Fleet GUI" }, harnesses: [] }));
+  await source.runPromise(Effect.flatMap(SourceCommands, (commands) => commands.publish({ reviewer: "agent-ui-proof" })));
+  const server = await source.runPromise(startSourceServer({ hostname: "127.0.0.1" }));
+  closeSource = server.close;
+  const invitation = await source.runPromise(Effect.flatMap(Enrollment, (enrollment) => enrollment.createInvitation({ endpoint: server.endpoint, expiresInMilliseconds: 60_000 })));
+  await runtime.runPromise(Effect.flatMap(FollowerCommands, (commands) => commands.enroll({ invitation, followerName: "automatic-follower", replace: false })));
   proxy.listen(38117, "0.0.0.0");
   await once(proxy, "listening");
   const ready = Promise.withResolvers<string>();
@@ -55,8 +61,10 @@ try {
   for (const socket of sockets) socket.destroy();
   proxy.close();
   await runtime.dispose();
+  await closeSource?.();
+  await source.dispose();
   rmSync(home, { recursive: true, force: true });
   rmSync("/tmp/canonfig-fleet-gui-url", { force: true });
   rmSync("/tmp/canonfig-fleet-gui.pid", { force: true });
-  console.log("Disposable GUI stopped; Source HOME and bootstrap URL removed.");
+  console.log("Disposable GUI stopped; Source/Follower HOMEs and bootstrap URL removed.");
 }

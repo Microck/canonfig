@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { once } from "node:events";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, watch, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, watch, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -13,7 +13,7 @@ import { pathToFileURL } from "node:url";
 
 process.umask(0o022);
 const project = resolve(import.meta.dirname, "../../..");
-const output = join(import.meta.dirname, "proof-output.txt");
+const output = join(import.meta.dirname, "proof-automatic-output.txt");
 const home = mkdtempSync(join(tmpdir(), "canonfig-fleet-proof-"));
 const manifest = JSON.parse(readFileSync(join(project, "package.json"), "utf8"));
 const previous = manifest.version;
@@ -144,7 +144,9 @@ try {
     await cli(source, ["source", "invite", "--endpoint", endpoint, "--output", invitation, "--json"]);
     const enrolled = await cli(follower, ["follower", "enroll", "--stdin", "--name", follower.name, "--json"], { input: readFileSync(invitation) });
     follower.id = enrolled.follower.id;
-    await cli(follower, ["self-update", "enable", "--apply", "--npm-cli", npmCli, "--confirm-idle", "--follow-source"]);
+    assert.equal(existsSync(join(dirname(follower.root), ".canonfig-self-update/settings.json")), false);
+    const updates = await cli(follower, ["self-update", "status", "--json"], { record: true });
+    assert.equal(updates.enabled, false);
     await cli(follower, ["sync", "--apply", "--no-input", "--json"]);
   }
   await cli(canary, ["--version"], { record: true });
@@ -182,6 +184,8 @@ try {
   assert(JSON.stringify(status).includes("Converged"));
   const verified = await cli(source, ["source", "update", "status", "--json"], { record: true });
   assert.equal(verified.followers[0].status, "healthy");
+  assert.equal(existsSync(join(dirname(canary.root), ".canonfig-self-update/settings.json")), false);
+  assert.equal((await cli(canary, ["self-update", "status", "--json"], { record: true })).enabled, false);
 
   const { verifyFleetDirective } = await import(pathToFileURL(join(canary.root, "dist/enrollment/fleet-update.js")));
   const { signed } = JSON.parse(readFileSync(`${canary.state}.fleet-follower.json`, "utf8"));
@@ -201,7 +205,7 @@ try {
   assert.equal(halted.followers[2].status, "queued");
   await cli(notAdmitted, ["sync", "--apply", "--no-input", "--json"]);
   assert.equal(await cli(notAdmitted, ["--version"], { record: true }), previous);
-  log("PASS: source upgrade, canary activation and Convergence, active-run deferral, signature rejection, failed health halts the rollout and leaves the remaining follower on N.");
+  log("PASS: no follower opt-in or settings; standalone updates remain disabled; source upgrade, canary activation and Convergence, active-run deferral, signature rejection, failed health halts the rollout and leaves the remaining follower on N.");
 } finally {
   paused?.child.kill("SIGCONT");
   for (const child of children) child.kill("SIGTERM");

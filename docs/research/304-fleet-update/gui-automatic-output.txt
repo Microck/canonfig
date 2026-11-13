@@ -1,0 +1,72 @@
+Agent-driven Chromium check against a disposable enrolled Follower.
+Task-owned Raft: paris:rf-92ec80e88114469f
+
+$ node --import tsx docs/research/304-fleet-update/prove-gui.ts
+FLEET_GUI_READY private-relay=38117
+$ raft forward paris:rf-92ec80e88114469f --remote 38117 --local 38117
+
+Browser session: canonfig306-auto
+Opened bootstrap URL from a private temporary file; token omitted.
+Clicked Settings, Version, and dismissed the tour offer.
+
+Version page:
+- generic ":root { --skullet-base: var(--muted); --skullet-highlight: color-mix(in oklab, var(--foreground) 7%," [ref=e1] clickable [onclick]
+  - link "Skip to content" [ref=e2]
+  - button "rf-92ec80e88114469f Follower" [expanded=false, ref=e4]
+  - button "Search or jump to… Ctrl K" [ref=e5]
+  - link "Overview" [ref=e9]
+  - link "Machines" [ref=e10]
+  - link "Sync" [ref=e11]
+  - link "Schedule" [ref=e12]
+  - link "Local settings" [ref=e13]
+  - link "Backups" [ref=e14]
+  - link "Secrets" [ref=e15]
+  - button "Settings" [expanded=true, ref=e6]
+  - link "SSH tunnel" [ref=e19]
+  - link "Agent policy" [ref=e20]
+  - link "Health check" [ref=e21]
+  - link "Enrollment" [ref=e22]
+  - link "Version" [ref=e23]
+  - link "Installers" [ref=e24]
+  - link "Setup" [ref=e25]
+  - button "Take the tour" [ref=e7]
+  - button "SSH tunnel settings" [ref=e8]
+  - heading "Version" [level=1, ref=e33]
+  - button "Reload status" [ref=e34]
+  - button "Turn on updates…" [ref=e35]
+  - heading "This machine" [level=2, ref=e36]
+  - region "Tour offer" [ref=e16]
+    - button "Dismiss tour offer" [ref=e29]
+    - heading "Find your way around" [level=2, ref=e17]
+    - button "Take the tour" [ref=e18]
+  - region "Notifications alt+T" [ref=e3]
+
+Visible main content:
+"Version\nin Settings\nReload status\nTurn on updates…\nThis machine\nVersion\n7.1.9\nSelf-updates\nOff"
+
+
+Clicked Turn on updates.
+Enable dialog:
+- generic ":root { --skullet-base: var(--muted); --skullet-highlight: color-mix(in oklab, var(--foreground) 7%," [ref=e1] clickable [onclick]
+  - region "Notifications alt+T" [ref=e3]
+- heading "Turn on Canonfig updates" [level=2, ref=e38]
+- textbox "npm's npm-cli.js" [ref=e39]
+- LabelText "I stopped every other Canonfig process and paused its schedules." [ref=e40] clickable [cursor:pointer]
+  - checkbox "I stopped every other Canonfig process and paused its schedules." [checked=false, ref=e43]
+- button "Cancel" [ref=e41]
+- button "Turn on updates" [ref=e42]
+- button "Close" [ref=e37]
+
+Visible dialog/page content:
+"Skip to content\nrf-92ec80e88114469f\nFollower\nSearch or jump to…\nCtrl K\nOverview\nMachines\nSync\nSchedule\nLocal settings\nBackups\nSecrets\nSettings\nSSH tunnel\nAgent policy\nHealth check\nEnrollment\nVersion\nInstallers\nSetup\nTake the tour\nSSH tunnel settings\nVersion\nin Settings\nReload status\nTurn on updates…\nThis machine\nVersion\n7.1.9\nSelf-updates\nOff\nTurn on Canonfig updates\n\nCanonfig updates itself with the npm you name here, in a global npm folder inside your home. Stop every other Canonfig process and pause its schedules first.\n\nnpm's npm-cli.js\n\nThe file itself, not an npm shortcut, like /Users/you/.npm-global/lib/node_modules/npm/bin/npm-cli.js.\n\nI stopped every other Canonfig process and paused its schedules.\nCancel\nTurn on updates\nClose"
+
+
+Observed: standalone Self-updates Off. Enable form has only the npm path and idle-confirmation checkbox; no Follow Source opt-in control. No enable request submitted. Cancelled the dialog.
+Screenshots: gui-automatic-follower.png, gui-automatic-enable.png
+
+Cleanup observed:
+Browser closed.
+GUI exit=0: Disposable GUI stopped; Source/Follower HOMEs and bootstrap URL removed.
+Private tunnel closed. Downloaded bootstrap file removed.
+$ raft destroy paris:rf-92ec80e88114469f
+Destroyed paris:rf-92ec80e88114469f
