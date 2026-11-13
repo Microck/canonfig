@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { createHash, X509Certificate } from "node:crypto";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { generate } from "selfsigned";
@@ -14,6 +14,8 @@ import { CredentialReference } from "../src/domain/brand.ts";
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
 import { HumanActionRequiredError } from "../src/machine/machine-state.errors.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
+import { adapterFor } from "../src/projection/adapters/index.ts";
+import { TARGET_IDS } from "../src/projection/model.ts";
 import { doctorProbeNames, runDoctorProbes, schedulerProbe } from "../src/runtime/doctor.ts";
 import { credentialReadiness, describeUnattendedRuns, scheduledDefinitionReadiness } from "../src/runtime/readiness.ts";
 import { scheduleManagerLayer } from "../src/schedule/schedule-manager.layer.ts";
@@ -22,6 +24,13 @@ import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 const runtimeEntrypoint = resolve(projectRoot, "src/runtime/main.ts");
+
+// Detection also searches the running Node's folder (#291), so on a machine with npm-installed agent CLIs
+// those harnesses are detected whatever PATH the test passes; expect them alongside the fixture's.
+const besideNode = TARGET_IDS.filter((id) => {
+  const { executables, genericExecutables = [] } = adapterFor(id).descriptor;
+  return executables.some((name) => !genericExecutables.includes(name) && existsSync(join(dirname(process.execPath), name)));
+});
 
 const executeDoctor = (
   home: string,
@@ -103,7 +112,7 @@ describe("doctor probes", () => {
       name: "harnesses",
       status: "warning",
       message: "listed but not installed: claude-code",
-      details: { listed: "codex,claude-code", excluded: "", detected: "codex", notInstalled: "claude-code", snapshots: 0 },
+      details: { listed: "codex,claude-code", excluded: "", detected: TARGET_IDS.filter((id) => id === "codex" || besideNode.includes(id)).join(","), notInstalled: "claude-code", snapshots: 0 },
     });
   });
 
