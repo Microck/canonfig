@@ -8,7 +8,7 @@ import { FollowerCommands } from "../../src/cli/follower-commands.ts";
 import { startSourceServer } from "../../src/enrollment/source-server.ts";
 import { requestFleetUpdate } from "../../src/enrollment/follower-client.ts";
 import { writeFleetRecord } from "../../src/enrollment/fleet-update.ts";
-import { finishFleetSync, followerFleetPath } from "../../src/runtime/follower-fleet-update.ts";
+import { finishFleetSync, followerFleetPath, prepareFleetSync } from "../../src/runtime/follower-fleet-update.ts";
 import { SignedFleetDirective, type FleetReport } from "../../src/domain/fleet-update.ts";
 import { EnrollmentLive } from "../../src/enrollment/enrollment.layer.ts";
 import { Enrollment } from "../../src/enrollment/enrollment.service.ts";
@@ -129,6 +129,11 @@ it("reports the published Source revision after a real follower projection conve
     await follower.runtime.runPromise(finishFleetSync(true));
     const rollout = await source.runtime.runPromise(control.controller.fleetStatus());
     expect(rollout).toMatchObject({ status: "complete", followers: [{ status: "healthy", health: { revision: control.revision.id, run: receipt?.run } }] });
+    // An unreachable Source must not block the sync that would restart its tunnel: the poll is skipped, not fatal.
+    await control.server.close();
+    close = undefined;
+    const lease = { suspended: false, close: () => {}, selfUpdate: <A>(operation: () => Promise<A>) => operation() };
+    expect(await follower.runtime.runPromise(prepareFleetSync(follower.directory, lease))).toBe(false);
   } finally {
     await close?.();
     await follower.runtime.dispose();

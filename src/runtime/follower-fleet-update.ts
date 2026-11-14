@@ -58,7 +58,13 @@ export const prepareFleetSync = Effect.fn("Fleet.prepareSync")(function*(
   const request = (report?: FleetReport) => Effect.runPromise(requestFleetUpdate(transport, report).pipe(
     Effect.mapError((cause) => new CliCommandFailure(describeRuntimeError(cause))), Effect.provideService(MachineState, machine),
   ));
-  const polled = yield* Effect.tryPromise({ try: () => request(), catch: fleetFailure });
+  // The poll runs before synchronize, and synchronize is what restarts a stopped managed tunnel and reports transport
+  // or version-skew failures. So a failed poll (Source not reachable yet, or a Source without the fleet protocol)
+  // skips Fleet Update for this run and lets the sync proceed; the next sync polls again. A directive that arrives
+  // still has to pass signature verification below.
+  const polled = yield* Effect.tryPromise({ try: () => request(), catch: fleetFailure }).pipe(
+    Effect.catch(() => Effect.succeed({ directive: null })),
+  );
   if (polled.directive === null) return false;
   const signed = polled.directive;
   const directive = yield* Effect.try({
