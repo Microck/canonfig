@@ -8,7 +8,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isCoarsePointer } from "@/lib/utils";
-import { AnimatedNumber, CliText, DitherProgress, Hint, Mono, StateCell, StateLabel, Term } from "@/shared/shared";
+import { AnimatedNumber, CliText, DitherProgress, Hint, Mono, StateCell, StateLabel, StatusMark, Term } from "@/shared/shared";
 import { DEMO, SECRETS_GROUP, STATE_META, type Revision } from "@/shared/metadata";
 import { ErrorNotice } from "../live/session";
 import { GuiRequestError } from "../gui-client";
@@ -396,6 +396,15 @@ export function SourceOverview() {
   );
 }
 
+/** A Follower's lifecycle states in the CLI's order (`canonfig status`), named in plain words. */
+const LIFECYCLE_STEPS = [
+  ["discovered", "Source address set"],
+  ["enrolled", "Joined"],
+  ["selected", "Profile chosen"],
+  ["reachable", "Source reachable"],
+  ["converged", "Up to date"],
+] as const;
+
 /** Only recorded session and status evidence belongs on a live Overview. */
 export function WorkspaceEvidence() {
   const { session, status, setView } = useWorkspace();
@@ -422,14 +431,18 @@ export function WorkspaceEvidence() {
       {/* Enrollment lifecycle and the tunnel belong to a Follower; a Source has neither. */}
       {session.role === "follower" && <>
         <section>
-          <SectionLabel>Follower lifecycle</SectionLabel>
+          <SectionLabel>Sync status</SectionLabel>
           <div className="border-t border-border">
-            {Object.entries(lifecycle).map(([name, { reached, detail }]) => (
-              <div key={name} className="border-b border-border/70 py-2">
-                <div className="flex gap-3 text-base"><span className="font-medium">{name}</span><span className="text-muted-foreground">{reached ? "Reached" : "Not reached"}</span></div>
-                {!reached && <p className="text-sm text-muted-foreground"><CliText>{detail}</CliText></p>}
-              </div>
-            ))}
+            {/* The CLI's lifecycle order, in plain words; a mark carries reached or not, and only a missed step explains itself. */}
+            {LIFECYCLE_STEPS.filter(([key]) => key in lifecycle).map(([key, label]) => {
+              const { reached, detail } = lifecycle[key]!;
+              return (
+                <div key={key} className="border-b border-border/70 py-2">
+                  <div className="flex items-center gap-2.5 text-base"><StatusMark kind={reached ? "ok" : "warn"} /><span>{label}</span></div>
+                  {!reached && <p className="mt-1 pl-6 text-sm text-muted-foreground"><CliText>{detail}</CliText></p>}
+                </div>
+              );
+            })}
           </div>
         </section>
         <Button variant="outline" size="sm" onClick={() => setView("sync")}>Open synchronization details</Button>
