@@ -120,8 +120,13 @@ interface BinaryResponse {
   readonly errorBody?: unknown | undefined;
 }
 
+/**
+ * Validate the endpoint and freeze one resolved address. A stalled OS resolver would otherwise wait past the
+ * caller's timeout before any connection timer starts, so the lookup has its own bound.
+ */
 const checkedEndpoint = (
   endpoint: string,
+  timeoutMilliseconds = defaultTimeoutMilliseconds,
 ): Effect.Effect<URL, EnrollmentTransportError> =>
   Effect.tryPromise({
     try: () => resolveSourceEndpoint(endpoint),
@@ -129,7 +134,13 @@ const checkedEndpoint = (
       operation: "validate source endpoint",
       message: cause instanceof Error ? cause.message : "The Source endpoint could not be resolved.",
     }),
-  });
+  }).pipe(
+    Effect.timeoutOption(timeoutMilliseconds),
+    Effect.flatMap((resolved) => resolved._tag === "Some" ? Effect.succeed(resolved.value) : Effect.fail(new EnrollmentTransportError({
+      operation: "validate source endpoint",
+      message: "Resolving the Source name timed out. Check that Tailscale is running and MagicDNS answers on this machine.",
+    }))),
+  );
 
 const inspectCertificate = (
   endpoint: URL,
@@ -413,7 +424,7 @@ export const enrollFollower = (
       });
     }
     // MagicDNS lookup is network work too, so it shares the phase deadline and cancellation.
-    const endpoint = yield* enrollmentPhase(checkedEndpoint(input.invitation.endpoint), input);
+    const endpoint = yield* enrollmentPhase(checkedEndpoint(input.invitation.endpoint, enrollmentPhaseTimeout(input)), input);
     const certificate = yield* enrollmentPhase(
       inspectCertificate(endpoint, enrollmentPhaseTimeout(input)),
       input,
@@ -640,7 +651,7 @@ export const probeSourceDescriptor = (
   input: SourceDescriptorProbeInput,
 ): Effect.Effect<SourceDescriptorProbe, EnrollmentTransportError> => {
   const timeout = input.timeoutMilliseconds ?? defaultTimeoutMilliseconds;
-  return checkedEndpoint(input.endpoint).pipe(Effect.flatMap((endpoint) => Effect.tryPromise({
+  return checkedEndpoint(input.endpoint, timeout).pipe(Effect.flatMap((endpoint) => Effect.tryPromise({
     try: () =>
       new Promise<SourceDescriptorProbe>((resolveProbe, rejectProbe) => {
         const host = endpoint.hostname.replaceAll("[", "").replaceAll("]", "");
@@ -1006,7 +1017,7 @@ const transportContext = (
 }, EnrollmentError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
-    const endpoint = yield* checkedEndpoint(input.endpoint);
+    const endpoint = yield* checkedEndpoint(input.endpoint, input.timeoutMilliseconds);
     const certificate = yield* inspectCertificate(endpoint, input.timeoutMilliseconds);
     if (certificate.fingerprint !== input.tlsFingerprint) {
       return yield* new EnrollmentFingerprintMismatchError({
