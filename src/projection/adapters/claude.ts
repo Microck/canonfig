@@ -60,6 +60,9 @@ export const claudeAdapter: HarnessAdapter = {
       neverTouch: under(context, root, [
         ".credentials.json", "projects", "sessions", "history.jsonl", "file-history", "cache",
       ]),
+      // Every key but mcpServers in .claude.json holds OAuth, trust and history, so a full backup takes it only with
+      // credential consent; managed backups still carry its mcpServers.
+      credentials: [userConfig],
       sharedSkills: false,
       skillSources: [{ path: context.join(root, "skills"), depth: 1 }],
     };

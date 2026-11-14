@@ -135,7 +135,7 @@ describe("portable backup recovery", () => {
     writeFileSync(join(config, "opencode.json"), "{}\n");
     writeFileSync(join(data, "opencode.db"), "fixture database");
     expect(spawnSync("mkfifo", [join(data, "events.pipe")]).status).toBe(0);
-    // Claude keeps its user config beside, not inside, ~/.claude.
+    // Claude keeps its user config, with its OAuth state, beside ~/.claude; without consent it stays out.
     mkdirSync(join(machine.home, ".claude"));
     writeFileSync(join(machine.home, ".claude", "settings.json"), "{}\n");
     writeFileSync(join(machine.home, ".claude.json"), '{"mcpServers":{}}\n');
@@ -152,7 +152,8 @@ describe("portable backup recovery", () => {
     expect(readFileSync(join(output, ".local", "share", "opencode", "opencode.db"), "utf8")).toBe("fixture database");
     expect(readFileSync(join(output, ".config", "opencode", "opencode.json"), "utf8")).toBe("{}\n");
     expect(existsSync(join(output, ".local", "share", "opencode", "events.pipe"))).toBe(false);
-    expect(readFileSync(join(output, ".claude.json"), "utf8")).toBe('{"mcpServers":{}}\n');
+    expect(existsSync(join(output, ".claude.json"))).toBe(false);
+    expect(readFileSync(join(output, ".claude", "settings.json"), "utf8")).toBe("{}\n");
     expect(readFileSync(join(output, ".agents", "skills", "team", "SKILL.md"), "utf8")).toContain("name: team");
   }, 60_000);
 
