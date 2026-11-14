@@ -13,6 +13,8 @@ import { dirname, relative, resolve } from "node:path";
 
 import { Schema } from "effect";
 
+import { doctorProbeNames } from "../../src/runtime/doctor.ts";
+
 const projectRoot = resolve(import.meta.dirname, "../..");
 const temporaryRoot = mkdtempSync(resolve(tmpdir(), "canonfig-release-"));
 const tarballRoot = resolve(temporaryRoot, "tarball");
@@ -295,7 +297,8 @@ const validateBinary = (executable: string): void => {
     doctorEnvelope.command !== "doctor"
     || doctorEnvelope.data?.noInput !== true
     || !Array.isArray(doctorEnvelope.data?.probes)
-    || doctorEnvelope.data.probes.length !== 8
+    // The packed doctor must run every probe the source declares, in order, so a new probe needs no edit here.
+    || doctorEnvelope.data.probes.map((probe: { name?: unknown }) => probe.name).join() !== doctorProbeNames.join()
   ) {
     fail("packed executable doctor returned an invalid envelope");
   }
