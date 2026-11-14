@@ -167,4 +167,12 @@ node --import tsx docs/research/304-fleet-update/prove-gui.ts
 
 The browser and private tunnel closed, the GUI exited successfully and removed both disposable HOMEs and its bootstrap URL, and Raft confirmed destruction of the workspace. No live enrollment, schedule, service or harness directory was used. All verification was agent-run; human testing remains for the maintainer before merge.
 
+## Revoked-enrollment regression verification
+
+A one-time [CI inspection](https://github.com/Microck/canonfig/actions/runs/43527977780) found Fleet Update polling converting revoked credentials into exit `3` instead of the existing exit `5` contract. The fix classifies typed enrollment errors before the updater's Promise boundary and preserves that classification through updater catches. Explicit update refusals still require human action.
+
+[Commands and output](checks-revocation-output.txt) record all 17 packed CLI tests passing, including the unchanged revoked-enrollment, TLS fingerprint and unavailable-source cases. All 15 fleet integration and failure-taxonomy tests also passed. Project and website typechecks passed; root and website lint reported zero warnings and errors, and documentation validation passed.
+
+The Raft image's preinstalled harnesses initially contaminated the fixture's executable discovery. A task-local Node copy with npm beside it isolated the runtime without changing the image tools or any test assertions. The log retains the intermediate missing-npm doctor failure and the final passing run. Raft confirmed destruction of task-owned workspace `paris:rf-a38607ab4a0b4785` after evidence collection.
+
 All research files and screenshots must be removed before merge. They are committed separately from the implementation.

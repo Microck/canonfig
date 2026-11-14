@@ -1,0 +1,192 @@
+Fleet Update transport classification verification
+
+The one-time CI inspection of run 43527977780 found the packed lifecycle returning exit 3 after revocation, instead of the unchanged expected exit 5:
+https://github.com/Microck/canonfig/actions/runs/43527977780
+
+Fix: classify typed enrollment errors through describeRuntimeError before the updater Promise boundary; preserve CliCommandFailure when crossing updater catches. Explicit update refusals remain human-action-required. No test or assertion changed.
+
+Task-owned workspace: paris:rf-a38607ab4a0b4785, 1 CPU / 4 GiB. No live operator state used.
+
+Typecheck command, before the final packed checks:
+  raft sync paris:rf-a38607ab4a0b4785 . /workspace/canonfig
+  raft exec paris:rf-a38607ab4a0b4785 -- bash -lc 'cd /workspace/canonfig && umask 022 && npm run typecheck'
+
+Observed typecheck output (this successful prefix preceded the first filtered packed run):
+> @microck/canonfig@7.1.9 typecheck
+> tsc -p tsconfig.json --noEmit && npm run website:typecheck
+> @microck/canonfig@7.1.9 website:typecheck
+> npm run typecheck --workspace @canonfig/website
+> @canonfig/website@7.1.9 typecheck
+> fumadocs-mdx && tsc --noEmit
+[MDX] generated files in 43.45630900000003ms
+
+Environment issue: the Raft image has Codex and Claude beside /usr/local/bin/node. Harness discovery searches that npm installation directory as well as PATH. The filtered packed run and then the full packed file hit missing-harness expectations before proving revocation. A runtime probe returned:
+{"node":"/usr/local/bin/node","adjacentCodex":true,"adjacentClaude":true,"adjacentGemini":false}
+
+The fixture must run with an isolated Node installation. Copying Node removed the image harnesses from discovery; its first full run passed revocation and 15 other tests but failed the remaining doctor check because the copied installation had no npm. Linking the image's npm into this task-local runtime fixed that environment prerequisite. Image tools and test assertions were not modified.
+
+FIRST ISOLATED RUNTIME COMMAND (16/17 packed tests passed):
+raft exec paris:rf-a38607ab4a0b4785 -- bash -lc 'set -eu
+runtime=$(mktemp -d /tmp/canonfig-fleet-node-XXXXXX)
+mkdir "$runtime/bin"
+cp /usr/local/bin/node "$runtime/bin/node"
+export PATH="$runtime/bin:$PATH"
+cd /workspace/canonfig
+umask 022
+node -p "process.execPath"
+npm test -- tests/packed-cli.test.ts --maxWorkers=1
+npm test -- tests/integration/fleet-update.test.ts tests/cli-failure-taxonomy.test.ts --maxWorkers=1
+npm run lint'
+
+OUTPUT:
+/tmp/canonfig-fleet-node-N6NXF2/bin/node
+
+> @microck/canonfig@7.1.9 test
+> vitest run tests/packed-cli.test.ts --maxWorkers=1
+
+
+ RUN  v4.1.12 /workspace/canonfig
+
+ ❯ tests/packed-cli.test.ts (17 tests | 1 failed) 102502ms
+     ✓ ships the live browser even when npm pack inherits the test environment 10ms
+     ✓ runs shipped help and version entrypoints  2050ms
+     ✓ runs representative safe routes with stable JSON  1757ms
+     ✓ maps invalid input to the stable usage exit code  747ms
+     ✓ publishes the Canonical Folder into a signed immutable revision and republishes equal content idempotently  2842ms
+     ✓ rejects malformed, escaping and secret-bearing folder input without leakage  8331ms
+     ✓ scans the Canonical Folder for tool evidence without writing it  985ms
+     ✓ exposes the published revision through signed follower transport  3115ms
+     ✓ resolves the enrolled credential policy without the environment  3097ms
+     ✓ probes the agent policy the enrolled follower actually runs under  2800ms
+     ✓ refuses to replace a completed enrollment unless asked  2799ms
+     ✓ runs doctor with bounded noninteractive probes and redaction  995ms
+     ✓ keeps unavailable scheduled apply quiet on stdout and truthful on stderr  1831ms
+     ✓ binds the scheduled command to an absolute runtime and shipped entrypoint  465ms
+     ✓ runs an authenticated source-to-follower lifecycle across packed processes  9504ms
+     ✓ rejects a tampered TLS fingerprint from the packed executable  2807ms
+     × converges a packed source across multiple isolated followers 11918ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/packed-cli.test.ts > packed Canonfig executable > converges a packed source across multiple isolated followers
+AssertionError: run healthy doctor probes: {"schema":"canonfig.cli/v1","command":"doctor","status":"error","exitCode":2,"message":"one or more doctor probes failed","data":{"noInput":true,"probes":[{"details":{"architecture":"arm64","canonfigVersion":"7.1.9","platform":"linux","runtime":"node","runtimeVersion":"24.21.0"},"message":"runtime is supported","name":"runtime","status":"pass"},{"details":{"header":"valid","migrations":"current","readWrite":true},"message":"SQLite state is migrated, readable, and writable","name":"state","status":"pass"},{"details":{"kind":"local-file","verification":"configuration"},"message":"credential storage uses an explicitly configured local file","name":"credentials","status":"warning"},{"details":{"authenticated":true,"reachable":true,"tlsPinned":true},"message":"source is reachable, TLS-pinned, and authenticated","name":"source","status":"pass"},{"message":"no schedule is selected; run `canonfig schedule set <calendar>` to schedule synchronization","name":"scheduler","status":"skipped"},{"category":"usage-or-configuration","message":"no supported package manager is available","name":"package-managers","status":"fail"},{"details":{"configured":false,"policy":"deterministic-only"},"message":"deterministic-only policy requires no adapter","name":"agent-adapter","status":"pass"},{"message":"/tmp/canonfig-packed-7ITwR5/workstation/home/.canonfig/canonfig.jsonc does not exist yet","name":"harnesses","status":"skipped"}],"schema":"canonfig.doctor/v1","status":"unhealthy","timeoutMilliseconds":10000}}
+: expected 2 to be +0 // Object.is equality
+
+- Expected
++ Received
+
+- 0
++ 2
+
+ ❯ requireSuccess tests/packed-cli.test.ts:319:71
+
+    317|   label: string,
+    318| ): ReturnType<typeof parseEnvelope> => {
+    319|   expect(result.status, `${label}: ${result.stdout}${result.stderr}`).…
+       |                                                                       ^
+    320|   expect(result.stderr, label).toBe("");
+    321|   return parseEnvelope(result);
+ ❯ tests/packed-cli.test.ts:1192:20
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 16 passed (17)
+   Start at  23:50:59
+   Duration  103.60s (transform 390ms, setup 0ms, import 865ms, tests 102.50s, environment 0ms)
+
+
+
+FINAL COMMAND:
+raft exec paris:rf-a38607ab4a0b4785 -- bash -lc 'set -u
+runtime=/tmp/canonfig-fleet-node-N6NXF2
+ln -s /usr/local/bin/npm "$runtime/bin/npm"
+export PATH="$runtime/bin:$PATH"
+cd /workspace/canonfig
+umask 022
+node -p "process.execPath"
+npm test -- tests/packed-cli.test.ts --maxWorkers=1
+packed=$?
+npm test -- tests/integration/fleet-update.test.ts tests/cli-failure-taxonomy.test.ts --maxWorkers=1
+focused=$?
+npm run lint
+lint=$?
+printf "packed=%s focused=%s lint=%s\n" "$packed" "$focused" "$lint"
+test "$packed$focused$lint" = 000'
+
+OUTPUT:
+/tmp/canonfig-fleet-node-N6NXF2/bin/node
+
+> @microck/canonfig@7.1.9 test
+> vitest run tests/packed-cli.test.ts --maxWorkers=1
+
+
+ RUN  v4.1.12 /workspace/canonfig
+
+ ✓ tests/packed-cli.test.ts (17 tests) 130983ms
+     ✓ runs shipped help and version entrypoints  2062ms
+     ✓ runs representative safe routes with stable JSON  1796ms
+     ✓ maps invalid input to the stable usage exit code  773ms
+     ✓ publishes the Canonical Folder into a signed immutable revision and republishes equal content idempotently  2927ms
+     ✓ rejects malformed, escaping and secret-bearing folder input without leakage  8513ms
+     ✓ scans the Canonical Folder for tool evidence without writing it  999ms
+     ✓ exposes the published revision through signed follower transport  3674ms
+     ✓ resolves the enrolled credential policy without the environment  3548ms
+     ✓ probes the agent policy the enrolled follower actually runs under  2865ms
+     ✓ refuses to replace a completed enrollment unless asked  2814ms
+     ✓ runs doctor with bounded noninteractive probes and redaction  1011ms
+     ✓ keeps unavailable scheduled apply quiet on stdout and truthful on stderr  1842ms
+     ✓ binds the scheduled command to an absolute runtime and shipped entrypoint  473ms
+     ✓ runs an authenticated source-to-follower lifecycle across packed processes  10444ms
+     ✓ rejects a tampered TLS fingerprint from the packed executable  2863ms
+     ✓ converges a packed source across multiple isolated followers  39485ms
+
+ Test Files  1 passed (1)
+      Tests  17 passed (17)
+   Start at  23:54:09
+   Duration  132.09s (transform 394ms, setup 0ms, import 871ms, tests 130.98s, environment 0ms)
+
+
+> @microck/canonfig@7.1.9 test
+> vitest run tests/integration/fleet-update.test.ts tests/cli-failure-taxonomy.test.ts --maxWorkers=1
+
+
+ RUN  v4.1.12 /workspace/canonfig
+
+ ✓ tests/integration/fleet-update.test.ts (2 tests) 989ms
+   ✓ binds admissions to the enrolled identity, advances only on fresh target-version health, and halts at the first failure  436ms
+   ✓ reports the published Source revision after a real follower projection converges  549ms
+ ✓ tests/cli-failure-taxonomy.test.ts (13 tests) 180ms
+
+ Test Files  2 passed (2)
+      Tests  15 passed (15)
+   Start at  23:56:22
+   Duration  4.88s (transform 1.92s, setup 0ms, import 3.32s, tests 1.17s, environment 0ms)
+
+
+> @microck/canonfig@7.1.9 lint
+> oxlint oxlint.config.ts vitest.config.ts tools/release src/agent src/cli src/domain src/enrollment src/gui src/logging src/machine src/profile src/projection src/runtime src/schedule src/secrets src/setup src/state src/synchronization tests/agent-resolution.test.ts tests/acceptance tests/cli.test.ts tests/cli-failure-taxonomy.test.ts tests/command-log.test.ts tests/documentation-command-validation.test.ts tests/doctor.test.ts tests/foundation.test.ts tests/packed-cli.test.ts tests/profile-contract.test.ts tests/profile-compiler.test.ts tests/discovery.test.ts tests/publication.test.ts tests/setup-controller.test.ts tests/state-repository.test.ts tests/machine-state-linux.test.ts tests/machine-state-macos.test.ts tests/machine-state-windows.test.ts tests/schedule-manager.test.ts tests/skills.test.ts tests/synchronization-planner.test.ts tests/installed-tool-version.test.ts tests/linux-credential-bootstrap.test.ts tests/contract/build-receipt.test.ts tests/contract/machine-state.contract.ts tests/contract/schedule-manager.contract.ts tests/integration/enrollment.test.ts tests/integration/transport.test.ts tests/integration/secret-transfer.test.ts tests/integration/secret-cleanup-retry.test.ts tests/integration/npm-artifact.test.ts tests/integration/synchronization-run.test.ts tests/integration/recovery.test.ts tests/integration/follower-orchestration.test.ts tests/integration/local-projection.test.ts tests/projection-adapters.test.ts tests/projection-detect.test.ts tests/projection-folder.test.ts tests/projection-authoring.test.ts tests/gui-plumbing.test.ts tests/projection-import.test.ts tests/projection-import-safety.test.ts tests/projection-translation.test.ts && npm run website:lint && npm run docs:validate && npm run skills:validate
+
+Found 0 warnings and 0 errors.
+Finished in 3.0s on 283 files with 112 rules using 1 threads.
+
+> @microck/canonfig@7.1.9 website:lint
+> npm run lint --workspace @canonfig/website
+
+
+> @canonfig/website@7.1.9 lint
+> oxlint app components lib source.config.ts next.config.mjs scripts
+
+Found 0 warnings and 0 errors.
+Finished in 432ms on 12 files with 112 rules using 1 threads.
+
+> @microck/canonfig@7.1.9 docs:validate
+> tsx website/scripts/validate-commands.ts
+
+Validated 449 Canonfig command examples across 64 documentation files.
+
+> @microck/canonfig@7.1.9 skills:validate
+> tsx website/scripts/validate-skills.ts
+
+Validated 3 Canonfig skill structures.
+packed=0 focused=0 lint=0
