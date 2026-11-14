@@ -62,6 +62,36 @@ function SectionLink({ onClick, children }: { onClick: () => void; children: str
   );
 }
 
+/**
+ * A live Source's head, from its published revisions only. Followers do not report which revision they
+ * applied to the Source, so this says what was published and never counts machines as up to date.
+ */
+function LivePublicationState() {
+  const ws = useWorkspace();
+  const revisions = ws.profileStates.revisions;
+  const name = ws.session?.machineName ?? ws.machineName;
+  if (revisions.error) {
+    return <StateHeader tone="warn" title={name} body={`Canonfig could not read the published revisions: ${revisions.error.message}`} />;
+  }
+  if (ws.publishing) return <StateHeader tone="ok" running title={ws.latest === undefined ? "Publishing revision 1…" : `Publishing revision ${ws.latest + 1}…`} body="Followers pick it up at their next check." />;
+  if (ws.latest === undefined) {
+    return revisions.loading
+      ? <StateHeader tone="muted" title={name} body="Reading published revisions…" />
+      : <StateHeader tone="warn" title="Nothing published yet" body="Publish revision 1 to send the profile to your other machines. Machines you add get nothing until you publish." />;
+  }
+  return (
+    <StateHeader
+      tone={ws.pending.length > 0 ? "warn" : "ok"}
+      title={ws.pending.length > 0 ? `${ws.pending.length} unpublished ${ws.pending.length === 1 ? "change" : "changes"}` : `Revision ${ws.latest} is published`}
+      body={
+        ws.pending.length > 0
+          ? `Machines stay on revision ${ws.latest} until you publish revision ${ws.latest + 1}.`
+          : "Followers pick it up at their next check. They don't report back which revision they applied, so this page can't tell which machines have it yet."
+      }
+    />
+  );
+}
+
 function OverviewState() {
   const ws = useWorkspace();
   const onLatest = ws.followers.filter((f) => f.revision === ws.latest).length;
@@ -70,7 +100,9 @@ function OverviewState() {
   if (service && !service.serving) {
     return <StateHeader tone="bad" title="Other machines can't reach this Source" body="They keep their current revision until the Source service runs again." />;
   }
-  if (!ws.capabilities.simulatedTelemetry || ws.latest === undefined) {
+  // A live Source has publication evidence but no fleet telemetry, so it never shows the simulated machine counts below.
+  if (!ws.capabilities.simulatedTelemetry) return <LivePublicationState />;
+  if (ws.latest === undefined) {
     return <StateHeader tone="muted" title={ws.session?.machineName ?? ws.machineName} body="Publish the profile to send it to your other machines." />;
   }
   const unreachable = ws.followers.filter((f) => f.state === "offline" && f.revision !== ws.latest);
