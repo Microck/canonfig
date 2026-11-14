@@ -102,3 +102,13 @@ it("a Source service that is not serving still outranks publication", async () =
     assert.ok(!text.includes("Revision 1 is published"), text);
   } finally { await page.close(); }
 });
+
+it("a live Source whose revisions cannot be read says so instead of guessing", async () => {
+  // No /api/revisions answer: the fixture server returns 404 with a CLI failure body.
+  const page = await overview({ "/api/status": status, "/api/source-service": service(true) });
+  try {
+    const text = await page.text("could not read the published revisions");
+    assert.ok(text.includes("Canonfig could not read the published revisions"), text);
+    assert.ok(!/is published|Nothing published yet|up to date/i.test(text), text);
+  } finally { await page.close(); }
+});
