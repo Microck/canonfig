@@ -8,8 +8,8 @@ Retrieved 2026-11-13. Measurements are local observations in the raw benchmark r
 - <https://raw.githubusercontent.com/nodejs/node/v24.13.0/lib/zlib.js>: implementation in the installed Node release, independent of the current documentation.
 - <https://www.rfc-editor.org/rfc/rfc8878.html>: Zstandard frame format, window and dictionary identifiers. The RFC page notes the later RFC 9659 revision.
 - <https://github.com/facebook/zstd>: upstream compressor and CLI documentation, high compression levels, dictionaries and long-distance matching.
-- <https://raw.githubusercontent.com/tukaani-project/xz/master/src/xz/xz.1>: xz presets, extreme mode and decompressor memory requirements. Higher presets are not universally better choices.
-- <https://raw.githubusercontent.com/google/brotli/master/README.md>: upstream Brotli implementation and RFC 7932 reference.
+- <https://raw.githubusercontent.com/tukaani-project/xz/HEAD/src/xz/xz.1>: xz presets, extreme mode and decompressor memory requirements. Higher presets are not universally better choices.
+- <https://raw.githubusercontent.com/google/brotli/HEAD/README.md>: upstream Brotli implementation and RFC 7932 reference.
 - <https://raw.githubusercontent.com/lz4/lz4/dev/README.md>: LZ4, high-compression mode and dictionaries.
 - <https://www.7-zip.org/7z.html>: 7z container, LZMA/LZMA2 and solid compression.
 - <https://github.com/iczelia/bzip3/releases/tag/1.5.5>: exact bzip3 release used by the benchmark. Its README describes the Burrows-Wheeler transform and context-mixing design, build instructions and licensing.
@@ -19,9 +19,9 @@ Retrieved 2026-11-13. Measurements are local observations in the raw benchmark r
 
 ## Repositories and transports
 
-- <https://raw.githubusercontent.com/restic/restic/master/doc/design.rst>: immutable content-addressed blobs, packs, encrypted repository metadata, per-blob authentication, snapshots and Zstandard repository-format-2 compression.
+- <https://raw.githubusercontent.com/restic/restic/HEAD/doc/design.rst>: immutable content-addressed blobs, packs, encrypted repository metadata, per-blob authentication, snapshots and Zstandard repository-format-2 compression.
 - <https://borgbackup.readthedocs.io/en/stable/internals/data-structures.html>: transactional repository segments, content-addressed keys, archive objects, compaction and repository quotas.
-- <https://raw.githubusercontent.com/kopia/kopia/master/site/content/docs/Advanced/Architecture/_index.md>: blob storage, content-addressed storage, encryption, deduplication and manifests.
+- <https://raw.githubusercontent.com/kopia/kopia/HEAD/site/content/docs/Advanced/Architecture/_index.md>: blob storage, content-addressed storage, encryption, deduplication and manifests.
 - <https://rustic.cli.rs/docs/getting_started.html>: encrypted deduplicated repositories, repeated snapshots and restore behavior.
 - <https://rclone.org/overview/>: backend support and differences in hashing, modification times, duplicate names and case sensitivity. Provider checksums are not uniformly available.
 - <https://rclone.org/crypt/>: crypt is a storage wrapper, not a snapshot/retention engine.
