@@ -395,10 +395,8 @@ export interface BackupSlice {
   state: ResourceState;
   /** The running or last operation: loading while it runs, its error after a failure. */
   action: ResourceState;
-  /** The copies of one policy from the last `list`, for one owner (this machine when owner is undefined). */
-  listing: { name: string; owner?: string | undefined; value: GuiBackupList } | null;
-  /** The result of the last operation other than `list`. */
-  report: { action: string; name?: string; value: Schema.Json } | null;
+  /** This machine's copies of each policy, from its last `list`. A run or prune drops that policy's entry. */
+  listings: Readonly<Record<string, GuiBackupList>>;
   run: (request: GuiBackupRequest) => Promise<boolean>;
 }
 

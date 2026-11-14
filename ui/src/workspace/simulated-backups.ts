@@ -1,5 +1,5 @@
 // The demo's Backups page: made-up policies, run history and copies in the shapes /api/backup returns, so the same
-// History page renders live and demo data. Changes stay in memory, like the rest of the demo.
+// Backups page renders live and demo data. Changes stay in memory, like the rest of the demo.
 import { useState } from "react";
 import { Schema } from "effect";
 import { GuiBackupStatus, type GuiBackupRequest } from "../../../src/gui/contract/backup";
@@ -38,7 +38,7 @@ function copies(policy: string, owner: string, count: number, everyDays: number,
 function seed(role: "source" | "follower", owner: string) {
   const now = new Date();
   const at = (hour: number, daysAgo = 0) => { const date = new Date(now.getTime() - daysAgo * DAY); date.setHours(hour, 0, 0, 0); return date.toISOString(); };
-  const lastSunday = (now.getDay() + 7) % 7 || 7;
+  const lastSunday = now.getDay() || 7;
   // On a Follower, "nightly" comes from the Source and "laptop-extra" is this machine's own.
   const local = role === "source" ? POLICIES : { "laptop-extra": { ...POLICIES.github, destination: { kind: "local", path: "/Users/maria/Backups/canonfig" } } };
   const declared = role === "source" ? {} : { nightly: POLICIES.nightly };
@@ -67,7 +67,7 @@ function seed(role: "source" | "follower", owner: string) {
 export function useSimulatedBackups(role: "source" | "follower", owner: string): BackupSlice {
   const [state, setState] = useState(() => seed(role, owner));
   const [action, setAction] = useState<BackupSlice["action"]>(READY);
-  const [listing, setListing] = useState<BackupSlice["listing"]>(null);
+  const [listings, setListings] = useState<BackupSlice["listings"]>({});
   const update = (change: (status: Status, snapshots: Record<string, Snapshot[]>) => { status: Status; snapshots?: Record<string, Snapshot[]> }) =>
     setState((previous) => { const next = change(previous.status, previous.snapshots); return { status: next.status, snapshots: next.snapshots ?? previous.snapshots }; });
   const withRuns = (status: Status, name: string, kind: "run" | "drill", outcome: Status["runs"][string]["run"]) =>
@@ -94,16 +94,16 @@ export function useSimulatedBackups(role: "source" | "follower", owner: string):
         const latest = previous[0];
         const copy = Schema.decodeUnknownSync(BackupSnapshot)({ ...(latest ?? copies(request.name, owner, 1, 1, new Date().getHours(), 1_812_480, 182, false)[0]), id: hexId(request.name, Date.now()), archiveSha256: hexId(request.name, Date.now()), createdAt: at });
         update((status, snapshots) => ({ status: withRuns(status, request.name, "run", { at, ok: true, bytes: copy.bytes, files: copy.files }), snapshots: { ...snapshots, [request.name]: [copy, ...previous] } }));
-        if (listing?.name === request.name && listing.owner === undefined) setListing({ name: request.name, value: { owner, snapshots: [copy, ...previous] } });
+        if (request.name in listings) setListings((previous) => ({ ...previous, [request.name]: { owner, snapshots: [copy, ...previous[request.name]!.snapshots] } }));
         break;
       }
       case "drill": update((status) => ({ status: withRuns(status, request.name, "drill", { at, ok: true, files: state.snapshots[request.name]?.[0]?.files ?? 0 }) })); break;
-      case "list": setListing({ name: request.name, owner: request.owner, value: { owner: request.owner ?? owner, snapshots: request.owner === undefined || request.owner === owner ? state.snapshots[request.name] ?? [] : [] } }); break;
+      case "list": setListings((previous) => ({ ...previous, [request.name]: { owner, snapshots: state.snapshots[request.name] ?? [] } })); break;
       default: break;
     }
     setAction(READY);
     return true;
   };
-  return { status: state.status, state: READY, action, listing, report: null, run };
+  return { status: state.status, state: READY, action, listings, run };
 }
 

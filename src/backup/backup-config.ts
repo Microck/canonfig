@@ -5,9 +5,8 @@ import { Effect, Schema } from "effect";
 import { TaggedError } from "../domain/tagged-error.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { decodeFolderConfig } from "../projection/folder.ts";
-import { withRunLock } from "../synchronization/run-lock.ts";
 import { BackupIoError, readBackupMetadata } from "./backup-io.ts";
-import { BackupName, BackupPolicies, BackupPolicy, BackupRuns, LocalBackups, type BackupOutcome } from "./backup.types.ts";
+import { BackupName, BackupPolicies, BackupPolicy, BackupRuns, LocalBackups, capturesCredentials, requiresEncryption, type BackupOutcome } from "./backup.types.ts";
 
 export class BackupError extends TaggedError<BackupError>()("BackupError", {
   code: Schema.Literals(["BACKUP_INVALID", "BACKUP_TOOL_REQUIRED", "BACKUP_VERIFY_FAILED", "BACKUP_CONFLICT", "BACKUP_CREDENTIAL_REQUIRED"]),
@@ -54,15 +53,17 @@ export const readBackupRuns = (folder: string) => backupWork("Read backup run hi
   }
 });
 
-/** Scheduled runs of different policies can finish together, so the read-modify-write holds its own lock. */
-export const recordBackupOutcome = (folder: string, name: string, kind: "run" | "drill", outcome: BackupOutcome) =>
-  withRunLock(backupRunsPath(folder), "record backup outcome", Effect.gen(function*() {
-    const machine = yield* MachineState;
-    const runs = yield* readBackupRuns(folder);
-    const anchor = yield* machine.normalizePath({ path: folder });
-    yield* machine.atomicWrite({ path: yield* machine.normalizePath({ path: backupRunsPath(folder) }), anchor,
-      content: new TextEncoder().encode(`${JSON.stringify({ ...runs, [name]: { ...runs[name], [kind]: outcome } }, undefined, 2)}\n`), mode: 0o600 });
-  }));
+/**
+ * Callers hold the `backups.json` run lock (`withStorage` does for every run and drill), which serializes this
+ * read-modify-write with every other backup operation on the folder.
+ */
+export const recordBackupOutcome = (folder: string, name: string, kind: "run" | "drill", outcome: BackupOutcome) => Effect.gen(function*() {
+  const machine = yield* MachineState;
+  const runs = yield* readBackupRuns(folder);
+  const anchor = yield* machine.normalizePath({ path: folder });
+  yield* machine.atomicWrite({ path: yield* machine.normalizePath({ path: backupRunsPath(folder) }), anchor,
+    content: new TextEncoder().encode(`${JSON.stringify({ ...runs, [name]: { ...runs[name], [kind]: outcome } }, undefined, 2)}\n`), mode: 0o600 });
+});
 
 export const readBackupPolicies = (folder: string) => Effect.gen(function*() {
   const local = yield* readLocalBackups(folder);
@@ -80,7 +81,7 @@ export const validateBackupPolicy = (policy: BackupPolicy): string | undefined =
   if (policy.harnesses.mode !== "none" && policy.harnesses.targets.length === 0) return "Select at least one Target Harness";
   if (new Set(policy.harnesses.targets).size !== policy.harnesses.targets.length) return "A Target Harness may be selected only once";
   if (policy.sourceIdentity && !policy.folder) return "Source identity recovery also needs the Canonical Folder";
-  if ((policy.sourceIdentity || policy.sharedSecrets || policy.includeCredentials || policy.harnesses.mode === "full") && policy.passwordReference === undefined) return "Source identity, shared secrets and full harness histories require password encryption";
+  if (requiresEncryption(policy) && policy.passwordReference === undefined) return "Source identity, shared secrets and full harness histories require password encryption";
   if (policy.destination.kind === "local" && !isAbsolute(policy.destination.path)) return "Local backup destination must be an absolute path";
   return undefined;
 };
@@ -99,7 +100,7 @@ export const backupPassword = (policy: BackupPolicy, local: LocalBackups) => Eff
 export const requireCapturePermission = (name: string, policy: BackupPolicy, local: LocalBackups) => {
   const problem = validateBackupPolicy(policy);
   if (problem !== undefined) return Effect.fail(new BackupError({ code: "BACKUP_INVALID", message: problem }));
-  return (policy.includeCredentials || policy.sourceIdentity || policy.sharedSecrets) && !local.allowCredentials.includes(name)
+  return capturesCredentials(policy) && !local.allowCredentials.includes(name)
     ? Effect.fail(new BackupError({ code: "BACKUP_CREDENTIAL_REQUIRED",
       message: `Policy ${name} needs local consent. Run 'canonfig backup allow-credentials ${name}' after reviewing what it captures.` }))
     : Effect.void;

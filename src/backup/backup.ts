@@ -292,9 +292,11 @@ export const backupCommand = Effect.fn("Backup.command")(function*(context: Back
     return { passwordAlias: request.name, warning: "Keep a separate copy of this password. Losing it makes the encrypted backups unrecoverable." };
   }));
   const owner = "owner" in request ? request.owner : undefined;
-  // Runs and drills leave their latest outcome for the GUI. Only Canonfig's own diagnostics are kept; other
-  // failures may carry tool output, so they are recorded as a generic failure.
-  const record = (kind: "run" | "drill", outcome: Omit<BackupOutcome, "at">) => recordBackupOutcome(folder, request.name, kind, { at: new Date().toISOString(), ...outcome });
+  // Runs and drills leave their latest outcome for the GUI. Recording is best-effort: a history write that fails
+  // never changes the command's result. Only Canonfig's own diagnostics are kept; other failures may carry tool
+  // output, so they are recorded as a generic failure.
+  const record = (kind: "run" | "drill", outcome: Omit<BackupOutcome, "at">) =>
+    recordBackupOutcome(folder, request.name, kind, { at: new Date().toISOString(), ...outcome }).pipe(Effect.ignore);
   return yield* withStorage(folder, request.name, owner, opened => Effect.gen(function*() {
     if (request.action === "owners") return { owners: yield* backupWork("List backup owners", signal => listBackupOwners({ destination: opened.policy.destination, policy: opened.name, scratch: opened.scratch, signal })) };
     if (request.action === "list") return { owner: opened.owner, snapshots: yield* backupWork("List backup snapshots", () => opened.storage.list()) };
@@ -331,6 +333,9 @@ export const backupCommand = Effect.fn("Backup.command")(function*(context: Back
       backupWork("Restore into new private HOME", () => restoreHome(verified, output, opened.scratch, references)));
     return { snapshot: verified.snapshot.id, signer: verified.signer, ...restored };
   })).pipe(Effect.tapError((error) => request.action === "run" || request.action === "drill"
-    ? record(request.action, { ok: false, message: error instanceof BackupError ? error.message : "The backup failed. Run it from the command line to see why." }).pipe(Effect.ignore)
+    // withStorage has released its lock by now (a failure may come from opening the destination), so take it
+    // again. If another operation holds it, the failure record is skipped.
+    ? withRunLock(localBackupPath(folder), "record backup outcome",
+      record(request.action, { ok: false, message: error instanceof BackupError ? error.message : "The backup failed. Run it from the command line to see why." })).pipe(Effect.ignore)
     : Effect.void));
 });

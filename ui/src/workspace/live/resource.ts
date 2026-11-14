@@ -91,8 +91,11 @@ export function useLiveActions(backend: WorkspaceBackend, reload: () => void) {
   const [state, setState] = useState<ResourceState>({ loading: false, error: null });
   const controller = useRef<AbortController | null>(null);
   useEffect(() => () => controller.current?.abort(), []);
-  /** Resolves true once the action finished without throwing; false when refused as busy or when it failed. */
-  async function run(action: (signal: AbortSignal) => Promise<unknown>): Promise<boolean> {
+  /**
+   * Resolves true once the action finished without throwing; false when refused as busy or when it failed.
+   * A read-only action passes `reload: false`, since it changed nothing the cached resources show.
+   */
+  async function run(action: (signal: AbortSignal) => Promise<unknown>, { reload: refresh = true } = {}): Promise<boolean> {
     if (controller.current !== null) {
       setState((state) => ({ ...state, error: new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: "Another action is running. Wait for it to finish, then retry." }) }));
       return false;
@@ -102,7 +105,7 @@ export function useLiveActions(backend: WorkspaceBackend, reload: () => void) {
     setState({ loading: true, error: null });
     try {
       await action(active.signal);
-      if (!active.signal.aborted) { setState({ loading: false, error: null }); reload(); }
+      if (!active.signal.aborted) { setState({ loading: false, error: null }); if (refresh) reload(); }
       return true;
     } catch (cause) {
       if (!active.signal.aborted) setState({ loading: false, error: requestError(cause) });

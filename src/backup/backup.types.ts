@@ -110,6 +110,12 @@ export const defaultBackupPolicy = (destination: BackupDestination): BackupPolic
   maximumFiles: 1_000_000,
 });
 
+/** Policies that capture sign-in data or keys need local consent on each machine that runs them. */
+export const capturesCredentials = (policy: BackupPolicy) => policy.includeCredentials || policy.sourceIdentity || policy.sharedSecrets;
+
+/** Full harness histories can hold tokens under unknown names, so they need encryption like credentials do. */
+export const requiresEncryption = (policy: BackupPolicy) => capturesCredentials(policy) || policy.harnesses.mode === "full";
+
 /** Keep the union of newest snapshots, newest per UTC day and newest per ISO week. */
 export const retainedSnapshots = (snapshots: ReadonlyArray<BackupSnapshot>, retention: BackupPolicy["retention"]): ReadonlySet<string> => {
   const ordered = [...snapshots].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));

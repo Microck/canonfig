@@ -98,15 +98,11 @@ export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, 
   const overlayItems = strings(config.overlays);
   const items = localItems(local.data);
   const interrupted = status?.activeRecovery !== undefined && status.activeRecovery !== null;
-  const run = async (action: (signal: AbortSignal) => Promise<unknown>) => {
-    let succeeded = false;
-    await actions.run(async (signal) => {
-      if (["Submitting", "Observing", "ObservationLost"].includes(commandRef.current.kind)) throw new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: "A follower command is still active. Resume its observation before changing this machine." });
-      transition({ kind: "InvalidatePlan" });
-      await action(signal); succeeded = true;
-    });
-    return succeeded;
-  };
+  const run = (action: (signal: AbortSignal) => Promise<unknown>) => actions.run(async (signal) => {
+    if (["Submitting", "Observing", "ObservationLost"].includes(commandRef.current.kind)) throw new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: "A follower command is still active. Resume its observation before changing this machine." });
+    transition({ kind: "InvalidatePlan" });
+    await action(signal);
+  });
   const mutation = (path: string, method: "POST" | "PUT" | "DELETE", body: unknown) =>
     run((signal) => backend.request(path, GuiSynchronizationResult, signal, { method, body }));
   const observe = async (ticket: string, signal: AbortSignal) => {

@@ -26,7 +26,7 @@ import { HARNESS_NAMES, type HarnessId, type Snapshot as TakeoverSnapshot } from
 import { Mono, StatusMark } from "@/shared/shared";
 import { usePrefersReducedMotion } from "@/lib/dither";
 import { cn, SNAP } from "@/lib/utils";
-import { defaultBackupPolicy, type BackupCompression, type BackupDestination, type BackupOutcome, type BackupPolicy, type BackupSnapshot } from "../../../src/backup/backup.types";
+import { capturesCredentials, defaultBackupPolicy, requiresEncryption, type BackupCompression, type BackupDestination, type BackupOutcome, type BackupPolicy, type BackupSnapshot } from "../../../src/backup/backup.types";
 import { TARGET_IDS } from "../../../src/projection/model";
 import { ErrorNotice } from "../live/session";
 import { Body, PageHeader } from "./kit";
@@ -80,10 +80,6 @@ function whatLabel(policy: BackupPolicy) {
 }
 
 const destinationLabel = (destination: BackupDestination) => destination.kind === "local" ? destination.path : destination.remote;
-/** Sign-in data or keys: these need encryption and this machine's consent before Canonfig captures them. */
-const sensitive = (policy: BackupPolicy) => policy.includeCredentials || policy.sourceIdentity || policy.sharedSecrets;
-const needsPassword = (policy: BackupPolicy) => policy.harnesses.mode === "full" || sensitive(policy);
-
 function LastRun({ run, paused, running }: { run: BackupOutcome | undefined; paused: boolean; running: boolean }) {
   const line = "flex items-center gap-1.5 text-sm";
   if (running) return <span className={cn(line, "text-muted-foreground")}><StatusMark kind="act" />Backing up…</span>;
@@ -175,13 +171,13 @@ function Settings({ name: initialName, initial, onClose }: { name: string; initi
   const [password, setPassword] = useState("");
   const [enabled, setEnabled] = useState(!status?.local.disabled.includes(initialName));
   const set = (patch: Partial<BackupPolicy>) => setPolicy((current) => ({ ...current, ...patch }));
-  const required = needsPassword(policy);
+  const required = requiresEncryption(policy);
   const [encrypt, setEncrypt] = useState(initial.passwordReference !== undefined);
   const encrypted = encrypt || required;
   const savedAlias = policy.passwordReference !== undefined && status?.local.passwords[policy.passwordReference] !== undefined ? policy.passwordReference : undefined;
   const destination = policy.destination;
   const listed = ws.harnesses.filter((harness) => harness.listed).map((harness) => harness.id);
-  const targetChoices = (listed.length > 0 ? listed : TARGET_IDS.filter((id): id is HarnessId => id in HARNESS_NAMES)) as HarnessId[];
+  const targetChoices = listed.length > 0 ? listed : TARGET_IDS.filter((id): id is HarnessId => id in HARNESS_NAMES);
   const declaredOnly = !isNew && status !== null && !(initialName in status.local.policies);
   const problem = !name ? "Enter a name." : destinationLabel(destination).trim() === "" ? "Enter where to keep it."
     : !policy.folder && policy.harnesses.mode === "none" && !policy.sourceIdentity && !policy.sharedSecrets ? "Choose what to back up."
@@ -193,7 +189,7 @@ function Settings({ name: initialName, initial, onClose }: { name: string; initi
     const alias = !encrypted ? undefined : savedAlias ?? (status?.local.passwords[name] === undefined ? name : `${name}-${Date.now()}`);
     if (encrypted && savedAlias === undefined && !(await backup.run({ action: "password", name: alias!, password }))) return;
     const next = { ...policy, passwordReference: alias, include: policy.include.filter((glob) => glob.trim()), exclude: policy.exclude.filter((glob) => glob.trim()) };
-    if (!(await backup.run({ action: "configure", name, policy: next, allowCredentials: sensitive(next) }))) return;
+    if (!(await backup.run({ action: "configure", name, policy: next, allowCredentials: capturesCredentials(next) }))) return;
     if (!isNew && enabled === status?.local.disabled.includes(initialName) && !(await backup.run({ action: enabled ? "enable" : "disable", name }))) return;
     toast.success(isNew ? `Created ${name}` : `Saved ${name}`);
     onClose();
@@ -347,7 +343,7 @@ function Settings({ name: initialName, initial, onClose }: { name: string; initi
   );
 }
 
-function RestoreDialog({ name, policy, copies, initial, owner, onClose }: { name: string; policy: BackupPolicy; copies: ReadonlyArray<BackupSnapshot>; initial: string; owner: string | undefined; onClose: () => void }) {
+function RestoreDialog({ name, policy, copies, initial, onClose }: { name: string; policy: BackupPolicy; copies: ReadonlyArray<BackupSnapshot>; initial: string; onClose: () => void }) {
   const ws = useWorkspace();
   const backup = ws.backup;
   const [id, setId] = useState(initial);
@@ -355,7 +351,7 @@ function RestoreDialog({ name, policy, copies, initial, owner, onClose }: { name
   const [folder, setFolder] = useState("");
   const [recover, setRecover] = useState(false);
   const busy = backup.action.loading;
-  const selection = { name, snapshot: id, owner };
+  const selection = { name, snapshot: id };
   const submit = async () => {
     const done = await backup.run(target === "test" ? { action: "drill", ...selection }
       : target === "folder" ? { action: "restore", ...selection, target: { kind: "home", path: folder.trim(), recoverCredentials: recover } }
@@ -470,13 +466,13 @@ export function BackupsView() {
   const [running, setRunning] = useState<string | null>(null);
   const current = selected === BEFORE ? BEFORE : selected !== null && names.includes(selected) ? selected : names[0] ?? BEFORE;
   const policy = current === BEFORE || status === null ? undefined : status.policies[current];
-  const listing = backup.listing?.name === current && backup.listing.owner === undefined ? backup.listing.value : null;
+  const listing = backup.listings[current] ?? null;
   const copies = listing?.snapshots ?? [];
   const shown = showAll ? copies : copies.slice(0, FIRST);
   const select = (name: string) => { setSelected(name); setShowAll(false); };
 
-  // The copies live at the destination, so the selected backup lists them once when it opens and again after a run
-  // clears the list. The ref keeps a failed listing from retrying in a loop.
+  // The copies live at the destination, so the selected backup lists them once when it first opens and again after a
+  // run clears its list. The ref keeps a failed listing from retrying in a loop.
   const listed = useRef<string | null>(null);
   const listKey = policy === undefined || listing !== null ? null : current;
   useEffect(() => {
@@ -489,7 +485,7 @@ export function BackupsView() {
   const run = status.runs[current]?.run;
   const drill = status.runs[current]?.drill;
   const paused = status.local.disabled.includes(current);
-  const consentMissing = policy !== undefined && sensitive(policy) && !status.local.allowCredentials.includes(current);
+  const consentMissing = policy !== undefined && capturesCredentials(policy) && !status.local.allowCredentials.includes(current);
   const backUp = async () => {
     setRunning(current);
     const done = await backup.run({ action: "run", name: current });
@@ -591,8 +587,8 @@ export function BackupsView() {
           </AnimatePresence>
         </section>
       </Body>
-      {editing && <Settings key={editing.name} name={editing.name} initial={editing.policy} onClose={() => { if (editing.name === "") listed.current = null; setEditing(null); }} />}
-      {restoring && policy && <RestoreDialog name={current} policy={policy} copies={copies} initial={restoring} owner={undefined} onClose={() => setRestoring(null)} />}
+      {editing && <Settings key={editing.name} name={editing.name} initial={editing.policy} onClose={() => setEditing(null)} />}
+      {restoring && policy && <RestoreDialog name={current} policy={policy} copies={copies} initial={restoring} onClose={() => setRestoring(null)} />}
       <ConfirmDialog open={consent} onOpenChange={setConsent} title={`Allow ${current} on this machine?`}
         body="It copies sign-in data or keys to its destination, encrypted with its password."
         confirm="Allow" onConfirm={() => void backup.run({ action: "allow-credentials", name: current })} />
