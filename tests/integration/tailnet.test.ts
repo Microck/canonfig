@@ -16,6 +16,11 @@ describe("tailnet network boundary", () => {
     expect(report).toMatchObject({ ready: true, dnsName: "source.private.example", controlUrl: prefs.ControlURL, httpsAvailable: false });
   });
 
+  it("accepts a node without key expiry, which LocalAPI reports as null fields", () => {
+    const report = describeTailnet(JSON.stringify({ ...status, Self: { DNSName: "source.private.example.", Expired: null, KeyExpiry: null } }), JSON.stringify(prefs));
+    expect(report.ready).toBe(true);
+  });
+
   it.each(["Stopped", "NeedsLogin", "NeedsMachineAuth", "Starting"])("refuses a %s client", (BackendState) => {
     const report = describeTailnet(JSON.stringify({ ...status, BackendState }), JSON.stringify(prefs));
     expect(report.ready).toBe(false);

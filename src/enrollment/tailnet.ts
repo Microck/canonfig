@@ -25,9 +25,10 @@ const LocalStatus = Schema.Struct({
   TailscaleIPs: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
   CertDomains: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
   Self: Schema.optional(Schema.NullOr(Schema.Struct({
-    DNSName: Schema.optional(Schema.String),
-    Expired: Schema.optional(Schema.Boolean),
-    KeyExpiry: Schema.optional(Schema.String),
+    DNSName: Schema.optional(Schema.NullOr(Schema.String)),
+    // LocalAPI can send null instead of omitting these fields; absent and null both mean "not reported".
+    Expired: Schema.optional(Schema.NullOr(Schema.Boolean)),
+    KeyExpiry: Schema.optional(Schema.NullOr(Schema.String)),
   }))),
   CurrentTailnet: Schema.optional(Schema.NullOr(Schema.Struct({
     Name: Schema.String,
@@ -42,7 +43,7 @@ export const describeTailnet = (statusJson: string, prefsJson: string, now = Dat
   const prefs = Schema.decodeUnknownSync(Schema.fromJsonString(LocalPrefs))(prefsJson);
   const dnsName = status.Self?.DNSName?.replace(/\.$/u, "").toLowerCase();
   const ips = (status.TailscaleIPs ?? []).filter(isTailnetAddress);
-  const expiry = status.Self?.KeyExpiry;
+  const expiry = status.Self?.KeyExpiry ?? undefined;
   const expired = status.Self?.Expired === true || (expiry !== undefined && Date.parse(expiry) <= now);
   const problem = status.BackendState !== "Running"
     ? `Tailscale is ${status.BackendState}. Start the client and complete login or machine approval.`
