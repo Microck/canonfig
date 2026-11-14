@@ -114,10 +114,12 @@ Confirm the npm version and provenance, GitHub tag, release notes,
 documentation deployment, and `main` CI. The release tag must resolve to the
 validated release commit.
 
-## Demo and documentation site
+## Website, demo and documentation site
 
-https://canonfig.micr.dev serves the UI demo at `/` and the documentation at
-`/docs`. The `Publish site` workflow (`.github/workflows/pages.yml`) runs after
+https://canonfig.micr.dev serves the landing page at `/`, the interactive demo
+at `/demo/`, and the documentation at `/docs/`. Demo routes such as
+`/demo/source/overview` stay under `/demo/`, including on reload. The
+`Publish site` workflow (`.github/workflows/pages.yml`) runs after
 each successful `Publish release` run on `main`. It checks out the released
 commit, confirms that tag `vX.Y.Z` points at it, runs
 `node scripts/build-pages.mjs`, and deploys the resulting `_site/` directory to

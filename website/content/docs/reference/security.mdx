@@ -21,7 +21,7 @@ Publication reads only the authoring allowlist: `canonfig.jsonc`,
 file must resolve inside `~/.canonfig/`, and links are refused, so neither
 `..` nor a symbolic link can publish a file from elsewhere on the Source
 Machine. Everything in the allowlist reaches every Follower Machine its
-[groups](/reference/canonfig-folder#groups) allow. Do not put tokens,
+[groups](/docs/reference/canonfig-folder#groups) allow. Do not put tokens,
 passwords, private keys, or cookies in it:
 
 - Write MCP secrets as `{ "fromEnv": "NAME" }` references. Each machine's
@@ -54,7 +54,7 @@ except `mcpServers`. No owned surface may equal or contain a never-touch path,
 and no snapshot ever copies one.
 Settings keys you declare cannot name the keys a harness keeps for provider
 credentials, such as `provider` in OpenCode. The
-[harness reference](/reference/harnesses) lists every owned surface and
+[harness reference](/docs/reference/harnesses) lists every owned surface and
 never-touch path.
 
 ## Takeover snapshots
@@ -75,7 +75,7 @@ Before Canonfig first writes a harness surface, and before `canonfig import
 harness snapshots off on one machine; an import that replaces folder entries
 always takes one. The setting is machine-local, so a Source Machine cannot
 turn off a Follower Machine's backups. See
-[Restore a harness from a backup](/how-to/restore-from-a-backup).
+[Restore a harness from a backup](/docs/how-to/restore-from-a-backup).
 
 ## Export archives
 
@@ -125,7 +125,7 @@ writes only the allowlist files, as a journaled run, after a takeover snapshot
 of any entry `--replace` replaces; harness files are verified and counted,
 never written. Each export and import is recorded in the append-only
 `archive_events` table of the state database. See
-[Export the folder and move it to a new machine](/how-to/export-and-import).
+[Export the folder and move it to a new machine](/docs/how-to/export-and-import).
 
 ## Hooks and MCP servers run code
 
@@ -241,7 +241,7 @@ session manager is running; `sudo loginctl enable-linger <user>` starts one.
 The login keyring must also be unlocked, which a password login does. A private
 `dbus-run-session` bus does not work. Run `canonfig secrets bootstrap` to check
 the store end to end; see
-[Headless Linux credential storage](/how-to/run-unattended#headless-linux-credential-storage).
+[Headless Linux credential storage](/docs/how-to/run-unattended#headless-linux-credential-storage).
 
 **macOS.** Over SSH or in the background, the login Keychain is often locked:
 
@@ -346,7 +346,7 @@ A Configuration Agent runs only inside the paths, programs, HTTPS origins, and
 capabilities you allow with `canonfig agent harness`. Canonfig starts programs
 directly, without a shell. An agent's report never counts as success; the
 resource's own verification does. See
-[Let a Configuration Agent resolve work](/how-to/configure-agent-policies).
+[Let a Configuration Agent resolve work](/docs/how-to/configure-agent-policies).
 
 ## Audit a machine
 

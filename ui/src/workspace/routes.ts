@@ -8,6 +8,9 @@ export type ProfileTab = "items" | "harnesses" | "groups" | "defaults";
 const PROFILE_TABS: Exclude<ProfileTab, "items">[] = ["harnesses", "groups", "defaults"];
 export type MachinesMode = "map" | "list";
 
+// Vite sets /demo/ for the public build and / for the installed GUI and dev server.
+const APP_BASE = (import.meta.env?.BASE_URL ?? "/").replace(/\/$/, "");
+
 const SOURCE_PATHS: Record<SourceView, string> = {
   overview: "overview",
   profile: "profile",
@@ -60,7 +63,7 @@ export function workspaceHref(role: WorkspaceRole, view: View, options: {
   const paths: Partial<Record<View, string>> = role === "source" ? SOURCE_PATHS : FOLLOWER_PATHS;
   const segment = paths[view];
   if (!segment) throw new Error(`No ${role} route for ${view}`);
-  let path = `/${role}/${segment}`;
+  let path = `${APP_BASE}/${role}/${segment}`;
   if (view === "profile" && options.profileTab && options.profileTab !== "items") path += `/${options.profileTab}`;
   if (view === "machines" && options.machinesMode === "list") path += "/list";
   if (options.focus != null) path += `?${new URLSearchParams({ focus: options.focus })}`;
@@ -68,13 +71,15 @@ export function workspaceHref(role: WorkspaceRole, view: View, options: {
 }
 
 export function roleHref(role: Role): string {
-  return role === "unconfigured" ? "/setup" : workspaceHref(role, "overview");
+  return role === "unconfigured" ? `${APP_BASE}/setup` : workspaceHref(role, "overview");
 }
 
 export function parseRoute(href: string): AppRoute {
   const url = new URL(href, "http://canonfig.local");
-  if (url.pathname === "/setup") return { kind: "setup" };
-  const [, role, ...parts] = url.pathname.split("/");
+  if (!url.pathname.startsWith(`${APP_BASE}/`)) return { kind: "not-found" };
+  const pathname = url.pathname.slice(APP_BASE.length);
+  if (pathname === "/setup") return { kind: "setup" };
+  const [, role, ...parts] = pathname.split("/");
   if (role !== "source" && role !== "follower") return { kind: "not-found" };
   const segment = parts.join("/");
   const paths: Partial<Record<View, string>> = role === "source" ? SOURCE_PATHS : FOLLOWER_PATHS;
@@ -140,9 +145,9 @@ export const navigate: Navigate = (href, { replace = false } = {}) => {
 
 /** Replace the entry URL, not a separate history entry that Back would revisit. */
 export function initializeAppRoute() {
-  if (window.location.pathname !== "/") return;
+  if (window.location.pathname !== `${APP_BASE}/` && window.location.pathname !== APP_BASE) return;
   const tour = new URLSearchParams(window.location.search).get("tour") === "1" ? "?tour=1" : "";
-  navigate(`/source/overview${tour}`, { replace: true });
+  navigate(`${workspaceHref("source", "overview")}${tour}`, { replace: true });
 }
 
 /**

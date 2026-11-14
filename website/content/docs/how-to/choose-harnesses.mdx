@@ -69,14 +69,14 @@ count: `~/.gemini`, for example, is shared by several Google products.
 | `hermes` | `hermes` |
 | `qwen` | `qwen` |
 
-[Harnesses](/reference/harnesses) lists each harness's root, the environment
+[Harnesses](/docs/reference/harnesses) lists each harness's root, the environment
 variable that moves it, and the files and keys Canonfig owns there.
 
 A scheduled run starts with a narrower `PATH` than your shell. If a scheduled
 run cannot find an executable your shell finds, it reports the harness as not
 installed and leaves its files as last applied. Install the harness under
 `~/.local/bin` or through a package manager Canonfig knows, or see
-[Run Canonfig unattended](/how-to/run-unattended).
+[Run Canonfig unattended](/docs/how-to/run-unattended).
 
 ## Change the list for every machine
 
@@ -118,7 +118,7 @@ which is never published. The next `canonfig sync --apply` removes what
 Canonfig wrote into OpenCode, except files someone changed since. It does not
 put back what OpenCode had before Canonfig took it over. To get that back as
 well, run `canonfig restore` instead; see
-[Restore a harness from a backup](/how-to/restore-from-a-backup). Restore
+[Restore a harness from a backup](/docs/how-to/restore-from-a-backup). Restore
 excludes the harness for you.
 
 To manage the harness again on this machine:
@@ -198,7 +198,7 @@ Fix it one of two ways:
   and `canonfig sync --apply` with the new environment. The next run takes over
   the new root. A restore puts back every harness in the snapshot, so include
   each harness it excludes; see
-  [Restore a harness from a backup](/how-to/restore-from-a-backup).
+  [Restore a harness from a backup](/docs/how-to/restore-from-a-backup).
 
 Roots must resolve inside your home directory. A root outside it stops the run
 with "codex resolves to `<root>`, outside the home directory `<home>`;

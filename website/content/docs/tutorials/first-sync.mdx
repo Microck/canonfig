@@ -27,7 +27,7 @@ that instead.
   account you run Claude Code and Codex under. Get Node.js from
   [nodejs.org](https://nodejs.org/en/download) or your package manager.
 - **Linux or macOS with a POSIX shell.** The commands below use one. For
-  Windows, see [Platform differences](/reference/cross-platform).
+  Windows, see [Platform differences](/docs/reference/cross-platform).
 - **Claude Code and Codex installed on both machines.** Canonfig detects them
   and manages their configuration. It does not install them.
 - **SSH from B to A.** The Source Machine listens only on its own loopback
@@ -62,7 +62,7 @@ canonfig doctor --no-input
 at the `credentials` line: Canonfig keeps its keys in the system credential
 store (Secret Service on Linux, Keychain on macOS). If that line reports a
 problem, follow the fix it prints, or see
-[Run Canonfig unattended](/how-to/run-unattended), before you continue.
+[Run Canonfig unattended](/docs/how-to/run-unattended), before you continue.
 
 ## 2. Set up machine A as the Source Machine
 
@@ -86,7 +86,7 @@ Installed AI coding tools found: codex, claude-code.
 
 To manage a different set, name each harness with `--harness`, for example
 `--harness claude-code --harness codex --harness opencode`.
-[Choose which harnesses Canonfig manages](/how-to/choose-harnesses) explains
+[Choose which harnesses Canonfig manages](/docs/how-to/choose-harnesses) explains
 detection.
 
 The plan also lists, under `imports`, every instruction file, rule, skill,
@@ -171,7 +171,7 @@ List the commits since the last tag with `git log --oneline $(git describe --tag
 Group them into Added, Changed, and Fixed, and leave out internal changes.
 ```
 
-The [Canonical Folder reference](/reference/canonfig-folder) lists every key
+The [Canonical Folder reference](/docs/reference/canonfig-folder) lists every key
 and file the folder can hold.
 
 ## 4. Preview, then project on machine A
@@ -205,11 +205,11 @@ Canonfig copies the current content of every surface it takes over into
 `takeover snapshot:` line, writes the projection, and checks every surface.
 The result ends with `outcome: Converged`. If a surface fails, Canonfig rolls
 the run back and names the surface and the reason; see
-[Recover from a failed or blocked sync](/how-to/recover).
+[Recover from a failed or blocked sync](/docs/how-to/recover).
 
 Run `canonfig sync --apply` a second time. It reports
 `outcome: Converged` with no actions and takes no snapshot. To undo the
-takeover, see [Restore a harness from a backup](/how-to/restore-from-a-backup).
+takeover, see [Restore a harness from a backup](/docs/how-to/restore-from-a-backup).
 
 ## 5. Publish
 
@@ -248,7 +248,7 @@ reports `running`. The service is a systemd user unit
 (`canonfig-source.service`) on Linux and a LaunchAgent (`dev.canonfig.source`)
 on macOS, and it runs while you are logged in. On macOS, run `install` from the
 desktop session, not over SSH. To keep A serving after logout or reboot, see
-[Run Canonfig unattended](/how-to/run-unattended).
+[Run Canonfig unattended](/docs/how-to/run-unattended).
 
 ## 7. Invite machine B
 
@@ -359,7 +359,7 @@ The schedule runs only when the machine can run it:
 - **macOS:** while you are logged in to the desktop with the login Keychain
   unlocked.
 
-[Sync on a schedule](/how-to/manage-schedules) covers time zones, daylight
+[Sync on a schedule](/docs/how-to/manage-schedules) covers time zones, daylight
 saving time, and missed runs.
 
 After the first scheduled run, check B:
@@ -391,7 +391,7 @@ removes installed tools or local credentials.
 Do not edit B's mirror in `~/.canonfig/`. A changed mirror file is Follower
 Drift: Canonfig keeps your edit, reports it, and stops updating that item's
 projections. To add something to B only, use its local folder; see
-[Add items to one machine only](/how-to/add-machine-local-items).
+[Add items to one machine only](/docs/how-to/add-machine-local-items).
 
 ## If a step fails
 
@@ -401,7 +401,7 @@ projections. To add something to B only, use its local folder; see
 | "import collision: AGENTS.md differs between claude-code/instructions/AGENTS.md, codex/instructions/AGENTS.md; choose one with --import &lt;id&gt;" (under `exclusions`) | Two harnesses hold different instructions. | Plan again and add `--import` with the `id` you want to keep. |
 | `/home/maria/.canonfig/canonfig.jsonc needs "profile": { "id": ..., "name": ... } to publish; the id names the Machine Profile followers sync` (`source publish`, exit 2) | `canonfig.jsonc` has no `profile`. Setup writes one, so it was removed. | Add `"profile": { "id": "workstation", "name": "Workstation" }`, as in step 3. |
 | "... contains a literal credential [REDACTED]; remove the value and use a symbolic environment reference ..." (`source publish`, exit 2) | A value in `canonfig.jsonc` looks like a secret. | Replace it with `{ "fromEnv": "NAME" }`. |
-| "/home/maria/.canonfig already holds authored items (canonfig.jsonc, skills), where a follower keeps its Source's mirror; ..." (`follower enroll`, exit 2) | B's `~/.canonfig/` holds its own items. | Move what B should keep into `~/.canonfig/local/` (see [Add items to one machine only](/how-to/add-machine-local-items)) or remove it, then enroll again. |
+| "/home/maria/.canonfig already holds authored items (canonfig.jsonc, skills), where a follower keeps its Source's mirror; ..." (`follower enroll`, exit 2) | B's `~/.canonfig/` holds its own items. | Move what B should keep into `~/.canonfig/local/` (see [Add items to one machine only](/docs/how-to/add-machine-local-items)) or remove it, then enroll again. |
 | "this machine is a Source (signing key ...), so it cannot enroll as a Follower: a machine is either a Source or a Follower, never both. ..." (`follower enroll`, exit 2) | You ran the enrollment on A, or B was made a Source earlier. A machine holds one role. | Enroll on B. If B should stop being a Source, run `canonfig source service remove` on B, move B's `~/.canonfig/` aside, then enroll again. The invitation is still valid. |
 | "this machine follows the Source at https://127.0.0.1:17342 (signing key ...) as laptop (...), so it cannot publish a revision: ..." (`source init`, `source publish` and the other `source` commands, exit 2) | You ran a Source command on B. | Run it on A. To make B a Source instead, run `canonfig follower unenroll` on B first. |
 | "Invitation duration must not exceed 24h" (`source invite`, exit 2) | `--expires` is longer than 24 hours. | Pick a value such as `15m`, `1h`, or `24h`. |
@@ -414,10 +414,10 @@ projections. To add something to B only, use its local folder; see
 | "the follower identity is already enrolled" | A Follower Machine named `laptop` is already enrolled. | Pick another `--name`, or revoke the old one on A first with `canonfig source revoke`. |
 
 For other errors, run `canonfig doctor --no-input` on the machine that failed.
-[Doctor probes and exit codes](/reference/diagnostics) lists every check.
+[Doctor probes and exit codes](/docs/reference/diagnostics) lists every check.
 
 ## Next steps
 
-- [Publish from the folder](/how-to/publish-from-the-folder)
-- [Choose which harnesses Canonfig manages](/how-to/choose-harnesses)
-- [Revoke or remove a Follower Machine](/reference/security)
+- [Publish from the folder](/docs/how-to/publish-from-the-folder)
+- [Choose which harnesses Canonfig manages](/docs/how-to/choose-harnesses)
+- [Revoke or remove a Follower Machine](/docs/reference/security)

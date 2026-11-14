@@ -1,0 +1,96 @@
+/* The logo wall: a slow endless row of harness logos, full bleed. */
+
+.band {
+  padding-block: var(--space-l);
+}
+
+.band-title {
+  margin-block-end: var(--space-s);
+  font-family: var(--font-mono);
+  font-size: var(--step--2);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: center;
+  color: var(--sa-9);
+}
+
+/* Full bleed, faded at both window edges so logos arrive and leave softly. */
+.strip {
+  grid-column: 1 / -1;
+  display: flex;
+  overflow: hidden;
+  mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent);
+}
+
+.strip-track {
+  list-style: none;
+  margin: 0;
+  /* The trailing pad equals the gap, so the copy starts one gap after the last logo. */
+  padding: 0 var(--space-xl) 0 0;
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-xl);
+}
+
+.strip-track li {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  white-space: nowrap;
+  font-size: var(--step-0);
+  font-weight: 500;
+  color: var(--sa-10);
+}
+
+.strip-logo {
+  width: 1.5rem;
+  height: 1.5rem;
+  color: var(--sa-11);
+}
+
+/* About 6 seconds per logo (~33px a second): slow enough to read each name. */
+@media (prefers-reduced-motion: no-preference) {
+  .strip-track {
+    animation: strip-slide 96s linear infinite;
+  }
+
+  /* Off screen it holds still instead of running unseen (harness-strip.tsx). */
+  .strip[data-offscreen] .strip-track {
+    animation-play-state: paused;
+  }
+}
+
+/* Hover holds it for reading, on real pointers only: a tap on touch leaves a
+   sticky hover that would freeze it. */
+@media (prefers-reduced-motion: no-preference) and (hover: hover) and (pointer: fine) {
+  .strip:hover .strip-track {
+    animation-play-state: paused;
+  }
+}
+
+@keyframes strip-slide {
+  to {
+    transform: translateX(-100%);
+  }
+}
+
+/* Still: one wrapped, centred set. */
+@media (prefers-reduced-motion: reduce) {
+  .strip-track[aria-hidden] {
+    display: none;
+  }
+
+  .strip {
+    grid-column: 2;
+    mask-image: none;
+  }
+
+  .strip-track {
+    flex: 1;
+    flex-wrap: wrap;
+    justify-content: center;
+    padding: 0;
+    row-gap: var(--space-s);
+  }
+}
