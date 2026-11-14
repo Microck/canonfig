@@ -143,16 +143,6 @@ function serviceNoticeCopy(report: ServiceReport): { message: string; action: "i
   }
 }
 
-/**
- * Reinstalling keeps the address and port the service already uses. URL drops a scheme's default port
- * (https://127.0.0.1:443 parses with port ""), so fall back to the scheme's port instead of hiding the action.
- */
-function currentAddress(endpoint: string): { hostname: "127.0.0.1" | "::1"; port: number } | null {
-  if (!URL.canParse(endpoint)) return null;
-  const url = new URL(endpoint);
-  const port = url.port ? Number(url.port) : url.protocol === "https:" ? 443 : url.protocol === "http:" ? 80 : 0;
-  return port >= 1 && port <= 65535 ? { hostname: url.hostname === "[::1]" ? "::1" : "127.0.0.1", port } : null;
-}
 
 interface Notice {
   urgent: boolean;
@@ -174,9 +164,9 @@ function serviceNotice(ws: Workspace): Notice | null {
   if (!report) return null;
   const copy = serviceNoticeCopy(report);
   if (!copy) return null;
-  const address = currentAddress(report.endpoint);
+  const address = report.requested;
   const action = copy.action === "install"
-    ? address && { label: copy.actionLabel, run: () => service.install(address.hostname, address.port) }
+    ? { label: copy.actionLabel, run: () => service.install(address.hostname, address.port) }
     : ws.view !== "service" && { label: copy.actionLabel, run: () => ws.go("service") };
   return { urgent: !report.serving, message: copy.message, action: action || undefined, dismissKey: report.serving ? report.state : undefined };
 }

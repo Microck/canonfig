@@ -14,6 +14,7 @@ import {
 import type { KeyObject } from "node:crypto";
 
 import { Effect, Layer, Redacted, Schema } from "effect";
+import { sourceEndpointUrl } from "./tailnet.ts";
 
 import {
   CertificateFingerprint,
@@ -327,25 +328,11 @@ const validateEndpoint = (
   endpoint: string,
 ): Effect.Effect<string, EnrollmentConfigurationError> =>
   Effect.try({
-    try: () => {
-      const parsed = new URL(endpoint);
-      const loopback = parsed.hostname === "127.0.0.1"
-        || parsed.hostname === "[::1]"
-        || parsed.hostname === "::1";
-      if (
-        parsed.protocol !== "https:"
-        || !loopback
-        || parsed.username !== ""
-        || parsed.password !== ""
-      ) {
-        throw new Error("invalid loopback HTTPS endpoint");
-      }
-      return parsed.origin;
-    },
+    try: () => sourceEndpointUrl(endpoint).origin,
     catch: () =>
       new EnrollmentConfigurationError({
         operation: "create invitation",
-        message: "the endpoint must be a loopback HTTPS origin",
+        message: "The endpoint must be a loopback or tailnet HTTPS origin.",
       }),
   });
 
@@ -604,7 +591,7 @@ const makeEnrollment = Effect.gen(function*() {
         // start for nothing; only `source init` generates a certificate.
         const { generate } = await import("selfsigned");
         const certificate = await generate(
-          [{ name: "commonName", value: "canonfig-loopback" }],
+          [{ name: "commonName", value: "canonfig-source" }],
           {
             algorithm: "sha256",
             keyType: "ec",

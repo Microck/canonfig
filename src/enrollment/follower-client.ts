@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { connect as tlsConnect } from "node:tls";
 
 import { Effect, Option, Redacted, Schema } from "effect";
+import { resolveSourceEndpoint } from "./tailnet.ts";
 
 import {
   BlobId,
@@ -119,25 +120,17 @@ interface BinaryResponse {
   readonly errorBody?: unknown | undefined;
 }
 
+/** Validate the endpoint and freeze one resolved address; the lookup shares the caller's timeout. */
 const checkedEndpoint = (
   endpoint: string,
+  timeoutMilliseconds = defaultTimeoutMilliseconds,
 ): Effect.Effect<URL, EnrollmentTransportError> =>
-  Effect.try({
-    try: () => {
-      const url = new URL(endpoint);
-      const loopback = url.hostname === "127.0.0.1"
-        || url.hostname === "[::1]"
-        || url.hostname === "::1";
-      if (url.protocol !== "https:" || !loopback) {
-        throw new Error("not a loopback HTTPS URL");
-      }
-      return url;
-    },
-    catch: () =>
-      new EnrollmentTransportError({
-        operation: "validate source endpoint",
-        message: "the source endpoint must use loopback HTTPS",
-      }),
+  Effect.tryPromise({
+    try: () => resolveSourceEndpoint(endpoint, timeoutMilliseconds),
+    catch: (cause) => new EnrollmentTransportError({
+      operation: "validate source endpoint",
+      message: cause instanceof Error ? cause.message : "The Source endpoint could not be resolved.",
+    }),
   });
 
 const inspectCertificate = (
@@ -149,7 +142,7 @@ const inspectCertificate = (
       new Promise<PinnedCertificate>((resolveCertificate, rejectCertificate) => {
         const socket = tlsConnect({
           host: endpoint.hostname.replaceAll("[", "").replaceAll("]", ""),
-          port: Number(endpoint.port),
+          port: Number(endpoint.port || "443"),
           rejectUnauthorized: false,
           minVersion: "TLSv1.2",
         });
@@ -220,7 +213,7 @@ const requestJson = (
           method,
           ca: certificate.pem,
           rejectUnauthorized: true,
-          checkServerIdentity: checkSourceServerIdentity,
+          checkServerIdentity: checkSourceServerIdentity(certificate.fingerprint),
           minVersion: "TLSv1.2",
           headers,
         }, (response) => {
@@ -421,7 +414,8 @@ export const enrollFollower = (
         message: `secure follower credential storage is unavailable. ${capability.recovery}`,
       });
     }
-    const endpoint = yield* checkedEndpoint(input.invitation.endpoint);
+    // MagicDNS lookup is network work too, so it shares the phase deadline and cancellation.
+    const endpoint = yield* enrollmentPhase(checkedEndpoint(input.invitation.endpoint, enrollmentPhaseTimeout(input)), input);
     const certificate = yield* enrollmentPhase(
       inspectCertificate(endpoint, enrollmentPhaseTimeout(input)),
       input,
@@ -648,24 +642,11 @@ export const probeSourceDescriptor = (
   input: SourceDescriptorProbeInput,
 ): Effect.Effect<SourceDescriptorProbe, EnrollmentTransportError> => {
   const timeout = input.timeoutMilliseconds ?? defaultTimeoutMilliseconds;
-  return Effect.tryPromise({
+  return checkedEndpoint(input.endpoint, timeout).pipe(Effect.flatMap((endpoint) => Effect.tryPromise({
     try: () =>
       new Promise<SourceDescriptorProbe>((resolveProbe, rejectProbe) => {
-        let endpoint: URL;
-        try {
-          endpoint = new URL(input.endpoint);
-          const loopback = endpoint.hostname === "127.0.0.1"
-            || endpoint.hostname === "[::1]"
-            || endpoint.hostname === "::1";
-          if (endpoint.protocol !== "https:" || !loopback) {
-            throw new Error("not a loopback HTTPS URL");
-          }
-        } catch {
-          rejectProbe(new Error("invalid source endpoint"));
-          return;
-        }
         const host = endpoint.hostname.replaceAll("[", "").replaceAll("]", "");
-        const port = Number(endpoint.port);
+        const port = Number(endpoint.port || "443");
         let secured = false;
         const socket = tlsConnect({
           host,
@@ -703,7 +684,7 @@ export const probeSourceDescriptor = (
             method: "GET",
             ca: pem,
             rejectUnauthorized: true,
-            checkServerIdentity: checkSourceServerIdentity,
+            checkServerIdentity: checkSourceServerIdentity(input.tlsFingerprint),
             minVersion: "TLSv1.2",
             headers: {
               accept: "application/json",
@@ -765,7 +746,7 @@ export const probeSourceDescriptor = (
         operation: "probe source descriptor",
         message: "the source descriptor could not be probed",
       }),
-  });
+  })));
 };
 
 export interface FollowerLifecycleInput extends FollowerTransportInput {
@@ -923,7 +904,7 @@ const transportRequest = (
           method: "GET",
           ca: certificate.pem,
           rejectUnauthorized: true,
-          checkServerIdentity: checkSourceServerIdentity,
+          checkServerIdentity: checkSourceServerIdentity(certificate.fingerprint),
           minVersion: "TLSv1.2",
           headers,
         }, (response) => {
@@ -1027,7 +1008,7 @@ const transportContext = (
 }, EnrollmentError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
-    const endpoint = yield* checkedEndpoint(input.endpoint);
+    const endpoint = yield* checkedEndpoint(input.endpoint, input.timeoutMilliseconds);
     const certificate = yield* inspectCertificate(endpoint, input.timeoutMilliseconds);
     if (certificate.fingerprint !== input.tlsFingerprint) {
       return yield* new EnrollmentFingerprintMismatchError({

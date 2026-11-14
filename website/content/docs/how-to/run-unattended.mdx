@@ -180,10 +180,13 @@ unencrypted.
 
 ## Reconnect to a remote Source Machine after a reboot
 
-Skip this if the Follower Machine and the Source Machine are the same host. A
-Follower Machine on another host reaches the Source Machine through the
-managed SSH tunnel it set up during enrollment. Canonfig recorded that tunnel,
-so you do not need the invitation again.
+For a [tailnet connection](/how-to/connect-over-tailnet), keep Tailscale running
+on both machines and install the Source service with `--tailnet`. Sync uses
+MagicDNS directly; no tunnel needs restarting.
+
+The steps below apply to loopback invitations on separate hosts. Canonfig
+recorded the managed SSH tunnel during enrollment, so you do not need the
+invitation again.
 
 1. On the Source Machine, check that it serves:
 

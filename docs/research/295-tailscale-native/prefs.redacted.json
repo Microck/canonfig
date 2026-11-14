@@ -1,0 +1,5 @@
+{
+  "ControlURL": "https://controlplane.tailscale.com",
+  "WantRunning": true,
+  "CorpDNS": true
+}

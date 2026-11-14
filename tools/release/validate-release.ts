@@ -13,6 +13,8 @@ import { dirname, relative, resolve } from "node:path";
 
 import { Schema } from "effect";
 
+import { doctorProbeNames } from "../../src/runtime/doctor.ts";
+
 const projectRoot = resolve(import.meta.dirname, "../..");
 const temporaryRoot = mkdtempSync(resolve(tmpdir(), "canonfig-release-"));
 const tarballRoot = resolve(temporaryRoot, "tarball");
@@ -195,8 +197,11 @@ const validatePackageContents = (
   // administration and the machine map. Explicit lifecycle code and declarations
   // bring the package to 1,287,025 packed / 4,642,878 unpacked bytes. The setup
   // import review and newcomer-readable onboarding copy bring it to 1,290,637 /
-  // 4,645,858; the ceilings keep about 9 KB packed and 54 KB unpacked headroom.
-  if (artifact.size > 1_300_000 || artifact.unpackedSize > 4_700_000) {
+  // 4,645,858. Tailnet transport, fleet updates, Shield and backups add about
+  // 93 KB packed and 430 KB unpacked together (measured per branch in CI:
+  // 1,301,010, 1,307,223, 1,314,828 and 1,332,363 packed). The ceilings fit all
+  // four with about 65 KB packed and 220 KB unpacked headroom.
+  if (artifact.size > 1_450_000 || artifact.unpackedSize > 5_300_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );
@@ -292,7 +297,8 @@ const validateBinary = (executable: string): void => {
     doctorEnvelope.command !== "doctor"
     || doctorEnvelope.data?.noInput !== true
     || !Array.isArray(doctorEnvelope.data?.probes)
-    || doctorEnvelope.data.probes.length !== 8
+    // The packed doctor must run every probe the source declares, in order, so a new probe needs no edit here.
+    || doctorEnvelope.data.probes.map((probe: { name?: unknown }) => probe.name).join() !== doctorProbeNames.join()
   ) {
     fail("packed executable doctor returned an invalid envelope");
   }

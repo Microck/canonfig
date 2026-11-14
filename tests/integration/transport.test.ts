@@ -480,33 +480,43 @@ describe("authenticated content-addressed transport", () => {
     expect(server.blobRequests()).toBe(3);
   });
 
-  it("rejects a pinned IPv6 endpoint whose certificate only covers IPv4 before HTTP", async () => {
-    const certificate = await generate([{ name: "commonName", value: "wrong-ip-source" }], {
+  it("authenticates by pin across address changes and refuses a mismatched pin before HTTP", async () => {
+    const certificate = await generate([{ name: "commonName", value: "relocated-source" }], {
       keyType: "ec",
       curve: "P-256",
       extensions: [{ name: "subjectAltName", altNames: [{ type: 7, ip: "127.0.0.1" }] }],
     });
+    const tlsFingerprint = decode(CertificateFingerprint)(
+      new X509Certificate(certificate.cert).fingerprint256.replaceAll(":", "").toLowerCase(),
+    );
+    const sourceFingerprint = sha256Hex("source-public-key");
     let requests = 0;
     const server = createHttpsServer(
       { key: certificate.private, cert: certificate.cert },
       (_request, response) => {
         requests += 1;
-        response.writeHead(503);
-        response.end();
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ source: { publicKeyFingerprint: sourceFingerprint }, tlsFingerprint }));
       },
     );
     await new Promise<void>((resolve) => server.listen(0, "::1", resolve));
     try {
       const address = server.address();
       if (address === null || Schema.is(Schema.String)(address)) throw new Error("no address");
-      const refused = await Effect.runPromise(Effect.flip(probeSourceDescriptor({
-        endpoint: `https://[::1]:${address.port}`,
-        tlsFingerprint: decode(CertificateFingerprint)(
-          new X509Certificate(certificate.cert).fingerprint256.replaceAll(":", "").toLowerCase(),
-        ),
-      })));
-      expect(refused).toBeInstanceOf(EnrollmentTransportError);
+      const endpoint = `https://[::1]:${address.port}`;
+      const refused = await Effect.runPromise(probeSourceDescriptor({
+        endpoint,
+        tlsFingerprint: decode(CertificateFingerprint)(sha256Hex("another-certificate")),
+      }));
+      expect(refused).toMatchObject({ tlsMatch: false, sourceFingerprint: undefined });
       expect(requests).toBe(0);
+
+      const verified = await Effect.runPromise(probeSourceDescriptor({ endpoint, tlsFingerprint }));
+      expect(verified).toMatchObject({
+        tlsMatch: true,
+        observedTlsFingerprint: tlsFingerprint,
+        sourceFingerprint,
+      });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

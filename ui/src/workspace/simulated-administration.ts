@@ -114,6 +114,8 @@ export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): Admini
       data: {
         state: installed ? "running" : "not-installed", platform: "linux", mechanism: "systemd-user-service",
         serviceName: "canonfig-source.service", endpoint: ws.endpoint,
+        requested: { hostname: "127.0.0.1", port: Number(new URL(ws.endpoint).port || "443") },
+        tailnet: { installed: false, ready: false, backendState: "NotInstalled", addresses: [], httpsAvailable: false, userspace: false, detail: "Network detection is available on a real machine." },
         manager: { installed, matches: installed, enabled: installed, active: installed, state: installed ? "running" : "not-installed" },
         serving: installed, supportedModes: "user", linger: lingerMarked, logs: "journalctl --user -u canonfig-source.service", detail: "",
       },

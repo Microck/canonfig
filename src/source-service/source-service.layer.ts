@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { Effect, Layer, Schema } from "effect";
 
 import { probeSourceDescriptor } from "../enrollment/follower-client.ts";
+import { detectTailnet, tailnetBinding } from "../enrollment/tailnet.ts";
+import type { TailnetReport } from "../domain/tailnet.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import type {
   MachinePlatform,
@@ -55,7 +57,7 @@ const recordFileName = "source-service.json";
 const defaultInput: SourceServiceInput = { hostname: "127.0.0.1", port: 17342 };
 
 const RequestedService = Schema.Struct({
-  hostname: Schema.Literals(["127.0.0.1", "::1"]),
+  hostname: Schema.Literals(["127.0.0.1", "::1", "tailnet"]),
   port: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 })),
 });
 const ServiceRegistration = Schema.Union([
@@ -158,8 +160,10 @@ const removeOptional = (path: string): Effect.Effect<void, SourceServiceError> =
     catch: fileFailure("remove Source service definition", path),
   });
 
-const endpointOf = (input: SourceServiceInput): string =>
-  `https://${input.hostname === "::1" ? "[::1]" : input.hostname}:${input.port}`;
+const endpointOf = (input: SourceServiceInput, tailnet: TailnetReport): string =>
+  input.hostname === "tailnet"
+    ? tailnet.dnsName === undefined ? "" : `https://${tailnet.dnsName}:${input.port}`
+    : `https://${input.hostname === "::1" ? "[::1]" : input.hostname}:${input.port}`;
 
 /** Native operations for one platform's user service manager. */
 interface ServiceManager {
@@ -480,6 +484,8 @@ export const sourceServiceLayer = (
             ...credentialRoot === undefined
               ? []
               : [{ name: "CANONFIG_LOCAL_CREDENTIAL_ROOT", value: credentialRoot }],
+            ...["CANONFIG_TAILSCALE_EXECUTABLE", "CANONFIG_TAILSCALE_SOCKET"].flatMap((name) =>
+              environment[name] === undefined ? [] : [{ name, value: environment[name] }]),
           ];
         }
         if (!installing) return [];
@@ -492,17 +498,19 @@ export const sourceServiceLayer = (
               `this shell uses ${home} as its home, but Task Scheduler starts the Source with ${user}'s profile ${userInfo().homedir}; run the install from a normal session of ${user}`,
           });
         }
-        if (credentialRoot !== undefined) {
-          const query = yield* run(win32.join(
-            environment.SystemRoot ?? "C:\\Windows",
-            "System32",
-            "reg.exe",
-          ), ["query", "HKCU\\Environment", "/v", "CANONFIG_LOCAL_CREDENTIAL_ROOT"]);
-          if (query.exitCode !== 0 || !outputOf(query).includes(credentialRoot)) {
+        const registry = win32.join(environment.SystemRoot ?? "C:\\Windows", "System32", "reg.exe");
+        for (const name of ["CANONFIG_LOCAL_CREDENTIAL_ROOT", "CANONFIG_TAILSCALE_EXECUTABLE", "CANONFIG_TAILSCALE_SOCKET"]) {
+          const value = environment[name];
+          if (value === undefined) continue;
+          // A user value overrides a system value in the task's environment, so the system scope counts only when
+          // the user scope does not define the name.
+          const user = yield* run(registry, ["query", "HKCU\\Environment", "/v", name]);
+          const query = user.exitCode === 0 ? user
+            : yield* run(registry, ["query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment", "/v", name]);
+          if (query.exitCode !== 0 || !outputOf(query).includes(value)) {
             return yield* new SourceServiceConfigurationError({
               operation: "install the Source service",
-              message:
-                `CANONFIG_LOCAL_CREDENTIAL_ROOT is set in this shell only; Task Scheduler would start the Source without it. Run \`setx CANONFIG_LOCAL_CREDENTIAL_ROOT "${credentialRoot}"\`, open a new terminal, and retry`,
+              message: `${name} is set in this shell only. Set it in your Windows user or system environment, open a new terminal, and retry so Task Scheduler uses the same configuration.`,
             });
           }
         }
@@ -530,8 +538,7 @@ export const sourceServiceLayer = (
             fileURLToPath(new URL("../runtime/main.js", import.meta.url)),
             "source",
             "serve",
-            "--host",
-            input.hostname,
+            ...input.hostname === "tailnet" ? ["--tailnet"] : ["--host", input.hostname],
             "--port",
             String(input.port),
           ],
@@ -585,13 +592,13 @@ export const sourceServiceLayer = (
         );
 
       const serving = (
-        input: SourceServiceInput,
+        endpoint: string,
         identity: SourceServiceIdentity | undefined,
       ): Effect.Effect<boolean> =>
-        identity === undefined
+        identity === undefined || endpoint === ""
           ? Effect.succeed(false)
           : probeSourceDescriptor({
-            endpoint: endpointOf(input),
+            endpoint,
             tlsFingerprint: identity.tlsFingerprint,
             timeoutMilliseconds: 3_000,
           }).pipe(
@@ -606,12 +613,13 @@ export const sourceServiceLayer = (
         rendered: RenderedSourceService,
         identity: SourceServiceIdentity | undefined,
       ): Effect.fn.Return<SourceServiceStatus, SourceServiceError> {
+        const tailnet = yield* detectTailnet();
+        const endpoint = endpointOf(input, tailnet);
         const [state, answering, modes] = yield* Effect.all([
           manager.inspect(rendered),
-          serving(input, identity),
+          serving(endpoint, identity),
           manager.supportedModes,
         ]);
-        const endpoint = endpointOf(input);
         const logs = manager.logs(rendered);
         const base = {
           platform,
@@ -619,6 +627,8 @@ export const sourceServiceLayer = (
           serviceName: rendered.serviceName,
           definitionPath: rendered.definitionPath,
           endpoint,
+          requested: input,
+          tailnet,
           manager: state,
           serving: answering,
           supportedModes: modes.text,
@@ -656,7 +666,8 @@ export const sourceServiceLayer = (
             ...base,
             state: "not-serving",
             detail:
-              `the ${rendered.mechanism} is running, but ${endpoint} does not answer with this Source's pinned identity (the Source credentials may be unavailable to the service). Logs: ${logs}`,
+              input.hostname === "tailnet" && !tailnet.ready ? tailnet.detail
+                : `the ${rendered.mechanism} is running, but ${endpoint} does not answer with this Source's pinned identity (the Source credentials may be unavailable to the service). Logs: ${logs}`,
           };
         }
         return {
@@ -684,6 +695,16 @@ export const sourceServiceLayer = (
         { readonly change: "installed" | "updated" | "unchanged"; readonly status: SourceServiceStatus },
         SourceServiceError
       > {
+        if (input.hostname === "tailnet") {
+          const tailnet = yield* detectTailnet();
+          yield* Effect.try({
+            try: () => tailnetBinding(tailnet),
+            catch: (cause) => new SourceServiceConfigurationError({
+              operation: "install tailnet Source service",
+              message: cause instanceof Error ? cause.message : "Tailscale is unavailable.",
+            }),
+          });
+        }
         let registration = yield* readRecord;
         const rendered = yield* render(input, true);
         const before = yield* statusFor(input, rendered, identity);

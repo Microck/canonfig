@@ -9,7 +9,7 @@ import {
   CertificateFingerprint,
   type CredentialReference,
 } from "../domain/brand.ts";
-import { canonicalLoopbackHostname } from "../enrollment/source-server.ts";
+import { resolveSourceEndpoint } from "../enrollment/tailnet.ts";
 import { canonfigVersionHeader } from "../enrollment/version-handshake.ts";
 import { checkSourceServerIdentity } from "../enrollment/tls-identity.ts";
 import { buildIdentity } from "../runtime/build-identity.ts";
@@ -71,30 +71,15 @@ const failure = (
 
 const checkedEndpoint = (
   endpoint: string,
+  timeoutMilliseconds: number,
 ): Effect.Effect<CheckedEndpoint, SecretTransferError> =>
-  Effect.try({
-    try: () => {
-      const url = new URL(endpoint);
-      const rawHostname = url.hostname.startsWith("[") && url.hostname.endsWith("]")
-        ? url.hostname.slice(1, -1)
-        : url.hostname;
-      const hostname = canonicalLoopbackHostname(rawHostname);
-      if (
-        url.protocol !== "https:"
-        || hostname === undefined
-        || url.username.length > 0
-        || url.password.length > 0
-      ) {
-        throw new Error("not loopback HTTPS");
-      }
-      return { url, hostname };
+  Effect.tryPromise({
+    try: async () => {
+      const url = await resolveSourceEndpoint(endpoint, timeoutMilliseconds);
+      return { url, hostname: url.hostname.replace(/^\[|\]$/gu, "") };
     },
-    catch: () =>
-      failure(
-        "transport",
-        "validate secret source",
-        "the secret source must use pinned loopback HTTPS without user information",
-      ),
+    catch: (cause) => failure("transport", "validate secret source", cause instanceof Error && cause.message.startsWith("Resolving the Source name timed out")
+      ? cause.message : "The secret Source must use pinned loopback or tailnet HTTPS."),
   });
 
 const inspectCertificate = (
@@ -163,7 +148,7 @@ const requestSecrets = (
           method: "GET",
           ca: certificate.pem,
           rejectUnauthorized: true,
-          checkServerIdentity: checkSourceServerIdentity,
+          checkServerIdentity: checkSourceServerIdentity(certificate.fingerprint),
           minVersion: "TLSv1.2",
           headers,
         }, (response) => {
@@ -212,9 +197,9 @@ export const fetchSharedSecrets = (
   Effect.gen(function*() {
     const machine = yield* MachineState;
     yield* requireSecureStorage("fetch shared secrets");
-    const endpoint = yield* checkedEndpoint(input.endpoint);
     const timeoutMilliseconds = input.timeoutMilliseconds
       ?? defaultTimeoutMilliseconds;
+    const endpoint = yield* checkedEndpoint(input.endpoint, timeoutMilliseconds);
     const certificate = yield* inspectCertificate(endpoint, timeoutMilliseconds);
     if (certificate.fingerprint !== input.tlsFingerprint) {
       return yield* failure(

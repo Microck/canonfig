@@ -1,3 +1,12 @@
+# Unreleased
+
+- Detect Tailscale during health checks, setup planning and Source service setup.
+- Serve the Source and browser interface directly on your tailnet with `--tailnet`.
+  MagicDNS invitations enroll and sync without an SSH tunnel. Headscale custom
+  domains work through the native Tailscale client.
+- Keep TLS certificate pins and signed revisions. Tailnet startup refuses
+  unavailable, expired or userspace-only clients and never changes Serve settings.
+
 # Canonfig v7.1.9
 
 This release clears a health check warning that never went away on Linux and

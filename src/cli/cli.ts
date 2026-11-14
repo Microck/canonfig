@@ -48,6 +48,7 @@ import { guiHostProblem, guiOrigin, runGui } from "../gui/server.ts";
 import type { ManagedCommandLease } from "../runtime/self-update/coordination.ts";
 import type { GuiQueries } from "../gui/queries.ts";
 import type { StateRepository } from "../state/state-repository.service.ts";
+import { sourceEndpointUrl } from "../enrollment/tailnet.ts";
 
 export type CliCommand =
   | { readonly _tag: "Ui"; readonly port: number; readonly open: boolean; readonly host: string; readonly origin: string | undefined }
@@ -60,12 +61,12 @@ export type CliCommand =
   | { readonly _tag: "SourcePublish"; readonly reviewer: string }
   | {
     readonly _tag: "SourceServe";
-    readonly hostname: "127.0.0.1" | "::1";
+    readonly hostname: "127.0.0.1" | "::1" | "tailnet";
     readonly port: number;
   }
   | {
     readonly _tag: "SourceServiceInstall";
-    readonly hostname: "127.0.0.1" | "::1";
+    readonly hostname: "127.0.0.1" | "::1" | "tailnet";
     readonly port: number;
   }
   | { readonly _tag: "SourceServiceStatus" }
@@ -602,10 +603,11 @@ const evaluateSourceCommand = (
     return command({ _tag: "SourcePublish", reviewer: one(options, "--reviewer", true)! }, format);
   }
   if (action === "serve") {
-    const options = parseOptions(rest, new Set(["--host", "--port"]), new Set());
+    const options = parseOptions(rest, new Set(["--host", "--port"]), new Set(["--tailnet"]));
     if (options.positionals.length > 0) return invalid("source serve accepts only named options");
-    const hostname = one(options, "--host") ?? "127.0.0.1";
-    if (hostname !== "127.0.0.1" && hostname !== "::1") {
+    if (options.switches.has("--tailnet") && one(options, "--host") !== undefined) return invalid("--tailnet cannot be combined with --host");
+    const hostname = options.switches.has("--tailnet") ? "tailnet" : one(options, "--host") ?? "127.0.0.1";
+    if (hostname !== "127.0.0.1" && hostname !== "::1" && hostname !== "tailnet") {
       return invalid(`Invalid source host: ${hostname}`);
     }
     const port = parsePositiveInteger(one(options, "--port") ?? "17342", "port", 65_535);
@@ -614,12 +616,13 @@ const evaluateSourceCommand = (
   if (action === "service") {
     const [serviceAction, ...serviceArguments] = rest;
     if (serviceAction === "install") {
-      const options = parseOptions(serviceArguments, new Set(["--host", "--port"]), new Set());
+      const options = parseOptions(serviceArguments, new Set(["--host", "--port"]), new Set(["--tailnet"]));
       if (options.positionals.length > 0) {
-        return invalid("source service install accepts only --host and --port");
+        return invalid("source service install accepts only --host, --tailnet and --port");
       }
-      const hostname = one(options, "--host") ?? "127.0.0.1";
-      if (hostname !== "127.0.0.1" && hostname !== "::1") {
+      if (options.switches.has("--tailnet") && one(options, "--host") !== undefined) return invalid("--tailnet cannot be combined with --host");
+      const hostname = options.switches.has("--tailnet") ? "tailnet" : one(options, "--host") ?? "127.0.0.1";
+      if (hostname !== "127.0.0.1" && hostname !== "::1" && hostname !== "tailnet") {
         return invalid(`Invalid source host: ${hostname}`);
       }
       const port = parsePositiveInteger(one(options, "--port") ?? "17342", "port", 65_535);
@@ -642,20 +645,11 @@ const evaluateSourceCommand = (
       new Set(),
     );
     if (options.positionals.length > 0) return invalid("source invite accepts only named options");
-    const endpoint = one(options, "--endpoint", true)!;
     let url: URL;
     try {
-      url = new URL(endpoint);
+      url = sourceEndpointUrl(one(options, "--endpoint", true)!);
     } catch {
-      return invalid(`Invalid source endpoint: ${endpoint}`);
-    }
-    if (url.protocol !== "https:") return invalid("Source endpoint must use HTTPS");
-    if (
-      url.hostname !== "127.0.0.1"
-      && url.hostname !== "[::1]"
-      && url.hostname !== "::1"
-    ) {
-      return invalid("Source endpoint must use a loopback host");
+      return invalid("Source endpoint must be a loopback or tailnet HTTPS origin");
     }
     const groups = (options.values.get("--group") ?? []).map((value) =>
       decodeOption(Schema.decodeUnknownOption(GroupName), value, "group name")
@@ -822,12 +816,14 @@ const evaluateCommand = (
       return invalid(`Missing ${area} command`);
     }
     if (area === "ui") {
-      const options = parseOptions(arguments_.slice(1), new Set(["--port", "--host", "--origin"]), new Set(["--no-open"]));
+      const options = parseOptions(arguments_.slice(1), new Set(["--port", "--host", "--origin"]), new Set(["--no-open", "--tailnet"]));
       if (options.positionals.length > 0) return invalid(`Usage: canonfig ${uiUsage}`);
       if (format === "json") return invalid("canonfig ui prints a browser sign-in URL and does not support --json");
       const port = one(options, "--port");
-      const host = one(options, "--host") ?? "127.0.0.1";
-      const hostProblem = guiHostProblem(host);
+      const tailnet = options.switches.has("--tailnet");
+      if (tailnet && (one(options, "--host") !== undefined || one(options, "--origin") !== undefined)) return invalid("--tailnet cannot be combined with --host or --origin");
+      const host = tailnet ? "tailnet" : one(options, "--host") ?? "127.0.0.1";
+      const hostProblem = tailnet ? undefined : guiHostProblem(host);
       if (hostProblem !== undefined) return invalid(hostProblem);
       const originValue = one(options, "--origin");
       const origin = originValue === undefined ? undefined : guiOrigin(originValue);

@@ -96,6 +96,15 @@ The caller does not fetch a profile, open SQLite, inspect the machine, or invoke
 
 An enrollment link contains an HTTPS endpoint, a pinned source certificate fingerprint, and a short-lived one-time token. After enrollment, each follower uses its own revocable credential. A source-signed revision remains independently verifiable after download.
 
+Transport uses pinned HTTPS over either a loopback SSH tunnel or a direct
+Tailscale/Headscale connection. Opt-in tailnet listeners use LocalAPI discovery,
+bind only an address assigned to this node, and advertise MagicDNS. Each client
+connection freezes a DNS result after verifying that all answers are tailnet
+addresses. Source identity is the exact pinned certificate, not its DNS name;
+certificate validity and revision signatures remain independently checked.
+Canonfig never changes Serve, Funnel, network policy or login state. See
+[ADR 0004](adr/0004-tailnet-transport.md).
+
 ### MachineState
 
 `MachineState` is an internal seam with three real platform adapters: Linux, macOS, and Windows. It owns filesystem operations, executable discovery, process execution, credential storage, package-manager probes, user directories, and native scheduler integration.

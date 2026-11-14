@@ -41,6 +41,19 @@ Canonfig signs Profile Revisions and pins the connection; it does not encrypt
 content at rest. A Follower Machine writes its mirror files with mode `0600`,
 or `0700` for executable files.
 
+### Tailnet connections
+
+Tailscale or Headscale supplies private routing and MagicDNS, not permission to
+enroll. Direct tailnet connections retain the exact Source TLS certificate pin,
+certificate validity checks, Follower credentials and signed revisions. A DNS
+name is a transport address, not the Source's identity. DNS answers outside
+tailnet ranges are refused before a connection is made.
+
+The tailnet GUI uses HTTP inside WireGuard and still requires its single-use
+sign-in link. Restrict its port to operator devices. Canonfig does not configure
+Serve, Funnel or network policy. See [Connect over a tailnet](/how-to/connect-over-tailnet).
+
+
 ## What Canonfig writes in a harness
 
 Each harness has a fixed list of surfaces Canonfig owns: whole files, whole
