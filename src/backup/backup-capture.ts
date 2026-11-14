@@ -33,7 +33,8 @@ export const captureBackupFiles = async (input: {
   readonly scratch: string;
   readonly home: string;
   readonly files: ReadonlyArray<ArchiveFile>;
-  readonly roots: ReadonlyArray<{ readonly harness: string; readonly root: string }>;
+  /** `optional` roots are harness state folders outside the harness root; a missing one is skipped. */
+  readonly roots: ReadonlyArray<{ readonly harness: string; readonly root: string; readonly optional: boolean }>;
   readonly signal: AbortSignal;
 }): Promise<BackupCapture> => {
   const directory = join(input.scratch, "capture");
@@ -68,6 +69,13 @@ export const captureBackupFiles = async (input: {
       harness: file.harness, target: file.target, keys: file.keys }, createHash("sha256").update(file.content).digest("hex"));
   }
   for (const root of input.roots) {
+    if (root.optional) {
+      const info = await lstat(root.root).catch((error) => {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      if (info === undefined || !info.isDirectory()) continue;
+    }
     if (root.root === input.home || !below(input.home, root.root) || below(root.root, input.scratch)
       || (input.policy.destination.kind === "local" && below(root.root, input.policy.destination.path))) {
       throw new BackupIoError("BACKUP_INVALID", "A full harness root must be below HOME and cannot contain the backup destination or staging directory");
@@ -88,8 +96,8 @@ export const captureBackupFiles = async (input: {
             if (!input.policy.exclude.some(pattern => matchesGlob(archivePath, pattern))) await walk(absolute);
             continue;
           }
-          if (!info.isFile()) throw new BackupIoError("BACKUP_INVALID", "Full harness capture encountered a special file. Exclude its path before backing up.");
           if (!selected(archivePath)) continue;
+          if (!info.isFile()) throw new BackupIoError("BACKUP_INVALID", `Full harness capture found a socket, pipe or device at ${archivePath}. Add it to exclude, then back up again.`);
           reserve(archivePath, Number(info.size));
           const file = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
           try {

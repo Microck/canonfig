@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -101,6 +102,26 @@ describe("portable backup recovery", () => {
     expect(readFileSync(join(privateOutput, ".codex", "auth.json"))).toEqual(readFileSync(join(harness, "auth.json")));
     await machine.configure({ ...capture, includeCredentials: true }, false);
     expect(await machine.fail({ action: "run", name: "daily" })).toMatchObject({ code: "BACKUP_CREDENTIAL_REQUIRED" });
+  }, 60_000);
+
+  it("captures harness state outside the config root and skips an excluded pipe", async () => {
+    const machine = fixture();
+    const config = join(machine.home, ".config", "opencode");
+    const data = join(machine.home, ".local", "share", "opencode");
+    mkdirSync(config, { recursive: true });
+    mkdirSync(data, { recursive: true });
+    writeFileSync(join(config, "opencode.json"), "{}\n");
+    writeFileSync(join(data, "opencode.db"), "fixture database");
+    expect(spawnSync("mkfifo", [join(data, "events.pipe")]).status).toBe(0);
+    await machine.run({ action: "password", name: "recovery", value: Redacted.make("frost library maple canvas") });
+    // The exact path the special-file error names.
+    await machine.configure({ folder: false, harnesses: { mode: "full", targets: ["opencode"] }, passwordReference: "recovery", exclude: ["harnesses/opencode/.local/share/opencode/events.pipe"] });
+    await machine.run({ action: "run", name: "daily" });
+    const output = join(machine.root, "restored");
+    await machine.run({ action: "restore", name: "daily", target: { kind: "home", path: output, recoverCredentials: false } });
+    expect(readFileSync(join(output, ".local", "share", "opencode", "opencode.db"), "utf8")).toBe("fixture database");
+    expect(readFileSync(join(output, ".config", "opencode", "opencode.json"), "utf8")).toBe("{}\n");
+    expect(existsSync(join(output, ".local", "share", "opencode", "events.pipe"))).toBe(false);
   }, 60_000);
 
   it("requires explicit native-store recovery and never falls back to credential files", async () => {

@@ -117,8 +117,14 @@ const capture = (context: BackupContext, opened: OpenBackup) => Effect.gen(funct
       ? yield* collectArchiveConfiguration({ folder, includeFolder: opened.policy.folder, includeHarnesses: opened.policy.harnesses.mode === "managed" })
       : { folderFiles: [], harnesses: { files: [], skipped: [] } };
     const recovery = yield* captureRecovery({ folder, statePath: context.statePath, policy: opened.policy, scratch: opened.scratch });
-    const full = opened.policy.harnesses.mode === "full"
-      ? opened.policy.harnesses.targets.map(harness => ({ harness, root: adapterFor(harness).layout(roots, emptyModel(folder)).root })) : [];
+    // A full capture takes the harness root plus the state the adapter places elsewhere (OpenCode keeps opencode.db
+    // under the XDG data directory), each folder once. State folders that don't exist yet are skipped.
+    const full = opened.policy.harnesses.mode === "full" ? opened.policy.harnesses.targets.flatMap(harness => {
+      const layout = adapterFor(harness).layout(roots, emptyModel(folder));
+      const outside = layout.neverTouch.filter(path => !below(layout.root, path));
+      const state = outside.filter(path => !outside.some(other => other !== path && below(other, path)));
+      return [{ harness, root: layout.root, optional: false }, ...[...new Set(state)].map(root => ({ harness, root, optional: true }))];
+    }) : [];
     const managed = configuration.harnesses.files.filter(file => opened.policy.harnesses.targets.some(target => target === file.harness));
     const staged = yield* backupWork("Capture backup files", signal => captureBackupFiles({
       policy: opened.policy, scratch: opened.scratch, home: roots.home, files: [...configuration.folderFiles, ...managed, ...recovery.files], roots: full, signal,
@@ -176,9 +182,13 @@ const capture = (context: BackupContext, opened: OpenBackup) => Effect.gen(funct
     skippedLinks: captured.staged.skippedLinks, skippedManagedSurfaces: captured.skippedManagedSurfaces };
 });
 
+/** Storage lists copies in no particular order; callers that pick or show "latest" sort with this. */
+const newestFirst = (snapshots: ReadonlyArray<BackupSnapshot>) =>
+  [...snapshots].sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id));
+
 const selectSnapshot = (snapshots: ReadonlyArray<BackupSnapshot>, requested: string | undefined): BackupSnapshot => {
   const snapshot = requested === undefined
-    ? [...snapshots].sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id))[0]
+    ? newestFirst(snapshots)[0]
     : snapshots.find(candidate => candidate.id === requested);
   if (snapshot === undefined) throw new BackupIoError("BACKUP_INVALID", "No matching backup snapshot exists for this owner");
   return snapshot;
@@ -302,7 +312,7 @@ export const backupCommand = Effect.fn("Backup.command")(function*(context: Back
     recordBackupOutcome(folder, request.name, kind, { at: new Date().toISOString(), ...outcome }).pipe(Effect.ignore);
   return yield* withStorage(folder, request.name, owner, opened => Effect.gen(function*() {
     if (request.action === "owners") return { owners: yield* backupWork("List backup owners", signal => listBackupOwners({ destination: opened.policy.destination, policy: opened.name, scratch: opened.scratch, signal })) };
-    if (request.action === "list") return { owner: opened.owner, snapshots: yield* backupWork("List backup snapshots", () => opened.storage.list()) };
+    if (request.action === "list") return { owner: opened.owner, snapshots: newestFirst(yield* backupWork("List backup snapshots", () => opened.storage.list())) };
     if (request.action === "run") {
       const captured = yield* capture(context, opened);
       yield* record("run", { ok: true, bytes: captured.snapshot.bytes, files: captured.snapshot.files });
