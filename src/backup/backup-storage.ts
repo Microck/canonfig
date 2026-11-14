@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, copyFile, link, lstat, mkdir, open, readdir, rm, writeFile } from "node:fs/promises";
+import { access, copyFile, link, lstat, mkdir, open, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { devNull } from "node:os";
 import { dirname, isAbsolute, join, parse } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -186,8 +186,10 @@ export const openBackupStorage = async (input: {
   const destination = input.destination;
   if (destination.kind === "local") {
     if (!isAbsolute(destination.path)) throw new BackupIoError("BACKUP_INVALID", "Local backup destination must be an absolute path");
-    const directory = join(destination.path, namespace);
-    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await mkdir(join(destination.path, namespace), { recursive: true, mode: 0o700 });
+    // The anchor refuses symbolic links on the way down, so resolve the ones in the chosen path first: macOS keeps
+    // /tmp and /var behind links to /private. Links swapped in after this point are still refused.
+    const directory = join(await realpath(destination.path), namespace);
     anchor = await openAnchoredDirectory(parse(directory).root, directory);
     root = anchor.base;
     await mkdir(join(root, "objects"), { mode: 0o700 }).catch(async error => { if (!(await lstat(join(root, "objects"))).isDirectory()) throw error; });
@@ -310,11 +312,12 @@ export const checkBackupDestination = async (input: {
 
   if (destination.kind === "local") {
     if (!isAbsolute(destination.path)) throw new BackupIoError("BACKUP_INVALID", "Local backup destination must be an absolute path");
+    // stat, not lstat: a chosen path may lead through links (macOS /tmp and /var), which the run resolves too.
     let existing = destination.path;
-    let info = await lstat(existing).catch(() => undefined);
+    let info = await stat(existing).catch(() => undefined);
     while (info === undefined && dirname(existing) !== existing) {
       existing = dirname(existing);
-      info = await lstat(existing).catch(() => undefined);
+      info = await stat(existing).catch(() => undefined);
     }
     if (info !== undefined && !info.isDirectory()) throw new BackupIoError("BACKUP_INVALID", `${existing} is a file, not a folder. Choose a folder for the backup.`);
     // The run creates missing folders, so the nearest existing one must accept a new file.
@@ -335,7 +338,7 @@ export const checkBackupDestination = async (input: {
     const where = gitWhere(remote);
     const localPath = localGitPath(remote);
     if (localPath !== undefined) {
-      if (!(await lstat(localPath).catch(() => undefined))?.isDirectory()) {
+      if (!(await stat(localPath).catch(() => undefined))?.isDirectory()) {
         throw new BackupIoError("BACKUP_INVALID", `There is no Git repository at ${localPath}. Create one with git init --bare, then save again.`);
       }
       if (!(await writable(localPath))) throw new BackupIoError("BACKUP_INVALID", `Canonfig can't write to the Git repository at ${localPath}. Check its permissions.`);

@@ -57,6 +57,17 @@ describe("portable backup recovery", () => {
     expect(await machine.run({ action: "status" })).toMatchObject({ runs: { daily: { run: { ok: true, files: 2 }, drill: { ok: true, files: 2 } } } });
   });
 
+  it("backs up to a folder reached through a symbolic link, as /tmp and /var are on macOS", async () => {
+    const machine = fixture();
+    const real = join(machine.root, "real-destination");
+    mkdirSync(real);
+    const linked = join(machine.root, "linked-destination");
+    symlinkSync(real, linked);
+    await machine.configure({ destination: { kind: "local", path: join(linked, "backups") } });
+    expect(await machine.run({ action: "run", name: "daily" })).toMatchObject({ snapshot: { files: 2 } });
+    expect(readdirSync(join(real, "backups", "canonfig-backup", "daily"))).toHaveLength(1);
+  }, 60_000);
+
   it("never reads an excluded Canonical Folder file, so a file over the content budget can be excluded", async () => {
     const machine = fixture();
     mkdirSync(join(machine.folder, "skills", "big"), { recursive: true });

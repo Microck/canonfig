@@ -504,14 +504,15 @@ export function BackupsView() {
   const shown = showAll ? copies : copies.slice(0, FIRST);
   const select = (name: string) => { setSelected(name); setShowAll(false); };
 
-  // The copies live at the destination, so the selected backup lists them once when it first opens and again after a
-  // run clears its list. The ref keeps a failed listing from retrying in a loop.
+  // The copies live at the destination, so the selected backup lists them whenever its list is missing: when it first
+  // opens, and after a run, prune or settings save drops the cached copies. The ref holds a listing in flight or one
+  // that failed, so a failure doesn't retry in a loop; a successful listing clears it.
   const listed = useRef<string | null>(null);
   const listKey = policy === undefined || listing !== null ? null : current;
   useEffect(() => {
     if (listKey === null || listed.current === listKey || backup.action.loading) return;
     listed.current = listKey;
-    void backup.run({ action: "list", name: listKey });
+    void backup.run({ action: "list", name: listKey }).then((result) => { if (result !== null && listed.current === listKey) listed.current = null; });
   }, [listKey, backup]);
 
   if (status === null) return <PageHeader crumbs={["Backups"]} />;
@@ -523,6 +524,7 @@ export function BackupsView() {
     setRunning(current);
     const done = await backup.run({ action: "run", name: current });
     setRunning(null);
+    // A failed listing of this backup gets another try now that a run changed what the destination holds.
     listed.current = null;
     if (done) toast.success(`Backed up ${current}`);
   };
@@ -624,8 +626,7 @@ export function BackupsView() {
           </AnimatePresence>
         </section>
       </Body>
-      {/* Saving drops the cached copies (a new destination holds others), so let the page list them again. */}
-      {editing && <Settings key={editing.name} name={editing.name} initial={editing.policy} onClose={() => { listed.current = null; setEditing(null); }} />}
+      {editing && <Settings key={editing.name} name={editing.name} initial={editing.policy} onClose={() => setEditing(null)} />}
       {restoring && policy && <RestoreDialog name={current} policy={policy} copies={copies} initial={restoring} onClose={() => setRestoring(null)} />}
       <ConfirmDialog open={consent} onOpenChange={setConsent} title={`Allow ${current} on this machine?`}
         body="It copies sign-in data or keys to its destination, encrypted with its password."
