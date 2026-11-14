@@ -113,15 +113,20 @@ describe("portable backup recovery", () => {
     writeFileSync(join(config, "opencode.json"), "{}\n");
     writeFileSync(join(data, "opencode.db"), "fixture database");
     expect(spawnSync("mkfifo", [join(data, "events.pipe")]).status).toBe(0);
+    // Claude keeps its user config beside, not inside, ~/.claude.
+    mkdirSync(join(machine.home, ".claude"));
+    writeFileSync(join(machine.home, ".claude", "settings.json"), "{}\n");
+    writeFileSync(join(machine.home, ".claude.json"), '{"mcpServers":{}}\n');
     await machine.run({ action: "password", name: "recovery", value: Redacted.make("frost library maple canvas") });
     // The exact path the special-file error names.
-    await machine.configure({ folder: false, harnesses: { mode: "full", targets: ["opencode"] }, passwordReference: "recovery", exclude: ["harnesses/opencode/.local/share/opencode/events.pipe"] });
+    await machine.configure({ folder: false, harnesses: { mode: "full", targets: ["opencode", "claude-code"] }, passwordReference: "recovery", exclude: ["harnesses/opencode/.local/share/opencode/events.pipe"] });
     await machine.run({ action: "run", name: "daily" });
     const output = join(machine.root, "restored");
     await machine.run({ action: "restore", name: "daily", target: { kind: "home", path: output, recoverCredentials: false } });
     expect(readFileSync(join(output, ".local", "share", "opencode", "opencode.db"), "utf8")).toBe("fixture database");
     expect(readFileSync(join(output, ".config", "opencode", "opencode.json"), "utf8")).toBe("{}\n");
     expect(existsSync(join(output, ".local", "share", "opencode", "events.pipe"))).toBe(false);
+    expect(readFileSync(join(output, ".claude.json"), "utf8")).toBe('{"mcpServers":{}}\n');
   }, 60_000);
 
   it("requires explicit native-store recovery and never falls back to credential files", async () => {

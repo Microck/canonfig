@@ -117,13 +117,15 @@ const capture = (context: BackupContext, opened: OpenBackup) => Effect.gen(funct
       ? yield* collectArchiveConfiguration({ folder, includeFolder: opened.policy.folder, includeHarnesses: opened.policy.harnesses.mode === "managed" })
       : { folderFiles: [], harnesses: { files: [], skipped: [] } };
     const recovery = yield* captureRecovery({ folder, statePath: context.statePath, policy: opened.policy, scratch: opened.scratch });
-    // A full capture takes the harness root plus the state the adapter places elsewhere (OpenCode keeps opencode.db
-    // under the XDG data directory), each folder once. State folders that don't exist yet are skipped.
+    // A full capture takes the harness root plus what the adapter keeps outside it: state folders (OpenCode keeps
+    // opencode.db under the XDG data directory) and config files (Claude's ~/.claude.json), each path once.
+    // Paths that don't exist yet are skipped.
     const full = opened.policy.harnesses.mode === "full" ? opened.policy.harnesses.targets.flatMap(harness => {
       const layout = adapterFor(harness).layout(roots, emptyModel(folder));
-      const outside = layout.neverTouch.filter(path => !below(layout.root, path));
-      const state = outside.filter(path => !outside.some(other => other !== path && below(other, path)));
-      return [{ harness, root: layout.root, optional: false }, ...[...new Set(state)].map(root => ({ harness, root, optional: true }))];
+      const configs = layout.surfaces.flatMap(surface => surface.kind === "config" ? [surface.target, ...(surface.alternatives ?? [])] : []);
+      const outside = [...new Set([...layout.neverTouch, ...configs])].filter(path => !below(layout.root, path));
+      const extra = outside.filter(path => !outside.some(other => other !== path && below(other, path)));
+      return [{ harness, root: layout.root, optional: false }, ...extra.map(root => ({ harness, root, optional: true }))];
     }) : [];
     const managed = configuration.harnesses.files.filter(file => opened.policy.harnesses.targets.some(target => target === file.harness));
     const staged = yield* backupWork("Capture backup files", signal => captureBackupFiles({

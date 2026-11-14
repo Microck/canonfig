@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants, createWriteStream } from "node:fs";
 import { lstat, mkdir, open, readdir, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, matchesGlob, relative, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, matchesGlob, relative, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Schema } from "effect";
 import { ContentDigest } from "../domain/brand.ts";
@@ -33,7 +33,7 @@ export const captureBackupFiles = async (input: {
   readonly scratch: string;
   readonly home: string;
   readonly files: ReadonlyArray<ArchiveFile>;
-  /** `optional` roots are harness state folders outside the harness root; a missing one is skipped. */
+  /** `optional` roots are harness state folders or files outside the harness root; a missing one is skipped. */
   readonly roots: ReadonlyArray<{ readonly harness: string; readonly root: string; readonly optional: boolean }>;
   readonly signal: AbortSignal;
 }): Promise<BackupCapture> => {
@@ -69,22 +69,25 @@ export const captureBackupFiles = async (input: {
       harness: file.harness, target: file.target, keys: file.keys }, createHash("sha256").update(file.content).digest("hex"));
   }
   for (const root of input.roots) {
+    // An optional root may be a state folder or a single file such as ~/.claude.json; a missing one is skipped.
+    let only: string | undefined;
     if (root.optional) {
       const info = await lstat(root.root).catch((error) => {
         if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
         throw error;
       });
-      if (info === undefined || !info.isDirectory()) continue;
+      if (info === undefined || (!info.isDirectory() && !info.isFile())) continue;
+      if (info.isFile()) only = basename(root.root);
     }
     if (root.root === input.home || !below(input.home, root.root) || below(root.root, input.scratch)
       || (input.policy.destination.kind === "local" && below(root.root, input.policy.destination.path))) {
       throw new BackupIoError("BACKUP_INVALID", "A full harness root must be below HOME and cannot contain the backup destination or staging directory");
     }
-    const walk = async (path: string): Promise<void> => {
+    const walk = async (path: string, name?: string): Promise<void> => {
       input.signal.throwIfAborted();
       const anchor = await openAnchoredDirectory(input.home, path);
       try {
-        for (const entry of (await readdir(anchor.base, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+        for (const entry of (await readdir(anchor.base, { withFileTypes: true })).filter((candidate) => name === undefined || candidate.name === name).sort((a, b) => a.name.localeCompare(b.name))) {
           const source = join(anchor.base, entry.name);
           const absolute = join(path, entry.name);
           const homePath = relative(input.home, absolute).split(sep).join("/");
@@ -128,7 +131,7 @@ export const captureBackupFiles = async (input: {
         await anchor.verify();
       } finally { await anchor.close(); }
     };
-    await walk(root.root);
+    await (only === undefined ? walk(root.root) : walk(dirname(root.root), only));
   }
   if (files.length === 0) throw new BackupIoError("BACKUP_INVALID", "This policy selected no regular files");
   if (caseCollision(files.map(file => file.path)) !== undefined) throw new BackupIoError("BACKUP_INVALID", "Captured paths collide on a case-insensitive filesystem");
