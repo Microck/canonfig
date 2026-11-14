@@ -95,6 +95,7 @@ export const qwenAdapter: HarnessAdapter = {
         "oauth_creds.json", "mcp-oauth-tokens.json", "google_accounts.json", ".env", "installation_id",
         "projects", "tmp", "memory.md", "file-history", "ide",
       ]),
+      credentials: under(context, root, ["mcp-oauth-tokens.json", "google_accounts.json"]),
       sharedSkills: true,
       // SkillManager user roots from SKILL_PROVIDER_CONFIG_DIRS in config/storage.ts.
       skillSources: [

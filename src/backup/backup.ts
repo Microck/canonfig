@@ -167,15 +167,15 @@ const capture = (context: BackupContext, opened: OpenBackup, scheduled: boolean)
       : { folderFiles: [], harnesses: { files: [], skipped: [] } };
     const recovery = yield* captureRecovery({ folder, statePath: context.statePath, policy: opened.policy, scratch: opened.scratch });
     // A full capture takes the harness root plus what the adapter keeps outside it: state folders (OpenCode keeps
-    // opencode.db under the XDG data directory) and config files (Claude's ~/.claude.json), each path once.
-    // Paths that don't exist yet are skipped.
+    // opencode.db under the XDG data directory), config files (Claude's ~/.claude.json) and other surfaces (Devin's
+    // ~/.devin/rules), each path once. Paths that don't exist yet are skipped.
     const layouts = opened.policy.harnesses.targets.map(harness => ({ harness, layout: adapterFor(harness).layout(roots, emptyModel(folder)) }));
     // Harnesses that read ~/.agents/skills share it, so it is captured once under the shared owner Canonfig uses for it.
     const sharedSkillRoots = [...new Set(layouts.flatMap(({ layout }) => layout.skillSources.filter(source => source.shared === true).map(source => source.path)))];
     const full = opened.policy.harnesses.mode === "full" ? [
       ...layouts.flatMap(({ harness, layout }) => {
-        const configs = layout.surfaces.flatMap(surface => surface.kind === "config" ? [surface.target, ...(surface.alternatives ?? [])] : []);
-        const outside = [...new Set([...layout.neverTouch, ...configs])].filter(path => !below(layout.root, path));
+        const surfaces = layout.surfaces.flatMap(surface => surface.kind === "config" ? [surface.target, ...(surface.alternatives ?? [])] : [surface.target]);
+        const outside = [...new Set([...layout.neverTouch, ...surfaces])].filter(path => !below(layout.root, path));
         const extra = outside.filter(path => !outside.some(other => other !== path && below(other, path)));
         return [{ harness, root: layout.root, optional: false }, ...extra.map(root => ({ harness, root, optional: true }))];
       }),

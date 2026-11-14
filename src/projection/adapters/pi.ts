@@ -79,6 +79,7 @@ export const piAdapter: HarnessAdapter = {
         },
       ],
       neverTouch: under(context, root, ["auth.json", "mcp-auth.json", "models.json", "sessions", "logs"]),
+      credentials: under(context, root, ["mcp-auth.json"]),
       sharedSkills: false,
       skillSources: [{ path: context.join(root, "skills"), depth: 64, flat: true }],
     };
