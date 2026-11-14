@@ -95,33 +95,38 @@ export type Term = keyof typeof GLOSSARY;
 
 /** The tooltip's last line, so the docs and CLI vocabulary is always one hover away. */
 function CalledThis({ term }: { term: string }) {
-  return <span className="mt-1 block text-muted-foreground">Canonfig calls this {term}.</span>;
+  return <span className="mt-2 block text-xs text-muted-foreground">Canonfig calls this {term}.</span>;
 }
 
 /**
- * A Canonfig concept in everyday words, with a dotted underline. Shows the
- * plain word unless `children` are given; hovering or focusing it explains it
- * and names the Canonfig term. It is a tab stop because the definition is
- * otherwise pointer-only; never put a Term inside a button or link.
+ * A Canonfig concept in everyday words, followed by a small (?) that explains it and names the
+ * Canonfig term. Shows the plain word unless `children` are given. The (?) is the tab stop, so the
+ * definition is reachable by keyboard; never put a Term inside a button or link.
  */
 export function Term({ children, term }: { children?: ReactNode; term: Term }) {
   const { plain, meaning } = GLOSSARY[term];
+  const title = plain.charAt(0).toUpperCase() + plain.slice(1);
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span
-          tabIndex={0}
-          className="rounded-[2px] underline decoration-faint decoration-dotted underline-offset-[3px] outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-        >
-          {children ?? plain}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent className="max-w-64 text-sm">
-        <span className="block font-medium">{plain.charAt(0).toUpperCase() + plain.slice(1)}</span>
-        {meaning}
-        <CalledThis term={term} />
-      </TooltipContent>
-    </Tooltip>
+    <span className="inline-flex items-baseline gap-0.5">
+      <span>{children ?? plain}</span>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={`What is ${typeof children === "string" ? children : plain}?`}
+            className="relative inline-flex size-4 shrink-0 items-center justify-center self-center rounded-sm text-faint outline-none hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/60 pointer-coarse:size-6"
+          >
+            <Question className="size-3" />
+          </button>
+        </TooltipTrigger>
+        {/* Short blocks with space between them; one dense paragraph was hard to read. */}
+        <TooltipContent className="max-w-72 text-sm leading-relaxed">
+          <span className="block font-medium">{title}</span>
+          <span className="mt-1 block">{meaning}</span>
+          <CalledThis term={term} />
+        </TooltipContent>
+      </Tooltip>
+    </span>
   );
 }
 

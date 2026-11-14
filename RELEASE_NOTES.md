@@ -1,21 +1,31 @@
-# Canonfig v7.1.9
+# Canonfig v7.1.10
 
-This release clears a health check warning that never went away on Linux and
-Windows, and fixes two small things on the Machines page.
+This release cuts clutter from the Follower pages and shows the Source the way
+you customized it on every machine's map.
 
-## Fixes
+## Follower pages
 
-- Health check now tests the keyring on Linux (Secret Service) and Windows
-  (Credential Manager) by saving, reading back and deleting a throwaway value,
-  as macOS already did. A working keyring now passes instead of showing
-  "write and unattended access are not verified" forever. If the test fails,
-  the check says to start and unlock the keyring, with the provider's error in
-  its details.
-- Add machine fills in the Source's address in "Address it connects to"
-  instead of opening with an empty box. An address you typed is kept the next
-  time you open it.
-- A renamed machine's card shows only the name you chose. The hostname moves
-  to the name's tooltip.
+- Overview shows each sync step (Source address set, Joined, Profile chosen,
+  Source reachable, Up to date) with a status mark instead of the word
+  "Reached", and its header turns green once the machine is up to date.
+- Sync lists only the changes it makes. Items that already match, or that were
+  verified, collapse into one line you can open. Revision and run IDs move
+  under "Technical details".
+- Commands in Sync and Schedule messages show as code. The notice about a
+  harness that cannot take an item now reads, for example, "Codex has no global
+  slash-command directory. Profile commands were not added there."
+- Enrollment keeps each fingerprint on one line, and Local settings lines up
+  the Backups switch with the table above it.
+- "Held items" and "Private adoption review" on Sync now say what they do.
+
+## Everywhere
+
+- Terms that used to be underlined show a small (?) button instead, and their
+  explanations are easier to read.
+- The Source card's name, icon and colour, customized on the Source, now show
+  on every Follower's map. Close the Customize panel to share a change. An
+  uploaded icon stays in the browser where you added it, and anything you
+  customize on a Follower still applies only there.
 
 ## Known limitation
 
@@ -29,7 +39,7 @@ during import.
 Before upgrading, finish or recover any unfinished run with the CLI build that
 created it.
 
-Install with `npm install --global @microck/canonfig@7.1.9` on every machine,
+Install with `npm install --global @microck/canonfig@7.1.10` on every machine,
 or run `canonfig self-update apply`. Stop `canonfig ui` first, and on a Source
 run `canonfig source service remove` before installing and
 `canonfig source service install` afterwards.

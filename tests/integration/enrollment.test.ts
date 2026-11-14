@@ -37,8 +37,10 @@ import {
   cancelFollowerEnrollment,
   finalizeFollowerEnrollment,
   enrollFollower,
+  fetchSourceLook,
   reconstructEnrollmentWireError,
 } from "../../src/enrollment/follower-client.ts";
+import { writeSourceLook } from "../../src/enrollment/source-look.ts";
 import {
   asEnrollmentError,
   startSourceServer,
@@ -205,6 +207,35 @@ const malformedRequest = (
   });
 
 describe("loopback HTTPS enrollment", () => {
+  it("serves the Source's saved card look only to an enrolled Follower", async () => {
+    const setup = fixture();
+    const server = await start(setup);
+    const enrolled = await runFollower(setup, enrollFollower({
+      invitation: await invitation(setup, server), followerName: "Look Host",
+    }));
+    const input = { endpoint: server.endpoint, tlsFingerprint: enrolled.tlsFingerprint, credentialReference: enrolled.credentialReference };
+    expect(await runFollower(setup, fetchSourceLook(input))).toBeUndefined();
+
+    const look = { name: "ashburnVPS", icon: "server", accent: "custom", customAccent: "#ff6300" };
+    await runSource(setup, writeSourceLook(look));
+    expect(await runFollower(setup, fetchSourceLook(input))).toEqual(look);
+
+    // Without a Follower credential the Source answers nothing about its card.
+    const { promise: anonymous, resolve: resolveStatus, reject: rejectStatus } = Promise.withResolvers<number>();
+    const endpoint = new URL(server.endpoint);
+    const request = httpsRequest({
+      hostname: endpoint.hostname, port: endpoint.port, path: "/v1/source/look", method: "GET", rejectUnauthorized: false,
+      headers: { [canonfigVersionHeader]: buildIdentity.packageVersion },
+    }, (response) => { response.resume(); resolveStatus(response.statusCode ?? 0); });
+    request.once("error", rejectStatus);
+    request.end();
+    expect(await anonymous).toBeGreaterThanOrEqual(400);
+
+    // A reset removes the saved look, so Followers fall back to their defaults.
+    await runSource(setup, writeSourceLook(undefined));
+    expect(await runFollower(setup, fetchSourceLook(input))).toBeUndefined();
+  });
+
   it("allows concurrent Source initialization to publish only one immutable identity", async () => {
     const setup = fixture();
     const attempts = await runSource(setup, Effect.flatMap(Enrollment, (enrollment) =>
