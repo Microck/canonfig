@@ -226,6 +226,20 @@ function HumanActionItem() {
   );
 }
 
+/** A live Follower's Overview head: green once every lifecycle step `canonfig status` reports is reached, amber while one is not. */
+function LiveFollowerHeader() {
+  const ws = useWorkspace();
+  const steps = Object.values(ws.status?.lifecycle ?? {});
+  const upToDate = steps.length > 0 && steps.every((step) => step.reached);
+  return (
+    <StateHeader
+      tone={steps.length === 0 ? "muted" : upToDate ? "ok" : "warn"}
+      title={ws.session?.machineName ?? ws.machineName}
+      body={upToDate ? "Up to date with the Source." : "Open Sync to check for updates."}
+    />
+  );
+}
+
 export function FollowerOverview() {
   const ws = useWorkspace();
   const rev = ws.targetRevision;
@@ -254,7 +268,7 @@ export function FollowerOverview() {
         }
       />
       <Body>
-        {!ws.capabilities.simulatedTelemetry ? <StateHeader tone="muted" title={ws.session?.machineName ?? ws.machineName} body="Open Sync to check for updates." /> : <StateHeader
+        {!ws.capabilities.simulatedTelemetry ? <LiveFollowerHeader /> : <StateHeader
           tone={tone}
           running={running}
           title={
