@@ -34,19 +34,29 @@ const headerFor = (name: string, size: number, mode: number, type: "0" | "x"): B
 };
 const padding = (size: number): Buffer => Buffer.alloc((512 - size % 512) % 512);
 
+/** The largest size the 11-digit octal ustar field holds (8 GiB - 1); larger entries carry a PAX `size` record. */
+const USTAR_SIZE_LIMIT = 0o77777777777;
+
+/** One PAX record, `<length> <key>=<value>\n`, where length counts its own digits. */
+const paxRecord = (key: string, value: string): string => {
+  const payload = `${key}=${value}\n`;
+  let length = Buffer.byteLength(payload) + 3;
+  while (length !== Buffer.byteLength(payload) + String(length).length + 1) {
+    length = Buffer.byteLength(payload) + String(length).length + 1;
+  }
+  return `${length} ${payload}`;
+};
+
 /** Stream the same canonical headers for in-memory exports and file-backed backups. */
 export async function* encodeTar(files: ReadonlyArray<TarSource>): AsyncGenerator<Uint8Array> {
   for (const [index, file] of files.entries()) {
-    const payload = `path=${file.path}\n`;
-    let length = Buffer.byteLength(payload) + 3;
-    while (length !== Buffer.byteLength(payload) + String(length).length + 1) {
-      length = Buffer.byteLength(payload) + String(length).length + 1;
-    }
-    const record = Buffer.from(`${length} ${payload}`);
+    const large = file.size > USTAR_SIZE_LIMIT;
+    const record = Buffer.from(paxRecord("path", file.path) + (large ? paxRecord("size", String(file.size)) : ""));
     yield headerFor(`PaxHeaders/${index}`, record.length, 0o644, "x");
     yield record;
     yield padding(record.length);
-    yield headerFor(`file-${index}`, file.size, file.mode, "0");
+    // PAX readers take the size record over the header field, which stays 0 when the size doesn't fit it.
+    yield headerFor(`file-${index}`, large ? 0 : file.size, file.mode, "0");
     let size = 0;
     const chunks = file.content instanceof Uint8Array ? [file.content] : file.content;
     for await (const chunk of chunks) {
@@ -120,15 +130,33 @@ const field = (header: Buffer, offset: number, length: number): string => {
   const end = bytes.indexOf(0);
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, end < 0 ? length : end));
 };
-const paxPath = (body: Buffer): string => {
-  const space = body.indexOf(0x20);
-  const length = Number(body.subarray(0, space).toString("ascii"));
-  if (space < 1 || !Number.isSafeInteger(length) || length !== body.length || body.at(-1) !== 0x0a) {
-    throw new Error("Archive has a malformed extended header");
+/** The extended header Canonfig writes: a path record, then a size record only when the size exceeds ustar's field. */
+interface PaxHeader { readonly path: string; readonly size?: number }
+const paxHeader = (body: Buffer): PaxHeader => {
+  const fields = new Map<string, string>();
+  let offset = 0;
+  while (offset < body.length) {
+    const space = body.indexOf(0x20, offset);
+    const length = Number(body.subarray(offset, space).toString("ascii"));
+    if (space <= offset || !Number.isSafeInteger(length) || offset + length > body.length || body[offset + length - 1] !== 0x0a) {
+      throw new Error("Archive has a malformed extended header");
+    }
+    const record = new TextDecoder("utf-8", { fatal: true }).decode(body.subarray(space + 1, offset + length - 1));
+    const equals = record.indexOf("=");
+    const key = record.slice(0, equals);
+    if (equals < 1 || fields.has(key) || (key !== "path" && key !== "size") || (key === "size" && fields.size !== 1)) {
+      throw new Error("Archive extended headers may contain only a path field and an optional size field");
+    }
+    fields.set(key, record.slice(equals + 1));
+    offset += length;
   }
-  const record = new TextDecoder("utf-8", { fatal: true }).decode(body.subarray(space + 1, -1));
-  if (!record.startsWith("path=")) throw new Error("Archive extended headers may contain only one path field");
-  return record.slice(5);
+  const path = fields.get("path");
+  if (path === undefined) throw new Error("Archive extended headers may contain only a path field and an optional size field");
+  const sizeText = fields.get("size");
+  if (sizeText === undefined) return { path };
+  const size = /^[0-9]+$/u.test(sizeText) ? Number(sizeText) : Number.NaN;
+  if (!Number.isSafeInteger(size) || size <= USTAR_SIZE_LIMIT) throw new Error("Archive has an invalid extended size");
+  return { path, size };
 };
 
 /** Consume each body completely before advancing. Nothing outside the manifest may ride along. */
@@ -138,13 +166,13 @@ export const decodeTar = async (
   limits: { readonly bytes: number; readonly files: number },
 ): Promise<void> => {
   const reader = new TarReader(input, limits.bytes);
-  let path: string | undefined;
+  let pax: PaxHeader | undefined;
   let count = 0;
   try {
     for (;;) {
       const header = await reader.bytes(512);
       if (header.every(byte => byte === 0)) {
-        if (path !== undefined) throw new Error("Archive ends after an extended header");
+        if (pax !== undefined) throw new Error("Archive ends after an extended header");
         await reader.finish();
         return;
       }
@@ -152,27 +180,32 @@ export const decodeTar = async (
       for (const [index, byte] of header.entries()) sum += index >= 148 && index < 156 ? 32 : byte;
       if (readOctal(header, 148, 8) !== sum) throw new Error("Archive has a damaged entry header");
       if (header.subarray(257, 263).toString("latin1") !== "ustar\0") throw new Error("Archive is not POSIX tar");
-      const size = readOctal(header, 124, 12);
+      const headerSize = readOctal(header, 124, 12);
       const type = header[156];
       if (type === 120) {
-        if (path !== undefined || size > 2048) throw new Error("Archive has an invalid extended header");
-        path = paxPath(await reader.bytes(size));
-      } else {
-        if (type !== 48 && type !== 0) throw new Error("Archive holds a link, directory, device or unsupported entry type");
-        const mode = readOctal(header, 100, 8);
-        if (mode > 0o777) throw new Error("Archive holds special permission bits");
-        const prefix = field(header, 345, 155);
-        const name = path ?? `${prefix.length === 0 ? "" : `${prefix}/`}${field(header, 0, 100)}`;
-        path = undefined;
-        count += 1;
-        if (count > limits.files) throw new Error("Archive exceeds the configured file count limit");
-        let consumed = 0;
-        const content = (async function*() {
-          for await (const chunk of reader.chunks(size)) { consumed += chunk.length; yield chunk; }
-        })();
-        await consume({ path: name, mode, size }, content);
-        if (consumed !== size) throw new Error("Archive consumer did not read an entire entry");
+        if (pax !== undefined || headerSize > 2048) throw new Error("Archive has an invalid extended header");
+        pax = paxHeader(await reader.bytes(headerSize));
+        const pad = await reader.bytes(padding(headerSize).length);
+        if (pad.some(byte => byte !== 0)) throw new Error("Archive holds nonzero entry padding");
+        continue;
       }
+      if (type !== 48 && type !== 0) throw new Error("Archive holds a link, directory, device or unsupported entry type");
+      const mode = readOctal(header, 100, 8);
+      if (mode > 0o777) throw new Error("Archive holds special permission bits");
+      const prefix = field(header, 345, 155);
+      // A PAX size replaces the header field only for entries too large for it, and only with a zero field.
+      if (pax?.size !== undefined && headerSize !== 0) throw new Error("Archive has conflicting entry sizes");
+      const size = pax?.size ?? headerSize;
+      const name = pax?.path ?? `${prefix.length === 0 ? "" : `${prefix}/`}${field(header, 0, 100)}`;
+      pax = undefined;
+      count += 1;
+      if (count > limits.files) throw new Error("Archive exceeds the configured file count limit");
+      let consumed = 0;
+      const content = (async function*() {
+        for await (const chunk of reader.chunks(size)) { consumed += chunk.length; yield chunk; }
+      })();
+      await consume({ path: name, mode, size }, content);
+      if (consumed !== size) throw new Error("Archive consumer did not read an entire entry");
       const pad = await reader.bytes(padding(size).length);
       if (pad.some(byte => byte !== 0)) throw new Error("Archive holds nonzero entry padding");
     }
