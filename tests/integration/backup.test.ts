@@ -172,6 +172,24 @@ describe("portable backup recovery", () => {
     expect(existsSync(join(output, ".local", "share", "amp", "secrets.json"))).toBe(false);
   }, 60_000);
 
+  it("leaves out a credential database with its SQLite sidecars and keeps native skill folders outside the root", async () => {
+    const machine = fixture();
+    const omp = join(machine.home, ".omp", "agent");
+    mkdirSync(omp, { recursive: true });
+    for (const name of ["agent.db", "agent.db-wal", "agent.db-shm"]) writeFileSync(join(omp, name), "private-fixture-token");
+    writeFileSync(join(omp, "settings.json"), "{}\n");
+    mkdirSync(join(machine.home, ".config", "kilo"), { recursive: true });
+    mkdirSync(join(machine.home, ".kilo", "skills", "notes"), { recursive: true });
+    writeFileSync(join(machine.home, ".kilo", "skills", "notes", "SKILL.md"), "---\nname: notes\ndescription: Notes\n---\n");
+    await machine.run({ action: "password", name: "recovery", value: Redacted.make("frost library maple canvas") });
+    await machine.configure({ folder: false, harnesses: { mode: "full", targets: ["oh-my-pi", "kilo"] }, passwordReference: "recovery" });
+    expect(await machine.run({ action: "run", name: "daily" })).toMatchObject({ skippedCredentials: 3 });
+    const output = join(machine.root, "restored");
+    await machine.run({ action: "restore", name: "daily", target: { kind: "home", path: output, recoverCredentials: false } });
+    expect(readdirSync(join(output, ".omp", "agent"))).toEqual(["settings.json"]);
+    expect(readFileSync(join(output, ".kilo", "skills", "notes", "SKILL.md"), "utf8")).toContain("name: notes");
+  }, 60_000);
+
   it("requires explicit native-store recovery and never falls back to credential files", async () => {
     const machine = fixture();
     await machine.run({ action: "password", name: "recovery", value: Redacted.make("synthetic recovery credential") });

@@ -100,7 +100,9 @@ export const captureBackupFiles = async (input: {
           const archivePath = `harnesses/${root.harness}/${homePath}`;
           const info = await lstat(source, { bigint: true });
           if (info.isSymbolicLink()) { skippedLinks += 1; continue; }
-          if (!input.policy.includeCredentials && input.credentials.some(credential => below(credential, absolute))) { skippedCredentials += 1; continue; }
+          // A declared credential database brings its SQLite journal, WAL and shared-memory files with it.
+          const declared = input.credentials.some(credential => below(credential, absolute) || ["-wal", "-shm", "-journal"].some(suffix => absolute === `${credential}${suffix}`));
+          if (!input.policy.includeCredentials && declared) { skippedCredentials += 1; continue; }
           // Two selected harnesses can resolve to one folder (Pi and Oh My Pi under PI_CODING_AGENT_DIR); each home
           // path is captured once, so a restore never writes the same destination twice.
           if (captured.has(homePath)) continue;

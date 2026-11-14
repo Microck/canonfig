@@ -174,7 +174,11 @@ const capture = (context: BackupContext, opened: OpenBackup, scheduled: boolean)
     const sharedSkillRoots = [...new Set(layouts.flatMap(({ layout }) => layout.skillSources.filter(source => source.shared === true).map(source => source.path)))];
     const full = opened.policy.harnesses.mode === "full" ? [
       ...layouts.flatMap(({ harness, layout }) => {
-        const surfaces = layout.surfaces.flatMap(surface => surface.kind === "config" ? [surface.target, ...(surface.alternatives ?? [])] : [surface.target]);
+        // Native skill folders count too (Kilo reads ~/.kilo/skills); shared ones are captured once below.
+        const surfaces = [
+          ...layout.surfaces.flatMap(surface => surface.kind === "config" ? [surface.target, ...(surface.alternatives ?? [])] : [surface.target]),
+          ...layout.skillSources.filter(source => source.shared !== true).map(source => source.path),
+        ];
         const outside = [...new Set([...layout.neverTouch, ...surfaces])].filter(path => !below(layout.root, path));
         const extra = outside.filter(path => !outside.some(other => other !== path && below(other, path)));
         return [{ harness, root: layout.root, optional: false }, ...extra.map(root => ({ harness, root, optional: true }))];
