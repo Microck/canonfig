@@ -250,17 +250,28 @@ describe("backup preflight on save, enable and check", () => {
     mkdirSync(empty);
     const repository = join(machine.root, "backups.git");
     bareRepository(repository);
-    expect(await refused(machine, { destination: { kind: "git", remote: `file://${repository}` } }, { PATH: empty }))
+    // Encrypted, so the destination is what gets checked and gitleaks (needed only for plaintext Git) isn't involved.
+    await machine.run({ action: "password", name: "recovery", value: Redacted.make("frost library maple canvas") });
+    const git = (remote: string): Partial<BackupPolicy> => ({ destination: { kind: "git", remote }, passwordReference: "recovery" });
+    expect(await refused(machine, git(`file://${repository}`), { PATH: empty }))
       .toMatchObject({ code: "BACKUP_TOOL_REQUIRED", message: expect.stringContaining("Git isn't installed") });
-    expect(await refused(machine, { destination: { kind: "git", remote: `file://${join(machine.root, "missing.git")}` } }))
+    expect(await refused(machine, git(`file://${join(machine.root, "missing.git")}`)))
       .toMatchObject({ code: "BACKUP_INVALID", message: expect.stringContaining("There is no Git repository") });
     if (!asRoot) {
       chmodSync(repository, 0o555);
       try {
-        expect(await refused(machine, { destination: { kind: "git", remote: `file://${repository}` } }))
+        expect(await refused(machine, git(`file://${repository}`)))
           .toMatchObject({ code: "BACKUP_INVALID", message: expect.stringContaining("can't write to the Git repository") });
       } finally { chmodSync(repository, 0o755); }
     }
+  }, 60_000);
+
+  it("refuses an unencrypted Git backup on a machine without gitleaks", async () => {
+    const machine = fixture(join(tmpdir(), "canonfig-no-such-path"));
+    const repository = join(machine.root, "backups.git");
+    bareRepository(repository);
+    expect(await refused(machine, { destination: { kind: "git", remote: `file://${repository}` } }))
+      .toMatchObject({ code: "BACKUP_TOOL_REQUIRED", message: expect.stringContaining("needs gitleaks") });
   }, 60_000);
 
   it("refuses an unwritable folder and a missing password alias, and saves a folder the first run will create", async () => {
@@ -284,7 +295,8 @@ describe("backup preflight on save, enable and check", () => {
     const machine = fixture();
     const repository = join(machine.root, "backups.git");
     bareRepository(repository);
-    expect(await machine.configure({ destination: { kind: "git", remote: `file://${repository}` } })).toMatchObject({ warnings: [] });
+    await machine.run({ action: "password", name: "recovery", value: Redacted.make("frost library maple canvas") });
+    expect(await machine.configure({ destination: { kind: "git", remote: `file://${repository}` }, passwordReference: "recovery" })).toMatchObject({ warnings: [] });
     // The dry-run push created nothing at the destination.
     expect(spawnSync("git", ["--git-dir", repository, "for-each-ref"], { encoding: "utf8" }).stdout).toBe("");
   }, 60_000);
