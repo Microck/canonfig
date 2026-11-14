@@ -36,3 +36,5 @@ export type ShieldLogEntry = typeof ShieldLogEntry.Type;
 
 /** Shield keeps a month of entries; older ones are dropped the next time Canonfig itself appends. */
 export const shieldLogDays = 30;
+/** `<folder>/.shield/log.jsonl`, as segments so the generated guard can join them with the target platform's separator. */
+export const shieldLogSegments = [".shield", "log.jsonl"] as const;

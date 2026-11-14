@@ -25,11 +25,11 @@ function seed(role: "source" | "follower", folder: string): GuiShield {
       { at: ago(98), kind: "blocked", harness: "amp", path: "~/.config/amp/skills/scrape-everything/SKILL.md" },
       { at: ago(98), kind: "ingested", path: "~/.config/amp/plugins/scrape-everything", item: "plugins/scrape-everything" },
     ],
+    // scrape-everything is excluded here, so like the live folder loader the list leaves it out.
     plugins: [
-      { id: "session-notes", harnesses: ["claude-code"], entries: [".claude-plugin/hooks/session-end.js"], requires: [], files: 6, digest: "a".repeat(64), reviewed: false, excluded: false },
-      { id: "opencode-git-guard", harnesses: ["opencode"], entries: ["index.js"], requires: ["tools/gh"], files: 3, digest: "b".repeat(64), reviewed: false, excluded: false },
-      { id: "commit-helper", harnesses: ["claude-code"], entries: [".claude-plugin/commands/commit.md"], requires: [], files: 4, digest: "c".repeat(64), reviewed: true, excluded: false },
-      { id: "scrape-everything", harnesses: ["amp"], entries: ["index.js"], requires: [], files: 9, digest: "d".repeat(64), reviewed: false, excluded: true },
+      { id: "session-notes", harnesses: ["claude-code"], entries: [".claude-plugin/hooks/session-end.js"], requires: [], digest: "a".repeat(64), reviewed: false },
+      { id: "opencode-git-guard", harnesses: ["opencode"], entries: ["index.js"], requires: ["tools/gh"], digest: "b".repeat(64), reviewed: false },
+      { id: "commit-helper", harnesses: ["claude-code"], entries: [".claude-plugin/commands/commit.md"], requires: [], digest: "c".repeat(64), reviewed: true },
     ],
   };
 }
@@ -41,19 +41,19 @@ function apply(shield: GuiShield, request: GuiShieldRequest): GuiShield {
     case "enable": return { ...shield, status: { ...status, enabled: true, hard: request.hard } };
     case "disable": return { ...shield, status: { ...status, enabled: false, hard: false } };
     case "review": return { ...shield, plugins: shield.plugins.map((plugin) => plugin.id === request.id ? { ...plugin, reviewed: true } : plugin) };
-    case "exclude":
-    case "include": {
-      const excludedPlugins = request.action === "exclude" ? [...new Set([...status.excludedPlugins, request.id])] : status.excludedPlugins.filter((id) => id !== request.id);
-      return { ...shield, status: { ...status, excludedPlugins }, plugins: shield.plugins.map((plugin) => ({ ...plugin, excluded: excludedPlugins.includes(plugin.id) })) };
-    }
+    case "exclude": return {
+      ...shield,
+      status: { ...status, excludedPlugins: [...new Set([...status.excludedPlugins, request.id])] },
+      plugins: shield.plugins.filter((plugin) => plugin.id !== request.id),
+    };
   }
 }
 
-/** Each demo machine has its own Shield, so switching between Source and Follower keeps both pages' changes. */
+/** The demo provider is keyed by role (simulated-app.tsx), so each role starts from its own seed. */
 export function useSimulatedShield(role: "source" | "follower", folder: string): ShieldSlice {
-  const [machines, setMachines] = useState(() => ({ source: seed("source", folder), follower: seed("follower", folder) }));
+  const [shield, setShield] = useState(() => seed(role, folder));
   return {
-    data: machines[role], state: READY, action: READY,
-    run: async (request) => { setMachines((current) => ({ ...current, [role]: apply(current[role], request) })); return true; },
+    data: shield, state: READY, action: READY,
+    run: async (request) => { setShield((current) => apply(current, request)); return true; },
   };
 }

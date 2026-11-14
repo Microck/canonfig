@@ -12,7 +12,7 @@ import type { RootContext } from "./harness.ts";
 import { scanImports, readImportContent, type ImportCandidate } from "./import.ts";
 import { NativePluginManifest, nativePluginDigest } from "./native-plugin.ts";
 import { nativeInstallChange, scanNativeInstalls } from "./shield-plugins.ts";
-import { appendShieldLog, homeRelative } from "./shield-log.ts";
+import { homeRelative, recordShieldLog } from "./shield-log.ts";
 
 const failure = (path: string, message: string) => new CanonicalFolderError({ path, message: `Shield: ${message}` });
 
@@ -166,7 +166,7 @@ export const ingestShield = Effect.fn("Shield.ingest")(function*(input: {
       ...sources.map((entry) => ({ at, kind: "ingested" as const, path: homeRelative(entry.path, context.home), item: entry.category === "mcp" ? `mcp/${entry.name}` : entry.target })),
       ...plugins.map((entry) => ({ at, kind: "ingested" as const, path: homeRelative(entry.install.path, context.home), item: entry.target })),
     ];
-    yield* Effect.tryPromise({ try: () => appendShieldLog(target.folder, entries), catch: (error) => failure(target.folder, `items admitted, but the Shield log could not be written: ${String(error)}`) });
+    yield* recordShieldLog(target.folder, entries);
   }
   return { imported: [...new Set([...sources.map((entry) => entry.target), ...plugins.map((entry) => entry.target)])], warnings: scan.skipped.map((entry) => `${entry.path}: ${entry.reason}`) };
 });

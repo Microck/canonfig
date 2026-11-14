@@ -12,7 +12,10 @@ export const GuiShieldStatus = Schema.Struct({
   note: Schema.String,
 });
 
-/** A Native Plugin in the folder, with what the review dialog shows before someone approves its code. */
+/**
+ * A Native Plugin this machine loads, with what the review dialog shows before someone approves its code. Plugins
+ * this machine excluded are not listed (the folder loader drops them); their ids are in `status.excludedPlugins`.
+ */
 export const GuiShieldPlugin = Schema.Struct({
   id: Schema.String,
   harnesses: Schema.Array(Schema.String),
@@ -20,10 +23,8 @@ export const GuiShieldPlugin = Schema.Struct({
   entries: Schema.Array(Schema.String),
   /** Folder tools the plugin needs, like `tools/gh`. */
   requires: Schema.Array(Schema.String),
-  files: Schema.Number,
   digest: Schema.String,
   reviewed: Schema.Boolean,
-  excluded: Schema.Boolean,
 });
 export type GuiShieldPlugin = typeof GuiShieldPlugin.Type;
 
@@ -41,6 +42,6 @@ export const GuiShieldRequest = Schema.Union([
   Schema.Struct({ action: Schema.Literal("disable") }),
   /** The digest the person saw; the command refuses it if the plugin's files changed since. */
   Schema.Struct({ action: Schema.Literal("review"), id: Schema.String, digest: Schema.String }),
-  Schema.Struct({ action: Schema.Literals(["exclude", "include"]), id: Schema.String }),
+  Schema.Struct({ action: Schema.Literal("exclude"), id: Schema.String }),
 ]);
 export type GuiShieldRequest = typeof GuiShieldRequest.Type;

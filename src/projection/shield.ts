@@ -2,6 +2,7 @@ import { Schema } from "effect";
 import { adapterFor } from "./adapters/index.ts";
 import type { RootContext } from "./harness.ts";
 import type { CanonicalModel } from "./model.ts";
+import { shieldLogSegments } from "./shield-log.types.ts";
 
 export const ShieldPolicy = Schema.Struct({ enabled: Schema.Boolean, hard: Schema.Boolean });
 export type ShieldPolicy = typeof ShieldPolicy.Type;
@@ -115,6 +116,6 @@ export const shieldModel = (model: CanonicalModel, context: RootContext, scope: 
     skills: [...model.skills, { name: shieldHookId, description: "Install agent configuration through Canonfig without contaminating harness folders.",
       files: [{ path: "SKILL.md", executable: false, content: new TextEncoder().encode(`---\nname: ${shieldHookId}\ndescription: Install skills, MCP servers and native plugins through Canonfig.\n---\n\n${instructions}`) }] }],
     hooks: [{ id: shieldHookId, event: "before_tool", matcher: { capabilities: [], tools: [] },
-      run: ["node", "--input-type=module", "-e", guardSource(shieldPaths(model, context), context.home, destination, context.join(model.folder, ".shield", "log.jsonl"))], timeoutMs: 5000, onFailure: "block" }, ...model.hooks],
+      run: ["node", "--input-type=module", "-e", guardSource(shieldPaths(model, context), context.home, destination, context.join(model.folder, ...shieldLogSegments))], timeoutMs: 5000, onFailure: "block" }, ...model.hooks],
   };
 };

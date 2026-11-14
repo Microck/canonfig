@@ -20,25 +20,27 @@ export const shieldRoutes = Effect.gen(function*() {
   return [
     queryRoute("/api/shield", () => Effect.gen(function*() {
       const session = yield* configured;
-      const status = yield* commands.shield({ action: "status" }).pipe(
-        Effect.flatMap((payload) => Schema.decodeUnknownEffect(GuiShieldStatus)(payload)),
-        Effect.mapError((error) => error instanceof CliCommandFailure ? error : invalid(`Shield status was not readable: ${error.message}`)),
-      );
-      const [log, loaded] = yield* Effect.tryPromise({
-        try: () => Promise.all([readShieldLog(session.folderPath), loadCanonicalFolder(session.folderPath)]),
-        catch: (cause) => invalid(String(cause)),
-      });
+      // Status, log and folder are independent reads, so they run together.
+      const [status, [log, loaded]] = yield* Effect.all([
+        commands.shield({ action: "status" }).pipe(
+          Effect.flatMap((payload) => Schema.decodeUnknownEffect(GuiShieldStatus)(payload)),
+          Effect.mapError((error) => error instanceof CliCommandFailure ? error : invalid(`Shield status was not readable: ${error.message}`)),
+        ),
+        Effect.tryPromise({
+          try: () => Promise.all([readShieldLog(session.folderPath), loadCanonicalFolder(session.folderPath)]),
+          catch: (cause) => invalid(String(cause)),
+        }),
+      ], { concurrency: "unbounded" });
       const shield: GuiShield = {
         status, log,
+        // The folder loader already drops plugins this machine excluded; their ids stay in status.excludedPlugins.
         plugins: loaded.model.plugins.map((plugin) => ({
           id: plugin.id,
           harnesses: [...new Set(plugin.manifest.variants.map((variant) => variant.harness))],
           entries: [...new Set(plugin.manifest.variants.flatMap((variant) => variant.entry === undefined ? [] : [`${variant.directory}/${variant.entry}`]))],
           requires: [...new Set(plugin.manifest.variants.flatMap((variant) => variant.requires ?? []))],
-          files: plugin.files.length,
           digest: plugin.digest,
           reviewed: plugin.reviewed,
-          excluded: status.excludedPlugins.includes(plugin.id),
         })),
       };
       return asJson(shield);

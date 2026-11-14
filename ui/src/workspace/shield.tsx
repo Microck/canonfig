@@ -45,16 +45,17 @@ function blockedLabel(path: string) {
 const INSTALLER_LABEL = { skills: "skills add", mcp: "mcp add", plugin: "plugin install" } as const;
 
 /** A log row has a time; a "Needs review" row is a plugin's current state, so it has none. */
-interface Row { key: string; at?: Date; what: string; who: string; where?: string; plugin?: GuiShieldPlugin }
+interface Row { key: string; at?: Date; what: string; who: string; where?: string; pluginId?: string }
+
+const pluginIdOf = (item: string) => item.startsWith("plugins/") ? item.slice("plugins/".length) : undefined;
 
 /** One row per thing a person would recognise: an installer that produced two items shows two rows. */
 function logRows(shield: GuiShield): Row[] {
-  const plugin = (item: string) => item.startsWith("plugins/") ? shield.plugins.find((entry) => entry.id === item.slice("plugins/".length)) : undefined;
   return shield.log.flatMap((entry, index): Row[] => {
     const at = new Date(entry.at);
     if (entry.kind === "blocked") return [{ key: `${index}`, at, what: entry.path !== undefined ? blockedLabel(entry.path) : entry.installer ?? "install", who: harnessName(entry.harness), where: entry.path }];
-    if (entry.kind === "installed") return entry.items.map((item) => ({ key: `${index}-${item}`, at, what: itemLabel(item), who: INSTALLER_LABEL[entry.installer], plugin: plugin(item) }));
-    return [{ key: `${index}`, at, what: itemLabel(entry.item), who: "found at sync", where: entry.path, plugin: plugin(entry.item) }];
+    if (entry.kind === "installed") return entry.items.map((item) => ({ key: `${index}-${item}`, at, what: itemLabel(item), who: INSTALLER_LABEL[entry.installer], pluginId: pluginIdOf(item) }));
+    return [{ key: `${index}`, at, what: itemLabel(entry.item), who: "found at sync", where: entry.path, pluginId: pluginIdOf(entry.item) }];
   });
 }
 
@@ -81,8 +82,10 @@ function Fold({ show, reduced, children }: { show: boolean; reduced: boolean; ch
   );
 }
 
-function Outcome({ plugin, onReview }: { plugin: GuiShieldPlugin | undefined; onReview: (plugin: GuiShieldPlugin) => void }) {
-  const outcome = plugin === undefined ? null : plugin.excluded ? "Kept off" : plugin.reviewed ? "Approved" : "review";
+/** A plugin row's state: kept off (excluded here, so the folder loader no longer lists it), approved, or waiting. */
+function Outcome({ pluginId, shield, onReview }: { pluginId: string | undefined; shield: GuiShield; onReview: (plugin: GuiShieldPlugin) => void }) {
+  const plugin = pluginId === undefined ? undefined : shield.plugins.find((entry) => entry.id === pluginId);
+  const outcome = pluginId !== undefined && shield.status.excludedPlugins.includes(pluginId) ? "Kept off" : plugin === undefined ? null : plugin.reviewed ? "Approved" : "review";
   return (
     <AnimatePresence mode="wait" initial={false}>
       {outcome === "review" ? (
@@ -96,7 +99,7 @@ function Outcome({ plugin, onReview }: { plugin: GuiShieldPlugin | undefined; on
   );
 }
 
-function LogRow({ row, index, reduced, onReview }: { row: Row; index: number; reduced: boolean; onReview: (plugin: GuiShieldPlugin) => void }) {
+function LogRow({ row, index, reduced, shield, onReview }: { row: Row; index: number; reduced: boolean; shield: GuiShield; onReview: (plugin: GuiShieldPlugin) => void }) {
   return (
     <motion.li layout={reduced ? false : "position"}
       initial={{ opacity: 0, transform: reduced ? "none" : "translateY(4px)" }}
@@ -108,7 +111,7 @@ function LogRow({ row, index, reduced, onReview }: { row: Row; index: number; re
         <p className="text-base"><span className="font-medium">{row.what}</span> <span className="text-sm text-muted-foreground">{row.who}</span></p>
         {row.where !== undefined && <Mono className="truncate text-sm text-faint">{row.where}</Mono>}
       </div>
-      <Outcome plugin={row.plugin} onReview={onReview} />
+      <Outcome pluginId={row.pluginId} shield={shield} onReview={onReview} />
     </motion.li>
   );
 }
@@ -146,14 +149,20 @@ export function ShieldView() {
   const busy = ws.shield.action.loading;
   if (shield === null) return <PageHeader crumbs={["Shield"]} />;
   const { status } = shield;
-  const pending = shield.plugins.filter((plugin) => !plugin.reviewed && !plugin.excluded);
+  const pending = shield.plugins.filter((plugin) => !plugin.reviewed);
   const rows: Row[] = filter === "all" ? logRows(shield)
-    : pending.map((plugin) => ({ key: plugin.id, what: `plugin ${plugin.id}`, who: plugin.harnesses.map(harnessName).join(", "), plugin }));
-  const dayOf = (row: Row) => row.at === undefined ? "" : dayLabel(row.at);
-  const days = [...new Set(rows.map(dayOf))];
+    : pending.map((plugin) => ({ key: plugin.id, what: `plugin ${plugin.id}`, who: plugin.harnesses.map(harnessName).join(", "), pluginId: plugin.id }));
+  // Group in one pass; a Map keeps days in first-seen order, which is newest first.
+  const groups = new Map<string, Row[]>();
+  for (const row of rows) {
+    const day = row.at === undefined ? "" : dayLabel(row.at);
+    groups.set(day, [...(groups.get(day) ?? []), row]);
+  }
   const listed = ws.harnesses.filter((harness) => harness.listed && !harness.excluded);
   const hooked = (id: HarnessId) => SURFACE_SUPPORT[id].includes("hooks");
-  const covered = listed.filter((harness) => status.enabled && status.projected && hooked(harness.id)).length;
+  /** ok: hooked and projected. warn: hooked, waiting for a sync. off: Shield off, or no hook support. */
+  const protection = (id: HarnessId) => !status.enabled || !hooked(id) ? "off" : status.projected ? "ok" : "warn";
+  const covered = listed.filter((harness) => protection(harness.id) === "ok").length;
   const decide = async (plugin: GuiShieldPlugin, approve: boolean) => {
     const done = await ws.shield.run(approve ? { action: "review", id: plugin.id, digest: plugin.digest } : { action: "exclude", id: plugin.id });
     if (done) setReviewing(null);
@@ -200,13 +209,13 @@ export function ShieldView() {
             {rows.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">{filter === "all" ? "Nothing caught in the last 30 days." : "Nothing to review."}</p>}
             <div className="grid gap-4" data-tour="shield-log">
               <AnimatePresence initial={false} mode="popLayout">
-                {days.map((day) => (
+                {[...groups].map(([day, dayRows]) => (
                   <motion.section key={`${filter}-${day}`} layout={reduced ? false : "position"} exit={{ opacity: 0, transition: EXIT }} aria-label={day || "Needs review"}>
                     {filter === "all" && <h3 className="pb-1 text-sm text-faint">{day}</h3>}
                     <ul className="grid divide-y divide-border/70">
                       <AnimatePresence initial={false} mode="popLayout">
-                        {rows.filter((row) => dayOf(row) === day).map((row, index) => (
-                          <LogRow key={`${filter}-${row.key}`} row={row} index={index} reduced={reduced} onReview={setReviewing} />
+                        {dayRows.map((row, index) => (
+                          <LogRow key={`${filter}-${row.key}`} row={row} index={index} reduced={reduced} shield={shield} onReview={setReviewing} />
                         ))}
                       </AnimatePresence>
                     </ul>
@@ -221,8 +230,8 @@ export function ShieldView() {
               <div className="flex items-baseline justify-between"><h2 id="shield-harnesses" className="text-sm font-semibold">Harnesses</h2><span className="text-sm text-muted-foreground tabular-nums">{covered} of {listed.length}</span></div>
               <ul className="grid">
                 {listed.map((harness) => {
-                  const kind = !status.enabled ? "off" : !hooked(harness.id) ? "off" : status.projected ? "ok" : "warn";
-                  const note = !status.enabled ? null : !hooked(harness.id) ? "No hook support. Sync moves strays." : status.projected ? null : "Protected after the next sync.";
+                  const kind = protection(harness.id);
+                  const note = kind === "warn" ? "Protected after the next sync." : status.enabled && kind === "off" ? "No hook support. Sync moves strays." : null;
                   return (
                     <li key={harness.id} className="grid py-1.5">
                       <span className="flex items-center gap-2 text-base">
