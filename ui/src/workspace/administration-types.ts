@@ -1,3 +1,4 @@
+import type { FleetUpdate } from "../../../src/domain/fleet-update";
 import type { Schema } from "effect";
 import type { UpdateLifecycle } from "./live/self-update";
 import type { GuiAgentPolicy, GuiInstallerMethod, GuiSourceServiceStatus, GuiSelfUpdateCheck, GuiSelfUpdateStatus, GuiSelfUpdateProgress } from "../../../src/gui/contract/administration";
@@ -56,6 +57,7 @@ export interface SetupJournal {
 }
 
 export interface AdministrationSlice {
+  fleet: (AdministrationResource<FleetUpdate> & { start: (canary: string) => void; stop: () => void }) | null;
   service: AdministrationResource<typeof GuiSourceServiceStatus.Type> & {
     since?: string;
     lingerMarked?: boolean;

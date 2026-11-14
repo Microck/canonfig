@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+import { prepareFleetSync, finishFleetSync, restartFleetSync } from "../runtime/follower-fleet-update.ts";
 import { Effect, Option, Schema } from "effect";
 import type { MachineState } from "../machine/machine-state.service.ts";
 
@@ -29,7 +31,7 @@ import {
   exitCodeForFailure,
   type CliExitCode as CliExitCodeValue,
 } from "./exit-codes.ts";
-import { FollowerCommands } from "./follower-commands.ts";
+import { FollowerCommands, type SynchronizationExecution } from "./follower-commands.ts";
 import {
   renderCliResult,
   renderUsageFailure,
@@ -79,6 +81,9 @@ export type CliCommand =
     readonly timeoutMilliseconds: number;
   }
   | { readonly _tag: "SourceRevoke"; readonly follower: typeof FollowerId.Type }
+  | { readonly _tag: "SourceUpdate"; readonly canary: typeof FollowerId.Type; readonly apply: boolean }
+  | { readonly _tag: "SourceUpdateStatus" }
+  | { readonly _tag: "SourceUpdateStop"; readonly apply: boolean }
   | {
     readonly _tag: "FollowerEnroll";
     readonly invitation: EnrollmentInvitationGrant;
@@ -202,7 +207,7 @@ export type CliOutcome =
 export interface CliIo {
   readonly writeStdout: (text: string) => void;
   readonly writeStderr: (text: string) => void;
-  readonly setExitCode: (exitCode: CliExitCodeValue) => void;
+  readonly setExitCode: (exitCode: number) => void;
 }
 
 interface Options {
@@ -600,6 +605,17 @@ const evaluateSourceCommand = (
     const options = parseOptions(rest, new Set(["--reviewer"]), new Set());
     if (options.positionals.length > 0) return invalid("source publish accepts only --reviewer");
     return command({ _tag: "SourcePublish", reviewer: one(options, "--reviewer", true)! }, format);
+  }
+  if (action === "update") {
+    const options = parseOptions(rest, new Set(["--canary"]), new Set(["--apply"]));
+    const subcommand = options.positionals[0];
+    const apply = options.switches.has("--apply");
+    if (options.positionals.length > 1) return invalid("source update accepts only status or stop");
+    if (subcommand === "status" && !apply && one(options, "--canary") === undefined) return command({ _tag: "SourceUpdateStatus" }, format);
+    if (subcommand === "stop" && one(options, "--canary") === undefined) return command({ _tag: "SourceUpdateStop", apply }, format);
+    if (subcommand !== undefined) return invalid("Use source update --canary <follower-id> [--apply], status, or stop [--apply]");
+    const canary = decodeOption(Schema.decodeUnknownOption(FollowerId), one(options, "--canary", true)!, "canary follower id");
+    return command({ _tag: "SourceUpdate", canary, apply }, format);
   }
   if (action === "serve") {
     const options = parseOptions(rest, new Set(["--host", "--port"]), new Set());
@@ -1055,6 +1071,9 @@ export const commandName = (value: CliCommand): string => {
     case "SourceServiceRemove": return "source.service.remove";
     case "SourceInvite": return "source.invite";
     case "SourceRevoke": return "source.revoke";
+    case "SourceUpdate": return "source.update";
+    case "SourceUpdateStatus": return "source.update.status";
+    case "SourceUpdateStop": return "source.update.stop";
     case "FollowerEnroll": return "follower.enroll";
     case "FollowerUnenroll": return "follower.unenroll";
     case "Synchronize": return `sync.${value.mode}`;
@@ -1090,10 +1109,11 @@ export const commandName = (value: CliCommand): string => {
 
 const executeCommand = Effect.fn("Cli.executeCommand")(function*(
   value: Exclude<CliCommand, { readonly _tag: "Ui" }>,
+  executeSynchronization?: SynchronizationExecution<MachineState | StateRepository>,
 ): Effect.fn.Return<
   CliPayload,
   CliCommandFailure,
-  SourceCommands | FollowerCommands | SetupCommands
+  SourceCommands | FollowerCommands | SetupCommands | MachineState | StateRepository
 > {
   const source = yield* SourceCommands;
   const follower = yield* FollowerCommands;
@@ -1117,6 +1137,9 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
         timeoutMilliseconds: value.timeoutMilliseconds,
       });
     case "SourceRevoke": return yield* source.revoke(value.follower);
+    case "SourceUpdate": return yield* source.startFleetUpdate({ canary: value.canary, apply: value.apply });
+    case "SourceUpdateStatus": return yield* source.fleetStatus();
+    case "SourceUpdateStop": return yield* source.stopFleetUpdate(value.apply);
     case "FollowerEnroll":
       return yield* follower.enroll({
         invitation: value.invitation,
@@ -1132,7 +1155,7 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
         scheduled: value.scheduled,
         noBackup: value.noBackup,
         reviewLocal: value.reviewLocal,
-      });
+      }, executeSynchronization);
     case "Overlays": return yield* follower.overlays({ change: value.change });
     case "Restore": return yield* follower.restore({ snapshot: value.snapshot });
     case "Export":
@@ -1194,7 +1217,7 @@ export const runCli = Effect.fn("runCli")(function*(
   io: CliIo,
   lease?: ManagedCommandLease,
 ): Effect.fn.Return<
-  CliExitCodeValue,
+  number,
   never,
   SourceCommands | FollowerCommands | SetupCommands | GuiQueries | MachineState | StateRepository
 > {
@@ -1219,8 +1242,23 @@ export const runCli = Effect.fn("runCli")(function*(
   const showsTransferProgress = outcome.format === "human"
     && (outcome.command._tag === "Recover"
       || (outcome.command._tag === "Synchronize" && outcome.command.scheduled !== true));
-  const execution: Effect.Effect<CliPayload, CliCommandFailure, SourceCommands | FollowerCommands | SetupCommands | GuiQueries | MachineState | StateRepository> =
-    outcome.command._tag === "Ui" ? runGui(outcome.command, io, lease) : executeCommand(outcome.command);
+  let restart = false;
+  const root = fileURLToPath(new URL("../../", import.meta.url));
+  const execution: Effect.Effect<CliPayload, CliCommandFailure, SourceCommands | FollowerCommands | SetupCommands | GuiQueries | MachineState | StateRepository> = Effect.gen(function*() {
+    if (outcome.command._tag === "Ui") return yield* runGui(outcome.command, io, lease);
+    if (outcome.command._tag !== "Synchronize" || outcome.command.mode !== "apply" || lease === undefined) {
+      return yield* executeCommand(outcome.command);
+    }
+    // Scheduled invocation bookkeeping must include failed checks, not just the file run.
+    return yield* executeCommand(outcome.command, (synchronize) => Effect.gen(function*() {
+      restart = yield* prepareFleetSync(root, lease);
+      if (restart) return null;
+      return yield* synchronize.pipe(Effect.matchEffect({
+        onSuccess: (data) => finishFleetSync(true).pipe(Effect.as(data)),
+        onFailure: (error) => finishFleetSync(false).pipe(Effect.andThen(Effect.fail(error))),
+      }));
+    }));
+  });
   const result = yield* (showsTransferProgress
     ? execution.pipe(
       Effect.provideService(BlobTransferProgress, humanTransferProgress(io.writeStderr)),
@@ -1241,6 +1279,14 @@ export const runCli = Effect.fn("runCli")(function*(
       }),
     }),
   );
+  if (restart && result.exitCode === CliExitCode.success) {
+    const exitCode = yield* restartFleetSync(root, arguments_).pipe(Effect.catch((error) => Effect.sync(() => {
+      io.writeStderr(renderCliResult({ command: name, message: error.message, exitCode: CliExitCode.humanActionRequired }, outcome.format));
+      return CliExitCode.humanActionRequired;
+    })));
+    io.setExitCode(exitCode);
+    return exitCode;
+  }
   yield* Effect.sync(() => {
     const rendered = renderCliResult(result, outcome.format);
     const quietScheduledSuccess = result.exitCode === CliExitCode.success

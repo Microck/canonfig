@@ -96,15 +96,33 @@ describe("self-update policy and package activation",()=>{
   expect(()=>disable(f.root)).toThrow("Cannot disable");
   expect(readFileSync(path,"utf8")).toBe(record);
  });
- it("registers its own lease after enabling and removes it when disabling",async()=>{
-  const f=fixture();const lease=managedCommandLease(f.root);const readers=join(updateDirectory(f.root),"readers");
+ it("keeps command coordination before enabling and after disabling standalone updates",async()=>{
+  const f=fixture();const lease=managedCommandLease(f.root,f.home);const readers=join(updateDirectory(f.root),"readers");
   try {
+   expect(readdirSync(readers)).toHaveLength(1);
    await lease.selfUpdate(()=>enable(f.root,f.npmCli,true,f.runner,f.home),()=>true);
    expect(readdirSync(readers)).toHaveLength(1);
    await lease.selfUpdate(async()=>disable(f.root),()=>true);
-   expect(readdirSync(readers)).toEqual([]);
+   expect(readdirSync(readers)).toHaveLength(1);
    expect(existsSync(join(updateDirectory(f.root),"settings.json"))).toBe(false);
    expect(lease.suspended).toBe(false);
+  } finally {lease.close();}
+ });
+ it.each(["never enabled", "disabled"])("activates fleet releases while standalone updates are %s without bypassing active commands",async(state)=>{
+  const f=fixture();
+  if(state==="disabled") { await enable(f.root,f.npmCli,true,f.runner,f.home); disable(f.root); }
+  const lease=managedCommandLease(f.root,f.home);
+  const target={version:"4.2.1",stateFormat:7,prepare:async()=>"verified-fixture.tgz",confirmAdmission:async()=>{}};
+  const runner:Runner=(input,signal)=>input.args[1]==="self-update"&&input.args[2]==="preflight"
+    ? Promise.resolve(JSON.stringify({data:{version:"4.2.1",stateFormat:7}})) : f.runner(input,signal);
+  try {
+   expect((await update(f.root,true,target,runner,undefined,f.home)).status).toBe("deferred");
+   expect(installation(f.root,f.home).version).toBe("4.2.0");
+   expect(f.calls.some(args=>args[1]==="install")).toBe(false);
+   expect((await lease.selfUpdate(()=>update(f.root,true,target,runner,undefined,f.home),value=>value.status!=="updated")).status).toBe("updated");
+   expect(installation(f.root,f.home).version).toBe("4.2.1");
+   expect(existsSync(join(updateDirectory(f.root),"settings.json"))).toBe(false);
+   expect(lease.suspended).toBe(true);
   } finally {lease.close();}
  });
  it("suspends only its own reader and reacquires after a deferred update or failure",async()=>{

@@ -1,3 +1,4 @@
+import { FleetPoll, type FleetReport } from "../domain/fleet-update.ts";
 import { defaultMaximumMetadataBytes } from "../domain/transport-limits.ts";
 import {
   createHash,
@@ -193,9 +194,10 @@ const requestJson = (
   endpoint: URL,
   path: string,
   certificate: PinnedCertificate,
-  body?: EnrollFollowerRequest | undefined,
+  body?: EnrollFollowerRequest | FleetReport | undefined,
   authorization?: Redacted.Redacted<string> | undefined,
   timeoutMilliseconds = defaultTimeoutMilliseconds,
+  versionPolicy: "paired" | "fleet" = "paired",
 ): Effect.Effect<JsonResponse, EnrollmentTransportError | SourceVersionMismatchError> =>
   Effect.tryPromise({
     try: () =>
@@ -225,7 +227,7 @@ const requestJson = (
           headers,
         }, (response) => {
           const sourceVersion = announcedVersion(response.headers[canonfigVersionHeader]);
-          if (!peerVersionCompatible(sourceVersion)) {
+          if (versionPolicy === "paired" && !peerVersionCompatible(sourceVersion)) {
             rejectResponse(sourceVersionMismatch(sourceVersion));
             request.destroy();
             return;
@@ -1041,6 +1043,18 @@ const transportContext = (
     );
     return { endpoint, certificate, credential };
   });
+
+/** Fleet control has its own signed protocol, independent of profile release skew. */
+export const requestFleetUpdate = (input: FollowerTransportInput, report?: FleetReport) => Effect.gen(function*() {
+  const context = yield* transportContext(input);
+  const response = yield* requestJson(report === undefined ? "GET" : "POST", context.endpoint,
+    report === undefined ? "/v1/fleet-update" : "/v1/fleet-update/report", context.certificate,
+    report, context.credential, input.timeoutMilliseconds, "fleet");
+  if (response.status !== 200) return yield* wireError(response);
+  if (report !== undefined) return { directive: null };
+  return yield* Schema.decodeUnknownEffect(FleetPoll, { onExcessProperty: "error" })(response.body).pipe(
+    Effect.mapError(() => new TransportMalformedResponseError({ operation: "read Fleet Update", message: "The Source returned an invalid Fleet Update response" })));
+});
 
 const transportFailure = (
   response: BinaryResponse,

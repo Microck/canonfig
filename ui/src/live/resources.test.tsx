@@ -37,7 +37,7 @@ function ResourceProbe() {
   </div>;
 }
 
-GlobalRegistrator.register({ url: "http://localhost/source/overview" });
+GlobalRegistrator.register({ url: "http://localhost/source/overview", settings: { device: { prefersReducedMotion: "reduce" } } });
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 // Workspace controls register DOM listeners at import time, after the test window exists.
 const { LiveWorkspaceProvider } = await import("../workspace/live-provider");
@@ -190,6 +190,8 @@ it("self-update offers a same-major minor, preserves major notices and pairing w
     "/api/session": { role: "source", machineName: "Update fixture", folderPath: "/tmp/update-fixture", version: "7.1.0" },
     "/api/status": { machineRole: { role: "source" }, lifecycle: {}, tunnel: null },
     "/api/self-update": { enabled: true, pending: false, platform: "linux", settings: { npmCli: "/tmp/update-fixture/npm/bin/npm-cli.js" } },
+    "/api/fleet-update": null,
+    "/api/machines": { followers: [], invitations: [] },
     "/api/self-update/check": { current: "7.1.0", candidate: "7.1.0", status: "available", detail },
     "/api/self-update/apply": { id: "update-operation" },
   };

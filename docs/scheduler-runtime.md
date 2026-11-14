@@ -7,6 +7,10 @@ shim, use `/usr/bin/env`, search PATH, or copy interactive Node flags. Only the
 native job passes `--scheduled`, which keys the unattended-run evidence, so a
 manual `--no-input` run cannot be mistaken for a scheduler fire.
 
+The scheduled invocation starts before CLI Fleet Update checks and includes
+their outcome. An unavailable Source or refused update still leaves a failed
+invocation for `status` and `doctor`; it is not reported as a job that never ran.
+
 When the running Node is a Homebrew Cellar path such as
 `<prefix>/Cellar/node@24/24.16.0/bin/node`, the job names the stable
 `<prefix>/opt/<formula>/bin/node` link instead, provided that link resolves to

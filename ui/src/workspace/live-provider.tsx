@@ -32,7 +32,7 @@ export function livePageResources(session: GuiSession, route: WorkspaceRoute): r
     machine: ["/api/enrollment", "/api/tunnel", "/api/local/items"],
     agent: ["/api/agent/policy", "/api/agent/harness"],
     installers: ["/api/installers"],
-    version: ["/api/self-update"],
+    version: session.role === "source" ? ["/api/self-update", "/api/fleet-update", "/api/machines"] : ["/api/self-update"],
     setup: ["/api/setup"],
   };
   return [...shared, ...(pages[route.view] ?? [])];

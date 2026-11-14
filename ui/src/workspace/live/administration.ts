@@ -1,3 +1,5 @@
+import { Schema } from "effect";
+import { FleetUpdate } from "../../../../src/domain/fleet-update";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   GuiAgentHarness, GuiAgentHarnessRead, GuiAgentPolicy, GuiDoctorReport, GuiInstallerCheck, GuiInstallerRemoval, GuiInstallerSet, GuiInstallers,
@@ -78,6 +80,8 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
   const configured = session.role !== "unconfigured";
   const sourceLoad = useCallback((signal: AbortSignal) => backend.request("/api/source-service", GuiSourceServiceReport, signal), [backend]);
   const service = useAdministrationResource(session.role === "source" ? sourceLoad : null, paths.includes("/api/source-service"));
+  const fleetLoad = useCallback((signal: AbortSignal) => backend.request("/api/fleet-update", Schema.NullOr(FleetUpdate), signal), [backend]);
+  const fleet = useAdministrationResource(session.role === "source" ? fleetLoad : null, paths.includes("/api/fleet-update"));
   // Agent policy and harness exist only on an enrolled Follower Machine.
   const follower = session.role === "follower";
   const policyLoad = useCallback((signal: AbortSignal) => backend.request("/api/agent/policy", GuiAgentPolicy, signal), [backend]);
@@ -168,6 +172,17 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
 
 
   return {
+    fleet: session.role === "source" ? {
+      ...fleet,
+      start: (canary) => { void fleet.run(async (signal) => {
+        const updated = await backend.request("/api/fleet-update", FleetUpdate, signal, { method: "POST", body: { canary, apply: true } });
+        if (!signal.aborted) fleet.setData(updated);
+      }); },
+      stop: () => { void fleet.run(async (signal) => {
+        const updated = await backend.request("/api/fleet-update/stop", Schema.NullOr(FleetUpdate), signal, { method: "POST", body: { apply: true } });
+        if (!signal.aborted) fleet.setData(updated);
+      }); },
+    } : null,
     service: {
       data: service.data?.report ?? null, loading: service.loading, busy: service.busy,
       // A reported service state (drifted, not serving, ...) is not a failed request: ServiceNotice shows it once

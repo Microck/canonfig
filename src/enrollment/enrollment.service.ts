@@ -1,5 +1,6 @@
 import { Context, type Effect, type Scope } from "effect";
 
+import type { FleetSource } from "./fleet-update.ts";
 import type { FollowerId, GroupName } from "../domain/brand.ts";
 import type { FollowerIdentity } from "../domain/identity.ts";
 import type { EnrollmentError } from "./enrollment.errors.ts";
@@ -17,7 +18,7 @@ import type {
   SourceEnrollmentMaterial,
 } from "./enrollment.types.ts";
 
-export class Enrollment extends Context.Service<Enrollment, {
+export class Enrollment extends Context.Service<Enrollment, FleetSource & {
   /** Exclusively own Source serving and recover abandoned prepares until scope close. */
   readonly startServerSession: () => Effect.Effect<void, EnrollmentError, Scope.Scope>;
   readonly initializeSource: (

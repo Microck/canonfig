@@ -111,3 +111,7 @@ _Avoid_: Baseline, cached resource
 **Agent Task**:
 A bounded request that gives a Configuration Agent the desired outcome, observed evidence, allowed actions, and required proof of completion.
 _Avoid_: Prompt, autonomous job
+
+**Fleet Update**:
+A Source Machine's staged release change that automatically brings its enrolled Follower Machines to the same Canonfig version, advancing only after each follower proves Convergence.
+_Avoid_: Profile update, configuration sync, remote install
