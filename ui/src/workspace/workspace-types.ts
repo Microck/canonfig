@@ -1,4 +1,5 @@
 import type { FollowerLive } from "./follower-types";
+import type { useLiveBackups } from "./live/backups";
 import type { Dispatch, SetStateAction } from "react";
 import type { AppendLocalCategory, Follower, FollowerState, Harness, HarnessId, ItemCategory, KeptSurface, LocalCategory, LocalItem, Resource, Revision, SkillSource, Snapshot, SurfaceCategory, UpstreamSkill } from "@/shared/metadata";
 import type { GuiRequestError, GuiSession, GuiStatus } from "../gui-client";
@@ -388,4 +389,5 @@ export interface FollowerSlice {
 /** The single store contract consumed by all workspace screens. */
 export interface Workspace extends OverviewSlice, ProfileSlice, MachinesSlice, FollowerSlice {
   admin: AdministrationSlice;
+  backupLive?: ReturnType<typeof useLiveBackups>;
 }

@@ -76,12 +76,12 @@ export function navItem(role: WorkspaceRole, view: View): NavItem | undefined {
   return navigation.main.find((item) => item.view === view) ?? navigation.settings.find((item) => item.view === view);
 }
 
-/** The session role chooses routes; demo-only backups never enter Source live navigation. */
+/** The session role chooses pages; installer and setup controls also belong to a live Follower. */
 export function navigationForRole(role: WorkspaceRole, live = !DEMO) {
   const navigation = NAV[role];
   if (!live) return navigation;
   return {
-    main: navigation.main.filter((item) => role !== "source" || item.view !== "backups"),
+    main: navigation.main,
     settings: role === "follower"
       ? [...navigation.settings, ...SOURCE_SETTINGS.filter((item) => item.view === "installers" || item.view === "setup")]
       : navigation.settings,

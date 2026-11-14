@@ -10,6 +10,7 @@ import { useWorkspace } from "./store";
 import { AnimatedRow, Body, EmptyState, ListHead, ListRow, PageHeader, RowPresence } from "./kit";
 import { ConfirmDialog } from "./settings";
 import { FollowerOperationEvidence } from "./follower-evidence";
+import { PortableBackups } from "./backups";
 
 
 /** What Canonfig does with a harness on this machine, from the three facts `canonfig harnesses` reports. */
@@ -212,6 +213,9 @@ export function BackupsView() {
     <>
       <PageHeader crumbs={["Backups"]} actions={ws.followerLive && <Button size="sm" variant="outline" onClick={ws.reload}>Reload</Button>} />
       <Body>
+        {ws.backupLive && <PortableBackups live={ws.backupLive} />}
+        {(ws.role === "follower" || !ws.backupLive) && <>
+        {ws.backupLive && <h2 className="px-[18px] pt-4 font-medium">Takeover snapshots</h2>}
         <p data-tour="backups-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
           Canonfig keeps the first snapshot and the {RECENT_KEPT} most recent.
         </p>
@@ -266,6 +270,7 @@ export function BackupsView() {
           </>
         )}
         {ws.followerLive?.operationName === "Restore backup" && <FollowerOperationEvidence />}
+        </>}
       </Body>
       <ConfirmDialog
         open={restoring !== null}

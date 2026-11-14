@@ -36,6 +36,38 @@ export const uiUsage = "ui [--port <n>] [--host <address>] [--origin <https-url>
 
 export const helpGroups: ReadonlyArray<HelpGroup> = [
   {
+    title: "Backups",
+    areas: ["backup"],
+    usage: [
+      "backup status",
+      "backup configure <name> --policy <policy.json> [--allow-credentials]",
+      "backup password <alias> --stdin",
+      "backup run <name>",
+      "backup owners <name>",
+      "backup list <name> [--owner <owner>]",
+      "backup verify|drill <name> [<snapshot>] [--owner <owner>] [--expect-key <fingerprint>]",
+      "backup restore <name> [<snapshot>] --to <new-home> [--owner <owner>] [--expect-key <fingerprint>] [--recover-credentials]",
+      "backup restore <name> [<snapshot>] --apply [--dry-run] [--replace] [--owner <owner>] [--expect-key <fingerprint>]",
+      "backup prune <name> [--apply]",
+      "backup disable|enable <name>",
+      "backup allow-credentials|deny-credentials <name>",
+      "backup schedule",
+    ],
+    notes: [
+      "Policies select local, Git or named rclone destinations; compression is fast, balanced, small or max.",
+      "Local policy is in ~/.canonfig/backups.json. Signed backupPolicies in canonfig.jsonc reach Followers.",
+      "Passwords are local credential aliases. Pipe a password through stdin, never pass it as an argument.",
+      "Losing the password loses the encrypted backups. Keep a separate recovery copy.",
+      "Full harness histories, Source identity and shared secrets require encryption. Credential capture also needs local consent.",
+      "configure and schedule reconcile native backup and restore-drill jobs, never the synchronization job.",
+      "run reads back the stored archive before applying retention. prune previews deletion unless --apply is supplied.",
+      "restore --to writes only a new private HOME. --recover-credentials imports identity and secrets into new native secure-store references.",
+      "restore --apply uses the existing Canonical Folder import and Projection path; harness histories are not applied live.",
+      "verify checks every file and signature. drill also restores into disposable private storage. The latest snapshot is the default.",
+      "Use owners and --owner to recover another machine without adopting its retention namespace.",
+    ],
+  },
+  {
     title: "Browser interface",
     areas: ["ui"],
     usage: [uiUsage],

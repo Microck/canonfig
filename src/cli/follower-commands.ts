@@ -1,3 +1,4 @@
+import type { BackupRequest } from "../backup/backup.types.ts";
 import { Context, type Effect } from "effect";
 
 import type { AgentPolicy } from "../domain/identity.ts";
@@ -96,6 +97,7 @@ export interface TunnelStartCommandInput {
 }
 
 export interface FollowerCommandsService {
+  readonly backup: (request: BackupRequest) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly enroll: (
     input: FollowerEnrollInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;

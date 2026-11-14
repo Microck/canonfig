@@ -1,3 +1,5 @@
+import { backupCommand } from "../backup/backup.ts";
+import { reconcileBackupSchedules } from "../backup/backup-schedule.ts";
 import { runtimeCredentialPolicy } from "./credential-policy.ts";
 import { runtimeStateLayer } from "./state-layer.ts";
 import {
@@ -831,6 +833,13 @@ const followerCommandsLayer = (
       });
 
     const service: FollowerCommandsService = {
+      backup: request => mapFailure(backupCommand({ statePath,
+        sourceSigner: loadSourceSigner(enrollment).pipe(Effect.map(({ archiveSigner }) => archiveSigner)),
+        environment: name => process.env[name],
+      }, request).pipe(
+        Effect.provideService(StateRepository, repository), Effect.provideService(MachineState, machine),
+        Effect.provideService(Synchronization, synchronization),
+      )).pipe(Effect.map(payload)),
       enroll: (input) =>
         Effect.gen(function*() {
             // A Source's folder is what it authors and publishes; enrolling
@@ -1226,6 +1235,10 @@ const followerCommandsLayer = (
                 message: `File synchronization completed, but shared-secret synchronization failed: ${error.message}`,
                 details: result,
               })),
+            ) : Effect.void), Effect.tap((completed) => input.mode === "apply" ? reconcileBackupSchedules(dirname(statePath)).pipe(
+              Effect.provideService(MachineState, machine),
+              Effect.mapError((error) => new CliCommandFailure({ category: commandFailure(error).category,
+                message: `File synchronization completed, but backup schedule reconciliation failed: ${commandFailure(error).message}`, details: completed })),
             ) : Effect.void), Effect.catch((error) => {
               const failed = scheduled ? mapFailure(repository.transitionScheduledInvocation({
                 ...identity, _tag: "Failed", at: new Date().toISOString(), reason: fireFailureReason(error),

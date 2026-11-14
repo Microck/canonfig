@@ -1,4 +1,4 @@
-import { createPublicKey, verify as verifySignature } from "node:crypto";
+import { createHash, createPublicKey, verify as verifySignature } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -34,6 +34,7 @@ import {
   listFolderFiles,
 } from "./folder.ts";
 import { TARGET_IDS } from "./model.ts";
+import { decodeTar, encodeTar } from "./archive-tar.ts";
 import {
   directoryResource,
   fileResource,
@@ -131,7 +132,7 @@ const MAXIMUM_ARCHIVE_BYTES = MAXIMUM_CONTENT_BYTES + MAXIMUM_FILES * 4096;
 /** The largest harness file export reads, as for takeover snapshots. */
 const MAXIMUM_HARNESS_FILE_BYTES = 8 * 1024 * 1024;
 
-const ManifestFile = Schema.Struct({
+export const ManifestFile = Schema.Struct({
   path: Schema.String,
   size: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   sha256: ContentDigest,
@@ -143,20 +144,20 @@ const ManifestFile = Schema.Struct({
   /** A shared harness file: the entry holds only these owned keys, not the whole file. */
   keys: Schema.optional(Schema.Array(Schema.String)),
 });
-type ManifestFile = typeof ManifestFile.Type;
+export type ManifestFile = typeof ManifestFile.Type;
 
 export const MachineRole = Schema.Literals(["source", "follower", "standalone"]);
 export type MachineRole = typeof MachineRole.Type;
 
-const ExportManifest = Schema.Struct({
+export const ExportManifest = Schema.Struct({
   format: Schema.Literal("canonfig-export"),
-  version: Schema.Literal(1),
+  version: Schema.Literal(2),
   canonfigVersion: Schema.String,
   createdAt: Timestamp,
   role: MachineRole,
   files: Schema.Array(ManifestFile),
 });
-type ExportManifest = typeof ExportManifest.Type;
+export type ExportManifest = typeof ExportManifest.Type;
 
 /**
  * `signature.json`: the Source's Ed25519 public key and its signature of
@@ -180,7 +181,7 @@ type ArchiveSignature = typeof ArchiveSignature.Type;
  * digest. The prefix keeps it from ever reading as a Profile Revision payload
  * (canonical JSON), which the same key signs.
  */
-const manifestSigningPayload = (manifestSha256: string): string => `canonfig-export-manifest:${manifestSha256}`;
+export const manifestSigningPayload = (manifestSha256: string): string => `canonfig-export-manifest:${manifestSha256}`;
 
 /** The Source's revision signer, with the public key an archive carries. */
 export interface ArchiveSigner {
@@ -193,7 +194,7 @@ export interface ArchiveSigner {
 export type ArchiveSignerError = CredentialStorageError | SourceCredentialMismatchError | PublicationSigningError;
 
 /** One archive entry with the manifest fields it carries besides its digest. */
-interface ArchiveFile {
+export interface ArchiveFile {
   readonly path: string;
   readonly content: Uint8Array;
   readonly mode: number;
@@ -210,7 +211,7 @@ interface ArchiveFile {
  * archive anywhere can neither escape the extraction directory nor lose a
  * file to a name the platform refuses.
  */
-const archivePathProblem = (value: string): string | undefined => {
+export const archivePathProblem = (value: string): string | undefined => {
   if (value.length === 0 || value.includes("\\") || value.startsWith("/") || /^[a-z]:/iu.test(value)) {
     return "is not a relative path with / separators";
   }
@@ -244,7 +245,7 @@ const byPath = (left: { readonly path: string }, right: { readonly path: string 
 const modeText = (mode: number): string => `0${(mode & 0o777).toString(8).padStart(3, "0")}`;
 
 /** Two paths that only differ in case or Unicode form become one file on macOS and Windows. */
-const caseCollision = (paths: ReadonlyArray<string>): string | undefined => {
+export const caseCollision = (paths: ReadonlyArray<string>): string | undefined => {
   const seen = new Map<string, string>();
   for (const path of paths) {
     const folded = path.normalize("NFC").toLowerCase();
@@ -257,159 +258,13 @@ const caseCollision = (paths: ReadonlyArray<string>): string | undefined => {
 
 // ── tar.gz ───────────────────────────────────────────────────────────────
 
-const writeOctal = (header: Buffer, offset: number, length: number, value: number): void => {
-  header.write(`${value.toString(8).padStart(length - 1, "0")}\0`, offset, length, "ascii");
+
+const encodeArchive = async (files: ReadonlyArray<ArchiveFile>): Promise<Uint8Array> => {
+  const parts: Array<Uint8Array> = [];
+  for await (const part of encodeTar(files.map(file => ({ ...file, size: file.content.length })))) parts.push(part);
+  return gzipSync(Buffer.concat(parts), { level: 9 });
 };
 
-const tarHeader = (name: string, size: number, mode: number, type: "0" | "x"): Buffer => {
-  const header = Buffer.alloc(512);
-  header.write(name, 0, 100, "utf8");
-  writeOctal(header, 100, 8, mode);
-  writeOctal(header, 108, 8, 0);
-  writeOctal(header, 116, 8, 0);
-  writeOctal(header, 124, 12, size);
-  // Every timestamp is 0, so equal input gives equal bytes.
-  writeOctal(header, 136, 12, 0);
-  header.fill(32, 148, 156);
-  header.write(type, 156, "ascii");
-  header.write("ustar\0", 257, "ascii");
-  header.write("00", 263, "ascii");
-  const checksum = header.reduce((sum, byte) => sum + byte, 0);
-  header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148, 8, "ascii");
-  return header;
-};
-
-const padded = (content: Uint8Array): ReadonlyArray<Buffer> =>
-  [Buffer.from(content), Buffer.alloc((512 - content.length % 512) % 512)];
-
-/**
- * A POSIX tar stream, gzip-compressed, of `files` in the given order. Each
- * entry carries its path in a PAX record, so UTF-8 and long paths are never
- * truncated; owner, group and times are 0.
- */
-const encodeArchive = (files: ReadonlyArray<ArchiveFile>): Uint8Array => {
-  const parts: Array<Buffer> = [];
-  for (const [index, file] of files.entries()) {
-    const payload = `path=${file.path}\n`;
-    // A PAX record's length counts its own decimal digits.
-    let length = Buffer.byteLength(payload) + 3;
-    while (length !== Buffer.byteLength(payload) + String(length).length + 1) {
-      length = Buffer.byteLength(payload) + String(length).length + 1;
-    }
-    const record = Buffer.from(`${length} ${payload}`);
-    parts.push(tarHeader(`PaxHeaders/${index}`, record.length, 0o644, "x"), ...padded(record));
-    parts.push(tarHeader(`file-${index}`, file.content.length, file.mode & 0o777, "0"), ...padded(file.content));
-  }
-  return gzipSync(Buffer.concat([...parts, Buffer.alloc(1024)]), { level: 9 });
-};
-
-interface TarEntry {
-  readonly path: string;
-  readonly mode: number;
-  readonly content: Uint8Array;
-}
-
-/** An octal header field, or undefined when it holds anything but octal digits. */
-const readOctal = (header: Buffer, offset: number, length: number): number | undefined => {
-  const text = header.subarray(offset, offset + length).toString("latin1").replace(/^ +/u, "").replace(/[\0 ]+$/u, "");
-  return /^[0-7]+$/u.test(text) ? Number.parseInt(text, 8) : undefined;
-};
-
-const entryKind = (type: string): string => {
-  switch (type) {
-    case "1": return "a hard link";
-    case "2": return "a symbolic link";
-    case "3": return "a character device";
-    case "4": return "a block device";
-    case "5": return "a directory";
-    case "6": return "a FIFO";
-    default: return `an entry of type '${type}'`;
-  }
-};
-
-/**
- * Parse an export's tar stream strictly: ustar headers with valid checksums,
- * regular files, and PAX records that carry only `path`. Links, devices,
- * directories and every other entry type are refused rather than skipped, so
- * nothing the manifest does not describe can ride along.
- */
-const decodeArchive = (path: string, compressed: Uint8Array): ReadonlyArray<TarEntry> => {
-  const fail = (message: string) => new ArchiveIntegrityError({ path, message });
-  let tar: Buffer;
-  try {
-    tar = gunzipSync(compressed, { maxOutputLength: MAXIMUM_ARCHIVE_BYTES });
-  } catch (error) {
-    throw fail(`is not a gzip-compressed tar archive of at most ${MAXIMUM_ARCHIVE_BYTES} bytes (${error instanceof Error ? error.message : String(error)})`);
-  }
-  const entries: Array<TarEntry> = [];
-  let offset = 0;
-  let paxPath: string | undefined;
-  for (;;) {
-    if (offset + 512 > tar.length) throw fail("ends before its end-of-archive marker");
-    const header = tar.subarray(offset, offset + 512);
-    if (header.every((byte) => byte === 0)) break;
-    let sum = 0;
-    for (let index = 0; index < 512; index += 1) sum += index >= 148 && index < 156 ? 32 : header[index]!;
-    if (readOctal(header, 148, 8) !== sum) throw fail(`has a damaged entry header at byte ${offset}`);
-    if (header.subarray(257, 263).toString("latin1") !== "ustar\0") throw fail("is not a POSIX tar archive");
-    const size = readOctal(header, 124, 12);
-    if (size === undefined) throw fail(`has an entry without a size at byte ${offset}`);
-    const start = offset + 512;
-    if (start + size > tar.length) throw fail("ends inside an entry");
-    const body = tar.subarray(start, start + size);
-    offset = start + Math.ceil(size / 512) * 512;
-    const type = String.fromCharCode(header[156]!);
-    if (type === "x") {
-      if (paxPath !== undefined) throw fail("has two extended headers in a row");
-      paxPath = paxPathOf(body, fail);
-      continue;
-    }
-    const name = paxPath ?? ustarName(header);
-    paxPath = undefined;
-    if (type !== "0" && type !== "\0") throw fail(`holds ${name}, ${entryKind(type)}; an export holds regular files only`);
-    const mode = readOctal(header, 100, 8);
-    if (mode === undefined || mode > 0o777) throw fail(`holds ${name} with a special or unreadable mode; an export holds plain permission bits only`);
-    entries.push({ path: name, mode, content: body });
-    if (entries.length > MAXIMUM_FILES + 1) throw fail(`holds more than ${MAXIMUM_FILES} files`);
-  }
-  if (paxPath !== undefined) throw fail("ends after an extended header with no entry");
-  // Only zero padding may follow the end-of-archive marker; entries there
-  // would ride along without the manifest describing them.
-  if (tar.subarray(offset).some((byte) => byte !== 0)) throw fail("holds data after its end-of-archive marker");
-  return entries;
-};
-
-const ustarName = (header: Buffer): string => {
-  const field = (offset: number, length: number) => {
-    const bytes = header.subarray(offset, offset + length);
-    const end = bytes.indexOf(0);
-    return bytes.subarray(0, end < 0 ? length : end).toString("utf8");
-  };
-  const prefix = field(345, 155);
-  const name = field(0, 100);
-  return prefix.length > 0 ? `${prefix}/${name}` : name;
-};
-
-/** The `path` of a PAX extended header; any other field is refused. */
-const paxPathOf = (body: Buffer, fail: (message: string) => ArchiveIntegrityError): string => {
-  let path: string | undefined;
-  let position = 0;
-  while (position < body.length) {
-    const space = body.indexOf(0x20, position);
-    const length = space < 0 ? Number.NaN : Number(body.subarray(position, space).toString("latin1"));
-    if (!Number.isSafeInteger(length) || length <= 0 || position + length > body.length || body[position + length - 1] !== 0x0a) {
-      throw fail("has a malformed extended header");
-    }
-    const record = body.subarray(space + 1, position + length - 1).toString("utf8");
-    const equals = record.indexOf("=");
-    const key = equals < 0 ? record : record.slice(0, equals);
-    if (key !== "path" || path !== undefined) throw fail(`has an extended header field '${key}'; an export records only paths there`);
-    path = record.slice(equals + 1);
-    position += length;
-  }
-  if (path === undefined) throw fail("has an extended header without a path");
-  return path;
-};
 
 // ── manifest verification ────────────────────────────────────────────────
 
@@ -436,7 +291,7 @@ export interface VerifiedArchive {
  * the key hashes to the fingerprint `signature.json` names and that its
  * Ed25519 signature of the manifest digest holds. Anything else refuses.
  */
-const signerOf = (content: Uint8Array, manifestSha256: string, fail: (message: string) => ArchiveIntegrityError): string => {
+export const signerOf = (content: Uint8Array, manifestSha256: string, fail: (message: string) => ArchiveIntegrityError): string => {
   let signature: ArchiveSignature;
   try {
     signature = Schema.decodeUnknownSync(ArchiveSignature)(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(content)));
@@ -463,73 +318,106 @@ const signerOf = (content: Uint8Array, manifestSha256: string, fail: (message: s
   return fingerprint;
 };
 
+/** Verify the canonical manifest and every streamed entry before a caller publishes its private staging tree. */
+export const verifyArchiveStream = async (input: {
+  readonly path: string;
+  readonly bytes: AsyncIterable<Uint8Array> | Iterable<Uint8Array>;
+  readonly maximumBytes: number;
+  readonly maximumFiles: number;
+  readonly consume: (file: ManifestFile, content: AsyncIterable<Uint8Array>) => Promise<void>;
+}) => {
+  const fail = (message: string) => new ArchiveIntegrityError({ path: input.path, message });
+  let manifest: ExportManifest | undefined;
+  let manifestSha256: ContentDigest | undefined;
+  let signer: string | undefined;
+  const listed = new Map<string, ManifestFile>();
+  const seen = new Set<string>();
+  let entryIndex = 0;
+  const metadata = async (content: AsyncIterable<Uint8Array>, size: number, maximum: number): Promise<Buffer> => {
+    if (size > maximum) throw fail("archive metadata exceeds its size limit");
+    const bytes = Buffer.alloc(size);
+    let offset = 0;
+    for await (const chunk of content) { bytes.set(chunk, offset); offset += chunk.length; }
+    return bytes;
+  };
+  await decodeTar(input.bytes, async (entry, content) => {
+    const index = entryIndex++;
+    if (index === 0) {
+      if (entry.path !== MANIFEST_PATH) throw fail(`does not start with ${MANIFEST_PATH}`);
+      const bytes = await metadata(content, entry.size, 64 * 1024 * 1024);
+      manifestSha256 = sha256BytesHex(bytes);
+      try {
+        manifest = Schema.decodeUnknownSync(ExportManifest)(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+      } catch { throw fail(`has an invalid ${MANIFEST_PATH}`); }
+      if (manifest.files.length > input.maximumFiles) throw fail("manifest exceeds the configured file count limit");
+      let total = 0;
+      for (const file of manifest.files) {
+        if (archivePathProblem(file.path) !== undefined || file.path === MANIFEST_PATH || file.path === SIGNATURE_PATH || listed.has(file.path)) {
+          throw fail("manifest holds an unsafe, reserved or duplicate path");
+        }
+        total += file.size;
+        if (total > input.maximumBytes) throw fail("manifest exceeds the configured content size limit");
+        listed.set(file.path, file);
+      }
+      if (caseCollision([...listed.keys()]) !== undefined) throw fail("manifest paths collide on a case-insensitive filesystem");
+      return;
+    }
+    if (entry.path === SIGNATURE_PATH && index === 1 && manifestSha256 !== undefined) {
+      signer = signerOf(await metadata(content, entry.size, 16 * 1024), manifestSha256, fail);
+      return;
+    }
+    const file = listed.get(entry.path);
+    if (file === undefined || seen.has(entry.path)) throw fail("archive holds an unlisted or duplicate entry");
+    if (file.size !== entry.size || file.mode !== modeText(entry.mode)) throw fail("archive entry size or permissions differ from the manifest");
+    seen.add(entry.path);
+    const digest = createHash("sha256");
+    const checked = (async function*() {
+      for await (const chunk of content) { digest.update(chunk); yield chunk; }
+    })();
+    await input.consume(file, checked);
+    if (digest.digest("hex") !== file.sha256) throw fail("archive entry does not match its manifest checksum");
+  }, { bytes: input.maximumBytes + input.maximumFiles * 4096 + 64 * 1024 * 1024, files: input.maximumFiles + 2 });
+  if (manifest === undefined || manifestSha256 === undefined || seen.size !== listed.size) throw fail("archive is missing its manifest or a listed entry");
+  if (manifest.role === "source" && signer === undefined) throw fail("Source archive has no signature");
+  return { manifest, manifestSha256, signer };
+};
+
 /**
  * Check an export before anything uses it: `manifest.json` comes first, a
  * `signature.json` after it must verify, and the manifest lists every other
  * entry exactly once with its size, SHA-256 and mode, and every entry sits
  * inside the allowlist. Any difference refuses the whole archive.
  */
-const verifyArchive = (path: string, bytes: Uint8Array): VerifiedArchive => {
+const verifyArchive = async (path: string, bytes: Uint8Array): Promise<VerifiedArchive> => {
   const fail = (message: string) => new ArchiveIntegrityError({ path, message });
-  const [first, ...rest] = decodeArchive(path, bytes);
-  if (first?.path !== MANIFEST_PATH) throw fail(`does not start with ${MANIFEST_PATH}, so it is not a Canonfig export`);
-  const manifestSha256 = sha256BytesHex(first.content);
-  const signer = rest[0]?.path === SIGNATURE_PATH ? signerOf(rest[0].content, manifestSha256, fail) : undefined;
-  const entries = signer === undefined ? rest : rest.slice(1);
-  let manifest: ExportManifest;
-  try {
-    manifest = Schema.decodeUnknownSync(ExportManifest)(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(first.content)));
-  } catch (error) {
-    throw fail(`has an unreadable ${MANIFEST_PATH}: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  const listed = new Map<string, ManifestFile>();
-  for (const file of manifest.files) {
-    const problem = archivePathProblem(file.path);
-    if (problem !== undefined) throw fail(`${MANIFEST_PATH} lists ${file.path}, which ${problem}`);
-    if (file.path === MANIFEST_PATH || listed.has(file.path)) throw fail(`${MANIFEST_PATH} lists ${file.path} twice`);
-    listed.set(file.path, file);
-  }
-  const collision = caseCollision([...listed.keys()]);
-  if (collision !== undefined) throw fail(`holds ${collision}, which differ only in case`);
-
   const folderFiles: Array<ArchivedFolderFile> = [];
   const harnessFiles: Array<ManifestFile> = [];
-  const seen = new Set<string>();
-  for (const entry of entries) {
-    if (entry.path === MANIFEST_PATH || entry.path === SIGNATURE_PATH || seen.has(entry.path)) throw fail(`holds ${entry.path} twice`);
-    seen.add(entry.path);
-    const file = listed.get(entry.path);
-    if (file === undefined) throw fail(`holds ${entry.path}, which ${MANIFEST_PATH} does not list`);
-    if (entry.content.length !== file.size || sha256BytesHex(entry.content) !== file.sha256) {
-      throw fail(`${entry.path} does not match its checksum in ${MANIFEST_PATH}; the archive was changed or damaged after export`);
-    }
-    if (modeText(entry.mode) !== file.mode) throw fail(`${entry.path} has mode ${modeText(entry.mode)}, but ${MANIFEST_PATH} records ${file.mode}`);
-    const segments = entry.path.split("/");
-    if (credentialFileName(segments.at(-1)!)) throw fail(`holds ${entry.path}, a credential file name; an export never holds one`);
-    if (entry.path.startsWith(FOLDER_PREFIX) && folderEntryOf(entry.path.slice(FOLDER_PREFIX.length)) !== undefined) {
-      folderFiles.push({ path: entry.path.slice(FOLDER_PREFIX.length), content: entry.content, mode: entry.mode });
-      continue;
-    }
-    // `harnesses/<harness>/<path below home>`, with the manifest naming the same harness.
-    const harness = entry.path.startsWith(HARNESS_PREFIX) && segments.length > 2 ? segments[1]! : undefined;
-    if (harness !== undefined && HARNESS_DIRECTORIES.has(harness) && file.harness === harness) {
-      harnessFiles.push(file);
-      continue;
-    }
-    throw fail(`holds ${entry.path}, which is outside what an export may hold (folder/<authored entry or local> and harnesses/<harness>/)`);
-  }
-  const missing = [...listed.keys()].find((listedPath) => !seen.has(listedPath));
-  if (missing !== undefined) throw fail(`${MANIFEST_PATH} lists ${missing}, which the archive does not hold`);
-  if (!folderFiles.some((file) => file.path === "canonfig.jsonc")) throw fail("holds no folder/canonfig.jsonc, so it is not a Canonfig export");
-  const { files: _files, ...summary } = manifest;
-  return {
-    manifest: summary,
-    manifestSha256,
-    archiveSha256: sha256BytesHex(bytes),
-    signer,
-    folderFiles,
-    harnessFiles,
-  };
+  const verified = await verifyArchiveStream({
+    path,
+    bytes: [gunzipSync(bytes, { maxOutputLength: MAXIMUM_ARCHIVE_BYTES })],
+    maximumBytes: MAXIMUM_CONTENT_BYTES,
+    maximumFiles: MAXIMUM_FILES,
+    consume: async (file, content) => {
+      const segments = file.path.split("/");
+      if (credentialFileName(segments.at(-1)!)) throw fail("credential files require encrypted backup recovery, not configuration import");
+      if (file.path.startsWith(FOLDER_PREFIX) && folderEntryOf(file.path.slice(FOLDER_PREFIX.length)) !== undefined) {
+        const parts: Array<Uint8Array> = [];
+        for await (const part of content) parts.push(part);
+        folderFiles.push({ path: file.path.slice(FOLDER_PREFIX.length), content: Buffer.concat(parts), mode: Number.parseInt(file.mode, 8) });
+        return;
+      }
+      const harness = file.path.startsWith(HARNESS_PREFIX) && segments.length > 2 ? segments[1] : undefined;
+      if (harness !== undefined && HARNESS_DIRECTORIES.has(harness) && file.harness === harness) {
+        for await (const _part of content) { /* Verify but never import harness-owned state. */ }
+        harnessFiles.push(file);
+        return;
+      }
+      throw fail("archive holds recovery-only content; use canonfig backup restore into an empty directory");
+    },
+  });
+  if (!folderFiles.some(file => file.path === "canonfig.jsonc")) throw fail("holds no folder/canonfig.jsonc, so it is not a Canonfig export");
+  const { files: _files, ...summary } = verified.manifest;
+  return { manifest: summary, manifestSha256: verified.manifestSha256, archiveSha256: sha256BytesHex(bytes), signer: verified.signer, folderFiles, harnessFiles };
 };
 
 // ── export ───────────────────────────────────────────────────────────────
@@ -889,6 +777,31 @@ const collectHarnesses = (records: ReadonlyArray<AppliedResourceRecord>, budget:
     return { files, skipped };
   });
 
+/** Backups and export capture the same safe authoring and unchanged managed surfaces. */
+export const collectArchiveConfiguration = (input: {
+  readonly folder: string;
+  readonly includeFolder: boolean;
+  readonly includeHarnesses: boolean;
+}) => Effect.gen(function*() {
+  const repository = yield* StateRepository;
+  const identity = yield* machineIdentity;
+  const budget: ContentBudget = { remaining: MAXIMUM_CONTENT_BYTES };
+  const collected = yield* collectFolder(input.folder, budget);
+  // A harness may spell an environment reference as a bare variable name.
+  // Validate its authoring input, not its translated syntax.
+  const config = yield* assertNoLiteralCredentials(input.folder, collected);
+  const enabledScripts = enabledHookScripts(config, join(input.folder, "canonfig.jsonc"));
+  const folderFiles: ReadonlyArray<ArchiveFile> = input.includeFolder ? collected.map(file => ({
+    path: file.path,
+    content: file.content,
+    mode: intendedExecutable(file.path.slice(FOLDER_PREFIX.length), file.executable, enabledScripts) ? 0o755 : 0o644,
+  })) : [];
+  const harnesses = input.includeHarnesses
+    ? yield* collectHarnesses(yield* repository.loadAppliedResources(identity.follower), budget)
+    : { files: [], skipped: [] };
+  return { folderFiles, harnesses };
+});
+
 /**
  * Where the archive goes: a `.tar.gz` in an existing directory inside the
  * home directory and outside the Canonical Folder. Without `--output`, a
@@ -972,27 +885,9 @@ export const exportFolder = Effect.fn("Archive.export")(function*(input: ExportI
   const identity = yield* machineIdentity;
   const home = (yield* machine.userDirectories()).home.absolute;
   const { destination, realHome } = yield* archiveWork(input.output ?? input.cwd, () => destinationOf(input, home));
-  const budget: ContentBudget = { remaining: MAXIMUM_CONTENT_BYTES };
-  const collected = yield* collectFolder(input.folder, budget);
-  // Harness files are not pattern-scanned: each is a projection of these
-  // checked items, and a harness config spells an environment reference in
-  // its own syntax (Codex `env_http_headers` maps a header to a bare
-  // variable name), which the pattern would misread as a literal.
-  const config = yield* assertNoLiteralCredentials(input.folder, collected);
-  // A folder file's mode is 0755 when it is meant to run, else 0644; on a
-  // Windows Source an enabled hook naming a script is that intent.
-  const enabledScripts = enabledHookScripts(config, join(input.folder, "canonfig.jsonc"));
-  const folderFiles: ReadonlyArray<ArchiveFile> = collected.map((file) => {
-    const folderPath = file.path.slice(FOLDER_PREFIX.length);
-    return {
-      path: file.path,
-      content: file.content,
-      mode: intendedExecutable(folderPath, file.executable, enabledScripts) ? 0o755 : 0o644,
-    };
+  const { folderFiles, harnesses } = yield* collectArchiveConfiguration({
+    folder: input.folder, includeFolder: true, includeHarnesses: input.includeHarnesses,
   });
-  const harnesses = input.includeHarnesses
-    ? yield* collectHarnesses(yield* repository.loadAppliedResources(identity.follower), budget)
-    : { files: [], skipped: [] };
   const files = [...folderFiles, ...harnesses.files].sort(byPath);
 
   const refuse = (message: string) => new ArchiveRequestError({ path: input.folder, message });
@@ -1009,7 +904,7 @@ export const exportFolder = Effect.fn("Archive.export")(function*(input: ExportI
   const createdAt = Schema.decodeUnknownSync(Timestamp)(input.now.toISOString());
   const manifest: ExportManifest = {
     format: "canonfig-export",
-    version: 1,
+    version: 2,
     canonfigVersion: packageVersion,
     createdAt,
     role: identity.role,
@@ -1037,11 +932,11 @@ export const exportFolder = Effect.fn("Archive.export")(function*(input: ExportI
     signature = { path: SIGNATURE_PATH, content: new TextEncoder().encode(`${JSON.stringify(signed, undefined, 2)}\n`), mode: 0o644 };
     signer = source.fingerprint;
   }
-  const archive = encodeArchive([
+  const archive = yield* archiveWork(destination, () => encodeArchive([
     { path: MANIFEST_PATH, content: manifestBytes, mode: 0o644 },
     ...signature === undefined ? [] : [signature],
     ...files,
-  ]);
+  ]));
   const archiveSha256 = sha256BytesHex(archive);
   // The checked parent is real and below the real home, and the write is
   // anchored there: it publishes only into that directory, reached without

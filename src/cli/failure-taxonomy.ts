@@ -11,6 +11,7 @@ import type { CliFailureCategory } from "./exit-codes.ts";
  */
 export interface TaggedRuntimeError extends Error {
   readonly _tag?: string | undefined;
+  readonly code?: string | undefined;
   readonly action?: string | undefined;
   readonly actualBytes?: number | undefined;
   readonly artifact?: string | undefined;
@@ -150,6 +151,12 @@ const declared = (
  * `CliCommandFailure` with an explicit category.
  */
 export const failureTaxonomy = {
+  BackupError: classified(
+    error => error.code === "BACKUP_CREDENTIAL_REQUIRED" || error.code === "BACKUP_TOOL_REQUIRED" ? "human-action-required"
+      : error.code === "BACKUP_CONFLICT" ? "conflict-or-drift"
+      : error.code === "BACKUP_VERIFY_FAILED" ? "verification-or-apply-failure" : "usage-or-configuration",
+    error => error.message,
+  ),
   // Plan and profile construction invariants. Reaching the CLI means Canonfig
   // built something malformed itself, so these are defects, not operator input.
   ActionCycleError: describe(
