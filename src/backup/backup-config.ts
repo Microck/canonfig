@@ -5,8 +5,9 @@ import { Effect, Schema } from "effect";
 import { TaggedError } from "../domain/tagged-error.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { decodeFolderConfig } from "../projection/folder.ts";
+import { withRunLock } from "../synchronization/run-lock.ts";
 import { BackupIoError, readBackupMetadata } from "./backup-io.ts";
-import { BackupName, BackupPolicies, BackupPolicy, LocalBackups } from "./backup.types.ts";
+import { BackupName, BackupPolicies, BackupPolicy, BackupRuns, LocalBackups, type BackupOutcome } from "./backup.types.ts";
 
 export class BackupError extends TaggedError<BackupError>()("BackupError", {
   code: Schema.Literals(["BACKUP_INVALID", "BACKUP_TOOL_REQUIRED", "BACKUP_VERIFY_FAILED", "BACKUP_CONFLICT", "BACKUP_CREDENTIAL_REQUIRED"]),
@@ -41,6 +42,27 @@ export const writeLocalBackups = (folder: string, configuration: LocalBackups) =
   yield* machine.atomicWrite({ path: yield* machine.normalizePath({ path: localBackupPath(folder) }), anchor,
     content: new TextEncoder().encode(`${JSON.stringify(configuration, undefined, 2)}\n`), mode: 0o600 });
 });
+
+/** Machine-local history of the latest run and drill per policy, beside backups.json. */
+export const backupRunsPath = (folder: string): string => join(folder, "backup-runs.json");
+
+export const readBackupRuns = (folder: string) => backupWork("Read backup run history", async (): Promise<BackupRuns> => {
+  try { return await readBackupMetadata(backupRunsPath(folder), BackupRuns); }
+  catch (cause) {
+    if (missingBackupFile(cause)) return {};
+    throw cause;
+  }
+});
+
+/** Scheduled runs of different policies can finish together, so the read-modify-write holds its own lock. */
+export const recordBackupOutcome = (folder: string, name: string, kind: "run" | "drill", outcome: BackupOutcome) =>
+  withRunLock(backupRunsPath(folder), "record backup outcome", Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const runs = yield* readBackupRuns(folder);
+    const anchor = yield* machine.normalizePath({ path: folder });
+    yield* machine.atomicWrite({ path: yield* machine.normalizePath({ path: backupRunsPath(folder) }), anchor,
+      content: new TextEncoder().encode(`${JSON.stringify({ ...runs, [name]: { ...runs[name], [kind]: outcome } }, undefined, 2)}\n`), mode: 0o600 });
+  }));
 
 export const readBackupPolicies = (folder: string) => Effect.gen(function*() {
   const local = yield* readLocalBackups(folder);

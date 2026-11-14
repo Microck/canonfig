@@ -62,6 +62,18 @@ export const BackupSnapshot = Schema.Struct({
   files: Count,
 });
 export type BackupSnapshot = typeof BackupSnapshot.Type;
+/** The latest backup run or restore drill of one policy on this machine, as the GUI shows it. */
+export const BackupOutcome = Schema.Struct({
+  at: Schema.String,
+  ok: Schema.Boolean,
+  bytes: Schema.optional(Positive),
+  files: Schema.optional(Count),
+  /** Canonfig's own diagnostic for a failure; tool and filesystem output never reaches it. */
+  message: Schema.optional(Schema.String),
+});
+export type BackupOutcome = typeof BackupOutcome.Type;
+export const BackupRuns = Schema.Record(BackupName, Schema.Struct({ run: Schema.optional(BackupOutcome), drill: Schema.optional(BackupOutcome) }));
+export type BackupRuns = typeof BackupRuns.Type;
 
 export type BackupRequest =
   | { readonly action: "status" }

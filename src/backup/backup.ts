@@ -20,12 +20,12 @@ import { packageVersion } from "../runtime/build-identity.ts";
 import { withRunLock } from "../synchronization/run-lock.ts";
 import { captureBackupFiles, below, scanPlaintextGitBackup } from "./backup-capture.ts";
 import { decodeBackup, encodeBackup } from "./backup-codec.ts";
-import { backupOwner, backupPassword, BackupError, backupWork, localBackupPath, readBackupPolicies, readLocalBackups, requireCapturePermission, validateBackupPolicy, writeLocalBackups } from "./backup-config.ts";
+import { backupOwner, backupPassword, BackupError, backupWork, localBackupPath, readBackupPolicies, readBackupRuns, readLocalBackups, recordBackupOutcome, requireCapturePermission, validateBackupPolicy, writeLocalBackups } from "./backup-config.ts";
 import { BackupIoError, hashBackupFile, readBackupMetadata } from "./backup-io.ts";
 import { captureRecovery, readRecovery, restoreRecovery, withRecoveryCredentials, type Recovery } from "./backup-recovery.ts";
 import { backupScheduleStatus, reconcileBackupSchedules } from "./backup-schedule.ts";
 import { listBackupOwners, openBackupStorage, type BackupStorage } from "./backup-storage.ts";
-import { BackupName, BackupPolicy, retainedSnapshots, type BackupRequest, type BackupSnapshot, type LocalBackups } from "./backup.types.ts";
+import { BackupName, BackupPolicy, retainedSnapshots, type BackupOutcome, type BackupRequest, type BackupSnapshot, type LocalBackups } from "./backup.types.ts";
 
 interface BackupContext {
   readonly statePath: string;
@@ -273,7 +273,7 @@ export const backupCommand = Effect.fn("Backup.command")(function*(context: Back
   const machine = yield* MachineState;
   yield* machine.ensureDirectory({ path: yield* machine.normalizePath({ path: folder }), mode: 0o700 });
   if ("name" in request) yield* Schema.decodeUnknownEffect(BackupName)(request.name).pipe(Effect.mapError(() => new BackupError({ code: "BACKUP_INVALID", message: "Backup names use 1-64 letters, digits, underscores or hyphens" })));
-  if (request.action === "status") return { ...yield* readBackupPolicies(folder), schedules: yield* backupScheduleStatus(folder) };
+  if (request.action === "status") return { ...yield* readBackupPolicies(folder), runs: yield* readBackupRuns(folder), schedules: yield* backupScheduleStatus(folder) };
   if (request.action === "schedule") return yield* reconcileBackupSchedules(folder);
   if (request.action === "configure-file") {
     const policy = yield* backupWork("Read backup policy", () => readBackupMetadata(resolve(request.file), BackupPolicy));
@@ -292,10 +292,17 @@ export const backupCommand = Effect.fn("Backup.command")(function*(context: Back
     return { passwordAlias: request.name, warning: "Keep a separate copy of this password. Losing it makes the encrypted backups unrecoverable." };
   }));
   const owner = "owner" in request ? request.owner : undefined;
+  // Runs and drills leave their latest outcome for the GUI. Only Canonfig's own diagnostics are kept; other
+  // failures may carry tool output, so they are recorded as a generic failure.
+  const record = (kind: "run" | "drill", outcome: Omit<BackupOutcome, "at">) => recordBackupOutcome(folder, request.name, kind, { at: new Date().toISOString(), ...outcome });
   return yield* withStorage(folder, request.name, owner, opened => Effect.gen(function*() {
     if (request.action === "owners") return { owners: yield* backupWork("List backup owners", signal => listBackupOwners({ destination: opened.policy.destination, policy: opened.name, scratch: opened.scratch, signal })) };
     if (request.action === "list") return { owner: opened.owner, snapshots: yield* backupWork("List backup snapshots", () => opened.storage.list()) };
-    if (request.action === "run") return yield* capture(context, opened);
+    if (request.action === "run") {
+      const captured = yield* capture(context, opened);
+      yield* record("run", { ok: true, bytes: captured.snapshot.bytes, files: captured.snapshot.files });
+      return captured;
+    }
     if (request.action === "prune") return yield* backupWork("Prune backup snapshots", async () => {
       const snapshots = await opened.storage.list();
       const retained = retainedSnapshots(snapshots, opened.policy.retention);
@@ -308,6 +315,7 @@ export const backupCommand = Effect.fn("Backup.command")(function*(context: Back
     if (request.action === "drill") {
       const restored = yield* withRecoveryCredentials({ recovery: verified.recovery, recoverCredentials: true, keep: false }, references =>
         backupWork("Run restore drill", () => restoreHome(verified, join(opened.scratch, "drill"), opened.scratch, references)));
+      yield* record("drill", { ok: true, files: restored.files });
       return { snapshot: verified.snapshot.id, verified: true, restoredFiles: restored.files, sourceIdentity: restored.source, secrets: restored.secrets };
     }
     if (request.target.kind === "apply") {
@@ -322,5 +330,7 @@ export const backupCommand = Effect.fn("Backup.command")(function*(context: Back
     const restored = yield* withRecoveryCredentials({ recovery: verified.recovery, recoverCredentials, keep: true }, references =>
       backupWork("Restore into new private HOME", () => restoreHome(verified, output, opened.scratch, references)));
     return { snapshot: verified.snapshot.id, signer: verified.signer, ...restored };
-  }));
+  })).pipe(Effect.tapError((error) => request.action === "run" || request.action === "drill"
+    ? record(request.action, { ok: false, message: error instanceof BackupError ? error.message : "The backup failed. Run it from the command line to see why." }).pipe(Effect.ignore)
+    : Effect.void));
 });

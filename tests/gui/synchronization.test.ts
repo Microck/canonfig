@@ -125,9 +125,10 @@ it("serves real role-gated secrets and a verified Source archive without leaking
     ["/api/local/preferences", "PUT", { expectedDigest: null, edits: [] }],
     ["/api/harnesses", "PUT", { harness: "codex", action: "include" }], ["/api/local/overlays", "GET", undefined],
     ["/api/local/overlays", "PUT", { item: "rules/test" }], ["/api/local/overlays", "DELETE", { item: "rules/test" }],
-    ["/api/backups", "GET", undefined], ["/api/backups/restore", "POST", { snapshot: "missing" }],
     ["/api/tunnel", "GET", undefined], ["/api/tunnel/start", "POST", {}], ["/api/tunnel/stop", "POST", {}], ["/api/enrollment", "DELETE", {}],
   ] as const) expect((await api.call(path, method, body)).payload, path).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  // A Source lists its own takeover snapshots; none exist before it first projects into a harness.
+  expect((await api.call("/api/backups")).payload).toEqual({ snapshots: [] });
   const exported = await api.call("/api/exports", "POST", { includeHarnesses: false });
   expect(exported.status).toBe(200);
   const archive = Schema.decodeUnknownSync(GuiArchiveDownload)(exported.payload);

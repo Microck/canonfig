@@ -1,10 +1,12 @@
 import { Schema } from "effect";
-import { BackupName, BackupPolicies, BackupPolicy, BackupSnapshot, LocalBackups, SnapshotId } from "../../backup/backup.types.ts";
+import { BackupName, BackupPolicies, BackupPolicy, BackupRuns, BackupSnapshot, LocalBackups, SnapshotId } from "../../backup/backup.types.ts";
 
 export const GuiBackupStatus = Schema.Struct({
   local: LocalBackups,
   declared: BackupPolicies,
   policies: BackupPolicies,
+  /** The latest run and restore drill of each policy on this machine. */
+  runs: BackupRuns,
   schedules: Schema.Array(Schema.Json),
 });
 export type GuiBackupStatus = typeof GuiBackupStatus.Type;

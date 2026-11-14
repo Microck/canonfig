@@ -2,26 +2,23 @@ import { useState } from "react";
 import { Schema } from "effect";
 import { GuiBackupList, GuiBackupStatus, type GuiBackupRequest } from "../../../../src/gui/contract/backup";
 import type { WorkspaceBackend } from "../../gui-client";
-import { useLiveActions, useLiveResource } from "./resource";
+import type { BackupSlice } from "../workspace-types";
+import { resourceState, useLiveActions, useLiveResource } from "./resource";
 
-export function useLiveBackups(backend: WorkspaceBackend, reload: () => void) {
+/** /api/backup/status plus one operation channel; a list result is kept per policy for the copies list. */
+export function useLiveBackups(backend: WorkspaceBackend, reload: () => void): BackupSlice {
   const status = useLiveResource(backend, "/api/backup/status", GuiBackupStatus, true);
   const actions = useLiveActions(backend, reload);
-  const [listing, setListing] = useState<{ name: string; value: GuiBackupList } | null>(null);
-  const [report, setReport] = useState<{ action: string; name?: string; value: Schema.Json } | null>(null);
-  const run = async (input: GuiBackupRequest): Promise<boolean> => {
-    let succeeded = false;
-    await actions.run(async signal => {
-      setReport(null);
-      if (input.action === "list") setListing(null);
-      const operation = await actions.operation("/api/backup", input, signal);
-      signal.throwIfAborted();
-      if (input.action === "list") setListing({ name: input.name, value: Schema.decodeUnknownSync(GuiBackupList)(operation.result) });
-      else setReport({ action: input.action, ...("name" in input ? { name: input.name } : {}), value: operation.result });
-      if (input.action === "run" || input.action === "prune") setListing(null);
-      succeeded = true;
-    });
-    return succeeded;
-  };
-  return { status, action: actions.state, listing, report, run };
+  const [listing, setListing] = useState<BackupSlice["listing"]>(null);
+  const [report, setReport] = useState<BackupSlice["report"]>(null);
+  const run = (input: GuiBackupRequest) => actions.run(async signal => {
+    setReport(null);
+    const operation = await actions.operation("/api/backup", input, signal);
+    signal.throwIfAborted();
+    if (input.action === "list") setListing({ name: input.name, owner: input.owner, value: Schema.decodeUnknownSync(GuiBackupList)(operation.result) });
+    else setReport({ action: input.action, ...("name" in input ? { name: input.name } : {}), value: operation.result });
+    // A run or retention change makes the listed copies stale.
+    if ((input.action === "run" || input.action === "prune") && listing?.name === input.name) setListing(null);
+  });
+  return { status: status.data, state: resourceState([status]), action: actions.state, listing, report, run };
 }

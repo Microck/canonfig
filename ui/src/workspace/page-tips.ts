@@ -22,8 +22,8 @@ export const PAGE_TIPS: Record<"source" | "follower", Partial<Record<View, TourS
     },
     backups: {
       target: ["page-help"],
-      title: "What a restore does",
-      body: "Restore a portable backup into a new HOME, or apply its Canonical Folder here. A restore drill tests recovery without changing this machine's setup.",
+      title: "Restore any copy",
+      body: "Test a copy without changing anything, restore it into a new folder for a new machine, or put your Canonfig folder back. Before Canonfig holds the harness files Canonfig replaced.",
     },
   },
   follower: {
@@ -39,8 +39,8 @@ export const PAGE_TIPS: Record<"source" | "follower", Partial<Record<View, TourS
     },
     backups: {
       target: ["page-help"],
-      title: "Two kinds of backup",
-      body: "Portable backups restore into a new HOME. This machine's Canonical Folder comes from its Source. Takeover Snapshots put back pre-Canonfig harness files and exclude that harness from later updates.",
+      title: "Restore any copy",
+      body: "Test a copy without changing anything, or restore it into a new folder for a new machine. Before Canonfig holds the harness files Canonfig replaced; putting one back stops syncing that harness here.",
     },
   },
 };

@@ -71,7 +71,8 @@ export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, 
   const harnesses = useLiveResource(backend, "/api/harnesses", GuiHarnessReport, session.role !== "unconfigured");
   const local = useLiveResource(backend, "/api/local/items", GuiLocalItems, follower);
   const schedule = useLiveResource(backend, "/api/schedule", GuiSynchronizationResult, follower);
-  const backups = useLiveResource(backend, "/api/backups", GuiBackups, follower);
+  // Takeover snapshots belong to any machine Canonfig projects into, including a Source.
+  const backups = useLiveResource(backend, "/api/backups", GuiBackups, session.role !== "unconfigured");
   const overlays = useLiveResource(backend, "/api/local/overlays", GuiSynchronizationResult, follower);
   const tunnel = useLiveResource(backend, "/api/tunnel", GuiSynchronizationResult, follower);
   const enrollment = useLiveResource(backend, "/api/enrollment", GuiEnrollment, follower);

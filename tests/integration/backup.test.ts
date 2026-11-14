@@ -52,6 +52,8 @@ describe("portable backup recovery", () => {
     expect(refused._tag).toBe("BackupError");
     expect(readFileSync(join(output, ".canonfig", "AGENTS.md"), "utf8")).toBe(machine.original);
     expect(await machine.run({ action: "drill", name: "daily" })).toMatchObject({ verified: true, restoredFiles: 2 });
+    // The status the GUI reads carries the latest run and drill of the policy.
+    expect(await machine.run({ action: "status" })).toMatchObject({ runs: { daily: { run: { ok: true, files: 2 }, drill: { ok: true, files: 2 } } } });
   });
 
   it("fails closed for a wrong password and a corrupted stored object", async () => {
@@ -90,6 +92,8 @@ describe("portable backup recovery", () => {
     expect(readFileSync(join(output, ".codex", "config.toml"))).toEqual(readFileSync(join(harness, "config.toml")));
     await machine.configure({ ...capture, includeCredentials: true });
     expect(await machine.fail({ action: "run", name: "daily" })).toMatchObject({ code: "BACKUP_CREDENTIAL_REQUIRED" });
+    // A refused run is recorded with Canonfig's own diagnostic, so the GUI can say why.
+    expect(await machine.run({ action: "status" })).toMatchObject({ runs: { daily: { run: { ok: false, message: expect.stringContaining("needs local consent") } } } });
     await machine.run({ action: "allow-credentials", name: "daily" });
     await machine.run({ action: "run", name: "daily" });
     const privateOutput = join(machine.root, "restored-private");

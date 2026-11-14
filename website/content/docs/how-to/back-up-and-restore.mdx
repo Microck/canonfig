@@ -3,9 +3,20 @@ title: Back up and restore your configuration
 description: Keep versioned backups in a local folder, Git repository or cloud drive, and test recovery before you need it.
 ---
 
-Use **Backups → Portable backups** in `canonfig ui`, or the commands below. Portable backups are separate from [Takeover Snapshots](/how-to/restore-from-a-backup), which protect files that Canonfig is about to overwrite.
+Use the **Backups** page in `canonfig ui`, or the commands below. Portable backups are separate from [Takeover Snapshots](/how-to/restore-from-a-backup), which protect files that Canonfig is about to overwrite.
 
 A policy selects the Canonical Folder, managed Target Harness configuration, or full folders for selected harnesses. Source identity and shared secrets are optional encrypted extras. Full harness folders require encryption because histories and caches can contain tokens under unknown names. Known credential files and symbolic links are excluded by default.
+
+## Use the Backups page
+
+The page lists your backups on the left, each with its latest result, for example **Backed up today 03:00 · 49.8 MB** or **Failed Sun 02:00**. Select one to see its copies, newest first.
+
+- **Back up now** runs it once. **Settings** opens what to back up, where, when and the password; compression, retention, restore tests and filters are under **More options**.
+- **Restore…** on a copy offers three choices: test it in a throwaway folder, restore it into a new folder for a new machine, or, on a Source, put your Canonfig folder back through the usual import checks.
+- A failed run shows Canonfig's diagnostic above the copies. A backup that captures sign-in data or keys asks you to **Allow** it on this machine before it runs.
+- **Before Canonfig**, the last entry, holds the [Takeover Snapshots](/how-to/restore-from-a-backup).
+
+Each machine records the latest run and restore test of every backup in `~/.canonfig/backup-runs.json`, which `canonfig backup status --json` reports as `runs`.
 
 ## Create a local backup
 
@@ -57,7 +68,7 @@ Unencrypted Git backups require `gitleaks` on PATH. Canonfig scans the staged fi
 
 ## Protect backups with a password
 
-Add a password in the GUI, or pipe it from your password manager into:
+In the GUI, turn on **Encrypt with a password** in the backup's settings. From the CLI, pipe it from your password manager into:
 
 ```bash
 canonfig backup password recovery --stdin
