@@ -33,7 +33,7 @@ itself, from its own environment and platform:
 | `cursor` | `~/.cursor`; on Linux, `cli-config.json` follows `$XDG_CONFIG_HOME/cursor` | `%USERPROFILE%\.cursor` |
 | every other harness | its override, else a directory under `~` | the same under `%USERPROFILE%` |
 
-The full list is in the [harness reference](/reference/harnesses). Every root
+The full list is in the [harness reference](/docs/reference/harnesses). Every root
 must resolve inside your home directory, and Canonfig pins the root it used at
 takeover; a later run that resolves another root stops with Human Action
 Required instead of writing a second copy.
@@ -98,7 +98,7 @@ To verify a bare command such as `ruff`, Canonfig looks first in the
 directories where that recipe's installer puts executables, then on `PATH`.
 On Windows these include `%APPDATA%\npm` and
 `%LOCALAPPDATA%\Microsoft\WinGet\Links`. See
-[How Canonfig installs and verifies tools](/explanation/tools-and-recipes).
+[How Canonfig installs and verifies tools](/docs/explanation/tools-and-recipes).
 
 ## Windows package managers
 
@@ -122,7 +122,7 @@ Both paths must be absolute and exist. They depend on where Node.js is
 installed; nvm-windows and Volta use other directories. For pnpm, use
 `pnpm.cjs` as the `--arg`. `canonfig installer list` shows the same command
 under `suggestions`, and `canonfig installer check` confirms that the binding
-starts. See [Installer bindings](/reference/cli#installer-bindings).
+starts. See [Installer bindings](/docs/reference/cli#installer-bindings).
 
 ## Schedules
 
@@ -135,7 +135,7 @@ canonfig schedule status
 ```
 
 `--timezone` works on Linux only. Missed runs and daylight-saving changes
-follow each platform's scheduler; see [Sync on a schedule](/how-to/manage-schedules).
+follow each platform's scheduler; see [Sync on a schedule](/docs/how-to/manage-schedules).
 
 ## Unattended runs
 
@@ -172,7 +172,7 @@ The Source Machine's service and scheduled runs work under these conditions:
 | macOS | in the logged-in desktop session, with the login Keychain unlocked | no |
 | Windows | from logon, while you stay logged on | no |
 
-See [Run Canonfig unattended](/how-to/run-unattended).
+See [Run Canonfig unattended](/docs/how-to/run-unattended).
 
 ## Reaching the Source Machine
 
@@ -189,4 +189,4 @@ canonfig tunnel start
 
 The first command sets up and records the tunnel. Later starts need no
 invitation, and a scheduled run restarts a tunnel that went down once before
-it fetches. See the [CLI reference](/reference/cli#managed-ssh-tunnel).
+it fetches. See the [CLI reference](/docs/reference/cli#managed-ssh-tunnel).

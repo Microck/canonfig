@@ -4,20 +4,22 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
-const DEMO_URL = "https://canonfig.micr.dev/";
+const SITE_URL = "https://canonfig.micr.dev/";
+// The public demo is a separate app under /demo/ (scripts/build-pages.mjs).
+const DEMO_URL = `${SITE_URL}demo/`;
 const DEMO_TITLE = "Canonfig: interactive demo";
 const DEMO_DESCRIPTION =
   "Try Canonfig's browser workspace with made-up data. Canonfig keeps your AI agent instructions, settings, skills and tools the same on every machine.";
-// The share image, rendered from scripts/og-image.html. The docs at /docs point their og:image at the same URL.
+// The share image, rendered from scripts/og-image.html. The landing page and the docs point their og:image at the
+// same URL.
 const OG_IMAGE = "og-image.png";
-const OG_IMAGE_URL = `${DEMO_URL}${OG_IMAGE}`;
+const OG_IMAGE_URL = `${SITE_URL}${OG_IMAGE}`;
 const OG_IMAGE_ALT = "Canonfig machine map: the Source machine atlas syncing to laptop, studio, gaming-pc and build-box, under the line: Canonfig keeps your AI agent instructions, settings, skills and tools the same on every machine.";
 
 /**
- * The public demo at canonfig.micr.dev (`vite build --mode demo`, GitHub Pages). It adds indexable and share
- * meta to the page, emits the share image, and writes 404.html as a copy of index.html: Pages serves 404.html
- * for unknown paths, so deep links such as /follower/sync still boot the SPA, whose router reads the URL. The
- * production build that `canonfig ui` will serve gets none of these and keeps the plain title from index.html.
+ * The public demo at canonfig.micr.dev/demo/ (`vite build --mode demo`, GitHub Pages).
+ * It emits share metadata and a 404.html copy of index.html so Pages can boot
+ * deep links such as /demo/source/overview. The installed GUI gets none of these.
  */
 function demoSite(): Plugin {
   return {
@@ -92,7 +94,8 @@ function applicationEntrypoint(): Plugin {
   };
 }
 
-export default defineConfig({
+export default defineConfig((env) => ({
+  base: env.mode === "demo" ? "/demo/" : "/",
   plugins: [react(), tailwindcss(), demoSite(), applicationEntrypoint()],
   resolve: { alias: { "@": path.resolve(import.meta.dirname, "./src") } },
   build: {
@@ -118,4 +121,4 @@ export default defineConfig({
     // dev page whenever the demo builds.
     watch: { ignored: ["**/dist-demo/**"] },
   },
-});
+}));

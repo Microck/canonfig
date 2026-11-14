@@ -27,7 +27,7 @@ followers never publish changes back.
 deterministic actions run first. optional Configuration Agents handle bounded
 fallback tasks; an agent's claim never counts as proof of convergence.
 
-[documentation](https://canonfig.micr.dev/docs) | [interactive demo](https://canonfig.micr.dev) | [first sync](https://canonfig.micr.dev/docs/tutorials/first-sync/) | [CLI reference](https://canonfig.micr.dev/docs/reference/cli/)
+[website](https://canonfig.micr.dev) | [documentation](https://canonfig.micr.dev/docs) | [interactive demo](https://canonfig.micr.dev/demo/) | [first sync](https://canonfig.micr.dev/docs/tutorials/first-sync/) | [CLI reference](https://canonfig.micr.dev/docs/reference/cli/)
 
 ## why
 
@@ -80,7 +80,7 @@ Version page in Settings. stop other Canonfig processes before updating; after
 activation, restart with `canonfig ui`. unenrollment leaves applied files,
 the native schedule and tunnel configuration in place, as the CLI does.
 
-the [interactive demo](https://canonfig.micr.dev) and images below use made-up
+the [interactive demo](https://canonfig.micr.dev/demo/) and images below use made-up
 machines. its fleet health, revision and progress displays are not remote
 telemetry from the live GUI.
 

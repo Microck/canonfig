@@ -1,13 +1,14 @@
-// Serves the static export in out/ under /docs, the way GitHub Pages serves it
-// on https://canonfig.micr.dev, for the browser suite and local previews.
+// Serves the static export in out/ the way GitHub Pages serves it on
+// https://canonfig.micr.dev, for the browser suite and local previews.
 // `next start` cannot serve an `output: "export"` build.
 //
 // Usage: node scripts/serve-export.mjs [--hostname 127.0.0.1] [--port 3000]
 //
 // It mirrors the Pages behaviour the export relies on: a directory answers with
 // its index.html, a directory path without its trailing slash redirects to the
-// slashed path, and unknown paths get 404.html with status 404. Anything
-// outside /docs is the UI demo's in production, so it gets the 404 too.
+// slashed path, and unknown paths get 404.html with status 404. In production
+// the UI demo's 404.html answers unknown paths instead (scripts/build-pages.mjs),
+// so the demo's own routes are not served here.
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -15,8 +16,6 @@ import { extname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-// Must match `basePath` in next.config.mjs.
-const basePath = "/docs";
 const outDir = fileURLToPath(new URL("../out", import.meta.url));
 
 const { values } = parseArgs({
@@ -26,7 +25,7 @@ const { values } = parseArgs({
   },
 });
 
-// The static search index (api/search) has no extension and holds JSON.
+// The static search index (docs/api/search) has no extension and holds JSON.
 const contentTypes = {
   "": "application/json",
   ".css": "text/css",
@@ -61,13 +60,9 @@ const notFound = (response) => send(response, 404, join(outDir, "404.html"));
 
 createServer(async (request, response) => {
   const { pathname } = new URL(request.url ?? "/", "http://localhost");
-  if (pathname !== basePath && !pathname.startsWith(`${basePath}/`)) {
-    notFound(response);
-    return;
-  }
   let relative;
   try {
-    relative = decodeURIComponent(pathname.slice(basePath.length));
+    relative = decodeURIComponent(pathname);
   } catch {
     notFound(response); // malformed percent-encoding
     return;
@@ -93,5 +88,5 @@ createServer(async (request, response) => {
   if (found?.isFile()) send(response, 200, path);
   else notFound(response);
 }).listen(Number(values.port), values.hostname, () => {
-  console.log(`serve-export: http://${values.hostname}:${values.port}${basePath}/`);
+  console.log(`serve-export: http://${values.hostname}:${values.port}/`);
 });
