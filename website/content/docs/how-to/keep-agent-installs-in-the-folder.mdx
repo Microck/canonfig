@@ -54,7 +54,10 @@ and `canonfig shield exclude <id>`.
 
 On Linux with bubblewrap installed, **Hard mode** makes harness folders
 read-only for commands you start with `canonfig shield run`. It protects only
-that process tree; it is not a sandbox.
+that process tree; it is not a sandbox. A file Canonfig manages that does not
+exist yet, such as a harness's `hooks.json`, stays creatable, because locking its
+folder would also lock the harness's own sessions and sign-in. The next sync
+treats such a file as a foreign change.
 
 See [Shield in the CLI reference](/reference/cli#shield) for every command and
 the installers Shield supports.
