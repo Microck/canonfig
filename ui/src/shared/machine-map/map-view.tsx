@@ -37,12 +37,15 @@ import {
   PACKET_FILL,
   PACKET_PATH,
   resolveLook,
+  fromPublishedLook,
+  toPublishedLook,
   SOURCE_ID,
   TONE_STROKE,
   useMapStore,
   type Link,
   type MapActions,
   type MapRole,
+  type PublishedLook,
   type ResolvedLook,
 } from "./model";
 
@@ -55,7 +58,7 @@ export interface MachineMapProps {
   /** The dashed "Add machine" node (Source role only). */
   onInvite?: () => void;
   className?: string;
-  source: { hostname: string; platform?: Follower["platform"]; endpoint?: string };
+  source: { hostname: string; platform?: Follower["platform"]; endpoint?: string; look?: PublishedLook | undefined };
   followers: readonly MapFollower[];
   /** Newest Profile Revision sequence. Followers below it show packets on their way. */
   latestRevision?: number;
@@ -72,6 +75,8 @@ export interface MachineMapProps {
   customizeId?: string | null;
   /** The sheet opened for a machine (its id) or closed (`null`). Called in both modes. */
   onCustomizeChange?: (id: string | null) => void;
+  /** Source role: the Source card's Customize sheet closed; publish what it saved (undefined after a reset) to Followers. */
+  onSourceLookSave?: (look: PublishedLook | undefined) => void;
 }
 
 type MapNode = MachineNodeType | AddNodeType;
@@ -206,6 +211,7 @@ function MapCanvas({
   publishing = false,
   customizeId,
   onCustomizeChange,
+  onSourceLookSave,
 }: MachineMapProps) {
   const store = useMapStore();
   const { fitView, getViewport, setViewport } = useReactFlow();
@@ -239,11 +245,12 @@ function MapCanvas({
 
   const looks = useMemo(() => {
     const out: Record<string, ResolvedLook> = {
-      [SOURCE_ID]: resolveLook(SOURCE_ID, machine.hostname, machine.platform, store.looks[SOURCE_ID]),
+      // The Source's published look is the base; a look customized in this browser wins over it.
+      [SOURCE_ID]: resolveLook(SOURCE_ID, machine.hostname, machine.platform, { ...fromPublishedLook(machine.look), ...store.looks[SOURCE_ID] }),
     };
     for (const f of visible) out[f.id] = resolveLook(f.id, f.name, f.platform, store.looks[f.id]);
     return out;
-  }, [store.looks, visible, machine.hostname, machine.platform]);
+  }, [store.looks, visible, machine.hostname, machine.platform, machine.look]);
 
   const built = useMemo((): MapNode[] => {
     // Saved positions only seed nodes; a later move must not rebuild the rest.
@@ -531,7 +538,10 @@ function MapCanvas({
               hostname={sheetId === SOURCE_ID ? machine.hostname : (sheetFollower?.name ?? sheetId)}
               saved={store.looks[sheetId]}
               look={looks[sheetId]}
+              shared={sheetId === SOURCE_ID && onSourceLookSave !== undefined}
               onClose={() => {
+                // Edits save on every change in this browser; Followers get the Source card once, when its sheet closes.
+                if (sheetId === SOURCE_ID) onSourceLookSave?.(toPublishedLook(store.looks[SOURCE_ID]));
                 setCustomize(null);
                 focusNode(sheetId);
               }}

@@ -106,6 +106,37 @@ export function resolveLook(id: string, hostname: string, platform: Follower["pl
   };
 }
 
+/** The Source card's look as the Source publishes it to Followers: presets and a custom accent, never an uploaded icon. */
+export interface PublishedLook {
+  readonly name?: string | undefined;
+  readonly purpose?: string | undefined;
+  readonly icon?: string | undefined;
+  readonly accent?: string | undefined;
+  readonly customAccent?: string | undefined;
+}
+
+const isIcon = (value: string | undefined): value is DeviceIcon | "custom" => value !== undefined && (value === "custom" || value in DEVICE_ICONS);
+const isAccent = (value: string | undefined): value is Accent | "custom" => value !== undefined && (value === "custom" || value in ACCENTS);
+
+/** A published look as a stored one; a preset this build does not know is dropped so the card falls back to its default. */
+export function fromPublishedLook(look: PublishedLook | undefined): Look | undefined {
+  if (look === undefined) return undefined;
+  return {
+    ...(look.name !== undefined ? { name: look.name } : {}),
+    ...(look.purpose !== undefined ? { purpose: look.purpose } : {}),
+    ...(isIcon(look.icon) ? { icon: look.icon } : {}),
+    ...(isAccent(look.accent) ? { accent: look.accent } : {}),
+    ...(look.customAccent !== undefined ? { customAccent: look.customAccent } : {}),
+  };
+}
+
+/** What the Source publishes of a stored look: everything but an uploaded icon, which stays in this browser. */
+export function toPublishedLook(look: Look | undefined): PublishedLook | undefined {
+  if (look === undefined) return undefined;
+  const { customIcon: _localOnly, ...published } = look;
+  return published;
+}
+
 // ---------------------------------------------------------------------------
 // Contrast: WCAG relative luminance on #rrggbb colours.
 
