@@ -126,7 +126,7 @@ async function click(label: string) {
 const profile = { items: [], config: { profile: { id: "review", name: "Review" }, groups: { work: [] } }, supportedSurfaces: {} };
 const follower = { id: "review-follower", name: "Review laptop", groups: ["work", "secrets"], enrolledAt: "2026-11-06T00:00:00Z", revoked: false, pending: false, credentialPresent: true, credentialLifecycle: { _tag: "Active" } };
 const sourceResponses = () => ({
-  "/api/status": { machineRole: { role: "source" }, lifecycle: {}, tunnel: null, shield: { enabled: false, hard: false, scope: "canonical", destination: "/tmp/review-fixture", projected: false, excludedPlugins: [], note: "" } },
+  "/api/status": { machineRole: { role: "source" }, lifecycle: {}, tunnel: null, shield: { enabled: false, hard: false, scope: "canonical", destination: "/tmp/review-fixture", projected: [], excludedPlugins: [], note: "" } },
   "/api/profile/items": profile,
   "/api/revisions": { revisions: [] },
   "/api/skills": { version: 1, skills: [] },
@@ -276,7 +276,7 @@ for (const category of ["mcp", "settings"]) {
   it(`local ${category} reload resets its draft and saves against the refreshed local.jsonc digest`, async () => {
     const snapshot = (digest: string, command: string) => ({ items: [{ path: "local.jsonc", digest, files: [] }], config: { [category]: { example: { command } } }, canonicalConfig: { local: { allow: [category] } } });
     const responses: Record<string, unknown> = {
-      "/api/status": { machineRole: { role: "follower" }, lifecycle: {}, tunnel: null, shield: { enabled: false, hard: false, scope: "local", destination: "/tmp/review-fixture/local", projected: false, excludedPlugins: [], note: "" } },
+      "/api/status": { machineRole: { role: "follower" }, lifecycle: {}, tunnel: null, shield: { enabled: false, hard: false, scope: "local", destination: "/tmp/review-fixture/local", projected: [], excludedPlugins: [], note: "" } },
       "/api/harnesses": { folder: "/tmp/review-fixture", configured: true, listed: [], excluded: [], detected: [], notInstalled: [], snapshots: 0, harnesses: [] },
       "/api/local/overlays": { overlays: [] },
       "/api/local/items": snapshot("original-digest", "original"),
@@ -485,7 +485,7 @@ it("a secret submission freezes its draft and cannot close as if it cancelled th
 
 it("a failed harness save retains the committed policy as an explicit partial success", async () => {
   const responses: Record<string, unknown> = {
-    "/api/status": { machineRole: { role: "follower" }, lifecycle: {}, tunnel: null, shield: { enabled: false, hard: false, scope: "local", destination: "/tmp/review-fixture/local", projected: false, excludedPlugins: [], note: "" } },
+    "/api/status": { machineRole: { role: "follower" }, lifecycle: {}, tunnel: null, shield: { enabled: false, hard: false, scope: "local", destination: "/tmp/review-fixture/local", projected: [], excludedPlugins: [], note: "" } },
     "/api/agent/policy": "deterministic-only",
     "/api/agent/harness": { configured: false },
   };

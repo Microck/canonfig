@@ -71,7 +71,8 @@ function LiveWorkspace({ backend, session, route, cache, paths, onInstalled, chi
   const profile = useLiveProfile(backend, session, invalidate, reload);
   const machines = useLiveMachines(backend, session, invalidate);
   const follower = useLiveFollower(backend, session, overview.status, invalidate);
-  const shield = useLiveShield(backend, session, reload);
+  // Shield writes local/local.jsonc, which other pages' authoring snapshots carry a digest for.
+  const shield = useLiveShield(backend, session, invalidate);
   const service = admin.service.data;
   const resources: Partial<Record<Workspace["view"], ResourceState>> = {
     overview: overview.overviewState,

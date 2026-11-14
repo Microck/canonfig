@@ -223,17 +223,19 @@ const withSettings = (
   if (surface === undefined) {
     throw new CanonicalFolderError({ path: configPath, message: `settings.${harness}: ${harness} has no settings file Canonfig writes` });
   }
+  const existing = contents.find((content) => content.surface === surface.id);
+  // Keys Canonfig generated for this file, such as native plugin registrations, are as off-limits as surface.keys.
+  const generated = existing?.kind === "config" ? existing.keys.map((key) => key.path) : [];
   for (const entry of settings) {
     const reserved = (surface.settings?.reserved ?? []).find((pattern) => reservedOverlap(entry.path, pattern));
     if (reserved !== undefined) {
       throw new CanonicalFolderError({ path: configPath, message: `settings.${harness}.${entry.path} overlaps ${reserved}, which ${harness} keeps for itself` });
     }
-    const owned = surface.keys.find((key) => reservedOverlap(entry.path, key));
+    const owned = [...surface.keys, ...generated].find((key) => reservedOverlap(entry.path, key));
     if (owned !== undefined) {
       throw new CanonicalFolderError({ path: configPath, message: `settings.${harness}.${entry.path} overlaps ${owned}, which Canonfig already writes from the folder` });
     }
   }
-  const existing = contents.find((content) => content.surface === surface.id);
   const keys = [...(existing?.kind === "config" ? existing.keys : []), ...settings];
   return [
     ...contents.filter((content) => content !== existing),

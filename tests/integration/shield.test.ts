@@ -12,7 +12,8 @@ import { loadCanonicalFolder } from "../../src/projection/folder.ts";
 import { ingestShield } from "../../src/projection/shield-ingest.ts";
 import { synchronizeLocal } from "../../src/projection/sync.ts";
 import { shieldModel } from "../../src/projection/shield.ts";
-import { nativePluginDigest } from "../../src/projection/native-plugin.ts";
+import { nativePackage, nativePluginDigest, projectNativePlugins } from "../../src/projection/native-plugin.ts";
+import { adapterFor } from "../../src/projection/adapters/index.ts";
 import { emptyModel } from "../../src/projection/detect.ts";
 import type { RootContext } from "../../src/projection/harness.ts";
 import { hookRegistryJson, hookRunnerSource } from "../../src/projection/templates/runtime.ts";
@@ -215,5 +216,31 @@ describe("Shield admission and projection", () => {
     const directShim = "CALL :find_dp0\r\n\"%dp0%\\node_modules\\npm\\bin\\npx-cli.js\"   %*\r\n";
     expect(npmShimEntrypoint(nodeShim)).toBe("node_modules\\npm\\bin\\npx-cli.js");
     expect(npmShimEntrypoint(directShim)).toBeUndefined();
+  });
+
+  it("reads an installed Qwen extension by its own qwen-extension.json", () => {
+    const files = [{ path: "qwen/qwen-extension.json", content: new TextEncoder().encode('{"name":"session-notes","version":"1.2.0"}'), executable: false }];
+    expect(nativePackage({ files }, { id: "qwen", harness: "qwen", platforms: ["linux"], directory: "qwen" })).toEqual({ name: "session-notes", version: "1.2.0" });
+  });
+
+  it("projects an Amp plugin as a directory plugin so its relative skill paths resolve", () => {
+    const f = fixture();
+    const encode = (text: string) => new TextEncoder().encode(text);
+    const manifest = { version: 1 as const, variants: [{ id: "amp", harness: "amp" as const, platforms: ["linux" as const], directory: "amp", entry: "dist/main.js" }] };
+    const files = [
+      { path: "plugin.jsonc", content: encode(JSON.stringify(manifest)), executable: false },
+      { path: "amp/package.json", content: encode('{"name":"notes"}'), executable: false },
+      { path: "amp/dist/main.js", content: encode("export default (amp) => amp.registerSkill({ path: 'skills/notes' });\n"), executable: false },
+      { path: "amp/skills/notes/SKILL.md", content: encode(skill), executable: false },
+    ];
+    const model = { ...emptyModel(f.folder), harnesses: ["amp" as const], plugins: [{ id: "notes", manifest, files, digest: nativePluginDigest(manifest, files), reviewed: true }] };
+    const layout = adapterFor("amp").layout(f.context, model);
+    const loader = layout.surfaces.find((surface) => surface.id === "plugin")!;
+    const projected = projectNativePlugins(model, "amp", f.context, layout, { contents: [], diagnostics: [] });
+    expect(projected.layout.surfaces.find((surface) => surface.id === "native-plugin-notes")?.target).toBe(join(dirname(loader.target), "canonfig-notes"));
+    const content = projected.projection.contents.find((entry) => entry.surface === "native-plugin-notes");
+    if (content?.kind !== "directory") throw new Error("expected the package as a directory");
+    expect(content.files.map((file) => file.path).sort()).toEqual(["dist/main.js", "index.ts", "package.json", "skills/notes/SKILL.md"]);
+    expect(new TextDecoder().decode(content.files.find((file) => file.path === "index.ts")!.content)).toBe('export { default } from "./dist/main.js";\n');
   });
 });

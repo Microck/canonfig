@@ -144,10 +144,13 @@ if (denied || (failed && hook.onFailure === "block")) {
   process.exit(2);
 }
 if (failed && hook.onFailure === "warn") console.error(reason);
-if (output?.message) console.log(String(output.message));
-else if (result.stdout && !output) process.stdout.write(result.stdout);
-if (target === "cursor" && event === "before_tool") console.log(JSON.stringify({ permission: "allow" }));
-if (target === "antigravity" && event === "before_tool") console.log(JSON.stringify({ decision: "allow" }));
+// Cursor and Antigravity read stdout as exactly one JSON permission object, so a hook's own text goes to stderr there.
+const permission = event === "before_tool" && (target === "cursor" || target === "antigravity");
+const say = permission ? (text) => process.stderr.write(text) : (text) => process.stdout.write(text);
+if (output?.message) say(String(output.message) + "\\n");
+else if (result.stdout && !output) say(result.stdout);
+if (target === "cursor" && permission) console.log(JSON.stringify({ permission: "allow" }));
+if (target === "antigravity" && permission) console.log(JSON.stringify({ decision: "allow" }));
 process.exit(0);
 `;
 }

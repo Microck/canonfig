@@ -374,7 +374,7 @@ function shieldChapter(ws: Workspace): TourChapter {
       {
         target: ["shield-switch"],
         title: "Shield",
-        body: "When an agent or installer adds a skill, MCP server or plugin, Shield puts it in your Canonfig folder instead of a harness folder.",
+        body: "When an agent or installer adds a skill, MCP server or plugin, Shield sends it to your Canonfig folder instead of a harness folder. Anything that gets past it, like an installer started by its full path, moves there at the next sync.",
         before: () => ws.setView("shield"),
       },
       {

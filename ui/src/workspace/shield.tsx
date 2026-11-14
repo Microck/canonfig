@@ -19,7 +19,10 @@ import { CliText, Mono, StatusMark } from "@/shared/shared";
 import { usePrefersReducedMotion } from "@/lib/dither";
 import { cn, SNAP } from "@/lib/utils";
 import type { GuiShield, GuiShieldPlugin } from "../../../src/gui/contract/shield";
-import { Body, PageHeader } from "./kit";
+import { ErrorNotice } from "../live/session";
+import { Body, PageHeader, useDialogReturnFocus } from "./kit";
+import type { ResourceState } from "./workspace-types";
+import { focusPageHeading } from "./routes";
 import { useWorkspace } from "./store";
 
 const ENTER = { duration: 0.2, ease: SNAP };
@@ -116,14 +119,17 @@ function LogRow({ row, index, reduced, shield, onReview }: { row: Row; index: nu
   );
 }
 
-function ReviewDialog({ plugin, busy, onClose, onDecide }: { plugin: GuiShieldPlugin; busy: boolean; onClose: () => void; onDecide: (approve: boolean) => void }) {
+function ReviewDialog({ plugin, busy, error, onClose, onDecide }: { plugin: GuiShieldPlugin; busy: boolean; error: ResourceState["error"]; onClose: () => void; onDecide: (approve: boolean) => void }) {
+  // Opened from state, so focus goes back to the Review button, or to the heading once a decision removed it.
+  const returnFocus = useDialogReturnFocus(focusPageHeading);
   return (
     <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
-      <DialogContent className="grid-cols-[minmax(0,1fr)] gap-5 sm:max-w-[520px]">
+      <DialogContent className="grid-cols-[minmax(0,1fr)] gap-5 sm:max-w-[520px]" {...returnFocus}>
         <DialogHeader>
           <DialogTitle>Review {plugin.id}</DialogTitle>
           <DialogDescription>A {plugin.harnesses.map(harnessName).join(" and ")} plugin. It runs code on this machine.</DialogDescription>
         </DialogHeader>
+        {error && <ErrorNotice error={error} />}
         {(plugin.entries.length > 0 || plugin.requires.length > 0) && (
           <dl className="grid grid-cols-[72px_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm">
             {plugin.entries.length > 0 && <><dt className="text-faint">Runs</dt><dd className="grid gap-1">{plugin.entries.map((entry) => <Mono key={entry} className="[overflow-wrap:anywhere]">{entry}</Mono>)}</dd></>}
@@ -160,9 +166,10 @@ export function ShieldView() {
   }
   const listed = ws.harnesses.filter((harness) => harness.listed && !harness.excluded);
   const hooked = (id: HarnessId) => SURFACE_SUPPORT[id].includes("hooks");
-  /** ok: hooked and projected. warn: hooked, waiting for a sync. off: Shield off, or no hook support. */
-  const protection = (id: HarnessId) => !status.enabled || !hooked(id) ? "off" : status.projected ? "ok" : "warn";
+  /** ok: hooked and its applied output carries Shield. warn: hooked, waiting for a sync. off: Shield off, or no hook support. */
+  const protection = (id: HarnessId) => !status.enabled || !hooked(id) ? "off" : status.projected.includes(id) ? "ok" : "warn";
   const covered = listed.filter((harness) => protection(harness.id) === "ok").length;
+  const syncPending = status.enabled ? listed.some((harness) => protection(harness.id) === "warn") : status.projected.length > 0;
   const decide = async (plugin: GuiShieldPlugin, approve: boolean) => {
     const done = await ws.shield.run(approve ? { action: "review", id: plugin.id, digest: plugin.digest } : { action: "exclude", id: plugin.id });
     if (done) setReviewing(null);
@@ -182,7 +189,7 @@ export function ShieldView() {
                 </span>
                 <Switch checked={status.enabled} disabled={busy} aria-label="Shield" onCheckedChange={(on) => void ws.shield.run(on ? { action: "enable", hard: false } : { action: "disable" })} />
               </label>
-              <Fold show={status.enabled !== status.projected} reduced={reduced}>
+              <Fold show={syncPending} reduced={reduced}>
                 <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-warn/10 px-3 py-2 text-sm">
                   {ws.role === "follower"
                     ? <><span>Takes effect after the next sync and a harness restart.</span><Button size="xs" variant="outline" onClick={() => ws.setView("sync")}>Open Sync</Button></>
@@ -255,7 +262,7 @@ export function ShieldView() {
             </label>
           </aside>
         </div>
-        {reviewing && <ReviewDialog plugin={reviewing} busy={busy} onClose={() => setReviewing(null)} onDecide={(approve) => void decide(reviewing, approve)} />}
+        {reviewing && <ReviewDialog plugin={reviewing} busy={busy} error={ws.shield.action.error} onClose={() => setReviewing(null)} onDecide={(approve) => void decide(reviewing, approve)} />}
       </Body>
     </>
   );

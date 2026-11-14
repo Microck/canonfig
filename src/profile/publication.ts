@@ -52,7 +52,7 @@ import {
   PublicationSourceError,
   type ProfileCatalogPublishError,
 } from "./profile-catalog.errors.ts";
-import { asJson, canonicalJson } from "./profile-codec.ts";
+import { asJson, canonicalJson, sha256BytesHex } from "./profile-codec.ts";
 
 /**
  * Publication: `canonfig source publish` compiles the Canonical Folder into
@@ -196,6 +196,9 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
 
   // One manifest owns every payload file, so group filtering cannot expose a
   // partial package. The existing blob digests and revision signature cover code.
+  // Each file declares the digest of the bytes the review checked, so a file that
+  // changes on disk before signing fails publication instead of shipping unreviewed.
+  const reviewed = (item: ProfileResourceInput, content: Uint8Array): ProfileResourceInput => ({ ...item, verify: { method: "digest", digest: sha256BytesHex(content) } });
   const pluginFileUsers = new Map<string, ReadonlyArray<string>>();
   for (const plugin of authored.plugins) {
     if (!plugin.reviewed) throw refuse(`plugins/${plugin.id} needs review of digest ${plugin.digest}; run 'canonfig shield review ${plugin.id} --digest ${plugin.digest} --reviewer <name>' after inspecting its files`);
@@ -207,11 +210,13 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
     for (const file of plugin.files) {
       if (file.path === "plugin.jsonc") continue;
       const id = `plugin-files:${plugin.id}:${Buffer.from(file.path).toString("base64url")}`;
-      resources.push(fileItem(id, `plugins/${plugin.id}/${file.path}`, file.executable));
+      resources.push(reviewed(fileItem(id, `plugins/${plugin.id}/${file.path}`, file.executable), file.content));
       dependencies.push(id);
       pluginFileUsers.set(id, [`plugins:${plugin.id}`]);
     }
-    resources.push({ ...fileItem(`plugins:${plugin.id}`, `plugins/${plugin.id}/plugin.jsonc`, false), dependsOn: dependencies });
+    const manifest = plugin.files.find((file) => file.path === "plugin.jsonc");
+    if (manifest === undefined) throw refuse(`plugins/${plugin.id} has no plugin.jsonc`);
+    resources.push({ ...reviewed(fileItem(`plugins:${plugin.id}`, `plugins/${plugin.id}/plugin.jsonc`, false), manifest.content), dependsOn: dependencies });
   }
 
   // Hooks: the definition is a JSON item, the script it runs a file item.

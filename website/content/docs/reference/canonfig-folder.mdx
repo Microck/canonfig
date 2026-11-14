@@ -332,7 +332,7 @@ array and a `directory` within the item. Platforms are `linux`, `macos` and
 separate directories for platform-specific binaries or dependencies.
 
 Claude packages need `.claude-plugin/plugin.json`; Codex packages need
-`.codex-plugin/plugin.json`; Qwen packages need `gemini-extension.json`.
+`.codex-plugin/plugin.json`; Qwen packages need `qwen-extension.json`.
 The other loaders need `package.json` and an `entry` module within the package.
 Bundle file dependencies as regular files. Declare external tools in `requires`
 using `tools/<id>` entries from `canonfig.jsonc`, whose recipes select the platform.

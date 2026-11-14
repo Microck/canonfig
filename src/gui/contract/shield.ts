@@ -7,7 +7,8 @@ export const GuiShieldStatus = Schema.Struct({
   hard: Schema.Boolean,
   scope: Schema.Literals(["canonical", "local"]),
   destination: Schema.String,
-  projected: Schema.Boolean,
+  /** Harnesses whose applied output carries the Shield hook; empty until a sync projects it. */
+  projected: Schema.Array(Schema.String),
   excludedPlugins: Schema.Array(Schema.String),
   note: Schema.String,
 });

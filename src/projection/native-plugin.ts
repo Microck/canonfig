@@ -55,7 +55,8 @@ export const nativeManifestPath = (harness: NativePluginVariant["harness"]): str
   switch (harness) {
     case "claude-code": return ".claude-plugin/plugin.json";
     case "codex": return ".codex-plugin/plugin.json";
-    case "qwen": return "gemini-extension.json";
+    // Installed Qwen extensions carry qwen-extension.json; Qwen's installer converts Gemini and Claude manifests to it.
+    case "qwen": return "qwen-extension.json";
     default: return "package.json";
   }
 };
@@ -136,6 +137,19 @@ export const projectNativePlugins = (
       const surface = surfaces.find((entry) => entry.id === "skills");
       if (surface?.kind !== "directory") throw new Error("Claude skills directory is unavailable");
       add(surface, { kind: "directory", surface: surface.id, files: files.map((file) => ({ ...file, path: `${pkg.name}/${file.path}` })) });
+      continue;
+    }
+    if (harness === "amp" && variant.entry !== undefined) {
+      // Amp resolves a plugin's relative registerSkill paths against a directory plugin's root, never a single-file
+      // plugin's, so the package itself becomes <plugins>/canonfig-<id>/ with index.ts as Amp's entry.
+      const native = surfaces.find((entry) => entry.id === "plugin");
+      if (native?.kind !== "file") throw new Error("amp has no native module loader");
+      const directory = native.target.replace(/canonfig\.ts$/u, `canonfig-${plugin.id}`);
+      if (directory === native.target) throw new Error("amp has an unknown module discovery path");
+      const own = variant.entry === "index.ts" || (variant.entry === "index.js" && !files.some((file) => file.path === "index.ts"));
+      if (!own && files.some((file) => file.path === "index.ts")) throw new Error(`plugins/${plugin.id}: Amp would load the package's index.ts instead of ${variant.entry}`);
+      const loader = own ? [] : [{ path: "index.ts", content: new TextEncoder().encode(`export { default } from ${JSON.stringify(`./${variant.entry}`)};\n`), executable: false }];
+      add({ id, kind: "directory", target: directory }, { kind: "directory", surface: id, files: [...files, ...loader] });
       continue;
     }
     const target = harness === "codex" ? context.join(layout.root, "plugins", "cache", "canonfig", pkg.name, "local")

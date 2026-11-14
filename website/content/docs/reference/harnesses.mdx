@@ -138,7 +138,7 @@ under your home (default `.omp`), and a named profile in `OMP_PROFILE` or
 
 ### `opencode`
 
-- **Owns:** `AGENTS.md`, `skills/`, `agents/`, `commands/`, `plugins/canonfig.ts` (tool hooks).
+- **Owns:** `AGENTS.md`, `skills/`, `agents/`, `commands/`, `plugins/canonfig.ts` (tool hooks, written for the OpenCode 2 plugin API; OpenCode 1 does not run them, so update OpenCode before relying on hooks or Shield there).
 - **Keys:** `opencode.json` (or `opencode.jsonc`): `mcp`, declared settings.
 - **Never touches:** `~/.local/share/opencode/` (it holds `auth.json`), `~/.cache/opencode/`, and the `provider` key.
 - **Not projected:** lifecycle hooks other than tool events.

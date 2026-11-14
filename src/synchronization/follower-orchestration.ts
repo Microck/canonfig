@@ -71,6 +71,7 @@ import {
   sha256BytesHex,
   sha256Hex,
 } from "../profile/profile-codec.ts";
+import { ActiveRunExistsError } from "../state/state-repository.errors.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { Synchronization } from "./synchronization.service.ts";
 import { renderConfigDocument } from "./config-codec.ts";
@@ -479,6 +480,11 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
   });
   const policyCurrent = diskConfig !== undefined && Buffer.from(configContent).equals(diskConfig);
   if (ingest && loaded.local.shield?.enabled && policyCurrent) {
+    // Ingestion writes local items and removes native ones, so it waits until any unfinished run is recovered,
+    // the same refusal startRun gives later.
+    if ((yield* repository.loadRecovery(configuration.follower.id)) !== undefined) {
+      return yield* new ActiveRunExistsError({ follower: configuration.follower.id });
+    }
     const report = yield* ingestShield({ target: { folder, scope: "local", statePath: configuration.stateLocation }, context, loaded, applied: appliedResources });
     if (report.imported.length > 0) loaded = yield* Effect.tryPromise({
       try: () => loadCanonicalFolder(folder, mirrorFiles),

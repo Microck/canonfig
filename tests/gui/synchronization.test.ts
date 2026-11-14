@@ -120,7 +120,7 @@ it("serves real role-gated secrets and a verified Source archive without leaking
   // Shield is per machine: the Source reads and changes its own policy, and a review of a missing plugin is refused.
   expect((await api.call("/api/shield")).payload).toMatchObject({ status: { enabled: false, scope: "canonical" }, log: [], plugins: [] });
   expect((await api.call("/api/shield", "POST", { action: "enable", hard: false })).payload).toMatchObject({ enabled: true, hard: false });
-  expect((await api.call("/api/shield")).payload).toMatchObject({ status: { enabled: true, projected: false } });
+  expect((await api.call("/api/shield")).payload).toMatchObject({ status: { enabled: true, projected: [] } });
   expect((await api.call("/api/shield", "POST", { action: "review", id: "missing", digest: "0".repeat(64) })).status).not.toBe(200);
   expect((await api.call("/api/shield", "POST", { action: "disable" })).payload).toMatchObject({ enabled: false });
   for (const [path, method, body] of [

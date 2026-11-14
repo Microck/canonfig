@@ -578,8 +578,8 @@ const harnessProbe = (
 const shieldProbe = (statePath: string, machine: MachineState["Service"]) =>
   Effect.gen(function*() {
     const status = yield* shieldStatus(statePath);
-    const details = { enabled: status.enabled, projected: status.projected, hard: status.hard, destination: status.destination };
-    if (status.enabled !== status.projected) return {
+    const details = { enabled: status.enabled, projected: status.projected.join(", "), hard: status.hard, destination: status.destination };
+    if (status.enabled !== (status.projected.length > 0)) return {
       name: "shield" as const, status: "warning" as const, details,
       message: "Shield policy and projected hooks differ; run 'canonfig sync --apply' and reload clients.",
     };

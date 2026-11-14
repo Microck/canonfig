@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -11,7 +12,7 @@ import { adapterFor } from "../projection/adapters/index.ts";
 import { editAuthoringConfig, readAuthoringItem, writeAuthoringItems, type AuthoringTarget } from "../projection/authoring.ts";
 import { CanonicalFolderError, decodeLocalConfig, loadCanonicalFolder } from "../projection/folder.ts";
 import { NativePluginManifest, NATIVE_PLUGIN_HARNESSES, nativePluginDigest } from "../projection/native-plugin.ts";
-import { rootContext } from "../projection/plan.ts";
+import { parseSurfaceResourceId, rootContext } from "../projection/plan.ts";
 import { ingestShield } from "../projection/shield-ingest.ts";
 import { addNativePlugin, installerKind, redirectInstaller, shieldLaunch } from "../projection/shield-install.ts";
 import { shieldPaths } from "../projection/shield.ts";
@@ -45,7 +46,7 @@ export const shieldStatus = Effect.fn("Shield.status")(function*(statePath: stri
   });
   const applied = yield* repository.loadAppliedResources(configuration?.follower.id ?? localProjectionFollower);
   const registries = applied.filter((record) => record.resource.startsWith("runtime:hooks:"));
-  const projected = yield* Effect.tryPromise({
+  const registered = yield* Effect.tryPromise({
     try: async () => {
       for (const record of registries) {
         const text = await readFile(record.target, "utf8").catch((error) => {
@@ -59,6 +60,9 @@ export const shieldStatus = Effect.fn("Shield.status")(function*(statePath: stri
       return false;
     }, catch: (error) => new CanonicalFolderError({ path: folder, message: `Cannot read Shield hook registry: ${String(error)}` }),
   });
+  // Every hooked harness's output depends on the shared registry, so a harness carries the Shield hook once the
+  // registry has it and that harness has been applied. A harness listed since the last sync has no applied output.
+  const projected = registered ? [...new Set(applied.flatMap((record) => parseSurfaceResourceId(record.resource)?.harness ?? []))].sort() : [];
   return { enabled: policy.shield?.enabled ?? false, hard: policy.shield?.hard ?? false,
     scope: configuration === undefined ? "canonical" as const : "local" as const,
     destination: configuration === undefined ? folder : join(folder, "local"),
@@ -88,8 +92,12 @@ export const runShield = Effect.fn("Shield.command")(function*(statePath: string
   }
   if (!status.enabled) return yield* new CanonicalFolderError({ path: folder, message: "Enable Shield first with 'canonfig shield enable'." });
   if (input.action === "include" || input.action === "exclude") {
+    // Build the list from the same snapshot as the digest, so a concurrent exclusion is never dropped.
     const current = yield* readAuthoringItem(local, "local.jsonc");
-    const exclusions = input.action === "exclude" ? [...new Set([...status.excludedPlugins, input.id])] : status.excludedPlugins.filter((id) => id !== input.id);
+    const path = join(folder, "local", "local.jsonc");
+    const text = current.files[0] === undefined ? "{}" : new TextDecoder().decode(current.files[0].content);
+    const excluded = (yield* Effect.try({ try: () => decodeLocalConfig(path, text), catch: (error) => new CanonicalFolderError({ path, message: String(error) }) })).excludePlugins ?? [];
+    const exclusions = input.action === "exclude" ? [...new Set([...excluded, input.id])] : excluded.filter((id) => id !== input.id);
     yield* editAuthoringConfig(local, current.digest, [{ path: ["excludePlugins"], value: exclusions }]);
     return { excludedPlugins: exclusions, next: "canonfig sync --apply" };
   }
@@ -172,10 +180,15 @@ process.exit(result.status ?? 1);
       }
       args = ["--die-with-parent", "--unshare-pid", "--bind", "/", "/", "--proc", "/proc", "--cap-drop", "ALL", ...mounts, "--", program.executable.absolute, ...args];
     }
-    const result = yield* machine.runProcess({ executable, arguments: args,
-      environment: [{ name: "PATH", value: `${temporary}${delimiter}${originalPath}` }],
-      timeoutMilliseconds: 300000, maximumOutputBytes: 8 * 1024 * 1024 });
-    if (result.exitCode !== 0) return yield* new CanonicalFolderError({ path: folder, message: `Shield command exited ${result.exitCode}: ${new TextDecoder().decode(result.standardError)}` });
-    return { exitCode: result.exitCode, stdout: new TextDecoder().decode(result.standardOutput), stderr: new TextDecoder().decode(result.standardError), hard: status.hard };
+    // `shield run` wraps agent sessions, so the child shares this terminal: inherited stdin, stdout and stderr, and
+    // no deadline. machine.runProcess captures output for bounded commands, which an interactive harness can't use.
+    const command = { executable: executable.absolute, args };
+    const exitCode = yield* Effect.callback<number, CanonicalFolderError>((resume) => {
+      const child = spawn(command.executable, command.args, { stdio: "inherit", env: { ...process.env, PATH: `${temporary}${delimiter}${originalPath}` } });
+      child.once("error", (error) => resume(Effect.fail(new CanonicalFolderError({ path: command.executable, message: String(error) }))));
+      child.once("exit", (code, signal) => resume(Effect.succeed(code ?? (signal === null ? 1 : 128))));
+    });
+    if (exitCode !== 0) return yield* new CanonicalFolderError({ path: folder, message: `Shield command exited ${exitCode}` });
+    return { exitCode, hard: status.hard };
   }).pipe(Effect.ensuring(Effect.promise(() => rm(temporary, { recursive: true, force: true }))));
 });

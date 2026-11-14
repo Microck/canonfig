@@ -12,7 +12,8 @@ function seed(role: "source" | "follower", folder: string): GuiShield {
   const now = Date.now();
   const ago = (hours: number) => new Date(now - hours * 3_600_000).toISOString();
   return {
-    status: { enabled: true, hard: false, scope: role === "source" ? "canonical" : "local", destination: role === "source" ? folder : `${folder}/local`, projected: true, excludedPlugins: ["scrape-everything"], note: NOTE },
+    status: { enabled: true, hard: false, scope: role === "source" ? "canonical" : "local", destination: role === "source" ? folder : `${folder}/local`,
+      projected: ["amp", "claude-code", "codex", "copilot-cli", "opencode"], excludedPlugins: ["scrape-everything"], note: NOTE },
     log: [
       { at: ago(1.5), kind: "blocked", harness: "claude-code", path: "~/.claude/skills/pdf-tools/SKILL.md" },
       { at: ago(2), kind: "blocked", harness: "codex", installer: "codex mcp add" },
