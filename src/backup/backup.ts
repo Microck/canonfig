@@ -24,8 +24,8 @@ import { backupOwner, backupPassword, BackupError, backupWork, localBackupPath, 
 import { BackupIoError, hashBackupFile, readBackupMetadata } from "./backup-io.ts";
 import { captureRecovery, readRecovery, restoreRecovery, withRecoveryCredentials, type Recovery } from "./backup-recovery.ts";
 import { backupScheduleStatus, reconcileBackupSchedules } from "./backup-schedule.ts";
-import { listBackupOwners, openBackupStorage, type BackupStorage } from "./backup-storage.ts";
-import { BackupName, BackupPolicy, retainedSnapshots, type BackupOutcome, type BackupRequest, type BackupSnapshot, type LocalBackups } from "./backup.types.ts";
+import { checkBackupDestination, listBackupOwners, openBackupStorage, type BackupStorage } from "./backup-storage.ts";
+import { BackupName, BackupPolicy, capturesCredentials, retainedSnapshots, type BackupOutcome, type BackupRequest, type BackupSnapshot, type LocalBackups } from "./backup.types.ts";
 
 interface BackupContext {
   readonly statePath: string;
@@ -58,10 +58,38 @@ const readPasswordInput = () => backupWork("Read backup password", async () => {
   return Redacted.make(value);
 });
 
-const configure = (folder: string, request: Extract<BackupRequest, { readonly action: "configure" }>) => Effect.gen(function*() {
-  const policy = yield* Schema.decodeUnknownEffect(BackupPolicy)(request.policy).pipe(Effect.mapError(() => new BackupError({ code: "BACKUP_INVALID", message: "The backup policy does not match the documented schema" })));
+/**
+ * Everything a run will need from this machine and its destination, checked now instead of at 3am: the
+ * policy rules, the password alias, the compressor and scanner tools, and the destination itself. Blocking
+ * problems fail; an unreachable host and missing local consent come back as warnings, since the run can
+ * still succeed once the host is online or someone allows the capture.
+ */
+const checkBackup = (folder: string, name: string, policy: BackupPolicy, local: LocalBackups, allowCredentials: boolean) => Effect.gen(function*() {
   const problem = validateBackupPolicy(policy);
   if (problem !== undefined) return yield* new BackupError({ code: "BACKUP_INVALID", message: problem });
+  yield* backupPassword(policy, local);
+  const machine = yield* MachineState;
+  const need = (tool: string, message: string) => machine.findExecutable({ name: tool }).pipe(Effect.mapError(() => new BackupError({ code: "BACKUP_TOOL_REQUIRED", message })));
+  if (policy.compression === "small" || policy.compression === "max") yield* need("xz", `${policy.compression} compression needs xz. Install xz, or choose fast or balanced compression.`);
+  if (policy.compression === "max") yield* need("zpaq-stream", "max compression needs zpaq-stream. Install it, or choose another compression level.");
+  if (policy.destination.kind === "git" && policy.passwordReference === undefined) {
+    yield* need("gitleaks", "An unencrypted Git backup needs gitleaks to scan for secrets before each push. Install gitleaks, or turn on encryption.");
+  }
+  const owner = yield* backupOwner(folder);
+  const destination = yield* Effect.acquireUseRelease(
+    backupWork("Create private backup staging", () => mkdtemp(join(tmpdir(), "canonfig-backup-check-"))),
+    scratch => backupWork("Check backup destination", signal => checkBackupDestination({ destination: policy.destination, policy: name, owner, scratch, signal })),
+    scratch => Effect.promise(() => rm(scratch, { recursive: true, force: true })),
+  );
+  const consent = capturesCredentials(policy) && !allowCredentials && !local.allowCredentials.includes(name)
+    ? [`${name} copies sign-in data or keys, so it won't run until you allow it on this machine.`] : [];
+  return { warnings: [...consent, ...destination.warnings] };
+});
+
+const configure = (folder: string, request: Extract<BackupRequest, { readonly action: "configure" }>) => Effect.gen(function*() {
+  const policy = yield* Schema.decodeUnknownEffect(BackupPolicy)(request.policy).pipe(Effect.mapError(() => new BackupError({ code: "BACKUP_INVALID", message: "The backup policy does not match the documented schema" })));
+  // A policy that can't run is refused before it is saved or scheduled.
+  const checked = yield* checkBackup(folder, request.name, policy, yield* readLocalBackups(folder), request.allowCredentials === true);
   yield* withRunLock(localBackupPath(folder), "configure backup", Effect.gen(function*() {
     const local = yield* readLocalBackups(folder);
     yield* writeLocalBackups(folder, { ...local, policies: { ...local.policies, [request.name]: policy },
@@ -70,10 +98,18 @@ const configure = (folder: string, request: Extract<BackupRequest, { readonly ac
         : request.allowCredentials ? [...new Set([...local.allowCredentials, request.name])]
         : local.allowCredentials.filter(name => name !== request.name) });
   }));
-  return { configured: request.name, schedules: yield* reconcileBackupSchedules(folder) };
+  return { configured: request.name, warnings: checked.warnings, schedules: yield* reconcileBackupSchedules(folder) };
 });
 
 const changeConfiguration = (folder: string, request: Extract<BackupRequest, { readonly action: "disable" | "enable" | "allow-credentials" | "deny-credentials" }>) => Effect.gen(function*() {
+  // Turning a schedule back on checks the policy first, like saving it does.
+  let warnings: ReadonlyArray<string> = [];
+  if (request.action === "enable") {
+    const { local, policies } = yield* readBackupPolicies(folder);
+    const policy = policies[request.name];
+    if (policy === undefined) return yield* new BackupError({ code: "BACKUP_INVALID", message: "No backup policy has that name" });
+    warnings = (yield* checkBackup(folder, request.name, policy, local, false)).warnings;
+  }
   yield* withRunLock(localBackupPath(folder), "change backup policy", Effect.gen(function*() {
     const { local, policies } = yield* readBackupPolicies(folder);
     if (policies[request.name] === undefined) return yield* new BackupError({ code: "BACKUP_INVALID", message: "No backup policy has that name" });
@@ -85,7 +121,15 @@ const changeConfiguration = (folder: string, request: Extract<BackupRequest, { r
     if (request.action === "deny-credentials") allowed.delete(request.name);
     yield* writeLocalBackups(folder, { ...local, disabled: [...disabled], allowCredentials: [...allowed] });
   }));
-  return { changed: request.name, action: request.action, schedules: yield* reconcileBackupSchedules(folder) };
+  return { changed: request.name, action: request.action, warnings, schedules: yield* reconcileBackupSchedules(folder) };
+});
+
+/** `backup check`: the same preflight against the saved policy, or against a draft the GUI hasn't saved yet. */
+const check = (folder: string, request: Extract<BackupRequest, { readonly action: "check" }>) => Effect.gen(function*() {
+  const { local, policies } = yield* readBackupPolicies(folder);
+  const policy = request.policy ?? policies[request.name];
+  if (policy === undefined) return yield* new BackupError({ code: "BACKUP_INVALID", message: "No backup policy has that name" });
+  return { checked: request.name, ...yield* checkBackup(folder, request.name, policy, local, false) };
 });
 
 const withStorage = <A, E, R>(folder: string, name: string, owner: string | undefined, use: (opened: OpenBackup) => Effect.Effect<A, E, R>) =>
@@ -105,9 +149,10 @@ const withStorage = <A, E, R>(folder: string, name: string, owner: string | unde
     );
   }));
 
-const capture = (context: BackupContext, opened: OpenBackup) => Effect.gen(function*() {
+const capture = (context: BackupContext, opened: OpenBackup, scheduled: boolean) => Effect.gen(function*() {
   yield* requireCapturePermission(opened.name, opened.policy, opened.local);
-  if (opened.local.disabled.includes(opened.name)) return yield* new BackupError({ code: "BACKUP_INVALID", message: "This backup policy is disabled locally" });
+  // Pausing stops the schedule; "Back up now" and `backup run` still work, as the GUI says.
+  if (scheduled && opened.local.disabled.includes(opened.name)) return yield* new BackupError({ code: "BACKUP_INVALID", message: "This backup policy is paused on this machine" });
   const password = yield* backupPassword(opened.policy, opened.local);
   const captured = yield* withRunLock(context.statePath, "capture backup", Effect.gen(function*() {
     const folder = dirname(context.statePath);
@@ -308,6 +353,7 @@ export const backupCommand = Effect.fn("Backup.command")(function*(context: Back
     return yield* configure(folder, { action: "configure", name: request.name, policy, allowCredentials: request.allowCredentials });
   }
   if (request.action === "configure") return yield* configure(folder, request);
+  if (request.action === "check") return yield* check(folder, request);
   if (request.action === "disable" || request.action === "enable" || request.action === "allow-credentials" || request.action === "deny-credentials") return yield* changeConfiguration(folder, request);
   if (request.action === "password") return yield* withRunLock(localBackupPath(folder), "set backup password", Effect.gen(function*() {
     const local = yield* readLocalBackups(folder);
@@ -329,7 +375,7 @@ export const backupCommand = Effect.fn("Backup.command")(function*(context: Back
     if (request.action === "owners") return { owners: yield* backupWork("List backup owners", signal => listBackupOwners({ destination: opened.policy.destination, policy: opened.name, scratch: opened.scratch, signal })) };
     if (request.action === "list") return { owner: opened.owner, snapshots: newestFirst(yield* backupWork("List backup snapshots", () => opened.storage.list())) };
     if (request.action === "run") {
-      const captured = yield* capture(context, opened);
+      const captured = yield* capture(context, opened, request.scheduled === true);
       yield* record("run", { ok: true, bytes: captured.snapshot.bytes, files: captured.snapshot.files });
       return captured;
     }

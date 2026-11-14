@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Schema } from "effect";
-import { GuiBackupList, GuiBackupStatus, type GuiBackupRequest } from "../../../../src/gui/contract/backup";
+import { GuiBackupList, GuiBackupStatus, GuiBackupWarnings, type GuiBackupRequest } from "../../../../src/gui/contract/backup";
 import type { WorkspaceBackend } from "../../gui-client";
 import type { BackupSlice } from "../workspace-types";
 import { resourceState, useLiveActions, useLiveResource } from "./resource";
@@ -10,12 +10,18 @@ export function useLiveBackups(backend: WorkspaceBackend, reload: () => void): B
   const status = useLiveResource(backend, "/api/backup/status", GuiBackupStatus, true);
   const actions = useLiveActions(backend, reload);
   const [listings, setListings] = useState<BackupSlice["listings"]>({});
-  const run = (input: GuiBackupRequest) => actions.run(async signal => {
-    const operation = await actions.operation("/api/backup", input, signal);
-    signal.throwIfAborted();
-    if (input.action === "list" && input.owner === undefined) setListings(previous => ({ ...previous, [input.name]: Schema.decodeUnknownSync(GuiBackupList)(operation.result) }));
-    // A run, retention change or new destination makes that policy's listed copies stale.
-    if (input.action === "run" || input.action === "prune" || input.action === "configure") setListings(({ [input.name]: _stale, ...rest }) => rest);
-  }, { reload: input.action !== "list" && input.action !== "owners" });
+  const run = async (input: GuiBackupRequest) => {
+    let warnings: ReadonlyArray<string> = [];
+    const done = await actions.run(async signal => {
+      const operation = await actions.operation("/api/backup", input, signal);
+      signal.throwIfAborted();
+      if (input.action === "list" && input.owner === undefined) setListings(previous => ({ ...previous, [input.name]: Schema.decodeUnknownSync(GuiBackupList)(operation.result) }));
+      // Save, resume and check run the destination preflight; what it could not settle comes back as warnings.
+      if (input.action === "configure" || input.action === "enable" || input.action === "check") warnings = Schema.decodeUnknownSync(GuiBackupWarnings)(operation.result).warnings;
+      // A run, retention change or new destination makes that policy's listed copies stale.
+      if (input.action === "run" || input.action === "prune" || input.action === "configure") setListings(({ [input.name]: _stale, ...rest }) => rest);
+    }, { reload: input.action !== "list" && input.action !== "owners" && input.action !== "check" });
+    return done ? { warnings } : null;
+  };
   return { status: status.data, state: resourceState([status]), action: actions.state, listings, run };
 }

@@ -5,6 +5,7 @@ import { Schema } from "effect";
 import { GuiBackupStatus, type GuiBackupRequest } from "../../../src/gui/contract/backup";
 import { BackupSnapshot } from "../../../src/backup/backup.types";
 import type { BackupSlice } from "./workspace-types";
+import { GuiRequestError } from "../gui-client";
 
 const READY = { loading: false, error: null };
 const DAY = 86_400_000;
@@ -73,10 +74,20 @@ export function useSimulatedBackups(role: "source" | "follower", owner: string):
   const withRuns = (status: Status, name: string, kind: "run" | "drill", outcome: Status["runs"][string]["run"]) =>
     ({ ...status, runs: { ...status.runs, [name]: { ...status.runs[name], [kind]: outcome } } });
 
-  const run = async (request: GuiBackupRequest): Promise<boolean> => {
+  // The demo machine has these rclone remotes; saving a cloud backup that names another fails like the real check.
+  const demoRemotes = ["gdrive", "onedrive"];
+  const run = async (request: GuiBackupRequest): Promise<{ readonly warnings: ReadonlyArray<string> } | null> => {
     const slow = request.action === "run" || request.action === "drill" || request.action === "restore" || request.action === "list" || request.action === "owners";
     setAction({ loading: true, error: null });
     if (slow) await new Promise((resolve) => window.setTimeout(resolve, request.action === "list" ? 300 : 1200));
+    if (request.action === "configure" && request.policy.destination.kind === "rclone") {
+      const remote = request.policy.destination.remote.split(":")[0] ?? "";
+      if (!demoRemotes.includes(remote)) {
+        setAction({ loading: false, error: new GuiRequestError({ category: "usage-or-configuration", exitCode: 2,
+          message: `rclone has no remote called "${remote}". Run rclone config to add it, or use one of: ${demoRemotes.join(", ")}.` }) });
+        return null;
+      }
+    }
     const at = new Date().toISOString();
     switch (request.action) {
       case "configure": update((status) => {
@@ -103,7 +114,7 @@ export function useSimulatedBackups(role: "source" | "follower", owner: string):
       default: break;
     }
     setAction(READY);
-    return true;
+    return { warnings: [] };
   };
   return { status: state.status, state: READY, action, listings, run };
 }

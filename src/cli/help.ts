@@ -41,6 +41,7 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     usage: [
       "backup status",
       "backup configure <name> --policy <policy.json> [--allow-credentials]",
+      "backup check <name>",
       "backup password <alias> --stdin",
       "backup run <name>",
       "backup owners <name>",
@@ -60,6 +61,7 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
       "Losing the password loses the encrypted backups. Keep a separate recovery copy.",
       "Full harness histories, Source identity and shared secrets require encryption. Credential capture also needs local consent.",
       "configure and schedule reconcile native backup and restore-drill jobs, never the synchronization job.",
+      "configure, enable and check test the destination, password and tools first. A missing tool, remote, sign-in or write access is refused; an unreachable host is only a warning.",
       "run reads back the stored archive before applying retention. prune previews deletion unless --apply is supplied.",
       "restore --to writes only a new private HOME. --recover-credentials imports identity and secrets into new native secure-store references.",
       "restore --apply uses the existing Canonical Folder import and Projection path; harness histories are not applied live.",

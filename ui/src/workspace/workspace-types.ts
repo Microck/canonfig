@@ -402,7 +402,8 @@ export interface BackupSlice {
   action: ResourceState;
   /** This machine's copies of each policy, from its last `list`. A run or prune drops that policy's entry. */
   listings: Readonly<Record<string, GuiBackupList>>;
-  run: (request: GuiBackupRequest) => Promise<boolean>;
+  /** Resolves to the action's warnings once it succeeded (empty for actions without a preflight), or null when it failed. */
+  run: (request: GuiBackupRequest) => Promise<{ readonly warnings: ReadonlyArray<string> } | null>;
 }
 
 /** The single store contract consumed by all workspace screens. */

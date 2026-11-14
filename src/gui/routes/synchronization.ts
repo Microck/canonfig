@@ -118,8 +118,9 @@ export const synchronizationRoutes = Effect.gen(function*() {
     mutationRoute("POST", "/api/sync/plan", EmptyBody, () => start(commands.synchronize({ mode: "plan", noInput: false })), 202),
     mutationRoute("POST", "/api/sync/apply", EmptyBody, () => start(commands.synchronize({ mode: "apply", noInput: false })), 202),
     mutationRoute("POST", "/api/sync/reviews", EmptyBody, () => start(commands.synchronize({ mode: "plan", noInput: false, reviewLocal: true })), 202),
-    mutationRoute("POST", "/api/recovery", EmptyBody, () => start(commands.recover({ noInput: false })), 202),
-    mutationRoute("POST", "/api/recovery/abandon", EmptyBody, () => start(commands.abandon()), 202),
+    // A Source has local runs too (a restore from Backups), and recover/abandon resolve whichever run is open.
+    mutationRoute("POST", "/api/recovery", EmptyBody, () => start(commands.recover({ noInput: false }), ["source", "follower"]), 202),
+    mutationRoute("POST", "/api/recovery/abandon", EmptyBody, () => start(commands.abandon(), ["source", "follower"]), 202),
     queryRoute("/api/schedule", () => follower(commands.scheduleStatus())),
     mutationRoute("PUT", "/api/schedule", GuiScheduleRequest, (input) => follower(commands.setSchedule(input))),
     queryRoute("/api/harnesses", () => both(commands.harnesses({}))),

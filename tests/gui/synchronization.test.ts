@@ -119,7 +119,7 @@ it("serves real role-gated secrets and a verified Source archive without leaking
   expect((await api.call("/api/secrets", "DELETE", { name: "../invalid" })).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   for (const [path, method, body] of [
     ["/api/sync/plan", "POST", {}], ["/api/sync/apply", "POST", {}], ["/api/sync/reviews", "POST", {}],
-    ["/api/recovery", "POST", {}], ["/api/recovery/abandon", "POST", {}], ["/api/secrets/sync", "POST", {}],
+    ["/api/secrets/sync", "POST", {}],
     ["/api/schedule", "GET", undefined], ["/api/schedule", "PUT", { profileDefault: true }],
     ["/api/local/items", "GET", undefined], ["/api/local/items", "PUT", { changes: [] }],
     ["/api/local/preferences", "PUT", { expectedDigest: null, edits: [] }],
@@ -127,6 +127,8 @@ it("serves real role-gated secrets and a verified Source archive without leaking
     ["/api/local/overlays", "PUT", { item: "rules/test" }], ["/api/local/overlays", "DELETE", { item: "rules/test" }],
     ["/api/tunnel", "GET", undefined], ["/api/tunnel/start", "POST", {}], ["/api/tunnel/stop", "POST", {}], ["/api/enrollment", "DELETE", {}],
   ] as const) expect((await api.call(path, method, body)).payload, path).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  // A Source recovers or abandons its own interrupted local run, such as a restore from Backups.
+  for (const path of ["/api/recovery", "/api/recovery/abandon"]) expect((await api.call(path, "POST", {})).status, path).toBe(202);
   // A Source lists its own takeover snapshots; none exist before it first projects into a harness.
   expect((await api.call("/api/backups")).payload).toEqual({ snapshots: [] });
   const exported = await api.call("/api/exports", "POST", { includeHarnesses: false });

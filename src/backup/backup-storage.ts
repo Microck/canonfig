@@ -1,12 +1,13 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { copyFile, lstat, mkdir, open, readdir, rm, writeFile } from "node:fs/promises";
+import { access, copyFile, link, lstat, mkdir, open, readdir, rm, writeFile } from "node:fs/promises";
 import { devNull } from "node:os";
-import { isAbsolute, join, parse } from "node:path";
+import { dirname, isAbsolute, join, parse } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Schema } from "effect";
 import { openAnchoredDirectory } from "../machine/anchored-directory.ts";
 import { BackupName, BackupSnapshot, SnapshotId, type BackupDestination } from "./backup.types.ts";
-import { BackupIoError, hashBackupFile, readBackupMetadata, runBackupTool } from "./backup-io.ts";
+import { BackupIoError, hashBackupFile, probeBackupTool, probeFailure, readBackupMetadata, runBackupTool, type ProbeResult } from "./backup-io.ts";
 
 const partBytes = 48 * 1024 * 1024;
 const snapshotName = /^[0-9a-f]{64}\.json$/u;
@@ -105,7 +106,7 @@ export const openBackupStorage = async (input: {
   const policy = Schema.decodeUnknownSync(BackupName)(input.policy);
   const owner = Schema.decodeUnknownSync(BackupName)(input.owner);
   const namespace = `canonfig-backup/${policy}/${owner}`;
-  const tool = (name: string, args: ReadonlyArray<string>, extra: { readonly output?: string; readonly text?: string; readonly environment?: NodeJS.ProcessEnv } = {}) =>
+  const tool = (name: string, args: ReadonlyArray<string>, extra: { readonly output?: string; readonly text?: string; readonly environment?: NodeJS.ProcessEnv; readonly maximumOutputBytes?: number } = {}) =>
     runBackupTool(name, args, { cwd: input.scratch, signal: input.signal, ...extra });
   if (input.destination.kind === "git") {
     const remote = input.destination.remote;
@@ -199,21 +200,30 @@ export const openBackupStorage = async (input: {
     await tool("rclone", ["mkdir", `${root}/objects`]);
     await tool("rclone", ["mkdir", `${root}/snapshots`]);
   }
-  const listNames = async (directory: string): Promise<ReadonlyArray<string>> => destination.kind === "local"
-    ? readdir(join(root, directory))
-    : (await tool("rclone", ["lsf", "--files-only", "--max-depth", "1", `${root}/${directory}`])).split("\n").filter(name => name !== "");
-  const get = async (name: string, output: string): Promise<void> => {
-    if (destination.kind === "local") await copyFile(join(root, name), output, constants.COPYFILE_EXCL);
-    else await tool("rclone", ["copyto", "--immutable", `${root}/${name}`, output]);
+  // A copy that was interrupted before put linked it into place leaves a `.partial-` file; it is never a record.
+  const listNames = async (directory: string): Promise<ReadonlyArray<string>> => (destination.kind === "local"
+    ? await readdir(join(root, directory))
+    : (await tool("rclone", ["lsf", "--files-only", "--max-depth", "1", `${root}/${directory}`])).split("\n").filter(name => name !== ""))
+    .filter(name => !name.includes(".partial-"));
+  /** Never stage more than the record says: a stored object larger than expected is refused while it streams. */
+  const get = async (name: string, output: string, maximumBytes: number): Promise<void> => {
+    if (destination.kind === "local") {
+      if ((await lstat(join(root, name))).size > maximumBytes) throw new BackupIoError("BACKUP_VERIFY_FAILED", "A stored backup object is larger than its record says");
+      await copyFile(join(root, name), output, constants.COPYFILE_EXCL);
+    } else await tool("rclone", ["cat", `${root}/${name}`], { output, maximumOutputBytes: maximumBytes });
   };
   const put = async (name: string, source: string): Promise<void> => {
     if (destination.kind === "local") {
-      try { await copyFile(source, join(root, name), constants.COPYFILE_EXCL); }
+      // Copy beside the final name, then link it into place: an interrupted copy never leaves a partial object
+      // under its final name, and link (unlike rename) refuses to replace one that exists.
+      const partial = join(root, `${name}.partial-${randomUUID()}`);
+      await copyFile(source, partial, constants.COPYFILE_EXCL);
+      try { await link(partial, join(root, name)); }
       catch (error) {
         if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
         const [existing, intended] = await Promise.all([hashBackupFile(join(root, name)), hashBackupFile(source)]);
         if (existing.sha256 !== intended.sha256) throw new BackupIoError("BACKUP_VERIFY_FAILED", "An immutable backup object already exists with different content");
-      }
+      } finally { await rm(partial, { force: true }); }
     } else await tool("rclone", ["copyto", "--immutable", source, `${root}/${name}`]);
   };
   const remove = async (name: string): Promise<void> => {
@@ -222,7 +232,7 @@ export const openBackupStorage = async (input: {
   };
   const download = (snapshot: BackupSnapshot, output: string): Promise<void> => assemble(snapshot, output, async (digest, index) => {
     const path = join(input.scratch, `download-${snapshot.id}-${index}`);
-    await get(`objects/${digest}`, path);
+    await get(`objects/${digest}`, path, snapshot.parts[index]?.bytes ?? 0);
     return path;
   });
   return {
@@ -231,7 +241,7 @@ export const openBackupStorage = async (input: {
       for (const name of await listNames("snapshots")) {
         if (!snapshotName.test(name)) throw new BackupIoError("BACKUP_VERIFY_FAILED", "Unexpected file in the backup snapshot namespace");
         const path = join(input.scratch, name);
-        await get(`snapshots/${name}`, path);
+        await get(`snapshots/${name}`, path, 16 * 1024 * 1024);
         const snapshot = checkedSnapshot(await readBackupMetadata(path, BackupSnapshot), policy, owner);
         if (`${snapshot.id}.json` !== name) throw new BackupIoError("BACKUP_VERIFY_FAILED", "Snapshot filename does not match its record");
         snapshots.push(snapshot);
@@ -262,6 +272,138 @@ export const openBackupStorage = async (input: {
     },
     close: async () => { await anchor?.close(); },
   };
+};
+
+/** Problems a later run may outgrow on its own (an offline host) come back as warnings; everything else throws. */
+export interface DestinationCheck { readonly warnings: ReadonlyArray<string> }
+
+const unreachable = (where: string): DestinationCheck => ({
+  warnings: [`Couldn't reach ${where} just now. The backup is saved and tries again when it runs; check the connection if this keeps happening.`],
+});
+
+/** Where a Git remote points, for messages. checkGitRemote already refused addresses with credentials in them. */
+const gitWhere = (remote: string): string => {
+  try {
+    const url = new URL(remote);
+    return url.protocol === "file:" ? fileURLToPath(url) : `${url.host}${url.pathname}`;
+  } catch { return remote; }
+};
+
+const localGitPath = (remote: string): string | undefined =>
+  isAbsolute(remote) ? remote : remote.startsWith("file:///") ? fileURLToPath(remote) : undefined;
+
+const writable = (path: string) => access(path, constants.W_OK).then(() => true, () => false);
+
+/**
+ * The read-only "test connection" that save, enable and `backup check` share. It uses the tools and the
+ * arguments a real run uses, and turns each failure into one specific message without tool output, which
+ * can contain credentials. A missing tool, a missing remote, a refused sign-in or an unwritable destination
+ * throws; an unreachable host is a warning, because the scheduled run may well find it online.
+ */
+export const checkBackupDestination = async (input: {
+  readonly destination: BackupDestination; readonly policy: string; readonly owner: string; readonly scratch: string; readonly signal: AbortSignal;
+}): Promise<DestinationCheck> => {
+  const namespace = `canonfig-backup/${Schema.decodeUnknownSync(BackupName)(input.policy)}/${Schema.decodeUnknownSync(BackupName)(input.owner)}`;
+  const probe = (executable: string, args: ReadonlyArray<string>, environment?: NodeJS.ProcessEnv) =>
+    probeBackupTool(executable, args, { cwd: input.scratch, signal: input.signal, timeoutMilliseconds: 30_000, environment });
+  const destination = input.destination;
+
+  if (destination.kind === "local") {
+    if (!isAbsolute(destination.path)) throw new BackupIoError("BACKUP_INVALID", "Local backup destination must be an absolute path");
+    let existing = destination.path;
+    let info = await lstat(existing).catch(() => undefined);
+    while (info === undefined && dirname(existing) !== existing) {
+      existing = dirname(existing);
+      info = await lstat(existing).catch(() => undefined);
+    }
+    if (info !== undefined && !info.isDirectory()) throw new BackupIoError("BACKUP_INVALID", `${existing} is a file, not a folder. Choose a folder for the backup.`);
+    // The run creates missing folders, so the nearest existing one must accept a new file.
+    const marker = join(existing, `.canonfig-check-${randomUUID()}`);
+    const accepted = await writeFile(marker, "", { flag: "wx", mode: 0o600 }).then(() => true, () => false);
+    if (!accepted) throw new BackupIoError("BACKUP_INVALID", `Canonfig can't write to ${existing}. Choose a folder this account can write to.`);
+    await rm(marker, { force: true });
+    return existing === destination.path ? { warnings: [] }
+      : { warnings: [`${destination.path} doesn't exist yet; the first backup creates it. If it belongs on a removable drive, connect the drive before then.`] };
+  }
+
+  if (destination.kind === "git") {
+    const remote = destination.remote;
+    checkGitRemote(remote);
+    if ((await probe("git", ["--version"])).ok === false) {
+      throw new BackupIoError("BACKUP_TOOL_REQUIRED", "Git isn't installed on this machine, or it isn't on PATH. Install Git, then save again.");
+    }
+    const where = gitWhere(remote);
+    const localPath = localGitPath(remote);
+    if (localPath !== undefined) {
+      if (!(await lstat(localPath).catch(() => undefined))?.isDirectory()) {
+        throw new BackupIoError("BACKUP_INVALID", `There is no Git repository at ${localPath}. Create one with git init --bare, then save again.`);
+      }
+      if (!(await writable(localPath))) throw new BackupIoError("BACKUP_INVALID", `Canonfig can't write to the Git repository at ${localPath}. Check its permissions.`);
+    }
+    // Never wait on a prompt: a credential the run can't answer at 3am should fail here, now.
+    const environment: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" };
+    if (process.env.GIT_SSH_COMMAND === undefined && !(await probe("git", ["config", "--get", "core.sshCommand"])).ok) environment.GIT_SSH_COMMAND = "ssh -o BatchMode=yes";
+    const failed = (result: Extract<ProbeResult, { readonly ok: false }>, stage: "read" | "push"): DestinationCheck => {
+      const reason = probeFailure(result);
+      if (reason === "network") return unreachable(where);
+      if (reason === "auth") {
+        throw new BackupIoError("BACKUP_CREDENTIAL_REQUIRED", stage === "read"
+          ? `Git couldn't sign in to ${where}. Set up an SSH key or a credential helper for it on this machine, then save again.`
+          : `Git can read ${where} but can't push to it. Give this machine's sign-in write access, then save again.`);
+      }
+      if (reason === "not-found") throw new BackupIoError("BACKUP_INVALID", `There is no Git repository at ${where}. Create an empty one there first, then save again.`);
+      throw new BackupIoError("BACKUP_INVALID", `Git couldn't use ${where}. Run git ls-remote with that address in a terminal to see why; Canonfig doesn't show Git's output because it can contain credentials.`);
+    };
+    const read = await probe("git", ["-c", "protocol.ext.allow=never", "ls-remote", "--heads", "--", remote], environment);
+    if (!read.ok) return failed(read, "read");
+    // A dry-run push asks the host for write access without creating anything there.
+    const repository = join(input.scratch, "check-git");
+    const local = (args: ReadonlyArray<string>, text?: string) => runBackupTool("git", args, { cwd: input.scratch, signal: input.signal, text });
+    await local(["init", "--bare", "--quiet", repository]);
+    const tree = (await local(["--git-dir", repository, "mktree"], "")).trim();
+    const commit = (await runBackupTool("git", ["--git-dir", repository, "commit-tree", tree], {
+      cwd: input.scratch, signal: input.signal, text: "Canonfig destination check\n",
+      environment: { ...process.env, GIT_AUTHOR_NAME: "Canonfig", GIT_AUTHOR_EMAIL: "backup@canonfig.invalid", GIT_COMMITTER_NAME: "Canonfig", GIT_COMMITTER_EMAIL: "backup@canonfig.invalid" },
+    })).trim();
+    const push = await probe("git", ["--git-dir", repository, "-c", "protocol.ext.allow=never", "-c", `core.hooksPath=${devNull}`,
+      "push", "--dry-run", "--porcelain", "--", remote, `${commit}:refs/heads/${namespace}/check`], environment);
+    return push.ok ? { warnings: [] } : failed(push, "push");
+  }
+
+  const remote = destination.remote;
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*:[^\r\n\0]*$/u.test(remote)) {
+    throw new BackupIoError("BACKUP_INVALID", "Choose a named rclone remote such as drive:canonfig; inline credentials and backend connection strings are not accepted");
+  }
+  const name = remote.slice(0, remote.indexOf(":"));
+  const listed = await probe("rclone", ["listremotes"]);
+  if (!listed.ok) {
+    if (listed.missing) throw new BackupIoError("BACKUP_TOOL_REQUIRED", "rclone isn't installed on this machine, or it isn't on PATH. Install it from rclone.org, run rclone config, then save again.");
+    throw new BackupIoError("BACKUP_INVALID", "rclone couldn't read its configuration. Run rclone config in a terminal to fix it, then save again.");
+  }
+  const remotes = listed.stdout.split("\n").map(line => line.trim().replace(/:$/u, "")).filter(line => line !== "");
+  if (!remotes.includes(name)) {
+    throw new BackupIoError("BACKUP_INVALID", `rclone has no remote called "${name}". Run rclone config to add it${remotes.length > 0 ? `, or use one of: ${remotes.join(", ")}` : ""}.`);
+  }
+  const failed = (result: Extract<ProbeResult, { readonly ok: false }>, stage: "read" | "write"): DestinationCheck => {
+    const reason = probeFailure(result);
+    if (reason === "network") return unreachable(`${name}:`);
+    if (reason === "auth" && stage === "read") {
+      throw new BackupIoError("BACKUP_CREDENTIAL_REQUIRED", `rclone couldn't sign in to ${name}:. Run rclone config reconnect ${name}: in a terminal, then save again.`);
+    }
+    if (stage === "write") throw new BackupIoError("BACKUP_INVALID", `rclone can read ${name}: but can't write to ${remote}. Check that account's permissions, then save again.`);
+    throw new BackupIoError("BACKUP_INVALID", `rclone couldn't use ${name}:. Run rclone lsd ${name}: in a terminal to see why; Canonfig doesn't show rclone's output because it can contain credentials.`);
+  };
+  const reach = await probe("rclone", ["lsjson", "--max-depth", "1", "--dirs-only", `${name}:`]);
+  if (!reach.ok) return failed(reach, "read");
+  // A run writes under this namespace; prove it with a marker that is removed again.
+  const root = `${remote.replace(/\/+$/u, "")}/${namespace}`;
+  const marker = `${root}/.canonfig-check-${randomUUID()}`;
+  const made = await probe("rclone", ["mkdir", root]);
+  if (!made.ok) return failed(made, "write");
+  const written = await probe("rclone", ["touch", marker]);
+  if (!written.ok) return failed(written, "write");
+  await probe("rclone", ["deletefile", marker]);
+  return { warnings: [] };
 };
 
 /** Recovery can discover old owners without adopting their writer namespace. */

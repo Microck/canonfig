@@ -839,7 +839,9 @@ const followerCommandsLayer = (
       }, request).pipe(
         Effect.provideService(StateRepository, repository), Effect.provideService(MachineState, machine),
         Effect.provideService(Synchronization, synchronization),
-      )).pipe(Effect.map(payload)),
+        // A restore --apply carries the import's result; anything but a converged run fails the command like import does.
+      )).pipe(Effect.flatMap((value) => "outcome" in value && value.outcome !== undefined
+        ? Effect.flatMap(outcomePayload(value.outcome), () => Effect.succeed(payload(value))) : Effect.succeed(payload(value)))),
       enroll: (input) =>
         Effect.gen(function*() {
             // A Source's folder is what it authors and publishes; enrolling

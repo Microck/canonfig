@@ -19,6 +19,8 @@ const selection = {
 };
 export const GuiBackupRequest = Schema.Union([
   Schema.Struct({ action: Schema.Literal("configure"), name: BackupName, policy: BackupPolicy, allowCredentials: Schema.Boolean }),
+  /** The save-time preflight on its own; without `policy` it checks the saved one. */
+  Schema.Struct({ action: Schema.Literal("check"), name: BackupName, policy: Schema.optional(BackupPolicy) }),
   Schema.Struct({ action: Schema.Literal("password"), name: BackupName,
     password: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096), Schema.isPattern(/^[^\0]+$/u)) }),
   Schema.Struct({ action: Schema.Literal("schedule") }),
@@ -34,3 +36,5 @@ export const GuiBackupRequest = Schema.Union([
 export type GuiBackupRequest = typeof GuiBackupRequest.Type;
 export const GuiBackupList = Schema.Struct({ owner: BackupName, snapshots: Schema.Array(BackupSnapshot) });
 export type GuiBackupList = typeof GuiBackupList.Type;
+/** What configure, enable and check report besides success: problems the run may outgrow, like an offline host. */
+export const GuiBackupWarnings = Schema.Struct({ warnings: Schema.Array(Schema.String) });

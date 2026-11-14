@@ -11,7 +11,8 @@ A policy selects the Canonical Folder, managed Target Harness configuration, or 
 
 The page lists your backups on the left, each with its latest result, for example **Backed up today 03:00 · 49.8 MB** or **Failed Sun 02:00**. Select one to see its copies, newest first.
 
-- **Back up now** runs it once. **Settings** opens what to back up, where, when and the password; compression, retention, restore tests and filters are under **More options**.
+- **Back up now** runs it once. **Settings** opens what to back up, where, when and the password; compression, retention, restore tests and filters are under **More options**. **Resume** turns a paused schedule back on.
+- **Create backup**, **Save** and **Resume** first check that the backup can run, as `canonfig backup check` does (see below). A problem that would only fail the first scheduled run is shown in the sheet instead, and nothing is saved.
 - **Restore…** on a copy offers three choices: test it in a throwaway folder, restore it into a new folder for a new machine, or, on a Source, put your Canonfig folder back through the usual import checks.
 - A failed run shows Canonfig's diagnostic above the copies. A backup that captures sign-in data or keys asks you to **Allow** it on this machine before it runs.
 - **Before Canonfig**, the last entry, holds the [Takeover Snapshots](/how-to/restore-from-a-backup).
@@ -57,10 +58,27 @@ Change `destination` in the policy, then run `backup configure` again.
 | Destination | Policy value | Authentication |
 | --- | --- | --- |
 | GitHub, GitLab, Forgejo, Gitea, another Git host | `{"kind":"git","remote":"git@example.org:maria/canonfig-backups.git"}` | Your Git SSH configuration or credential helper |
-| Google Drive or another cloud drive | `{"kind":"rclone","remote":"drive:canonfig"}` | A named remote configured with `rclone config` |
+| Google Drive, OneDrive, Dropbox or another cloud drive | `{"kind":"rclone","remote":"drive:canonfig"}` | A named remote configured with `rclone config` |
 | S3-compatible storage, B2, WebDAV or SFTP | `{"kind":"rclone","remote":"archive:canonfig"}` | The corresponding named rclone remote |
 
 Install Git or rclone on every machine that uses that destination, including scheduled jobs. Never put a token or password in a destination URL. Configure the remote on each Follower Machine; its authentication does not travel in the Machine Profile.
+
+### Check a destination before the first run
+
+`backup configure`, `backup enable` and the GUI's save run the same check as `canonfig backup check <name>`, so a backup that can't run is refused when you set it up, not at its first scheduled run:
+
+| Problem | What happens |
+| --- | --- |
+| Git, rclone, `xz`, `zpaq-stream` or `gitleaks` is not installed or not on PATH | Refused, naming the tool |
+| The rclone remote name is not in `rclone listremotes` | Refused, listing the remotes you have |
+| Git or rclone can't sign in (`git ls-remote`, `rclone lsjson`) | Refused, with the command that fixes it |
+| Git can read but not push (`git push --dry-run`), or rclone can't write a test file | Refused |
+| A local folder or local Git repository is missing or not writable | Refused |
+| The password alias isn't set on this machine | Refused |
+| The host doesn't answer (offline, DNS, timeout) | Saved, with a warning; the run tries again |
+| A local folder doesn't exist yet, or credential capture isn't allowed yet | Saved, with a warning |
+
+The check never prints tool output, which can contain credentials. It runs with this machine's PATH; a scheduled job that uses a different PATH can still miss a tool.
 
 Git backups use separate snapshot branches under `canonfig-backup/<policy>/<owner>/`. They do not modify your ordinary branches. Archives are split into objects smaller than 50 MiB, but repository-wide quotas still apply. Prefer a local folder or rclone for large histories. Deleting branches does not immediately erase unreachable Git objects, and provider trash or version history can retain deleted cloud objects.
 
@@ -188,6 +206,7 @@ Retention is limited to the current machine's owner namespace. Stored objects ar
 ## Resolve a failed backup
 
 - **Missing password or credential consent:** configure the alias or review and allow credential capture locally. Canonfig never falls back to plaintext.
+- **Destination problem at run time:** run `canonfig backup check <name>` for the specific reason, such as an expired cloud sign-in.
 - **Missing native tool:** install the named helper and make it available on the scheduler PATH.
 - **Changed capture input:** stop the writer or exclude its path, then retry.
 - **Size or file-count limit:** review the selected data before raising `maximumBytes` or `maximumFiles`. The same limits bound recovery.

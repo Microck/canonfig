@@ -25,6 +25,8 @@ export type Recovery = typeof Recovery.Type;
 const SourceReferences = Schema.Struct({ signing_key_reference: CredentialReference, tls_key_reference: CredentialReference, tls_certificate_reference: CredentialReference });
 const ReferenceRow = Schema.Struct({ credential_reference: CredentialReference });
 const jsonFile = (path: string, value: Recovery): ArchiveFile => ({ path, content: Buffer.from(`${JSON.stringify(value)}\n`), mode: 0o600 });
+/** The most recovery metadata a restore reads into memory; capture refuses anything larger. */
+const RECOVERY_LIMIT = 16 * 1024 * 1024;
 
 /**
  * The snapshot retains publications and the follower registry, not in-flight work tied to the old machine.
@@ -88,7 +90,12 @@ export const captureRecovery = (input: { readonly policy: BackupPolicy; readonly
   ));
   const recovery: Recovery = { version: 1, stateFormat: stateFormatVersion, source: input.policy.sourceIdentity,
     credentials: [...credentials, ...shared?.credentials ?? []], secrets: shared?.secrets };
-  return { sourceDatabase, files: input.policy.sourceIdentity || input.policy.sharedSecrets ? [jsonFile("recovery/credentials.json", recovery)] : [] };
+  const files = input.policy.sourceIdentity || input.policy.sharedSecrets ? [jsonFile("recovery/credentials.json", recovery)] : [];
+  // readRecovery refuses more than this, so capture must too, or the backup would publish and never restore.
+  if (files.some(file => file.content.length > RECOVERY_LIMIT)) {
+    return yield* new BackupError({ code: "BACKUP_INVALID", message: "Source identity and shared secrets add up to more than 16 MiB, which a restore can't read. Remove unused shared secrets, then back up again." });
+  }
+  return { sourceDatabase, files };
 });
 
 /** Recovery values stay in bounded memory, never in an extracted credential file. */
@@ -97,7 +104,7 @@ export const readRecovery = async (content: AsyncIterable<Uint8Array>): Promise<
   let bytes = 0;
   for await (const chunk of content) {
     bytes += chunk.length;
-    if (bytes > 16 * 1024 * 1024) throw new BackupIoError("BACKUP_VERIFY_FAILED", "Recovery credentials exceed the metadata limit");
+    if (bytes > RECOVERY_LIMIT) throw new BackupIoError("BACKUP_VERIFY_FAILED", "Recovery credentials exceed the metadata limit");
     chunks.push(chunk);
   }
   return Schema.decodeUnknownSync(Recovery)(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))));

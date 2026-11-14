@@ -86,3 +86,46 @@ The final six-file rerun passed all 216 tests. `npm run build:cli` passed with t
 The full UI command `TSX_TSCONFIG_PATH=ui/tsconfig.app.json node --import tsx --test --test-concurrency=1 "ui/src/**/*.test.ts" "ui/src/**/*.test.tsx"` finished with 147 passed and 2 failed tests. Both failures were stale navigation expectations that Source backups were unavailable. The route test now requires Source backup access and retains unique-URL and cross-role access checks; copied menu lists and label assertions were removed.
 
 `npm --prefix ui run lint -- src/live/routes.test.ts` then passed with 0 warnings and 0 errors. `TSX_TSCONFIG_PATH=ui/tsconfig.app.json node --import tsx --test ui/src/live/routes.test.ts` passed all 5 tests. No UI failures remain from the full run.
+
+## Save-time preflight: gap inventory
+
+Every way a saved or scheduled backup could already be broken, where it surfaced before the preflight, and where it surfaces now. "Run" means the first `backup run`, usually the scheduled one, which reported the generic `<tool> failed. Check its local configuration...` message from `runBackupTool`.
+
+| Failure | Before | Now | Message class |
+| --- | --- | --- | --- |
+| Policy shape: nothing selected, encryption required, relative local path | Save (`validateBackupPolicy`) | Save | `BACKUP_INVALID` |
+| Git remote with credentials or an unsupported scheme | Run (`checkGitRemote` in storage open) | Save | `BACKUP_INVALID` |
+| rclone remote with an inline backend string | Run | Save | `BACKUP_INVALID` |
+| `git` missing from PATH | Run, `BACKUP_TOOL_REQUIRED` | Save, names Git | `BACKUP_TOOL_REQUIRED` |
+| `rclone` missing from PATH | Run, `BACKUP_TOOL_REQUIRED` | Save, names rclone | `BACKUP_TOOL_REQUIRED` |
+| rclone config unreadable | Run, generic | Save | `BACKUP_INVALID` |
+| rclone remote name not configured | Run, generic | Save, lists configured remotes | `BACKUP_INVALID` |
+| Cloud sign-in expired or refused (`rclone lsjson`) | Run, generic | Save, names `rclone config reconnect` | `BACKUP_CREDENTIAL_REQUIRED` |
+| Cloud account can read but not write | Run, generic | Save (mkdir, touch, deletefile of a marker) | `BACKUP_INVALID` |
+| Git sign-in refused (`git ls-remote`) | Run, generic | Save | `BACKUP_CREDENTIAL_REQUIRED` |
+| Git can read but not push | Run, generic | Save (`git push --dry-run`) | `BACKUP_CREDENTIAL_REQUIRED` |
+| Git repository missing at the address | Run, generic | Save | `BACKUP_INVALID` |
+| Local Git repository missing or not writable | Run, generic | Save (filesystem check before the dry run, which cannot see local permissions) | `BACKUP_INVALID` |
+| Local folder not writable, or a file where the folder should be | Run, filesystem error | Save (marker write in the nearest existing folder) | `BACKUP_INVALID` |
+| Local folder missing (unmounted drive) | Run silently creates it | Save, warning | warning |
+| Host offline, DNS failure or timeout | Run, generic | Save, warning; the run retries | warning |
+| Git prompt for a password or passphrase | Run hangs or fails | Save: `GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`, SSH `BatchMode=yes` unless the user set an SSH command | per class above |
+| Password alias not set on this machine | Run, `BACKUP_CREDENTIAL_REQUIRED` | Save | `BACKUP_CREDENTIAL_REQUIRED` |
+| Credential store locked | Run | Save (alias is loaded) | `BACKUP_CREDENTIAL_REQUIRED` |
+| `xz` missing for small or max compression | Run, `BACKUP_TOOL_REQUIRED` | Save | `BACKUP_TOOL_REQUIRED` |
+| `zpaq-stream` missing for max compression | Run | Save | `BACKUP_TOOL_REQUIRED` |
+| `gitleaks` missing for an unencrypted Git backup | Run | Save | `BACKUP_TOOL_REQUIRED` |
+| Credential capture without local consent | Run, `BACKUP_CREDENTIAL_REQUIRED` | Save, warning (the GUI asks for consent explicitly; it no longer sends consent on every save) | warning |
+| Schedule backend unavailable (systemd user manager, launchd, Task Scheduler) | Save (`reconcileBackupSchedules`) | Save | unchanged |
+| Paused backup resumed with a broken destination | Never checked | Resume (`backup enable`) runs the same preflight | as above |
+| Recovery metadata over the 16 MiB restore limit | Published, then every restore failed | Run refuses before publishing | `BACKUP_INVALID` |
+| Manifest over the 64 MiB restore limit | Published, then every restore failed | Run refuses before publishing | `BACKUP_INVALID` |
+| Capture input changes, size or file limits, special files | Run | Run (they depend on the data at capture time) | unchanged |
+
+Remaining limits:
+
+- The preflight runs with the PATH of the process that saves (CLI shell or GUI server). A native scheduler with a narrower PATH can still miss a tool; the run then reports `BACKUP_TOOL_REQUIRED`.
+- Sign-in classification reads tool stderr internally and never returns it. An error that matches no known pattern gets a generic but tool-specific message naming the command to run by hand.
+- A Source-declared policy that reaches a Follower is checked when the Follower saves an override or resumes it, not when the signed revision arrives.
+
+Proof: `tests/integration/backup.test.ts`, "backup preflight on save, enable and check", covers missing git and rclone (empty PATH), an unknown rclone remote, a missing and an unwritable file-URL Git repository, an unwritable folder, a missing password alias, a not-yet-existing folder (warning, folder not created), a writable Git repository including the dry-run push (no refs created), a configured rclone local remote (marker removed), an unreachable WebDAV remote whose config holds a token (saved with a warning, token absent from every message), and resume and check after the destination becomes unwritable.

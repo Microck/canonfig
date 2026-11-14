@@ -825,7 +825,7 @@ const evaluateBackupCommand = (action: string | undefined, rest: ReadonlyArray<s
     const name = decodeOption(Schema.decodeUnknownOption(BackupName), options.positionals[0]!, "backup policy name");
     return command({ _tag: "Backup", request: { action: "configure-file", name, file: one(options, "--policy", true)!, allowCredentials: options.switches.has("--allow-credentials") } }, format);
   }
-  if (action === "password" || action === "disable" || action === "enable" || action === "allow-credentials" || action === "deny-credentials" || action === "owners" || action === "prune" || action === "run") {
+  if (action === "password" || action === "disable" || action === "enable" || action === "allow-credentials" || action === "deny-credentials" || action === "owners" || action === "prune" || action === "run" || action === "check") {
     const switches = action === "password" ? ["--stdin"] : action === "prune" ? ["--apply"] : action === "run" ? ["--scheduled"] : [];
     const options = parseOptions(rest, new Set(), new Set(switches));
     if (options.positionals.length !== 1) return invalid(`Usage: canonfig backup ${action} <name>${action === "password" ? " --stdin" : ""}`);

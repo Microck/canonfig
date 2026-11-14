@@ -80,6 +80,7 @@ export type BackupRequest =
   | { readonly action: "schedule" }
   | { readonly action: "configure"; readonly name: string; readonly policy: BackupPolicy; readonly allowCredentials?: boolean }
   | { readonly action: "configure-file"; readonly name: string; readonly file: string; readonly allowCredentials: boolean }
+  | { readonly action: "check"; readonly name: string; readonly policy?: BackupPolicy }
   | { readonly action: "disable"; readonly name: string }
   | { readonly action: "enable"; readonly name: string }
   | { readonly action: "allow-credentials"; readonly name: string }

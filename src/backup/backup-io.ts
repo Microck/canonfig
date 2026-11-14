@@ -8,11 +8,44 @@ import { Schema } from "effect";
 
 /** External tools may print credentials from their configuration. Never expose their output on failure. */
 export class BackupIoError extends Error {
-  constructor(readonly code: "BACKUP_INVALID" | "BACKUP_TOOL_REQUIRED" | "BACKUP_VERIFY_FAILED" | "BACKUP_CONFLICT", message: string) {
+  constructor(readonly code: "BACKUP_INVALID" | "BACKUP_TOOL_REQUIRED" | "BACKUP_VERIFY_FAILED" | "BACKUP_CONFLICT" | "BACKUP_CREDENTIAL_REQUIRED", message: string) {
     super(message);
     this.name = "BackupIoError";
   }
 }
+
+/**
+ * How a read-only probe of an external tool ended. `detail` is the tool's stderr: it is only ever matched by
+ * `probeFailure`, never shown or logged, because it can contain credentials from the tool's configuration.
+ */
+export type ProbeResult =
+  | { readonly ok: true; readonly stdout: string }
+  | { readonly ok: false; readonly missing: boolean; readonly timedOut: boolean; readonly detail: string };
+
+/** Run a destination probe with a deadline. A missing executable and a timeout are reported, never thrown. */
+export const probeBackupTool = (executable: string, args: ReadonlyArray<string>, options: {
+  readonly cwd: string; readonly signal: AbortSignal; readonly timeoutMilliseconds: number; readonly environment?: NodeJS.ProcessEnv;
+}): Promise<ProbeResult> => new Promise(resolve => {
+  const deadline = AbortSignal.timeout(options.timeoutMilliseconds);
+  const child = spawn(executable, [...args], {
+    cwd: options.cwd, signal: AbortSignal.any([options.signal, deadline]), windowsHide: true,
+    env: options.environment ?? process.env, stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk: Buffer) => { if (stdout.length < 1024 * 1024) stdout += chunk.toString("utf8"); });
+  child.stderr.on("data", (chunk: Buffer) => { if (stderr.length < 64 * 1024) stderr += chunk.toString("utf8"); });
+  child.once("error", (error) => resolve({ ok: false, missing: "code" in error && error.code === "ENOENT", timedOut: deadline.aborted, detail: stderr }));
+  child.once("close", (code) => resolve(code === 0 ? { ok: true, stdout } : { ok: false, missing: false, timedOut: deadline.aborted, detail: stderr }));
+});
+
+const NETWORK = /could not resolve|name or service not known|no such host|temporary failure in name resolution|network is unreachable|connection (?:timed out|refused|reset)|operation timed out|i\/o timeout|dial tcp|failed to connect|could not connect|no route to host/iu;
+const AUTH = /permission denied|authentication failed|could not read username|terminal prompts disabled|access denied|unauthori[sz]ed|forbidden|\b40[13]\b|invalid_grant|token (?:has )?expired|couldn't fetch token|failed to refresh token|host key verification failed/iu;
+const NOT_FOUND = /repository not found|does not appear to be a git repository|not a git repository|no such file or directory|directory not found|doesn't exist|does not exist|not found/iu;
+
+/** Why a probe failed, from its stderr. Network problems are the only ones a later run can fix on its own. */
+export const probeFailure = (result: Extract<ProbeResult, { readonly ok: false }>): "missing" | "network" | "auth" | "not-found" | "other" =>
+  result.missing ? "missing" : result.timedOut || NETWORK.test(result.detail) ? "network" : AUTH.test(result.detail) ? "auth" : NOT_FOUND.test(result.detail) ? "not-found" : "other";
 
 interface BackupToolOptions {
   readonly cwd: string;

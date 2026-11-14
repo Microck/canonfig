@@ -29,7 +29,7 @@ import { cn, SNAP } from "@/lib/utils";
 import { capturesCredentials, defaultBackupPolicy, requiresEncryption, type BackupCompression, type BackupDestination, type BackupOutcome, type BackupPolicy, type BackupSnapshot } from "../../../src/backup/backup.types";
 import { TARGET_IDS } from "../../../src/projection/model";
 import { ErrorNotice } from "../live/session";
-import { Body, PageHeader } from "./kit";
+import { Body, PageHeader, useLeaveGuard } from "./kit";
 import { WEEK, type Day } from "./schedule";
 import { ConfirmDialog } from "./settings";
 import { useWorkspace } from "./store";
@@ -170,6 +170,9 @@ function Settings({ name: initialName, initial, onClose }: { name: string; initi
   const [policy, setPolicy] = useState(initial);
   const [password, setPassword] = useState("");
   const [enabled, setEnabled] = useState(!status?.local.disabled.includes(initialName));
+  // Consent to capture sign-in data is its own choice; picking those options doesn't grant it.
+  const [consent, setConsent] = useState(status?.local.allowCredentials.includes(initialName) ?? false);
+  const form = useRef<HTMLFormElement>(null);
   const set = (patch: Partial<BackupPolicy>) => setPolicy((current) => ({ ...current, ...patch }));
   const required = requiresEncryption(policy);
   const [encrypt, setEncrypt] = useState(initial.passwordReference !== undefined);
@@ -189,17 +192,26 @@ function Settings({ name: initialName, initial, onClose }: { name: string; initi
     const alias = !encrypted ? undefined : savedAlias ?? (status?.local.passwords[name] === undefined ? name : `${name}-${Date.now()}`);
     if (encrypted && savedAlias === undefined && !(await backup.run({ action: "password", name: alias!, password }))) return;
     const next = { ...policy, passwordReference: alias, include: policy.include.filter((glob) => glob.trim()), exclude: policy.exclude.filter((glob) => glob.trim()) };
-    if (!(await backup.run({ action: "configure", name, policy: next, allowCredentials: capturesCredentials(next) }))) return;
+    // configure checks the destination, password and tools before saving; a refusal shows at the top of the sheet.
+    const saved = await backup.run({ action: "configure", name, policy: next, allowCredentials: capturesCredentials(next) && consent });
+    if (saved === null) { form.current?.scrollTo({ top: 0 }); return; }
     // configure always turns the backup on, so a backup left off is paused again afterwards.
     if (!enabled && !(await backup.run({ action: "disable", name }))) return;
     toast.success(isNew ? `Created ${name}` : `Saved ${name}`);
+    for (const warning of saved.warnings) toast.warning(warning);
     onClose();
   };
+  // An edited draft asks before the sheet closes or the page navigates away.
+  const dirty = name !== initialName || password !== "" || JSON.stringify(policy) !== JSON.stringify(initial)
+    || enabled !== !status?.local.disabled.includes(initialName) || consent !== (status?.local.allowCredentials.includes(initialName) ?? false);
+  const guard = useLeaveGuard(dirty, isNew ? "this new backup" : initialName);
+  const [discarding, setDiscarding] = useState(false);
+  const dismiss = () => { if (backup.action.loading) return; if (dirty) setDiscarding(true); else onClose(); };
   return (
-    <Sheet open onOpenChange={(open) => !open && !backup.action.loading && onClose()}>
+    <Sheet open onOpenChange={(open) => !open && dismiss()}>
       <SheetContent className="w-full gap-0 sm:max-w-[520px]">
         <SheetHeader><SheetTitle>{isNew ? "New backup" : initialName}</SheetTitle></SheetHeader>
-        <form id="backup-settings" className="grid flex-1 content-start gap-5 overflow-y-auto px-4 pb-6" onSubmit={(event) => { event.preventDefault(); if (problem === null) void save(); }}>
+        <form ref={form} id="backup-settings" className="grid flex-1 content-start gap-5 overflow-y-auto px-4 pb-6" onSubmit={(event) => { event.preventDefault(); if (problem === null) void save(); }}>
           {backup.action.error && <ErrorNotice error={backup.action.error} />}
           {isNew ? (
             <div className="grid gap-1.5">
@@ -257,19 +269,26 @@ function Settings({ name: initialName, initial, onClose }: { name: string; initi
                 </label>
               </div>
             )}
+            {capturesCredentials(policy) && (
+              <label className="flex cursor-pointer items-start gap-3 text-sm">
+                <Checkbox checked={consent} onCheckedChange={(value) => setConsent(value === true)} className="mt-0.5" />
+                <span>Allow this backup to copy sign-in data or keys from this machine. Without this it is saved but doesn't run.</span>
+              </label>
+            )}
           </Section>
           <Section title="Where">
             <div className="grid gap-2">
               <Option name="destination" checked={destination.kind === "local"} onChange={() => set({ destination: { kind: "local", path: "" } })} title="A folder">On this machine or a mounted drive.</Option>
               <Option name="destination" checked={destination.kind === "git"} onChange={() => set({ destination: { kind: "git", remote: "" } })} title="A Git repository">GitHub, GitLab, Forgejo or Gitea. Uses your existing Git sign-in.</Option>
-              <Option name="destination" checked={destination.kind === "rclone"} onChange={() => set({ destination: { kind: "rclone", remote: "" } })} title="Cloud storage">Google Drive, S3, Backblaze, WebDAV or SFTP, through rclone.</Option>
+              <Option name="destination" checked={destination.kind === "rclone"} onChange={() => set({ destination: { kind: "rclone", remote: "" } })} title="Cloud storage">Google Drive, OneDrive, Dropbox, S3, Backblaze, WebDAV or SFTP, through rclone.</Option>
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="backup-destination" className="text-sm font-medium text-muted-foreground">{destination.kind === "local" ? "Folder" : destination.kind === "git" ? "Repository URL" : "rclone remote and path"}</Label>
               <Input id="backup-destination" value={destinationLabel(destination)} spellCheck={false} autoComplete="off" className="font-mono text-base md:text-sm"
                 placeholder={destination.kind === "local" ? "/mnt/backup/canonfig" : destination.kind === "git" ? "git@github.com:you/canonfig-backup.git" : "gdrive:Backups/canonfig"}
                 onChange={(event) => set({ destination: destination.kind === "local" ? { kind: "local", path: event.target.value } : { kind: destination.kind, remote: event.target.value } })} />
-              {destination.kind === "rclone" && <p className="text-sm text-faint">Set up the remote once with rclone config on this machine.</p>}
+              {destination.kind === "rclone" && <p className="text-sm text-faint">Set up the remote once with rclone config on this machine. Saving checks that it exists and can be written.</p>}
+              {destination.kind === "git" && <p className="text-sm text-faint">Saving checks that this machine can sign in and push there.</p>}
             </div>
           </Section>
           <Section title="When"><WhenFields id="backup-when" value={policy.schedule} onChange={(schedule) => set({ schedule })} /></Section>
@@ -333,13 +352,16 @@ function Settings({ name: initialName, initial, onClose }: { name: string; initi
               </Section>
             </CollapsibleContent>
           </Collapsible>
+          {guard.dialog}
         </form>
         <SheetFooter className="flex-row items-center justify-end gap-2 border-t border-border">
           {problem !== null && name !== "" && <span className="mr-auto text-sm text-muted-foreground">{problem}</span>}
-          <Button type="button" variant="ghost" disabled={backup.action.loading} onClick={onClose}>Cancel</Button>
-          <Button type="submit" form="backup-settings" variant="primary" disabled={problem !== null || backup.action.loading}>{backup.action.loading ? "Saving…" : isNew ? "Create backup" : "Save"}</Button>
+          <Button type="button" variant="ghost" disabled={backup.action.loading} onClick={dismiss}>Cancel</Button>
+          <Button type="submit" form="backup-settings" variant="primary" disabled={problem !== null || backup.action.loading}>{backup.action.loading ? "Checking…" : isNew ? "Create backup" : "Save"}</Button>
         </SheetFooter>
       </SheetContent>
+      <ConfirmDialog open={discarding} onOpenChange={setDiscarding} title="Discard unsaved changes?"
+        body={`Your edits to ${isNew ? "this new backup" : initialName} aren't saved. Closing now discards them.`} confirm="Discard changes" onConfirm={onClose} />
     </Sheet>
   );
 }
@@ -568,7 +590,11 @@ export function BackupsView() {
                 <Fold show={paused} reduced={reduced}>
                   <div className="flex items-center justify-between gap-3 rounded-lg bg-raised/60 px-3 py-2 text-sm">
                     <span>Scheduled backups are paused.</span>
-                    <Button size="xs" variant="outline" disabled={backup.action.loading} onClick={() => void backup.run({ action: "enable", name: current })}>Resume</Button>
+                    <Button size="xs" variant="outline" disabled={backup.action.loading} onClick={async () => {
+                      // Resuming runs the same preflight as saving; a refusal shows above, warnings as toasts.
+                      const resumed = await backup.run({ action: "enable", name: current });
+                      for (const warning of resumed?.warnings ?? []) toast.warning(warning);
+                    }}>Resume</Button>
                   </div>
                 </Fold>
 
@@ -598,7 +624,8 @@ export function BackupsView() {
           </AnimatePresence>
         </section>
       </Body>
-      {editing && <Settings key={editing.name} name={editing.name} initial={editing.policy} onClose={() => setEditing(null)} />}
+      {/* Saving drops the cached copies (a new destination holds others), so let the page list them again. */}
+      {editing && <Settings key={editing.name} name={editing.name} initial={editing.policy} onClose={() => { listed.current = null; setEditing(null); }} />}
       {restoring && policy && <RestoreDialog name={current} policy={policy} copies={copies} initial={restoring} onClose={() => setRestoring(null)} />}
       <ConfirmDialog open={consent} onOpenChange={setConsent} title={`Allow ${current} on this machine?`}
         body="It copies sign-in data or keys to its destination, encrypted with its password."

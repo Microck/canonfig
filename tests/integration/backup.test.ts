@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect, Layer, Redacted, Schema } from "effect";
@@ -14,7 +14,7 @@ import { SynchronizationLive } from "../../src/synchronization/synchronization.l
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-const fixture = () => {
+const fixture = (path = process.env.PATH ?? "") => {
   const root = mkdtempSync(join(tmpdir(), "canonfig-backup-test-"));
   roots.push(root);
   const home = join(root, "home");
@@ -25,7 +25,7 @@ const fixture = () => {
   writeFileSync(join(folder, "AGENTS.md"), original);
   const statePath = join(folder, "state.sqlite");
   const machine = linuxMachineStateLayer({
-    environment: [{ name: "HOME", value: home }, { name: "XDG_CACHE_HOME", value: join(home, ".cache") }],
+    environment: [{ name: "HOME", value: home }, { name: "XDG_CACHE_HOME", value: join(home, ".cache") }, { name: "PATH", value: path }],
     credentialPolicy: { kind: "local-file", path: join(home, "credentials") },
   });
   const layer = SynchronizationLive.pipe(Layer.provideMerge(stateRepositoryLayer(statePath)), Layer.provideMerge(machine));
@@ -202,4 +202,116 @@ it("retains the union of latest, UTC days and Monday-based weeks across a year b
   const snapshots = dates.map(snapshot);
   const kept = retainedSnapshots(snapshots, { last: 2, daily: 2, weekly: 3 });
   expect(snapshots.filter(item => kept.has(item.id)).map(item => item.createdAt)).toEqual([dates[0], dates[1], dates[2], dates[4]]);
+});
+
+// The destination probes run the real git and rclone found on the process PATH, as the CLI and GUI do.
+const hasRclone = spawnSync("rclone", ["version"]).status === 0;
+const asRoot = process.getuid?.() === 0;
+const withEnvironment = async <A>(changes: Record<string, string>, body: () => Promise<A>): Promise<A> => {
+  const before = Object.fromEntries(Object.keys(changes).map(name => [name, process.env[name]]));
+  Object.assign(process.env, changes);
+  try { return await body(); } finally {
+    for (const [name, value] of Object.entries(before)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+  }
+};
+const bareRepository = (path: string) => expect(spawnSync("git", ["init", "--bare", "--quiet", path]).status).toBe(0);
+
+describe("backup preflight on save, enable and check", () => {
+  const secret = "private-fixture-token";
+  const rcloneConfig = (root: string, body: string) => {
+    const path = join(root, "rclone.conf");
+    writeFileSync(path, body);
+    return { RCLONE_CONFIG: path };
+  };
+  interface Saving { readonly policy: BackupPolicy; readonly fail: (request: BackupRequest) => Promise<Error> }
+  const refused = async (machine: Saving, patch: Partial<BackupPolicy>, environment: Record<string, string> = {}) => {
+    const error = await withEnvironment(environment, () => machine.fail({ action: "configure", name: "daily", policy: { ...machine.policy, ...patch }, allowCredentials: false }));
+    // Nothing was saved, and no tool output (which can hold credentials) reached the message.
+    expect(await machine.fail({ action: "check", name: "daily" })).toMatchObject({ message: "No backup policy has that name" });
+    expect(JSON.stringify(error)).not.toContain(secret);
+    return error;
+  };
+
+  it("refuses a Git destination when Git is missing, the repository is missing or it can't be written", async () => {
+    const machine = fixture();
+    const empty = join(machine.root, "empty-path");
+    mkdirSync(empty);
+    const repository = join(machine.root, "backups.git");
+    bareRepository(repository);
+    expect(await refused(machine, { destination: { kind: "git", remote: `file://${repository}` } }, { PATH: empty }))
+      .toMatchObject({ code: "BACKUP_TOOL_REQUIRED", message: expect.stringContaining("Git isn't installed") });
+    expect(await refused(machine, { destination: { kind: "git", remote: `file://${join(machine.root, "missing.git")}` } }))
+      .toMatchObject({ code: "BACKUP_INVALID", message: expect.stringContaining("There is no Git repository") });
+    if (!asRoot) {
+      chmodSync(repository, 0o555);
+      try {
+        expect(await refused(machine, { destination: { kind: "git", remote: `file://${repository}` } }))
+          .toMatchObject({ code: "BACKUP_INVALID", message: expect.stringContaining("can't write to the Git repository") });
+      } finally { chmodSync(repository, 0o755); }
+    }
+  }, 60_000);
+
+  it("refuses an unwritable folder and a missing password alias, and saves a folder the first run will create", async () => {
+    const machine = fixture();
+    expect(await refused(machine, { passwordReference: "nope" }))
+      .toMatchObject({ code: "BACKUP_CREDENTIAL_REQUIRED", message: expect.stringContaining("canonfig backup password nope") });
+    if (!asRoot) {
+      const locked = join(machine.root, "locked");
+      mkdirSync(locked, { mode: 0o555 });
+      try {
+        expect(await refused(machine, { destination: { kind: "local", path: join(locked, "backups") } }))
+          .toMatchObject({ code: "BACKUP_INVALID", message: `Canonfig can't write to ${locked}. Choose a folder this account can write to.` });
+      } finally { chmodSync(locked, 0o755); }
+    }
+    const later = join(machine.root, "not-yet", "backups");
+    expect(await machine.configure({ destination: { kind: "local", path: later } })).toMatchObject({ warnings: [expect.stringContaining("doesn't exist yet")] });
+    expect(existsSync(later)).toBe(false);
+  }, 60_000);
+
+  it("accepts a writable file Git repository, including the push check", async () => {
+    const machine = fixture();
+    const repository = join(machine.root, "backups.git");
+    bareRepository(repository);
+    expect(await machine.configure({ destination: { kind: "git", remote: `file://${repository}` } })).toMatchObject({ warnings: [] });
+    // The dry-run push created nothing at the destination.
+    expect(spawnSync("git", ["--git-dir", repository, "for-each-ref"], { encoding: "utf8" }).stdout).toBe("");
+  }, 60_000);
+
+  it.skipIf(!hasRclone)("refuses a missing rclone, an unknown remote name, and accepts a configured one", async () => {
+    const machine = fixture();
+    const empty = join(machine.root, "empty-path");
+    mkdirSync(empty);
+    const config = rcloneConfig(machine.root, "[vault]\ntype = local\n");
+    expect(await refused(machine, { destination: { kind: "rclone", remote: "vault:backups" } }, { ...config, PATH: empty }))
+      .toMatchObject({ code: "BACKUP_TOOL_REQUIRED", message: expect.stringContaining("rclone isn't installed") });
+    expect(await refused(machine, { destination: { kind: "rclone", remote: "drive:backups" } }, config))
+      .toMatchObject({ code: "BACKUP_INVALID", message: 'rclone has no remote called "drive". Run rclone config to add it, or use one of: vault.' });
+    const target = join(machine.root, "cloud");
+    expect(await withEnvironment(config, () => machine.configure({ destination: { kind: "rclone", remote: `vault:${target}` } }))).toMatchObject({ warnings: [] });
+    // The write probe removed its marker again.
+    expect(readdirSync(join(target, "canonfig-backup", "daily"), { recursive: true }).map(String).filter(name => name.includes(".canonfig-check"))).toEqual([]);
+  }, 60_000);
+
+  it.skipIf(!hasRclone)("saves an unreachable cloud destination with a warning that names no credential", async () => {
+    const machine = fixture();
+    const config = rcloneConfig(machine.root, `[offline]\ntype = webdav\nurl = http://127.0.0.1:9/dav\nbearer_token = ${secret}\n`);
+    const saved = await withEnvironment(config, () => machine.configure({ destination: { kind: "rclone", remote: "offline:backups" } }));
+    expect(saved).toMatchObject({ warnings: [expect.stringContaining("Couldn't reach offline:")] });
+    expect(JSON.stringify(saved)).not.toContain(secret);
+    expect(Object.keys((await machine.run({ action: "status" })).policies)).toEqual(["daily"]);
+  }, 90_000);
+
+  it.skipIf(asRoot)("checks again before a paused backup is turned back on", async () => {
+    const machine = fixture();
+    const destination = join(machine.root, "destination");
+    mkdirSync(destination);
+    await machine.configure({ destination: { kind: "local", path: destination } });
+    await machine.run({ action: "disable", name: "daily" });
+    chmodSync(destination, 0o555);
+    try {
+      expect(await machine.fail({ action: "enable", name: "daily" })).toMatchObject({ code: "BACKUP_INVALID", message: expect.stringContaining("can't write to") });
+      expect(await machine.fail({ action: "check", name: "daily" })).toMatchObject({ code: "BACKUP_INVALID" });
+    } finally { chmodSync(destination, 0o755); }
+    expect(await machine.run({ action: "check", name: "daily" })).toMatchObject({ checked: "daily", warnings: [] });
+  }, 60_000);
 });
