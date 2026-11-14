@@ -10,7 +10,7 @@ import { Effect, Redacted, Schema } from "effect";
 import { ContentDigest, CredentialReference, Timestamp } from "../domain/brand.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { adapterFor } from "../projection/adapters/index.ts";
-import { ArchiveIntegrityError, collectArchiveConfiguration, machineIdentity, MANIFEST_PATH, manifestSigningPayload, SIGNATURE_PATH, verifyArchiveStream, type ArchiveSigner, type ArchiveSignerError, type ExportManifest, type ManifestFile } from "../projection/archive.ts";
+import { ArchiveIntegrityError, collectArchiveConfiguration, machineIdentity, MANIFEST_PATH, manifestSigningPayload, MAXIMUM_MANIFEST_BYTES, SIGNATURE_PATH, verifyArchiveStream, type ArchiveSigner, type ArchiveSignerError, type ExportManifest, type ManifestFile } from "../projection/archive.ts";
 import { encodeTar, type TarSource } from "../projection/archive-tar.ts";
 import { emptyModel } from "../projection/detect.ts";
 import { rootContext } from "../projection/plan.ts";
@@ -141,6 +141,9 @@ const capture = (context: BackupContext, opened: OpenBackup) => Effect.gen(funct
       createdAt: Schema.decodeUnknownSync(Timestamp)(new Date().toISOString()), role: identity.role,
       files: files.sort((left, right) => left.path.localeCompare(right.path)) };
     const bytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+    if (bytes.length > MAXIMUM_MANIFEST_BYTES) {
+      return yield* new BackupError({ code: "BACKUP_INVALID", message: `The backup lists too many files to restore (${files.length}). Exclude caches or histories with exclude globs, or capture fewer harness folders.` });
+    }
     const prefix = [tarFile(MANIFEST_PATH, bytes)];
     if (identity.role === "source") {
       const signer = yield* context.sourceSigner;

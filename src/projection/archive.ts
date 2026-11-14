@@ -109,6 +109,8 @@ export class ArchiveIntegrityError extends TaggedError<ArchiveIntegrityError>()(
 ) {}
 
 export const MANIFEST_PATH = "manifest.json";
+/** The largest manifest verification reads. Writers check it too, so they never publish an archive that cannot restore. */
+export const MAXIMUM_MANIFEST_BYTES = 64 * 1024 * 1024;
 /** A Source's signature of the manifest; never listed in it, since it signs it. */
 export const SIGNATURE_PATH = "signature.json";
 const FOLDER_PREFIX = "folder/";
@@ -344,7 +346,7 @@ export const verifyArchiveStream = async (input: {
     const index = entryIndex++;
     if (index === 0) {
       if (entry.path !== MANIFEST_PATH) throw fail(`does not start with ${MANIFEST_PATH}`);
-      const bytes = await metadata(content, entry.size, 64 * 1024 * 1024);
+      const bytes = await metadata(content, entry.size, MAXIMUM_MANIFEST_BYTES);
       manifestSha256 = sha256BytesHex(bytes);
       try {
         manifest = Schema.decodeUnknownSync(ExportManifest)(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));

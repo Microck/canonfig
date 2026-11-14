@@ -190,7 +190,8 @@ function Settings({ name: initialName, initial, onClose }: { name: string; initi
     if (encrypted && savedAlias === undefined && !(await backup.run({ action: "password", name: alias!, password }))) return;
     const next = { ...policy, passwordReference: alias, include: policy.include.filter((glob) => glob.trim()), exclude: policy.exclude.filter((glob) => glob.trim()) };
     if (!(await backup.run({ action: "configure", name, policy: next, allowCredentials: capturesCredentials(next) }))) return;
-    if (!isNew && enabled === status?.local.disabled.includes(initialName) && !(await backup.run({ action: enabled ? "enable" : "disable", name }))) return;
+    // configure always turns the backup on, so a backup left off is paused again afterwards.
+    if (!enabled && !(await backup.run({ action: "disable", name }))) return;
     toast.success(isNew ? `Created ${name}` : `Saved ${name}`);
     onClose();
   };

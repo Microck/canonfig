@@ -82,7 +82,8 @@ export function useSimulatedBackups(role: "source" | "follower", owner: string):
       case "configure": update((status) => {
         const policies = { ...status.local.policies, [request.name]: request.policy };
         const allowCredentials = request.allowCredentials ? [...new Set([...status.local.allowCredentials, request.name])] : status.local.allowCredentials;
-        return { status: { ...status, local: { ...status.local, policies, allowCredentials }, policies: { ...status.declared, ...policies } } };
+        const disabled = status.local.disabled.filter((name) => name !== request.name);
+        return { status: { ...status, local: { ...status.local, policies, allowCredentials, disabled }, policies: { ...status.declared, ...policies } } };
       }); break;
       case "password": update((status) => ({ status: Schema.decodeUnknownSync(GuiBackupStatus)({ ...status, local: { ...status.local, passwords: { ...status.local.passwords, [request.name]: `canonfig-backup-demo-${request.name}` } } }) })); break;
       case "enable": case "disable": update((status) => ({ status: { ...status, local: { ...status.local, disabled: request.action === "disable" ? [...status.local.disabled, request.name] : status.local.disabled.filter((name) => name !== request.name) } } })); break;
