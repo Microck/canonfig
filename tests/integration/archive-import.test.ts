@@ -74,7 +74,7 @@ const archiveOf = (entries: ReadonlyArray<Entry>, options: { readonly listed?: R
     version: 2,
     canonfigVersion: "7.1.3",
     createdAt: "2026-11-05T00:00:00.000Z",
-    role: "source",
+    role: "standalone",
     files: listed.map((entry) => ({
       path: entry.path,
       size: Buffer.byteLength(entry.content ?? ""),

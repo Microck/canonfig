@@ -1041,7 +1041,13 @@ export const planImport = (input: {
           message: /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message) ? "does not exist" : `cannot be read as a regular file: ${error.message}`,
         }))),
     );
-    const verified = yield* archiveWork(input.archive, async () => verifyArchive(input.archive, bytes));
+    // File access succeeded; decoding failures describe untrusted archive bytes, not the request.
+    const verified = yield* Effect.tryPromise({
+      try: () => verifyArchive(input.archive, bytes),
+      catch: (error) => error instanceof ArchiveIntegrityError ? error : new ArchiveIntegrityError({
+        path: input.archive, message: `archive data is invalid: ${error instanceof Error ? error.message : String(error)}`,
+      }),
+    });
     if (input.expectKey !== undefined && verified.signer !== input.expectKey) {
       return yield* new ArchiveIntegrityError({
         path: input.archive,

@@ -154,7 +154,7 @@ All files and encrypted input are checked before the recovery directory is creat
 
 Snapshots containing Source identity or shared secrets also require `--recover-credentials`. Canonfig imports them into the recovery machine's native secure credential store under new references. It never replaces existing credentials or writes plaintext credential files. A locked or unavailable store fails with Human Action Required; unlock it and retry. Stop the old Source before putting its recovered identity into service. Offline recovery does not change the running Source or its existing credentials.
 
-To restore only the Canonical Folder on the current machine, preview first:
+On a Source or unenrolled machine, restore only the Canonical Folder by previewing first. An enrolled Follower receives that folder from its Source and must use offline recovery instead:
 
 ```bash
 canonfig backup restore daily --apply --dry-run

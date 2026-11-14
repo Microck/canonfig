@@ -14,6 +14,7 @@ import { Field } from "./kit";
 import { ScheduleFields, type Schedule } from "./schedule";
 import { ConfirmDialog } from "./settings";
 import type { Workspace } from "./workspace-types";
+import { useWorkspace } from "./store";
 
 type LiveBackups = NonNullable<Workspace["backupLive"]>;
 const namePattern = "[a-zA-Z0-9][a-zA-Z0-9_\\-]{0,63}";
@@ -137,6 +138,7 @@ function PasswordEditor({ live, onClose }: { live: LiveBackups; onClose: () => v
 }
 
 function SnapshotBrowser({ live, name }: { live: LiveBackups; name: string }) {
+  const { role } = useWorkspace();
   const [owner, setOwner] = useState("");
   const [snapshot, setSnapshot] = useState("");
   const [expectKey, setExpectKey] = useState("");
@@ -168,11 +170,11 @@ function SnapshotBrowser({ live, name }: { live: LiveBackups; name: string }) {
       <Toggle id="backup-recover-credentials" checked={recoverCredentials} onChange={setRecoverCredentials}>Recover encrypted identity and shared secrets</Toggle>
       <div><Button type="submit" variant="outline" disabled={busy}>Restore into new HOME…</Button></div>
     </form>
-    <details><summary className="cursor-pointer text-sm font-medium">Apply the Canonical Folder here</summary><div className="mt-3 grid gap-3">
+    {role === "source" && <details><summary className="cursor-pointer text-sm font-medium">Apply the Canonical Folder here</summary><div className="mt-3 grid gap-3">
       <Toggle id="backup-replace" checked={replace} onChange={setReplace}>Replace the current Canonical Folder instead of merging</Toggle>
       <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy} onClick={() => { void live.run({ action: "restore", ...selection, target: { kind: "apply", replace, dryRun: true } }); }}>Preview folder restore</Button>
         <Button variant="outline" disabled={busy} onClick={() => setConfirmation({ action: "restore", ...selection, target: { kind: "apply", replace, dryRun: false } })}>Apply folder restore…</Button></div>
-    </div></details>
+    </div></details>}
     <ConfirmDialog open={confirmation !== null} onOpenChange={open => { if (!open) setConfirmation(null); }} title={confirmation?.action === "prune" ? "Delete snapshots outside retention?" : "Restore this snapshot?"}
       body={confirmation?.action === "prune" ? "This deletes snapshots outside the current retention policy for this machine's owner namespace. Remote trash and Git objects may remain with the provider."
         : confirmation?.action === "restore" && confirmation.target.kind === "apply" ? "Canonfig applies the backed-up Canonical Folder on this machine through the normal import and Projection checks." : "Canonfig verifies the entire snapshot before writing the new HOME directory."}

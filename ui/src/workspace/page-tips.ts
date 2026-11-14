@@ -40,7 +40,7 @@ export const PAGE_TIPS: Record<"source" | "follower", Partial<Record<View, TourS
     backups: {
       target: ["page-help"],
       title: "Two kinds of backup",
-      body: "Portable backups restore into a new HOME or apply the Canonical Folder here. Takeover Snapshots put back pre-Canonfig harness files and exclude that harness from later updates.",
+      body: "Portable backups restore into a new HOME. This machine's Canonical Folder comes from its Source. Takeover Snapshots put back pre-Canonfig harness files and exclude that harness from later updates.",
     },
   },
 };
