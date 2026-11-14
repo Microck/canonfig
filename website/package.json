@@ -1,6 +1,6 @@
 {
   "name": "@canonfig/website",
-  "version": "7.1.9",
+  "version": "7.1.10",
   "private": true,
   "type": "module",
   "scripts": {
