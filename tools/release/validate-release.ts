@@ -168,6 +168,8 @@ const validatePackageMetadata = (metadataPath: string): void => {
   const expectedRuntimeDependencies = [
     "@canonfig/effect-platform-node-shared",
     "@canonfig/effect-sql-sqlite-node",
+    // Password-encrypted backups use the age v1 format (docs/adr/0004-backup.md).
+    "age-encryption",
     "effect",
     "jsonc-parser",
     "selfsigned",
