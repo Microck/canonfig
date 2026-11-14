@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { AnimatedNumber, DitherProgress, Mono, StateBand, StateLabel, StatusMark, Term, type StatusKind } from "@/shared/shared";
+import { AnimatedNumber, CliText, DitherProgress, Mono, StateBand, StateLabel, StatusMark, Term, type StatusKind } from "@/shared/shared";
 import {
   APPEND_LOCAL_LABEL,
   CATEGORY_LABEL,
@@ -552,11 +552,13 @@ function SyncForm() {
           {!live.operation && <EmptyState title="Check for a revision" body="Nothing changes until you apply." />}
           <FollowerOperationEvidence />
           <div className="space-y-3 border-t border-border px-[18px] py-5">
-            <SectionLabel>Held items and local changes</SectionLabel>
+            <SectionLabel>Your own changes</SectionLabel>
+            <p className="max-w-prose text-sm text-muted-foreground">Items you add on this machine, and edits Canonfig is holding back, are in Local settings.</p>
             <Button variant="outline" size="sm" onClick={() => ws.go("local")}>Open Local settings</Button>
-            <SectionLabel className="pt-4">Private adoption review</SectionLabel>
-            <p className="max-w-prose text-sm text-muted-foreground">Create the CLI's private review files before first adoption.</p>
-            <Button variant="outline" size="sm" disabled={running || blocks.blocked !== null} onClick={live.createReview}>Create private review</Button>
+            {/* The CLI's `sync --plan --review-local`: one private file per existing instructions file Canonfig will start managing. */}
+            <SectionLabel className="pt-4">Preview instructions files</SectionLabel>
+            <p className="max-w-prose text-sm text-muted-foreground">Before the first sync into an instructions file you already have, write a private preview of what Canonfig will add and what stays yours. It is saved in <Mono>~/.canonfig/.reviews</Mono>; the browser can't open it.</p>
+            <Button variant="outline" size="sm" disabled={running || blocks.blocked !== null} onClick={live.createReview}>Write preview</Button>
           </div>
         </> : <>
         <section data-tour="sync-summary" className="relative isolate overflow-hidden border-b border-border" aria-live="polite">
@@ -923,7 +925,7 @@ function ScheduleForm() {
           <ScheduleFields idPrefix="sch" value={draft} onChange={setDraft} defaultLabel={defaultLabel} allowCustom={!!ws.followerLive} />
           {ws.followerLive ? <div className={cn("mt-8", settingsGroup)}>
             {/* "Not selected" tells you to run a CLI command; Save schedule above does that. */}
-            <SettingRow title="Native schedule" description={text(ws.followerLive.schedule?.state) === "not-selected" ? undefined : text(ws.followerLive.schedule?.detail)}>{text(ws.followerLive.schedule?.state)?.replaceAll("-", " ") ?? "Not reported"}</SettingRow>
+            <SettingRow title="Native schedule" description={text(ws.followerLive.schedule?.state) === "not-selected" || !text(ws.followerLive.schedule?.detail) ? undefined : <CliText>{text(ws.followerLive.schedule?.detail)!}</CliText>}>{text(ws.followerLive.schedule?.state)?.replaceAll("-", " ") ?? "Not reported"}</SettingRow>
             {text(ws.followerLive.schedule?.nextRun) && <SettingRow title="Next check">{text(ws.followerLive.schedule?.nextRun)}</SettingRow>}
             {text(ws.followerLive.schedule?.platform) && <SettingRow title="Platform">{text(ws.followerLive.schedule?.platform)}</SettingRow>}
             {text(ws.followerLive.schedule?.unattendedRuns) && <SettingRow title="Recorded runs">{text(ws.followerLive.schedule?.unattendedRuns)}</SettingRow>}
@@ -1291,15 +1293,11 @@ function LocalForm() {
         </div>
         <div className="px-4 pt-8 pb-20 sm:px-[18px]">
           <SectionLabel>Backups</SectionLabel>
-          <div data-tour="local-backups" className={cn("mt-1 max-w-[880px]", settingsGroup)}>
+          <div data-tour="local-backups" className={cn("mt-1", settingsGroup)}>
             <SettingRow
               title="Back up a harness before taking it over"
               htmlFor="local-backups"
-              description={
-                <>
-                  <Mono>"backups"</Mono> in local.jsonc. Only this machine decides; {ws.sourceMachine.hostname} can't turn it off.
-                </>
-              }
+              description={`Only this machine decides; ${ws.sourceMachine.hostname} can't turn it off.`}
             >
               <Switch
                 id="local-backups"
@@ -2033,7 +2031,7 @@ export function MachineView() {
             <SettingRow title={<Term term="Machine Profile">Profile</Term>} >
               {ws.followerLive ? text(record(ws.followerLive.local?.canonicalConfig.profile).name) ?? "Not reported" : ws.profile.name || "Not reported"}
             </SettingRow>
-            <SettingRow title={PLAIN.groups} description={`Groups come from the invitation. To change them, ${ws.sourceMachine.hostname} makes a new invitation and this machine joins again with it.`}>
+            <SettingRow title={PLAIN.groups} description="Set by the invitation.">
               <span className="grid justify-items-end">
                 {ws.selfFollower ? ws.selfFollower.groups.map((group) => <Mono key={group}>{group}</Mono>) : "Not reported"}
               </span>
@@ -2041,7 +2039,8 @@ export function MachineView() {
             {ws.followerLive?.enrollment && <>
               <SettingRow title="Enrolled">{ws.followerLive.enrollment.follower.enrolledAt}</SettingRow>
               <SettingRow title="Enrollment state">{ws.followerLive.enrollment.pending ? "Pending" : ws.followerLive.enrollment.follower.revoked ? "Revoked" : "Enrolled"}</SettingRow>
-              {([["Source signing fingerprint", ws.followerLive.enrollment.source.signingFingerprint], ["TLS fingerprint", ws.followerLive.enrollment.source.tlsFingerprint]] as const).map(([label, value]) => <SettingRow key={label} title={label}><span className="flex min-w-0 items-center gap-2"><Mono className="break-all">{value}</Mono><Button variant="outline" size="xs" onClick={() => { void copy(value, "Fingerprint copied"); }}>Copy</Button></span></SettingRow>)}
+              {/* One line each: a wrapped hash reads as two values. The full value is in the tooltip and Copy. */}
+              {([["Source signing fingerprint", ws.followerLive.enrollment.source.signingFingerprint], ["TLS fingerprint", ws.followerLive.enrollment.source.tlsFingerprint]] as const).map(([label, value]) => <SettingRow key={label} title={label}><span className="flex min-w-0 items-center gap-2"><span className="min-w-0 truncate" title={value}><Mono>{value}</Mono></span><Button variant="outline" size="xs" onClick={() => { void copy(value, "Fingerprint copied"); }}>Copy</Button></span></SettingRow>)}
             </>}
           </div>
 

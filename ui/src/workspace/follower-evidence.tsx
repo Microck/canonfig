@@ -1,6 +1,7 @@
 import type { Schema } from "effect";
-import { Mono, StateBand, StatusMark, type StatusKind } from "../shared/shared";
+import { CliText, Mono, StateBand, StatusMark, type StatusKind } from "../shared/shared";
 import { Button } from "../components/ui/button";
+import { cn } from "@/lib/utils";
 import { useWorkspace } from "./store";
 import { ListHead, ListRow, SectionLabel, SettingRow, settingsGroup } from "./kit";
 import { record, strings, text } from "./live/follower";
@@ -53,6 +54,8 @@ export function FollowerOperationEvidence() {
   const outcome = record(report.outcome);
   const plan = record(report.plan);
   const actions = Array.isArray(plan.actions) ? plan.actions.map(record) : [];
+  const changes = actions.filter((action) => text(action.kind) !== "no-op");
+  const unchanged = actions.filter((action) => text(action.kind) === "no-op");
   const human = Array.isArray(outcome.actions) ? outcome.actions.map(record) : [];
   const conflicts = Array.isArray(outcome.conflicts) ? outcome.conflicts.map(record) : [];
   const reviews = Array.isArray(report.adoptionReviews) ? report.adoptionReviews.map(record) : [];
@@ -69,25 +72,31 @@ export function FollowerOperationEvidence() {
     </div>
     <div className="px-[18px] py-4">
       <div className={settingsGroup}>
-        {text(report.revision) && <SettingRow title="Profile revision"><Mono className="break-all">{text(report.revision)}</Mono></SettingRow>}
-        {text(outcome.run ?? report.run ?? journal.run) && <SettingRow title="Synchronization run"><Mono className="break-all">{text(outcome.run ?? report.run ?? journal.run)}</Mono></SettingRow>}
         {typeof report.downloadedBlobs === "number" && <SettingRow title="Files downloaded">{report.downloadedBlobs}</SettingRow>}
         {typeof report.reusedBlobs === "number" && <SettingRow title="Files reused">{report.reusedBlobs}</SettingRow>}
         {text(report.restored) && <SettingRow title="Restored snapshot"><Mono>{text(report.restored)}</Mono></SettingRow>}
         {strings(report.excludedHarnesses).length > 0 && <SettingRow title="Harnesses excluded after restore">{strings(report.excludedHarnesses).join(", ")}</SettingRow>}
-        {text(record(report.schedule).detail) && <SettingRow title="Schedule">{text(record(report.schedule).detail)}</SettingRow>}
+        {text(record(report.schedule).detail) && <SettingRow title="Schedule"><CliText>{text(record(report.schedule).detail)!}</CliText></SettingRow>}
         {report.abandoned === true && <SettingRow title="Recovery">Run abandoned. Applied changes remain; nothing was rolled back.</SettingRow>}
       </div>
-      {human.map((action, index) => <div key={index} className="border-b border-border py-3"><h3 className="font-medium">{text(action.reason)}</h3><p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">{text(action.instructions)}</p></div>)}
+      {human.map((action, index) => <div key={index} className="border-b border-border py-3"><h3 className="font-medium">{text(action.reason)}</h3><p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground"><CliText>{text(action.instructions) ?? ""}</CliText></p></div>)}
       {conflicts.map((conflict, index) => <div key={index} className="border-b border-border py-3"><h3 className="font-medium">Held: {resourceLabel(text(conflict.resource))}</h3><Mono>{text(conflict.target)}</Mono><p className="mt-1 text-sm text-muted-foreground">Move your edit into the Local folder, ask the Source to publish it, or restore the published content. Canonfig does not force an overwrite.</p></div>)}
       {[...(Array.isArray(report.diagnostics) ? report.diagnostics : []), ...(Array.isArray(report.warnings) ? report.warnings : []), ...(Array.isArray(report.clientSteps) ? report.clientSteps : [])].map((entry, index) => {
         const detail = record(entry);
         const message = text(entry) ?? text(detail.message) ?? text(detail.detail) ?? text(detail.instructions);
-        return message ? <p key={index} className="border-b border-border py-3 text-sm text-muted-foreground">{message}</p> : null;
+        return message ? <p key={index} className="border-b border-border py-3 text-sm text-muted-foreground"><CliText>{message}</CliText></p> : null;
       })}
       {report.adoptionReviews !== undefined && <><SectionLabel className="mt-5">Private adoption review</SectionLabel>{reviews.length === 0 ? <p className="text-sm text-muted-foreground">No first-adoption files need a private review.</p> : reviews.map((review, index) => <SettingRow key={index} title={text(review.target) ?? "Review file"}><Mono className="break-all">{text(review.path) ?? text(review.file)}</Mono></SettingRow>)}<p className="mt-2 text-sm text-muted-foreground">Private review text stays on disk. The browser cannot read or delete it.</p></>}
+      {/* Revision and run ids identify this result for the CLI and logs; they are not something to read on every visit. */}
+      {(text(report.revision) || text(outcome.run ?? report.run ?? journal.run)) && <details className="mt-4 text-sm">
+        <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
+        <div className={cn("mt-1", settingsGroup)}>
+          {text(report.revision) && <SettingRow title="Profile revision"><Mono className="break-all">{text(report.revision)}</Mono></SettingRow>}
+          {text(outcome.run ?? report.run ?? journal.run) && <SettingRow title="Synchronization run"><Mono className="break-all">{text(outcome.run ?? report.run ?? journal.run)}</Mono></SettingRow>}
+        </div>
+      </details>}
     </div>
-    {actions.length > 0 && <><ListHead cols={cols} minWidth={600}><span>Change</span><span>Item</span><span>Where and why</span></ListHead>{actions.map((action, index) => {
+    {changes.length > 0 && <><ListHead cols={cols} minWidth={600}><span>Change</span><span>Item</span><span>Where and why</span></ListHead>{changes.map((action, index) => {
       const detail = record(action.detail);
       const kind = text(action.kind) ?? "";
       const reason = text(detail.reason) ?? text(detail.adoptionNotice) ?? text(detail.retentionNotice) ?? text(detail.summary);
@@ -97,7 +106,15 @@ export function FollowerOperationEvidence() {
         <div className="min-w-0 text-sm"><Mono className="break-all">{text(detail.target) ?? text(detail.package) ?? text(detail.method)}</Mono>{reason && <p className="mt-1 text-muted-foreground">{reason}</p>}{text(detail.instructions) && <p className="mt-1 whitespace-pre-wrap">{text(detail.instructions)}</p>}{kind === "drift-conflict" && <p className="mt-1 text-muted-foreground">Your edit stays in place. Resolve it outside Sync before checking again.</p>}</div>
       </ListRow>;
     })}</>}
-    {strings(outcome.verified).length > 0 && <><ListHead cols="28px minmax(160px,1fr)"><span /><span>Verified item</span></ListHead>{strings(outcome.verified).map((resource) => <ListRow key={resource} cols="28px minmax(160px,1fr)"><StatusMark kind="ok" /><span className="text-sm">{resourceLabel(resource)}</span></ListRow>)}</>}
+    {/* Unchanged items and verified items can run to hundreds; one line counts them, and the list opens on request. */}
+    {unchanged.length > 0 && <details className="border-t border-border">
+      <summary className="flex cursor-pointer items-center gap-2 px-[18px] py-3 text-sm"><StatusMark kind="ok" />{unchanged.length} {unchanged.length === 1 ? "item already matches" : "items already match"}</summary>
+      {unchanged.map((action, index) => <ListRow key={text(action.id) ?? index} cols="28px minmax(160px,1fr)"><StatusMark kind="ok" /><span className="text-sm">{resourceLabel(text(action.resource))}</span></ListRow>)}
+    </details>}
+    {strings(outcome.verified).length > 0 && <details className="border-t border-border">
+      <summary className="flex cursor-pointer items-center gap-2 px-[18px] py-3 text-sm"><StatusMark kind="ok" />{strings(outcome.verified).length} {strings(outcome.verified).length === 1 ? "item" : "items"} verified</summary>
+      {strings(outcome.verified).map((resource) => <ListRow key={resource} cols="28px minmax(160px,1fr)"><StatusMark kind="ok" /><span className="text-sm">{resourceLabel(resource)}</span></ListRow>)}
+    </details>}
     {(human.length > 0 || conflicts.length > 0) && <div className="px-[18px] py-3"><Button variant="outline" size="sm" disabled={live.action.loading} onClick={live.check}>Check again</Button></div>}
   </section>;
 }

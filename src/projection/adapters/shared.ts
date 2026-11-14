@@ -68,6 +68,7 @@ export function unsupportedFeatures(
       level: "warning",
       code: "FEATURE_UNSUPPORTED",
       harness,
-      message: `${harness} has no global ${feature} surface: ${reason} The ${feature} were not projected.`,
+      // The reason already names the harness ("Codex has no global slash-command directory."), so the sentence after it only says what was skipped.
+      message: `${reason} Profile ${feature} were not added there.`,
     }));
 }
