@@ -195,8 +195,10 @@ const validatePackageContents = (
   // administration and the machine map. Explicit lifecycle code and declarations
   // bring the package to 1,287,025 packed / 4,642,878 unpacked bytes. The setup
   // import review and newcomer-readable onboarding copy bring it to 1,290,637 /
-  // 4,645,858; the ceilings keep about 9 KB packed and 54 KB unpacked headroom.
-  if (artifact.size > 1_300_000 || artifact.unpackedSize > 4_700_000) {
+  // 4,645,858. The 7.1.8-7.1.11 UI work (Source look shared to Followers, live
+  // Source publication state, Follower page cleanup) brings it to 1,300,067 /
+  // 4,686,043; the ceilings keep about 10 KB packed and 54 KB unpacked headroom.
+  if (artifact.size > 1_310_000 || artifact.unpackedSize > 4_740_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );
