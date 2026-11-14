@@ -35,6 +35,8 @@ export const ingestShield = Effect.fn("Shield.ingest")(function*(input: {
   readonly applied: ReadonlyArray<AppliedResourceRecord>;
   /** Installer staging homes are also admitted through this same reader. */
   readonly installer?: boolean;
+  /** Digests of staging items that were already there before this installer run; they were admitted earlier. */
+  readonly unchanged?: ReadonlySet<string>;
 }) {
   const { target, context, loaded } = input;
   if (!loaded.local.shield?.enabled) return { imported: [], warnings: [] };
@@ -49,7 +51,8 @@ export const ingestShield = Effect.fn("Shield.ingest")(function*(input: {
   });
   const candidates = [...new Map(scan.candidates.filter((candidate) =>
     !native.roots.some((root) => candidate.path === root || candidate.path.startsWith(root + sep))
-    && (!wasManaged(candidate, input.applied, loaded) || input.installer))
+    && (!wasManaged(candidate, input.applied, loaded) || input.installer)
+    && input.unchanged?.has(candidate.digest) !== true)
     .map((candidate) => [`${candidate.path}\0${candidate.name}`, candidate])).values()];
   if (candidates.length === 0 && native.installs.length === 0) return { imported: [], warnings: scan.skipped.map((entry) => `${entry.path}: ${entry.reason}`) };
   const items = yield* readAuthoringItems(target);

@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { dirname, isAbsolute, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 
 import { Effect, Option, Schema } from "effect";
 
@@ -467,7 +467,16 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
         : new CanonicalFolderError({ path: folder, message: String(error) }),
   });
   const context = yield* rootContext(environment);
-  if (ingest && loaded.local.shield?.enabled) {
+  // Ingestion writes through the authoring path, which checks the folder policy on disk. A revision that changes
+  // canonfig.jsonc (for example, one that newly allows a local category) is applied first, and the next sync ingests
+  // under the policy it brought; otherwise a waiting foreign item could block the very revision that permits it.
+  const diskConfig = yield* Effect.tryPromise({
+    try: () => readFile(join(folder, "canonfig.jsonc")).catch((error: unknown) =>
+      error instanceof Error && "code" in error && error.code === "ENOENT" ? undefined : Promise.reject(error)),
+    catch: (error) => new CanonicalFolderError({ path: folder, message: String(error) }),
+  });
+  const policyCurrent = diskConfig !== undefined && Buffer.from(configContent).equals(diskConfig);
+  if (ingest && loaded.local.shield?.enabled && policyCurrent) {
     const report = yield* ingestShield({ target: { folder, scope: "local", statePath: configuration.stateLocation }, context, loaded, applied: appliedResources });
     if (report.imported.length > 0) loaded = yield* Effect.tryPromise({
       try: () => loadCanonicalFolder(folder, mirrorFiles),

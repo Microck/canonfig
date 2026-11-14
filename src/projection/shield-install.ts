@@ -7,6 +7,7 @@ import { withRunLock } from "../synchronization/run-lock.ts";
 import { readAuthoringItem, writeAuthoringItems, type AuthoringTarget } from "./authoring.ts";
 import { CanonicalFolderError, type LoadedFolder } from "./folder.ts";
 import type { RootContext } from "./harness.ts";
+import { scanImports } from "./import.ts";
 import { ingestShield } from "./shield-ingest.ts";
 import { recordShieldLog } from "./shield-log.ts";
 import { nativeInstallChange } from "./shield-plugins.ts";
@@ -84,6 +85,14 @@ export const redirectInstaller = Effect.fn("Shield.redirectInstaller")(function*
     const argument = command[index]!;
     if (argument.startsWith("./") || argument.startsWith("../")) command[index] = resolve(argument);
   }
+  const context: RootContext = { ...input.context, home, appData: environment.APPDATA, join,
+    environment: (name) => Object.entries(environment).find(([key]) => key === name)?.[1] };
+  // The staging home persists between runs, and MCP entries stay in its config after admission. Record what is
+  // already there so this run admits only what the installer added or changed.
+  const before = yield* Effect.tryPromise({
+    try: () => scanImports({ context, harnesses: loaded.model.harnesses, folder: target.folder }),
+    catch: (error) => failure(home, String(error)),
+  });
   const result = yield* machine.runProcess({ executable, arguments: command,
     workingDirectory: yield* machine.normalizePath({ path: home }),
     environment: Object.entries(environment).map(([name, value]) => ({ name, value })),
@@ -91,9 +100,8 @@ export const redirectInstaller = Effect.fn("Shield.redirectInstaller")(function*
     timeoutMilliseconds: 300000, maximumOutputBytes: 4 * 1024 * 1024,
   });
   if (result.exitCode !== 0) return yield* failure(home, `installer exited ${result.exitCode}; isolated files remain at ${home}. ${new TextDecoder().decode(result.standardError)}`);
-  const context: RootContext = { ...input.context, home, appData: environment.APPDATA, join,
-    environment: (name) => Object.entries(environment).find(([key]) => key === name)?.[1] };
-  const imported = yield* withRunLock(target.statePath, "shield install", ingestShield({ target, context, loaded, applied: [], installer: true }));
+  const unchanged = new Set(before.candidates.map((candidate) => candidate.digest));
+  const imported = yield* withRunLock(target.statePath, "shield install", ingestShield({ target, context, loaded, applied: [], installer: true, unchanged }));
   if (imported.imported.length === 0 && kind !== "plugin") return yield* failure(home, `installer produced no importable items. ${imported.warnings.join("; ")}`);
   yield* recordShieldLog(target.folder, [{ at: new Date().toISOString(), kind: "installed", installer: kind, items: imported.imported }]);
   return { ...imported, stagingHome: home, installerExitCode: result.exitCode, published: false };
