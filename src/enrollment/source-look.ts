@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { Effect, Schema } from "effect";
@@ -48,10 +49,15 @@ export const writeSourceLook = (look: SourceLook | undefined): Effect.Effect<voi
           return;
         }
         // Write then rename, so a Follower reading at the same moment sees the old look or the new one, never half of one.
+        // Each save gets its own temporary file, so two browsers saving at once cannot interleave or rename it from under each other.
         await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-        const temporary = `${path}.tmp`;
-        await writeFile(temporary, `${JSON.stringify(look)}\n`, { mode: 0o600 });
-        await rename(temporary, path);
+        const temporary = `${path}.${randomUUID()}.tmp`;
+        try {
+          await writeFile(temporary, `${JSON.stringify(look)}\n`, { mode: 0o600 });
+          await rename(temporary, path);
+        } finally {
+          await rm(temporary, { force: true });
+        }
       },
       catch: (cause) => new Error(`the source look could not be saved: ${cause instanceof Error ? cause.message : String(cause)}`),
     })),
