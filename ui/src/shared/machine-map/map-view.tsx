@@ -24,13 +24,16 @@ import { usePrefersReducedMotion } from "@/lib/dither";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { Term } from "@/shared/shared";
-import { STATE_META, type Follower } from "@/shared/metadata";
+import { HARNESS_NAMES, STATE_META, type Follower, type HarnessReport, type ItemCategory } from "@/shared/metadata";
 import { AddNode, MachineNode, type AddNodeType, type MachineNodeType } from "./machine-node";
 import { CustomizeSheet } from "./customize-sheet";
 import { SyncEdge, type SyncEdgeType } from "./sync-edge";
 import {
   ADD_ID,
+  ADD_W,
   defaultLayout,
+  machineSize,
+  NODE_H,
   linkFor,
   MapActionsContext,
   mapStore,
@@ -46,7 +49,11 @@ import {
   type ResolvedLook,
 } from "./model";
 
-export type MapFollower = Pick<Follower, "id" | "name"> & Partial<Pick<Follower, "platform" | "state" | "revision" | "schedule" | "behind">>;
+export type MapFollower = Pick<Follower, "id" | "name"> & Partial<Pick<Follower, "platform" | "state" | "revision" | "schedule" | "behind" | "harnesses">>;
+
+/** ", with OpenAI Codex up to date, …" for a node's label, so screen readers hear what the harness cards show. */
+const harnessSummary = (harnesses: readonly HarnessReport[] | undefined) =>
+  harnesses === undefined ? "" : harnesses.length === 0 ? ", no harnesses" : `, harnesses: ${harnesses.map((h) => `${HARNESS_NAMES[h.id]} ${h.state ? STATE_META[h.state].label.toLowerCase() : "managed"}`).join(", ")}`;
 
 export interface MachineMapProps {
   role: MapRole;
@@ -55,7 +62,8 @@ export interface MachineMapProps {
   /** The dashed "Add machine" node (Source role only). */
   onInvite?: () => void;
   className?: string;
-  source: { hostname: string; platform?: Follower["platform"]; endpoint?: string };
+  /** `harnesses` and `categories` fill the Source's card body; each is absent when unknown (a follower's view of the Source). */
+  source: { hostname: string; platform?: Follower["platform"]; endpoint?: string; harnesses?: readonly HarnessReport[]; categories?: readonly ItemCategory[] };
   followers: readonly MapFollower[];
   /** Newest Profile Revision sequence. Followers below it show packets on their way. */
   latestRevision?: number;
@@ -79,9 +87,10 @@ type MapNode = MachineNodeType | AddNodeType;
 const nodeTypes = { machine: MachineNode, add: AddNode };
 const edgeTypes = { sync: SyncEdge };
 // Cards stay readable at fit: a 4-follower row fills most of an 1100px panel without blowing up a 1-machine map.
-// minZoom 1 keeps 11px card text at true size in narrow panels: fit centres the map and the user pans to the rest
-// (wide panels already fit above 1, so they are unaffected). Manual zoom-out still goes to the ReactFlow minZoom.
-const FIT: FitViewOptions = { padding: 0.2, minZoom: 1, maxZoom: 1.15 };
+// minZoom 0.8 keeps 11px card text at about 9px in narrow panels, so a fleet whose cards hold harnesses still fits
+// in its first view; beyond that, fit centres the map and the user pans to the rest. Manual zoom-out still goes to
+// the ReactFlow minZoom.
+const FIT: FitViewOptions = { padding: 0.2, minZoom: 0.8, maxZoom: 1.15 };
 const NO_SYNCING: readonly string[] = [];
 
 // Viewport feel. The mouse wheel and trackpad scroll zoom around the pointer, a pinch zooms, and dragging the
@@ -218,8 +227,12 @@ function MapCanvas({
   const latest = latestRevision;
   const self = role === "follower" ? followers.find((f) => f.id === selfId) : undefined;
   const visible = useMemo(() => (role === "source" ? followers : self ? [self] : []), [role, followers, self]);
-  const rowKey = visible.map((f) => f.id).join();
-  const layout = useMemo(() => defaultLayout(role === "source" ? [...rowKey.split(","), ADD_ID] : rowKey.split(",")), [role, rowKey]);
+  const { w: sourceW, h: sourceH } = machineSize(machine.harnesses?.length, machine.categories !== undefined);
+  // Positions only seed new nodes (see `built`), so recomputing this on a data refresh moves nothing on screen.
+  const layout = useMemo(() => {
+    const items = visible.map((f) => ({ id: f.id, ...machineSize(f.harnesses?.length) }));
+    return defaultLayout({ w: sourceW, h: sourceH }, role === "source" ? [...items, { id: ADD_ID, w: ADD_W, h: NODE_H }] : items);
+  }, [role, visible, sourceW, sourceH]);
   const syncingKey = syncing.join();
   const syncingIds = useMemo(() => new Set(syncingKey.split(",")), [syncingKey]);
   // The Source glows while anything it sent is moving: a publish, or a run on a machine shown here.
@@ -252,7 +265,7 @@ function MapCanvas({
       id: SOURCE_ID,
       type: "machine",
       position: saved[SOURCE_ID] ?? layout[SOURCE_ID],
-      ariaLabel: `${looks[SOURCE_ID].name}, the Source${role === "source" ? ", this machine" : ""}${latest === undefined ? "" : `, revision ${latest}`}${publishing ? ", publishing" : ""}`,
+      ariaLabel: `${looks[SOURCE_ID].name}, the Source${role === "source" ? ", this machine" : ""}${latest === undefined ? "" : `, revision ${latest}`}${publishing ? ", publishing" : ""}${harnessSummary(machine.harnesses)}`,
       data: {
         kind: "source",
         hostname: machine.hostname,
@@ -265,6 +278,8 @@ function MapCanvas({
         isSelf: role === "source",
         active: sourceActive,
         publishing,
+        harnesses: machine.harnesses,
+        categories: machine.categories,
       },
     };
     const followerNodes = visible.map((f): MachineNodeType => {
@@ -274,7 +289,7 @@ function MapCanvas({
         id: f.id,
         type: "machine",
         position: saved[f.id] ?? layout[f.id],
-        ariaLabel: `${look.name}${f.state === undefined ? "" : `, ${STATE_META[f.state].label}`}${f.revision === undefined ? "" : `, revision ${f.revision ?? "none"}`}${behind ? `, revision ${latest} waiting` : ""}${role === "follower" ? ", this machine" : ""}`,
+        ariaLabel: `${look.name}${f.state === undefined ? "" : `, ${STATE_META[f.state].label}`}${f.revision === undefined ? "" : `, revision ${f.revision ?? "none"}`}${behind ? `, revision ${latest} waiting` : ""}${role === "follower" ? ", this machine" : ""}${harnessSummary(f.harnesses)}`,
         data: {
           kind: "follower",
           hostname: f.name,
@@ -286,6 +301,7 @@ function MapCanvas({
           isSelf: role === "follower",
           active: syncingIds.has(f.id),
           publishing: false,
+          harnesses: f.harnesses,
         },
       };
     });
@@ -294,7 +310,7 @@ function MapCanvas({
       out.push({ id: ADD_ID, type: "add", position: layout[ADD_ID], draggable: false, selectable: false, focusable: false, data: {} });
     }
     return out;
-  }, [role, visible, looks, latest, layout, sourceActive, publishing, syncingIds, machine.hostname, machine.platform, machine.endpoint]);
+  }, [role, visible, looks, latest, layout, sourceActive, publishing, syncingIds, machine.hostname, machine.platform, machine.endpoint, machine.harnesses, machine.categories]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<MapNode>(built);
   const selectedId = nodes.find((n) => n.selected && n.type === "machine")?.id ?? null;

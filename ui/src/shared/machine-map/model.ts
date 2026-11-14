@@ -285,23 +285,73 @@ export const NODE_H = 104;
 export const ADD_W = 156;
 export const ADD_ID = "add-machine";
 const GAP_X = 28;
-const ROW_Y = NODE_H + 120;
+/** Vertical room between the Source and the first follower row, where the edges fan out. */
+const SOURCE_GAP = 120;
 /** Wider than this, a single row only fits a panel at an unreadable zoom, so followers wrap. */
 const ROW_MAX = 6;
+// Rows also wrap by width once cards hold harnesses. Wrapping costs more than width does: an edge to a second-row
+// card runs behind the first row and reads as coming from the card it crosses. So the cap holds about four harness
+// cards and the Add slot (2,076px for two three-harness and two two-harness cards), which a 1080p panel still fits
+// at the fit zoom floor; plain-card rows still wrap only at ROW_MAX.
+const ROW_W = 2100;
 const ROW_GAP = 48;
 
-/** Default top-left positions for the given ids in follower rows (plus the Source). */
-export function defaultLayout(ids: readonly string[]): Record<string, XY> {
-  const out: Record<string, XY> = { [SOURCE_ID]: { x: -NODE_W / 2, y: 0 } };
-  for (let start = 0; start < ids.length; start += ROW_MAX) {
-    const row = ids.slice(start, start + ROW_MAX);
-    const widths = row.map((id) => (id === ADD_ID ? ADD_W : NODE_W));
-    const y = ROW_Y + (start / ROW_MAX) * (NODE_H + ROW_GAP);
-    let x = -(widths.reduce((sum, w) => sum + w, 0) + (row.length - 1) * GAP_X) / 2;
-    row.forEach((id, i) => {
-      out[id] = { x, y };
-      x += widths[i] + GAP_X;
-    });
+// A machine that reports its harnesses grows into the film's card (harnesses.tsx): a header, its ~/.canonfig/
+// folder, branches, then one card per harness in rows of up to three. Sizes are derived here, not measured, so the
+// default layout knows every card's size before React Flow renders it.
+export const HARNESS_W = 160;
+export const HARNESS_H = 52;
+export const HARNESS_GAP = 12;
+export const HARNESS_COLS = 3;
+export const CARD_PAD = 16;
+export const HEADER_H = 64;
+/** A follower's folder row: just the path. */
+export const FOLDER_H = 40;
+/** The Source's folder row adds one line of category chips, which needs the full three-column width. */
+export const FOLDER_CHIPS_H = 68;
+export const BRANCH_H = 32;
+/** The card's 1px border, on each side, around the header and body. */
+const BORDER = 1;
+
+export interface Size {
+  w: number;
+  h: number;
+}
+
+/**
+ * A machine card's size. `harnesses` is undefined when the machine reports none (the plain card), and 0 for a
+ * machine that reports an empty list, which keeps one slot for its empty state.
+ */
+export function machineSize(harnesses: number | undefined, chips = false): Size {
+  if (harnesses === undefined) return { w: NODE_W, h: NODE_H };
+  const slots = Math.max(harnesses, 1);
+  const cols = chips ? HARNESS_COLS : Math.min(slots, HARNESS_COLS);
+  const rows = Math.ceil(slots / HARNESS_COLS);
+  return {
+    w: Math.max(NODE_W, cols * HARNESS_W + (cols - 1) * HARNESS_GAP + 2 * CARD_PAD + 2 * BORDER),
+    // The extra BORDER is the 1px divider between the header and the body.
+    h: HEADER_H + BORDER + CARD_PAD + (chips ? FOLDER_CHIPS_H : FOLDER_H) + BRANCH_H + rows * HARNESS_H + (rows - 1) * HARNESS_GAP + CARD_PAD + 2 * BORDER,
+  };
+}
+
+/** Default top-left positions: the Source centred on top, then follower rows, each as tall as its tallest card. */
+export function defaultLayout(source: Size, items: readonly ({ id: string } & Size)[]): Record<string, XY> {
+  const out: Record<string, XY> = { [SOURCE_ID]: { x: -source.w / 2, y: 0 } };
+  let y = source.h + SOURCE_GAP;
+  const rows: ({ id: string } & Size)[][] = [];
+  for (const item of items) {
+    const row = rows.at(-1);
+    const width = row ? row.reduce((sum, r) => sum + r.w + GAP_X, 0) + item.w : Infinity;
+    if (row && row.length < ROW_MAX && width <= ROW_W) row.push(item);
+    else rows.push([item]);
+  }
+  for (const row of rows) {
+    let x = -(row.reduce((sum, item) => sum + item.w, 0) + (row.length - 1) * GAP_X) / 2;
+    for (const item of row) {
+      out[item.id] = { x, y };
+      x += item.w + GAP_X;
+    }
+    y += Math.max(...row.map((item) => item.h)) + ROW_GAP;
   }
   return out;
 }

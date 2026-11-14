@@ -60,6 +60,17 @@ export interface Follower {
   behind?: string;
   /** Per-resource state for the convergence matrix. */
   resources?: Record<string, FollowerState | "excluded">;
+  /** The harnesses Canonfig manages on that machine, with each one's state. Absent until the machine reports them. */
+  harnesses?: HarnessReport[];
+}
+
+/**
+ * One managed harness on a machine, as the machine map shows it. `state` reads like a follower's (STATE_META) and
+ * is absent when nothing reports it for that harness alone, such as one file edited somewhere on the machine.
+ */
+export interface HarnessReport {
+  id: HarnessId;
+  state?: FollowerState;
 }
 
 export interface Revision {

@@ -235,6 +235,7 @@ export const followers: Follower[] = [
     lastRun: "12 min ago",
     schedule: "Daily 09:00",
     resources: all("converged"),
+    harnesses: [{ id: "codex", state: "converged" }, { id: "claude-code", state: "converged" }, { id: "opencode", state: "converged" }],
   },
   {
     id: "f_3b90",
@@ -247,6 +248,8 @@ export const followers: Follower[] = [
     schedule: "Daily 09:00",
     note: "Local edit to skills/code-review",
     resources: all("converged", { "skills/code-review": "drift", "credentials/github-token": "excluded" }),
+    // The edited skill lives in Claude Code's folder; Codex still matches.
+    harnesses: [{ id: "claude-code", state: "drift" }, { id: "codex", state: "converged" }],
   },
   {
     id: "f_d417",
@@ -259,6 +262,8 @@ export const followers: Follower[] = [
     schedule: "Weekly Mon 08:00",
     note: "Run `gh auth login` on this machine",
     resources: { ...all("converged", { "tools/gh": "human-action", "credentials/github-token": "excluded" }), "tools/cuda-toolkit": "converged" },
+    // The sign-in it waits on is a tool's, not a harness's: every harness here is current.
+    harnesses: [{ id: "codex", state: "converged" }, { id: "copilot-cli", state: "converged" }, { id: "opencode", state: "converged" }, { id: "amp", state: "converged" }],
   },
   {
     id: "f_71ea",
@@ -272,6 +277,8 @@ export const followers: Follower[] = [
     note: "Tunnel down since Sat",
     behind: "On revision 6 of 7: it can't reach the Source (tunnel down since Sat).",
     resources: { ...all("converged", { "agents/researcher": "never-synced" }), "tools/cuda-toolkit": "converged" },
+    // Last report before the tunnel went down: Amp was listed in revision 7, which never arrived.
+    harnesses: [{ id: "codex", state: "converged" }, { id: "amp", state: "never-synced" }],
   },
 ];
 

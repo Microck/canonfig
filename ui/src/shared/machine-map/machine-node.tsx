@@ -1,4 +1,5 @@
-// Machine map nodes: one card per machine, plus the dashed "Add machine" slot.
+// Machine map nodes: one card per machine, plus the dashed "Add machine" slot. A machine that reports its
+// harnesses grows a body with its folder and harness cards (./harnesses).
 import { memo, use, type ComponentProps } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Handle, NodeToolbar, Position, type Node, type NodeProps } from "@xyflow/react";
@@ -8,8 +9,9 @@ import { DitherShader, fillStyle, usePrefersReducedMotion } from "@/lib/dither";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { Mono, StateLabel, Term } from "@/shared/shared";
-import type { Follower, FollowerState } from "@/shared/metadata";
-import { ADD_W, DEVICE_ICONS, ICON_TILE_TINT, MapActionsContext, NODE_H, NODE_W, type ResolvedLook } from "./model";
+import type { Follower, FollowerState, HarnessReport, ItemCategory } from "@/shared/metadata";
+import { HarnessBody } from "./harnesses";
+import { ADD_W, DEVICE_ICONS, HEADER_H, ICON_TILE_TINT, machineSize, MapActionsContext, NODE_H, type ResolvedLook } from "./model";
 
 // Platform reads as a word ahead of the purpose: Solar has no brand logos, and a name is clearer than a 14px glyph
 // behind a tooltip. It sits on the purpose line so the footer keeps its width for the revision and state.
@@ -30,6 +32,10 @@ export type MachineNodeData = {
   active: boolean;
   /** Source only: a new Profile Revision is being published. */
   publishing: boolean;
+  /** The machine's managed harnesses, when it reports them; undefined keeps the plain card. */
+  harnesses?: readonly HarnessReport[];
+  /** Source only: the categories its Canonical Folder holds, shown as chips. */
+  categories?: readonly ItemCategory[];
 };
 export type MachineNodeType = Node<MachineNodeData, "machine">;
 export type AddNodeType = Node<Record<string, never>, "add">;
@@ -89,6 +95,47 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
   // Revision 0 means nothing applied yet (a just-joined follower) or nothing published (a new Source): show it as missing.
   const revision = data.revision === 0 ? null : data.revision;
   const behind = data.kind === "follower" && data.latest !== undefined && revision !== undefined && (revision === null || revision < data.latest);
+  const rich = data.harnesses !== undefined;
+  const size = machineSize(data.harnesses?.length, data.categories !== undefined);
+
+  const revisionText = revision === undefined ? "Revision not reported" : revision === null ? (
+    "No revision yet"
+  ) : (
+    <span className="truncate font-mono">
+      rev {revision}
+      {behind && <span className="text-muted-foreground"> → {data.latest}</span>}
+    </span>
+  );
+  const status = data.state ? (
+    <StateLabel state={data.state} self={data.isSelf} />
+  ) : data.publishing ? (
+    <span className="text-sm text-ok">Publishing…</span>
+  ) : (
+    <span className="text-sm text-muted-foreground">
+      <Term term={data.kind === "source" ? "Source Machine" : "Follower Machine"} />
+    </span>
+  );
+  const identity = (
+    <>
+      <span
+        className="relative grid size-9 shrink-0 place-items-center overflow-hidden rounded-md"
+        style={{ color: accent, backgroundColor: `color-mix(in oklab, ${accent} ${Math.round(ICON_TILE_TINT * 100)}%, transparent)` }}
+      >
+        <span aria-hidden className="absolute inset-0 opacity-70" style={fillStyle("gradient", { color: accent, cell: 1.5, edge: "bottom", length: 12, from: 0.5, to: 0 })} />
+        {/* A working machine's tile carries a still hatch; the source's dither glow is the map's one moving signal. */}
+        {data.active && <span aria-hidden className="absolute inset-0 opacity-30" style={fillStyle("hatched", { color: accent, cell: 1.5 })} />}
+        <span aria-hidden className="absolute inset-0 rounded-md border" style={{ borderColor: `color-mix(in oklab, ${accent} 40%, transparent)` }} />
+        <LookIcon look={look} bold={lit} className="relative size-5" />
+      </span>
+      <div className="min-w-0 flex-1">
+        {/* A renamed machine shows only its chosen name; the hostname commands use stays in the tooltip and the Customize sheet. */}
+        <div className="truncate text-lg leading-[18px] font-semibold text-foreground" title={look.name === data.hostname ? undefined : data.hostname}>{look.name}</div>
+        <div className="truncate text-sm text-muted-foreground" title={data.endpoint}>
+          {data.endpoint ? <Mono>{data.endpoint}</Mono> : <>{data.platform && <>{PLATFORM[data.platform]} · </>}{look.purpose || <span className="text-faint">No purpose set</span>}</>}
+        </div>
+      </div>
+    </>
+  );
 
   return (
     <>
@@ -141,8 +188,8 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
           lit ? "border-transparent" : "hover:border-border-strong",
         )}
         style={{
-          width: NODE_W,
-          height: NODE_H,
+          width: size.w,
+          height: size.h,
           boxShadow: lit ? `0 0 0 1px ${accent}, 0 0 0 4px color-mix(in oklab, ${accent} 16%, transparent)` : undefined,
         }}
       >
@@ -151,46 +198,28 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
             This machine
           </span>
         )}
-        <div className="flex min-h-0 flex-1 items-center gap-3 px-3">
-          <span
-            className="relative grid size-9 shrink-0 place-items-center overflow-hidden rounded-md"
-            style={{ color: accent, backgroundColor: `color-mix(in oklab, ${accent} ${Math.round(ICON_TILE_TINT * 100)}%, transparent)` }}
-          >
-            <span aria-hidden className="absolute inset-0 opacity-70" style={fillStyle("gradient", { color: accent, cell: 1.5, edge: "bottom", length: 12, from: 0.5, to: 0 })} />
-            {/* A working machine's tile carries a still hatch; the source's dither glow is the map's one moving signal. */}
-            {data.active && <span aria-hidden className="absolute inset-0 opacity-30" style={fillStyle("hatched", { color: accent, cell: 1.5 })} />}
-            <span aria-hidden className="absolute inset-0 rounded-md border" style={{ borderColor: `color-mix(in oklab, ${accent} 40%, transparent)` }} />
-            <LookIcon look={look} bold={lit} className="relative size-5" />
-          </span>
-          <div className="min-w-0 flex-1">
-            {/* A renamed machine shows only its chosen name; the hostname commands use stays in the tooltip and the Customize sheet. */}
-            <div className="truncate text-lg leading-[18px] font-semibold text-foreground" title={look.name === data.hostname ? undefined : data.hostname}>{look.name}</div>
-            <div className="truncate text-sm text-muted-foreground" title={data.endpoint}>
-              {data.endpoint ? <Mono>{data.endpoint}</Mono> : <>{data.platform && <>{PLATFORM[data.platform]} · </>}{look.purpose || <span className="text-faint">No purpose set</span>}</>}
+        {rich ? (
+          <>
+            {/* The film's header: revision and state move up beside the name, so the body can hold the harnesses. */}
+            <div className="flex shrink-0 items-center gap-3 px-3" style={{ height: HEADER_H }}>
+              {identity}
+              <div className="flex shrink-0 flex-col items-end gap-0.5 text-xs text-faint">
+                {revisionText}
+                {status}
+              </div>
             </div>
-          </div>
-        </div>
-        <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-t border-border px-3 text-xs">
-          <span className="flex min-w-0 items-center gap-1.5 text-faint">
-            {revision === undefined ? "Revision not reported" : revision === null ? (
-              "No revision yet"
-            ) : (
-              <span className="truncate font-mono">
-                rev {revision}
-                {behind && <span className="text-muted-foreground"> → {data.latest}</span>}
-              </span>
-            )}
-          </span>
-          {data.state ? (
-            <StateLabel state={data.state} self={data.isSelf} />
-          ) : data.publishing ? (
-            <span className="text-sm text-ok">Publishing…</span>
-          ) : (
-            <span className="text-sm text-muted-foreground">
-              <Term term={data.kind === "source" ? "Source Machine" : "Follower Machine"} />
-            </span>
-          )}
-        </div>
+            {/* Inside the card's 1px border on each side. */}
+            <HarnessBody width={size.w - 2} harnesses={data.harnesses ?? []} categories={data.categories} self={data.isSelf} />
+          </>
+        ) : (
+          <>
+            <div className="flex min-h-0 flex-1 items-center gap-3 px-3">{identity}</div>
+            <div className="flex h-9 shrink-0 items-center justify-between gap-2 border-t border-border px-3 text-xs">
+              <span className="flex min-w-0 items-center gap-1.5 text-faint">{revisionText}</span>
+              {status}
+            </div>
+          </>
+        )}
       </div>
       <Handle type="source" position={Position.Bottom} isConnectable={false} />
     </>
