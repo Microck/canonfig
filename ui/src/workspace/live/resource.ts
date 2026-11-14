@@ -91,10 +91,11 @@ export function useLiveActions(backend: WorkspaceBackend, reload: () => void) {
   const [state, setState] = useState<ResourceState>({ loading: false, error: null });
   const controller = useRef<AbortController | null>(null);
   useEffect(() => () => controller.current?.abort(), []);
-  async function run(action: (signal: AbortSignal) => Promise<unknown>) {
+  /** Resolves true once the action finished without throwing; false when refused as busy or when it failed. */
+  async function run(action: (signal: AbortSignal) => Promise<unknown>): Promise<boolean> {
     if (controller.current !== null) {
       setState((state) => ({ ...state, error: new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: "Another action is running. Wait for it to finish, then retry." }) }));
-      return;
+      return false;
     }
     const active = new AbortController();
     controller.current = active;
@@ -102,8 +103,10 @@ export function useLiveActions(backend: WorkspaceBackend, reload: () => void) {
     try {
       await action(active.signal);
       if (!active.signal.aborted) { setState({ loading: false, error: null }); reload(); }
+      return true;
     } catch (cause) {
       if (!active.signal.aborted) setState({ loading: false, error: requestError(cause) });
+      return false;
     } finally {
       controller.current = null;
     }

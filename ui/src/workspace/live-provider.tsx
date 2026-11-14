@@ -11,6 +11,7 @@ import { useLiveProfile } from "./live/profile";
 import { useLiveMachines } from "./live/machines";
 import { useLiveFollower } from "./live/follower";
 import { useLiveAdministration } from "./live/administration";
+import { useLiveShield } from "./live/shield";
 import { LiveResourceCache, LiveResourcesContext, resourceState } from "./live/resource";
 import { isRouteForRole } from "./nav";
 
@@ -28,6 +29,7 @@ export function livePageResources(session: GuiSession, route: WorkspaceRoute): r
     schedule: ["/api/schedule"],
     local: ["/api/local/items", "/api/harnesses", "/api/local/overlays"],
     backups: ["/api/backups", "/api/local/items"],
+    shield: ["/api/shield", "/api/harnesses"],
     tunnel: ["/api/tunnel"],
     machine: ["/api/enrollment", "/api/tunnel", "/api/local/items"],
     agent: ["/api/agent/policy", "/api/agent/harness"],
@@ -69,6 +71,8 @@ function LiveWorkspace({ backend, session, route, cache, paths, onInstalled, chi
   const profile = useLiveProfile(backend, session, invalidate, reload);
   const machines = useLiveMachines(backend, session, invalidate);
   const follower = useLiveFollower(backend, session, overview.status, invalidate);
+  // Shield writes local/local.jsonc, which other pages' authoring snapshots carry a digest for.
+  const shield = useLiveShield(backend, session, invalidate);
   const service = admin.service.data;
   const resources: Partial<Record<Workspace["view"], ResourceState>> = {
     overview: overview.overviewState,
@@ -79,13 +83,15 @@ function LiveWorkspace({ backend, session, route, cache, paths, onInstalled, chi
     sync: follower.followerState, schedule: follower.followerStates.schedule,
     local: follower.followerStates.local,
     backups: resourceState([follower.followerStates.backups, follower.followerStates.local]),
+    // The skeleton shows only before the first read; refreshes after a change keep the page mounted.
+    shield: { ...resourceState([shield.state, follower.followerStates.harnesses]), loading: shield.data === null && shield.state.loading },
     tunnel: follower.followerStates.tunnel,
     machine: resourceState([follower.followerState, follower.followerStates.local]),
     setup: machines.machineStates.setup,
   };
   const resource = resources[route.view];
   const workspace: Workspace = {
-    ...overview, ...profile, ...machines, ...follower, admin,
+    ...overview, ...profile, ...machines, ...follower, admin, shield,
     profileTab: route.profileTab, machinesMode: route.machinesMode,
     endpoint: session.role === "source" ? service?.endpoint ?? "" : machines.endpoint,
     sourceMachine: { ...machines.sourceMachine, ...(session.role === "source" && service ? { endpoint: service.endpoint, platform: service.platform, service: service.state } : {}) },

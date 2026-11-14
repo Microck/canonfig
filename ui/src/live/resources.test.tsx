@@ -52,7 +52,7 @@ for (const role of ["source", "follower"] as const) {
     const setup = { discoveryPaths: [], stage: "approved", approved: true, approvals: [], stages: [], items: [], catalog: [], planDigest: "navigation-plan" };
     const responses: Record<string, unknown> = {
       "/api/session": { role, machineName: "Navigation fixture", folderPath: "/tmp/navigation-fixture", version: "7.1.0" },
-      "/api/status": { machineRole: { role }, lifecycle: {}, tunnel: null },
+      "/api/status": { machineRole: { role }, lifecycle: {}, tunnel: null, shield: { enabled: false, hard: false, scope: role === "follower" ? "local" : "canonical", destination: "/tmp/navigation-fixture", projected: [], excludedPlugins: [], note: "" } },
       "/api/installers": { bindings: [], detected: [] },
       "/api/agent/policy": "deterministic-only",
       "/api/agent/harness": { configured: false },
@@ -188,7 +188,7 @@ it("self-update offers a same-major minor, preserves major notices and pairing w
   const detail = "Source and Followers only pair on the same major.minor, so update every machine. 8.0.0: a new major is available; it installs automatically if auto updates are on, or with npm install --global @microck/canonfig@8.0.0.";
   const responses: Record<string, unknown> = {
     "/api/session": { role: "source", machineName: "Update fixture", folderPath: "/tmp/update-fixture", version: "7.1.0" },
-    "/api/status": { machineRole: { role: "source" }, lifecycle: {}, tunnel: null },
+    "/api/status": { machineRole: { role: "source" }, lifecycle: {}, tunnel: null, shield: { enabled: false, hard: false, scope: "canonical", destination: "/tmp/update-fixture", projected: [], excludedPlugins: [], note: "" } },
     "/api/self-update": { enabled: true, pending: false, platform: "linux", settings: { npmCli: "/tmp/update-fixture/npm/bin/npm-cli.js" } },
     "/api/self-update/check": { current: "7.1.0", candidate: "7.1.0", status: "available", detail },
     "/api/self-update/apply": { id: "update-operation" },

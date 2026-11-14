@@ -32,6 +32,7 @@ import { detectHarnesses, emptyModel, harnessReport } from "./detect.ts";
 import { adapterFor } from "./adapters/index.ts";
 import { CanonicalFolderError, holdsEntries, LocalItemCollisionError, loadCanonicalFolder, parseOverlay } from "./folder.ts";
 import type { TargetId } from "./model.ts";
+import { ingestShield } from "./shield-ingest.ts";
 import {
   keyClaimIssue,
   parseSurfaceResourceId,
@@ -260,7 +261,7 @@ const finishRestore = (statePath: string, revision: PlanningLocalRevision) =>
  */
 export const editLocalList = (
   folder: string,
-  key: "excludeHarnesses" | "excludeResources" | "overlays",
+  key: "excludeHarnesses" | "excludeResources" | "excludePlugins" | "overlays",
   update: (current: ReadonlyArray<string>) => ReadonlyArray<string>,
 ) =>
   Effect.gen(function*() {
@@ -497,10 +498,14 @@ export const synchronizeLocal = Effect.fn("LocalProjection.synchronize")(functio
   if (mode === "apply" && (yield* repository.loadRecovery(localProjectionFollower)) !== undefined) {
     return yield* new ActiveRunExistsError({ follower: localProjectionFollower });
   }
-  const loaded = yield* loadFolder(statePath);
+  let loaded = yield* loadFolder(statePath);
   const context = yield* rootContext(options.environment);
   const takeovers = yield* repository.loadHarnessTakeovers();
   const applied = yield* repository.loadAppliedResources(localProjectionFollower);
+  const shield = mode === "apply" ? yield* ingestShield({
+    target: { folder: loaded.model.folder, scope: "canonical", statePath }, context, loaded, applied,
+  }) : undefined;
+  if (shield !== undefined && shield.imported.length > 0) loaded = yield* loadFolder(statePath);
   const installed = new Set((yield* detectHarnesses(context, loaded.model.folder))
     .filter((entry) => entry.installed)
     .map((entry) => entry.harness));
@@ -509,6 +514,7 @@ export const synchronizeLocal = Effect.fn("LocalProjection.synchronize")(functio
   const backup = !options.noBackup && loaded.local.backups;
   const base = {
     mode,
+    shield,
     origin: { folder: loaded.model.folder, digest: loaded.digest },
     harnesses: planned.harnesses.map((entry) => ({ harness: entry.harness, root: entry.layout.root })),
     notInstalled: notInstalled.length === 0 ? undefined : notInstalled,

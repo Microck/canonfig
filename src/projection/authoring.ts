@@ -52,21 +52,21 @@ const digest = (content: Uint8Array) => createHash("sha256").update(content).dig
 const validPath = (path: string) => path.length > 0 && !path.includes("\\") && !path.includes("\0") &&
   path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 const configurationKeys: Readonly<Record<string, true>> = Object.fromEntries(["harnesses", "surfaces", "mcp", "hooks", "settings", "tools", "credentials", "groups", "scheduleDefault", "local", "resources", "profile"].map((key) => [key, true]));
-const localKeys: Readonly<Record<string, true>> = Object.fromEntries(["mcp", "settings", "excludeHarnesses", "excludeResources", "overlays", "backups"].map((key) => [key, true]));
+const localKeys: Readonly<Record<string, true>> = Object.fromEntries(["mcp", "settings", "excludeHarnesses", "excludeResources", "excludePlugins", "overlays", "backups", "shield"].map((key) => [key, true]));
 const invalid = (path: string, message: string) => new AuthoringInvalid({ path, message });
 const conflict = (path: string) => new AuthoringConflict({ path, message: `${path} changed since it was read. Reload it before saving; no authoring files were written.` });
 
-/** File items plus whole skill directories are the write unit, never arbitrary filesystem paths. */
+/** File items plus whole skill and plugin directories are write units, never arbitrary paths. */
 const itemPath = (path: string, scope: AuthoringTarget["scope"]): boolean => {
   if (!validPath(path)) return false;
   if (path === "AGENTS.md" || path === (scope === "canonical" ? "canonfig.jsonc" : "local.jsonc")) return true;
   if (/^(rules|agents|commands)\/[A-Za-z0-9][A-Za-z0-9_-]*\.md$/u.test(path)) return true;
-  if (/^skills\/[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(path)) return true;
+  if (/^(skills|plugins)\/[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(path)) return true;
   return scope === "canonical" && /^(hooks|files)\/.+/u.test(path);
 };
 
 const itemFrom = (path: string, files: ReadonlyMap<string, FolderFile>): AuthoringItem => {
-  const tree = path.startsWith("skills/");
+  const tree = path.startsWith("skills/") || path.startsWith("plugins/");
   const selected = [...files].filter(([name]) => name === path || (tree && name.startsWith(`${path}/`)))
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([name, file]) => ({ ...file, path: name, digest: digest(file.content) }));
@@ -125,7 +125,7 @@ const scopedFiles = (target: AuthoringTarget, files: ReadonlyMap<string, FolderF
 export const readAuthoringItems = Effect.fn("Authoring.readItems")(function*(target: AuthoringTarget) {
   const { files } = yield* readFiles(target.folder);
   const scoped = scopedFiles(target, files);
-  const paths = new Set([...scoped.keys()].map((path) => path.startsWith("skills/") ? path.split("/").slice(0, 2).join("/") : path));
+  const paths = new Set([...scoped.keys()].map((path) => /^(skills|plugins)\//u.test(path) ? path.split("/").slice(0, 2).join("/") : path));
   return [...paths].sort().map((path) => itemFrom(path, scoped));
 });
 
@@ -159,7 +159,7 @@ const prepareChanges = (target: AuthoringTarget, files: Map<string, FolderFile>,
     for (const file of previous.files) candidate.delete(prefix + file.path);
     const seen = new Set<string>();
     for (const file of change.files) {
-      if (!validPath(file.path) || seen.has(file.path) || (change.path.startsWith("skills/") ? !file.path.startsWith(`${change.path}/`) : file.path !== change.path)) {
+      if (!validPath(file.path) || seen.has(file.path) || (/^(skills|plugins)\//u.test(change.path) ? !file.path.startsWith(`${change.path}/`) : file.path !== change.path)) {
         throw invalid(file.path, "A changed file must belong to its item exactly once.");
       }
       seen.add(file.path);
@@ -189,8 +189,8 @@ const prepareChanges = (target: AuthoringTarget, files: Map<string, FolderFile>,
   return candidate;
 };
 
-/** All candidates validate before the first write. Each file publishes atomically; a tree is not a filesystem transaction. */
-export const writeAuthoringItems = Effect.fn("Authoring.writeItems")(function*(target: AuthoringTarget, changes: ReadonlyArray<AuthoringChange>) {
+/** Caller holds the run lock. Validate all candidates before the first atomic file write. */
+export const writeAuthoringItemsLocked = Effect.fn("Authoring.writeItemsLocked")(function*(target: AuthoringTarget, changes: ReadonlyArray<AuthoringChange>) {
   const machine = yield* MachineState;
   const { root, files } = yield* readFiles(target.folder);
   const candidate = yield* Effect.try({
@@ -244,7 +244,12 @@ export const writeAuthoringItems = Effect.fn("Authoring.writeItems")(function*(t
   }
   const scoped = scopedFiles(target, candidate);
   return changes.map(({ path }) => itemFrom(path, scoped));
-}, (effect, target) => withRunLock(target.statePath, "author folder", effect));
+});
+
+export const writeAuthoringItems = Effect.fn("Authoring.writeItems")(
+  writeAuthoringItemsLocked,
+  (effect, target) => withRunLock(target.statePath, "author folder", effect),
+);
 
 export const editAuthoringConfig = Effect.fn("Authoring.editConfig")(function*(target: AuthoringTarget, expectedDigest: string | null, edits: ReadonlyArray<AuthoringConfigEdit>, changes: ReadonlyArray<AuthoringChange> = []) {
   const path = target.scope === "canonical" ? "canonfig.jsonc" : "local.jsonc";

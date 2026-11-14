@@ -1,0 +1,63 @@
+---
+title: Keep agent installs in the folder
+description: Turn on Shield so skills, MCP servers and plugins that agents and installers add land in the Canonical Folder, then review native plugins before they run.
+---
+
+Agents and installers like `npx skills add` or `claude mcp add` write straight
+into harness folders, where Canonfig doesn't manage them and other machines
+never get them. **Shield** sends those additions to your Canonical Folder
+instead: `~/.canonfig` on a Source Machine, `~/.canonfig/local` on a Follower
+Machine. It never publishes anything. Shield is set per machine.
+
+## Turn Shield on
+
+In the browser, open **Shield** and turn on the switch. From the CLI:
+
+```bash
+canonfig shield enable
+canonfig sync --apply
+```
+
+The hooks take effect after the next `sync --apply` and a restart of each
+running harness. Until then the page says so. On a Follower Machine, **Open
+Sync** takes you to the page that applies it.
+
+## Read what Shield caught
+
+The Shield page lists the last 30 days, newest first:
+
+- a write a harness hook refused, with the harness and the path it tried;
+- an installer that ran through `canonfig shield install`, with what it added;
+- an item `sync --apply` found in a harness folder and moved, marked
+  **found at sync**.
+
+The **Harnesses** list shows which listed harnesses are protected. A harness
+without hook support can't be stopped mid-install, so sync moves what it
+added instead.
+
+## Review a native plugin
+
+A plugin runs code, so Shield keeps it off until someone approves it. Plugins
+waiting for that show **Review** in the log and under **Needs review**. The
+review dialog lists the files the harness loads and the tools the plugin needs.
+
+- **Approve** pins the plugin's exact files. If any of them change, the plugin
+  stays off until you review it again.
+- **Keep it off** excludes the plugin on this machine. The published item stays
+  as it is.
+
+Run `canonfig sync --apply` afterwards to project or remove it. The CLI
+equivalents are `canonfig shield review <id> --digest <sha256> --reviewer <name>`
+and `canonfig shield exclude <id>`.
+
+## Hard mode
+
+On Linux with bubblewrap installed, **Hard mode** makes harness folders
+read-only for commands you start with `canonfig shield run`. It protects only
+that process tree; it is not a sandbox. A file Canonfig manages that does not
+exist yet, such as a harness's `hooks.json`, stays creatable, because locking its
+folder would also lock the harness's own sessions and sign-in. The next sync
+treats such a file as a foreign change.
+
+See [Shield in the CLI reference](/reference/cli#shield) for every command and
+the installers Shield supports.

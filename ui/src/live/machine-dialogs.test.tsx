@@ -36,7 +36,7 @@ const follower = { id: "dialog-follower", name: "Original laptop", groups: ["wor
 type Handler = (path: string, body: unknown, outgoing: ServerResponse) => boolean;
 async function fixture(handler: Handler) {
   const responses: Record<string, unknown> = {
-    "/api/status": { machineRole: { role: "source" }, lifecycle: {}, tunnel: null },
+    "/api/status": { machineRole: { role: "source" }, lifecycle: {}, tunnel: null, shield: { enabled: false, hard: false, scope: "canonical", destination: "/tmp/dialog-fixture", projected: [], excludedPlugins: [], note: "" } },
     "/api/profile/items": { items: [], config: { profile: { id: "dialog", name: "Dialog" }, groups: { work: [] } }, supportedSurfaces: {} },
     "/api/source-service": { report: { state: "not-installed", platform: "linux", mechanism: "systemd-user-service", serviceName: "dialog-fixture", endpoint: "", manager: { installed: false, matches: false, enabled: false, active: false, state: "not-installed" }, serving: false, supportedModes: "", logs: "", detail: "" }, error: null },
     "/api/revisions": { revisions: [] },

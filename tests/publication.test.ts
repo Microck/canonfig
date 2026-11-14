@@ -28,6 +28,7 @@ import { profileCatalogLayer } from "../src/profile/profile-catalog.layer.ts";
 import { ProfileCatalog } from "../src/profile/profile-catalog.service.ts";
 import type { ProfileRevisionSigner } from "../src/profile/publication.ts";
 import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
+import { loadCanonicalFolder } from "../src/projection/folder.ts";
 
 /**
  * `canonfig source publish` compiles the Canonical Folder. Every case builds
@@ -192,6 +193,40 @@ describe("publishing the Canonical Folder", () => {
     expect(revision.groups).toEqual([{ name: "work" }]);
     expect(revision.scheduleDefault).toEqual({ type: "daily", at: "09:00", timezone: "local" });
     expect(signing.calls).toEqual({ signed: 1, verified: 1 });
+  });
+
+  it("requires current plugin review and signs grouped payloads with executable intent and tool dependencies", async () => {
+    const fixture = workspace({ groups: { work: ["plugins/review-proof"] } });
+    const signing = makeSigner();
+    const root = join(fixture.folder, "plugins", "review-proof");
+    const declaration = { version: 1, variants: [{
+      id: "linux", harness: "oh-my-pi", platforms: ["linux"], directory: "package",
+      entry: "index.mjs", requires: ["tools/uv"],
+    }] };
+    write(join(root, "plugin.jsonc"), JSON.stringify(declaration));
+    write(join(root, "package", "package.json"), '{"name":"review-proof"}');
+    write(join(root, "package", "index.mjs"), "export default function () {}\n");
+    write(join(root, "package", "check.sh"), "#!/bin/sh\necho reviewed\n", 0o755);
+
+    expect((await publishFailure(fixture, signing.signer)).message).toContain("needs review of digest");
+    expect(signing.calls.signed).toBe(0);
+    expect(persisted(fixture.database)).toMatchObject({ revisions: 0, blobs: 0, approvals: 0 });
+    const [plugin] = (await loadCanonicalFolder(fixture.folder)).model.plugins;
+    write(join(root, "plugin.jsonc"), JSON.stringify({ ...declaration, review: { reviewer: "fixture", digest: plugin!.digest } }));
+
+    const revision = await publishAt(fixture, signing.signer);
+    const payloads = revision.resources.filter((resource) => resource.id.startsWith("plugin-files:review-proof:"));
+    expect(payloads.map((resource) => resource.target).sort()).toEqual([
+      "plugins/review-proof/package/check.sh", "plugins/review-proof/package/index.mjs", "plugins/review-proof/package/package.json",
+    ]);
+    expect(payloads.every((resource) => resource.groups?.includes("work"))).toBe(true);
+    expect(payloads.find((resource) => resource.target.endsWith("check.sh"))?.spec).toMatchObject({ kind: "file", executable: true });
+    expect(resourceOf(revision, "plugins:review-proof")).toMatchObject({ groups: ["work"], dependsOn: expect.arrayContaining(["tools:uv", ...payloads.map((resource) => resource.id)]) });
+    expect(signing.calls).toEqual({ signed: 1, verified: 1 });
+
+    write(join(root, "package", "index.mjs"), "export default function () { throw Error('changed'); }\n");
+    expect((await publishFailure(fixture, signing.signer)).message).toContain("needs review of digest");
+    expect(signing.calls.signed).toBe(1);
   });
 
   it("does not infer execute intent from a disabled-only hook", async () => {

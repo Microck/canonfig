@@ -44,6 +44,7 @@ export const emptyModel = (folder: string): CanonicalModel => ({
   resources: [],
   rules: [],
   skills: [],
+  plugins: [],
   agents: [],
   commands: [],
   hooks: [],

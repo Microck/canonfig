@@ -65,6 +65,14 @@ export const mirrorItem = (
     if (category === "surfaces") return entryOf(resource.spec, "surfaces");
     return undefined;
   }
+  if (category === "plugin-files") {
+    const match = /^([a-z0-9][a-z0-9-]*):([A-Za-z0-9_-]+)$/u.exec(rest);
+    if (match === null) return undefined;
+    const path = Buffer.from(match[2]!, "base64url").toString("utf8");
+    if (Buffer.from(path).toString("base64url") !== match[2] || path.includes("\\") || path.includes("\0")
+      || path.split("/").some((part) => part === "" || part === "." || part === "..") || path === "plugin.jsonc") return undefined;
+    return file(`plugins/${match[1]}/${path}`, "file");
+  }
   // A path item names a file by its segments: `hook-scripts:lib:run.sh` is
   // `hooks/lib/run.sh`, `files:a:b` is `files/a/b`. No segment is `.` or `..`.
   const directory = category === "hook-scripts" ? "hooks" : category === "files" ? "files" : undefined;
@@ -79,6 +87,8 @@ export const mirrorItem = (
     case "agents":
     case "commands":
       return file(`${category}/${rest}.md`, "file");
+    case "plugins":
+      return file(`plugins/${rest}/plugin.jsonc`, "file");
     case "skills":
       return file(`skills/${rest}`, "skill");
     case "hooks": {

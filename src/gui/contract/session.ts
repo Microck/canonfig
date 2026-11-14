@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { GuiShieldStatus } from "./shield.ts";
 
 /** The CLI and its bundled browser use this module directly, without generated copies. */
 export const GuiRole = Schema.Literals(["source", "follower", "unconfigured"]);
@@ -27,6 +28,7 @@ export const GuiStatus = Schema.StructWithRest(
     }),
     lifecycle: Schema.Record(Schema.String, LifecycleStep),
     tunnel: Schema.Json,
+    shield: GuiShieldStatus,
   }),
   [Schema.Record(Schema.String, Schema.Json)],
 );

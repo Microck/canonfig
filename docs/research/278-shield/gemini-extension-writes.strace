@@ -1,0 +1,24 @@
+3511025 mkdirat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini", 0777) = 0
+3511024 mkdirat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini", 0777) = -1 EEXIST (File exists)
+3511024 mkdirat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini", 0777 <unfinished ...>
+3511024 mkdirat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini", 0777) = -1 EEXIST (File exists)
+3511026 openat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/projects.json.24d3ed1d-6300-411b-999b-e1c0cb958185.tmp", O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 0666) = 23
+3511026 openat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/projects.json.c68ce5cb-92a7-48ed-bbbf-0dbc7aff2724.tmp", O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 0666) = 24
+3511023 renameat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/projects.json.24d3ed1d-6300-411b-999b-e1c0cb958185.tmp", AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/projects.json" <unfinished ...>
+3511026 renameat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/projects.json.c68ce5cb-92a7-48ed-bbbf-0dbc7aff2724.tmp", AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/projects.json") = 0
+3511025 mkdirat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/projects.json.lock", 0777) = 0
+3511026 mkdirat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/projects.json.lock", 0777) = -1 EEXIST (File exists)
+3511024 mkdirat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/tmp/trace-gemini-vq3srbiu", 0777) = -1 ENOENT (No such file or directory)
+3511025 mkdirat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/tmp", 0777) = 0
+3511023 mkdirat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/tmp/trace-gemini-vq3srbiu", 0777) = 0
+3511025 openat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/tmp/trace-gemini-vq3srbiu/.project_root", O_WRONLY|O_CREAT|O_EXCL|O_TRUNC|O_CLOEXEC, 0666 <unfinished ...>
+3511024 mkdirat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/history/trace-gemini-vq3srbiu", 0777) = -1 ENOENT (No such file or directory)
+3511026 mkdirat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/history", 0777) = 0
+3511024 mkdirat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/history/trace-gemini-vq3srbiu", 0777) = 0
+3511026 openat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/history/trace-gemini-vq3srbiu/.project_root", O_WRONLY|O_CREAT|O_EXCL|O_TRUNC|O_CLOEXEC, 0666) = 23
+3511024 mkdirat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini", 0777) = -1 EEXIST (File exists)
+3511023 openat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/projects.json.8268c3ee-c926-4beb-9260-c48f2ea9adb5.tmp", O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 0666) = 23
+3511024 renameat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/projects.json.8268c3ee-c926-4beb-9260-c48f2ea9adb5.tmp", AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/projects.json" <unfinished ...>
+3511025 unlinkat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/projects.json.lock", AT_REMOVEDIR) = 0
+3511023 mkdirat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/projects.json.lock", 0777) = 0
+3511024 unlinkat(AT_FDCWD, "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu/.gemini/projects.json.lock", AT_REMOVEDIR) = 0

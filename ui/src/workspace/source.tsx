@@ -400,7 +400,7 @@ export function SourceOverview() {
 export function WorkspaceEvidence() {
   const { session, status, setView } = useWorkspace();
   if (!session || !status) return null;
-  const { machineRole, lifecycle, tunnel } = status;
+  const { machineRole, lifecycle, tunnel, shield } = status;
   return (
     <>
       <section>
@@ -409,8 +409,15 @@ export function WorkspaceEvidence() {
           <Prop label="Name">{session.machineName}</Prop>
           <Prop label="Canonfig version"><Mono>{session.version}</Mono></Prop>
           <Prop label="Canonical Folder"><Mono>{session.folderPath}</Mono></Prop>
+          <Prop label="Shield">{shield.enabled ? (shield.projected.length > 0 ? "Enabled" : "Enabled, sync required") : (shield.projected.length > 0 ? "Disabled, sync required" : "Disabled")}</Prop>
+          {shield.enabled && <>
+            <Prop label="Install destination"><Mono>{shield.destination}</Mono></Prop>
+            <Prop label="Hard protection">{shield.hard ? "Linux: shield run only" : "Off"}</Prop>
+          </>}
           {machineRole.follower !== undefined && <Prop label="Follower identity"><Mono>{machineRole.follower}</Mono></Prop>}
         </div>
+        {shield.enabled !== (shield.projected.length > 0) && <p className="mt-2 text-sm"><CliText>Run canonfig sync --apply, then reload clients.</CliText></p>}
+        {shield.enabled && <p className="mt-2 text-sm text-muted-foreground">{shield.note}</p>}
         {(machineRole.sourceFingerprint !== undefined || machineRole.tlsFingerprint !== undefined) && <details className="mt-3 text-sm">
           <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
           <div className="mt-1 border-t border-border">

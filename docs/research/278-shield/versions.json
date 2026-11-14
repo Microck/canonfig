@@ -1,0 +1,37 @@
+{
+  "claude": {
+    "exit": 0,
+    "stdout": "2.1.293 (Claude Code)",
+    "stderr": ""
+  },
+  "codex": {
+    "exit": 0,
+    "stdout": "codex-cli 0.167.1",
+    "stderr": "WARNING: proceeding, even though we could not create PATH aliases: CODEX_HOME points to \"/tmp/canonfig-shield-278.1PQfGP/versions-xlbdntof/.codex\", but that path does not exist"
+  },
+  "opencode": {
+    "exit": 0,
+    "stdout": "opencode v2.2.6",
+    "stderr": ""
+  },
+  "omp": {
+    "exit": 0,
+    "stdout": "omp/18.18.7",
+    "stderr": ""
+  },
+  "bwrap": {
+    "exit": 0,
+    "stdout": "bubblewrap 0.6.1",
+    "stderr": ""
+  },
+  "strace": {
+    "exit": 0,
+    "stdout": "strace -- version 5.16\nCopyright (c) 1991-2022 The strace developers <https://strace.io>.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\nOptional features enabled: no-m32-mpers",
+    "stderr": ""
+  },
+  "gemini": {
+    "exit": 0,
+    "stdout": "0.45.1\n",
+    "stderr": ""
+  }
+}

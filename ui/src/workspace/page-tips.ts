@@ -8,6 +8,13 @@
 import type { TourStep } from "@/tour/tour";
 import type { View } from "./store";
 
+/** Shield is per machine, so both roles share its tip. */
+const SHIELD_TIP: TourStep = {
+  target: ["page-help"],
+  title: "What an approval covers",
+  body: "Approving a plugin pins its exact files. If any of them change, the plugin stays off until you review it again.",
+};
+
 export const PAGE_TIPS: Record<"source" | "follower", Partial<Record<View, TourStep>>> = {
   source: {
     profile: {
@@ -25,6 +32,7 @@ export const PAGE_TIPS: Record<"source" | "follower", Partial<Record<View, TourS
       title: "What a restore does",
       body: "Restoring puts back what a harness had before Canonfig first wrote to it, then excludes that harness on this machine so the next sync leaves it alone.",
     },
+    shield: SHIELD_TIP,
   },
   follower: {
     sync: {
@@ -42,5 +50,6 @@ export const PAGE_TIPS: Record<"source" | "follower", Partial<Record<View, TourS
       title: "What a restore does",
       body: "Restoring puts back what a harness had before Canonfig first wrote to it, then excludes that harness on this machine so the next update leaves it alone.",
     },
+    shield: SHIELD_TIP,
   },
 };

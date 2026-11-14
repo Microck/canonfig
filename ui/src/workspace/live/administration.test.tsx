@@ -41,7 +41,7 @@ it("keeps undisclosed harness collections absent on save and sends explicit repl
   // cover credential sanitization and storage using real disposable machines.
   const backend: WorkspaceBackend = {
     session: async () => session,
-    status: async () => ({ machineRole: { role: "follower" }, lifecycle: {}, tunnel: null }),
+    status: async () => ({ machineRole: { role: "follower" }, lifecycle: {}, tunnel: null, shield: { enabled: false, hard: false, scope: "local", destination: "/tmp/administration-fixture/local", projected: [], excludedPlugins: [], note: "" } }),
     operation: async () => assert.fail("No operation ticket expected"),
     request: async (path, schema, _signal, mutation) => {
       if (path === "/api/agent/policy") return Schema.decodeUnknownSync(schema)("agent-propose");

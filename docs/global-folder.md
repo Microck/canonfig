@@ -17,6 +17,7 @@ https://canonfig.micr.dev/docs/reference/harnesses/.
 | `AGENTS.md` | shared instructions |
 | `rules/<id>.md` | rules |
 | `skills/<name>/` | skill trees with `SKILL.md` |
+| `plugins/<id>/` | reviewed native packages with `plugin.jsonc` and harness-specific variants |
 | `agents/<id>.md` | subagent definitions |
 | `commands/<id>.md` | slash commands |
 | `hooks/` | scripts that a hook in `canonfig.jsonc` runs |
@@ -30,8 +31,8 @@ folder, and authored trees hold regular files and directories only;
 violations fail with `CanonicalFolderError`.
 
 `profile` is required to publish and unused by projection. `local.allow`
-names the categories that `local/` may add to: `rules`, `skills`, `agents`,
-`commands`, `mcp`, `settings` (`LOCAL_CATEGORIES`).
+names the categories that `local/` may add to: `rules`, `skills`, `plugins`,
+`agents`, `commands`, `mcp`, `settings` (`LOCAL_CATEGORIES`).
 
 ## Compile to resources
 
@@ -43,6 +44,8 @@ Machine Profile with one resource per item:
 | `instructions` | file | `AGENTS.md` |
 | `rules:<id>`, `agents:<id>`, `commands:<id>` | file | `<category>/<id>.md` |
 | `skills:<name>` | skill | `skills/<name>/` |
+| `plugins:<id>` | file | `plugins/<id>/plugin.jsonc`; depends on its payload and declared tools |
+| `plugin-files:<id>:<path>` | file | native payload bytes and executable intent, grouped with the manifest |
 | `hooks:<id>` | config | `canonfig.jsonc#hooks.<id>`, with its position in the `hooks` array |
 | `hook-scripts:<path>` | file | a script under `hooks/`, path segments joined with `:` |
 | `mcp:<name>` | config | `canonfig.jsonc#mcp.<name>`; depends on the `tools/<id>` it `requires` |
@@ -58,6 +61,28 @@ script no hook runs, a hook naming a missing script, an MCP server requiring
 an undeclared tool, and a group naming an item the folder does not declare.
 A grouped item reaches only followers in one of its groups; a hook script
 follows the hooks that run it.
+
+## Shield and Native Plugins
+
+[ADR 0004](adr/0004-shield-and-native-plugins.md) defines the folder extension.
+`local/local.jsonc` stores this machine's `shield: { enabled, hard }` and
+`excludePlugins` policy. A Source redirects to authored entries; an enrolled
+Follower redirects only to `local/`, subject to `local.allow` and Local Overlays.
+
+Before projection, apply-mode sync admits recognized foreign entries through
+the existing authoring transaction. It copies and validates before removing
+native entries, rejects linked ancestors and content collisions, and preserves
+edits to already-managed items as drift. Native packages are scanned before
+skills so their hooks and dependencies remain intact. Admission clears native
+review. Projection and publication require a digest matching all payload bytes,
+executable intent and variant declarations. A Follower's `excludePlugins` removes
+only its projected package, not the signed mirror.
+
+The generated hook registry, installer staging cache and `.shield/` ingestion
+receipt are machine-local. No daemon or automatic publication is added. Hard
+protection uses a Linux bubblewrap process tree, not immutable flags on a home.
+Mixed configuration/authentication files stay writable. Canonfig's projection
+runs outside that tree.
 
 ## Follower mirror
 

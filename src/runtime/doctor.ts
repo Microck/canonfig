@@ -12,6 +12,7 @@ import { harnessReport } from "../projection/detect.ts";
 import { rootContext } from "../projection/plan.ts";
 import { resolveInstallerInvocation } from "../synchronization/installer-bindings.ts";
 import { programVersion } from "../cli/help.ts";
+import { shieldStatus } from "../cli/shield.ts";
 import {
   buildIdentity,
   minimumSupportedNodeMajor,
@@ -49,6 +50,7 @@ export const doctorProbeNames = [
   "package-managers",
   "agent-adapter",
   "harnesses",
+  "shield",
 ] as const;
 
 export type DoctorProbeName = typeof doctorProbeNames[number];
@@ -573,6 +575,22 @@ const harnessProbe = (
       : pass("harnesses", `${report.harnesses.filter((row) => row.status === "selected").length} listed harness(es) installed`, details);
   });
 
+const shieldProbe = (statePath: string, machine: MachineState["Service"]) =>
+  Effect.gen(function*() {
+    const status = yield* shieldStatus(statePath);
+    const details = { enabled: status.enabled, projected: status.projected.join(", "), hard: status.hard, destination: status.destination };
+    if (status.enabled !== (status.projected.length > 0)) return {
+      name: "shield" as const, status: "warning" as const, details,
+      message: "Shield policy and projected hooks differ; run 'canonfig sync --apply' and reload clients.",
+    };
+    if (!status.enabled) return pass("shield", "Shield is disabled", details);
+    if (status.hard) {
+      const available = yield* executableAvailable(machine, "bwrap");
+      if (process.platform !== "linux" || !available) return failed("shield", "human-action-required", "Hard Shield needs Linux and bubblewrap; disable hard mode with 'canonfig shield enable'.", details);
+    }
+    return pass("shield", status.note, details);
+  });
+
 export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
   input: DoctorInput,
 ): Effect.fn.Return<
@@ -658,6 +676,11 @@ export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
       harnessProbe(input.statePath, input.environment, repository),
       (error) =>
         failed("harnesses", "usage-or-configuration", `harness selection could not be read: ${error.message}`),
+      "internal",
+    ),
+    isolated(
+      "shield", timeout, shieldProbe(input.statePath, machine),
+      (error) => failed("shield", "usage-or-configuration", `Shield status could not be read: ${error.message}`),
       "internal",
     ),
   ], { concurrency: "unbounded" });

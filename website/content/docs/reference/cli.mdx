@@ -103,6 +103,77 @@ command and launch it again for a fresh session. Use Overview's Reload
 action after resolving a reported status error. Browser errors preserve
 the CLI failure category, exit code, and message listed above.
 
+## Shield
+
+Shield redirects installations into the Canonical Folder on a Source Machine,
+or into `~/.canonfig/local/` on a Follower Machine. It never publishes changes.
+Enable it after setting up the folder:
+
+```bash
+canonfig shield enable
+canonfig sync --apply
+canonfig shield status --json
+canonfig shield install -- npx --yes skills add vercel-labs/agent-skills --skill web-design-guidelines --agent claude-code --yes
+canonfig sync --apply
+```
+
+Reload running harnesses after enabling or disabling Shield. Projected instructions
+and a `canonfig-shield` skill explain the destination. Before-tool hooks deny
+recognized writes into harness configuration and return the path to use instead.
+Hook availability and trust settings belong to each harness. Hooks cannot
+intercept standalone installers or reliably interpret arbitrary shell programs.
+
+| Command | Effect |
+| --- | --- |
+| `shield enable [--hard]` | Enable this machine's policy. `--hard` requires Linux and bubblewrap. Sync and reload clients to apply hooks. |
+| `shield disable` | Disable the policy. Sync and reload clients to remove hooks and instructions. Imported items remain in the folder. |
+| `shield status` | Show the policy, destination, projected hook registry and excluded plugins. It does not claim that a running client has reloaded. |
+| `shield install -- <command> [arguments...]` | Run a supported installer in a private staging home, then admit its output. Live harness config and credential files are not copied. |
+| `shield run -- <command> [arguments...]` | Run a command with process-local installer interception. With hard mode enabled, dedicated harness paths are read-only inside that process tree. |
+| `shield ingest` | Admit recognized foreign items without projecting them. `sync --apply` also ingests before projection. `sync` without `--apply` does not ingest. |
+| `shield add-plugin <directory> --harness <id> [--entry <module>]` | Import a native package for review. Module-based packages need an entry module. |
+| `shield review <id> --digest <sha256> --reviewer <name>` | Approve the exact native package digest after inspecting its files. Sync to activate it. |
+| `shield exclude <id>` | Decline a Native Plugin on this machine. Sync to remove its projection. The published item remains unchanged. |
+| `shield include <id>` | Remove that machine-local exclusion. Sync to project a reviewed, compatible variant. |
+
+Supported installers are `skills add` or `install`, including `npx skills`,
+`claude mcp add`, `codex mcp add`, `qwen mcp add`, Claude plugin marketplace
+addition and plugin installation, and Qwen extension installation or linking.
+Skill installs use global scope. MCP installs use user scope. Other command
+shapes fail rather than run unprotected. Gemini CLI is not a Target Harness.
+
+For other native packages, use `shield add-plugin`. See
+[Native Plugins](/reference/canonfig-folder#native-plugins) for the package
+format, supported loaders, dependencies and platform variants. A redirected
+plugin stays inactive until review. Changing payload bytes, executable bits
+or its variant declaration invalidates that review. `source publish` refuses
+unreviewed plugins.
+
+Follower additions must be allowed by the Source's `local.allow`. A collision
+requires a different name or an explicit Local Overlay. Shield leaves the
+foreign input in place when admission fails. It does not reinterpret changes
+to already-managed files as installations; those still report Follower Drift.
+Credentials in MCP entries must become environment references before admission.
+
+The launcher captures output and allows five minutes per command. It is for
+bounded commands, not interactive terminal sessions. Hard mode protects only
+its child process tree. Mixed configuration/authentication files stay writable,
+as do runtime and session files. Run `canonfig sync --apply` outside that tree.
+macOS and Windows support hooks, explicit installer routing and ingestion,
+but `--hard` fails with an explanation. Shield is not a sandbox for hostile code.
+
+Put Canonfig's `--json` before `--`; everything after the separator belongs
+to the child command. `canonfig doctor` checks the same policy and projected
+registry.
+
+Each machine keeps 30 days of Shield history in `~/.canonfig/.shield/log.jsonl`:
+writes the hook refused, installers `shield install` ran, and items
+`sync --apply` moved out of harness folders. Entries hold paths, item names and
+installer kinds, never file contents or installer arguments. The browser's
+**Shield** page shows that history, the plugins waiting for review, and which
+listed harnesses are protected; see
+[Keep agent installs in the folder](/how-to/keep-agent-installs-in-the-folder).
+
 ## Self-update
 
 ```bash
