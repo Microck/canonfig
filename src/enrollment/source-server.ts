@@ -53,6 +53,7 @@ import {
   versionMismatchMessage,
 } from "./version-handshake.ts";
 import { buildIdentity } from "../runtime/build-identity.ts";
+import { readSourceLook, type SourceLook } from "./source-look.ts";
 
 const maximumRequestBytes = 64 * 1024;
 
@@ -81,6 +82,7 @@ type SourceServerResponse =
   | RevisionMetadata
   | TransferredSecrets
   | { readonly ok: true }
+  | { readonly look: SourceLook | null }
   | ErrorResponse;
 
 /**
@@ -373,6 +375,15 @@ const startSourceServerScoped = (
               ),
             );
             sendJson(response, 200, authenticated);
+            return;
+          }
+          if (request.method === "GET" && requestUrl.pathname === "/v1/source/look") {
+            // Only an enrolled Follower sees how the Source's card is customized.
+            await runRequestEffect(
+              enrollment.authenticate(bearerCredential(request.headers.authorization)),
+            );
+            const look = await Effect.runPromise(readSourceLook().pipe(Effect.provideService(MachineState, machine)));
+            sendJson(response, 200, { look: look ?? null });
             return;
           }
           if (

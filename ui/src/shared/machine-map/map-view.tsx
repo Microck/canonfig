@@ -37,12 +37,15 @@ import {
   PACKET_FILL,
   PACKET_PATH,
   resolveLook,
+  fromPublishedLook,
+  toPublishedLook,
   SOURCE_ID,
   TONE_STROKE,
   useMapStore,
   type Link,
   type MapActions,
   type MapRole,
+  type PublishedLook,
   type ResolvedLook,
 } from "./model";
 
@@ -55,7 +58,7 @@ export interface MachineMapProps {
   /** The dashed "Add machine" node (Source role only). */
   onInvite?: () => void;
   className?: string;
-  source: { hostname: string; platform?: Follower["platform"]; endpoint?: string };
+  source: { hostname: string; platform?: Follower["platform"]; endpoint?: string; look?: PublishedLook | undefined };
   followers: readonly MapFollower[];
   /** Newest Profile Revision sequence. Followers below it show packets on their way. */
   latestRevision?: number;
@@ -72,6 +75,8 @@ export interface MachineMapProps {
   customizeId?: string | null;
   /** The sheet opened for a machine (its id) or closed (`null`). Called in both modes. */
   onCustomizeChange?: (id: string | null) => void;
+  /** Source role: the Source card's Customize sheet closed; publish what it saved (undefined after a reset) to Followers. */
+  onSourceLookSave?: (look: PublishedLook | undefined) => void;
 }
 
 type MapNode = MachineNodeType | AddNodeType;
@@ -206,6 +211,7 @@ function MapCanvas({
   publishing = false,
   customizeId,
   onCustomizeChange,
+  onSourceLookSave,
 }: MachineMapProps) {
   const store = useMapStore();
   const { fitView, getViewport, setViewport } = useReactFlow();
@@ -229,21 +235,38 @@ function MapCanvas({
   const requestedId = customizeId === undefined ? ownCustomizeId : customizeId;
   // Only a machine on this map can have a sheet; an id for a hidden follower shows none.
   const sheetId = requestedId === SOURCE_ID || visible.some((f) => f.id === requestedId) ? requestedId : null;
+  // The Source card's local look when its sheet opened, so closing it publishes only a real change; undefined when it opened from outside this map.
+  const sourceLookAtOpen = useRef<string | undefined>(undefined);
+  // Every way the sheet opens, closes or switches machine goes through here, so the Source card is published on each of them.
   const setCustomize = useCallback(
     (id: string | null) => {
+      if (onSourceLookSave && id === SOURCE_ID && sheetId !== SOURCE_ID) {
+        // A browser with nothing saved starts from the shared look, so editing one field or reopening never drops the rest of it.
+        const seeded = store.looks[SOURCE_ID] ?? fromPublishedLook(machine.look);
+        if (store.looks[SOURCE_ID] === undefined && seeded !== undefined) mapStore.setLook(SOURCE_ID, seeded);
+        sourceLookAtOpen.current = JSON.stringify(seeded ?? null);
+      }
+      if (onSourceLookSave && sheetId === SOURCE_ID && id !== SOURCE_ID) {
+        const local = mapStore.look(SOURCE_ID);
+        const before = sourceLookAtOpen.current;
+        // A reset removes the local look and so clears the shared one; an untouched sheet publishes nothing.
+        if (before === undefined ? local !== undefined : JSON.stringify(local ?? null) !== before) onSourceLookSave(toPublishedLook(local));
+        sourceLookAtOpen.current = undefined;
+      }
       setOwnCustomizeId(id);
       onCustomizeChange?.(id);
     },
-    [onCustomizeChange],
+    [onCustomizeChange, onSourceLookSave, sheetId, store.looks, machine.look],
   );
 
   const looks = useMemo(() => {
     const out: Record<string, ResolvedLook> = {
-      [SOURCE_ID]: resolveLook(SOURCE_ID, machine.hostname, machine.platform, store.looks[SOURCE_ID]),
+      // The Source's published look is the base; a look customized in this browser wins over it.
+      [SOURCE_ID]: resolveLook(SOURCE_ID, machine.hostname, machine.platform, { ...fromPublishedLook(machine.look), ...store.looks[SOURCE_ID] }),
     };
     for (const f of visible) out[f.id] = resolveLook(f.id, f.name, f.platform, store.looks[f.id]);
     return out;
-  }, [store.looks, visible, machine.hostname, machine.platform]);
+  }, [store.looks, visible, machine.hostname, machine.platform, machine.look]);
 
   const built = useMemo((): MapNode[] => {
     // Saved positions only seed nodes; a later move must not rebuild the rest.
@@ -531,6 +554,7 @@ function MapCanvas({
               hostname={sheetId === SOURCE_ID ? machine.hostname : (sheetFollower?.name ?? sheetId)}
               saved={store.looks[sheetId]}
               look={looks[sheetId]}
+              shared={sheetId === SOURCE_ID && onSourceLookSave !== undefined}
               onClose={() => {
                 setCustomize(null);
                 focusNode(sheetId);

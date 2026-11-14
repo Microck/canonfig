@@ -22,7 +22,7 @@ export function livePageResources(session: GuiSession, route: WorkspaceRoute): r
   const pages: Partial<Record<Workspace["view"], readonly string[]>> = {
     profile: ["/api/profile/items", "/api/revisions", ...(route.profileTab === "items" ? ["/api/skills"] : []), ...(route.profileTab === "harnesses" ? ["/api/harnesses"] : []), ...(route.profileTab === "groups" ? ["/api/machines"] : [])],
     revisions: ["/api/revisions"],
-    machines: session.role === "source" ? ["/api/machines", "/api/profile/items"] : ["/api/enrollment"],
+    machines: session.role === "source" ? ["/api/machines", "/api/profile/items", "/api/source-look"] : ["/api/enrollment", "/api/source-look"],
     secrets: session.role === "source" ? ["/api/secrets", "/api/machines"] : ["/api/secrets", "/api/tunnel"],
     sync: ["/api/tunnel"],
     schedule: ["/api/schedule"],
