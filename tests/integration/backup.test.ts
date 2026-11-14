@@ -128,9 +128,13 @@ describe("portable backup recovery", () => {
     mkdirSync(join(machine.home, ".claude"));
     writeFileSync(join(machine.home, ".claude", "settings.json"), "{}\n");
     writeFileSync(join(machine.home, ".claude.json"), '{"mcpServers":{}}\n');
+    // Codex reads skills from the shared ~/.agents/skills as well as its own root.
+    mkdirSync(join(machine.home, ".codex"));
+    mkdirSync(join(machine.home, ".agents", "skills", "team"), { recursive: true });
+    writeFileSync(join(machine.home, ".agents", "skills", "team", "SKILL.md"), "---\nname: team\ndescription: Team\n---\n");
     await machine.run({ action: "password", name: "recovery", value: Redacted.make("frost library maple canvas") });
     // The exact path the special-file error names.
-    await machine.configure({ folder: false, harnesses: { mode: "full", targets: ["opencode", "claude-code"] }, passwordReference: "recovery", exclude: ["harnesses/opencode/.local/share/opencode/events.pipe"] });
+    await machine.configure({ folder: false, harnesses: { mode: "full", targets: ["opencode", "claude-code", "codex"] }, passwordReference: "recovery", exclude: ["harnesses/opencode/.local/share/opencode/events.pipe"] });
     await machine.run({ action: "run", name: "daily" });
     const output = join(machine.root, "restored");
     await machine.run({ action: "restore", name: "daily", target: { kind: "home", path: output, recoverCredentials: false } });
@@ -138,6 +142,7 @@ describe("portable backup recovery", () => {
     expect(readFileSync(join(output, ".config", "opencode", "opencode.json"), "utf8")).toBe("{}\n");
     expect(existsSync(join(output, ".local", "share", "opencode", "events.pipe"))).toBe(false);
     expect(readFileSync(join(output, ".claude.json"), "utf8")).toBe('{"mcpServers":{}}\n');
+    expect(readFileSync(join(output, ".agents", "skills", "team", "SKILL.md"), "utf8")).toContain("name: team");
   }, 60_000);
 
   it("requires explicit native-store recovery and never falls back to credential files", async () => {

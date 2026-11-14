@@ -13,7 +13,7 @@ import { adapterFor } from "../projection/adapters/index.ts";
 import { ArchiveIntegrityError, collectArchiveConfiguration, machineIdentity, MANIFEST_PATH, manifestSigningPayload, MAXIMUM_MANIFEST_BYTES, SIGNATURE_PATH, verifyArchiveStream, type ArchiveSigner, type ArchiveSignerError, type ExportManifest, type ManifestFile } from "../projection/archive.ts";
 import { encodeTar, type TarSource } from "../projection/archive-tar.ts";
 import { emptyModel } from "../projection/detect.ts";
-import { rootContext } from "../projection/plan.ts";
+import { rootContext, sharedSkillsOwner } from "../projection/plan.ts";
 import { importLocal } from "../projection/sync.ts";
 import { sha256BytesHex } from "../profile/profile-codec.ts";
 import { packageVersion } from "../runtime/build-identity.ts";
@@ -124,14 +124,20 @@ const capture = (context: BackupContext, opened: OpenBackup) => Effect.gen(funct
     // A full capture takes the harness root plus what the adapter keeps outside it: state folders (OpenCode keeps
     // opencode.db under the XDG data directory) and config files (Claude's ~/.claude.json), each path once.
     // Paths that don't exist yet are skipped.
-    const full = opened.policy.harnesses.mode === "full" ? opened.policy.harnesses.targets.flatMap(harness => {
-      const layout = adapterFor(harness).layout(roots, emptyModel(folder));
-      const configs = layout.surfaces.flatMap(surface => surface.kind === "config" ? [surface.target, ...(surface.alternatives ?? [])] : []);
-      const outside = [...new Set([...layout.neverTouch, ...configs])].filter(path => !below(layout.root, path));
-      const extra = outside.filter(path => !outside.some(other => other !== path && below(other, path)));
-      return [{ harness, root: layout.root, optional: false }, ...extra.map(root => ({ harness, root, optional: true }))];
-    }) : [];
-    const managed = configuration.harnesses.files.filter(file => opened.policy.harnesses.targets.some(target => target === file.harness));
+    const layouts = opened.policy.harnesses.targets.map(harness => ({ harness, layout: adapterFor(harness).layout(roots, emptyModel(folder)) }));
+    // Harnesses that read ~/.agents/skills share it, so it is captured once under the shared owner Canonfig uses for it.
+    const sharedSkillRoots = [...new Set(layouts.flatMap(({ layout }) => layout.skillSources.filter(source => source.shared === true).map(source => source.path)))];
+    const full = opened.policy.harnesses.mode === "full" ? [
+      ...layouts.flatMap(({ harness, layout }) => {
+        const configs = layout.surfaces.flatMap(surface => surface.kind === "config" ? [surface.target, ...(surface.alternatives ?? [])] : []);
+        const outside = [...new Set([...layout.neverTouch, ...configs])].filter(path => !below(layout.root, path));
+        const extra = outside.filter(path => !outside.some(other => other !== path && below(other, path)));
+        return [{ harness, root: layout.root, optional: false }, ...extra.map(root => ({ harness, root, optional: true }))];
+      }),
+      ...sharedSkillRoots.map(root => ({ harness: sharedSkillsOwner, root, optional: true })),
+    ] : [];
+    const owners = new Set<string>([...opened.policy.harnesses.targets, ...(sharedSkillRoots.length > 0 ? [sharedSkillsOwner] : [])]);
+    const managed = configuration.harnesses.files.filter(file => file.harness !== undefined && owners.has(file.harness));
     const staged = yield* backupWork("Capture backup files", signal => captureBackupFiles({
       policy: opened.policy, scratch: opened.scratch, home: roots.home, files: [...configuration.folderFiles, ...managed, ...recovery.files], roots: full, signal,
     }));
