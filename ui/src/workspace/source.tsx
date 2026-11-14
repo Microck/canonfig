@@ -438,7 +438,7 @@ export function WorkspaceEvidence() {
               const { reached, detail } = lifecycle[key]!;
               return (
                 <div key={key} className="border-b border-border/70 py-2">
-                  <div className="flex items-center gap-2.5 text-base"><StatusMark kind={reached ? "ok" : "warn"} /><span>{label}</span></div>
+                  <div className="flex items-center gap-2.5 text-base"><StatusMark kind={reached ? "ok" : "warn"} /><span>{label}<span className="sr-only">{reached ? ": done" : ": not yet"}</span></span></div>
                   {!reached && <p className="mt-1 pl-6 text-sm text-muted-foreground"><CliText>{detail}</CliText></p>}
                 </div>
               );
