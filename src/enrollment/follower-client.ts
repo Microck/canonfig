@@ -120,27 +120,18 @@ interface BinaryResponse {
   readonly errorBody?: unknown | undefined;
 }
 
-/**
- * Validate the endpoint and freeze one resolved address. A stalled OS resolver would otherwise wait past the
- * caller's timeout before any connection timer starts, so the lookup has its own bound.
- */
+/** Validate the endpoint and freeze one resolved address; the lookup shares the caller's timeout. */
 const checkedEndpoint = (
   endpoint: string,
   timeoutMilliseconds = defaultTimeoutMilliseconds,
 ): Effect.Effect<URL, EnrollmentTransportError> =>
   Effect.tryPromise({
-    try: () => resolveSourceEndpoint(endpoint),
+    try: () => resolveSourceEndpoint(endpoint, timeoutMilliseconds),
     catch: (cause) => new EnrollmentTransportError({
       operation: "validate source endpoint",
       message: cause instanceof Error ? cause.message : "The Source endpoint could not be resolved.",
     }),
-  }).pipe(
-    Effect.timeoutOption(timeoutMilliseconds),
-    Effect.flatMap((resolved) => resolved._tag === "Some" ? Effect.succeed(resolved.value) : Effect.fail(new EnrollmentTransportError({
-      operation: "validate source endpoint",
-      message: "Resolving the Source name timed out. Check that Tailscale is running and MagicDNS answers on this machine.",
-    }))),
-  );
+  });
 
 const inspectCertificate = (
   endpoint: URL,

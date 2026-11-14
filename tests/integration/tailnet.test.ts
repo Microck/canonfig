@@ -65,7 +65,7 @@ describe("tailnet network boundary", () => {
 
 describe("MagicDNS resolution before authentication", () => {
   it("freezes the checked IPv4 address for both TLS and credential requests", async () => {
-    const endpoint = await resolveSourceEndpoint("https://source.private.example:17342", async () => [
+    const endpoint = await resolveSourceEndpoint("https://source.private.example:17342", 10_000, async () => [
       { address: "fd7a:115c:a1e0::10", family: 6 },
       { address: "100.64.0.10", family: 4 },
     ]);
@@ -73,15 +73,20 @@ describe("MagicDNS resolution before authentication", () => {
   });
 
   it("supports an IPv6-only Headscale DNS answer", async () => {
-    const endpoint = await resolveSourceEndpoint("https://source.private.example", async () => [
+    const endpoint = await resolveSourceEndpoint("https://source.private.example", 10_000, async () => [
       { address: "fd7a:115c:a1e0::10", family: 6 },
     ]);
     expect(endpoint.origin).toBe("https://[fd7a:115c:a1e0::10]");
   });
 
   it.each([[], ["100.64.0.10", "192.168.1.20"], ["127.0.0.1"], ["203.0.113.20"]])("refuses empty or mixed DNS answers %j", async (...addresses: string[]) => {
-    await expect(resolveSourceEndpoint("https://source.private.example:17342", async () =>
+    await expect(resolveSourceEndpoint("https://source.private.example:17342", 10_000, async () =>
       addresses.map((address) => ({ address, family: 4 }))
     )).rejects.toThrow("Source DNS must resolve only to Tailscale addresses");
+  });
+
+  it("gives up on a resolver that never answers", async () => {
+    await expect(resolveSourceEndpoint("https://source.private.example", 20, () => new Promise<never>(() => undefined)))
+      .rejects.toThrow("Resolving the Source name timed out");
   });
 });

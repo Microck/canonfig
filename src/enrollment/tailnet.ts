@@ -134,14 +134,23 @@ export const sourceEndpointUrl = (endpoint: string): URL => {
   return url;
 };
 
-/** Freeze one validated address so TLS inspection and credential submission cannot re-resolve DNS. */
+/**
+ * Freeze one validated address so TLS inspection and credential submission cannot re-resolve DNS. The OS resolver
+ * has no deadline of its own, so the lookup is bounded here for every caller (enrollment, secrets, doctor).
+ */
 export const resolveSourceEndpoint = async (
   endpoint: string,
+  timeoutMilliseconds = 10_000,
   resolver: (hostname: string, options: { all: true }) => Promise<readonly { address: string; family: number }[]> = lookup,
 ): Promise<URL> => {
   const url = sourceEndpointUrl(endpoint);
   if (isIP(url.hostname.replace(/^\[|\]$/gu, "")) !== 0) return url;
-  const resolved = await resolver(url.hostname, { all: true });
+  // The backend targets a library without Promise.withResolvers, so the deadline uses the executor form.
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error("Resolving the Source name timed out. Check that Tailscale is running and MagicDNS answers on this machine.")), timeoutMilliseconds);
+  });
+  const resolved = await Promise.race([resolver(url.hostname, { all: true }), deadline]).finally(() => clearTimeout(timer));
   if (resolved.length === 0 || resolved.some(({ address }) => !isTailnetAddress(address))) {
     throw new Error("Source DNS must resolve only to Tailscale addresses; no connection was made.");
   }

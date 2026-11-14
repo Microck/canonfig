@@ -71,13 +71,15 @@ const failure = (
 
 const checkedEndpoint = (
   endpoint: string,
+  timeoutMilliseconds: number,
 ): Effect.Effect<CheckedEndpoint, SecretTransferError> =>
   Effect.tryPromise({
     try: async () => {
-      const url = await resolveSourceEndpoint(endpoint);
+      const url = await resolveSourceEndpoint(endpoint, timeoutMilliseconds);
       return { url, hostname: url.hostname.replace(/^\[|\]$/gu, "") };
     },
-    catch: () => failure("transport", "validate secret source", "The secret Source must use pinned loopback or tailnet HTTPS."),
+    catch: (cause) => failure("transport", "validate secret source", cause instanceof Error && cause.message.startsWith("Resolving the Source name timed out")
+      ? cause.message : "The secret Source must use pinned loopback or tailnet HTTPS."),
   });
 
 const inspectCertificate = (
@@ -195,9 +197,9 @@ export const fetchSharedSecrets = (
   Effect.gen(function*() {
     const machine = yield* MachineState;
     yield* requireSecureStorage("fetch shared secrets");
-    const endpoint = yield* checkedEndpoint(input.endpoint);
     const timeoutMilliseconds = input.timeoutMilliseconds
       ?? defaultTimeoutMilliseconds;
+    const endpoint = yield* checkedEndpoint(input.endpoint, timeoutMilliseconds);
     const certificate = yield* inspectCertificate(endpoint, timeoutMilliseconds);
     if (certificate.fingerprint !== input.tlsFingerprint) {
       return yield* failure(
