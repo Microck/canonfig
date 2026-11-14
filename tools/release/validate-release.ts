@@ -168,6 +168,8 @@ const validatePackageMetadata = (metadataPath: string): void => {
   const expectedRuntimeDependencies = [
     "@canonfig/effect-platform-node-shared",
     "@canonfig/effect-sql-sqlite-node",
+    // Password-encrypted backups use the age v1 format (docs/adr/0004-backup.md).
+    "age-encryption",
     "effect",
     "jsonc-parser",
     "selfsigned",
@@ -195,8 +197,11 @@ const validatePackageContents = (
   // administration and the machine map. Explicit lifecycle code and declarations
   // bring the package to 1,287,025 packed / 4,642,878 unpacked bytes. The setup
   // import review and newcomer-readable onboarding copy bring it to 1,290,637 /
-  // 4,645,858; the ceilings keep about 9 KB packed and 54 KB unpacked headroom.
-  if (artifact.size > 1_300_000 || artifact.unpackedSize > 4_700_000) {
+  // 4,645,858. Tailnet transport, fleet updates, Shield and backups add about
+  // 93 KB packed and 430 KB unpacked together (measured per branch in CI:
+  // 1,301,010, 1,307,223, 1,314,828 and 1,332,363 packed). The ceilings fit all
+  // four with about 65 KB packed and 220 KB unpacked headroom.
+  if (artifact.size > 1_450_000 || artifact.unpackedSize > 5_300_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );
@@ -208,6 +213,8 @@ const validatePackageContents = (
     "package.json",
     "dist/runtime/main.js",
     "dist/ui/index.html",
+    // Source for the `max` preset's ZPAQ helper, which users compile (docs: back up and restore).
+    "tools/backup/zpaq-stream.cpp",
   ]) {
     if (!paths.includes(required)) fail(`package omits required file: ${required}`);
   }
@@ -216,6 +223,7 @@ const validatePackageContents = (
       path === "LICENSE"
       || path === "README.md"
       || path === "package.json"
+      || path === "tools/backup/zpaq-stream.cpp"
       || /^dist\/.+\.(?:js|d\.ts)$/u.test(path)
       || /^dist\/ui\/.+\.(?:html|js|css|svg|png|ico|woff2?|txt)$/u.test(path)
     ) continue;

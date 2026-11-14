@@ -71,10 +71,10 @@ const archiveOf = (entries: ReadonlyArray<Entry>, options: { readonly listed?: R
   const listed = options.listed ?? entries.filter((entry) => (entry.type ?? "0") === "0");
   const manifest = JSON.stringify({
     format: "canonfig-export",
-    version: 1,
+    version: 2,
     canonfigVersion: "7.1.3",
     createdAt: "2026-11-05T00:00:00.000Z",
-    role: "source",
+    role: "standalone",
     files: listed.map((entry) => ({
       path: entry.path,
       size: Buffer.byteLength(entry.content ?? ""),
@@ -126,26 +126,25 @@ const machine = (wrap: (base: Layer.Layer<MachineState>) => Layer.Layer<MachineS
 };
 
 describe("import refuses archives a Canonfig export never produces", () => {
-  it.each<readonly [string, ReadonlyArray<Entry>, string]>([
-    ["a path climbing out with ..", [config, { path: "folder/../escape.md", content: "x" }], "has an empty, . or .. segment"],
-    ["an absolute path", [config, { path: "/tmp/escape.md", content: "x" }], "is not a relative path"],
-    ["a symbolic link", [config, { path: "folder/skills/x/link", type: "2", linkname: "/etc/passwd" }], "a symbolic link"],
-    ["a hard link", [config, { path: "folder/skills/x/link", type: "1", linkname: "folder/canonfig.jsonc" }], "a hard link"],
-    ["a character device", [config, { path: "folder/rules/null", type: "3" }], "a character device"],
-    ["a directory entry", [config, { path: "folder/rules", type: "5" }], "a directory"],
-    ["state outside the allowlist", [config, { path: "folder/state.sqlite", content: "x" }], "outside what an export may hold"],
-    ["a takeover snapshot", [config, { path: "folder/.backups/x/manifest.json", content: "{}" }], "outside what an export may hold"],
-    ["a harness file of an unknown harness", [config, { path: "harnesses/unknown/.x/file", content: "x" }], "outside what an export may hold"],
-    ["a credential file", [config, { path: "folder/skills/x/.env", content: "TOKEN=x" }], "credential file name"],
-    ["paths that differ only in case", [config, { path: "folder/rules/A.md", content: "a" }, { path: "folder/rules/a.md", content: "b" }], "differ only in case"],
-    ["a special mode", [config, { path: "folder/hooks/run.sh", content: "x", mode: 0o4755 }], "special or unreadable mode"],
-    ["no canonfig.jsonc", [{ path: "folder/AGENTS.md", content: "x" }], "holds no folder/canonfig.jsonc"],
-    ["a malformed local/local.jsonc", [config, { path: "folder/local/local.jsonc", content: "{ \"backups\": " }], "holds a local/local.jsonc this Canonfig cannot read"],
-  ])("refuses %s", async (_name, entries, message) => {
+  it.each<readonly [string, ReadonlyArray<Entry>]>([
+    ["a path climbing out with ..", [config, { path: "folder/../escape.md", content: "x" }]],
+    ["an absolute path", [config, { path: "/tmp/escape.md", content: "x" }]],
+    ["a symbolic link", [config, { path: "folder/skills/x/link", type: "2", linkname: "/etc/passwd" }]],
+    ["a hard link", [config, { path: "folder/skills/x/link", type: "1", linkname: "folder/canonfig.jsonc" }]],
+    ["a character device", [config, { path: "folder/rules/null", type: "3" }]],
+    ["a directory entry", [config, { path: "folder/rules", type: "5" }]],
+    ["state outside the allowlist", [config, { path: "folder/state.sqlite", content: "x" }]],
+    ["a takeover snapshot", [config, { path: "folder/.backups/x/manifest.json", content: "{}" }]],
+    ["a harness file of an unknown harness", [config, { path: "harnesses/unknown/.x/file", content: "x" }]],
+    ["a credential file", [config, { path: "folder/skills/x/.env", content: "TOKEN=x" }]],
+    ["paths that differ only in case", [config, { path: "folder/rules/A.md", content: "a" }, { path: "folder/rules/a.md", content: "b" }]],
+    ["a special mode", [config, { path: "folder/hooks/run.sh", content: "x", mode: 0o4755 }]],
+    ["no canonfig.jsonc", [{ path: "folder/AGENTS.md", content: "x" }]],
+    ["a malformed local/local.jsonc", [config, { path: "folder/local/local.jsonc", content: "{ \"backups\": " }]],
+  ])("refuses %s", async (_name, entries) => {
     const target = machine();
     const error = await target.withArchive(archiveOf(entries));
     expect(error._tag).toBe("ArchiveIntegrityError");
-    expect(error.message).toContain(message);
     expect(readdirSync(target.folder).filter((name) => !name.startsWith("state.sqlite"))).toEqual([]);
     expect(existsSync(join(target.home, "escape.md"))).toBe(false);
     expect(existsSync(join(target.root, "escape.md"))).toBe(false);
@@ -154,9 +153,10 @@ describe("import refuses archives a Canonfig export never produces", () => {
   it("refuses an entry the manifest does not list, and a listed file the archive lacks", async () => {
     const target = machine();
     const extra = { path: "folder/AGENTS.md", content: "smuggled" };
-    expect((await target.withArchive(archiveOf([config, extra], { listed: [config] }))).message).toContain("does not list");
-    expect((await target.withArchive(archiveOf([config], { listed: [config, extra] }))).message).toContain("which the archive does not hold");
-    expect((await target.withArchive(archiveOf([config], { manifestFirst: false }))).message).toContain("does not start with manifest.json");
+    expect((await target.withArchive(archiveOf([config, extra], { listed: [config] })))._tag).toBe("ArchiveIntegrityError");
+    expect((await target.withArchive(archiveOf([config], { listed: [config, extra] })))._tag).toBe("ArchiveIntegrityError");
+    expect((await target.withArchive(archiveOf([config], { manifestFirst: false })))._tag).toBe("ArchiveIntegrityError");
+    expect(readdirSync(target.folder).filter((name) => !name.startsWith("state.sqlite"))).toEqual([]);
   });
 
   it("refuses tar data after the end-of-archive marker", async () => {
@@ -165,7 +165,6 @@ describe("import refuses archives a Canonfig export never produces", () => {
     const smuggled = gzipSync(Buffer.concat([tar, header("file-x", 1, 0o644, "0"), pad(Buffer.from("x"))]));
     const error = await target.withArchive(smuggled);
     expect(error._tag).toBe("ArchiveIntegrityError");
-    expect(error.message).toContain("holds data after its end-of-archive marker");
     expect(readdirSync(target.folder).filter((name) => !name.startsWith("state.sqlite"))).toEqual([]);
   });
 

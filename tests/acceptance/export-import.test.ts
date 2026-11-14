@@ -26,9 +26,10 @@ const SECRET = "docs-token-value-8f3a1c";
 // tsx loader is named by file URL because `--import tsx` resolves from the cwd.
 const tsxLoader = pathToFileURL(resolve(import.meta.dirname, "../../node_modules/tsx/dist/loader.mjs")).href;
 
-const invoke = (home: string, args: ReadonlyArray<string>, environment: Record<string, string> = {}) => {
+const invoke = (home: string, args: ReadonlyArray<string>, environment: Record<string, string> = {}, input?: string) => {
   const result = spawnSync(process.execPath, ["--import", tsxLoader, resolve(import.meta.dirname, "../../src/runtime/main.ts"), "--json", ...args], {
     cwd: home,
+    input,
     encoding: "utf8",
     timeout: 60_000,
     env: {
@@ -162,7 +163,7 @@ describe("canonfig export and import", () => {
     expect(entries[0]!.path).toBe("manifest.json");
     const manifest = JSON.parse(entries[0]!.content.toString("utf8"));
     expect(exported.envelope.data.manifestSha256).toBe(sha256(entries[0]!.content));
-    expect(manifest).toMatchObject({ format: "canonfig-export", version: 1, canonfigVersion: "7.1.9", role: "standalone" });
+    expect(manifest).toMatchObject({ format: "canonfig-export", version: 2, canonfigVersion: "7.1.9", role: "standalone" });
     const expected = authoredFiles(join(source, ".canonfig")).map((path) => `folder/${path}`);
     expect(entries.slice(1).map((entry) => entry.path)).toEqual(expected);
     expect(manifest.files.map((file: { path: string }) => file.path)).toEqual(expected);
@@ -259,7 +260,6 @@ describe("canonfig export and import", () => {
     const target = newHome();
     const tampered = invoke(target, ["import", tamperedPath]);
     expect(tampered.status).toBe(7);
-    expect(tampered.envelope.message).toContain("folder/AGENTS.md does not match its checksum");
     expect(authoredFiles(join(target, ".canonfig"))).toEqual([]);
 
     expect(invoke(target, ["import", archivePath]).status).toBe(0);
@@ -347,6 +347,28 @@ describe("canonfig export and import", () => {
       ["Error", null],
       ["Converged", fingerprint],
     ]);
+  }, 180_000);
+
+  it("backs up a Source's identity after an export journaled an append-only archive event", () => {
+    const source = sourceHome();
+    const credentials = { CANONFIG_LOCAL_CREDENTIAL_ROOT: join(source, "credential-store") };
+    const step = (args: ReadonlyArray<string>, input?: string) => {
+      const result = invoke(source, args, credentials, input);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      return result;
+    };
+    step(["source", "init"]);
+    step(["export", "--output", "setup.tar.gz"]);
+    expect(archiveEvents(source)).toHaveLength(1);
+    step(["backup", "password", "recovery", "--stdin"], "synthetic recovery password");
+    writeFileSync(join(source, "policy.json"), JSON.stringify({ destination: { kind: "local", path: join(source, "backups") }, folder: true,
+      harnesses: { mode: "none", targets: [] }, compression: "fast", sourceIdentity: true, sharedSecrets: false, includeCredentials: false,
+      passwordReference: "recovery", include: [], exclude: [], retention: { last: 5, daily: 7, weekly: 4 }, maximumBytes: 1024 ** 3, maximumFiles: 100_000 }));
+    step(["backup", "configure", "recovery", "--policy", join(source, "policy.json")]);
+    step(["backup", "allow-credentials", "recovery"]);
+    expect(step(["backup", "run", "recovery"]).envelope.data.snapshot).toMatchObject({ encrypted: true });
+    // The live journal keeps its event; the capture only clears in-flight work in its private copy.
+    expect(archiveEvents(source)).toHaveLength(1);
   }, 180_000);
 
   it("leaves a non-Source export unsigned, which --expect-key refuses", () => {

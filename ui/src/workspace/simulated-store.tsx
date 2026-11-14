@@ -44,6 +44,7 @@ import { useWorkspaceNavigation } from "./navigation-state";
 import type { Schedule } from "./schedule";
 import { TransitionError, useStateMachine } from "@/lib/state-machine";
 import { pendingChanges, simulatedPlan, transitionPublication, transitionSimulatedFollower, type PublicationEvent, type SimulatedPublication, type SimulatedFollowerEvent, type SimulatedFollowerState } from "./simulated-state";
+import { useSimulatedBackups } from "./simulated-backups";
 
 const READY = { loading: false, error: null };
 
@@ -167,7 +168,7 @@ function demoDigest(sequence: number, summary: string): string {
   return `sha256:${hex.slice(0, 4)}…${hex.slice(4)}`;
 }
 
-function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Setup | null): Omit<Workspace, "admin"> {
+function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Setup | null): Omit<Workspace, "admin" | "backup"> {
   const { role } = route;
   // Fresh out of onboarding, the workspace holds only what the person just set up.
   const newSource = role === "source" && setup?.role === "source" ? setup : null;
@@ -514,7 +515,8 @@ function SimulatedWorkspace({ route, navigate, setup, children }: {
 }) {
   const workspace = useWorkspaceState(route, navigate, setup);
   const admin = useSimulatedAdministration(workspace);
-  return <WorkspaceContext value={{ ...workspace, admin }}><DemoScreenContext>{children}</DemoScreenContext></WorkspaceContext>;
+  const backup = useSimulatedBackups(route.role, workspace.machineName);
+  return <WorkspaceContext value={{ ...workspace, admin, backup }}><DemoScreenContext>{children}</DemoScreenContext></WorkspaceContext>;
 }
 
 function DemoScreenContext({ children }: { children: ReactNode }) {

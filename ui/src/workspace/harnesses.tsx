@@ -1,16 +1,13 @@
-// The harness list and takeover backups page share the active workspace's reports and restore action.
+// The harness list shares the active workspace's harness reports.
 import { useRef, useState } from "react";
 import { CaretDown } from "@/components/icons";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { HARNESS_NAMES, DEMO, SURFACE_CATEGORIES, SURFACE_NAMES, SURFACE_SUPPORT, type Harness, type HarnessId, type Snapshot, type SurfaceCategory } from "@/shared/metadata";
+import { SURFACE_CATEGORIES, SURFACE_NAMES, SURFACE_SUPPORT, type Harness, type HarnessId, type SurfaceCategory } from "@/shared/metadata";
 import { Mono, StatusMark, type StatusKind } from "@/shared/shared";
 import { useWorkspace } from "./store";
-import { AnimatedRow, Body, EmptyState, ListHead, ListRow, PageHeader, RowPresence } from "./kit";
-import { ConfirmDialog } from "./settings";
-import { FollowerOperationEvidence } from "./follower-evidence";
-
+import { ListHead, ListRow } from "./kit";
 
 /** What Canonfig does with a harness on this machine, from the three facts `canonfig harnesses` reports. */
 function harnessStatus(h: Harness): { kind: StatusKind; label: string; hint: string } {
@@ -187,101 +184,6 @@ export function HarnessTable({ edit, onToggle }: { edit?: "listed" | "managed"; 
           </ListRow>
         );
       })}
-    </>
-  );
-}
-
-/** "Codex, Claude Code" for a snapshot's harnesses. */
-const namesOf = (ids: HarnessId[]) => ids.map((h) => HARNESS_NAMES[h]).join(", ");
-
-/**
- * Retention as Canonfig applies it after writing a snapshot (src/projection/takeover.ts): the first stays, and
- * the oldest of the recent ones goes once there are more than 4 of them.
- */
-const RECENT_KEPT = 4;
-
-export function BackupsView() {
-  const ws = useWorkspace();
-  const [restoring, setRestoring] = useState<Snapshot | null>(null);
-  const cols = "minmax(220px,280px) minmax(160px,1fr) 64px 120px";
-  const colsMin = 220 + 160 + 64 + 120 + 3 * 12 + 20;
-  const recent = ws.snapshots.filter((s) => s.first === false).length;
-  // Newest first, the way people look for the one to restore.
-  const shown = [...ws.snapshots].reverse();
-  return (
-    <>
-      <PageHeader crumbs={["Backups"]} actions={ws.followerLive && <Button size="sm" variant="outline" onClick={ws.reload}>Reload</Button>} />
-      <Body>
-        <p data-tour="backups-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
-          Canonfig keeps the first snapshot and the {RECENT_KEPT} most recent.
-        </p>
-        {ws.backups === false && (
-          <p className="flex items-center gap-2 border-b border-border px-[18px] py-3 text-sm text-pretty text-warn">
-            <StatusMark kind="warn" />
-            Backups are off on this machine: local/local.jsonc sets "backups": false, so Canonfig takes over a new harness without a snapshot.
-          </p>
-        )}
-        {shown.length === 0 ? (
-          <EmptyState title="No backups yet" body="Canonfig takes the first one the first time it writes to a harness on this machine." />
-        ) : (
-          <>
-            <ListHead cols={cols} minWidth={colsMin} data-tour="backups-list">
-              <span>Snapshot</span>
-              <span>Harnesses</span>
-              <span>Files</span>
-              <span className="sr-only">Restore</span>
-            </ListHead>
-            <RowPresence>
-              {shown.map((s) => {
-                const done = ws.capabilities.simulatedTelemetry && s.harnesses.length > 0 && s.harnesses.every((h) => ws.excluded.includes(h));
-                return (
-                  <AnimatedRow key={s.id}>
-                    <ListRow cols={cols} minWidth={colsMin} data-tour="backups-list">
-                      <span className="flex min-w-0 items-center gap-2">
-                        <Mono className="truncate text-foreground">{s.id}</Mono>
-                        {s.first && (
-                          <span title={"The state before Canonfig ever wrote.\nCanonfig always keeps it."} className="inline-flex h-4 shrink-0 items-center rounded-[3px] bg-raised px-1 text-xs font-medium text-muted-foreground">
-                            First, kept
-                          </span>
-                        )}
-                      </span>
-                      <span className="truncate text-sm text-muted-foreground" title={s.harnesses.join(", ")}>
-                        {s.harnesses.length > 0 ? namesOf(s.harnesses) : "Not reported"}
-                      </span>
-                      <span className="text-sm text-muted-foreground tabular-nums">{s.files ?? "Not reported"}</span>
-                      <span className="flex justify-end">
-                        <Button variant="outline" size="xs" disabled={done || ws.followerLive?.action.loading} title={done ? "Its harnesses are already excluded on this machine." : undefined} onClick={() => setRestoring(s)}>
-                          {done ? "Restored" : "Restore…"}
-                        </Button>
-                      </span>
-                    </ListRow>
-                  </AnimatedRow>
-                );
-              })}
-            </RowPresence>
-            <p className="px-[18px] py-3 text-sm text-pretty text-faint">
-              {ws.snapshots.every((snapshot) => snapshot.first !== undefined) && <>{recent} of {RECENT_KEPT} recent {recent === 1 ? "snapshot" : "snapshots"} kept. </>}For files a harness shares with its own state, like{" "}
-              <Mono>~/.claude.json</Mono>, a snapshot holds only the keys Canonfig owns, so sign-in data never enters a backup.
-            </p>
-          </>
-        )}
-        {ws.followerLive?.operationName === "Restore backup" && <FollowerOperationEvidence />}
-      </Body>
-      <ConfirmDialog
-        open={restoring !== null}
-        onOpenChange={(open) => !open && setRestoring(null)}
-        title={restoring ? `Restore ${restoring.harnesses.length > 0 ? namesOf(restoring.harnesses) : restoring.id}?` : ""}
-        body={
-          restoring && (
-            <>
-              Canonfig restores snapshot <Mono className="text-foreground">{restoring.id}</Mono> and excludes its restored harnesses from future synchronization. It refuses files that changed since Canonfig last wrote them.
-              {DEMO && " This demo changes no files."}
-            </>
-          )
-        }
-        confirm="Restore"
-        onConfirm={() => restoring && ws.restore(restoring.id)}
-      />
     </>
   );
 }

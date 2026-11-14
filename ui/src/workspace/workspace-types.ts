@@ -1,4 +1,5 @@
 import type { FollowerLive } from "./follower-types";
+import type { GuiBackupList, GuiBackupRequest, GuiBackupStatus } from "../../../src/gui/contract/backup";
 import type { Dispatch, SetStateAction } from "react";
 import type { AppendLocalCategory, Follower, FollowerState, Harness, HarnessId, ItemCategory, KeptSurface, LocalCategory, LocalItem, Resource, Revision, SkillSource, Snapshot, SurfaceCategory, UpstreamSkill } from "@/shared/metadata";
 import type { GuiRequestError, GuiSession, GuiStatus } from "../gui-client";
@@ -385,7 +386,22 @@ export interface FollowerSlice {
   isStopped: () => boolean;
 }
 
+/**
+ * Portable backups on this machine: policies, their latest run and drill, and one operation channel. Live reads
+ * /api/backup/status and posts operations to /api/backup; the demo simulates the same shapes.
+ */
+export interface BackupSlice {
+  status: GuiBackupStatus | null;
+  state: ResourceState;
+  /** The running or last operation: loading while it runs, its error after a failure. */
+  action: ResourceState;
+  /** This machine's copies of each policy, from its last `list`. A run or prune drops that policy's entry. */
+  listings: Readonly<Record<string, GuiBackupList>>;
+  run: (request: GuiBackupRequest) => Promise<boolean>;
+}
+
 /** The single store contract consumed by all workspace screens. */
 export interface Workspace extends OverviewSlice, ProfileSlice, MachinesSlice, FollowerSlice {
   admin: AdministrationSlice;
+  backup: BackupSlice;
 }

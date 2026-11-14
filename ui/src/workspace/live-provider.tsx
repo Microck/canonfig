@@ -11,6 +11,7 @@ import { useLiveProfile } from "./live/profile";
 import { useLiveMachines } from "./live/machines";
 import { useLiveFollower } from "./live/follower";
 import { useLiveAdministration } from "./live/administration";
+import { useLiveBackups } from "./live/backups";
 import { LiveResourceCache, LiveResourcesContext, resourceState } from "./live/resource";
 import { isRouteForRole } from "./nav";
 
@@ -27,7 +28,8 @@ export function livePageResources(session: GuiSession, route: WorkspaceRoute): r
     sync: ["/api/tunnel"],
     schedule: ["/api/schedule"],
     local: ["/api/local/items", "/api/harnesses", "/api/local/overlays"],
-    backups: ["/api/backups", "/api/local/items"],
+    // Portable backups, takeover snapshots for "Before Canonfig", and the harness list for choosing what to back up.
+    backups: ["/api/backup/status", "/api/backups", "/api/harnesses", ...(session.role === "follower" ? ["/api/local/items"] : [])],
     tunnel: ["/api/tunnel"],
     machine: ["/api/enrollment", "/api/tunnel", "/api/local/items"],
     agent: ["/api/agent/policy", "/api/agent/harness"],
@@ -69,7 +71,12 @@ function LiveWorkspace({ backend, session, route, cache, paths, onInstalled, chi
   const profile = useLiveProfile(backend, session, invalidate, reload);
   const machines = useLiveMachines(backend, session, invalidate);
   const follower = useLiveFollower(backend, session, overview.status, invalidate);
+  const backup = useLiveBackups(backend, invalidate);
   const service = admin.service.data;
+  const backupState = resourceState([backup.state, follower.followerStates.backups, follower.followerStates.local]);
+  // Show the skeleton only before the first data arrives. Refreshes must not remount backup forms.
+  const backupsPending = backup.status === null || cache.get("/api/backups").data === null
+    || (session.role === "follower" && cache.get("/api/local/items").data === null);
   const resources: Partial<Record<Workspace["view"], ResourceState>> = {
     overview: overview.overviewState,
     profile: resourceState([profile.profileState, follower.followerStates.harnesses, machines.machineStates.inventory]), revisions: profile.profileStates.revisions,
@@ -78,14 +85,14 @@ function LiveWorkspace({ backend, session, route, cache, paths, onInstalled, chi
     machines: resourceState([machines.machinesState, profile.profileStates.items]),
     sync: follower.followerState, schedule: follower.followerStates.schedule,
     local: follower.followerStates.local,
-    backups: resourceState([follower.followerStates.backups, follower.followerStates.local]),
+    backups: { ...backupState, loading: backupState.loading && backupsPending },
     tunnel: follower.followerStates.tunnel,
     machine: resourceState([follower.followerState, follower.followerStates.local]),
     setup: machines.machineStates.setup,
   };
   const resource = resources[route.view];
   const workspace: Workspace = {
-    ...overview, ...profile, ...machines, ...follower, admin,
+    ...overview, ...profile, ...machines, ...follower, admin, backup,
     profileTab: route.profileTab, machinesMode: route.machinesMode,
     endpoint: session.role === "source" ? service?.endpoint ?? "" : machines.endpoint,
     sourceMachine: { ...machines.sourceMachine, ...(session.role === "source" && service ? { endpoint: service.endpoint, platform: service.platform, service: service.state } : {}) },

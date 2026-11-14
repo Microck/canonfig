@@ -3,6 +3,7 @@ import { basename, isAbsolute, join, relative, sep } from "node:path";
 
 import { parse as parseJsonc, type ParseError, printParseErrorCode } from "jsonc-parser";
 import { Schema } from "effect";
+import { BackupPolicies } from "../backup/backup.types.ts";
 
 import { type ContentDigest, ProfileId } from "../domain/brand.ts";
 import { configPathIssue, configPathsOverlap } from "../domain/config-path.ts";
@@ -74,7 +75,7 @@ const positiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
 
 /** Categories whose items `groups` can name, as `<category>/<name>`, plus `instructions`. */
 export const GROUPABLE_CATEGORIES = [
-  "rules", "skills", "agents", "commands", "hooks", "mcp", "settings", "tools", "credentials", "resources",
+  "rules", "skills", "agents", "commands", "hooks", "mcp", "settings", "tools", "credentials", "resources", "backupPolicies",
 ] as const;
 const itemReference = Schema.String.check(Schema.isPattern(
   new RegExp(`^(?:instructions|(?:${GROUPABLE_CATEGORIES.join("|")})/[A-Za-z0-9][A-Za-z0-9_-]*)$`, "u"),
@@ -239,6 +240,7 @@ const CanonfigJsonc = Schema.Struct({
   credentials: Schema.optional(Schema.Record(identifier, Schema.Struct({ reference: Schema.NonEmptyString }))),
   groups: Schema.optional(Schema.Record(identifier, Schema.Array(itemReference))),
   scheduleDefault: Schema.optional(ScheduleInput),
+  backupPolicies: Schema.optional(BackupPolicies),
   local: Schema.optional(LocalAllow),
   resources: Schema.optional(Schema.Record(identifier, ResourceInput)),
 });

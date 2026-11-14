@@ -156,7 +156,7 @@ The Source Machine authors its Machine Profile as the Canonical Folder:
 
 ```text
 ~/.canonfig/
-  canonfig.jsonc      profile, harnesses, mcp, hooks, settings, tools, credentials, resources, groups, scheduleDefault, local
+  canonfig.jsonc      profile, harnesses, mcp, hooks, settings, tools, credentials, resources, groups, scheduleDefault, backupPolicies, local
   AGENTS.md
   rules/<id>.md
   skills/<name>/SKILL.md
@@ -170,6 +170,8 @@ The Source Machine authors its Machine Profile as the Canonical Folder:
 The folder is the authoring format; the signed Profile Revision is the wire format. `canonfig source publish` compiles the folder into one Profile Resource per item, encodes the canonical Profile Revision, and signs it. Comments and authoring layout never affect the revision digest. The reviewer and signed revision digest commit in the same SQLite transaction as the immutable revision. Followers mirror each authorized item into their own `~/.canonfig/` and project the mirror plus `local/` into their Target Harnesses. Resource ids, the follower mirror, projection, takeover snapshots and restore are described in [global-folder.md](global-folder.md).
 
 `scheduleDefault` is an optional suggested schedule. A Machine Profile does not apply a schedule: the native synchronization job belongs to the Follower Machine, which accepts the profile's suggestion with `canonfig schedule set --default` or chooses its own calendar with `canonfig schedule set`. Sync never installs, re-enables, or recreates a job; when no decision exists it only reports that a schedule is available. Repairing that job happens after a converged run rather than as part of one, so a follower whose native scheduler does not work still converges. `tools.<id>` entries in `canonfig.jsonc` declare executables, installation recipes, login requirements, bounded agent installation and verification.
+
+`backupPolicies` separately declares portable backup and restore-drill jobs. Applying the signed Canonical Folder mirror reconciles only the `canonfig-backup-*` namespace, never `canonfig-sync`. Local overrides, password aliases and credential-capture consent remain on each machine. Portable backup, export and import share the version-2 manifest and PAX tar codec; offline recovery can also carry encrypted Source identity or shared secrets. See [ADR 0004](adr/0004-backup.md).
 
 ### Profile Resource kinds
 

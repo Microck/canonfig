@@ -32,6 +32,15 @@ _Avoid_: Export, install
 The backup, kept under `~/.canonfig/.backups/`, of content Canonfig is about to overwrite: a Target Harness's owned surfaces before Canonfig's first write to that harness, or the Canonical Folder entries that `canonfig import --replace` (or a restore of such a backup) replaces.
 _Avoid_: Journal, run backup
 
+**Portable Backup**:
+A versioned capture of selected Canonical Folder or Target Harness files, optionally with encrypted recovery credentials, stored in a local folder or remote destination. It is independent of Takeover Snapshots and Profile Revisions.
+
+**Backup Policy**:
+A named selection of backup contents, destination, compression, encryption reference, retention and optional backup or restore-drill schedules. A local policy overrides a same-name Source declaration; credential permission stays local.
+
+**Restore Drill**:
+A full download, integrity check and restore of a Portable Backup into disposable private storage, without changing the running machine's configuration.
+
 **Observed State**:
 The configuration state that Canonfig finds on a machine at a point in time.
 _Avoid_: Current profile, actual profile

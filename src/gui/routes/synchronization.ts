@@ -89,8 +89,8 @@ export const synchronizationRoutes = Effect.gen(function*() {
 
   // Capture identity from this command's result or typed failure details, never a mutable "latest run".
   // Planning has no run journal. Before an apply returns its identity the journal is explicitly unknown.
-  const start = (operation: Effect.Effect<CliPayload, CliCommandFailure>) => Effect.gen(function*() {
-    yield* role(["follower"]);
+  const start = (operation: Effect.Effect<CliPayload, CliCommandFailure>, roles: ReadonlyArray<"source" | "follower"> = ["follower"]) => Effect.gen(function*() {
+    yield* role(roles);
     let details: Schema.Json = null;
     let run: typeof RunId.Type | undefined;
     const capture = (value: CliPayload | undefined) => {
@@ -166,11 +166,12 @@ export const synchronizationRoutes = Effect.gen(function*() {
       Effect.provideService(MachineState, machine), Effect.mapError(commandFailure),
       Effect.andThen(localItems),
     )),
-    queryRoute("/api/backups", () => role(["follower"]).pipe(
+    // Takeover snapshots are per machine: a Source takes them too when it first projects into its own harnesses.
+    queryRoute("/api/backups", () => role(["source", "follower"]).pipe(
       Effect.flatMap((session) => listSnapshots(join(session.folderPath, ".backups"))),
       Effect.mapError(commandFailure), Effect.map((snapshots) => ({ snapshots })),
     )),
-    mutationRoute("POST", "/api/backups/restore", GuiRestoreRequest, (input) => start(commands.restore(input)), 202),
+    mutationRoute("POST", "/api/backups/restore", GuiRestoreRequest, (input) => start(commands.restore(input), ["source", "follower"]), 202),
     queryRoute("/api/secrets", () => both(secrets(listSecrets()).pipe(
       Effect.map((entries) => ({ secrets: entries.map(({ name, origin }) => ({ name, origin })) })),
     ))),

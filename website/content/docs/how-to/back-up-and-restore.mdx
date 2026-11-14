@@ -1,0 +1,197 @@
+---
+title: Back up and restore your configuration
+description: Keep versioned backups in a local folder, Git repository or cloud drive, and test recovery before you need it.
+---
+
+Use the **Backups** page in `canonfig ui`, or the commands below. Portable backups are separate from [Takeover Snapshots](/how-to/restore-from-a-backup), which protect files that Canonfig is about to overwrite.
+
+A policy selects the Canonical Folder, managed Target Harness configuration, or full folders for selected harnesses. Source identity and shared secrets are optional encrypted extras. Full harness folders require encryption because histories and caches can contain tokens under unknown names. Known credential files and symbolic links are excluded by default.
+
+## Use the Backups page
+
+The page lists your backups on the left, each with its latest result, for example **Backed up today 03:00 · 49.8 MB** or **Failed Sun 02:00**. Select one to see its copies, newest first.
+
+- **Back up now** runs it once. **Settings** opens what to back up, where, when and the password; compression, retention, restore tests and filters are under **More options**.
+- **Restore…** on a copy offers three choices: test it in a throwaway folder, restore it into a new folder for a new machine, or, on a Source, put your Canonfig folder back through the usual import checks.
+- A failed run shows Canonfig's diagnostic above the copies. A backup that captures sign-in data or keys asks you to **Allow** it on this machine before it runs.
+- **Before Canonfig**, the last entry, holds the [Takeover Snapshots](/how-to/restore-from-a-backup).
+
+Each machine records the latest run and restore test of every backup in `~/.canonfig/backup-runs.json`, which `canonfig backup status --json` reports as `runs`.
+
+## Create a local backup
+
+Save a policy as `daily-backup.json`. Replace the destination with an absolute path outside the folders you capture.
+
+```json title="daily-backup.json"
+{
+  "destination": { "kind": "local", "path": "/home/maria/backups" },
+  "folder": true,
+  "harnesses": { "mode": "none", "targets": [] },
+  "compression": "balanced",
+  "sourceIdentity": false,
+  "sharedSecrets": false,
+  "includeCredentials": false,
+  "include": [],
+  "exclude": [],
+  "retention": { "last": 5, "daily": 7, "weekly": 4 },
+  "maximumBytes": 53687091200,
+  "maximumFiles": 1000000
+}
+```
+
+```bash
+canonfig backup configure daily --policy daily-backup.json
+canonfig backup run daily
+canonfig backup list daily
+canonfig backup drill daily
+```
+
+`run` downloads the stored archive and checks its checksum before applying retention. `drill` also decompresses, verifies every file and restores into disposable private storage. Run a drill after changing a destination or password policy.
+
+The Canonical Folder selection captures its authoring files and `local/`, not machine databases, caches, Takeover Snapshots, backup settings or credential stores. Source recovery is a separate choice below.
+
+## Choose another destination
+
+Change `destination` in the policy, then run `backup configure` again.
+
+| Destination | Policy value | Authentication |
+| --- | --- | --- |
+| GitHub, GitLab, Forgejo, Gitea, another Git host | `{"kind":"git","remote":"git@example.org:maria/canonfig-backups.git"}` | Your Git SSH configuration or credential helper |
+| Google Drive or another cloud drive | `{"kind":"rclone","remote":"drive:canonfig"}` | A named remote configured with `rclone config` |
+| S3-compatible storage, B2, WebDAV or SFTP | `{"kind":"rclone","remote":"archive:canonfig"}` | The corresponding named rclone remote |
+
+Install Git or rclone on every machine that uses that destination, including scheduled jobs. Never put a token or password in a destination URL. Configure the remote on each Follower Machine; its authentication does not travel in the Machine Profile.
+
+Git backups use separate snapshot branches under `canonfig-backup/<policy>/<owner>/`. They do not modify your ordinary branches. Archives are split into objects smaller than 50 MiB, but repository-wide quotas still apply. Prefer a local folder or rclone for large histories. Deleting branches does not immediately erase unreachable Git objects, and provider trash or version history can retain deleted cloud objects.
+
+Unencrypted Git backups require `gitleaks` on PATH. Canonfig scans the staged files with the default rules, without backup-supplied ignore rules or inline suppressions. A scan failure prevents publication. A scanner cannot prove that arbitrary text contains no secrets; choose encryption for private configuration.
+
+## Protect backups with a password
+
+In the GUI, turn on **Encrypt with a password** in the backup's settings. From the CLI, pipe it from your password manager into:
+
+```bash
+canonfig backup password recovery --stdin
+```
+
+Add `"passwordReference": "recovery"` to the policy and configure it again. The alias resolves through this machine's credential store. Passwords never appear in command arguments or published policies.
+
+<Callout title="Keep a separate recovery password" type="warning">
+  Losing the password makes encrypted backups unrecoverable. Keep a copy outside the machine and backup destination. Canonfig cannot reset it. Existing aliases cannot be overwritten; use a new alias when changing passwords, and retain old passwords for old snapshots.
+</Callout>
+
+Backups use the standard age password format. Encryption does not hide archive size, snapshot times, policy names or owner identifiers. Provider-side encryption alone does not protect a backup from the provider or someone with repository access.
+
+## Include harness files or recovery credentials
+
+Use `"harnesses": {"mode":"managed","targets":["codex","claude-code"]}` for the unchanged configuration that Canonfig manages. Changed managed surfaces are reported as skipped, not silently captured as canonical configuration.
+
+Use `"mode":"full"` to capture the regular files under each selected harness root, including history and caches. Configure a password first. Stop writers before capturing changing databases; a file that changes during capture causes an error rather than an inconsistent snapshot.
+
+Set `sourceIdentity`, `sharedSecrets` or `includeCredentials` to `true` only when needed. These options require encryption and consent on the capturing machine:
+
+```bash
+canonfig backup allow-credentials daily
+canonfig backup deny-credentials daily
+```
+
+Source identity recovery includes the signing key, TLS identity, published revisions and Follower registry. Shared secrets are selected independently. Only a Source Machine can capture Source identity. A Source policy cannot grant a Follower permission to copy credentials.
+
+`include` and `exclude` contain globs against archive paths such as `folder/skills/**` or `harnesses/codex/.codex/sessions/**`. An empty `include` selects everything in the chosen capture mode. Exclusions take precedence. Credential exclusions still apply unless explicitly allowed. Recovery credentials are not filtered piecemeal.
+
+## Choose compression
+
+| Preset | Codec | Additional tools | Tradeoff |
+| --- | --- | --- | --- |
+| `fast` | Zstandard level 1 | None | Short compression time |
+| `balanced` | Zstandard level 6 | None | Default for scheduled backups |
+| `small` | xz level 9 extreme | `xz` | Smaller files, slower compression |
+| `max` | Smaller of xz 9 extreme and ZPAQ method 5 | `xz` and `zpaq-stream` | Runs both compressors and needs extra staging space; compression and restore can take minutes |
+
+The snapshot records its actual codec. Restoring `max` needs the selected codec, not both tools. No compressor wins on every possible input; `max` compares the smallest candidates from the measured configuration corpus.
+
+To build `zpaq-stream`, download [public-domain libzpaq 7.15](https://mattmahoney.net/dc/zpaq715.zip), unpack it into `libzpaq`, and compile the helper shipped in `tools/backup/`:
+
+```bash
+g++ -O3 -DNOJIT -Ilibzpaq tools/backup/zpaq-stream.cpp libzpaq/libzpaq.cpp -o zpaq-stream -pthread
+```
+
+Put the executable on the interactive and native scheduler PATH. Use a matching native C++ toolchain on each platform. The helper accepts only a compression method or decompression command and never extracts archive paths. Keep these helpers available on your recovery machine.
+
+## Schedule backups and restore drills
+
+Add either or both fields to the policy:
+
+```json
+{
+  "schedule": { "kind": "daily", "localTime": "02:00" },
+  "drillSchedule": { "kind": "weekly", "weekdays": ["Sun"], "localTime": "03:00" }
+}
+```
+
+Configure the policy again to install its native jobs. Linux uses systemd user timers, macOS uses launchd, and Windows uses Task Scheduler. Jobs run the same `backup run` and `backup drill` commands, with no resident backup daemon. Leave `timezone` absent for the machine's timezone. Backend-specific custom calendars follow [native schedule rules](/how-to/manage-schedules).
+
+```bash
+canonfig backup status
+canonfig backup schedule
+canonfig backup disable daily
+canonfig backup enable daily
+```
+
+`backup schedule` reconciles backup jobs after a manual policy edit. It does not change the synchronization schedule. Local disablement survives subsequent Source policy updates.
+
+To declare backups for Followers, put named policies in `backupPolicies` in the Source's `canonfig.jsonc`, then publish and apply the revision normally. Followers receive the signed policy through the Canonical Folder mirror and reconcile backup jobs on apply. They still need local destination access, password aliases and any credential-capture consent. A same-name local policy takes precedence over a Source policy.
+
+## Restore into a new HOME
+
+Start with a recovery directory that does not exist:
+
+```bash
+canonfig backup verify daily
+canonfig backup restore daily --to /home/maria/recovered-home
+```
+
+Choose an older snapshot by adding its full identifier after `daily`. To recover after losing the original machine, configure a policy pointing at the same destination, set its password alias, then discover the old owner:
+
+```bash
+canonfig backup owners daily
+canonfig backup list daily --owner old-machine-owner
+canonfig backup restore daily --owner old-machine-owner --to /home/maria/recovered-home
+```
+
+Copy an owner identifier from `owners`, not the example above. A recovered installation has a new writer identifier, so its retention cannot prune the old machine's snapshots. Use `--expect-key` with a known Source fingerprint to require that signer, rather than accepting any valid embedded signature.
+
+All files and encrypted input are checked before the recovery directory is created. An occupied destination is refused. Files start private; executable intent is retained. If publication fails, Canonfig removes the new recovery directory and any credentials created by that attempt.
+
+Snapshots containing Source identity or shared secrets also require `--recover-credentials`. Canonfig imports them into the recovery machine's native secure credential store under new references. It never replaces existing credentials or writes plaintext credential files. A locked or unavailable store fails with Human Action Required; unlock it and retry. Stop the old Source before putting its recovered identity into service. Offline recovery does not change the running Source or its existing credentials.
+
+On a Source or unenrolled machine, restore only the Canonical Folder by previewing first. An enrolled Follower receives that folder from its Source and must use offline recovery instead:
+
+```bash
+canonfig backup restore daily --apply --dry-run
+canonfig backup restore daily --apply
+```
+
+This applies only the Canonical Folder through the normal import and Projection checks. It does not restore harness histories, Source identity or shared secrets. Use offline recovery for those extras. `--replace` opts into replacement and its Takeover Snapshot.
+
+## Control retention
+
+Retention keeps the union of the latest `last` snapshots, the newest snapshot on each of `daily` distinct UTC days, and the newest snapshot in each of `weekly` distinct Monday-based UTC weeks. At least one latest snapshot is required. Retention runs after each verified publication; preview or apply it explicitly with:
+
+```bash
+canonfig backup prune daily
+canonfig backup prune daily --apply
+```
+
+Retention is limited to the current machine's owner namespace. Stored objects are content-addressed; unchanged whole archive parts can be reused. This is not content-defined deduplication, and independently encrypted archives normally do not reuse parts.
+
+## Resolve a failed backup
+
+- **Missing password or credential consent:** configure the alias or review and allow credential capture locally. Canonfig never falls back to plaintext.
+- **Missing native tool:** install the named helper and make it available on the scheduler PATH.
+- **Changed capture input:** stop the writer or exclude its path, then retry.
+- **Size or file-count limit:** review the selected data before raising `maximumBytes` or `maximumFiles`. The same limits bound recovery.
+- **Wrong password or damaged object:** no restore is published. Select the correct alias or another snapshot; do not replace the damaged object with guessed bytes.
+- **Native job not armed:** inspect `backup status` and the OS scheduler. Missing session services or native overrides require local repair.
+
+Use `--json` for the standard command envelope. Diagnostics do not expose tool output because it can contain destination credentials.
