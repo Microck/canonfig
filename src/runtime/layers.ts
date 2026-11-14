@@ -1163,7 +1163,7 @@ const followerCommandsLayer = (
               "files Canonfig applied stay in place; a native schedule, if installed, still starts `canonfig sync`: remove it with `canonfig schedule remove`",
           });
         }).pipe(withEnrollmentLock),
-      synchronize: (input) => {
+      synchronize: (input, execute) => {
         // Only the rendered native job passes --scheduled, so the fire
         // record is evidence the real scheduler started this process.
         const scheduled = input.scheduled === true;
@@ -1207,7 +1207,7 @@ const followerCommandsLayer = (
           return start.pipe(Effect.andThen(Effect.gen(function*() {
             // A scheduled run restarts a down managed tunnel once, and a
             // transport failure while the tunnel is down reports the tunnel.
-            const result = yield* repository.getFollowerSynchronizationConfiguration().pipe(
+            const synchronize = repository.getFollowerSynchronizationConfiguration().pipe(
               Effect.catch(() => Effect.succeed(undefined)),
               Effect.flatMap((configuration) =>
                 withManagedTunnel(
@@ -1224,14 +1224,16 @@ const followerCommandsLayer = (
               Effect.catchTag("TunnelDownError", (error) => Effect.fail(commandFailure(error))),
               // Retain completed file-run evidence if shared-secret refresh fails.
               Effect.tap((result) => input.mode === "apply" ? synchronizeSharedSecrets().pipe(
-              Effect.provideService(MachineState, machine),
-              Effect.provideService(StateRepository, repository),
-              Effect.mapError((error) => new CliCommandFailure({
-                category: secretFailureCategory(error),
-                message: `File synchronization completed, but shared-secret synchronization failed: ${error.message}`,
-                details: result,
-              })),
-            ) : Effect.void), Effect.catch((error) => {
+                Effect.provideService(MachineState, machine),
+                Effect.provideService(StateRepository, repository),
+                Effect.mapError((error) => new CliCommandFailure({
+                  category: secretFailureCategory(error),
+                  message: `File synchronization completed, but shared-secret synchronization failed: ${error.message}`,
+                  details: result,
+                })),
+              ) : Effect.void),
+            );
+            const result = yield* (execute === undefined ? synchronize : execute(synchronize)).pipe(Effect.catch((error) => {
               const failed = scheduled ? mapFailure(repository.transitionScheduledInvocation({
                 ...identity, _tag: "Failed", at: new Date().toISOString(), reason: fireFailureReason(error),
               })) : Effect.void;

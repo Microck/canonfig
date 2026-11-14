@@ -31,7 +31,7 @@ import {
   exitCodeForFailure,
   type CliExitCode as CliExitCodeValue,
 } from "./exit-codes.ts";
-import { FollowerCommands } from "./follower-commands.ts";
+import { FollowerCommands, type SynchronizationExecution } from "./follower-commands.ts";
 import {
   renderCliResult,
   renderUsageFailure,
@@ -1109,10 +1109,11 @@ export const commandName = (value: CliCommand): string => {
 
 const executeCommand = Effect.fn("Cli.executeCommand")(function*(
   value: Exclude<CliCommand, { readonly _tag: "Ui" }>,
+  executeSynchronization?: SynchronizationExecution<MachineState | StateRepository>,
 ): Effect.fn.Return<
   CliPayload,
   CliCommandFailure,
-  SourceCommands | FollowerCommands | SetupCommands
+  SourceCommands | FollowerCommands | SetupCommands | MachineState | StateRepository
 > {
   const source = yield* SourceCommands;
   const follower = yield* FollowerCommands;
@@ -1154,7 +1155,7 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
         scheduled: value.scheduled,
         noBackup: value.noBackup,
         reviewLocal: value.reviewLocal,
-      });
+      }, executeSynchronization);
     case "Overlays": return yield* follower.overlays({ change: value.change });
     case "Restore": return yield* follower.restore({ snapshot: value.snapshot });
     case "Export":
@@ -1245,14 +1246,17 @@ export const runCli = Effect.fn("runCli")(function*(
   const root = fileURLToPath(new URL("../../", import.meta.url));
   const execution: Effect.Effect<CliPayload, CliCommandFailure, SourceCommands | FollowerCommands | SetupCommands | GuiQueries | MachineState | StateRepository> = Effect.gen(function*() {
     if (outcome.command._tag === "Ui") return yield* runGui(outcome.command, io, lease);
-    const fleetSync = outcome.command._tag === "Synchronize" && outcome.command.mode === "apply" && lease !== undefined;
-    if (fleetSync) {
+    if (outcome.command._tag !== "Synchronize" || outcome.command.mode !== "apply" || lease === undefined) {
+      return yield* executeCommand(outcome.command);
+    }
+    // Scheduled invocation bookkeeping must include failed checks, not just the file run.
+    return yield* executeCommand(outcome.command, (synchronize) => Effect.gen(function*() {
       restart = yield* prepareFleetSync(root, lease);
       if (restart) return null;
-    }
-    return yield* executeCommand(outcome.command).pipe(Effect.matchEffect({
-      onSuccess: (data) => fleetSync ? finishFleetSync(true).pipe(Effect.as(data)) : Effect.succeed(data),
-      onFailure: (error) => fleetSync ? finishFleetSync(false).pipe(Effect.andThen(Effect.fail(error))) : Effect.fail(error),
+      return yield* synchronize.pipe(Effect.matchEffect({
+        onSuccess: (data) => finishFleetSync(true).pipe(Effect.as(data)),
+        onFailure: (error) => finishFleetSync(false).pipe(Effect.andThen(Effect.fail(error))),
+      }));
     }));
   });
   const result = yield* (showsTransferProgress
