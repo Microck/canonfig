@@ -18,6 +18,7 @@ import { profileRoutes } from "./routes/profile.ts";
 import { enrollmentRoutes } from "./routes/enrollment.ts";
 import { synchronizationRoutes } from "./routes/synchronization.ts";
 import { administrationRoutes } from "./routes/administration.ts";
+import { shieldRoutes } from "./routes/shield.ts";
 import { managedCommandLease, type ManagedCommandLease } from "../runtime/self-update/coordination.ts";
 
 export interface GuiOptions {
@@ -173,6 +174,7 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
     profileRoutes,
     enrollmentRoutes,
     synchronizationRoutes,
+    shieldRoutes,
     administrationRoutes(lease, () => { Effect.runSync(Deferred.succeed(stopped, undefined)); }, updateSettled),
   ]).pipe(Effect.provideService(GuiOperations, operations))).flat();
   routes.push(operations.route);

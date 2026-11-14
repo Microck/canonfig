@@ -163,9 +163,16 @@ macOS and Windows support hooks, explicit installer routing and ingestion,
 but `--hard` fails with an explanation. Shield is not a sandbox for hostile code.
 
 Put Canonfig's `--json` before `--`; everything after the separator belongs
-to the child command. The browser's machine settings show Shield's policy,
-destination and whether a sync is required. `canonfig doctor` checks the same
-policy and projected registry.
+to the child command. `canonfig doctor` checks the same policy and projected
+registry.
+
+Each machine keeps 30 days of Shield history in `~/.canonfig/.shield/log.jsonl`:
+writes the hook refused, installers `shield install` ran, and items
+`sync --apply` moved out of harness folders. Entries hold paths, item names and
+installer kinds, never file contents or installer arguments. The browser's
+**Shield** page shows that history, the plugins waiting for review, and which
+listed harnesses are protected; see
+[Keep agent installs in the folder](/how-to/keep-agent-installs-in-the-folder).
 
 ## Self-update
 

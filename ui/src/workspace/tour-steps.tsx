@@ -321,6 +321,7 @@ function sourceChapters(ws: Workspace): TourChapter[] {
         },
       ],
     },
+    shieldChapter(ws),
     {
       id: "health",
       title: "Service and health",
@@ -360,6 +361,36 @@ function sourceChapters(ws: Workspace): TourChapter[] {
       ],
     },
   ];
+}
+
+/** Shield is per machine and reads the same on both roles. */
+function shieldChapter(ws: Workspace): TourChapter {
+  return {
+    id: "shield",
+    title: "Shield",
+    summary: "Where agent installs go, and the plugins waiting for review.",
+    pages: ["shield"],
+    steps: [
+      {
+        target: ["shield-switch"],
+        title: "Shield",
+        body: "When an agent or installer adds a skill, MCP server or plugin, Shield puts it in your Canonfig folder instead of a harness folder.",
+        before: () => ws.setView("shield"),
+      },
+      {
+        target: ["shield-log"],
+        title: "What Shield caught",
+        body: "Every redirect from the last 30 days. Plugins run code, so they stay off until you review them here.",
+        before: () => ws.setView("shield"),
+      },
+      {
+        target: ["shield-harnesses"],
+        title: "Harnesses",
+        body: "A harness without hook support can't be stopped mid-install. Sync moves what it added instead.",
+        before: () => ws.setView("shield"),
+      },
+    ],
+  };
 }
 
 function followerChapters(ws: Workspace): TourChapter[] {
@@ -498,6 +529,7 @@ function followerChapters(ws: Workspace): TourChapter[] {
         },
       ],
     },
+    shieldChapter(ws),
     {
       id: "secrets",
       title: "Secrets",

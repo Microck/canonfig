@@ -12,6 +12,7 @@ import type { RootContext } from "./harness.ts";
 import { scanImports, readImportContent, type ImportCandidate } from "./import.ts";
 import { NativePluginManifest, nativePluginDigest } from "./native-plugin.ts";
 import { nativeInstallChange, scanNativeInstalls } from "./shield-plugins.ts";
+import { appendShieldLog, homeRelative } from "./shield-log.ts";
 
 const failure = (path: string, message: string) => new CanonicalFolderError({ path, message: `Shield: ${message}` });
 
@@ -158,5 +159,14 @@ export const ingestShield = Effect.fn("Shield.ingest")(function*(input: {
   yield* machine.ensureDirectory({ path: directory, mode: 0o700 });
   const path = yield* machine.normalizePath({ path: join(directory.absolute, "last-ingestion.json") });
   yield* machine.atomicWrite({ path, anchor: root, content: new TextEncoder().encode(JSON.stringify(receipt, null, 2) + "\n"), mode: 0o600 });
+  // Installer staging homes are logged once by `shield install` with the installer's kind; this logs what sync found.
+  if (input.installer !== true) {
+    const at = receipt.at;
+    const entries = [
+      ...sources.map((entry) => ({ at, kind: "ingested" as const, path: homeRelative(entry.path, context.home), item: entry.category === "mcp" ? `mcp/${entry.name}` : entry.target })),
+      ...plugins.map((entry) => ({ at, kind: "ingested" as const, path: homeRelative(entry.install.path, context.home), item: entry.target })),
+    ];
+    yield* Effect.tryPromise({ try: () => appendShieldLog(target.folder, entries), catch: (error) => failure(target.folder, `items admitted, but the Shield log could not be written: ${String(error)}`) });
+  }
   return { imported: [...new Set([...sources.map((entry) => entry.target), ...plugins.map((entry) => entry.target)])], warnings: scan.skipped.map((entry) => `${entry.path}: ${entry.reason}`) };
 });

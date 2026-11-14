@@ -15,6 +15,7 @@ import { ProfileView } from "./profile";
 import { PublishDialog, RevisionsView, SecretsView, SourceOverview } from "./source";
 import { AgentPolicyView, DoctorView, InstallersView, ServiceView, SetupView, VersionView } from "./settings";
 import { BackupsView } from "./harnesses";
+import { ShieldView } from "./shield";
 // A session is one role, so the Follower screens load only when a Follower workspace opens. All of them share
 // one chunk: after the first Follower page suspends once, page changes inside the role never suspend.
 const follower = () => import("./follower");
@@ -31,13 +32,13 @@ import { ErrorNotice } from "../live/session";
 import { cn } from "@/lib/utils";
 import type { GuiSourceServiceStatus } from "../../../src/gui/contract/administration";
 import type { Workspace } from "./workspace-types";
-
 const SOURCE_SCREENS: Partial<Record<View, React.ComponentType>> = {
   overview: SourceOverview,
   profile: ProfileView,
   machines: MachinesView,
   revisions: RevisionsView,
   backups: BackupsView,
+  shield: ShieldView,
   secrets: SecretsView,
   service: ServiceView,
   installers: InstallersView,
@@ -53,6 +54,7 @@ const FOLLOWER_SCREENS: Partial<Record<View, React.ComponentType>> = {
   schedule: ScheduleView,
   local: LocalView,
   backups: BackupsView,
+  shield: ShieldView,
   secrets: FollowerSecretsView,
   tunnel: TunnelView,
   agent: AgentPolicyView,

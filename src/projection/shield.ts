@@ -24,12 +24,13 @@ export const shieldPaths = (model: CanonicalModel, context: RootContext) => {
 };
 
 /** Generated, dependency-free guard. Shell inspection is advisory, not a shell parser or sandbox. */
-const guardSource = (paths: ReadonlyArray<string>, home: string, destination: string) => `
+const guardSource = (paths: ReadonlyArray<string>, home: string, destination: string, logFile: string) => `
 import fs from "node:fs";
 import path from "node:path";
 const protectedPaths = ${JSON.stringify(paths)};
 const home = ${JSON.stringify(home)};
 const destination = ${JSON.stringify(destination)};
+const logFile = ${JSON.stringify(logFile)};
 const input = JSON.parse(fs.readFileSync(0, "utf8"));
 const raw = input.raw ?? {};
 const tool = input.toolName;
@@ -49,11 +50,16 @@ const physical = (value) => {
 };
 const within = (value, root) => { if (process.platform !== "linux") { value = value.toLowerCase(); root = root.toLowerCase(); } return value === root || value.startsWith(root + path.sep); };
 let blockedRelative = "";
+let blockedPath = "";
+let blockedInstaller = "";
 const match = (value) => {
   const absolute = resolve(value);
   const actual = physical(absolute);
   const root = protectedPaths.find((root) => within(absolute, root) || within(actual, physical(root)));
-  if (root) blockedRelative = within(actual, physical(root)) ? path.relative(physical(root), actual) : path.relative(root, absolute);
+  if (root) {
+    blockedRelative = within(actual, physical(root)) ? path.relative(physical(root), actual) : path.relative(root, absolute);
+    blockedPath = absolute;
+  }
   return root;
 };
 const writeTool = /(write|edit|patch|create|delete|move|replace)/i.test(tool);
@@ -80,10 +86,17 @@ if (shellTool) {
     const mutates = /(?:\\b(?:mkdir|touch|cp|mv|rm|install|tee|dd|ln|chmod|chown|truncate|Set-Content|Add-Content|Remove-Item|New-Item)\\b|\\bsed\\s+[^;]*-i|\\b(?:node|python[0-9.]*|perl|ruby)\\s+[^;]*-[ec]|\\b(?:writeFile|write_text|write_bytes|appendFile)\\s*\\()/i.test(command);
     if (mutates) for (const token of command.split(/[\\s'";|&<>]+/)) if (token && (token.includes("/") || token.includes("\\\\"))) blocked ??= match(token);
     for (const redirect of command.matchAll(/>{1,2}\\s*(?:"([^"]+)"|'([^']+)'|([^\\s;&|<>]+))/g)) blocked ??= match(redirect[1] ?? redirect[2] ?? redirect[3]);
-    if (/(?:\\bskills\\s+(?:add|install)|\\b(?:claude|codex|gemini|qwen)\\s+(?:mcp\\s+add|plugins?\\s+(?:install|add)|extensions\\s+(?:install|link)))/.test(command)) blocked ??= "installer";
+    const installer = command.match(/(?:\\bskills\\s+(?:add|install)|\\b(?:claude|codex|gemini|qwen)\\s+(?:mcp\\s+add|plugins?\\s+(?:install|add)|extensions\\s+(?:install|link)))/);
+    if (installer) { blocked ??= "installer"; blockedInstaller ||= installer[0].replace(/\\s+/g, " "); }
   }
 }
 if (blocked) {
+  // The log is history for the Shield page (see shield-log.ts). It holds the refused path or installer phrase,
+  // never content or arguments. A failed append must not turn a block into a crash, so its error is dropped.
+  const entry = { at: new Date().toISOString(), kind: "blocked", harness: input.target };
+  if (blockedPath) entry.path = within(blockedPath, home) ? "~" + blockedPath.slice(home.length) : blockedPath;
+  else if (blockedInstaller) entry.installer = blockedInstaller;
+  try { fs.mkdirSync(path.dirname(logFile), { recursive: true, mode: 0o700 }); fs.appendFileSync(logFile, JSON.stringify(entry) + "\\n", { mode: 0o600 }); } catch {}
   const category = protectedPaths.includes(blocked) && /[/\\\\]skills$/.test(blocked) ? "skills/" + blockedRelative : "";
   console.log(JSON.stringify({ decision: "deny", reason: "Canonfig Shield blocked a harness installation. Write authored content to " + path.join(destination, category) + "; for installers run canonfig shield install -- <original command>. Run canonfig sync --apply afterward. Native plugins need canonfig shield review before activation. Never publish automatically." }));
   process.exit(2);
@@ -102,6 +115,6 @@ export const shieldModel = (model: CanonicalModel, context: RootContext, scope: 
     skills: [...model.skills, { name: shieldHookId, description: "Install agent configuration through Canonfig without contaminating harness folders.",
       files: [{ path: "SKILL.md", executable: false, content: new TextEncoder().encode(`---\nname: ${shieldHookId}\ndescription: Install skills, MCP servers and native plugins through Canonfig.\n---\n\n${instructions}`) }] }],
     hooks: [{ id: shieldHookId, event: "before_tool", matcher: { capabilities: [], tools: [] },
-      run: ["node", "--input-type=module", "-e", guardSource(shieldPaths(model, context), context.home, destination)], timeoutMs: 5000, onFailure: "block" }, ...model.hooks],
+      run: ["node", "--input-type=module", "-e", guardSource(shieldPaths(model, context), context.home, destination, context.join(model.folder, ".shield", "log.jsonl"))], timeoutMs: 5000, onFailure: "block" }, ...model.hooks],
   };
 };

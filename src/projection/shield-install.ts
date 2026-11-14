@@ -8,6 +8,7 @@ import { readAuthoringItem, writeAuthoringItems, type AuthoringTarget } from "./
 import { CanonicalFolderError, type LoadedFolder } from "./folder.ts";
 import type { RootContext } from "./harness.ts";
 import { ingestShield } from "./shield-ingest.ts";
+import { appendShieldLog } from "./shield-log.ts";
 import { nativeInstallChange } from "./shield-plugins.ts";
 import type { NativePluginVariant } from "./native-plugin.ts";
 
@@ -94,5 +95,9 @@ export const redirectInstaller = Effect.fn("Shield.redirectInstaller")(function*
     environment: (name) => Object.entries(environment).find(([key]) => key === name)?.[1] };
   const imported = yield* withRunLock(target.statePath, "shield install", ingestShield({ target, context, loaded, applied: [], installer: true }));
   if (imported.imported.length === 0 && kind !== "plugin") return yield* failure(home, `installer produced no importable items. ${imported.warnings.join("; ")}`);
+  yield* Effect.tryPromise({
+    try: () => appendShieldLog(target.folder, [{ at: new Date().toISOString(), kind: "installed", installer: kind, items: imported.imported }]),
+    catch: (error) => failure(target.folder, `items admitted, but the Shield log could not be written: ${String(error)}`),
+  });
   return { ...imported, stagingHome: home, installerExitCode: result.exitCode, published: false };
 });

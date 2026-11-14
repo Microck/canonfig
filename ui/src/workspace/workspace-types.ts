@@ -10,6 +10,7 @@ import type { GuiEnrollment, GuiInvitationDownload } from "../../../src/gui/cont
 import type { Schema } from "effect";
 import type { GuiProfileSnapshot, GuiProfileValidation, GuiProfileConfigWrite, GuiSkillCheck } from "../../../src/gui/contract/profile";
 import type { GuiArchiveDownload } from "../../../src/gui/contract/synchronization";
+import type { GuiShield, GuiShieldRequest } from "../../../src/gui/contract/shield";
 import type { ExactDraft } from "./profile-authoring";
 
 type SetState<T> = Dispatch<SetStateAction<T>>;
@@ -25,9 +26,10 @@ export type SourceView =
   | "installers"
   | "setup"
   | "doctor"
-  | "version";
+  | "version"
+  | "shield";
 
-export type FollowerView = "overview" | "machines" | "sync" | "schedule" | "local" | "backups" | "secrets" | "tunnel" | "agent" | "installers" | "setup" | "doctor" | "machine" | "version";
+export type FollowerView = "overview" | "machines" | "sync" | "schedule" | "local" | "backups" | "shield" | "secrets" | "tunnel" | "agent" | "installers" | "setup" | "doctor" | "machine" | "version";
 
 export type View = SourceView | FollowerView | "not-found";
 
@@ -385,7 +387,17 @@ export interface FollowerSlice {
   isStopped: () => boolean;
 }
 
+/** The Shield page: this machine's policy, 30-day log and plugin reviews. Live reads /api/shield; the demo simulates it. */
+export interface ShieldSlice {
+  data: GuiShield | null;
+  state: ResourceState;
+  /** The last change: loading while it runs, its error after a refusal. */
+  action: ResourceState;
+  run: (request: GuiShieldRequest) => Promise<boolean>;
+}
+
 /** The single store contract consumed by all workspace screens. */
 export interface Workspace extends OverviewSlice, ProfileSlice, MachinesSlice, FollowerSlice {
   admin: AdministrationSlice;
+  shield: ShieldSlice;
 }

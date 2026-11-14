@@ -16,6 +16,7 @@ import { nativePluginDigest } from "../../src/projection/native-plugin.ts";
 import { emptyModel } from "../../src/projection/detect.ts";
 import type { RootContext } from "../../src/projection/harness.ts";
 import { hookRegistryJson, hookRunnerSource } from "../../src/projection/templates/runtime.ts";
+import { appendShieldLog, readShieldLog, shieldLogPath } from "../../src/projection/shield-log.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -87,6 +88,7 @@ describe("Shield admission and projection", () => {
     expect(existsSync(join(f.folder, "skills", "sample"))).toBe(false);
     expect((await f.sync()).outcome).toMatchObject({ outcome: "Converged" });
     expect(readFileSync(join(f.folder, "skills", "sample", "SKILL.md"), "utf8")).toBe(skill);
+    expect((await readShieldLog(f.folder)).filter((entry) => entry.kind === "ingested").map((entry) => entry.item)).toContain("skills/sample");
     expect(lstatSync(join(f.home, ".claude", "skills", "sample")).isSymbolicLink()).toBe(false);
     expect(readFileSync(join(shared, "SKILL.md"), "utf8")).toBe(skill);
     expect(readFileSync(auth, "utf8")).toBe('{"fixture":"never-copy"}');
@@ -160,6 +162,26 @@ describe("Shield admission and projection", () => {
     expect(execute("Bash", { command: "ls ~/.claude/skills/sample/SKILL.md 2>/dev/null" }).status).toBe(0);
     expect(execute("Bash", { command: "printf bad > ~/.claude/skills/sample/SKILL.md" }).status).toBe(2);
     expect(execute("Bash", { command: "cp ./sample ~/.claude/skills/sample/SKILL.md" }).status).toBe(2);
+    // Every block left one log line with a home-relative path or the bare installer phrase, never the content.
+    const log = readFileSync(shieldLogPath(f.folder), "utf8");
+    expect(log).not.toContain("content");
+    expect(log).not.toContain("public/repo");
+    expect(JSON.parse(log.split("\n")[0]!)).toMatchObject({ kind: "blocked", path: "~/alias/sample/SKILL.md" });
+    expect(log).toContain('"installer":"skills add"');
+  });
+
+  it("keeps 30 days of log entries and skips torn lines", async () => {
+    const f = fixture();
+    const now = Date.parse("2026-11-14T12:00:00Z");
+    write(shieldLogPath(f.folder), [
+      JSON.stringify({ at: "2026-10-01T00:00:00Z", kind: "ingested", path: "~/.claude/skills/old", item: "skills/old" }),
+      '{"at":"2026-11-13T00:00:00Z","kind":"blo',
+      JSON.stringify({ at: "2026-11-13T00:00:00Z", kind: "blocked", harness: "codex", path: "~/.codex/skills/kept" }),
+    ].join("\n") + "\n");
+    expect(await readShieldLog(f.folder, now)).toEqual([{ at: "2026-11-13T00:00:00Z", kind: "blocked", harness: "codex", path: "~/.codex/skills/kept" }]);
+    await appendShieldLog(f.folder, [{ at: "2026-11-14T00:00:00Z", kind: "installed", installer: "skills", items: ["skills/new"] }], now);
+    expect((await readShieldLog(f.folder, now)).map((entry) => entry.kind)).toEqual(["installed", "blocked"]);
+    expect(readFileSync(shieldLogPath(f.folder), "utf8")).not.toContain("skills/old");
   });
 
   it("returns native denial envelopes and redirects Antigravity file and command writes", () => {
