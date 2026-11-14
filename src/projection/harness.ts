@@ -108,6 +108,11 @@ export interface HarnessLayout {
    * one, and no snapshot ever reads one.
    */
   readonly neverTouch: ReadonlyArray<string>;
+  /**
+   * The neverTouch entries that hold sign-in data, by absolute path, when their names are too generic for
+   * Canonfig's credential name pattern. Full backups leave them out unless the policy includes credentials.
+   */
+  readonly credentials?: ReadonlyArray<string>;
   /** Skills go to the shared `~/.agents/skills/` instead of a private surface. */
   readonly sharedSkills: boolean;
   /** Explicit native skill discovery, independent of Canonfig's write layout. */

@@ -58,6 +58,7 @@ export const ampAdapter: HarnessAdapter = {
         context.join(data, "threads"),
         context.join(xdgCacheHome(context), "amp"),
       ],
+      credentials: [context.join(data, "secrets.json")],
       sharedSkills: true,
       // https://ampcode.com/docs/markdown/customize/skills, local source precedence.
       skillSources: [

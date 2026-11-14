@@ -71,6 +71,8 @@ export interface OpenCodeFamily {
   readonly plugins: string;
   /** Harness state outside the root, by absolute path. */
   readonly state: (context: RootContext) => ReadonlyArray<string>;
+  /** The state entries that hold sign-in data (see HarnessLayout.credentials). */
+  readonly credentials?: (context: RootContext) => ReadonlyArray<string>;
 }
 
 /**
@@ -109,6 +111,7 @@ export function openCodeFamilyAdapter(family: OpenCodeFamily): HarnessAdapter {
           },
         ],
         neverTouch: [...family.state(context)],
+        credentials: family.credentials?.(context) ?? [],
         sharedSkills: family.id === "kilo",
         // Native global directories, not mutation surfaces. Both tools also read shared skills.
         skillSources: [

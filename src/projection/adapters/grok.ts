@@ -73,6 +73,7 @@ export const grokAdapter: HarnessAdapter = {
         },
       ],
       neverTouch: under(context, root, ["sessions", "logs", "crash", "mcp_credentials.json", "trusted_folders.toml"]),
+      credentials: [context.join(root, "mcp_credentials.json")],
       sharedSkills: true,
       // Native global root plus documented default-on compatibility readers.
       skillSources: [

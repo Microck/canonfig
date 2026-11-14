@@ -18,12 +18,11 @@ export interface BackupCapture {
 }
 
 /**
- * Credential names are an exclusion list, not proof that an arbitrary history/database is safe. Besides generic
- * names, it lists files adapters document as credentials under names too generic to match on their own:
- * Amp's secrets.json and Kilo's daemon.json (its daemon credential).
+ * Credential names are an exclusion list, not proof that an arbitrary history/database is safe. Files adapters
+ * document as credentials under generic names arrive separately as `credentials`.
  */
-const credentialPath = (path: string): boolean => /(?:^|\/)kilo\/daemon\.json$/iu.test(path) || path.split("/").some(part =>
-  /^(?:\.?env(?:\..*)?|\.?credentials?(?:\..*)?|auth(?:\.json)?|oauth(?:[-_].*)?|tokens?|secrets(?:\.json)?|id_rsa|id_ed25519)$/iu.test(part)
+const credentialPath = (path: string): boolean => path.split("/").some(part =>
+  /^(?:\.?env(?:\..*)?|\.?credentials?(?:\..*)?|auth(?:\.json)?|oauth(?:[-_].*)?|tokens?|secrets|id_rsa|id_ed25519)$/iu.test(part)
   || /\.(?:pem|key|p12|pfx)$/iu.test(part));
 
 export const below = (root: string, path: string): boolean => {
@@ -39,6 +38,8 @@ export const captureBackupFiles = async (input: {
   readonly files: ReadonlyArray<ArchiveFile>;
   /** `optional` roots are harness state folders or files outside the harness root; a missing one is skipped. */
   readonly roots: ReadonlyArray<{ readonly harness: string; readonly root: string; readonly optional: boolean }>;
+  /** Absolute paths the selected adapters declare as credentials (HarnessLayout.credentials). */
+  readonly credentials: ReadonlyArray<string>;
   readonly signal: AbortSignal;
 }): Promise<BackupCapture> => {
   const directory = join(input.scratch, "capture");
@@ -46,6 +47,7 @@ export const captureBackupFiles = async (input: {
   const files: Array<ManifestFile> = [];
   let bytes = 0;
   let skippedCredentials = 0;
+  const captured = new Set<string>();
   let skippedLinks = 0;
   const selected = (path: string): boolean => {
     if (!input.policy.includeCredentials && credentialPath(path)) { skippedCredentials += 1; return false; }
@@ -98,6 +100,10 @@ export const captureBackupFiles = async (input: {
           const archivePath = `harnesses/${root.harness}/${homePath}`;
           const info = await lstat(source, { bigint: true });
           if (info.isSymbolicLink()) { skippedLinks += 1; continue; }
+          if (!input.policy.includeCredentials && input.credentials.some(credential => below(credential, absolute))) { skippedCredentials += 1; continue; }
+          // Two selected harnesses can resolve to one folder (Pi and Oh My Pi under PI_CODING_AGENT_DIR); each home
+          // path is captured once, so a restore never writes the same destination twice.
+          if (captured.has(homePath)) continue;
           if (info.isDirectory()) {
             if (!input.policy.includeCredentials && credentialPath(archivePath)) { skippedCredentials += 1; continue; }
             if (!input.policy.exclude.some(pattern => matchesGlob(archivePath, pattern))) await walk(absolute);
@@ -106,6 +112,7 @@ export const captureBackupFiles = async (input: {
           if (!selected(archivePath)) continue;
           if (!info.isFile()) throw new BackupIoError("BACKUP_INVALID", `Full harness capture found a socket, pipe or device at ${archivePath}. Add it to exclude, then back up again.`);
           reserve(archivePath, Number(info.size));
+          captured.add(homePath);
           const file = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
           try {
             const before = await file.stat({ bigint: true });

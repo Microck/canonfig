@@ -139,7 +139,10 @@ const capture = (context: BackupContext, opened: OpenBackup) => Effect.gen(funct
     const owners = new Set<string>([...opened.policy.harnesses.targets, ...(sharedSkillRoots.length > 0 ? [sharedSkillsOwner] : [])]);
     const managed = configuration.harnesses.files.filter(file => file.harness !== undefined && owners.has(file.harness));
     const staged = yield* backupWork("Capture backup files", signal => captureBackupFiles({
-      policy: opened.policy, scratch: opened.scratch, home: roots.home, files: [...configuration.folderFiles, ...managed, ...recovery.files], roots: full, signal,
+      policy: opened.policy, scratch: opened.scratch, home: roots.home, files: [...configuration.folderFiles, ...managed, ...recovery.files], signal,
+      // One folder can belong to two selected harnesses; walk it once, for the first.
+      roots: full.filter((entry, index) => full.findIndex(other => other.root === entry.root) === index),
+      credentials: layouts.flatMap(({ layout }) => layout.credentials ?? []),
     }));
     const files = [...staged.files];
     if (recovery.sourceDatabase !== undefined) {
