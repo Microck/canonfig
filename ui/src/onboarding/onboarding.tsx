@@ -1034,7 +1034,9 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
   const [pasted, setPasted] = useState("");
   const [pasteTried, setPasteTried] = useState(false);
   const [useTunnel, setTunnel] = useState(true);
-  const invitationHost = live?.inspection ? new URL(live.inspection.endpoint).hostname : undefined;
+  // A malformed endpoint in an otherwise readable invitation must not crash the wizard; enrollment reports it.
+  const invitationUrl = live?.inspection && URL.canParse(live.inspection.endpoint) ? new URL(live.inspection.endpoint) : undefined;
+  const invitationHost = invitationUrl?.hostname;
   const directTailnet = invitationHost !== undefined && !["127.0.0.1", "[::1]", "localhost"].includes(invitationHost);
   const tunnel = !directTailnet && useTunnel;
   const [sshHost, setSshHost] = useState(live ? "" : "atlas.local");
@@ -1094,7 +1096,7 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
   const pasteValid = live ? !!pasted.trim() : pasted.trim().startsWith("canonfig-invite-v1:");
   const readPasted = () => {
     setPasteTried(true);
-    if (live) void live.inspectInvitation(pasted, (inspection) => { setSourceTrusted(false); setTrusted(false); setLocalPort(new URL(inspection.endpoint).port || "443"); });
+    if (live) void live.inspectInvitation(pasted, (inspection) => { setSourceTrusted(false); setTrusted(false); setLocalPort((URL.canParse(inspection.endpoint) ? new URL(inspection.endpoint).port : "") || "443"); });
     else if (pasteValid) setInvite("(pasted)");
   };
 
@@ -1203,7 +1205,7 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
                   <div className="mt-4 flex flex-wrap justify-center gap-2">
                     {live ? <Input type="file" aria-label="Invitation file" onChange={async (event) => {
                       const file = event.target.files?.[0];
-                      if (file) void live.inspectInvitation(await file.text(), (inspection) => { setSourceTrusted(false); setTrusted(false); setLocalPort(new URL(inspection.endpoint).port || "443"); }, file.name);
+                      if (file) void live.inspectInvitation(await file.text(), (inspection) => { setSourceTrusted(false); setTrusted(false); setLocalPort((URL.canParse(inspection.endpoint) ? new URL(inspection.endpoint).port : "") || "443"); }, file.name);
                     }} /> : <Button type="button" variant="outline" size="sm" onClick={() => setInvite("~/Downloads/canonfig-invite")}>
                       Use the example file
                     </Button>}
