@@ -35,11 +35,11 @@ export const ingestShield = Effect.fn("Shield.ingest")(function*(input: {
   readonly applied: ReadonlyArray<AppliedResourceRecord>;
   /** Installer staging homes are also admitted through this same reader. */
   readonly installer?: boolean;
-  /** Digests of staging items that were already there before this installer run; they were admitted earlier. */
+  /** Digests of staging items earlier installer runs admitted; their config stays in the staging home, so skip them. */
   readonly unchanged?: ReadonlySet<string>;
 }) {
   const { target, context, loaded } = input;
-  if (!loaded.local.shield?.enabled) return { imported: [], warnings: [] };
+  if (!loaded.local.shield?.enabled) return { imported: [], digests: [], warnings: [] };
   const machine = yield* MachineState;
   const native = yield* Effect.tryPromise({
     try: () => scanNativeInstalls(context, loaded.model, input.applied),
@@ -54,7 +54,7 @@ export const ingestShield = Effect.fn("Shield.ingest")(function*(input: {
     && (!wasManaged(candidate, input.applied, loaded) || input.installer)
     && input.unchanged?.has(candidate.digest) !== true)
     .map((candidate) => [`${candidate.path}\0${candidate.name}`, candidate])).values()];
-  if (candidates.length === 0 && native.installs.length === 0) return { imported: [], warnings: scan.skipped.map((entry) => `${entry.path}: ${entry.reason}`) };
+  if (candidates.length === 0 && native.installs.length === 0) return { imported: [], digests: [], warnings: scan.skipped.map((entry) => `${entry.path}: ${entry.reason}`) };
   const items = yield* readAuthoringItems(target);
   const changes = new Map<string, AuthoringChange>();
   const sources: Array<ImportCandidate> = [];
@@ -171,5 +171,10 @@ export const ingestShield = Effect.fn("Shield.ingest")(function*(input: {
     ];
     yield* recordShieldLog(target.folder, entries);
   }
-  return { imported: [...new Set([...sources.map((entry) => entry.target), ...plugins.map((entry) => entry.target)])], warnings: scan.skipped.map((entry) => `${entry.path}: ${entry.reason}`) };
+  return {
+    imported: [...new Set([...sources.map((entry) => entry.target), ...plugins.map((entry) => entry.target)])],
+    /** What this call admitted, for the installer's staging ledger. */
+    digests: sources.map((entry) => entry.digest),
+    warnings: scan.skipped.map((entry) => `${entry.path}: ${entry.reason}`),
+  };
 });

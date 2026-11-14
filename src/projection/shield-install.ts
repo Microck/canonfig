@@ -1,13 +1,12 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { sha256Hex } from "../profile/profile-codec.ts";
 import { withRunLock } from "../synchronization/run-lock.ts";
 import { readAuthoringItem, writeAuthoringItems, type AuthoringTarget } from "./authoring.ts";
 import { CanonicalFolderError, type LoadedFolder } from "./folder.ts";
 import type { RootContext } from "./harness.ts";
-import { scanImports } from "./import.ts";
 import { ingestShield } from "./shield-ingest.ts";
 import { recordShieldLog } from "./shield-log.ts";
 import { nativeInstallChange } from "./shield-plugins.ts";
@@ -87,11 +86,15 @@ export const redirectInstaller = Effect.fn("Shield.redirectInstaller")(function*
   }
   const context: RootContext = { ...input.context, home, appData: environment.APPDATA, join,
     environment: (name) => Object.entries(environment).find(([key]) => key === name)?.[1] };
-  // The staging home persists between runs, and MCP entries stay in its config after admission. Record what is
-  // already there so this run admits only what the installer added or changed.
-  const before = yield* Effect.tryPromise({
-    try: () => scanImports({ context, harnesses: loaded.model.harnesses, folder: target.folder }),
-    catch: (error) => failure(home, String(error)),
+  // The staging home persists between runs, and MCP entries stay in its config after admission. A ledger of what
+  // earlier runs actually admitted lets this run skip those entries; anything a failed run left behind stays eligible.
+  const ledger = join(home, ".canonfig-admitted.json");
+  const admitted = yield* Effect.tryPromise({
+    try: async () => new Set(Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.String)))(await readFile(ledger, "utf8").catch((error) => {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return "[]";
+      throw error;
+    }))),
+    catch: (error) => failure(ledger, String(error)),
   });
   const result = yield* machine.runProcess({ executable, arguments: command,
     workingDirectory: yield* machine.normalizePath({ path: home }),
@@ -100,8 +103,11 @@ export const redirectInstaller = Effect.fn("Shield.redirectInstaller")(function*
     timeoutMilliseconds: 300000, maximumOutputBytes: 4 * 1024 * 1024,
   });
   if (result.exitCode !== 0) return yield* failure(home, `installer exited ${result.exitCode}; isolated files remain at ${home}. ${new TextDecoder().decode(result.standardError)}`);
-  const unchanged = new Set(before.candidates.map((candidate) => candidate.digest));
-  const imported = yield* withRunLock(target.statePath, "shield install", ingestShield({ target, context, loaded, applied: [], installer: true, unchanged }));
+  const imported = yield* withRunLock(target.statePath, "shield install", ingestShield({ target, context, loaded, applied: [], installer: true, unchanged: admitted }));
+  yield* Effect.tryPromise({
+    try: () => writeFile(ledger, JSON.stringify([...new Set([...admitted, ...imported.digests])]), { mode: 0o600 }),
+    catch: (error) => failure(ledger, String(error)),
+  });
   if (imported.imported.length === 0 && kind !== "plugin") return yield* failure(home, `installer produced no importable items. ${imported.warnings.join("; ")}`);
   yield* recordShieldLog(target.folder, [{ at: new Date().toISOString(), kind: "installed", installer: kind, items: imported.imported }]);
   return { ...imported, stagingHome: home, installerExitCode: result.exitCode, published: false };
