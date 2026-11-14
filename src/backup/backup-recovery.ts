@@ -26,13 +26,16 @@ const SourceReferences = Schema.Struct({ signing_key_reference: CredentialRefere
 const ReferenceRow = Schema.Struct({ credential_reference: CredentialReference });
 const jsonFile = (path: string, value: Recovery): ArchiveFile => ({ path, content: Buffer.from(`${JSON.stringify(value)}\n`), mode: 0o600 });
 
-/** The snapshot retains publications and the follower registry, not in-flight work tied to the old machine. */
+/**
+ * The snapshot retains publications and the follower registry, not in-flight work tied to the old machine.
+ * archive_events stays: it is an append-only history whose delete trigger fires even with foreign keys off.
+ */
 const clearMachineWork = (database: DatabaseSync): void => {
   database.exec(`PRAGMA foreign_keys = OFF;
     DELETE FROM mcp_qualification_receipts; DELETE FROM action_journal; DELETE FROM run_actions;
     DELETE FROM drift_records; DELETE FROM deployment_receipts; DELETE FROM applied_resources;
     DELETE FROM harness_takeovers; DELETE FROM local_revisions; DELETE FROM synchronization_runs;
-    DELETE FROM scheduled_invocations; DELETE FROM archive_events; DELETE FROM follower_sync_configuration;
+    DELETE FROM scheduled_invocations; DELETE FROM follower_sync_configuration;
     DELETE FROM enrollment_invitations; DELETE FROM pending_enrollments; DELETE FROM enrollment_credential_retirements;
     DELETE FROM follower_credentials WHERE follower_id IN (SELECT id FROM followers WHERE revoked = 1);
     PRAGMA foreign_keys = ON;`);
