@@ -13,7 +13,7 @@ import { CanonicalFolderError, decodeLocalConfig, loadCanonicalFolder } from "..
 import { NativePluginManifest, NATIVE_PLUGIN_HARNESSES, nativePluginDigest } from "../projection/native-plugin.ts";
 import { rootContext } from "../projection/plan.ts";
 import { ingestShield } from "../projection/shield-ingest.ts";
-import { addNativePlugin, installerKind, redirectInstaller, shieldExecutable } from "../projection/shield-install.ts";
+import { addNativePlugin, installerKind, redirectInstaller, shieldLaunch } from "../projection/shield-install.ts";
 import { shieldPaths } from "../projection/shield.ts";
 
 export type ShieldInput =
@@ -123,6 +123,9 @@ export const runShield = Effect.fn("Shield.command")(function*(statePath: string
     for (const name of ["npx", "skills", "claude", "codex", "qwen"]) {
       const executable = yield* machine.findExecutable({ name }).pipe(Effect.option);
       if (executable._tag === "None") continue;
+      // A Windows command shim that only a shell could start keeps reaching its program without a Shield shim.
+      const launch = yield* shieldLaunch(executable.value.path.absolute).pipe(Effect.option);
+      if (launch._tag === "None") continue;
       const source = `#!/usr/bin/env node
 const { spawnSync } = require("node:child_process");
 const args = process.argv.slice(2);
@@ -133,7 +136,7 @@ const install = name === "skills" ? /^(add|install)$/.test(args[0] ?? "")
   : args[0] === "mcp" && args[1] === "add"
     || name === "claude" && args[0] === "plugin" && (args[1] === "install" || args[1] === "marketplace" && args[2] === "add")
     || name === "qwen" && args[0] === "extensions" && /^(install|link)$/.test(args[1] ?? "");
-const run = install ? ${JSON.stringify([node, ...process.execArgv, process.argv[1], "shield", "install", "--", executable.value.path.absolute])} : [${JSON.stringify(executable.value.path.absolute)}];
+const run = install ? ${JSON.stringify([node, ...process.execArgv, process.argv[1], "shield", "install", "--", executable.value.path.absolute])} : ${JSON.stringify([launch.value.executable.absolute, ...launch.value.arguments])};
 const result = spawnSync(run[0], [...run.slice(1), ...args], { stdio: "inherit", env: install ? { ...process.env, PATH: ${JSON.stringify(originalPath)} } : process.env });
 if (result.error) console.error(result.error.message);
 process.exit(result.status ?? 1);
@@ -146,9 +149,9 @@ process.exit(result.status ?? 1);
         }
       }, catch: (error) => new CanonicalFolderError({ path: temporary, message: String(error) }) });
     }
-    const program = yield* shieldExecutable(input.argv[0]!);
-    let executable = program;
-    let args = input.argv.slice(1);
+    const program = yield* shieldLaunch(input.argv[0]!);
+    let executable = program.executable;
+    let args = [...program.arguments, ...input.argv.slice(1)];
     if (status.hard) {
       if (context.platform !== "linux") return yield* new CanonicalFolderError({ path: folder, message: "Hard Shield requires Linux bubblewrap." });
       executable = (yield* machine.findExecutable({ name: "bwrap" })).path;
@@ -167,7 +170,7 @@ process.exit(result.status ?? 1);
         if (!present) yield* Effect.tryPromise({ try: () => mkdir(path, { recursive: true, mode: 0o700 }), catch: (error) => new CanonicalFolderError({ path, message: String(error) }) });
         mounts.push("--ro-bind", path, path);
       }
-      args = ["--die-with-parent", "--unshare-pid", "--bind", "/", "/", "--proc", "/proc", "--cap-drop", "ALL", ...mounts, "--", program.absolute, ...args];
+      args = ["--die-with-parent", "--unshare-pid", "--bind", "/", "/", "--proc", "/proc", "--cap-drop", "ALL", ...mounts, "--", program.executable.absolute, ...args];
     }
     const result = yield* machine.runProcess({ executable, arguments: args,
       environment: [{ name: "PATH", value: `${temporary}${delimiter}${originalPath}` }],

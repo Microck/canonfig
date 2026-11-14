@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, join, resolve, win32 } from "node:path";
 import { Effect, Schema } from "effect";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { sha256Hex } from "../profile/profile-codec.ts";
@@ -14,11 +14,25 @@ import type { NativePluginVariant } from "./native-plugin.ts";
 
 const failure = (path: string, message: string) => new CanonicalFolderError({ path, message: `Shield: ${message}` });
 
-/** Explicit paths bypass PATH lookup; runProcess reports missing or non-executable files. */
-export const shieldExecutable = Effect.fn("Shield.executable")(function*(command: string) {
+/** The JavaScript entrypoint an npm-generated Windows command shim (cmd-shim) hands to Node, relative to the shim. */
+export const npmShimEntrypoint = (content: string) => /"%_prog%"\s+"%dp0%\\([^"]+)"\s+%\*/iu.exec(content)?.[1];
+
+/**
+ * The process that runs `command`. Explicit paths bypass PATH lookup; runProcess reports missing or non-executable
+ * files. Node cannot start a Windows `.cmd` without a shell, and Canonfig never starts one, so an npm script shim
+ * runs as Node on its entrypoint, as the shim itself would (node.exe beside the shim, else Node from PATH).
+ */
+export const shieldLaunch = Effect.fn("Shield.launch")(function*(command: string) {
   const machine = yield* MachineState;
-  if (/[\\/]/u.test(command)) return yield* machine.normalizePath({ path: command });
-  return (yield* machine.findExecutable({ name: command })).path;
+  const path = /[\\/]/u.test(command) ? yield* machine.normalizePath({ path: command }) : (yield* machine.findExecutable({ name: command })).path;
+  const none: string[] = [];
+  if (path.platform !== "windows" || !/\.(?:cmd|bat)$/iu.test(path.absolute)) return { executable: path, arguments: none };
+  const shim = path.absolute;
+  const entrypoint = npmShimEntrypoint(yield* Effect.tryPromise({ try: () => readFile(shim, "utf8"), catch: (error) => failure(shim, String(error)) }));
+  if (entrypoint === undefined) return yield* failure(shim, "this Windows command shim needs a shell, which Canonfig never starts. Run the program it starts directly.");
+  const besideShim = yield* machine.normalizePath({ path: win32.join(win32.dirname(shim), "node.exe") });
+  const local = yield* machine.inspectPath(besideShim).pipe(Effect.map((object) => object.kind === "regular"), Effect.orElseSucceed(() => false));
+  return { executable: local ? besideShim : (yield* machine.findExecutable({ name: "node" })).path, arguments: [win32.join(win32.dirname(shim), entrypoint)] };
 });
 
 
@@ -60,7 +74,7 @@ export const redirectInstaller = Effect.fn("Shield.redirectInstaller")(function*
   const kind = installerKind(argv);
   if (kind === undefined) return yield* failure(argv.join(" "), "unsupported installer. Use skills add, claude/codex/qwen mcp add, claude plugin install/marketplace add, or qwen extensions install. For a native package use shield add-plugin. Gemini is not a Target Harness.");
   const machine = yield* MachineState;
-  const executable = yield* shieldExecutable(argv[0]!);
+  const launch = yield* shieldLaunch(argv[0]!);
   const cache = (yield* machine.userDirectories()).cache.absolute;
   // Marketplace state persists here so add followed by install works, without borrowing live config or credentials.
   const home = join(cache, "canonfig", "shield", sha256Hex(target.folder).slice(0, 16));
@@ -96,7 +110,7 @@ export const redirectInstaller = Effect.fn("Shield.redirectInstaller")(function*
     }))),
     catch: (error) => failure(ledger, String(error)),
   });
-  const result = yield* machine.runProcess({ executable, arguments: command,
+  const result = yield* machine.runProcess({ executable: launch.executable, arguments: [...launch.arguments, ...command],
     workingDirectory: yield* machine.normalizePath({ path: home }),
     environment: Object.entries(environment).map(([name, value]) => ({ name, value })),
     environmentUnset: ["OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "PI_CODING_AGENT_DIR", "OMP_PROFILE", "PI_PROFILE", "PI_CONFIG_DIR", "GEMINI_CLI_HOME", "QWEN_CODE_HOME", "QWEN_RUNTIME_DIR", "CLAUDE_CODE_PLUGIN_CACHE_DIR", "CANONFIG_SHIELD_ROOT"],

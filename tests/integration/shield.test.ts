@@ -17,6 +17,7 @@ import { emptyModel } from "../../src/projection/detect.ts";
 import type { RootContext } from "../../src/projection/harness.ts";
 import { hookRegistryJson, hookRunnerSource } from "../../src/projection/templates/runtime.ts";
 import { appendShieldLog, readShieldLog, shieldLogPath } from "../../src/projection/shield-log.ts";
+import { npmShimEntrypoint } from "../../src/projection/shield-install.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -206,5 +207,13 @@ describe("Shield admission and projection", () => {
     const cursor = execute("cursor", { tool_name: "Write", tool_input: { file_path: protectedFile } });
     expect(cursor.status, cursor.stderr).toBe(0);
     expect(JSON.parse(cursor.stdout)).toMatchObject({ permission: "deny", agent_message: expect.stringContaining(join(f.folder, "local", "skills", "sample", "SKILL.md")) });
+  });
+
+  it("finds the Node entrypoint of an npm Windows command shim and refuses shims that need a shell", () => {
+    // Last lines of what npm's cmd-shim writes for a script with a node shebang, and for one without.
+    const nodeShim = "endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\node_modules\\npm\\bin\\npx-cli.js\" %*\r\n";
+    const directShim = "CALL :find_dp0\r\n\"%dp0%\\node_modules\\npm\\bin\\npx-cli.js\"   %*\r\n";
+    expect(npmShimEntrypoint(nodeShim)).toBe("node_modules\\npm\\bin\\npx-cli.js");
+    expect(npmShimEntrypoint(directShim)).toBeUndefined();
   });
 });
