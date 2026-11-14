@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect, Layer, Redacted, Schema } from "effect";
@@ -56,6 +56,17 @@ describe("portable backup recovery", () => {
     // The status the GUI reads carries the latest run and drill of the policy.
     expect(await machine.run({ action: "status" })).toMatchObject({ runs: { daily: { run: { ok: true, files: 2 }, drill: { ok: true, files: 2 } } } });
   });
+
+  it("never reads an excluded Canonical Folder file, so a file over the content budget can be excluded", async () => {
+    const machine = fixture();
+    mkdirSync(join(machine.folder, "skills", "big"), { recursive: true });
+    writeFileSync(join(machine.folder, "skills", "big", "SKILL.md"), "---\nname: big\ndescription: Big\n---\n");
+    // Sparse, so the test writes nothing close to 130 MiB.
+    writeFileSync(join(machine.folder, "skills", "big", "data.bin"), "");
+    truncateSync(join(machine.folder, "skills", "big", "data.bin"), 130 * 1024 * 1024);
+    await machine.configure({ exclude: ["folder/skills/big/**"] });
+    expect(await machine.run({ action: "run", name: "daily" })).toMatchObject({ snapshot: { files: 2 } });
+  }, 60_000);
 
   it("fails closed for a wrong password and a corrupted stored object", async () => {
     const machine = fixture();

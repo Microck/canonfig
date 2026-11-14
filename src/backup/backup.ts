@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { constants, createReadStream, createWriteStream } from "node:fs";
 import { chmod, copyFile, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, matchesGlob, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
@@ -113,8 +113,12 @@ const capture = (context: BackupContext, opened: OpenBackup) => Effect.gen(funct
     const folder = dirname(context.statePath);
     const identity = yield* machineIdentity;
     const roots = yield* rootContext(context.environment);
+    // Excluded folder files are never read, so excluding a large file is enough to back up the rest. Capture applies
+    // the same include/exclude rule again to everything it stages.
+    const filtered = (path: string) => (opened.policy.include.length > 0 && !opened.policy.include.some(pattern => matchesGlob(path, pattern)))
+      || opened.policy.exclude.some(pattern => matchesGlob(path, pattern));
     const configuration = opened.policy.folder || opened.policy.harnesses.mode === "managed"
-      ? yield* collectArchiveConfiguration({ folder, includeFolder: opened.policy.folder, includeHarnesses: opened.policy.harnesses.mode === "managed" })
+      ? yield* collectArchiveConfiguration({ folder, includeFolder: opened.policy.folder, includeHarnesses: opened.policy.harnesses.mode === "managed", skip: filtered })
       : { folderFiles: [], harnesses: { files: [], skipped: [] } };
     const recovery = yield* captureRecovery({ folder, statePath: context.statePath, policy: opened.policy, scratch: opened.scratch });
     // A full capture takes the harness root plus what the adapter keeps outside it: state folders (OpenCode keeps

@@ -529,7 +529,7 @@ interface CollectedFile {
  * resolving outside the folder, as publication does; the reads are anchored
  * at the folder, so an ancestor swapped for a link after listing is refused.
  */
-const collectFolder = (folder: string, budget: ContentBudget) =>
+const collectFolder = (folder: string, budget: ContentBudget, skip: (path: string) => boolean = () => false) =>
   Effect.gen(function*() {
     const realFolder = yield* archiveWork(folder, () => realpath(folder));
     const files: Array<CollectedFile> = [];
@@ -539,6 +539,8 @@ const collectFolder = (folder: string, budget: ContentBudget) =>
         : (yield* archiveWork(join(folder, entry), () => listFolderFiles(realFolder, entry)))
           .map((file) => ({ path: `${entry}/${file.path}`, executable: file.executable }));
       for (const file of listed) {
+        // canonfig.jsonc is always read: the credential check below validates the folder through it.
+        if (file.path !== "canonfig.jsonc" && skip(`${FOLDER_PREFIX}${file.path}`)) continue;
         const absolute = join(realFolder, ...file.path.split("/"));
         if (credentialFileName(basename(absolute))) {
           return yield* new ArchiveRequestError({ path: absolute, message: "is a credential file; an export never holds one. Move it out of the Canonical Folder, then export again" });
@@ -784,11 +786,13 @@ export const collectArchiveConfiguration = (input: {
   readonly folder: string;
   readonly includeFolder: boolean;
   readonly includeHarnesses: boolean;
+  /** Archive paths (`folder/...`) a backup excludes; they are never read, so they don't count against the budget. */
+  readonly skip?: (path: string) => boolean;
 }) => Effect.gen(function*() {
   const repository = yield* StateRepository;
   const identity = yield* machineIdentity;
   const budget: ContentBudget = { remaining: MAXIMUM_CONTENT_BYTES };
-  const collected = yield* collectFolder(input.folder, budget);
+  const collected = yield* collectFolder(input.folder, budget, input.skip);
   // A harness may spell an environment reference as a bare variable name.
   // Validate its authoring input, not its translated syntax.
   const config = yield* assertNoLiteralCredentials(input.folder, collected);
