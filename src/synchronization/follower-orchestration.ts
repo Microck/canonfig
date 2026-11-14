@@ -471,8 +471,10 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
   // canonfig.jsonc (for example, one that newly allows a local category) is applied first, and the next sync ingests
   // under the policy it brought; otherwise a waiting foreign item could block the very revision that permits it.
   const diskConfig = yield* Effect.tryPromise({
-    try: () => readFile(join(folder, "canonfig.jsonc")).catch((error: unknown) =>
-      error instanceof Error && "code" in error && error.code === "ENOENT" ? undefined : Promise.reject(error)),
+    try: () => readFile(join(folder, "canonfig.jsonc")).catch((error) => {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+      throw error;
+    }),
     catch: (error) => new CanonicalFolderError({ path: folder, message: String(error) }),
   });
   const policyCurrent = diskConfig !== undefined && Buffer.from(configContent).equals(diskConfig);
