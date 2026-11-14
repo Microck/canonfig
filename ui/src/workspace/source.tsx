@@ -65,6 +65,8 @@ function SectionLink({ onClick, children }: { onClick: () => void; children: str
 /**
  * A live Source's head, from its published revisions only. Followers do not report which revision they
  * applied to the Source, so this says what was published and never counts machines as up to date.
+ * It also cannot tell whether the folder changed since that revision (only some edits are tracked in
+ * this session), so it says that saved edits need a new revision instead of counting them.
  */
 function LivePublicationState() {
   const ws = useWorkspace();
@@ -81,13 +83,9 @@ function LivePublicationState() {
   }
   return (
     <StateHeader
-      tone={ws.pending.length > 0 ? "warn" : "ok"}
-      title={ws.pending.length > 0 ? `${ws.pending.length} unpublished ${ws.pending.length === 1 ? "change" : "changes"}` : `Revision ${ws.latest} is published`}
-      body={
-        ws.pending.length > 0
-          ? `Machines stay on revision ${ws.latest} until you publish revision ${ws.latest + 1}.`
-          : "Followers pick it up at their next check. They don't report back which revision they applied, so this page can't tell which machines have it yet."
-      }
+      tone="ok"
+      title={`Revision ${ws.latest} is published`}
+      body="Followers pick it up at their next check, and edits saved since then reach them only after you publish again. Followers don't report back which revision they applied, so this page can't tell which machines have it yet."
     />
   );
 }

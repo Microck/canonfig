@@ -28,7 +28,7 @@ function Fixture({ backend }: { backend: WorkspaceBackend }) {
   </LiveWorkspaceProvider></TooltipProvider>;
 }
 
-const revision = (sequence: number) => ({ id: `rev-${sequence}`, profileId: "fixture", sequence, digest: `digest-${sequence}`, publishedAt: `2026-11-1${sequence}T00:00:00Z` });
+const revision = (sequence: number, profileId = "fixture", publishedAt = `2026-11-1${sequence}T00:00:00Z`) => ({ id: `${profileId}-${sequence}`, profileId, sequence, digest: `digest-${sequence}`, publishedAt });
 const service = (serving: boolean) => ({ report: { state: serving ? "running" : "not-serving", platform: "linux", mechanism: "systemd-user-service", serviceName: "overview-fixture", endpoint: "https://127.0.0.1:17342", manager: { installed: true, matches: true, enabled: true, active: serving, state: serving ? "running" : "not-running" }, serving, supportedModes: "", logs: "", detail: "" }, error: null });
 
 /** Renders the live Source Overview against a real HTTP server that answers with the given Source evidence. */
@@ -76,7 +76,9 @@ async function overview(responses: Record<string, unknown>) {
 const status = { machineRole: { role: "source" }, lifecycle: {}, tunnel: null };
 
 it("a live Source that published revisions says so, without claiming machines have them", async () => {
-  const page = await overview({ "/api/status": status, "/api/source-service": service(true), "/api/revisions": { revisions: [revision(1), revision(3), revision(2)] } });
+  // The server lists by profile id, then ascending; a profile id the folder used before keeps its older, higher-numbered history.
+  const before = revision(9, "renamed", "2026-01-01T00:00:00Z");
+  const page = await overview({ "/api/status": status, "/api/source-service": service(true), "/api/revisions": { revisions: [revision(1), revision(3), revision(2), before] } });
   try {
     const text = await page.text("Revision 3 is published");
     assert.ok(text.includes("Revision 3 is published"), text);
