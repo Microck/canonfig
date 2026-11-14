@@ -412,7 +412,8 @@ export const enrollFollower = (
         message: `secure follower credential storage is unavailable. ${capability.recovery}`,
       });
     }
-    const endpoint = yield* checkedEndpoint(input.invitation.endpoint);
+    // MagicDNS lookup is network work too, so it shares the phase deadline and cancellation.
+    const endpoint = yield* enrollmentPhase(checkedEndpoint(input.invitation.endpoint), input);
     const certificate = yield* enrollmentPhase(
       inspectCertificate(endpoint, enrollmentPhaseTimeout(input)),
       input,

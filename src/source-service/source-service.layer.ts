@@ -498,14 +498,19 @@ export const sourceServiceLayer = (
               `this shell uses ${home} as its home, but Task Scheduler starts the Source with ${user}'s profile ${userInfo().homedir}; run the install from a normal session of ${user}`,
           });
         }
+        const registry = win32.join(environment.SystemRoot ?? "C:\\Windows", "System32", "reg.exe");
         for (const name of ["CANONFIG_LOCAL_CREDENTIAL_ROOT", "CANONFIG_TAILSCALE_EXECUTABLE", "CANONFIG_TAILSCALE_SOCKET"]) {
           const value = environment[name];
           if (value === undefined) continue;
-          const query = yield* run(win32.join(environment.SystemRoot ?? "C:\\Windows", "System32", "reg.exe"), ["query", "HKCU\\Environment", "/v", name]);
+          // A user value overrides a system value in the task's environment, so the system scope counts only when
+          // the user scope does not define the name.
+          const user = yield* run(registry, ["query", "HKCU\\Environment", "/v", name]);
+          const query = user.exitCode === 0 ? user
+            : yield* run(registry, ["query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment", "/v", name]);
           if (query.exitCode !== 0 || !outputOf(query).includes(value)) {
             return yield* new SourceServiceConfigurationError({
               operation: "install the Source service",
-              message: `${name} is set in this shell only. Set it in your Windows user environment, open a new terminal, and retry so Task Scheduler uses the same configuration.`,
+              message: `${name} is set in this shell only. Set it in your Windows user or system environment, open a new terminal, and retry so Task Scheduler uses the same configuration.`,
             });
           }
         }

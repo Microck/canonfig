@@ -334,7 +334,8 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
   if (address === null || Schema.is(Schema.String)(address)) return yield* Effect.die("The browser server has no TCP address");
   // URL normalizes the spelling (IPv6 case and zero groups), so it matches the origin of every parsed request.
   const bound = new URL(`http://${isIP(host) === 6 ? `[${host}]` : host}:${address.port}`).origin;
-  const advertised = tailnet === undefined ? options.origin ?? bound : `http://${tailnet.dnsName}:${address.port}`;
+  // Normalized like `bound`: URL drops a default port (:80), and the request Origin check compares exact strings.
+  const advertised = tailnet === undefined ? options.origin ?? bound : new URL(`http://${tailnet.dnsName}:${address.port}`).origin;
   origins = tailnet !== undefined ? [advertised] : options.origin === undefined ? [bound] : [bound, options.origin];
   // Tailnet mode accepts only its discovered MagicDNS authority, not proxy or forwarded hosts.
   const url = `${advertised}/?token=${token}`;

@@ -32,8 +32,8 @@ that instead.
   and manages their configuration. It does not install them.
 - **SSH from B to A for this tutorial's loopback path.** You need an SSH login
   on A and A's SSH host public key. If both machines use Tailscale or Headscale,
-  follow [Connect over a tailnet](/how-to/connect-over-tailnet) for the serving
-  and invitation steps instead; no SSH tunnel is needed. Two accounts on the
+  follow [Connect over a tailnet](/how-to/connect-over-tailnet) for the serving,
+  invitation and enrollment steps instead; no SSH tunnel is needed. Two accounts on the
   same host also need no SSH.
 - **The same Canonfig release on both machines.** A Source Machine and a
   Follower Machine on different `major.minor` releases refuse to talk to each
@@ -271,7 +271,9 @@ scp /etc/ssh/ssh_host_ed25519_key.pub b.example:source-host-key.pub
 
 ## 8. Enroll machine B
 
-On B, start the tunnel to A. Skip this command if A and B are the same host.
+On B, start the tunnel to A. Skip this command if A and B are the same host, or
+if both use a tailnet and you followed
+[Connect over a tailnet](/how-to/connect-over-tailnet).
 
 ```bash
 canonfig tunnel start --invitation ./canonfig-invite --ssh-host a.example --ssh-user maria --ssh-host-key-file ./source-host-key.pub
