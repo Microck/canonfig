@@ -287,6 +287,10 @@ export const mapStore = {
   positions(role: MapRole): Record<string, XY> {
     return read().positions[role] ?? {};
   },
+  /** A machine's saved look right now, for event handlers that run after a commit this render has not seen. */
+  look(id: string): Look | undefined {
+    return read().looks[id];
+  },
   setLook(id: string, patch: Look) {
     const s = read();
     commit({ ...s, looks: { ...s.looks, [id]: { ...s.looks[id], ...patch } } });

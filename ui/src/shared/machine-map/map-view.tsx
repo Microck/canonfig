@@ -235,12 +235,28 @@ function MapCanvas({
   const requestedId = customizeId === undefined ? ownCustomizeId : customizeId;
   // Only a machine on this map can have a sheet; an id for a hidden follower shows none.
   const sheetId = requestedId === SOURCE_ID || visible.some((f) => f.id === requestedId) ? requestedId : null;
+  // The Source card's local look when its sheet opened, so closing it publishes only a real change; undefined when it opened from outside this map.
+  const sourceLookAtOpen = useRef<string | undefined>(undefined);
+  // Every way the sheet opens, closes or switches machine goes through here, so the Source card is published on each of them.
   const setCustomize = useCallback(
     (id: string | null) => {
+      if (onSourceLookSave && id === SOURCE_ID && sheetId !== SOURCE_ID) {
+        // A browser with nothing saved starts from the shared look, so editing one field or reopening never drops the rest of it.
+        const seeded = store.looks[SOURCE_ID] ?? fromPublishedLook(machine.look);
+        if (store.looks[SOURCE_ID] === undefined && seeded !== undefined) mapStore.setLook(SOURCE_ID, seeded);
+        sourceLookAtOpen.current = JSON.stringify(seeded ?? null);
+      }
+      if (onSourceLookSave && sheetId === SOURCE_ID && id !== SOURCE_ID) {
+        const local = mapStore.look(SOURCE_ID);
+        const before = sourceLookAtOpen.current;
+        // A reset removes the local look and so clears the shared one; an untouched sheet publishes nothing.
+        if (before === undefined ? local !== undefined : JSON.stringify(local ?? null) !== before) onSourceLookSave(toPublishedLook(local));
+        sourceLookAtOpen.current = undefined;
+      }
       setOwnCustomizeId(id);
       onCustomizeChange?.(id);
     },
-    [onCustomizeChange],
+    [onCustomizeChange, onSourceLookSave, sheetId, store.looks, machine.look],
   );
 
   const looks = useMemo(() => {
@@ -540,8 +556,6 @@ function MapCanvas({
               look={looks[sheetId]}
               shared={sheetId === SOURCE_ID && onSourceLookSave !== undefined}
               onClose={() => {
-                // Edits save on every change in this browser; Followers get the Source card once, when its sheet closes.
-                if (sheetId === SOURCE_ID) onSourceLookSave?.(toPublishedLook(store.looks[SOURCE_ID]));
                 setCustomize(null);
                 focusNode(sheetId);
               }}
