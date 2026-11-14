@@ -65,4 +65,24 @@ The browser exposed an invalid HTML pattern for policy names and outdated Takeov
 
 Final UI commands: `npm run ui:lint` (0 errors, 73 warnings) and `npm --prefix ui run build -- --outDir /tmp/canonfig-279-final-ui` (passed). The separate output directory avoided modifying the package assets used by the concurrent core suite. [Screenshot](gui-backups.png). The proof tab was closed afterward.
 
+The final production build was also checked with a newly enrolled Follower and its Source. Both exposed offline recovery; only the Source exposed in-place Canonical Folder restore. The Follower's help explained that its Canonical Folder comes from the Source. [Follower screenshot](gui-follower-backups.png). These fixtures used private HOME/XDG paths, file-backed synthetic credentials and an unavailable private D-Bus address, not the live user bus. T3's browser preview completed the check after the standalone browser runners were unavailable. The preview and GUI services were closed afterward.
+
 `gitleaks git --staged --pre-commit --redact --ignore-gitleaks-allow --no-banner .` scanned the staged feature and research changes and found no leaks. The disposable GUI server was stopped and its temporary HOME, credential store and package assets were removed.
+
+## Test suites
+
+The first full `npm test -- --maxWorkers=1` run completed with 2,087 passed, 26 failed and 79 skipped tests across 86 files. Seven failures came from the test environment: root bypassed the unwritable-file case, and Raft's preinstalled harness executables made isolated harness-absence assumptions false. The archive failures included stale version-1 fixtures, parser-wording assertions, an unsigned fixture labelled as a Source archive, and malformed tar data incorrectly classified as a request error.
+
+The archive fixtures now use version 2 and correctly label unsigned standalone archives. Tests retain integrity-error, exit-code, no-write and rollback assertions rather than pinning parser wording. Import classifies decoding failures after a successful file read as integrity errors. The final rerun used the disposable `canonfig-proof` user with a fresh temporary HOME and private XDG paths; Claude, Codex, Pi and OpenCode executables were isolated inside the task-owned Raft workspace. No host executable or live account was changed.
+
+Focused rerun command:
+
+```sh
+npm test -- tests/integration/archive-import.test.ts tests/acceptance/export-import.test.ts tests/integration/synchronization-run.test.ts tests/packed-cli.test.ts tests/projection-detect.test.ts tests/acceptance/folder-sync.test.ts --maxWorkers=1
+```
+
+The final six-file rerun passed all 216 tests. `npm run build:cli` passed with the archive and role-control fixes, including root and UI compilation. `npm exec -- oxlint src/projection/archive.ts tests/integration/archive-import.test.ts tests/acceptance/export-import.test.ts` and `npm --prefix ui run lint -- src/workspace/backups.tsx src/workspace/page-tips.ts` both passed with 0 warnings and 0 errors. The focused rerun cleared every failing file from the full core run; the entire suite was not repeated.
+
+The full UI command `TSX_TSCONFIG_PATH=ui/tsconfig.app.json node --import tsx --test --test-concurrency=1 "ui/src/**/*.test.ts" "ui/src/**/*.test.tsx"` finished with 147 passed and 2 failed tests. Both failures were stale navigation expectations that Source backups were unavailable. The route test now requires Source backup access and retains unique-URL and cross-role access checks; copied menu lists and label assertions were removed.
+
+`npm --prefix ui run lint -- src/live/routes.test.ts` then passed with 0 warnings and 0 errors. `TSX_TSCONFIG_PATH=ui/tsconfig.app.json node --import tsx --test ui/src/live/routes.test.ts` passed all 5 tests. No UI failures remain from the full run.

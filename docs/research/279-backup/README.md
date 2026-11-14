@@ -1,6 +1,6 @@
 # Backup research for #279
 
-Compression and destination research is complete. Implementation verification and PR delivery are in progress; completed evidence is recorded below.
+Research, implementation and agent-run verification are complete. This directory records the measurements, design decisions and observed results for review; remove it before merging.
 
 ## Approved scope
 
@@ -72,9 +72,9 @@ The committed heavy run sampled 1,999,999,997 bytes. It completed with fifteen s
 - Native synchronization jobs use systemd user timers, launchd, and Task Scheduler. There is no follower daemon. Existing synchronization schedules remain locally controlled; the approved backup-policy authority is distinct.
 - LSP is unconfigured. The code graph is unindexed. Semantic search is unavailable because its provider has no credit; scoped source reads and exact search are used instead.
 
-## Active work and blockers
+## Delivery and verification
 
-Task-owned Raft workspace: `paris:rf-025b35d1112741e6`, disposable, six-hour TTL, one CPU and 3 GiB RAM. It is reserved for builds and synthetic destination/scheduler proofs. Never upload the real corpus there. Primary copies were deleted by the benchmark's temporary-directory cleanup after each stopped run; the remaining benchmark helper scratch has also been removed.
+The task-owned Raft workspace `paris:rf-025b35d1112741e6` was destroyed after collecting proof artifacts. It ran with one CPU and 3 GiB RAM and held only build inputs and synthetic destination/scheduler fixtures. The private benchmark corpus was never uploaded. Benchmark copies and helper scratch were removed after measurement.
 
 Primary measurements are in `primary-results.json`, `primary-remaining-results.json` and `primary-tmpfs-results.json`. Interrupted attempts remain recorded. Heavy measurements finished in `heavy-results.json`; the script confirmed removal of its private scratch. The raw inputs remained local throughout.
 
@@ -86,4 +86,6 @@ Completed destination proof: encrypted fast/balanced/small/max restores were byt
 
 Completed native proof: `source-follower-proof.json` records signed policy delivery and execution, native systemd backup and drill timers, byte-identical Source identity and shared-secret recovery under fresh references, and authenticated synchronization by the existing Follower after Source recovery. Drills and refused restores removed only their new native credentials. A locked keyring returned Human Action Required (exit 3), with no restore destination and no plaintext credential-file writes in the syscall trace. The proof uses its own D-Bus session and foreground GNOME Keyring inside Raft; the live Secret Service is untouched.
 
-GUI recovery, final browser validation and the staged Gitleaks scan passed. The proof tab, server and temporary GUI data are removed. See [verification](verification.md) and the [GUI screenshot](gui-backups.png). Typechecks, lint and the production build passed; the full core/UI suites remain running in Raft as task job `bg_42`. No native macOS/Windows proof or human testing is claimed.
+GUI recovery, role-specific restore controls and Gitleaks scans passed. See [verification](verification.md), the [Source screenshot](gui-backups.png) and the [Follower screenshot](gui-follower-backups.png). The final fixes classify malformed archive bytes as integrity failures and hide in-place folder restore from enrolled Followers. The production CLI/UI build and scoped lint checks passed. All 216 tests in the final six-file core rerun passed; the five-test UI navigation rerun also passed. The full-suite failures and their resolution are recorded without claiming a second full-suite run. No native macOS/Windows proof or human testing is claimed.
+
+Research commits contain only this directory. Implementation commits are `c8b7fc3`, `e161ebc` and `499d10b`. The ready-for-review PR uses `Refs #279`, records the verification limits and includes the required research-removal checklist. It does not authorize merging or release.
