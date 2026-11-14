@@ -351,12 +351,16 @@ function RestoreDialog({ name, policy, copies, initial, onClose }: { name: strin
   const [target, setTarget] = useState<"test" | "folder" | "here">("test");
   const [folder, setFolder] = useState("");
   const [recover, setRecover] = useState(false);
+  const [replace, setReplace] = useState(false);
   const busy = backup.action.loading;
   const selection = { name, snapshot: id };
+  // Recovery credentials only travel in encrypted copies; an older copy may hold them after the policy stopped capturing them.
+  const encrypted = copies.find((copy) => copy.id === id)?.encrypted === true;
+  const ready = target === "test" || (target === "folder" ? folder.trim() !== "" : replace);
   const submit = async () => {
     const done = await backup.run(target === "test" ? { action: "drill", ...selection }
-      : target === "folder" ? { action: "restore", ...selection, target: { kind: "home", path: folder.trim(), recoverCredentials: recover } }
-      : { action: "restore", ...selection, target: { kind: "apply", replace: false, dryRun: false } });
+      : target === "folder" ? { action: "restore", ...selection, target: { kind: "home", path: folder.trim(), recoverCredentials: encrypted && recover } }
+      : { action: "restore", ...selection, target: { kind: "apply", replace: true, dryRun: false } });
     if (!done) return;
     toast.success(target === "test" ? "Restore test passed: every file matched." : target === "folder" ? `Restored into ${folder.trim()}.` : "Your Canonfig folder was restored. Publish to send it to your followers.");
     onClose();
@@ -365,7 +369,7 @@ function RestoreDialog({ name, policy, copies, initial, onClose }: { name: strin
     <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
       <DialogContent aria-describedby={undefined} className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] gap-5 overflow-y-auto sm:max-w-[520px]">
         <DialogHeader><DialogTitle>Restore from {name}</DialogTitle></DialogHeader>
-        <form id="backup-restore" className="grid gap-4" onSubmit={(event) => { event.preventDefault(); if (target !== "folder" || folder.trim()) void submit(); }}>
+        <form id="backup-restore" className="grid gap-4" onSubmit={(event) => { event.preventDefault(); if (ready) void submit(); }}>
           {backup.action.error && <ErrorNotice error={backup.action.error} />}
           <div className="grid gap-1.5">
             <Label htmlFor="restore-copy" className="text-sm font-medium text-muted-foreground">Copy</Label>
@@ -385,17 +389,23 @@ function RestoreDialog({ name, policy, copies, initial, onClose }: { name: strin
               <Label htmlFor="restore-folder" className="text-sm font-medium text-muted-foreground">New folder</Label>
               <Input id="restore-folder" value={folder} onChange={(event) => setFolder(event.target.value)} placeholder="/home/maria-new" spellCheck={false} className="font-mono text-base md:text-sm" />
             </div>
-            {(policy.sourceIdentity || policy.sharedSecrets) && (
+            {encrypted && (
               <label className="flex cursor-pointer items-start gap-3 text-sm">
                 <Checkbox checked={recover} onCheckedChange={(value) => setRecover(value === true)} className="mt-0.5" />
-                <span>Also put the Source identity and shared secrets into this machine's credential store.</span>
+                <span>If this copy holds the Source identity or shared secrets, also put them into this machine's credential store.</span>
               </label>
             )}
           </>}
+          {target === "here" && (
+            <label className="flex cursor-pointer items-start gap-3 text-sm">
+              <Checkbox checked={replace} onCheckedChange={(value) => setReplace(value === true)} className="mt-0.5" />
+              <span>Replace what's in ~/.canonfig now. Canonfig saves a snapshot of what it replaces first.</span>
+            </label>
+          )}
         </form>
         <DialogFooter>
           <Button type="button" variant="ghost" disabled={busy} onClick={onClose}>Cancel</Button>
-          <Button type="submit" form="backup-restore" variant="primary" disabled={busy || (target === "folder" && !folder.trim())}>
+          <Button type="submit" form="backup-restore" variant="primary" disabled={busy || !ready}>
             {busy ? "Checking…" : target === "test" ? "Test restore" : target === "folder" ? "Restore" : "Restore my folder"}
           </Button>
         </DialogFooter>
