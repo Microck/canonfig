@@ -93,7 +93,10 @@ For an editor anchored to its control: the schedule time list (`schedule.tsx`), 
 200ms in, after the provider's 250ms delay (`App.tsx`). Contents: a few words naming the control, or one or two sentences explaining a term (`max-w-64 text-sm`). Never put a link, button or anything focusable inside. Information a person needs to act goes on the page, not in a tooltip. Use the wrappers first:
 
 - `Hint`: a "?" after a label that explains it. Its `label` prop names what it explains for screen readers.
-- `Term`: a glossary word with a dotted underline.
+- `Term`: a glossary word that explains itself. Where it sits decides how it looks:
+  - In running text, keep the dotted underline: `…gets its own identity, as a <Term term="Follower Machine">follower</Term>.` A (?) icon in the middle of a sentence breaks the line and does not fit there.
+  - As a title, section heading or field label, pass `label`: the text gets a small (?) button after it, because an underlined heading reads as a link. `<SectionLabel><Term label term="Local Overlay">Replacing published items</Term></SectionLabel>`
+  - Compact cells (table headers, map card captions) stay underlined; a (?) there crowds the cell.
 - `StateLabel`: a state with its explanation.
 
 ```tsx

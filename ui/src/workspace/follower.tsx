@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { AnimatedNumber, CliText, DitherProgress, Mono, StateBand, StateLabel, StatusMark, Term, type StatusKind } from "@/shared/shared";
+import { AnimatedNumber, CliText, DitherProgress, Hint, Mono, StateBand, StateLabel, StatusMark, Term, type StatusKind } from "@/shared/shared";
 import {
   APPEND_LOCAL_LABEL,
   CATEGORY_LABEL,
@@ -566,12 +566,16 @@ function SyncForm() {
           {!live.operation && <EmptyState title="Check for a revision" body="Nothing changes until you apply." />}
           <FollowerOperationEvidence />
           <div className="space-y-3 border-t border-border px-[18px] py-5">
-            <SectionLabel>Your own changes</SectionLabel>
-            <p className="max-w-prose text-sm text-muted-foreground">Items you add on this machine, and edits Canonfig is holding back, are in Local settings.</p>
+            {/* The buttons say what to do; why sits behind the (?) so the page stays short. */}
+            <SectionLabel>Your own changes <Hint label="your own changes">Items you add on this machine, and edits Canonfig is holding back, are in Local settings.</Hint></SectionLabel>
             <Button variant="outline" size="sm" onClick={() => ws.go("local")}>Open Local settings</Button>
             {/* The CLI's `sync --plan --review-local`: one private file per existing instructions file Canonfig will start managing. */}
-            <SectionLabel className="pt-4">Preview instructions files</SectionLabel>
-            <p className="max-w-prose text-sm text-muted-foreground">Before the first sync into an instructions file you already have, write a private preview of what Canonfig will add and what stays yours. It is saved in <Mono>~/.canonfig/.reviews</Mono>; the browser can't open it.</p>
+            <SectionLabel className="pt-4">
+              Preview instructions files{" "}
+              <Hint label="instructions file previews">
+                Before the first sync into an instructions file you already have, write a private preview of what Canonfig will add and what stays yours. It is saved in <Mono>~/.canonfig/.reviews</Mono>; the browser can't open it.
+              </Hint>
+            </SectionLabel>
             <Button variant="outline" size="sm" disabled={running || blocks.blocked !== null} onClick={live.createReview}>Write preview</Button>
           </div>
         </> : <>
@@ -1182,7 +1186,7 @@ function LocalForm() {
 
         <div className="px-4 pt-8 sm:px-[18px]">
           <SectionLabel>
-            <Term term="Local Overlay">Replacing published items</Term>
+            <Term label term="Local Overlay">Replacing published items</Term>
           </SectionLabel>
           <p className="pb-2 text-sm text-pretty text-muted-foreground">
             A local item named like a published one stops updates until you rename or remove it, or let it replace the published one here.
@@ -1263,7 +1267,7 @@ function LocalForm() {
         {!ws.followerLive && <>
         <div className="px-4 pt-8 sm:px-[18px]">
           <SectionLabel>
-            <Term term="Append-local">Your own content in shared files</Term>
+            <Term label term="Append-local">Your own content in shared files</Term>
           </SectionLabel>
           <p className="pb-2 text-sm text-pretty text-muted-foreground">
             {ws.profile.appendLocal.length > 0
@@ -1390,7 +1394,7 @@ function KeyClaims() {
   return (
     <div className="px-4 pt-8 sm:px-[18px]">
       <SectionLabel>
-        <Term term="Key Claim">Settings keys you set yourself</Term>
+        <Term label term="Key Claim">Settings keys you set yourself</Term>
       </SectionLabel>
       <p className="pb-2 text-sm text-pretty text-muted-foreground">
         Claim one key of a harness's settings file to set it in that file yourself. Canonfig stops writing, removing or checking that key on this machine, and the
@@ -2042,7 +2046,7 @@ export function MachineView() {
               {ws.tunnelConfigured ? " (via SSH tunnel)" : ""}
             </SettingRow>
             <SettingRow title="Identity">{ws.unenrolled ? "Deleted" : <Mono className="text-foreground">{ws.selfFollower?.id ?? "Not reported"}</Mono>}</SettingRow>
-            <SettingRow title={<Term term="Machine Profile">Profile</Term>} >
+            <SettingRow title={<Term label term="Machine Profile">Profile</Term>} >
               {ws.followerLive ? text(record(ws.followerLive.local?.canonicalConfig.profile).name) ?? "Not reported" : ws.profile.name || "Not reported"}
             </SettingRow>
             <SettingRow title={PLAIN.groups} description="Set by the invitation.">
