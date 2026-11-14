@@ -175,4 +175,16 @@ A one-time [CI inspection](https://github.com/Microck/canonfig/actions/runs/4352
 
 The Raft image's preinstalled harnesses initially contaminated the fixture's executable discovery. A task-local Node copy with npm beside it isolated the runtime without changing the image tools or any test assertions. The log retains the intermediate missing-npm doctor failure and the final passing run. Raft confirmed destruction of task-owned workspace `paris:rf-a38607ab4a0b4785` after evidence collection.
 
+## Native scheduler receipt regression
+
+Fleet Update polling ran before `FollowerCommands.synchronize`, which owns scheduled invocation records. An unavailable Source could therefore end a scheduled command without recording that the scheduler had fired. The fix runs CLI fleet preflight and health reporting inside that existing invocation boundary. It preserves the transport failure rather than treating it as a successful synchronization.
+
+[Native before/after evidence](checks-scheduler-native-output.txt) records the unchanged `node scripts/schedule-fire-acceptance.mjs` in task-owned Raft workspace `paris:rf-74de7713b9e3459c`. Before the fix, the deliberately stopped fixture Source caused exit `6` with no invocation row. After the fix, a fresh guest account produced `SCHEDULER_FIRE_OK`; SQLite held a `Failed` invocation with the expected `ECONNREFUSED` transport reason. The existing acceptance script covers this regression, so no test or assertion was changed and no duplicate test was added.
+
+[Focused checks](checks-scheduler-output.txt) passed all 155 tests across six CLI, scheduler, fleet and updater files. The root TypeScript check passed; root and website lint reported zero warnings and errors. Documentation validation covered 449 examples, and skill validation covered three structures. Native macOS and Windows verification remains for CI.
+
+[Release validation and installed proof](checks-scheduler-release-output.txt) passed with the approved package budgets and sorted Sigstore dependency allowance. The package contained 451 files, 1,307,275 packed bytes and 4,722,989 unpacked bytes; metadata, naming, secret checks, clean installation and binary smoke passed. The installed fixture proof again upgraded the canary from `7.1.9` to `7.1.10` and recorded Convergence, refused unsigned/tampered directives, deferred an active run, and halted on failed health while leaving the next follower on `7.1.9`. It uses signed fixture publisher metadata; the separate public-registry proof above remains the provenance evidence.
+
+Raft confirmed destruction of `paris:rf-74de7713b9e3459c` after evidence collection. No live enrollment, Source service, schedule or harness directory was changed.
+
 All research files and screenshots must be removed before merge. They are committed separately from the implementation.
