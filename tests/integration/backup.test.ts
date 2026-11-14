@@ -145,6 +145,21 @@ describe("portable backup recovery", () => {
     expect(readFileSync(join(output, ".agents", "skills", "team", "SKILL.md"), "utf8")).toContain("name: team");
   }, 60_000);
 
+  it("leaves out harness credential files with generic names unless credentials are included", async () => {
+    const machine = fixture();
+    mkdirSync(join(machine.home, ".config", "amp"), { recursive: true });
+    mkdirSync(join(machine.home, ".local", "share", "amp", "threads"), { recursive: true });
+    writeFileSync(join(machine.home, ".local", "share", "amp", "secrets.json"), '{"token":"private-fixture-token"}');
+    writeFileSync(join(machine.home, ".local", "share", "amp", "threads", "t1.json"), "{}\n");
+    await machine.run({ action: "password", name: "recovery", value: Redacted.make("frost library maple canvas") });
+    await machine.configure({ folder: false, harnesses: { mode: "full", targets: ["amp"] }, passwordReference: "recovery" });
+    expect(await machine.run({ action: "run", name: "daily" })).toMatchObject({ skippedCredentials: 1 });
+    const output = join(machine.root, "restored");
+    await machine.run({ action: "restore", name: "daily", target: { kind: "home", path: output, recoverCredentials: false } });
+    expect(readFileSync(join(output, ".local", "share", "amp", "threads", "t1.json"), "utf8")).toBe("{}\n");
+    expect(existsSync(join(output, ".local", "share", "amp", "secrets.json"))).toBe(false);
+  }, 60_000);
+
   it("requires explicit native-store recovery and never falls back to credential files", async () => {
     const machine = fixture();
     await machine.run({ action: "password", name: "recovery", value: Redacted.make("synthetic recovery credential") });

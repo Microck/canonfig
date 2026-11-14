@@ -17,9 +17,13 @@ export interface BackupCapture {
   readonly skippedLinks: number;
 }
 
-/** Credential names are an exclusion list, not proof that an arbitrary history/database is safe. */
-const credentialPath = (path: string): boolean => path.split("/").some(part =>
-  /^(?:\.?env(?:\..*)?|\.?credentials?(?:\..*)?|auth(?:\.json)?|oauth(?:[-_].*)?|tokens?|secrets|id_rsa|id_ed25519)$/iu.test(part)
+/**
+ * Credential names are an exclusion list, not proof that an arbitrary history/database is safe. Besides generic
+ * names, it lists files adapters document as credentials under names too generic to match on their own:
+ * Amp's secrets.json and Kilo's daemon.json (its daemon credential).
+ */
+const credentialPath = (path: string): boolean => /(?:^|\/)kilo\/daemon\.json$/iu.test(path) || path.split("/").some(part =>
+  /^(?:\.?env(?:\..*)?|\.?credentials?(?:\..*)?|auth(?:\.json)?|oauth(?:[-_].*)?|tokens?|secrets(?:\.json)?|id_rsa|id_ed25519)$/iu.test(part)
   || /\.(?:pem|key|p12|pfx)$/iu.test(part));
 
 export const below = (root: string, path: string): boolean => {
