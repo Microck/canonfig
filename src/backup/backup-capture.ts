@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants, createWriteStream } from "node:fs";
-import { lstat, mkdir, open, readdir, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, writeFile } from "node:fs/promises";
+import { backup as sqliteBackup, DatabaseSync } from "node:sqlite";
 import { basename, dirname, isAbsolute, join, matchesGlob, relative, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Schema } from "effect";
@@ -8,7 +9,7 @@ import { ContentDigest } from "../domain/brand.ts";
 import { openAnchoredDirectory, sameIdentity } from "../machine/anchored-directory.ts";
 import { archivePathProblem, caseCollision, type ArchiveFile, type ManifestFile } from "../projection/archive.ts";
 import type { BackupPolicy } from "./backup.types.ts";
-import { BackupIoError, runBackupTool } from "./backup-io.ts";
+import { BackupIoError, hashBackupFile, runBackupTool } from "./backup-io.ts";
 
 export interface BackupCapture {
   readonly files: ReadonlyArray<ManifestFile>;
@@ -48,6 +49,14 @@ export const captureBackupFiles = async (input: {
   let bytes = 0;
   let skippedCredentials = 0;
   const captured = new Set<string>();
+  const SQLITE_SIDECAR = /-(?:wal|shm|journal)$/u;
+  /** SQLite databases start with this 16-byte header, whatever their file name. */
+  const isSqliteDatabase = async (path: string): Promise<boolean> => {
+    const header = Buffer.alloc(16);
+    const probe = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try { return (await probe.read(header, 0, 16, 0)).bytesRead === 16 && header.toString("latin1") === "SQLite format 3\0"; }
+    finally { await probe.close(); }
+  };
   let skippedLinks = 0;
   const selected = (path: string): boolean => {
     if (!input.policy.includeCredentials && credentialPath(path)) { skippedCredentials += 1; return false; }
@@ -106,6 +115,8 @@ export const captureBackupFiles = async (input: {
           // Two selected harnesses can resolve to one folder (Pi and Oh My Pi under PI_CODING_AGENT_DIR); each home
           // path is captured once, so a restore never writes the same destination twice.
           if (captured.has(homePath)) continue;
+          // A database's journal, WAL and shared memory are already inside its consistent snapshot (below).
+          if (SQLITE_SIDECAR.test(entry.name) && captured.has(homePath.replace(SQLITE_SIDECAR, ""))) continue;
           if (info.isDirectory()) {
             if (!input.policy.includeCredentials && credentialPath(archivePath)) { skippedCredentials += 1; continue; }
             if (!input.policy.exclude.some(pattern => matchesGlob(archivePath, pattern))) await walk(absolute);
@@ -113,6 +124,24 @@ export const captureBackupFiles = async (input: {
           }
           if (!selected(archivePath)) continue;
           if (!info.isFile()) throw new BackupIoError("BACKUP_INVALID", `Full harness capture found a socket, pipe or device at ${archivePath}. Add it to exclude, then back up again.`);
+          if (await isSqliteDatabase(source)) {
+            // Copying a live database and its WAL file by file can lose committed rows to a checkpoint between the
+            // two reads. SQLite's online backup gives one consistent copy with the WAL folded in, as Source
+            // identity capture already does.
+            const destination = join(directory, archivePath);
+            await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+            const live = new DatabaseSync(source, { readOnly: true });
+            try { await sqliteBackup(live, destination); }
+            catch { throw new BackupIoError("BACKUP_CONFLICT", `${archivePath} is a database its harness held busy. Close the harness or exclude the file, then back up again.`); }
+            finally { live.close(); }
+            await chmod(destination, 0o600);
+            const snapshot = await hashBackupFile(destination);
+            reserve(archivePath, snapshot.bytes);
+            captured.add(homePath);
+            record({ path: archivePath, size: snapshot.bytes, mode: `0${(Number(info.mode) & 0o777).toString(8).padStart(3, "0")}`,
+              harness: root.harness, target: `~/${homePath}` }, snapshot.sha256);
+            continue;
+          }
           reserve(archivePath, Number(info.size));
           captured.add(homePath);
           const file = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);

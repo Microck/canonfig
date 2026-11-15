@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { backupCommand } from "../../src/backup/backup.ts";
@@ -188,6 +189,28 @@ describe("portable backup recovery", () => {
     await machine.run({ action: "restore", name: "daily", target: { kind: "home", path: output, recoverCredentials: false } });
     expect(readdirSync(join(output, ".omp", "agent"))).toEqual(["settings.json"]);
     expect(readFileSync(join(output, ".kilo", "skills", "notes", "SKILL.md"), "utf8")).toContain("name: notes");
+  }, 60_000);
+
+  it("captures a live SQLite database with its uncheckpointed WAL as one consistent snapshot", async () => {
+    const machine = fixture();
+    const data = join(machine.home, ".local", "share", "opencode");
+    mkdirSync(join(machine.home, ".config", "opencode"), { recursive: true });
+    mkdirSync(data, { recursive: true });
+    // The harness keeps its connection open, so these committed rows live only in opencode.db-wal.
+    const live = new DatabaseSync(join(data, "opencode.db"));
+    try {
+      live.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0; CREATE TABLE session (id TEXT); INSERT INTO session VALUES ('committed-before-capture');");
+      expect(existsSync(join(data, "opencode.db-wal"))).toBe(true);
+      await machine.run({ action: "password", name: "recovery", value: Redacted.make("frost library maple canvas") });
+      await machine.configure({ folder: false, harnesses: { mode: "full", targets: ["opencode"] }, passwordReference: "recovery" });
+      await machine.run({ action: "run", name: "daily" });
+    } finally { live.close(); }
+    const output = join(machine.root, "restored");
+    await machine.run({ action: "restore", name: "daily", target: { kind: "home", path: output, recoverCredentials: false } });
+    expect(readdirSync(join(output, ".local", "share", "opencode"))).toEqual(["opencode.db"]);
+    const restored = new DatabaseSync(join(output, ".local", "share", "opencode", "opencode.db"), { readOnly: true });
+    try { expect(restored.prepare("SELECT id FROM session").all()).toEqual([{ id: "committed-before-capture" }]); }
+    finally { restored.close(); }
   }, 60_000);
 
   it("requires explicit native-store recovery and never falls back to credential files", async () => {
