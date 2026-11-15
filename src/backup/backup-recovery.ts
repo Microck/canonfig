@@ -125,20 +125,23 @@ export const withRecoveryCredentials = <A, E, R>(
   if (new Set(recovery.credentials.map(credential => credential.reference)).size !== recovery.credentials.length) {
     return yield* new BackupError({ code: "BACKUP_VERIFY_FAILED", message: "Recovery contains a duplicate credential reference" });
   }
-  return yield* Effect.uninterruptibleMask(restore => Effect.gen(function*() {
+  // The whole sequence is uninterruptible. Each native store is bounded by its own command timeout, and an
+  // interrupted store or restore could still finish after cleanup: a keyring write applied after removeCredential
+  // leaves an unreported credential, and files published after it point at nothing.
+  return yield* Effect.uninterruptible(Effect.gen(function*() {
     const created: Array<CredentialReference> = [];
+    const track = (reference: CredentialReference) => { if (!created.includes(reference)) created.push(reference); };
     const references = new Map<string, CredentialReference>();
     const outcome = yield* Effect.exit(Effect.gen(function*() {
-      yield* restore(Effect.gen(function*() {
-        for (const credential of recovery.credentials) {
-          const reference = yield* machine.storeCredential({ name: `canonfig-recovery-${randomUUID()}`, value: Redacted.make(credential.value),
-            beforeStore: reference => Effect.sync(() => { created.push(reference); }),
-          }).pipe(Effect.mapError(unavailable));
-          references.set(credential.reference, reference);
-        }
-      }));
-      // `use` publishes files that point at these references. It stays uninterruptible: an interrupted promise keeps
-      // writing after Effect stops waiting, so removing the references then would leave a HOME that points at nothing.
+      for (const credential of recovery.credentials) {
+        // beforeStore runs on stores that name the reference first (Secret Service); the macOS and Windows command
+        // stores only return it, so the returned reference is tracked too.
+        const reference = yield* machine.storeCredential({ name: `canonfig-recovery-${randomUUID()}`, value: Redacted.make(credential.value),
+          beforeStore: reference => Effect.sync(() => track(reference)),
+        }).pipe(Effect.mapError(unavailable));
+        track(reference);
+        references.set(credential.reference, reference);
+      }
       return yield* use(references);
     }));
     if (!input.keep || Exit.isFailure(outcome)) {

@@ -22,6 +22,8 @@ export function useLiveBackups(backend: WorkspaceBackend, reload: () => void): B
       if (input.action === "configure" || input.action === "enable" || input.action === "check") warnings = Schema.decodeUnknownSync(GuiBackupWarnings)(operation.result).warnings;
       // A run, retention change or new destination makes that policy's listed copies stale.
       if (input.action === "run" || input.action === "prune" || input.action === "configure") setListings(({ [input.name]: _stale, ...rest }) => rest);
+      // A saved policy may point at a new destination, whose writers have to be found again.
+      if (input.action === "configure") setOwners(({ [input.name]: _stale, ...rest }) => rest);
     }, { reload: input.action !== "list" && input.action !== "owners" && input.action !== "check" });
     // A failed run or restore test is recorded too, so the page shows it rather than the last success.
     if (!done && (input.action === "run" || input.action === "drill")) reload();
