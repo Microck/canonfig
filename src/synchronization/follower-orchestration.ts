@@ -521,6 +521,8 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
   });
   return {
     ...planned,
+    // Rollback restores current ownership; see planFolder.
+    appliedResources,
     takeovers: projection.takeovers,
     diagnostics: projection.diagnostics,
     harnesses: projection.harnesses,

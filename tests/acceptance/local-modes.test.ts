@@ -357,11 +357,11 @@ describe("what a follower keeps of its own", () => {
 
   it("keeps a Source's own native MCP and excluded skills when it syncs its own folder", () => {
     // A Source applies its folder to its own harnesses without enrolling as a follower.
-    const source = machine("source-local", ["codex", "claude-code"]);
+    const source = machine("source-local", ["codex", "claude-code", "hermes", "amp"]);
     write(join(source.folder, "canonfig.jsonc"), JSON.stringify({
       version: 1,
       profile: { id: "team", name: "Team" },
-      harnesses: ["codex", "claude-code"],
+      harnesses: ["codex", "claude-code", "hermes", "amp"],
       local: { appendLocal: ["skills"] },
       mcp: { docs: { transport: "streamable-http", url: "https://docs.example.invalid/mcp" } },
     }, undefined, 2));
@@ -374,18 +374,31 @@ describe("what a follower keeps of its own", () => {
     const ownClaude = '{"mcpServers":{"local":{"type":"http","url":"https://local.example.invalid/mcp","oauth":{"clientId":"local-client"}}}}\n';
     write(codex, ownCodex);
     write(claude, ownClaude);
+    // Hermes writes MCP beside hooks in config.yaml; Amp under the dotted `amp.mcpServers` key.
+    const hermes = join(source.home, ".hermes", "config.yaml");
+    const amp = join(source.home, ".config", "amp", "settings.json");
+    const ownHermes = "mcp_servers:\n  local:\n    command: local-server\n    timeout: 120\n";
+    const ownAmp = '{"amp.mcpServers":{"local":{"command":"local-server"}}}\n';
+    write(hermes, ownHermes);
+    write(amp, ownAmp);
     const claudeSkills = join(source.home, ".claude", "skills");
+    const hermesSkills = join(source.home, ".hermes", "skills");
     const localDeploy = skill("deploy", "This Source machine's own deploy.");
     write(join(claudeSkills, "deploy", "SKILL.md"), localDeploy);
+    write(join(hermesSkills, "deploy", "SKILL.md"), localDeploy);
     write(join(source.folder, "local", "local.jsonc"), JSON.stringify({ preserveMcp: true, excludeSkills: ["deploy"] }));
     succeed(source.run(["source", "init"]), "source init");
 
     succeed(source.run(["sync", "--apply"]), "Source-local apply");
     expect(read(codex)).toBe(ownCodex);
     expect(read(claude)).toBe(ownClaude);
+    expect(read(hermes)).toBe(ownHermes);
+    expect(read(amp)).toBe(ownAmp);
     expect(read(join(claudeSkills, "deploy", "SKILL.md"))).toBe(localDeploy);
+    expect(read(join(hermesSkills, "deploy", "SKILL.md"))).toBe(localDeploy);
     expect(existsSync(join(source.home, ".agents", "skills", "deploy"))).toBe(false);
     expect(read(join(claudeSkills, "review", "SKILL.md"))).toBe(skill("review", "Source review."));
+    expect(read(join(hermesSkills, "review", "SKILL.md"))).toBe(skill("review", "Source review."));
     expect(read(join(source.home, ".agents", "skills", "review", "SKILL.md"))).toBe(skill("review", "Source review."));
     expect(read(join(source.home, ".codex", "AGENTS.md"))).toContain("Team rules.");
 
