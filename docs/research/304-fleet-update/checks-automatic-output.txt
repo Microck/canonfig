@@ -1,0 +1,833 @@
+$ raft exec paris:rf-92ec80e88114469f -- bash -lc 'cd /workspace/canonfig && umask 022 && npm run build:cli && npm test -- tests/integration/fleet-update.test.ts tests/acceptance/self-update.test.ts tests/acceptance/self-update-policy.test.ts tests/acceptance/gui-self-update.test.ts --maxWorkers=1 && npm run typecheck && npm run lint && npm --prefix ui run typecheck && npm --prefix ui run lint && TSX_TSCONFIG_PATH=ui/tsconfig.app.json node --import tsx --test --test-concurrency=1 ui/src/workspace/live/self-update.test.tsx ui/src/live/resources.test.tsx'
+
+<fc.t...... tests/acceptance/gui-self-update.test.ts
+
+> @microck/canonfig@7.1.9 build:cli
+> npm --prefix ui run build && tsc -p tsconfig.json && tsx tools/release/build-ui.ts && tsx tools/release/minify-cli.ts
+
+
+> @canonfig/ui@0.0.0 build
+> tsc -b && vite build
+
+vite v8.3.5 building client environment for production...
+transforming...
+✓ 1060 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                             1.14 kB │ gzip:   0.56 kB
+dist/assets/machine-map-BVtvaFd6.css       12.06 kB │ gzip:   2.26 kB
+dist/assets/index-Dt_Hlz5_.css            132.26 kB │ gzip:  21.87 kB
+dist/assets/rolldown-runtime-WkwZ5CU-.js    0.59 kB │ gzip:   0.36 kB
+dist/assets/follower-C1uckzjb.js           77.74 kB │ gzip:  22.10 kB
+dist/assets/machine-map-BtQvgkeV.js       209.96 kB │ gzip:  67.88 kB
+dist/assets/react-DCTAcUCH.js             218.75 kB │ gzip:  68.27 kB
+dist/assets/vendor-D_9YjINR.js            582.11 kB │ gzip: 189.10 kB
+dist/assets/index-CISebbKx.js             611.11 kB │ gzip: 184.27 kB
+
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 2.55s
+
+> @microck/canonfig@7.1.9 test
+> vitest run tests/integration/fleet-update.test.ts tests/acceptance/self-update.test.ts tests/acceptance/self-update-policy.test.ts tests/acceptance/gui-self-update.test.ts --maxWorkers=1
+
+
+ RUN  v4.1.12 /workspace/canonfig
+
+ ✓ tests/acceptance/self-update.test.ts (39 tests) 657ms
+ ✓ tests/acceptance/gui-self-update.test.ts (6 tests) 69468ms
+     ✓ enables, checks and activates a minor without selecting the reported major before cleanly exiting and freeing its port  17454ms
+     ✓ delivers an installed result and exits when receipt publication fails  11953ms
+     ✓ defers for a second command lease and recovers after SIGINT without weakening the CLI disable refusal  10802ms
+     ✓ defers for a second command lease and recovers after SIGKILL without weakening the CLI disable refusal  8209ms
+     ✓ uses the manual selection policy through the installed CLI  8498ms
+     ✓ uses the auto selection policy through the installed CLI  12547ms
+ ✓ tests/integration/fleet-update.test.ts (2 tests) 1086ms
+   ✓ binds admissions to the enrolled identity, advances only on fresh target-version health, and halts at the first failure  451ms
+   ✓ reports the published Source revision after a real follower projection converges  632ms
+ ✓ tests/acceptance/self-update-policy.test.ts (7 tests) 21318ms
+     ✓ auto picks the newest major's latest stable release over a current-line patch  4093ms
+     ✓ auto ignores an in-major minor and selects only a current-line patch  2549ms
+     ✓ manual picks a newer minor and reports but never selects the newer major  3484ms
+     ✓ manual remains current when only a newer major or prerelease exists  2484ms
+     ✓ moves the saved line after manual activation and admits the next command/check  3017ms
+     ✓ moves the saved line after auto activation and admits the next command/check  3050ms
+     ✓ retains recovery evidence and restart-required semantics when publishing the new line fails  2637ms
+
+ Test Files  4 passed (4)
+      Tests  54 passed (54)
+   Start at  23:21:38
+   Duration  101.64s (transform 3.64s, setup 0ms, import 7.73s, tests 92.53s, environment 1ms)
+
+
+> @microck/canonfig@7.1.9 typecheck
+> tsc -p tsconfig.json --noEmit && npm run website:typecheck
+
+
+> @microck/canonfig@7.1.9 website:typecheck
+> npm run typecheck --workspace @canonfig/website
+
+
+> @canonfig/website@7.1.9 typecheck
+> fumadocs-mdx && tsc --noEmit
+
+[MDX] generated files in 44.92628100000002ms
+
+> @microck/canonfig@7.1.9 lint
+> oxlint oxlint.config.ts vitest.config.ts tools/release src/agent src/cli src/domain src/enrollment src/gui src/logging src/machine src/profile src/projection src/runtime src/schedule src/secrets src/setup src/state src/synchronization tests/agent-resolution.test.ts tests/acceptance tests/cli.test.ts tests/cli-failure-taxonomy.test.ts tests/command-log.test.ts tests/documentation-command-validation.test.ts tests/doctor.test.ts tests/foundation.test.ts tests/packed-cli.test.ts tests/profile-contract.test.ts tests/profile-compiler.test.ts tests/discovery.test.ts tests/publication.test.ts tests/setup-controller.test.ts tests/state-repository.test.ts tests/machine-state-linux.test.ts tests/machine-state-macos.test.ts tests/machine-state-windows.test.ts tests/schedule-manager.test.ts tests/skills.test.ts tests/synchronization-planner.test.ts tests/installed-tool-version.test.ts tests/linux-credential-bootstrap.test.ts tests/contract/build-receipt.test.ts tests/contract/machine-state.contract.ts tests/contract/schedule-manager.contract.ts tests/integration/enrollment.test.ts tests/integration/transport.test.ts tests/integration/secret-transfer.test.ts tests/integration/secret-cleanup-retry.test.ts tests/integration/npm-artifact.test.ts tests/integration/synchronization-run.test.ts tests/integration/recovery.test.ts tests/integration/follower-orchestration.test.ts tests/integration/local-projection.test.ts tests/projection-adapters.test.ts tests/projection-detect.test.ts tests/projection-folder.test.ts tests/projection-authoring.test.ts tests/gui-plumbing.test.ts tests/projection-import.test.ts tests/projection-import-safety.test.ts tests/projection-translation.test.ts && npm run website:lint && npm run docs:validate && npm run skills:validate
+
+Found 0 warnings and 0 errors.
+Finished in 3.0s on 283 files with 112 rules using 1 threads.
+
+> @microck/canonfig@7.1.9 website:lint
+> npm run lint --workspace @canonfig/website
+
+
+> @canonfig/website@7.1.9 lint
+> oxlint app components lib source.config.ts next.config.mjs scripts
+
+Found 0 warnings and 0 errors.
+Finished in 406ms on 12 files with 112 rules using 1 threads.
+
+> @microck/canonfig@7.1.9 docs:validate
+> tsx website/scripts/validate-commands.ts
+
+Validated 449 Canonfig command examples across 64 documentation files.
+
+> @microck/canonfig@7.1.9 skills:validate
+> tsx website/scripts/validate-skills.ts
+
+Validated 3 Canonfig skill structures.
+
+> @canonfig/ui@0.0.0 typecheck
+> tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.node.json --noEmit
+
+
+> @canonfig/ui@0.0.0 lint
+> oxlint
+
+
+  ! react(set-state-in-effect): Calling setState synchronously within an effect can trigger cascading renders
+    ,-[src/live-app.tsx:39:5]
+ 36 |   const [revision, setRevision] = useState(0);
+ 37 |   useEffect(() => {
+    :   ^^^^|^^^^
+    :       `-- This is the containing effect
+ 38 |     const controller = new AbortController();
+ 39 |     setState({ kind: "loading" });
+    :     ^^^^|^^^
+    :         `-- Avoid calling setState() directly within an effect
+ 40 |     void backend.session(controller.signal).then((session) => {
+    `----
+  help: Effects should synchronize React with external systems. Calling setState synchronously inside an effect starts another render and is usually unnecessary. Derive the value during render, initialize state directly, or update it from the event that caused the change. Use an effect only when synchronizing with an external system.
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/set-state-in-effect
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+     ,-[src/workspace/workspace.tsx:323:17]
+ 322 | /** The page's name for the tab and history entry: its sidebar label, so two open tabs or Back's menu tell pages apart. */
+ 323 | export function pageTitle(route: AppRoute): string {
+     :                 ^^^^^^^^^
+ 324 |   if (route.kind === "setup") return "Setup";
+     `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/workspace/store.tsx:27:17]
+ 26 | 
+ 27 | export function useWorkspace() {
+    :                 ^^^^^^^^^^^^
+ 28 |   const ctx = useContext(WorkspaceContext);
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/workspace/store.tsx:39:17]
+ 38 |  */
+ 39 | export function useSharedState<T>(key: string, initial: T): [T, (next: T | ((prev: T) => T)) => void] {
+    :                 ^^^^^^^^^^^^^^
+ 40 |   const ctx = useContext(SharedContext);
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/workspace/store.tsx:58:17]
+ 57 |  */
+ 58 | export function useSharedReader<T>(key: string, initial: T): () => T {
+    :                 ^^^^^^^^^^^^^^^
+ 59 |   const ctx = useContext(SharedContext);
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Move your React context(s) to a separate file.
+   ,-[src/workspace/store.tsx:5:14]
+ 4 | 
+ 5 | export const WorkspaceContext = createContext<Workspace | null>(null);
+   :              ^^^^^^^^^^^^^^^^
+ 6 | 
+   `----
+
+  ! react(refs): Cannot access refs during render
+    ,-[src/workspace/store.tsx:21:9]
+ 20 |   const latest = useRef(values);
+ 21 |   latest.current = values;
+    :   ^^^|^^^^^^|^^^
+    :      |      `-- Cannot update ref value during render
+    :      `-- This value is a ref
+ 22 |   const read = useCallback((key: string, fallback: unknown) => key in latest.current ? latest.current[key] : fallback, []);
+    `----
+  help: React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/refs
+
+  ! react(set-state-in-effect): Calling setState synchronously within an effect can trigger cascading renders
+     ,-[src/workspace/source.tsx:479:5]
+ 475 | 
+ 476 |   useEffect(() => {
+     :   ^^^^|^^^^
+     :       `-- This is the containing effect
+ 477 |     if (!open || !ws.capabilities.profileWrite) return;
+ 478 |     if (live) { void validate(); return; }
+ 479 |     setCheck(0);
+     :     ^^^^|^^^
+     :         `-- Avoid calling setState() directly within an effect
+ 480 |     setTried(false);
+     `----
+  help: Effects should synchronize React with external systems. Calling setState synchronously inside an effect starts another render and is usually unnecessary. Derive the value during render, initialize state directly, or update it from the event that caused the change. Use an effect only when synchronizing with an external system.
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/set-state-in-effect
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/workspace/skills.tsx:53:17]
+ 52 |  */
+ 53 | export function useSkillLocked(id: string) {
+    :                 ^^^^^^^^^^^^^^
+ 54 |   const busy = useSkillBusy()[0];
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/workspace/skills.tsx:63:17]
+ 62 |  */
+ 63 | export function useMoveSkillTracking() {
+    :                 ^^^^^^^^^^^^^^^^^^^^
+ 64 |   const [, setSources] = useSkillSources();
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/workspace/simulated-store.tsx:55:14]
+ 54 |  */
+ 55 | export const FOLLOWER_PLAN: PlanItem[] = [
+    :              ^^^^^^^^^^^^^
+ 56 |   { resource: "rules/typescript", category: "rules", target: "~/.claude/rules/typescript.md", action: "write", reason: "Changed in revision 8. Writes it for each harness with rule files and links it from the others' instructions." },
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/workspace/simulated-store.tsx:83:14]
+ 82 |  */
+ 83 | export const JOINED_PLAN: PlanItem[] = [
+    :              ^^^^^^^^^^^
+ 84 |   {
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+     ,-[src/workspace/simulated-store.tsx:101:14]
+ 100 | // `source scan` reads the folder's instructions, skills, hook scripts and MCP commands and proposes one tools entry per program it finds.
+ 101 | export const SCANNED_TOOLS = [
+     :              ^^^^^^^^^^^^^
+ 102 |   { id: "node", executable: "npx", command: "npx -y @upstash/context7-mcp@2.1.0", file: "canonfig.jsonc", where: "mcp.context7" },
+     `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+     ,-[src/workspace/simulated-store.tsx:107:17]
+ 106 | 
+ 107 | export function toolFromScan(f: ScannedTool): Resource {
+     :                 ^^^^^^^^^^^^
+ 108 |   return {
+     `----
+
+  ! react(globals): Cannot reassign variables declared outside of the component/hook
+    ,-[src/workspace/simulated-lifecycle.test.tsx:16:20]
+ 15 | let ws: Workspace;
+ 16 | function Probe() { ws = useWorkspace(); return null; }
+    :                    ^|
+    :                     `-- `ws` cannot be reassigned
+ 17 | async function fixture(role: "source" | "follower") {
+    `----
+  help: Variable `ws` is declared outside of the component/hook. Reassigning this value during render is a side effect which can cause unpredictable behavior. If this variable is used in rendering, use useState instead. Otherwise, update it in an effect
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/globals
+
+  ! react(refs): Cannot access refs during render
+    ,-[src/workspace/simulated-administration.ts:54:16]
+ 53 |   const latestVersion = useRef(version);
+ 54 |   latestVersion.current = version;
+    :   ^^^^^^|^^^^^^^^^^|^^^
+    :         |          `-- Cannot update ref value during render
+    :         `-- This value is a ref
+ 55 |   const sendVersion = (event: UpdateEvent) => {
+    `----
+  help: React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/refs
+
+  ! react(refs): Cannot access refs during render
+     ,-[src/workspace/simulated-administration.ts:99:15]
+  98 |   const checks = doctor.map((check) => ({ ...check, ...overrides[check.check] })).filter((check) => ws.role !== "source" || installed || check.check !== "Linger");
+  99 |   latestChecks.current = checks;
+     :   ^^^^^^|^^^^^^^^^|^^^
+     :         |         `-- Cannot update ref value during render
+     :         `-- This value is a ref
+ 100 |   const gate = updateGate({ role: ws.role, serviceInstalled: installed, serviceBusy: serviceAction !== null, setupApplying: journal.phase === "applying",
+     `----
+  help: React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/refs
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/workspace/settings.tsx:27:17]
+ 26 |  */
+ 27 | export function warningName(d: { check: string; detail: string }) {
+    :                 ^^^^^^^^^^^
+ 28 |   const [state, effect] = d.detail.split(": ");
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+     ,-[src/workspace/settings.tsx:707:17]
+ 706 | /** Overview uses the same result rows as the health screen. */
+ 707 | export function useChecks() {
+     :                 ^^^^^^^^^
+ 708 |   return useWorkspace().admin.doctor.data ?? [];
+     `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+     ,-[src/workspace/settings.tsx:784:17]
+ 783 | /** The machine menu reads the same last check as this screen. */
+ 784 | export function useSelfUpdate() {
+     :                 ^^^^^^^^^^^^^
+ 785 |   const version = useWorkspace().admin.version;
+     `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/workspace/schedule.tsx:11:14]
+ 10 | 
+ 11 | export const WEEK = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
+    :              ^^^^
+ 12 | export type Day = (typeof WEEK)[number];
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/workspace/schedule.tsx:42:17]
+ 41 |  */
+ 42 | export function scheduleError(s: Schedule): string | null {
+    :                 ^^^^^^^^^^^^^
+ 43 |   if (s.cadence === "default") return null;
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/workspace/schedule.tsx:52:17]
+ 51 | 
+ 52 | export function scheduleSummary(s: Schedule, defaultLabel: string) {
+    :                 ^^^^^^^^^^^^^^^
+ 53 |   if (s.cadence === "default") return defaultLabel;
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/workspace/schedule.tsx:65:17]
+ 64 | /** The next scheduled check after now, in this browser's local time, as the follower's scheduler would run it. */
+ 65 | export function nextCheck(s: Schedule, defaultTime: string) {
+    :                 ^^^^^^^^^
+ 66 |   // An incomplete schedule never runs, so there is no next check to promise.
+    `----
+
+  ! react(set-state-in-effect): Calling setState synchronously within an effect can trigger cascading renders
+      ,-[src/workspace/profile.tsx:1504:5]
+ 1501 | 
+ 1502 |   useEffect(() => {
+      :   ^^^^|^^^^
+      :       `-- This is the containing effect
+ 1503 |     if (!open || !ws.capabilities.simulatedTelemetry) return;
+ 1504 |     setProgress(0);
+      :     ^^^^^|^^^^^
+      :          `-- Avoid calling setState() directly within an effect
+ 1505 |     const t = window.setInterval(() => setProgress((p) => (p >= 100 ? 100 : p + 10)), 110);
+      `----
+  help: Effects should synchronize React with external systems. Calling setState synchronously inside an effect starts another render and is usually unnecessary. Derive the value during render, initialize state directly, or update it from the event that caused the change. Use an effect only when synchronizing with an external system.
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/set-state-in-effect
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/workspace/machines.tsx:73:17]
+ 72 | /** What someone has to do for a follower that needs attention, and where. The Source can only explain it. */
+ 73 | export function nextStep(f: Follower): { title: string; body: ReactNode; command: string } | null {
+    :                 ^^^^^^^^
+ 74 |   switch (f.state) {
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+     ,-[src/workspace/machines.tsx:110:17]
+ 109 | /** One plain sentence for why a machine isn't up to date on the latest revision, or null when it is. */
+ 110 | export function whyBehind(f: Follower, latest: number | undefined, syncing: boolean): string | null {
+     :                 ^^^^^^^^^
+ 111 |   if (latest === undefined || f.revision === undefined || f.state === undefined) return null;
+     `----
+
+  ! react(refs): Cannot access refs during render
+     ,-[src/workspace/machines.tsx:810:25]
+ 809 |   if (!ws.inviteOpen && state.phase !== "closed") {
+ 810 |     window.clearTimeout(creating.current);
+     :                         ^^^^^^^^|^^^^^^^
+     :                                 `-- Passing a ref to a function may read its value during render
+ 811 |     dispatch({ type: "close" });
+     `----
+  help: React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/refs
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/workspace/live-provider.tsx:18:17]
+ 17 | /** Dependencies are page-specific; status remains shared local machine evidence. */
+ 18 | export function livePageResources(session: GuiSession, route: WorkspaceRoute): readonly string[] {
+    :                 ^^^^^^^^^^^^^^^^^
+ 19 |   if (!isRouteForRole(route, session.role)) return [];
+    `----
+
+  ! react-hooks(exhaustive-deps): React Hook useCallback has a missing dependency: 'admin.service'
+    ,-[src/workspace/live-provider.tsx:66:6]
+ 64 |     cache.invalidate(paths);
+ 65 |     if (paths.includes("/api/source-service")) admin.service.reload();
+    :                                                ^^^^^^|^^^^^^
+    :                                                      `-- useCallback uses `admin.service` here
+ 66 |   }, [cache, paths, admin.service.reload]);
+    :      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ 67 |   const invalidate = useCallback(() => cache.invalidate(), [cache]);
+    `----
+  help: Either include it or remove the dependency array.
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/workspace/kit.tsx:18:14]
+ 17 | 
+ 18 | export const CATEGORY_ICON: Record<ItemCategory, IconComponent> = {
+    :              ^^^^^^^^^^^^^
+ 19 |   instructions: FileText,
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/workspace/kit.tsx:64:17]
+ 63 | /** Plain name for a group: the reserved secrets group reads as what it does. */
+ 64 | export function groupLabel(name: string) {
+    :                 ^^^^^^^^^^
+ 65 |   return name === "canonfig:secrets" ? PLAIN.secretsGroup : name;
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/workspace/kit.tsx:71:17]
+ 70 | 
+ 71 | export function useGroups() {
+    :                 ^^^^^^^^^
+ 72 |   const { groups } = useScreenContext();
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/workspace/kit.tsx:78:23]
+ 77 | /** Copies `text` and resolves true only once the browser confirms the write; a denied or missing clipboard says so. */
+ 78 | export async function copy(text: string, what = "Copied"): Promise<boolean> {
+    :                       ^^^^
+ 79 |   try {
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+     ,-[src/workspace/kit.tsx:609:17]
+ 608 |  */
+ 609 | export function useDialogReturnFocus(fallback: () => void) {
+     :                 ^^^^^^^^^^^^^^^^^^^^
+ 610 |   const opener = useRef<HTMLElement | null>(null);
+     `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+     ,-[src/workspace/kit.tsx:635:17]
+ 634 |  */
+ 635 | export function useLeaveGuard(dirty: boolean, label: string) {
+     :                 ^^^^^^^^^^^^^
+ 636 |   const [leaveRequest, setLeaveRequest] = useState<(() => void) | null>(null);
+     `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/workspace/guide.tsx:40:17]
+ 39 | /** The list for this role, derived from live state so items tick themselves off. */
+ 40 | export function getStartedItems(ws: Workspace): GetStartedItem[] {
+    :                 ^^^^^^^^^^^^^^^
+ 41 |   if (ws.role === "source")
+    `----
+
+  ! react(refs): Cannot access refs during render
+     ,-[src/workspace/guide.tsx:431:7]
+ 430 |   const live = useRef(ws);
+ 431 |   live.current = ws;
+     :   ^^|^^^^^|^^^
+     :     |     `-- Cannot update ref value during render
+     :     `-- This value is a ref
+ 432 |   // `tour` only ever holds an id from this role's list: the picker, the offer and ?tour=1 ("quick").
+     `----
+  help: React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/refs
+
+  ! react(refs): Cannot access refs during render
+     ,-[src/workspace/guide.tsx:433:30]
+ 432 |   // `tour` only ever holds an id from this role's list: the picker, the offer and ?tour=1 ("quick").
+ 433 |   const [chapter] = useState(() => chaptersFor(ws, () => live.current).find((c) => c.id === ws.tour)!);
+     :                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^|^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     :                                                                  `-- Passing a ref to a function may read its value during render
+ 434 |   const close = (finished: boolean) => {
+     `----
+  help: React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/refs
+
+  ! react(set-state-in-effect): Calling setState synchronously within an effect can trigger cascading renders
+     ,-[src/workspace/frame.tsx:133:21]
+ 131 |   };
+ 132 |   useEffect(() => {
+     :   ^^^^|^^^^
+     :       `-- This is the containing effect
+ 133 |     if (inSettings) setOpen(true);
+     :                     ^^^|^^^
+     :                        `-- Avoid calling setState() directly within an effect
+ 134 |   }, [inSettings]);
+     `----
+  help: Effects should synchronize React with external systems. Calling setState synchronously inside an effect starts another render and is usually unnecessary. Derive the value during render, initialize state directly, or update it from the event that caused the change. Use an effect only when synchronizing with an external system.
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/set-state-in-effect
+
+  ! react(refs): Cannot access refs during render
+     ,-[src/workspace/follower-authoring.tsx:163:92]
+ 156 |   const send = (event: DraftEvent) => {
+ 157 |     const next = transition(current.current, event);
+     :                             ^^^^^^^|^^^^^^^
+     :                                    `-- The ref is accessed here
+ 158 |     current.current = next;
+ 159 |     setFlow(next);
+ 160 |   };
+ 161 |   const revision = live.local?.items.find((entry) => entry.path === (!item || item.category === "mcp" || item.category === "settings" ? "local.jsonc" : item.path))?.digest ?? null;
+ 162 |   // A refreshed disk revision resets an editable generation, never an in-flight submission.
+ 163 |   if ((flow.tag === "editing" || flow.tag === "failed") && revision !== baseline.revision) send({ type: "refresh", baseline: localBaseline(live, item) });
+     :                                                                                            ^^|^
+     :                                                                                              `-- This function accesses a ref value
+ 164 |   const mounted = useRef(true);
+     `----
+  help: React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/refs
+
+  ! react(globals): Cannot reassign variables declared outside of the component/hook
+    ,-[src/workspace/live/self-update.test.tsx:17:62]
+ 16 | let version: AdministrationSlice["version"];
+ 17 | function Probe({ backend }: { backend: WorkspaceBackend }) { version = useLiveAdministration(backend, session, ["/api/self-update"], () => assert.fail("Unexpected installation")).version; return null; }
+    :                                                              ^^^|^^^
+    :                                                                 `-- `version` cannot be reassigned
+ 18 | async function fixture() {
+    `----
+  help: Variable `version` is declared outside of the component/hook. Reassigning this value during render is a side effect which can cause unpredictable behavior. If this variable is used in rendering, use useState instead. Otherwise, update it in an effect
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/globals
+
+  ! react(refs): Cannot access refs during render
+    ,-[src/workspace/live/profile.ts:81:7]
+ 80 |   const observed = useRef(observation);
+ 81 |   if (observed.current !== observation) { observed.current = observation; publishEvent({ kind: "Invalidate" }); }
+    :       ^^^^^^^^|^^^^^^^
+    :               `-- Cannot access ref value during render
+ 82 |   const validation = "validation" in publication ? publication.validation : null;
+    `----
+  help: React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/refs
+
+  ! react(refs): Cannot access refs during render
+    ,-[src/workspace/live/profile.ts:81:51]
+ 80 |   const observed = useRef(observation);
+ 81 |   if (observed.current !== observation) { observed.current = observation; publishEvent({ kind: "Invalidate" }); }
+    :                                           ^^^^|^^^^^^^|^^^
+    :                                               |       `-- Cannot update ref value during render
+    :                                               `-- This value is a ref
+ 82 |   const validation = "validation" in publication ? publication.validation : null;
+    `----
+  help: React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/refs
+
+  ! react(refs): Cannot access refs during render
+    ,-[src/workspace/live/profile.ts:81:75]
+ 76 |   const publicationRef = useRef(publication);
+ 77 |   const publishEvent = (event: PublicationEvent) => { const next = publicationTransition(publicationRef.current, event); publicationRef.current = next; setPublication(next); };
+    :                                                                                          ^^^^^^^^^^^|^^^^^^^^^^
+    :                                                                                                     `-- The ref is accessed here
+ 78 |   const publishing = publication.kind === "Publishing";
+ 79 |   const observation = JSON.stringify({ items: items.data?.items.map(({ path, digest }) => [path, digest]), config: items.data?.config });
+ 80 |   const observed = useRef(observation);
+ 81 |   if (observed.current !== observation) { observed.current = observation; publishEvent({ kind: "Invalidate" }); }
+    :                                                                           ^^^^^^|^^^^^
+    :                                                                                 `-- This function accesses a ref value
+ 82 |   const validation = "validation" in publication ? publication.validation : null;
+    `----
+  help: React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/refs
+
+  ! react(refs): Cannot access refs during render
+    ,-[src/workspace/live/administration.ts:58:49]
+ 57 |   }, []);
+ 58 |   return { data, setData, loading: enabled && (!attempted.current || loading), busy, error, setError, run, reload };
+    :                                                 ^^^^^^^^|^^^^^^^^
+    :                                                         `-- Cannot access ref value during render
+ 59 | }
+    `----
+  help: React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/refs
+
+  ! react(refs): Cannot access refs during render
+    ,-[src/workspace/live/administration.ts:58:48]
+ 57 |   }, []);
+ 58 |   return { data, setData, loading: enabled && (!attempted.current || loading), busy, error, setError, run, reload };
+    :                                                ^^^^^^^^^|^^^^^^^^
+    :                                                         `-- Cannot access ref value during render
+ 59 | }
+    `----
+  help: React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/refs
+
+  ! react(refs): Cannot access refs during render
+    ,-[src/workspace/live/administration.ts:58:48]
+ 57 |   }, []);
+ 58 |   return { data, setData, loading: enabled && (!attempted.current || loading), busy, error, setError, run, reload };
+    :                                                ^^^^^^^^^^^^^^|^^^^^^^^^^^^^^
+    :                                                              `-- Cannot access ref value during render
+ 59 | }
+    `----
+  help: React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/refs
+
+  ! react(refs): Cannot access refs during render
+    ,-[src/workspace/live/administration.ts:58:36]
+ 57 |   }, []);
+ 58 |   return { data, setData, loading: enabled && (!attempted.current || loading), busy, error, setError, run, reload };
+    :                                    ^^^^^^^^^^^^^^^^^^^^^|^^^^^^^^^^^^^^^^^^^^
+    :                                                         `-- Cannot access ref value during render
+ 59 | }
+    `----
+  help: React refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/refs
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/shared/shared.tsx:15:14]
+ 14 |  */
+ 15 | export const GLOSSARY = {
+    :              ^^^^^^^^
+ 16 |   "Source Machine": {
+    `----
+
+  ! react(jsx-key): Missing "key" prop for element in array.
+      ,-[src/onboarding/onboarding.tsx:1226:29]
+ 1225 |                 items={[
+ 1226 |                   ["File", <Mono className="text-foreground">{invite === "(pasted)" ? "Pasted" : invite}</Mono>],
+      :                             ^^^^
+ 1227 |                   ["Source address", <Mono className="text-foreground">{live?.inspection?.endpoint ?? data.endpoint}</Mono>],
+      `----
+
+  ! react(jsx-key): Missing "key" prop for element in array.
+      ,-[src/onboarding/onboarding.tsx:1227:39]
+ 1226 |                   ["File", <Mono className="text-foreground">{invite === "(pasted)" ? "Pasted" : invite}</Mono>],
+ 1227 |                   ["Source address", <Mono className="text-foreground">{live?.inspection?.endpoint ?? data.endpoint}</Mono>],
+      :                                       ^^^^
+ 1228 |                   ["Expires", live?.inspection?.expiresAt ?? "In 52 minutes, or once used"],
+      `----
+
+  ! react(jsx-key): Missing "key" prop for element in array.
+      ,-[src/onboarding/onboarding.tsx:1230:22]
+ 1229 |                   [
+ 1230 |                     <Term term="Follower Group">Groups</Term>,
+      :                      ^^^^
+ 1231 |                     live ? live.inspection?.groups.join(", ") || "Base profile only" : <>
+      `----
+
+  ! react(jsx-key): Missing "key" prop for element in array.
+      ,-[src/onboarding/onboarding.tsx:1249:52]
+ 1248 |             <p className="text-sm text-muted-foreground">These fingerprints identify the Source and its secure connection. Compare both with the values shown on the Source through a separate trusted connection, such as an existing SSH session. If either differs, stop and request a new invitation.</p>
+ 1249 |             <Facts items={[["Source fingerprint", <Mono className="break-all">{live.inspection.sourceFingerprint}</Mono>], ["TLS fingerprint", <Mono className="break-all">{live.inspection.tlsFingerprint}</Mono>]]} />
+      :                                                    ^^^^
+ 1250 |             <label className={CHECK_ROW}><Checkbox checked={sourceTrusted} onCheckedChange={(checked) => setSourceTrusted(checked === true)} />I compared both fingerprints with the Source and they match.</label>
+      `----
+
+  ! react(jsx-key): Missing "key" prop for element in array.
+      ,-[src/onboarding/onboarding.tsx:1249:145]
+ 1248 |             <p className="text-sm text-muted-foreground">These fingerprints identify the Source and its secure connection. Compare both with the values shown on the Source through a separate trusted connection, such as an existing SSH session. If either differs, stop and request a new invitation.</p>
+ 1249 |             <Facts items={[["Source fingerprint", <Mono className="break-all">{live.inspection.sourceFingerprint}</Mono>], ["TLS fingerprint", <Mono className="break-all">{live.inspection.tlsFingerprint}</Mono>]]} />
+      :                                                                                                                                                 ^^^^
+ 1250 |             <label className={CHECK_ROW}><Checkbox checked={sourceTrusted} onCheckedChange={(checked) => setSourceTrusted(checked === true)} />I compared both fingerprints with the Source and they match.</label>
+      `----
+
+  ! react(globals): Cannot reassign variables declared outside of the component/hook
+    ,-[src/onboarding/lifecycle.test.tsx:27:3]
+ 26 | function Probe({ backend, evidenceView }: { backend: WorkspaceBackend; evidenceView?: "journal" }) {
+ 27 |   current = useEnrollmentController(backend, session);
+    :   ^^^|^^^
+    :      `-- `current` cannot be reassigned
+ 28 |   return evidenceView ? <SetupApproval controller={current} confirm /> : <div>{current.joined ? "Joined" : "Not joined"}</div>;
+    `----
+  help: Variable `current` is declared outside of the component/hook. Reassigning this value during render is a side effect which can cause unpredictable behavior. If this variable is used in rendering, use useState instead. Otherwise, update it in an effect
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/globals
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/onboarding/kit.tsx:20:17]
+ 19 |  */
+ 20 | export function useFocusOnMount<T extends HTMLElement>() {
+    :                 ^^^^^^^^^^^^^^^
+ 21 |   const ref = useRef<T>(null);
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+     ,-[src/onboarding/kit.tsx:319:17]
+ 318 | /** Run a fake job: ticks progress 0..100 then resolves. */
+ 319 | export function simulate(ms: number, onTick: (value: number) => void, onDone: () => void) {
+     :                 ^^^^^^^^
+ 320 |   const started = performance.now();
+     `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/onboarding/enrollment-controller.tsx:67:17]
+ 66 | 
+ 67 | export function useEnrollmentController(backend: WorkspaceBackend, session: GuiSession, statusState?: readonly [
+    :                 ^^^^^^^^^^^^^^^^^^^^^^^
+ 68 |   GuiSetupStatus | null, (status: GuiSetupStatus | null) => void,
+    `----
+
+  ! react(jsx-key): Missing "key" prop for element in array.
+     ,-[src/onboarding/enrollment-controller.tsx:496:49]
+ 495 |           <div className="mt-3 space-y-3">
+ 496 |             <Facts items={[["Plan identifier", <Mono className="break-all">{current.planDigest}</Mono>], ["Stage", current.stage]]} />
+     :                                                 ^^^^
+ 497 |             {c.plan && <SetupFields value={{ decisions: c.plan.decisions, exclusions: c.plan.exclusions, evidence: c.plan.evidence, imports: c.plan.imports }} />}
+     `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+   ,-[src/live/session.tsx:6:17]
+ 5 | 
+ 6 | export function overviewPath(role: GuiSession["role"]) {
+   :                 ^^^^^^^^^^^^
+ 7 |   return role === "unconfigured" ? "/setup" : `/${role}/overview`;
+   `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/lib/dither/pattern.tsx:20:14]
+ 19 |  */
+ 20 | export const ditherPath = (level: number, matrix: DitherMatrix = "bayer4") => {
+    :              ^^^^^^^^^^
+ 21 |   const key = `${matrix}:${level}`;
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/lib/dither/pattern.tsx:59:14]
+ 58 |  */
+ 59 | export const ditherMask = (
+    :              ^^^^^^^^^^
+ 60 |   level: number,
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/lib/dither/pattern.tsx:85:14]
+ 84 |  */
+ 85 | export const ditherMaskStyle = (
+    :              ^^^^^^^^^^^^^^^
+ 86 |   level: number,
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/components/ui/tabs.tsx:87:52]
+ 86 | 
+ 87 | export { Tabs, TabsList, TabsTrigger, TabsContent, tabsListVariants }
+    :                                                    ^^^^^^^^^^^^^^^^
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/components/ui/button.tsx:93:18]
+ 92 | 
+ 93 | export { Button, buttonVariants }
+    :                  ^^^^^^^^^^^^^^
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components.
+    ,-[src/components/ui/badge.tsx:48:17]
+ 47 | 
+ 48 | export { Badge, badgeVariants }
+    :                 ^^^^^^^^^^^^^
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file has exports. Move your component(s) to a separate file.
+    ,-[src/break/main.tsx:87:10]
+ 86 | 
+ 87 | function Frame({ scenario, children, suffix = "" }: { scenario: Scenario; children: ReactNode; suffix?: string }) {
+    :          ^^^^^
+ 88 |   const id = `${scenario.id}${suffix}`;
+    `----
+
+  ! react(only-export-components): Fast refresh only works when a file has exports. Move your component(s) to a separate file.
+     ,-[src/break/main.tsx:100:10]
+  99 | // Each stress case owns its navigation independently of the app URL and the other cases.
+ 100 | function FixtureWorkspace({ rows }: { rows: Follower[] }) {
+     :          ^^^^^^^^^^^^^^^^
+ 101 |   const [href, setHref] = useState("/source/machines/list");
+     `----
+
+  ! react(only-export-components): Fast refresh only works when a file has exports. Move your component(s) to a separate file.
+     ,-[src/break/main.tsx:109:10]
+ 108 | // Populate each real provider before mounting its views. No app module or saved state is patched.
+ 109 | function FixtureViews({ rows }: { rows: Follower[] }) {
+     :          ^^^^^^^^^^^^
+ 110 |   const ws = useWorkspace();
+     `----
+
+  ! react(only-export-components): Fast refresh only works when a file has exports. Move your component(s) to a separate file.
+     ,-[src/break/main.tsx:127:10]
+ 126 | 
+ 127 | function App() {
+     :          ^^^
+ 128 |   return <TooltipProvider delayDuration={250}>
+     `----
+
+  ! react(set-state-in-effect): Calling setState synchronously within an effect can trigger cascading renders
+     ,-[src/break/main.tsx:116:5]
+ 111 |   const [ready, setReady] = useState(false);
+ 112 |   useLayoutEffect(() => {
+     :   ^^^^^^^|^^^^^^^
+     :          `-- This is the containing effect
+ 113 |     ws.setFollowers!(rows);
+ 114 |     ws.setResources([]);
+ 115 |     ws.setInvitations!([]);
+ 116 |     setReady(true);
+     :     ^^^^|^^^
+     :         `-- Avoid calling setState() directly within an effect
+ 117 |   }, [rows]);
+     `----
+  help: Effects should synchronize React with external systems. Calling setState synchronously inside an effect starts another render and is usually unnecessary. Derive the value during render, initialize state directly, or update it from the event that caused the change. Use an effect only when synchronizing with an external system.
+  note: React Compiler skipped optimizing this component or hook. Additional guidance: https://react.dev/reference/eslint-plugin-react-hooks/lints/set-state-in-effect
+
+  ! react-hooks(exhaustive-deps): React Hook useLayoutEffect has a missing dependency: 'ws'
+     ,-[src/break/main.tsx:117:6]
+ 112 |   useLayoutEffect(() => {
+ 113 |     ws.setFollowers!(rows);
+     :     ^|
+     :      `-- useLayoutEffect uses `ws` here
+ 114 |     ws.setResources([]);
+ 115 |     ws.setInvitations!([]);
+ 116 |     setReady(true);
+ 117 |   }, [rows]);
+     :      ^^^^^^
+ 118 |   if (!ready) return null;
+     `----
+  help: Either include it or remove the dependency array.
+
+Found 73 warnings and 0 errors.
+Finished in 733ms on 121 files with 116 rules using 1 threads.
+OPTIONS http://127.0.0.1:36307/api/source-service 404 (Not Found)
+Cross-Origin Request Blocked: The Same Origin Policy disallows reading the remote resource at "http://127.0.0.1:36307/api/source-service".
+OPTIONS http://127.0.0.1:36307/api/source-service 404 (Not Found)
+Cross-Origin Request Blocked: The Same Origin Policy disallows reading the remote resource at "http://127.0.0.1:36307/api/source-service".
+✔ source Overview fetches only session/status and revisits retain page reads (386.955269ms)
+✔ follower Overview fetches only session/status and revisits retain page reads (246.615742ms)
+You have Reduced Motion enabled on your device. Animations may not appear as expected.. For more information and steps for solving, visit https://motion.dev/troubleshooting/reduced-motion-disabled
+GET http://127.0.0.1:36829/api/source-service 404 (Not Found)
+✔ self-update offers a same-major minor, preserves major notices and pairing warnings, and stops requests after installation (2079.907113ms)
+✔ status reload invalidates an earlier available check when disabled (89.67952ms)
+✔ poll failure retains a resumable ticket, not a running progress claim (578.129566ms)
+✔ the Version page treats an installed result with a warning as success (1145.715687ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 11040.699716

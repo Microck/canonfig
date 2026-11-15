@@ -1,5 +1,7 @@
 import { backupCommand } from "../backup/backup.ts";
 import { reconcileBackupSchedules } from "../backup/backup-schedule.ts";
+import { readFollowerFleet } from "./follower-fleet-update.ts";
+import { readFleetUpdate } from "../enrollment/fleet-update.ts";
 import { runtimeCredentialPolicy } from "./credential-policy.ts";
 import { runtimeStateLayer } from "./state-layer.ts";
 import {
@@ -358,6 +360,9 @@ const sourceCommandsLayer = (folder: string): Layer.Layer<
 
     const service: SourceCommandsService = {
       initialize: () => mapFailure(enrollment.initializeSource()).pipe(Effect.map(payload)),
+      fleetStatus: () => asSource("inspect a Fleet Update", mapFailure(enrollment.fleetStatus()).pipe(Effect.map(payload))),
+      startFleetUpdate: (input) => asSource("start a Fleet Update", mapFailure(enrollment.startFleetUpdate(input)).pipe(Effect.map(payload))),
+      stopFleetUpdate: (apply) => asSource("stop a Fleet Update", mapFailure(enrollment.stopFleetUpdate(apply)).pipe(Effect.map(payload))),
       scan: (input) =>
         asSource("scan its folder for tools", mapFailure(profiles.scan({ folder, write: input.write })).pipe(Effect.map(payload))),
       publish: (input) =>
@@ -1174,7 +1179,7 @@ const followerCommandsLayer = (
               "files Canonfig applied stay in place; a native schedule, if installed, still starts `canonfig sync`: remove it with `canonfig schedule remove`",
           });
         }).pipe(withEnrollmentLock),
-      synchronize: (input) => {
+      synchronize: (input, execute) => {
         // Only the rendered native job passes --scheduled, so the fire
         // record is evidence the real scheduler started this process.
         const scheduled = input.scheduled === true;
@@ -1218,7 +1223,7 @@ const followerCommandsLayer = (
           return start.pipe(Effect.andThen(Effect.gen(function*() {
             // A scheduled run restarts a down managed tunnel once, and a
             // transport failure while the tunnel is down reports the tunnel.
-            const result = yield* repository.getFollowerSynchronizationConfiguration().pipe(
+            const synchronize = repository.getFollowerSynchronizationConfiguration().pipe(
               Effect.catch(() => Effect.succeed(undefined)),
               Effect.flatMap((configuration) =>
                 withManagedTunnel(
@@ -1235,18 +1240,21 @@ const followerCommandsLayer = (
               Effect.catchTag("TunnelDownError", (error) => Effect.fail(commandFailure(error))),
               // Retain completed file-run evidence if shared-secret refresh fails.
               Effect.tap((result) => input.mode === "apply" ? synchronizeSharedSecrets().pipe(
-              Effect.provideService(MachineState, machine),
-              Effect.provideService(StateRepository, repository),
-              Effect.mapError((error) => new CliCommandFailure({
-                category: secretFailureCategory(error),
-                message: `File synchronization completed, but shared-secret synchronization failed: ${error.message}`,
-                details: result,
-              })),
-            ) : Effect.void), Effect.tap((completed) => input.mode === "apply" ? reconcileBackupSchedules(dirname(statePath)).pipe(
-              Effect.provideService(MachineState, machine),
-              Effect.mapError((error) => new CliCommandFailure({ category: commandFailure(error).category,
-                message: `File synchronization completed, but backup schedule reconciliation failed: ${commandFailure(error).message}`, details: completed })),
-            ) : Effect.void), Effect.catch((error) => {
+                Effect.provideService(MachineState, machine),
+                Effect.provideService(StateRepository, repository),
+                Effect.mapError((error) => new CliCommandFailure({
+                  category: secretFailureCategory(error),
+                  message: `File synchronization completed, but shared-secret synchronization failed: ${error.message}`,
+                  details: result,
+                })),
+              ) : Effect.void),
+              Effect.tap((completed) => input.mode === "apply" ? reconcileBackupSchedules(dirname(statePath)).pipe(
+                Effect.provideService(MachineState, machine),
+                Effect.mapError((error) => new CliCommandFailure({ category: commandFailure(error).category,
+                  message: `File synchronization completed, but backup schedule reconciliation failed: ${commandFailure(error).message}`, details: completed })),
+              ) : Effect.void),
+            );
+            const result = yield* (execute === undefined ? synchronize : execute(synchronize)).pipe(Effect.catch((error) => {
               const failed = scheduled ? mapFailure(repository.transitionScheduledInvocation({
                 ...identity, _tag: "Failed", at: new Date().toISOString(), reason: fireFailureReason(error),
               })) : Effect.void;
@@ -1351,6 +1359,7 @@ const followerCommandsLayer = (
                   });
                   return {
                     machineRole,
+                    fleetUpdate: yield* Effect.try({ try: () => readFleetUpdate(statePath), catch: (cause) => new CliCommandFailure({ category: "human-action-required", message: String(cause) }) }),
                     lifecycle: {
                       discovered: notReached("no Source endpoint is configured"),
                       selected: notReached("no profile is selected"),
@@ -1393,6 +1402,7 @@ const followerCommandsLayer = (
                     tlsFingerprint: configuration.source.tlsFingerprint,
                   },
                   ...state,
+                  fleetUpdate: yield* Effect.try({ try: () => readFollowerFleet(statePath), catch: (cause) => new CliCommandFailure({ category: "human-action-required", message: String(cause) }) }),
                   enrollmentLifecycle: configuration.lifecycle._tag,
                   enrollmentRecovery: configuration.lifecycle._tag === "RollbackPending" ? rollbackRecoveryDetail : undefined,
                   activeRecovery: openRun,

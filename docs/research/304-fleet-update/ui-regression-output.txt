@@ -1,0 +1,15 @@
+$ TSX_TSCONFIG_PATH=ui/tsconfig.app.json node --import tsx --test ui/src/workspace/live/self-update.test.tsx
+Run in task-owned Raft workspace after adding fleet: null to the terminal Version fixture.
+
+✔ status reload invalidates an earlier available check when disabled (78.431163ms)
+✔ poll failure retains a resumable ticket, not a running progress claim (591.01465ms)
+✔ the Version page treats an installed result with a warning as success (1131.395643ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4051.657808
+Wall time: 5.83 seconds

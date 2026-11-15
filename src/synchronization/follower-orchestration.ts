@@ -45,6 +45,7 @@ import {
   fileResource,
   parseSurfaceResourceId,
   planBuilt,
+  releaseExcludedSkillRecords,
   rootContext,
   takeoverSummary,
   type BuiltResource,
@@ -472,7 +473,8 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
     .filter((entry) => entry.installed)
     .map((entry) => entry.harness));
   const notInstalled = loaded.model.harnesses.filter((harness) => !installed.has(harness));
-  const projection = yield* buildProjection(loaded, context, takeovers, appliedResources, notInstalled);
+  const projectionApplied = releaseExcludedSkillRecords(appliedResources, loaded.local.excludeSkills);
+  const projection = yield* buildProjection(loaded, context, takeovers, projectionApplied, notInstalled);
   const authorized = new Set<string>(built.map((item) => item.resource.id));
   const requiredTools = entries.flatMap((entry) =>
     entry.key.startsWith("mcp.")
@@ -496,7 +498,7 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
     const path = relative(folderPath.absolute, target);
     return path.startsWith(`hooks${sep}`) || path.startsWith(`rules${sep}`);
   };
-  const retired = appliedResources.filter((record) =>
+  const retired = projectionApplied.filter((record) =>
     !current.has(record.resource) && !projection.isHeld(record) && !(heldConsumers && isLinkedFile(record.target))
   );
   const consumers = [...projection.built.map((item) => item.resource.id), ...retired.map((record) => record.resource)]
@@ -515,10 +517,12 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
       const inside = fromFolder !== ".." && !fromFolder.startsWith(`..${sep}`) && !isAbsolute(fromFolder);
       return inside ? [] : mirrored;
     },
-    appliedResources,
+    appliedResources: projectionApplied,
   });
   return {
     ...planned,
+    // Rollback restores current ownership; see planFolder.
+    appliedResources,
     takeovers: projection.takeovers,
     diagnostics: projection.diagnostics,
     harnesses: projection.harnesses,

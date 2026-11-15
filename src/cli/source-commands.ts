@@ -1,5 +1,6 @@
 import { Context, Data, type Effect } from "effect";
 
+import type { FleetStart } from "../domain/fleet-update.ts";
 import type {
   FollowerId,
   GroupName,
@@ -47,6 +48,9 @@ export interface SourceInviteInput {
 
 export interface SourceCommandsService {
   readonly initialize: () => Effect.Effect<CliPayload, CliCommandFailure>;
+  readonly fleetStatus: () => Effect.Effect<CliPayload, CliCommandFailure>;
+  readonly startFleetUpdate: (input: FleetStart) => Effect.Effect<CliPayload, CliCommandFailure>;
+  readonly stopFleetUpdate: (apply: boolean) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly scan: (
     input: SourceScanInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
