@@ -47,22 +47,32 @@ export const backupScheduleStatus = (folder: string) => Effect.gen(function*() {
   }));
 });
 
-/** Only this namespace is reconciled. Synchronization schedules remain locally controlled. */
+/**
+ * Only this namespace is reconciled. Synchronization schedules remain locally controlled. A policy that can't run
+ * (no consent, no password) is listed in `refused` and keeps whatever jobs it already had, so the next scheduled
+ * run records why it failed where the GUI shows it; the other policies are still reconciled.
+ */
 export const reconcileBackupSchedules = Effect.fn("Backup.reconcileSchedules")(function*(folder: string) {
   return yield* withRunLock(localBackupPath(folder), "reconcile backup schedules", Effect.gen(function*() {
     const machine = yield* MachineState;
     const { local, policies } = yield* readBackupPolicies(folder);
     if (caseCollision(Object.keys(policies)) !== undefined) return yield* new BackupError({ code: "BACKUP_INVALID", message: "Backup policy names must be unique on case-insensitive machines" });
+    const previous = yield* readJobs(folder);
     const desired: Array<BackupJob> = [];
+    const refused: Array<{ readonly name: string; readonly message: string }> = [];
     for (const [name, policy] of Object.entries(policies)) {
       if (local.disabled.includes(name) || (policy.schedule === undefined && policy.drillSchedule === undefined)) continue;
-      yield* requireCapturePermission(name, policy, local);
-      yield* backupPassword(policy, local);
+      const problem = yield* requireCapturePermission(name, policy, local).pipe(
+        Effect.andThen(backupPassword(policy, local)), Effect.as(undefined), Effect.catch(error => Effect.succeed(error)));
+      if (problem !== undefined) {
+        refused.push({ name, message: problem.message });
+        desired.push(...previous.filter(job => job.name === name));
+        continue;
+      }
       if (policy.schedule !== undefined) desired.push({ name, action: "run", schedule: policy.schedule });
       if (policy.drillSchedule !== undefined) desired.push({ name, action: "drill", schedule: policy.drillSchedule });
     }
-    const previous = yield* readJobs(folder);
-    if (desired.length === 0 && previous.length === 0) return { installed: 0, removed: 0 };
+    if (desired.length === 0 && previous.length === 0) return { installed: 0, removed: 0, refused };
     // Persist ownership before native writes. An interrupted install/removal remains discoverable on retry.
     const pending = new Map([...previous, ...desired].map(job => [keyOf(job), job]));
     const definitions = yield* Effect.forEach(desired, job => render(job).pipe(Effect.map(definition => ({ job, definition }))));
@@ -87,6 +97,6 @@ export const reconcileBackupSchedules = Effect.fn("Backup.reconcileSchedules")(f
       removed += 1;
     }
     yield* writeJobs(folder, desired);
-    return { installed, removed };
+    return { installed, removed, refused };
   }));
 });

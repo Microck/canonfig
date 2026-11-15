@@ -87,6 +87,7 @@ import {
 import {
   defaultScheduledInvocation,
   FollowerConfigurationFields,
+  FollowerSynchronizationConfigurationError,
 } from "../synchronization/follower-sync-config.ts";
 import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
@@ -164,6 +165,10 @@ const doctorAgentFromEnvironment = (): DoctorAgentConfiguration | undefined => {
     executable: executable ?? "",
   };
 };
+
+/** `recover` or `abandon` on a machine with no open local run and no follower enrollment. */
+const nothingUnfinished = new FollowerSynchronizationConfigurationError({ reason: "missing",
+  message: "this machine has no unfinished run to recover or abandon" });
 
 const payload = <Value>(value: Value): CliPayload =>
   Schema.decodeUnknownSync(Schema.MutableJson)(
@@ -1254,21 +1259,22 @@ const followerCommandsLayer = (
           })));
         }));
       },
-      // An open local projection run is resolved before any follower run.
+      // An open local projection run is resolved before any follower run. A Source or standalone machine has no
+      // follower run, so with no local run open it is told there is nothing to resolve.
       abandon: () =>
         mapFailure(Effect.gen(function*() {
-          return (yield* hasOpenLocalRun)
-            ? yield* abandonLocal(statePath)
-            : yield* abandonFollowerRun(statePath);
+          if (yield* hasOpenLocalRun) return yield* abandonLocal(statePath);
+          if ((yield* repository.getFollowerSynchronizationConfiguration()) === undefined) return yield* nothingUnfinished;
+          return yield* abandonFollowerRun(statePath);
         }).pipe(
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),
         )).pipe(Effect.map(payload)),
       recover: () =>
         mapFailure(Effect.gen(function*() {
-          return (yield* hasOpenLocalRun)
-            ? yield* recoverLocal(statePath)
-            : yield* recoverFollower(statePath);
+          if (yield* hasOpenLocalRun) return yield* recoverLocal(statePath);
+          if ((yield* repository.getFollowerSynchronizationConfiguration()) === undefined) return yield* nothingUnfinished;
+          return yield* recoverFollower(statePath);
         }).pipe(
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),

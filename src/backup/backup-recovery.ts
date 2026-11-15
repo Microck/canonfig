@@ -128,15 +128,19 @@ export const withRecoveryCredentials = <A, E, R>(
   return yield* Effect.uninterruptibleMask(restore => Effect.gen(function*() {
     const created: Array<CredentialReference> = [];
     const references = new Map<string, CredentialReference>();
-    const outcome = yield* Effect.exit(restore(Effect.gen(function*() {
-      for (const credential of recovery.credentials) {
-        const reference = yield* machine.storeCredential({ name: `canonfig-recovery-${randomUUID()}`, value: Redacted.make(credential.value),
-          beforeStore: reference => Effect.sync(() => { created.push(reference); }),
-        }).pipe(Effect.mapError(unavailable));
-        references.set(credential.reference, reference);
-      }
+    const outcome = yield* Effect.exit(Effect.gen(function*() {
+      yield* restore(Effect.gen(function*() {
+        for (const credential of recovery.credentials) {
+          const reference = yield* machine.storeCredential({ name: `canonfig-recovery-${randomUUID()}`, value: Redacted.make(credential.value),
+            beforeStore: reference => Effect.sync(() => { created.push(reference); }),
+          }).pipe(Effect.mapError(unavailable));
+          references.set(credential.reference, reference);
+        }
+      }));
+      // `use` publishes files that point at these references. It stays uninterruptible: an interrupted promise keeps
+      // writing after Effect stops waiting, so removing the references then would leave a HOME that points at nothing.
       return yield* use(references);
-    })));
+    }));
     if (!input.keep || Exit.isFailure(outcome)) {
       const removed = yield* Effect.forEach(created, reference => Effect.exit(machine.removeCredential(reference)));
       if (removed.some(Exit.isFailure)) return yield* new BackupError({ code: "BACKUP_CREDENTIAL_REQUIRED", message: `Recovery could not remove its new native credentials. Unlock the secure store and remove these references before trying again: ${created.join(", ")}` });

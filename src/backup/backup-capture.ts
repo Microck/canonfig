@@ -131,9 +131,19 @@ export const captureBackupFiles = async (input: {
             const destination = join(directory, archivePath);
             await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
             const live = new DatabaseSync(source, { readOnly: true });
-            try { await sqliteBackup(live, destination); }
-            catch { throw new BackupIoError("BACKUP_CONFLICT", `${archivePath} is a database its harness held busy. Close the harness or exclude the file, then back up again.`); }
-            finally { live.close(); }
+            try {
+              // The snapshot is page_count × page_size bytes with the WAL folded in, so a database the budget can't
+              // hold is refused before anything is copied. reserve below still checks the final size.
+              const pages = Number(live.prepare("PRAGMA page_count").get()?.["page_count"]);
+              const pageSize = Number(live.prepare("PRAGMA page_size").get()?.["page_size"]);
+              if (files.length >= input.policy.maximumFiles || bytes + pages * pageSize > input.policy.maximumBytes) {
+                throw new BackupIoError("BACKUP_INVALID", "Capture exceeds this policy's maximumFiles or maximumBytes");
+              }
+              await sqliteBackup(live, destination);
+            } catch (error) {
+              if (error instanceof BackupIoError) throw error;
+              throw new BackupIoError("BACKUP_CONFLICT", `${archivePath} is a database its harness held busy. Close the harness or exclude the file, then back up again.`);
+            } finally { live.close(); }
             await chmod(destination, 0o600);
             const snapshot = await hashBackupFile(destination);
             reserve(archivePath, snapshot.bytes);

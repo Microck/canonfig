@@ -54,8 +54,8 @@ export const readBackupRuns = (folder: string) => backupWork("Read backup run hi
 });
 
 /**
- * Callers hold the `backups.json` run lock (`withStorage` does for every run and drill), which serializes this
- * read-modify-write with every other backup operation on the folder.
+ * Callers hold the `backups.json` run lock (`backupCommand`'s `record` takes it for each write), which serializes
+ * this read-modify-write with configuration changes and other policies' outcomes.
  */
 export const recordBackupOutcome = (folder: string, name: string, kind: "run" | "drill", outcome: BackupOutcome) => Effect.gen(function*() {
   const machine = yield* MachineState;
@@ -106,17 +106,21 @@ export const requireCapturePermission = (name: string, policy: BackupPolicy, loc
     : Effect.void;
 };
 
+/** This installation's writer identifier, if it has one yet. Reading never creates it. */
+export const readBackupOwner = (folder: string) => backupWork("Read backup owner", async () => {
+  const path = join(folder, ".backup-owner");
+  try {
+    const info = await lstat(path);
+    if (!info.isFile() || info.size > 64) throw new BackupIoError("BACKUP_INVALID", "Backup owner is not a bounded regular file");
+    return Schema.decodeUnknownSync(BackupName)((await readFile(path, "utf8")).trim());
+  } catch (cause) { if (missingBackupFile(cause)) return undefined; throw cause; }
+});
+
 /** Created once per installation. Never captured or copied into a recovered machine. */
 export const backupOwner = (folder: string) => Effect.gen(function*() {
   const machine = yield* MachineState;
   const path = join(folder, ".backup-owner");
-  const existing = yield* backupWork("Read backup owner", async () => {
-    try {
-      const info = await lstat(path);
-      if (!info.isFile() || info.size > 64) throw new BackupIoError("BACKUP_INVALID", "Backup owner is not a bounded regular file");
-      return Schema.decodeUnknownSync(BackupName)((await readFile(path, "utf8")).trim());
-    } catch (cause) { if (missingBackupFile(cause)) return undefined; throw cause; }
-  });
+  const existing = yield* readBackupOwner(folder);
   if (existing !== undefined) return existing;
   yield* backupWork("Create backup directory", () => mkdir(folder, { recursive: true, mode: 0o700 }));
   const owner = randomUUID();

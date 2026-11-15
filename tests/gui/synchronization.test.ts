@@ -127,8 +127,12 @@ it("serves real role-gated secrets and a verified Source archive without leaking
     ["/api/local/overlays", "PUT", { item: "rules/test" }], ["/api/local/overlays", "DELETE", { item: "rules/test" }],
     ["/api/tunnel", "GET", undefined], ["/api/tunnel/start", "POST", {}], ["/api/tunnel/stop", "POST", {}], ["/api/enrollment", "DELETE", {}],
   ] as const) expect((await api.call(path, method, body)).payload, path).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
-  // A Source recovers or abandons its own interrupted local run, such as a restore from Backups.
-  for (const path of ["/api/recovery", "/api/recovery/abandon"]) expect((await api.call(path, "POST", {})).status, path).toBe(202);
+  // A Source may recover or abandon its own interrupted local run, such as a restore from Backups. With none open
+  // the operation runs and says there is nothing to resolve, rather than asking a Source to enroll as a Follower.
+  for (const path of ["/api/recovery", "/api/recovery/abandon"]) {
+    expect(await api.operation(path), path).toMatchObject({ state: "failed",
+      failure: { category: "usage-or-configuration", message: "this machine has no unfinished run to recover or abandon" } });
+  }
   // A Source lists its own takeover snapshots; none exist before it first projects into a harness.
   expect((await api.call("/api/backups")).payload).toEqual({ snapshots: [] });
   const exported = await api.call("/api/exports", "POST", { includeHarnesses: false });

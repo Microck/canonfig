@@ -120,14 +120,19 @@ function Option({ name, checked, onChange, title, children }: { name: string; ch
   );
 }
 
-/** Every day, every week on one day, or only when run. A custom schedule saved elsewhere stays until replaced. */
+/**
+ * Every day, every week on one day, or only when run. A custom schedule saved elsewhere stays until replaced, and so
+ * does a weekly schedule on several days: changing its time keeps all of them; picking one day replaces them.
+ */
 function WhenFields({ value, onChange, id }: { value: BackupPolicy["schedule"]; onChange: (value: BackupPolicy["schedule"]) => void; id: string }) {
   const kind = value === undefined ? "manual" : value.kind;
   const time = value !== undefined && "localTime" in value ? value.localTime : "03:00";
   const timezone = value?.timezone;
-  const day: Day = value?.kind === "weekly" ? ("weekdays" in value ? value.weekdays[0] : value.weekday) ?? "Sun" : "Sun";
-  const set = (next: string, nextTime = time, nextDay = day): void => onChange(next === "manual" ? undefined
-    : next === "daily" ? { kind: "daily", localTime: nextTime, timezone } : { kind: "weekly", weekdays: [nextDay], localTime: nextTime, timezone });
+  const saved: ReadonlyArray<Day> = value?.kind === "weekly" ? ("weekdays" in value ? value.weekdays : [value.weekday]) : [];
+  const days: ReadonlyArray<Day> = saved.length > 0 ? saved : ["Sun"];
+  const several = days.length > 1 ? days.join(", ") : null;
+  const set = (next: string, nextTime = time, nextDays = days): void => onChange(next === "manual" ? undefined
+    : next === "daily" ? { kind: "daily", localTime: nextTime, timezone } : { kind: "weekly", weekdays: [...nextDays], localTime: nextTime, timezone });
   return (
     <div className="flex flex-wrap items-center gap-2">
       <Select value={kind === "custom" ? "custom" : kind} onValueChange={(next) => set(next)}>
@@ -140,9 +145,12 @@ function WhenFields({ value, onChange, id }: { value: BackupPolicy["schedule"]; 
         </SelectContent>
       </Select>
       {kind === "weekly" && (
-        <Select value={day} onValueChange={(next) => set("weekly", time, next as Day)}>
-          <SelectTrigger aria-label="Day" className="w-[96px]"><SelectValue /></SelectTrigger>
-          <SelectContent>{WEEK.map((entry) => <SelectItem key={entry} value={entry}>{entry}</SelectItem>)}</SelectContent>
+        <Select value={several ?? days[0]} onValueChange={(next) => { if (next !== several) set("weekly", time, [next as Day]); }}>
+          <SelectTrigger aria-label="Day" className={several ? "w-auto" : "w-[96px]"}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {several && <SelectItem value={several}>{several}</SelectItem>}
+            {WEEK.map((entry) => <SelectItem key={entry} value={entry}>{entry}</SelectItem>)}
+          </SelectContent>
         </Select>
       )}
       {(kind === "daily" || kind === "weekly") && <>
@@ -182,36 +190,44 @@ function Settings({ name: initialName, initial, onClose }: { name: string; initi
   const listed = ws.harnesses.filter((harness) => harness.listed).map((harness) => harness.id);
   const targetChoices = listed.length > 0 ? listed : TARGET_IDS.filter((id): id is HarnessId => id in HARNESS_NAMES);
   const declaredOnly = !isNew && status !== null && !(initialName in status.local.policies);
-  const problem = !name ? "Enter a name." : destinationLabel(destination).trim() === "" ? "Enter where to keep it."
+  // Names are unique ignoring case, as on case-insensitive machines; saving a taken one would replace that backup.
+  const taken = isNew && status !== null && Object.keys(status.policies).some((existing) => existing.toLowerCase() === name.toLowerCase());
+  const problem = !name ? "Enter a name." : taken ? `A backup called ${name} already exists.` : destinationLabel(destination).trim() === "" ? "Enter where to keep it."
     : !policy.folder && policy.harnesses.mode === "none" && !policy.sourceIdentity && !policy.sharedSecrets ? "Choose what to back up."
     : policy.harnesses.mode !== "none" && policy.harnesses.targets.length === 0 ? "Choose at least one harness."
     : encrypted && savedAlias === undefined && password.length < 8 ? "Enter a password of at least 8 characters." : null;
+  // The form is locked for the whole save (password, configure, then pause), so what is saved is what the sheet shows.
+  const [saving, setSaving] = useState(false);
+  const busy = saving || backup.action.loading;
   const save = async () => {
-    // A new password is stored on this machine first; the policy then names it. Aliases are never replaced, because
-    // existing copies stay encrypted with the old one.
-    const alias = !encrypted ? undefined : savedAlias ?? (status?.local.passwords[name] === undefined ? name : `${name}-${Date.now()}`);
-    if (encrypted && savedAlias === undefined && !(await backup.run({ action: "password", name: alias!, password }))) return;
-    const next = { ...policy, passwordReference: alias, include: policy.include.filter((glob) => glob.trim()), exclude: policy.exclude.filter((glob) => glob.trim()) };
-    // configure checks the destination, password and tools before saving; a refusal shows at the top of the sheet.
-    const saved = await backup.run({ action: "configure", name, policy: next, allowCredentials: capturesCredentials(next) && consent });
-    if (saved === null) { form.current?.scrollTo({ top: 0 }); return; }
-    // configure always turns the backup on, so a backup left off is paused again afterwards.
-    if (!enabled && !(await backup.run({ action: "disable", name }))) return;
-    toast.success(isNew ? `Created ${name}` : `Saved ${name}`);
-    for (const warning of saved.warnings) toast.warning(warning);
-    onClose();
+    setSaving(true);
+    try {
+      // A new password is stored on this machine first; the policy then names it. Aliases are never replaced, because
+      // existing copies stay encrypted with the old one.
+      const alias = !encrypted ? undefined : savedAlias ?? (status?.local.passwords[name] === undefined ? name : `${name}-${Date.now()}`);
+      if (encrypted && savedAlias === undefined && !(await backup.run({ action: "password", name: alias!, password }))) return;
+      const next = { ...policy, passwordReference: alias, include: policy.include.filter((glob) => glob.trim()), exclude: policy.exclude.filter((glob) => glob.trim()) };
+      // configure checks the destination, password and tools before saving; a refusal shows at the top of the sheet.
+      const saved = await backup.run({ action: "configure", name, policy: next, allowCredentials: capturesCredentials(next) && consent });
+      if (saved === null) { form.current?.scrollTo({ top: 0 }); return; }
+      // configure always turns the backup on, so a backup left off is paused again afterwards.
+      if (!enabled && !(await backup.run({ action: "disable", name }))) return;
+      toast.success(isNew ? `Created ${name}` : `Saved ${name}`);
+      for (const warning of saved.warnings) toast.warning(warning);
+      onClose();
+    } finally { setSaving(false); }
   };
   // An edited draft asks before the sheet closes or the page navigates away.
   const dirty = name !== initialName || password !== "" || JSON.stringify(policy) !== JSON.stringify(initial)
     || enabled !== !status?.local.disabled.includes(initialName) || consent !== (status?.local.allowCredentials.includes(initialName) ?? false);
   const guard = useLeaveGuard(dirty, isNew ? "this new backup" : initialName);
   const [discarding, setDiscarding] = useState(false);
-  const dismiss = () => { if (backup.action.loading) return; if (dirty) setDiscarding(true); else onClose(); };
+  const dismiss = () => { if (busy) return; if (dirty) setDiscarding(true); else onClose(); };
   return (
     <Sheet open onOpenChange={(open) => !open && dismiss()}>
       <SheetContent className="w-full gap-0 sm:max-w-[520px]">
         <SheetHeader><SheetTitle>{isNew ? "New backup" : initialName}</SheetTitle></SheetHeader>
-        <form ref={form} id="backup-settings" className="grid flex-1 content-start gap-5 overflow-y-auto px-4 pb-6" onSubmit={(event) => { event.preventDefault(); if (problem === null) void save(); }}>
+        <form ref={form} id="backup-settings" inert={saving} className="grid flex-1 content-start gap-5 overflow-y-auto px-4 pb-6" onSubmit={(event) => { event.preventDefault(); if (problem === null) void save(); }}>
           {backup.action.error && <ErrorNotice error={backup.action.error} />}
           {isNew ? (
             <div className="grid gap-1.5">
@@ -356,8 +372,8 @@ function Settings({ name: initialName, initial, onClose }: { name: string; initi
         </form>
         <SheetFooter className="flex-row items-center justify-end gap-2 border-t border-border">
           {problem !== null && name !== "" && <span className="mr-auto text-sm text-muted-foreground">{problem}</span>}
-          <Button type="button" variant="ghost" disabled={backup.action.loading} onClick={dismiss}>Cancel</Button>
-          <Button type="submit" form="backup-settings" variant="primary" disabled={problem !== null || backup.action.loading}>{backup.action.loading ? "Checking…" : isNew ? "Create backup" : "Save"}</Button>
+          <Button type="button" variant="ghost" disabled={busy} onClick={dismiss}>Cancel</Button>
+          <Button type="submit" form="backup-settings" variant="primary" disabled={problem !== null || busy}>{busy ? "Checking…" : isNew ? "Create backup" : "Save"}</Button>
         </SheetFooter>
       </SheetContent>
       <ConfirmDialog open={discarding} onOpenChange={setDiscarding} title="Discard unsaved changes?"
@@ -366,7 +382,32 @@ function Settings({ name: initialName, initial, onClose }: { name: string; initi
   );
 }
 
-function RestoreDialog({ name, policy, copies, initial, onClose }: { name: string; policy: BackupPolicy; copies: ReadonlyArray<BackupSnapshot>; initial: string; onClose: () => void }) {
+/**
+ * Whose copies the list shows. A replaced machine writes under a new identifier, so its own list starts empty; it
+ * finds the old machine here, and listing or restoring then reads that machine's copies.
+ */
+function CopiesFrom({ name, shown }: { name: string; shown: string | undefined }) {
+  const backup = useWorkspace().backup;
+  const own = backup.status?.owner;
+  const found = backup.owners[name];
+  if (found === undefined) {
+    return <Button size="xs" variant="ghost" className="justify-self-start" disabled={backup.action.loading} onClick={() => void backup.run({ action: "owners", name })}>Find copies from other machines</Button>;
+  }
+  const others = found.filter((owner) => owner !== own);
+  if (others.length === 0) return <p className="text-sm text-muted-foreground">No other machine has copies here.</p>;
+  const choices = own === undefined ? others : [own, ...others];
+  return (
+    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+      <span>Copies from</span>
+      <Select value={shown ?? ""} disabled={backup.action.loading} onValueChange={(owner) => void backup.run({ action: "list", name, owner: owner === own ? undefined : owner })}>
+        <SelectTrigger aria-label="Copies from" className="w-auto"><SelectValue placeholder="Choose a machine" /></SelectTrigger>
+        <SelectContent>{choices.map((owner) => <SelectItem key={owner} value={owner}>{owner === own ? "This machine" : `Another machine (${owner.slice(0, 8)})`}</SelectItem>)}</SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+function RestoreDialog({ name, owner, policy, copies, initial, onClose }: { name: string; owner: string | undefined; policy: BackupPolicy; copies: ReadonlyArray<BackupSnapshot>; initial: string; onClose: () => void }) {
   const ws = useWorkspace();
   const backup = ws.backup;
   const [id, setId] = useState(initial);
@@ -375,7 +416,8 @@ function RestoreDialog({ name, policy, copies, initial, onClose }: { name: strin
   const [recover, setRecover] = useState(false);
   const [replace, setReplace] = useState(false);
   const busy = backup.action.loading;
-  const selection = { name, snapshot: id };
+  // The copies may be another machine's (picked under "Copies from"), so the request names their writer.
+  const selection = { name, snapshot: id, owner };
   // Recovery credentials only travel in encrypted copies; an older copy may hold them after the policy stopped capturing them.
   const encrypted = copies.find((copy) => copy.id === id)?.encrypted === true;
   const ready = target === "test" || (target === "folder" ? folder.trim() !== "" : replace);
@@ -600,6 +642,7 @@ export function BackupsView() {
                   </div>
                 </Fold>
 
+                <CopiesFrom name={current} shown={listing?.owner} />
                 {listing === null ? <p className="py-8 text-center text-sm text-muted-foreground">{backup.action.loading ? "Loading copies…" : "Copies couldn't be listed."}</p>
                   : copies.length === 0 ? <p className="py-8 text-center text-sm text-muted-foreground">No copies yet. Back up now to make the first one.</p> : (
                   <ul aria-label={`Copies of ${current}`} data-tour="backups-copies" className="grid">
@@ -627,7 +670,7 @@ export function BackupsView() {
         </section>
       </Body>
       {editing && <Settings key={editing.name} name={editing.name} initial={editing.policy} onClose={() => setEditing(null)} />}
-      {restoring && policy && <RestoreDialog name={current} policy={policy} copies={copies} initial={restoring} onClose={() => setRestoring(null)} />}
+      {restoring && policy && <RestoreDialog name={current} owner={listing?.owner} policy={policy} copies={copies} initial={restoring} onClose={() => setRestoring(null)} />}
       <ConfirmDialog open={consent} onOpenChange={setConsent} title={`Allow ${current} on this machine?`}
         body="It copies sign-in data or keys to its destination, encrypted with its password."
         confirm="Allow" onConfirm={() => void backup.run({ action: "allow-credentials", name: current })} />

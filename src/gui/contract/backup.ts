@@ -7,6 +7,8 @@ export const GuiBackupStatus = Schema.Struct({
   policies: BackupPolicies,
   /** The latest run and restore drill of each policy on this machine. */
   runs: BackupRuns,
+  /** This installation's writer identifier, once it has backed up or listed copies. Absent on a fresh installation. */
+  owner: Schema.optional(BackupName),
   schedules: Schema.Array(Schema.Json),
 });
 export type GuiBackupStatus = typeof GuiBackupStatus.Type;
@@ -36,5 +38,7 @@ export const GuiBackupRequest = Schema.Union([
 export type GuiBackupRequest = typeof GuiBackupRequest.Type;
 export const GuiBackupList = Schema.Struct({ owner: BackupName, snapshots: Schema.Array(BackupSnapshot) });
 export type GuiBackupList = typeof GuiBackupList.Type;
+/** The writers that have copies of a policy at its destination; a replaced machine lists and restores an old one's. */
+export const GuiBackupOwners = Schema.Struct({ owners: Schema.Array(BackupName) });
 /** What configure, enable and check report besides success: problems the run may outgrow, like an offline host. */
 export const GuiBackupWarnings = Schema.Struct({ warnings: Schema.Array(Schema.String) });

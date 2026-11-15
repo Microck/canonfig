@@ -213,6 +213,13 @@ describe("portable backup recovery", () => {
     finally { restored.close(); }
   }, 60_000);
 
+  it("saves a scheduled policy that lacks consent and lists it as refused instead of failing reconciliation", async () => {
+    const machine = fixture();
+    await machine.run({ action: "password", name: "recovery", value: Redacted.make("frost library maple canvas") });
+    const saved = await machine.configure({ includeCredentials: true, passwordReference: "recovery", schedule: { kind: "daily", localTime: "03:00" } });
+    expect(saved).toMatchObject({ schedules: { installed: 0, removed: 0, refused: [{ name: "daily", message: expect.stringContaining("needs local consent") }] } });
+  }, 60_000);
+
   it("requires explicit native-store recovery and never falls back to credential files", async () => {
     const machine = fixture();
     await machine.run({ action: "password", name: "recovery", value: Redacted.make("synthetic recovery credential") });

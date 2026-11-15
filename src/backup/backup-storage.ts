@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, copyFile, link, lstat, mkdir, open, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { access, copyFile, lstat, mkdir, open, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { devNull } from "node:os";
 import { dirname, isAbsolute, join, parse } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -216,15 +216,24 @@ export const openBackupStorage = async (input: {
   };
   const put = async (name: string, source: string): Promise<void> => {
     if (destination.kind === "local") {
-      // Copy beside the final name, then link it into place: an interrupted copy never leaves a partial object
-      // under its final name, and link (unlike rename) refuses to replace one that exists.
+      // Copy beside the final name, then rename it into place: an interrupted copy never leaves a partial object
+      // under its final name. Rename works on every filesystem (exFAT and FAT drives have no hard links) but would
+      // replace an existing file, so an existing name is compared first. Nothing else writes this namespace
+      // meanwhile: the owner is per installation, and this policy's run lock is held for the whole operation.
+      const final = join(root, name);
+      const existing = await lstat(final).catch((error) => {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      if (existing !== undefined) {
+        const [stored, intended] = await Promise.all([hashBackupFile(final), hashBackupFile(source)]);
+        if (stored.sha256 !== intended.sha256) throw new BackupIoError("BACKUP_VERIFY_FAILED", "An immutable backup object already exists with different content");
+        return;
+      }
       const partial = join(root, `${name}.partial-${randomUUID()}`);
-      await copyFile(source, partial, constants.COPYFILE_EXCL);
-      try { await link(partial, join(root, name)); }
-      catch (error) {
-        if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
-        const [existing, intended] = await Promise.all([hashBackupFile(join(root, name)), hashBackupFile(source)]);
-        if (existing.sha256 !== intended.sha256) throw new BackupIoError("BACKUP_VERIFY_FAILED", "An immutable backup object already exists with different content");
+      try {
+        await copyFile(source, partial, constants.COPYFILE_EXCL);
+        await rename(partial, final);
       } finally { await rm(partial, { force: true }); }
     } else await tool("rclone", ["copyto", "--immutable", source, `${root}/${name}`]);
   };

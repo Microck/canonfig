@@ -400,8 +400,10 @@ export interface BackupSlice {
   state: ResourceState;
   /** The running or last operation: loading while it runs, its error after a failure. */
   action: ResourceState;
-  /** This machine's copies of each policy, from its last `list`. A run or prune drops that policy's entry. */
+  /** Each policy's copies from its last `list`: this machine's, or another writer's when one was picked. A run or prune drops that policy's entry. */
   listings: Readonly<Record<string, GuiBackupList>>;
+  /** The writers with copies at each policy's destination, from its last `owners`. */
+  owners: Readonly<Record<string, ReadonlyArray<string>>>;
   /** Resolves to the action's warnings once it succeeded (empty for actions without a preflight), or null when it failed. */
   run: (request: GuiBackupRequest) => Promise<{ readonly warnings: ReadonlyArray<string> } | null>;
 }

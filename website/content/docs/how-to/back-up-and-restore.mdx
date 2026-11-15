@@ -5,7 +5,7 @@ description: Keep versioned backups in a local folder, Git repository or cloud d
 
 Use the **Backups** page in `canonfig ui`, or the commands below. Portable backups are separate from [Takeover Snapshots](/how-to/restore-from-a-backup), which protect files that Canonfig is about to overwrite.
 
-A policy selects the Canonical Folder, managed Target Harness configuration, or full folders for selected harnesses. Source identity and shared secrets are optional encrypted extras. Full harness folders require encryption because histories and caches can contain tokens under unknown names. Known credential files and symbolic links are excluded by default.
+A policy selects the Canonical Folder, managed Target Harness configuration, or full folders for selected harnesses. Source identity and shared secrets are optional encrypted extras. Full harness folders require encryption because histories and caches can contain tokens under unknown names. Known credential files and symbolic links are excluded by default. SQLite databases in a harness folder, such as OpenCode's `opencode.db`, are copied as one consistent snapshot with their write-ahead log folded in, so a harness that keeps running during the backup cannot leave it with half a database.
 
 ## Use the Backups page
 
@@ -156,7 +156,7 @@ canonfig backup disable daily
 canonfig backup enable daily
 ```
 
-`backup schedule` reconciles backup jobs after a manual policy edit. It does not change the synchronization schedule. Local disablement survives subsequent Source policy updates.
+`backup schedule` reconciles backup jobs after a manual policy edit. It does not change the synchronization schedule. Local disablement survives subsequent Source policy updates. A scheduled policy that cannot run yet, because it lacks its password alias or credential-capture consent, is listed under `refused` and keeps the jobs it already had; the other policies are still reconciled, and its next scheduled run records the reason on the Backups page.
 
 To declare backups for Followers, put named policies in `backupPolicies` in the Source's `canonfig.jsonc`, then publish and apply the revision normally. Followers receive the signed policy through the Canonical Folder mirror and reconcile backup jobs on apply. They still need local destination access, password aliases and any credential-capture consent. A same-name local policy takes precedence over a Source policy.
 
@@ -177,7 +177,7 @@ canonfig backup list daily --owner old-machine-owner
 canonfig backup restore daily --owner old-machine-owner --to /home/maria/recovered-home
 ```
 
-Copy an owner identifier from `owners`, not the example above. A recovered installation has a new writer identifier, so its retention cannot prune the old machine's snapshots. Use `--expect-key` with a known Source fingerprint to require that signer, rather than accepting any valid embedded signature.
+Copy an owner identifier from `owners`, not the example above. In the app, open the backup on the Backups page, choose **Find copies from other machines**, then pick the old machine under **Copies from**; restoring then reads that machine's copies. A recovered installation has a new writer identifier, so its retention cannot prune the old machine's snapshots. Use `--expect-key` with a known Source fingerprint to require that signer, rather than accepting any valid embedded signature.
 
 All files and encrypted input are checked before the recovery directory is created. An occupied destination is refused. Files start private; executable intent is retained. If publication fails, Canonfig removes the new recovery directory and any credentials created by that attempt.
 

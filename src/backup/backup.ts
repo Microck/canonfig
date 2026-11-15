@@ -9,7 +9,7 @@ import { createGzip } from "node:zlib";
 import { Effect, Redacted, Schema } from "effect";
 import { ContentDigest, CredentialReference, Timestamp } from "../domain/brand.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
-import { adapterFor } from "../projection/adapters/index.ts";
+import { adapterFor, BUILTIN_ADAPTERS } from "../projection/adapters/index.ts";
 import { ArchiveIntegrityError, collectArchiveConfiguration, machineIdentity, MANIFEST_PATH, manifestSigningPayload, MAXIMUM_MANIFEST_BYTES, SIGNATURE_PATH, verifyArchiveStream, type ArchiveSigner, type ArchiveSignerError, type ExportManifest, type ManifestFile } from "../projection/archive.ts";
 import { encodeTar, type TarSource } from "../projection/archive-tar.ts";
 import { emptyModel } from "../projection/detect.ts";
@@ -20,7 +20,7 @@ import { packageVersion } from "../runtime/build-identity.ts";
 import { withRunLock } from "../synchronization/run-lock.ts";
 import { captureBackupFiles, below, scanPlaintextGitBackup } from "./backup-capture.ts";
 import { decodeBackup, encodeBackup } from "./backup-codec.ts";
-import { backupOwner, backupPassword, BackupError, backupWork, localBackupPath, readBackupPolicies, readBackupRuns, readLocalBackups, recordBackupOutcome, requireCapturePermission, validateBackupPolicy, writeLocalBackups } from "./backup-config.ts";
+import { backupOwner, backupPassword, BackupError, backupWork, localBackupPath, readBackupOwner, readBackupPolicies, readBackupRuns, readLocalBackups, recordBackupOutcome, requireCapturePermission, validateBackupPolicy, writeLocalBackups } from "./backup-config.ts";
 import { BackupIoError, hashBackupFile, readBackupMetadata } from "./backup-io.ts";
 import { captureRecovery, readRecovery, restoreRecovery, withRecoveryCredentials, type Recovery } from "./backup-recovery.ts";
 import { backupScheduleStatus, reconcileBackupSchedules } from "./backup-schedule.ts";
@@ -132,13 +132,20 @@ const check = (folder: string, request: Extract<BackupRequest, { readonly action
   return { checked: request.name, ...yield* checkBackup(folder, request.name, policy, local, false) };
 });
 
+/**
+ * `backups.json`'s lock is held only to read the policy and owner. The storage work (a run, restore or drill can take
+ * minutes) holds a lock for this policy alone, so other policies, configuration changes and schedule reconciliation
+ * are not refused meanwhile, while two operations on one policy's copies still are.
+ */
 const withStorage = <A, E, R>(folder: string, name: string, owner: string | undefined, use: (opened: OpenBackup) => Effect.Effect<A, E, R>) =>
-  withRunLock(localBackupPath(folder), "access backup repository", Effect.gen(function*() {
-    const { local, policies } = yield* readBackupPolicies(folder);
-    const policy = policies[name];
-    if (policy === undefined) return yield* new BackupError({ code: "BACKUP_INVALID", message: "No backup policy has that name" });
-    const identity = owner ?? (yield* backupOwner(folder));
-    return yield* Effect.acquireUseRelease(
+  Effect.gen(function*() {
+    const { local, policy, identity } = yield* withRunLock(localBackupPath(folder), "read backup policy", Effect.gen(function*() {
+      const { local, policies } = yield* readBackupPolicies(folder);
+      const policy = policies[name];
+      if (policy === undefined) return yield* new BackupError({ code: "BACKUP_INVALID", message: "No backup policy has that name" });
+      return { local, policy, identity: owner ?? (yield* backupOwner(folder)) };
+    }));
+    return yield* withRunLock(join(folder, `backup-${name}`), "access backup repository", Effect.acquireUseRelease(
       backupWork("Create private backup staging", () => mkdtemp(join(tmpdir(), "canonfig-backup-"))),
       scratch => Effect.acquireUseRelease(
         backupWork("Open backup destination", signal => openBackupStorage({ destination: policy.destination, policy: name, owner: identity, scratch, signal })),
@@ -146,8 +153,8 @@ const withStorage = <A, E, R>(folder: string, name: string, owner: string | unde
         storage => Effect.promise(() => storage.close()),
       ),
       scratch => Effect.promise(() => rm(scratch, { recursive: true, force: true })),
-    );
-  }));
+    ));
+  });
 
 const capture = (context: BackupContext, opened: OpenBackup, scheduled: boolean) => Effect.gen(function*() {
   yield* requireCapturePermission(opened.name, opened.policy, opened.local);
@@ -191,7 +198,9 @@ const capture = (context: BackupContext, opened: OpenBackup, scheduled: boolean)
       policy: opened.policy, scratch: opened.scratch, home: roots.home, files: [...configuration.folderFiles, ...managed, ...recovery.files], signal,
       // One folder can belong to two selected harnesses; walk it once, for the first.
       roots: full.filter((entry, index) => full.findIndex(other => other.root === entry.root) === index),
-      credentials: layouts.flatMap(({ layout }) => layout.credentials ?? []),
+      // Every adapter's declarations count, not only the selected ones: Pi alone still walks the folder Oh My Pi
+      // shares with it when no Oh My Pi profile is set, and that folder holds Oh My Pi's agent.db.
+      credentials: BUILTIN_ADAPTERS.flatMap(adapter => adapter.layout(roots, emptyModel(folder)).credentials ?? []),
     }));
     const files = [...staged.files];
     if (recovery.sourceDatabase !== undefined) {
@@ -350,7 +359,7 @@ export const backupCommand = Effect.fn("Backup.command")(function*(context: Back
   const machine = yield* MachineState;
   yield* machine.ensureDirectory({ path: yield* machine.normalizePath({ path: folder }), mode: 0o700 });
   if ("name" in request) yield* Schema.decodeUnknownEffect(BackupName)(request.name).pipe(Effect.mapError(() => new BackupError({ code: "BACKUP_INVALID", message: "Backup names use 1-64 letters, digits, underscores or hyphens" })));
-  if (request.action === "status") return { ...yield* readBackupPolicies(folder), runs: yield* readBackupRuns(folder), schedules: yield* backupScheduleStatus(folder) };
+  if (request.action === "status") return { ...yield* readBackupPolicies(folder), owner: yield* readBackupOwner(folder), runs: yield* readBackupRuns(folder), schedules: yield* backupScheduleStatus(folder) };
   if (request.action === "schedule") return yield* reconcileBackupSchedules(folder);
   if (request.action === "configure-file") {
     const policy = yield* backupWork("Read backup policy", () => readBackupMetadata(resolve(request.file), BackupPolicy));
@@ -371,10 +380,10 @@ export const backupCommand = Effect.fn("Backup.command")(function*(context: Back
   }));
   const owner = "owner" in request ? request.owner : undefined;
   // Runs and drills leave their latest outcome for the GUI. Recording is best-effort: a history write that fails
-  // never changes the command's result. Only Canonfig's own diagnostics are kept; other failures may carry tool
-  // output, so they are recorded as a generic failure.
-  const record = (kind: "run" | "drill", outcome: Omit<BackupOutcome, "at">) =>
-    recordBackupOutcome(folder, request.name, kind, { at: new Date().toISOString(), ...outcome }).pipe(Effect.ignore);
+  // (or meets another write holding backups.json's lock) never changes the command's result. Only Canonfig's own
+  // diagnostics are kept; other failures may carry tool output, so they are recorded as a generic failure.
+  const record = (kind: "run" | "drill", outcome: Omit<BackupOutcome, "at">) => withRunLock(localBackupPath(folder), "record backup outcome",
+    recordBackupOutcome(folder, request.name, kind, { at: new Date().toISOString(), ...outcome })).pipe(Effect.ignore);
   return yield* withStorage(folder, request.name, owner, opened => Effect.gen(function*() {
     if (request.action === "owners") return { owners: yield* backupWork("List backup owners", signal => listBackupOwners({ destination: opened.policy.destination, policy: opened.name, scratch: opened.scratch, signal })) };
     if (request.action === "list") return { owner: opened.owner, snapshots: newestFirst(yield* backupWork("List backup snapshots", () => opened.storage.list())) };
@@ -411,9 +420,6 @@ export const backupCommand = Effect.fn("Backup.command")(function*(context: Back
       backupWork("Restore into new private HOME", () => restoreHome(verified, output, opened.scratch, references)));
     return { snapshot: verified.snapshot.id, signer: verified.signer, ...restored };
   })).pipe(Effect.tapError((error) => request.action === "run" || request.action === "drill"
-    // withStorage has released its lock by now (a failure may come from opening the destination), so take it
-    // again. If another operation holds it, the failure record is skipped.
-    ? withRunLock(localBackupPath(folder), "record backup outcome",
-      record(request.action, { ok: false, message: error instanceof BackupError ? error.message : "The backup failed. Run it from the command line to see why." })).pipe(Effect.ignore)
+    ? record(request.action, { ok: false, message: error instanceof BackupError ? error.message : "The backup failed. Run it from the command line to see why." })
     : Effect.void));
 });

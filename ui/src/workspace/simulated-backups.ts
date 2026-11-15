@@ -52,6 +52,7 @@ function seed(role: "source" | "follower", owner: string) {
       "laptop-extra": { run: { at: at(9), ok: true, bytes: 523_044, files: 182 } },
       "drive-full": { run: { at: at(2, lastSunday), ok: false, message: "rclone could not reach gdrive: its sign-in expired. Run rclone config reconnect gdrive:, then back up again." } },
     },
+    owner,
     schedules: [],
   });
   const snapshots: Record<string, Snapshot[]> = {
@@ -69,6 +70,7 @@ export function useSimulatedBackups(role: "source" | "follower", owner: string):
   const [state, setState] = useState(() => seed(role, owner));
   const [action, setAction] = useState<BackupSlice["action"]>(READY);
   const [listings, setListings] = useState<BackupSlice["listings"]>({});
+  const [owners, setOwners] = useState<BackupSlice["owners"]>({});
   const update = (change: (status: Status, snapshots: Record<string, Snapshot[]>) => { status: Status; snapshots?: Record<string, Snapshot[]> }) =>
     setState((previous) => { const next = change(previous.status, previous.snapshots); return { status: next.status, snapshots: next.snapshots ?? previous.snapshots }; });
   const withRuns = (status: Status, name: string, kind: "run" | "drill", outcome: Status["runs"][string]["run"]) =>
@@ -110,12 +112,14 @@ export function useSimulatedBackups(role: "source" | "follower", owner: string):
         break;
       }
       case "drill": update((status) => ({ status: withRuns(status, request.name, "drill", { at, ok: true, files: state.snapshots[request.name]?.[0]?.files ?? 0 }) })); break;
-      case "list": setListings((previous) => ({ ...previous, [request.name]: { owner, snapshots: state.snapshots[request.name] ?? [] } })); break;
+      // The demo machine is the only writer, so another writer's copies list empty.
+      case "list": setListings((previous) => ({ ...previous, [request.name]: { owner: request.owner ?? owner, snapshots: (request.owner ?? owner) === owner ? state.snapshots[request.name] ?? [] : [] } })); break;
+      case "owners": setOwners((previous) => ({ ...previous, [request.name]: [owner] })); break;
       default: break;
     }
     setAction(READY);
     return { warnings: [] };
   };
-  return { status: state.status, state: READY, action, listings, run };
+  return { status: state.status, state: READY, action, listings, owners, run };
 }
 
