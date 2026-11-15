@@ -95,33 +95,63 @@ export type Term = keyof typeof GLOSSARY;
 
 /** The tooltip's last line, so the docs and CLI vocabulary is always one hover away. */
 function CalledThis({ term }: { term: string }) {
-  return <span className="mt-1 block text-muted-foreground">Canonfig calls this {term}.</span>;
+  return <span className="mt-2 block text-xs text-muted-foreground">Canonfig calls this {term}.</span>;
 }
 
 /**
- * A Canonfig concept in everyday words, with a dotted underline. Shows the
- * plain word unless `children` are given; hovering or focusing it explains it
- * and names the Canonfig term. It is a tab stop because the definition is
- * otherwise pointer-only; never put a Term inside a button or link.
+ * A Canonfig concept in everyday words that explains itself on hover or focus and names the Canonfig
+ * term. Shows the plain word unless `children` are given.
+ *
+ * Where it sits decides how it looks (ui/docs/design/overlays.md, Tooltip):
+ * - Inside running text ("…gets its own identity, as a follower."), it is the word with a dotted
+ *   underline. An icon in the middle of a sentence breaks the line it sits on.
+ * - As a title or label (`label`), it is the plain text followed by a small (?) button, because an
+ *   underlined heading reads as a link.
+ * The word or the (?) is the tab stop, so the definition is reachable by keyboard; never put a Term
+ * inside a button or link.
  */
-export function Term({ children, term }: { children?: ReactNode; term: Term }) {
+export function Term({ children, term, label = false }: { children?: ReactNode; term: Term; label?: boolean }) {
   const { plain, meaning } = GLOSSARY[term];
+  const title = plain.charAt(0).toUpperCase() + plain.slice(1);
+  // Short blocks with space between them; one dense paragraph was hard to read.
+  const content = (
+    <TooltipContent className="max-w-72 text-sm leading-relaxed">
+      <span className="block font-medium">{title}</span>
+      <span className="mt-1 block">{meaning}</span>
+      <CalledThis term={term} />
+    </TooltipContent>
+  );
+  if (!label) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            tabIndex={0}
+            className="rounded-[2px] underline decoration-faint decoration-dotted underline-offset-[3px] outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+          >
+            {children ?? plain}
+          </span>
+        </TooltipTrigger>
+        {content}
+      </Tooltip>
+    );
+  }
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span
-          tabIndex={0}
-          className="rounded-[2px] underline decoration-faint decoration-dotted underline-offset-[3px] outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
-        >
-          {children ?? plain}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent className="max-w-64 text-sm">
-        <span className="block font-medium">{plain.charAt(0).toUpperCase() + plain.slice(1)}</span>
-        {meaning}
-        <CalledThis term={term} />
-      </TooltipContent>
-    </Tooltip>
+    <span className="inline-flex items-baseline gap-0.5">
+      <span>{children ?? plain}</span>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={`What is ${typeof children === "string" ? children : plain}?`}
+            className="relative inline-flex size-4 shrink-0 items-center justify-center self-center rounded-sm text-faint outline-none hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/60 pointer-coarse:size-6"
+          >
+            <Question className="size-3" />
+          </button>
+        </TooltipTrigger>
+        {content}
+      </Tooltip>
+    </span>
   );
 }
 
@@ -448,7 +478,7 @@ const DIGIT = {
 
 /** The 300px pixel-art chest, downscaled smoothly: `pixelated` only helps when scaling up. */
 export function Logo({ className }: { className?: string }) {
-  return <img src="/favicon.png" alt="" width={20} height={20} decoding="async" className={cn("size-5", className)} />;
+  return <img src={`${import.meta.env?.BASE_URL ?? "/"}favicon.png`} alt="" width={20} height={20} decoding="async" className={cn("size-5", className)} />;
 }
 
 export function Mono({ children, className }: { children: ReactNode; className?: string }) {

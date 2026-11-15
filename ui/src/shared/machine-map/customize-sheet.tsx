@@ -97,10 +97,12 @@ export interface CustomizeSheetProps {
   /** What the user saved, so cleared fields show the default as a placeholder. */
   saved: Look | undefined;
   look: ResolvedLook;
+  /** The Source's own card on a live Source: what is saved here is also shown on every Follower's map. */
+  shared?: boolean;
   onClose: () => void;
 }
 
-export function CustomizeSheet({ id, hostname, saved, look, onClose }: CustomizeSheetProps) {
+export function CustomizeSheet({ id, hostname, saved, look, shared = false, onClose }: CustomizeSheetProps) {
   const uid = useId();
   // Read once per open: autoFocus only matters on mount, and the sheet re-renders on every keystroke and colour drag.
   const [focusName] = useState(() => !isCoarsePointer());
@@ -185,13 +187,23 @@ export function CustomizeSheet({ id, hostname, saved, look, onClose }: Customize
           <h2 id={`${uid}-title`} className="truncate font-medium">
             Customize {look.name}
           </h2>
-          <p className="mt-0.5 flex items-center gap-1.5 text-sm text-muted-foreground">
-            Only changes how it looks here
-            <Hint label="where these changes apply">
-              These settings only change how this machine looks in canonfig ui on this computer.{"\n"}Nothing is sent to the Source or to
-              other machines, and its hostname stays <span className="font-mono">{hostname}</span>.
-            </Hint>
-          </p>
+          {shared ? (
+            <p className="mt-0.5 flex items-center gap-1.5 text-sm text-muted-foreground">
+              Followers see this too
+              <Hint label="where these changes apply">
+                The name, icon and colour you pick for the Source show on every Follower's map once you close this panel. An uploaded
+                icon stays on this computer.{"\n"}The hostname stays <span className="font-mono">{hostname}</span>.
+              </Hint>
+            </p>
+          ) : (
+            <p className="mt-0.5 flex items-center gap-1.5 text-sm text-muted-foreground">
+              Only changes how it looks here
+              <Hint label="where these changes apply">
+                These settings only change how this machine looks in canonfig ui on this computer.{"\n"}Nothing is sent to the Source or to
+                other machines, and its hostname stays <span className="font-mono">{hostname}</span>.
+              </Hint>
+            </p>
+          )}
         </div>
         <Button
           type="button"

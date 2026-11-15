@@ -25,9 +25,9 @@ canonfig source publish --reviewer "$USER"
 
 | Kind | Writes | `policy` |
 | --- | --- | --- |
-| `file` | The file at `source`, with its executable bit. | `replace` (default): Canonfig owns the whole file. `append-local`: Canonfig owns a marked section at the top and keeps the machine's text after it, as in [Keep a machine's own instructions and skills](/how-to/keep-local-content). |
+| `file` | The file at `source`, with its executable bit. | `replace` (default): Canonfig owns the whole file. `append-local`: Canonfig owns a marked section at the top and keeps the machine's text after it, as in [Keep a machine's own instructions and skills](/docs/how-to/keep-local-content). |
 | `directory` | Every file under the `source` directory. | `replace` (default): Canonfig owns the whole directory. `append-local`: Canonfig owns only the entries it writes. |
-| `config` | Only the `keys`, merged into a `json`, `toml`, or `yaml` file. Every other key stays. | Always merged. Keys are written like [settings](/reference/canonfig-folder#settings). |
+| `config` | Only the `keys`, merged into a `json`, `toml`, or `yaml` file. Every other key stays. | Always merged. Keys are written like [settings](/docs/reference/canonfig-folder#settings). |
 
 Each resource is published and mirrored like any other item and is not
 affected by `surfaces`. A resource no group names reaches every Follower

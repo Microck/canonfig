@@ -38,6 +38,7 @@ import {
   InsufficientDiskError,
   type MachineStateError,
 } from "../machine/machine-state.errors.ts";
+import { SourceLook } from "./source-look.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { BlobTransferProgress } from "./blob-transfer-progress.ts";
 import { checkSourceServerIdentity } from "./tls-identity.ts";
@@ -615,6 +616,41 @@ export const authenticateFollower = (
         })
       ),
     );
+  });
+
+const SourceLookResponse = Schema.Struct({ look: Schema.NullOr(SourceLook) });
+
+/**
+ * How the Source's card is customized, read with this Follower's credential.
+ * undefined when the Source saved none, or predates `/v1/source/look` (404).
+ */
+export const fetchSourceLook = (
+  input: FollowerAuthenticationInput,
+): Effect.Effect<SourceLook | undefined, EnrollmentError, MachineState> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const endpoint = yield* checkedEndpoint(input.endpoint);
+    const certificate = yield* inspectCertificate(endpoint);
+    if (certificate.fingerprint !== input.tlsFingerprint) {
+      return yield* new EnrollmentFingerprintMismatchError({
+        message: "the source TLS fingerprint does not match the pinned fingerprint",
+      });
+    }
+    const credential = yield* machine.loadCredential({ reference: input.credentialReference }).pipe(
+      Effect.mapError(followerCredentialReadFailure),
+    );
+    const response = yield* requestJson("GET", endpoint, "/v1/source/look", certificate, undefined, credential);
+    if (response.status === 404) return undefined;
+    if (response.status !== 200) return yield* wireError(response);
+    const decoded = yield* Schema.decodeUnknownEffect(SourceLookResponse)(response.body).pipe(
+      Effect.mapError(() =>
+        new EnrollmentTransportError({
+          operation: "decode source look",
+          message: "the source returned an invalid look",
+        })
+      ),
+    );
+    return decoded.look ?? undefined;
   });
 
 const SourceDescriptorSchema = Schema.Struct({

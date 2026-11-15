@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { FollowerId, GroupName } from "../../domain/brand.ts";
+import { SourceLook } from "../../enrollment/source-look.ts";
 import {
   SetupApproval, SetupDiscoveryInput, SetupItemSummary, SetupJournal, SetupMode,
   SetupProvenance, SetupRequestScope, SetupRole, SetupStageRecord,
@@ -88,6 +89,9 @@ export const GuiEnrollInput = Schema.Struct({
   envelope: Schema.String, followerName: Schema.NonEmptyString, replace: Schema.Boolean,
 });
 export const GuiRevokeInput = Schema.Struct({ follower: FollowerId });
+/** The Source card's look; `null` when the Source saved none (or, on a Follower, when the Source is older or unreachable). */
+export const GuiSourceLook = Schema.Struct({ look: Schema.NullOr(SourceLook) });
+export type GuiSourceLook = typeof GuiSourceLook.Type;
 export const GuiEnrollmentTunnelInput = Schema.Struct({
   envelope: Schema.String,
   sshHost: Schema.NonEmptyString, sshUser: Schema.NonEmptyString,

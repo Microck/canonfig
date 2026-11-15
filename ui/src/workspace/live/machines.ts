@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Schema } from "effect";
-import { GuiEnrollment, GuiInvitationDownload, GuiMachines, GuiSetupStatus } from "../../../../src/gui/contract/enrollment";
+import { GuiEnrollment, GuiInvitationDownload, GuiMachines, GuiSetupStatus, GuiSourceLook } from "../../../../src/gui/contract/enrollment";
 import type { GuiSession, WorkspaceBackend } from "../../gui-client";
 import type { ChangeGroupsRequest, MachinesSlice } from "../workspace-types";
 import { resourceState, useLiveResource } from "./resource";
@@ -10,6 +10,7 @@ export function useLiveMachines(backend: WorkspaceBackend, session: GuiSession, 
   const inventory = useLiveResource(backend, "/api/machines", GuiMachines, source);
   const enrollment = useLiveResource(backend, "/api/enrollment", GuiEnrollment, session.role === "follower");
   const setup = useLiveResource(backend, "/api/setup", GuiSetupStatus, session.role !== "unconfigured");
+  const sourceLook = useLiveResource(backend, "/api/source-look", GuiSourceLook, session.role !== "unconfigured");
   const controller = useRef(new AbortController());
   useEffect(() => {
     controller.current = new AbortController();
@@ -32,7 +33,7 @@ export function useLiveMachines(backend: WorkspaceBackend, session: GuiSession, 
     ...(enrollment.data ? { enrollment: enrollment.data } : {}),
     machinesState: resourceState([inventory, enrollment]),
     machineStates: { inventory, enrollment, setup },
-    sourceMachine: { hostname: source ? session.machineName : "Source", folder: source ? session.folderPath : "", endpoint },
+    sourceMachine: { hostname: source ? session.machineName : "Source", folder: source ? session.folderPath : "", endpoint, look: sourceLook.data?.look ?? undefined },
     followerSelf: { name: session.machineName, home: "", source: endpoint, local: [], overlays: [], kept: [] },
     selfFollower, endpoint, justJoined: enrollment.data?.pending ?? false,
     inviteOpen, setInviteOpen, followers,
@@ -40,6 +41,12 @@ export function useLiveMachines(backend: WorkspaceBackend, session: GuiSession, 
       await backend.request("/api/machines/revoke", Schema.Json, controller.current.signal, { method: "POST", body: { follower: id } });
       reload();
     },
+    ...(source ? {
+      async saveSourceLook(look) {
+        await backend.request("/api/source-look", GuiSourceLook, controller.current.signal, { method: "PUT", body: { look: look ?? null } });
+        reload();
+      },
+    } : {}),
     async createInvitation(input) {
       const invitation = await backend.request("/api/invitations", GuiInvitationDownload, controller.current.signal, { method: "POST", body: input });
       reload();

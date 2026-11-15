@@ -420,7 +420,7 @@ describe("adapter goldens", () => {
           ]
         }
       }
-    ! warning FEATURE_UNSUPPORTED: codex has no global commands surface: Codex has no global slash-command directory. The commands were not projected.
+    ! warning FEATURE_UNSUPPORTED: Codex has no global slash-command directory. Profile commands were not added there.
     ! warning AGENT_OPTION_UNSUPPORTED: Codex custom agents inherit the parent sandbox, so read-only agent reviewer can still write.
     "
   `));
@@ -846,7 +846,7 @@ describe("adapter goldens", () => {
           }
         }
       }
-    ! warning FEATURE_UNSUPPORTED: pi has no global agents surface: Pi has no subagent definitions. The agents were not projected.
+    ! warning FEATURE_UNSUPPORTED: Pi has no subagent definitions. Profile agents were not added there.
     "
   `));
   it("factory-droid", () => expect(golden("factory-droid")).toMatchInlineSnapshot(`
@@ -1017,9 +1017,9 @@ describe("adapter goldens", () => {
           }
         }
       }
-    ! warning FEATURE_UNSUPPORTED: cursor has no global instructions surface: Cursor keeps user rules in its settings, outside the filesystem. The instructions were not projected.
-    ! warning FEATURE_UNSUPPORTED: cursor has no global rules surface: Cursor keeps user rules in its settings, outside the filesystem. The rules were not projected.
-    ! warning FEATURE_UNSUPPORTED: cursor has no global commands surface: Cursor has no global command directory. The commands were not projected.
+    ! warning FEATURE_UNSUPPORTED: Cursor keeps user rules in its settings, outside the filesystem. Profile instructions were not added there.
+    ! warning FEATURE_UNSUPPORTED: Cursor keeps user rules in its settings, outside the filesystem. Profile rules were not added there.
+    ! warning FEATURE_UNSUPPORTED: Cursor has no global command directory. Profile commands were not added there.
     "
   `));
   it("devin", () => expect(golden("devin")).toMatchInlineSnapshot(`
@@ -1106,7 +1106,7 @@ describe("adapter goldens", () => {
           }
         }
       }
-    ! warning FEATURE_UNSUPPORTED: devin has no global commands surface: Devin has no global command directory. The commands were not projected.
+    ! warning FEATURE_UNSUPPORTED: Devin has no global command directory. Profile commands were not added there.
     "
   `));
   it("opencode", () => expect(golden("opencode")).toMatchInlineSnapshot(`
@@ -1272,7 +1272,7 @@ describe("adapter goldens", () => {
           }
         }
       }
-    ! warning FEATURE_UNSUPPORTED: grok-build has no global commands surface: Grok has no global command directory. The commands were not projected.
+    ! warning FEATURE_UNSUPPORTED: Grok has no global command directory. Profile commands were not added there.
     "
   `));
   it("antigravity", () => expect(golden("antigravity")).toMatchInlineSnapshot(`
@@ -1380,7 +1380,7 @@ describe("adapter goldens", () => {
           }
         }
       }
-    ! warning FEATURE_UNSUPPORTED: antigravity has no global commands surface: Antigravity has no global command directory. The commands were not projected.
+    ! warning FEATURE_UNSUPPORTED: Antigravity has no global command directory. Profile commands were not added there.
     "
   `));
   it("copilot-cli", () => expect(golden("copilot-cli")).toMatchInlineSnapshot(`
@@ -1490,7 +1490,7 @@ describe("adapter goldens", () => {
           ]
         }
       }
-    ! warning FEATURE_UNSUPPORTED: copilot-cli has no global commands surface: Copilot CLI has no global command directory. The commands were not projected.
+    ! warning FEATURE_UNSUPPORTED: Copilot CLI has no global command directory. Profile commands were not added there.
     "
   `));
   it("kimi", () => expect(golden("kimi")).toMatchInlineSnapshot(`
@@ -1555,7 +1555,7 @@ describe("adapter goldens", () => {
           }
         }
       }
-    ! warning FEATURE_UNSUPPORTED: kimi has no global commands surface: Kimi has no global command directory. The commands were not projected.
+    ! warning FEATURE_UNSUPPORTED: Kimi has no global command directory. Profile commands were not added there.
     "
   `));
   it("kilo", () => expect(golden("kilo")).toMatchInlineSnapshot(`
@@ -1716,10 +1716,10 @@ describe("adapter goldens", () => {
           }
         ]
       }
-    ! warning FEATURE_UNSUPPORTED: hermes has no global instructions surface: SOUL.md is an identity, not an instruction file. The instructions were not projected.
-    ! warning FEATURE_UNSUPPORTED: hermes has no global rules surface: Hermes has no global rules location. The rules were not projected.
-    ! warning FEATURE_UNSUPPORTED: hermes has no global agents surface: Hermes has no subagent definitions. The agents were not projected.
-    ! warning FEATURE_UNSUPPORTED: hermes has no global commands surface: Hermes has no command directory. The commands were not projected.
+    ! warning FEATURE_UNSUPPORTED: SOUL.md is an identity, not an instruction file. Profile instructions were not added there.
+    ! warning FEATURE_UNSUPPORTED: Hermes has no global rules location. Profile rules were not added there.
+    ! warning FEATURE_UNSUPPORTED: Hermes has no subagent definitions. Profile agents were not added there.
+    ! warning FEATURE_UNSUPPORTED: Hermes has no command directory. Profile commands were not added there.
     "
   `));
   it("qwen", () => expect(golden("qwen")).toMatchInlineSnapshot(`

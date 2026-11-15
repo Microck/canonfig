@@ -10,11 +10,14 @@ import { StateRepository } from "../../state/state-repository.service.ts";
 import {
   GuiEnrollInput, GuiEnrollmentTunnelInput, GuiInvitationInput, GuiInviteInput,
   GuiRevokeInput, GuiSetupApplyInput, GuiSetupApproveInput, GuiSetupPlanInput,
-  GuiSetupStatus, type GuiMachines,
+  GuiSetupStatus, GuiSourceLook, type GuiMachines,
 } from "../contract/enrollment.ts";
 import { GuiOperations } from "../operations.ts";
 import { GuiQueries } from "../queries.ts";
 import { commandFailure, mutationRoute, queryRoute } from "../routing.ts";
+import { fetchSourceLook } from "../../enrollment/follower-client.ts";
+import { readSourceLook, writeSourceLook } from "../../enrollment/source-look.ts";
+import { MachineState } from "../../machine/machine-state.service.ts";
 
 const json = (value: CliPayload | GuiMachines) => Schema.decodeUnknownEffect(Schema.Json)(value).pipe(
   Effect.mapError(() => new CliCommandFailure({ category: "internal", message: "The command returned an invalid JSON response." })),
@@ -43,6 +46,7 @@ export const enrollmentRoutes = Effect.gen(function*() {
   const repository = yield* StateRepository;
   const queries = yield* GuiQueries;
   const operations = yield* GuiOperations;
+  const machine = yield* MachineState;
   const requireRole = (roles: ReadonlyArray<string>) => queries.session().pipe(Effect.flatMap((session) =>
     roles.includes(session.role) ? Effect.void : Effect.fail(new CliCommandFailure({
       category: "usage-or-configuration", message: `This operation is not available on a ${session.role} machine.`,
@@ -98,6 +102,28 @@ export const enrollmentRoutes = Effect.gen(function*() {
         Effect.flatMap(json),
       )), () => Effect.succeed(null));
     }), 202),
+    // A Source reads its saved look; a Follower asks its Source, and an older or unreachable Source just means the default card.
+    queryRoute("/api/source-look", () => Effect.gen(function*() {
+      const session = yield* queries.session();
+      if (session.role === "source") return { look: (yield* readSourceLook().pipe(Effect.provideService(MachineState, machine))) ?? null };
+      if (session.role !== "follower") return { look: null };
+      const configuration = yield* repository.getFollowerSynchronizationConfiguration().pipe(Effect.mapError(commandFailure));
+      if (configuration === undefined) return { look: null };
+      const look = yield* fetchSourceLook({
+        endpoint: configuration.source.endpoint,
+        tlsFingerprint: configuration.source.tlsFingerprint,
+        credentialReference: configuration.credentialReference,
+      }).pipe(Effect.provideService(MachineState, machine), Effect.orElseSucceed(() => undefined));
+      return { look: look ?? null };
+    })),
+    mutationRoute("PUT", "/api/source-look", GuiSourceLook, (input) => Effect.gen(function*() {
+      yield* requireRole(["source"]);
+      yield* writeSourceLook(input.look ?? undefined).pipe(
+        Effect.provideService(MachineState, machine),
+        Effect.mapError((cause) => new CliCommandFailure({ category: "internal", message: cause.message })),
+      );
+      return { look: input.look };
+    })),
     queryRoute("/api/setup", () => setupStatus().pipe(Effect.flatMap(json))),
     mutationRoute("POST", "/api/setup/plan", GuiSetupPlanInput, (input) => setup.plan(input).pipe(Effect.flatMap(json))),
     mutationRoute("POST", "/api/setup/approve", GuiSetupApproveInput, (input) => setup.approve(input).pipe(Effect.flatMap(json))),

@@ -19,7 +19,7 @@ canonfig doctor --no-input
 
 `status` shows the recorded Synchronization Run and any resource that is
 blocked. `doctor` checks this machine; see
-[Doctor probes and exit codes](/reference/diagnostics).
+[Doctor probes and exit codes](/docs/reference/diagnostics).
 
 <Callout title="Keep the evidence" type="warning">
   Do not delete Canonfig's database, cache, or run journal to clear an error.
@@ -102,7 +102,7 @@ which version to keep:
   Source Machine, publish there, then run `canonfig sync --apply`.
 - **Your local change, on this machine only:** move it into
   `~/.canonfig/local/`, then run `canonfig sync --apply`. See
-  [Add items to one machine only](/how-to/add-machine-local-items).
+  [Add items to one machine only](/docs/how-to/add-machine-local-items).
 
 ## Resolve Human Action Required
 
@@ -113,8 +113,8 @@ The sync exits 3 and the message names the step only you can take:
 | A login that cannot finish without you | the command to log in |
 | A locked or unreachable credential store | the store and the command to unlock it |
 | A harness config file that does not parse | the file, line, and column |
-| A harness root that changed since takeover | the old and new root; see [Keep a harness in one place](/how-to/choose-harnesses#keep-a-harness-in-one-place) |
-| A local item with the name of a published one | the item; see [Add items to one machine only](/how-to/add-machine-local-items) |
+| A harness root that changed since takeover | the old and new root; see [Keep a harness in one place](/docs/how-to/choose-harnesses#keep-a-harness-in-one-place) |
+| A local item with the name of a published one | the item; see [Add items to one machine only](/docs/how-to/add-machine-local-items) |
 | An agent policy that forbids a needed capability (elevation, restart, reboot) | the capability |
 | An action that needs a decision under `deterministic-only` | the resource and the choice |
 
@@ -143,18 +143,18 @@ The sync exits 3 and the message names the step only you can take:
 | "source/follower version mismatch: source `<a>` vs follower `<b>`. install the same major.minor canonfig release on the Source Machine and on every follower" | The Source Machine and this Follower Machine run different `major.minor` releases. | Install one release line on every machine. |
 | "this machine is not enrolled; run 'canonfig follower enroll' first" | The machine has no Follower Identity. | Enroll it with an invitation from the Source Machine. |
 | "follower `<name>` has no run to recover" | You ran `canonfig recover` with no open run. | Run `canonfig sync --apply`. |
-| "`<path>`: `<reason>`", for example "/home/maria/.canonfig/canonfig.jsonc: is not valid JSONC: ..." | A file in `~/.canonfig/` is not valid. The message names the file and the problem. | Fix the file. [Publish your folder to Follower Machines](/how-to/publish-from-the-folder) lists the reasons and their fixes. |
-| "`<path>` needs N characters including Canonfig's staging names, but this machine accepts file paths of at most 260 characters because Windows long paths are not enabled" | A Windows target path is too long. Nothing was changed. | Shorten the target or enable long paths; see [Platform differences](/reference/cross-platform). |
+| "`<path>`: `<reason>`", for example "/home/maria/.canonfig/canonfig.jsonc: is not valid JSONC: ..." | A file in `~/.canonfig/` is not valid. The message names the file and the problem. | Fix the file. [Publish your folder to Follower Machines](/docs/how-to/publish-from-the-folder) lists the reasons and their fixes. |
+| "`<path>` needs N characters including Canonfig's staging names, but this machine accepts file paths of at most 260 characters because Windows long paths are not enabled" | A Windows target path is too long. Nothing was changed. | Shorten the target or enable long paths; see [Platform differences](/docs/reference/cross-platform). |
 
 ### Exit 3: Human Action Required
 
 | Message | Cause | Fix |
 | --- | --- | --- |
 | "`<path>` changed after run `<run>` was interrupted: the current content matches neither the content before the run nor what the run was writing, so recovery stopped without changing anything." | Someone edited a target after the run stopped. Canonfig keeps the file and its copy from before the run. | Save your edit elsewhere or restore one of the two versions, then run `canonfig recover` again. To keep the files exactly as they are, run `canonfig abandon`. |
-| "this machine's credential store could not return the follower credential, so no Source request was made: ..." | The keyring or Keychain is locked, or this session cannot reach it. The Follower Identity is not revoked. | Unlock the store in this session. For scheduled runs, see [Run Canonfig unattended](/how-to/run-unattended). |
-| "`<harness>` was taken over at `<root>` but now resolves to `<root>`, ..." | The harness root changed after takeover, for example because `CODEX_HOME` changed. | See [Keep a harness in one place](/how-to/choose-harnesses#keep-a-harness-in-one-place). |
+| "this machine's credential store could not return the follower credential, so no Source request was made: ..." | The keyring or Keychain is locked, or this session cannot reach it. The Follower Identity is not revoked. | Unlock the store in this session. For scheduled runs, see [Run Canonfig unattended](/docs/how-to/run-unattended). |
+| "`<harness>` was taken over at `<root>` but now resolves to `<root>`, ..." | The harness root changed after takeover, for example because `CODEX_HOME` changed. | See [Keep a harness in one place](/docs/how-to/choose-harnesses#keep-a-harness-in-one-place). |
 | "local skill `<name>` has the same name as a published one; rename or remove one of them" | A local item collides with a published one. | Rename or remove the local item. |
-| "restore of snapshot `<id>` refused, nothing was changed: ..." | A surface changed since Canonfig last applied it. | See [Restore a harness from a backup](/how-to/restore-from-a-backup). |
+| "restore of snapshot `<id>` refused, nothing was changed: ..." | A surface changed since Canonfig last applied it. | See [Restore a harness from a backup](/docs/how-to/restore-from-a-backup). |
 | "Canonfig state at `<path>` was created by an earlier Canonfig version, and this version cannot read it. ..." | `~/.canonfig/state.sqlite` uses an earlier state format, including 6.1. Canonfig does not convert it or change its schema or data. | Move `~/.canonfig/state.sqlite` aside, then set the machine up again: `canonfig setup plan` on a Source, or enroll the follower again with a new invitation. |
 | Any other step only a person can take | See [Resolve Human Action Required](#resolve-human-action-required). | Do what the message says, then sync again. |
 
@@ -190,13 +190,13 @@ The sync exits 3 and the message names the step only you can take:
 | "the Source is unreachable because the managed tunnel `<endpoint>` is down" or "is stopped" | The managed tunnel is not running. | Run `canonfig tunnel start`. |
 
 For every tunnel and service message, see
-[Run Canonfig unattended](/how-to/run-unattended#if-something-fails).
+[Run Canonfig unattended](/docs/how-to/run-unattended#if-something-fails).
 
 ### Exit 7: apply or verification failure
 
 | Message | Cause | Fix |
 | --- | --- | --- |
 | "resource `<id>` could not be applied to `<target>`: `<cause>`", for example "resource harness:claude-code:mcp could not be applied to /home/maria/.claude.json: atomically write file failed: EACCES: permission denied" | An action failed. Canonfig rolled the run back. | Fix the cause it names, then run `canonfig sync --apply`. |
-| "verification failed for resource `<id>`: ..." or "verification failed for agent task `<resource>`" | The actions ran, but the resource does not pass its `verify` check. | Fix the cause the message names, then run `canonfig sync --apply`. For tools, see [How Canonfig installs and verifies tools](/explanation/tools-and-recipes). |
+| "verification failed for resource `<id>`: ..." or "verification failed for agent task `<resource>`" | The actions ran, but the resource does not pass its `verify` check. | Fix the cause the message names, then run `canonfig sync --apply`. For tools, see [How Canonfig installs and verifies tools](/docs/explanation/tools-and-recipes). |
 | "the filesystem holding `<path>` needs N bytes (M MiB) free but only N bytes (M MiB) are available; nothing was changed. Free space there, then retry" | Canonfig checks free space before it records a run and before it downloads content. No run was opened, so there is nothing to recover. | Free space on that filesystem, then run `canonfig sync --apply`. |
 | "restore Windows permissions failed on `<path>`" (during `canonfig recover`) | Windows refused to restore an owner or access rule Canonfig recorded. The run stays failed, and the journal and backups stay in place. | Fix the permission problem on that path, then run `canonfig recover` again. |

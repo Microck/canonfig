@@ -143,7 +143,7 @@ Skill installs use global scope. MCP installs use user scope. Other command
 shapes fail rather than run unprotected. Gemini CLI is not a Target Harness.
 
 For other native packages, use `shield add-plugin`. See
-[Native Plugins](/reference/canonfig-folder#native-plugins) for the package
+[Native Plugins](/docs/reference/canonfig-folder#native-plugins) for the package
 format, supported loaders, dependencies and platform variants. A redirected
 plugin stays inactive until review. Changing payload bytes, executable bits
 or its variant declaration invalidates that review. `source publish` refuses
@@ -172,7 +172,7 @@ writes the hook refused, installers `shield install` ran, and items
 installer kinds, never file contents or installer arguments. The browser's
 **Shield** page shows that history, the plugins waiting for review, and which
 listed harnesses are protected; see
-[Keep agent installs in the folder](/how-to/keep-agent-installs-in-the-folder).
+[Keep agent installs in the folder](/docs/how-to/keep-agent-installs-in-the-folder).
 
 ## Self-update
 
@@ -241,7 +241,7 @@ canonfig source init
 
 Creates the Source Machine's signing key and HTTPS certificate in the native
 credential store. On an initialized Source Machine it creates nothing and
-checks that the stored keys still match; see [Source keys](/reference/security#source-keys).
+checks that the stored keys still match; see [Source keys](/docs/reference/security#source-keys).
 
 ### `source scan`
 
@@ -257,7 +257,7 @@ never reads `local/`. Without `--write` it only reports. `--write` adds each
 accepted tool that `canonfig.jsonc` does not declare yet under `tools`,
 keeping the file's comments and layout; tools that need review are only
 reported. See
-[How Canonfig installs and verifies tools](/explanation/tools-and-recipes).
+[How Canonfig installs and verifies tools](/docs/explanation/tools-and-recipes).
 
 | Message | Cause |
 | --- | --- |
@@ -287,8 +287,8 @@ validate, a hook script is missing or unused, a `requires` or `groups` entry
 names an undeclared item, a value looks like a literal credential, a recipe
 has no exact `version`, or the revision's metadata exceeds the transport
 limit. Every message is in the
-[Canonical Folder reference](/reference/canonfig-folder#publication-failures).
-See [Publish changes from the folder](/how-to/publish-from-the-folder).
+[Canonical Folder reference](/docs/reference/canonfig-folder#publication-failures).
+See [Publish changes from the folder](/docs/how-to/publish-from-the-folder).
 
 ### `source serve` and `source service`
 
@@ -322,7 +322,7 @@ lingering. On macOS, run it from the logged-in desktop session, not over SSH.
 | `drifted` | 4 | The service definition changed. Run `source service install` again. |
 
 `source service remove` stops and deletes the service. See
-[Run Canonfig unattended](/how-to/run-unattended).
+[Run Canonfig unattended](/docs/how-to/run-unattended).
 
 ### `source invite`
 
@@ -438,7 +438,7 @@ it, reports it, exits 4, and leaves its projections as they were last applied.
 | `--apply` | Applies the plan and verifies every resource. Cannot be combined with `--plan`. |
 | `--no-input` | Never prompts. |
 | `--no-backup` | Takes over harness surfaces without a takeover snapshot. |
-| `--review-local` | With `--plan` only: writes each append-local first adoption's exact texts to a private JSON file under `~/.canonfig/.reviews/` and lists the files. Refused with `--apply`, `--scheduled`, or `--no-input` (exit 2). See [Keep a machine's own instructions and skills](/how-to/keep-local-content). |
+| `--review-local` | With `--plan` only: writes each append-local first adoption's exact texts to a private JSON file under `~/.canonfig/.reviews/` and lists the files. Refused with `--apply`, `--scheduled`, or `--no-input` (exit 2). See [Keep a machine's own instructions and skills](/docs/how-to/keep-local-content). |
 | `--scheduled` | Set only by the native schedule, which runs `sync --apply --no-input --scheduled`. |
 
 When `local.appendLocal` in `canonfig.jsonc` shares instructions or skills with
@@ -466,13 +466,13 @@ you add to an owned directory, is Follower Drift: kept and reported (exit 4).
 A harness root is pinned at takeover. A later run that resolves a different
 root, for example because `CODEX_HOME` changed, stops with Human Action
 Required (exit 3) instead of writing a second copy. Each harness's root and
-owned surfaces are in the [harness reference](/reference/harnesses).
+owned surfaces are in the [harness reference](/docs/reference/harnesses).
 
 A failed action rolls back the run's file, directory, and config changes and
 exits 7: "resource `<id>` could not be applied to `<target>`: `<cause>`". Tool
 installs are not rolled back. Human Action Required (exit 3) and Follower Drift
 (exit 4) stop the run without rolling back. See
-[the transaction boundary](/explanation/architecture#the-transaction-boundary).
+[the transaction boundary](/docs/explanation/architecture#the-transaction-boundary).
 
 After a successful apply, Canonfig also copies shared secrets when the
 Follower Machine is in the `canonfig:secrets` group. If that copy fails, the
@@ -501,7 +501,7 @@ canonfig restore 2026-11-03T09-30-00-000Z
 authorized, and a local projection run resumes from the revision it recorded.
 `abandon` closes a run `recover` cannot finish; it does not undo anything, and
 the next run reconciles what was applied. Both exit 4 while another Canonfig
-process holds the run, and print its process ID. See [Recover from a failed or blocked sync](/how-to/recover).
+process holds the run, and print its process ID. See [Recover from a failed or blocked sync](/docs/how-to/recover).
 
 `restore [<snapshot>]` writes a takeover snapshot back, the latest one when
 no id is given. It runs as a journaled run: it rewrites the files, directories
@@ -513,7 +513,7 @@ sync leaves them alone. A surface Canonfig shares with the machine
 (append-local) is not overwritten from the snapshot: restore removes only
 Canonfig's section or entries, which leaves what the machine had and added.
 Snapshot ids are the directory names under `~/.canonfig/.backups/`. See
-[Restore a harness from a backup](/how-to/restore-from-a-backup).
+[Restore a harness from a backup](/docs/how-to/restore-from-a-backup).
 
 | Message | Exit | Cause |
 | --- | ---: | --- |
@@ -548,7 +548,7 @@ links, choose another directory or pass `--force`. The archive gets mode
 `0600`, or an ACL that grants only your user on Windows. On macOS and Windows
 the link checks on the output directory run before and after the write, so
 they miss a directory swapped and put back in between; see
-[Security](/reference/security). If a check fails once the archive is already
+[Security](/docs/reference/security). If a check fails once the archive is already
 at the output path, the message says whether the path holds the complete
 archive or no longer holds it, and export leaves the path as it is.
 
@@ -613,7 +613,7 @@ the outcome (`Exported`, the import run's outcome, or `Error`), the archive
 path, its SHA-256 and the signer. These rows are apart from Synchronization
 Runs, so an export never becomes the last sync that `canonfig status` reports,
 and they can be added to but never changed. See
-[Export the folder and move it to a new machine](/how-to/export-and-import).
+[Export the folder and move it to a new machine](/docs/how-to/export-and-import).
 
 | Message | Exit | Cause |
 | --- | ---: | --- |
@@ -660,7 +660,7 @@ the list in `canonfig.jsonc`. Including a harness that is not listed warns:
 there to project it". An unknown id fails with exit 2: "Unknown harness:
 `<id>`; expected one of codex, claude-code, ...". `doctor` reports the same
 detection and selection in its `harnesses` probe. See
-[Choose which harnesses Canonfig manages](/how-to/choose-harnesses).
+[Choose which harnesses Canonfig manages](/docs/how-to/choose-harnesses).
 
 ## Local overlays
 
@@ -703,7 +703,7 @@ no local item. Overlays and claims are never published or mirrored, and a new
 revision does not change them. An entry in another form fails with exit 2:
 "invalid overlay `<item>`: expected rules|skills|agents|commands|mcp/`<name>`,
 settings/`<harness>`, or settings/`<harness>`#`<key>`". See
-[Replace a published item on one machine](/how-to/use-local-overlays).
+[Replace a published item on one machine](/docs/how-to/use-local-overlays).
 
 ## Status
 
@@ -733,7 +733,7 @@ canonfig doctor --no-input --timeout-ms 5000
 
 Runs independent checks of this machine and its connection to the Source
 Machine. `--timeout-ms` limits each check (default 5000, at most 300000). See
-[Doctor probes and exit codes](/reference/diagnostics).
+[Doctor probes and exit codes](/docs/reference/diagnostics).
 
 ## Managed SSH tunnel
 
@@ -912,7 +912,7 @@ profile's suggested schedule and takes no other option. `set` prints the zone,
 the next run, and a warning when the time does not exist on a daylight-saving
 day; it never starts a run for a time already past today. `set` refuses while a
 native override of the job exists. See
-[Sync on a schedule](/how-to/manage-schedules).
+[Sync on a schedule](/docs/how-to/manage-schedules).
 
 ## Shared secrets
 
@@ -945,7 +945,7 @@ canonfig secrets bootstrap
   bytes: "the secret on stdin exceeds the 16384 byte limit".
 
 A credential-store failure exits 3 with the store's recovery text. See
-[Opt-in shared secrets](/reference/security#opt-in-shared-secrets).
+[Opt-in shared secrets](/docs/reference/security#opt-in-shared-secrets).
 
 ### Headless Linux storage
 
@@ -969,7 +969,7 @@ mode `0600` instead. Shared secrets still require a secure store.
 CANONFIG_LOCAL_CREDENTIAL_ROOT="$HOME/.canonfig/credentials" canonfig secrets bootstrap
 ```
 
-See [Run Canonfig unattended](/how-to/run-unattended#headless-linux-credential-storage).
+See [Run Canonfig unattended](/docs/how-to/run-unattended#headless-linux-credential-storage).
 
 ## Upstream skills
 
@@ -1021,7 +1021,7 @@ records that the method is not allowed; installs with it then need Human
 Action Required instead of using `PATH`.
 
 On Windows, bind npm to `node.exe` plus `npm-cli.js`; see
-[Windows package managers](/reference/cross-platform#windows-package-managers).
+[Windows package managers](/docs/reference/cross-platform#windows-package-managers).
 
 ## JSON envelope
 

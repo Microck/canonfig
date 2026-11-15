@@ -1,8 +1,7 @@
 import type { BaseLayoutProps } from "fumadocs-ui/layouts/shared";
 import React from "react";
 
-// A static import gives a /docs/_next/static/media/... URL that carries the
-// base path; a plain "/logo.png" string would point outside the docs.
+// A static import gives a hashed /_next/static/media/... URL.
 import logo from "@/public/logo.png";
 
 export const baseOptions: BaseLayoutProps = {
@@ -13,24 +12,20 @@ export const baseOptions: BaseLayoutProps = {
         <span style={{ fontWeight: 600 }}>Canonfig</span>
       </div>
     ),
-    url: "/",
+    url: "/docs",
   },
-  // The docs are dark only (app/layout.tsx disables the theme provider), so a theme toggle would do nothing.
+  // The docs are dark only (app/docs/layout.tsx disables the theme provider), so a theme toggle would do nothing.
   themeSwitch: { enabled: false },
   links: [
     {
       text: "CLI reference",
-      url: "/reference/cli",
+      url: "/docs/reference/cli",
       active: "nested-url",
     },
     {
-      // The demo is a separate app at the site root, outside the Next base
-      // path. `external` renders a plain <a href="/"> instead of a Next link,
-      // which would rewrite "/" to "/docs/". Active matching compares against
-      // the docs pathname without its base path, so "/" would light up on
-      // the docs home; `active: "none"` keeps it a plain link.
+      // The demo is a separate app under /demo/. Use a plain <a>, not a Next link.
       text: "Try the demo",
-      url: "/",
+      url: "/demo/",
       external: true,
       active: "none",
     },
