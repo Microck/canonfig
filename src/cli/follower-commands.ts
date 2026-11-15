@@ -31,6 +31,11 @@ export interface SynchronizeInput {
   readonly reviewLocal?: boolean | undefined;
 }
 
+/** CLI-specific work runs inside the same invocation boundary as synchronization. */
+export type SynchronizationExecution<Requirements = never> = (
+  synchronize: Effect.Effect<CliPayload, CliCommandFailure>,
+) => Effect.Effect<CliPayload, CliCommandFailure, Requirements>;
+
 export interface RestoreInput {
   /** Snapshot id under `~/.canonfig/.backups/`; the latest when absent. */
   readonly snapshot?: string | undefined;
@@ -107,9 +112,10 @@ export interface FollowerCommandsService {
    */
   readonly unenroll: () => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly abandon: () => Effect.Effect<CliPayload, CliCommandFailure>;
-  readonly synchronize: (
+  readonly synchronize: <Requirements = never>(
     input: SynchronizeInput,
-  ) => Effect.Effect<CliPayload, CliCommandFailure>;
+    execute?: SynchronizationExecution<Requirements>,
+  ) => Effect.Effect<CliPayload, CliCommandFailure, Requirements>;
   readonly recover: (
     input: RecoverInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;

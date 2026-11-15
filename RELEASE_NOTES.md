@@ -7,32 +7,38 @@
 - Keep TLS certificate pins and signed revisions. Tailnet startup refuses
   unavailable, expired or userspace-only clients and never changes Serve settings.
 
-# Canonfig v7.1.11
+# Canonfig v7.1.12
 
-This release makes the Source Overview tell the truth about what is published,
-and tidies how terms and explanations show up.
+This release lets a machine keep selected skills and its own MCP servers while
+the rest of the Source's setup syncs. It works on Followers and on the Source
+when it syncs its own folder.
 
-## Source Overview
+## Keep selected skills local
 
-- The Overview now shows the newest published revision, for example "Revision
-  3 is published". Before, a Source with published revisions still showed a
-  gray "Publish the profile to send it to your other machines".
-- With nothing published it says "Nothing published yet", and if the
-  revisions cannot be read it says so and shows the error.
-- It never claims machines are up to date. Followers don't report which
-  revision they applied, so the Overview says it can't tell which machines
-  have it yet, and that edits saved since then need a new revision.
-- "Other machines can't reach this Source" still comes first when the Source
-  service is not serving.
-- The Revisions list and the revision details show the newest revision first.
+Add skill names to `excludeSkills` in the machine's
+`~/.canonfig/local/local.jsonc`:
 
-## Everywhere
+```json
+{
+  "excludeSkills": ["deploy", "review"]
+}
+```
 
-- A term inside a sentence, such as "as a follower", is underlined again and
-  explains itself on hover or focus. Titles and labels keep the small (?)
-  button.
-- On a Follower's Sync page, the explanations under "Your own changes" and
-  "Preview instructions files" moved into (?) tooltips next to their titles.
+Those skills stay as they are in every harness skill folder on that machine,
+including `~/.agents/skills` and Hermes's skill folders. Canonfig does not
+write, check or delete them, and other Source skills still sync. If Canonfig
+managed one before, the next successful sync gives it back to the machine with
+its current files. This needs `skills` in the Source's `local.appendLocal`.
+
+## Keep native MCP servers
+
+Set `"preserveMcp": true` in the same file to leave each harness's MCP server
+list exactly as it is, including options the canonical format cannot express.
+New Source servers are not written either. Instructions, skills, commands and
+other settings still sync, and agent files still name the Source's servers.
+
+Removing either setting does not quietly take over local copies. The next
+sync stops and says what to resolve.
 
 ## Known limitation
 
@@ -46,7 +52,7 @@ during import.
 Before upgrading, finish or recover any unfinished run with the CLI build that
 created it.
 
-Install with `npm install --global @microck/canonfig@7.1.11` on every machine,
+Install with `npm install --global @microck/canonfig@7.1.12` on every machine,
 or run `canonfig self-update apply`. Stop `canonfig ui` first, and on a Source
 run `canonfig source service remove` before installing and
 `canonfig source service install` afterwards.

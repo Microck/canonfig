@@ -803,6 +803,8 @@ const planMirror = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
  * already hold the machine's edit. Kept keys that already hold the desired
  * values need no check (observed equals desired), as long as nothing owned is
  * removed; anything else still needs the whole record unchanged.
+ * If every previously owned key is given back, no owned value remains to
+ * protect. Newly declared keys then use the normal first-adoption merge.
  */
 const planConfigIfUnmodified = (
   context: ResourcePlanningContext,
@@ -820,10 +822,11 @@ const planConfigIfUnmodified = (
     const declared = new Set(desired.keys);
     const released = new Set(desired.releases ?? []);
     const owned = applied.ownership === "ConfigKeys" ? applied.ownedKeys : [];
+    const releasesAllOwned = owned.length > 0 && owned.every((key) => released.has(key) && !declared.has(key));
     const onlyGivesBack = owned.some((key) => released.has(key) && !declared.has(key))
       && owned.every((key) => declared.has(key) || released.has(key))
       && observed.digest === desired.digest;
-    if (!onlyGivesBack) {
+    if (!releasesAllOwned && !onlyGivesBack) {
       return [driftConflict(
         context,
         desired.digest,

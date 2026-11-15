@@ -317,6 +317,8 @@ takes these keys:
 | `settings` | object: harness id to object of key path to value | Settings keys only this machine adds. |
 | `excludeHarnesses` | array of harness ids | Harnesses this machine never projects, even when listed. `canonfig harnesses exclude` and `canonfig restore` edit it. |
 | `excludeResources` | array of resource ids | Authored resources this machine never projects. `canonfig restore` adds the ones it gives back. |
+| `excludeSkills` | array of skill names | Skill directories this machine keeps local in every harness, including shared skills. Requires Source `local.appendLocal` to include `skills`. Excluded skills are not written, checked, or deleted, even if previously managed. Source copies can remain in the canonical mirror. Removing an exclusion does not adopt a local copy; overlapping local content stops sync. |
+| `preserveMcp` | boolean | `true` keeps native MCP configuration outside projection on this machine, including servers or options the canonical format cannot represent. It applies to future Source additions too. Other harness settings still follow the Source. Default `false`. |
 | `overlays` | array of `<category>/<name>` or `settings/<harness>#<key>` | Local Overlays: published items this machine's local item replaces. Key claims: settings keys Canonfig never writes, removes, or checks on this machine, while the other keys of that settings file follow the Source. `canonfig overlay set` and `remove` edit it. See [Replace a published item on one machine](/docs/how-to/use-local-overlays). |
 | `backups` | boolean | `false` turns harness takeover snapshots off on this machine; `canonfig import --replace` still snapshots the folder entries it replaces. Default `true`. |
 

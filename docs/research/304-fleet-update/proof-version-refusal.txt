@@ -1,0 +1,24 @@
+Fixture releases: 7.1.9 -> 7.1.10; real npm tarballs, local signed publisher metadata, production SHA-512 downloader.
+[canary] canonfig --version
+exit=0
+7.1.9
+[source] npm install --global --prefix <source-prefix> --install-strategy=nested --ignore-scripts <canonfig-7.1.10.tgz>
+exit=0
+[source] canonfig --version
+exit=0
+7.1.9
+[source] canonfig source update --canary follower-5b35983e5c927afbe198d65c89d98f16 --apply --json
+exit=0
+{"schema":"canonfig.cli/v1","command":"source.update","status":"success","exitCode":0,"message":"source.update completed","data":{"followers":[{"admittedAt":null,"attempt":null,"detail":"Waiting for the follower's next sync and local update opt-in","health":null,"id":"follower-5b35983e5c927afbe198d65c89d98f16","name":"canary","status":"queued","version":null},{"admittedAt":null,"attempt":null,"detail":"Waiting for the follower's next sync and local update opt-in","health":null,"id":"follower-d7501e64946890a29fa2458eef881dd3","name":"failing","status":"queued","version":null},{"admittedAt":null,"attempt":null,"detail":"Waiting for the follower's next sync and local update opt-in","health":null,"id":"follower-e1be81ecf4665723b160756c4d2028a5","name":"queued","status":"queued","version":null}],"id":"e31966f6-4477-4d4a-a12c-3eb15fac6cf3","integrity":"sha512-WNKURqWujBZouIFfoNK/Pm306e3IkkKr6JckJn4lMfoLnZjusqH7uVjsLTXbpOWlvR5wh9jPQNngLPcE8csuVA==","schema":"canonfig.fleet-update/v1","sequence":1,"source":"cb06a5e58e0aa90da6e4b61439bed62952db9bc90db3083bd8e74e96815c50c2","startedAt":"2026-11-13T21:36:21.244Z","stateFormat":7,"status":"running","version":"7.1.10"}}
+[canary] canonfig sync --apply --no-input --json
+exit=3
+
+{"schema":"canonfig.cli/v1","command":"sync.apply","status":"error","exitCode":3,"message":"Fleet Update deferred: another Synchronization Run is active"}
+[source] canonfig source update status --json
+exit=0
+{"schema":"canonfig.cli/v1","command":"source.update.status","status":"success","exitCode":0,"message":"source.update.status completed","data":{"followers":[{"admittedAt":"2026-11-13T21:36:22.301Z","attempt":"3de15ef4-6b56-44a1-ad99-10a9d165ce43","detail":"path=\"/tmp/canonfig-fleet-proof-rVKE9R/canary/.canonfig/state.sqlite.run-lock\" operation=\"sync --apply\" pid=1226 since=\"2026-11-13T21:36:20.254Z\"","health":null,"id":"follower-5b35983e5c927afbe198d65c89d98f16","name":"canary","status":"deferred","version":"7.1.9"},{"admittedAt":null,"attempt":null,"detail":"Waiting for the follower's next sync and local update opt-in","health":null,"id":"follower-d7501e64946890a29fa2458eef881dd3","name":"failing","status":"queued","version":null},{"admittedAt":null,"attempt":null,"detail":"Waiting for the follower's next sync and local update opt-in","health":null,"id":"follower-e1be81ecf4665723b160756c4d2028a5","name":"queued","status":"queued","version":null}],"id":"e31966f6-4477-4d4a-a12c-3eb15fac6cf3","integrity":"sha512-WNKURqWujBZouIFfoNK/Pm306e3IkkKr6JckJn4lMfoLnZjusqH7uVjsLTXbpOWlvR5wh9jPQNngLPcE8csuVA==","schema":"canonfig.fleet-update/v1","sequence":1,"source":"cb06a5e58e0aa90da6e4b61439bed62952db9bc90db3083bd8e74e96815c50c2","startedAt":"2026-11-13T21:36:21.244Z","stateFormat":7,"status":"running","version":"7.1.10"}}
+[canary] canonfig sync --apply --no-input --json
+exit=3
+
+{"schema":"canonfig.cli/v1","command":"sync.apply","status":"error","exitCode":3,"message":"Staged CLI version verification failed"}
+Disposable processes stopped and machine HOMEs removed.

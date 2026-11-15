@@ -71,7 +71,7 @@ it("the Version page treats an installed result with a warning as success", asyn
   const checked = { current: "7.1.0", candidate: "7.1.1", status: "updated" as const, detail: "Receipt unavailable; keep the update record for recovery." };
   assert.ok(version.data);
   const installed = { ...version, checked, latest: checked.candidate, lifecycle: { kind: "installed" as const, status: version.data, checked } };
-  const workspace = { role: "source", admin: { version: installed } } as Workspace;
+  const workspace = { role: "source", admin: { version: installed, fleet: null } } as Workspace;
   const container = document.createElement("div"); document.body.append(container);
   const root = createRoot(container);
   try {

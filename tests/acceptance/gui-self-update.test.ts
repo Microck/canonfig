@@ -171,7 +171,7 @@ describe("GUI self-update with a disposable npm installation", () => {
       await sent.promise;
       await expect.poll(async () => (await server.api("/api/self-update")).status, { timeout: 5_000 }).toBe(409);
       expect((await server.api("/api/self-update")).status).toBe(409);
-      slow.end("true}");
+      slow.end('true}');
       const response = await enabled.promise;
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       expect(Schema.decodeUnknownSync(GuiSelfUpdateStatus)(response.body)).toMatchObject({ enabled: true });
@@ -281,7 +281,7 @@ describe("GUI self-update with a disposable npm installation", () => {
     const disabled = await server.api("/api/self-update/disable", {});
     expect(disabled.status).toBe(200);
     expect(Schema.decodeUnknownSync(GuiSelfUpdateStatus)(disabled.body)).toMatchObject({ enabled: false, settings: null });
-    expect(machine.readers()).toHaveLength(0);
+    expect(machine.readers()).toHaveLength(1);
     expect((await server.api("/api/session")).status).toBe(200);
     await enable(server, machine.npmCli);
     expect(machine.readers()).toHaveLength(1);

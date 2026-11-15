@@ -1,0 +1,301 @@
+✔ freezes a submitted local draft and blocks Discard, close, Escape and navigation until it settles (246.943048ms)
+✔ a removed file's delayed upload cannot overwrite the file that takes its list position (115.633159ms)
+✔ a mode change cancels uploads from the previous local file tree (76.02347ms)
+✔ only the latest replacement read owns a local file (90.773393ms)
+POST http://127.0.0.1:45781/ 409 (Conflict)
+✔ failed config saves retain their JSON draft, unlock editing and preserve the config digest on retry (107.29901ms)
+✔ a binary replacement preserves exact bytes and the file's executable flag (72.528882ms)
+✔ confirmed removal freezes the same editor until the digest-checked deletion settles (111.986449ms)
+✔ refreshing local config replaces an editing draft and its save digest (88.634775ms)
+✔ refreshing local config during submission keeps the frozen generation until success closes it (65.998308ms)
+You have Reduced Motion enabled on your device. Animations may not appear as expected.. For more information and steps for solving, visit https://motion.dev/troubleshooting/reduced-motion-disabled
+POST http://127.0.0.1:40211/api/invitations 500 (Internal Server Error)
+✔ group invitation retains its submitted follower after failure, retry and inventory removal (1331.378001ms)
+Error: socket hang up
+    at Socket.socketCloseListener (node:_http_client:739:27)
+    at Socket.emit (node:events:526:24)
+    at TCP.<anonymous> (node:net:362:12) {
+  code: 'ECONNRESET'
+}
+✔ revocation cannot be cancelled or dismissed while its server request runs (466.70571ms)
+Error: connect ECONNRESET 127.0.0.1:45265
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:2021:16) {
+  errno: -104,
+  code: 'ECONNRESET',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 45265
+}
+Error: connect ECONNREFUSED 127.0.0.1:45265
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:2021:16) {
+  errno: -111,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 45265
+}
+POST http://127.0.0.1:39383/api/machines/revoke 500 (Internal Server Error)
+✔ reopening failed revocation clears the prior attempt error (283.008387ms)
+✔ ordinary invitation captures its submitted values and starts a fresh invitation (779.015659ms)
+✔ invitation address starts as the Source service's address once it has loaded (274.400835ms)
+OPTIONS http://127.0.0.1:43627/api/source-service 404 (Not Found)
+Cross-Origin Request Blocked: The Same Origin Policy disallows reading the remote resource at "http://127.0.0.1:43627/api/source-service".
+OPTIONS http://127.0.0.1:43627/api/source-service 404 (Not Found)
+Cross-Origin Request Blocked: The Same Origin Policy disallows reading the remote resource at "http://127.0.0.1:43627/api/source-service".
+✔ source Overview fetches only session/status and revisits retain page reads (424.923602ms)
+✔ follower Overview fetches only session/status and revisits retain page reads (246.326801ms)
+You have Reduced Motion enabled on your device. Animations may not appear as expected.. For more information and steps for solving, visit https://motion.dev/troubleshooting/reduced-motion-disabled
+GET http://127.0.0.1:35017/api/source-service 404 (Not Found)
+✔ self-update offers a same-major minor, preserves major notices and pairing warnings, and stops requests after installation (2151.912757ms)
+GET http://127.0.0.1:44935/api/source-service 404 (Not Found)
+GET http://127.0.0.1:44935/api/source-service 404 (Not Found)
+GET http://127.0.0.1:44935/api/machines 500 (Internal Server Error)
+GET http://127.0.0.1:44935/api/source-service 404 (Not Found)
+✔ /source/secrets cold entry loads follower membership, reports failures and refreshes it (588.522077ms)
+GET http://127.0.0.1:33369/api/source-service 404 (Not Found)
+GET http://127.0.0.1:33369/api/source-service 404 (Not Found)
+GET http://127.0.0.1:33369/api/machines 500 (Internal Server Error)
+GET http://127.0.0.1:33369/api/source-service 404 (Not Found)
+✔ /source/profile/groups cold entry loads follower membership, reports failures and refreshes it (129.574914ms)
+GET http://127.0.0.1:36757/api/source-service 404 (Not Found)
+Error: socket hang up
+    at Socket.socketCloseListener (node:_http_client:739:27)
+    at Socket.emit (node:events:526:24)
+    at TCP.<anonymous> (node:net:362:12) {
+  code: 'ECONNRESET'
+}
+You have Reduced Motion enabled on your device. Animations may not appear as expected.. For more information and steps for solving, visit https://motion.dev/troubleshooting/reduced-motion-disabled
+✔ revision inspection cancels superseded reads and does not share the mutation lock (145.853569ms)
+GET http://127.0.0.1:44381/api/source-service 404 (Not Found)
+✔ setup apply invalidates configured workspace evidence when succeeded (317.271868ms)
+GET http://127.0.0.1:45951/api/source-service 404 (Not Found)
+✔ setup apply invalidates configured workspace evidence when failed (291.042972ms)
+GET http://127.0.0.1:41651/api/source-service 404 (Not Found)
+✔ saves a harness's Gets choices once when the menu closes (631.322791ms)
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20) {
+  errno: -104,
+  code: 'ECONNRESET',
+  syscall: 'read'
+}
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20) {
+  errno: -104,
+  code: 'ECONNRESET',
+  syscall: 'read'
+}
+Error: read ECONNRESET
+    at TCP.onStreamRead (node:internal/stream_base_commons:216:20) {
+  errno: -104,
+  code: 'ECONNRESET',
+  syscall: 'read'
+}
+Error: connect ECONNREFUSED 127.0.0.1:41651
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:2021:16) {
+  errno: -111,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 41651
+}
+✔ local mcp reload resets its draft and saves against the refreshed local.jsonc digest (2424.452407ms)
+✔ local settings reload resets its draft and saves against the refreshed local.jsonc digest (1740.63414ms)
+GET http://127.0.0.1:34683/api/source-service 404 (Not Found)
+PUT http://127.0.0.1:34683/api/profile/config 409 (Conflict)
+GET http://127.0.0.1:34683/api/source-service 404 (Not Found)
+✔ profile conflict reload preserves the draft until Discard my edits (1016.47114ms)
+GET http://127.0.0.1:39499/api/source-service 404 (Not Found)
+PUT http://127.0.0.1:39499/api/profile/config 409 (Conflict)
+GET http://127.0.0.1:39499/api/source-service 404 (Not Found)
+✔ profile conflict reload preserves the draft until Re-apply my edits (1458.114198ms)
+GET http://127.0.0.1:33793/api/operations/plan 503 (Service Unavailable)
+✔ retains an uncertain follower ticket, blocks another command and resumes its observation (559.720476ms)
+GET http://127.0.0.1:36277/api/operations/first-poll 503 (Service Unavailable)
+Error: socket hang up
+    at Socket.socketCloseListener (node:_http_client:739:27)
+    at Socket.emit (node:events:526:24)
+    at TCP.<anonymous> (node:net:362:12) {
+  code: 'ECONNRESET'
+}
+✔ offers ticket recovery even when the first operation observation fails (38.341998ms)
+✔ only a successful plan enables Apply and successful Apply reaches done (70.206582ms)
+Error: connect ECONNREFUSED 127.0.0.1:35067
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:2021:16) {
+  errno: -111,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 35067
+}
+GET http://127.0.0.1:34959/api/source-service 404 (Not Found)
+✔ a profile save refresh keeps edits made after the submitted draft (887.652192ms)
+GET http://127.0.0.1:41619/api/source-service 404 (Not Found)
+POST http://127.0.0.1:41619/api/profile/scan 500 (Internal Server Error)
+✔ discovery failure stops Finding tools and offers a scan-specific retry (148.162147ms)
+GET http://127.0.0.1:41689/api/source-service 404 (Not Found)
+GET http://127.0.0.1:41689/api/source-service 404 (Not Found)
+✔ a changed folder snapshot invalidates publication review evidence (174.750767ms)
+GET http://127.0.0.1:40195/api/source-service 404 (Not Found)
+✔ a secret submission freezes its draft and cannot close as if it cancelled the write (206.089907ms)
+PUT http://127.0.0.1:33327/api/agent/harness 500 (Internal Server Error)
+✔ a failed harness save retains the committed policy as an explicit partial success (47.495834ms)
+▶ shared live workspace navigation
+  ✔ uses the polished navigation groups for source (2.910784ms)
+  ✔ uses the polished navigation groups for follower (0.920008ms)
+  ✔ gates tabs by session role and keeps unknown routes unavailable (0.326923ms)
+  ✔ requires setup for an unconfigured session (0.244322ms)
+  ✔ retains Source backups in demo navigation (0.225562ms)
+✔ shared live workspace navigation (6.596615ms)
+✔ tools start collapsed and open into categories and items (1344.468973ms)
+✔ checking a differing item under one tool picks that tool's version and marks the others (359.645258ms)
+✔ identical copies in two tools check together as one import (83.640972ms)
+✔ checking a whole tool takes undecided items only, and one click clears what it took (2381.637598ms)
+✔ a choice retained from an unlisted tool survives checking another tool (82.836566ms)
+✔ conversion notes are visible and describe the item's checkbox (20.949974ms)
+✔ search opens matching branches by name or path and keeps selections (76.402432ms)
+✔ content already in the folder cannot be checked, even from a retained choice (20.653091ms)
+✔ an MCP server with a password names its variable and checking it is the consent (28.062032ms)
+✔ each tool keeps its skipped items closed until asked, grouped by reason (40.403175ms)
+✔ a search that matches a skipped path shows it (17.413824ms)
+✔ shared skills disclose selected readers only when expanded and retain each offer's provenance (91.028393ms)
+✔ a skips-only shared branch keeps its folder identity without inventing readers (27.498708ms)
+✔ same-name copies within one source have distinct path labels and preserve the chosen opaque id through search (161.159094ms)
+✔ reviewing version warnings does not replace the selected import (104.981869ms)
+You have Reduced Motion enabled on your device. Animations may not appear as expected.. For more information and steps for solving, visit https://motion.dev/troubleshooting/reduced-motion-disabled
+✔ Source discovery cannot replace a newer Follower choice (288.449347ms)
+POST http://127.0.0.1:40459/api/setup/plan 400 (Bad Request)
+✔ Source discovery shows actionable earlier-journal guidance (82.545563ms)
+✔ harness changes keep canonical ids and the item choice (primary literal: false, replaced while unlisted: false) (758.889321ms)
+✔ harness changes keep canonical ids and the item choice (primary literal: false, replaced while unlisted: true) (648.706089ms)
+✔ harness changes keep canonical ids and the item choice (primary literal: true, replaced while unlisted: false) (573.640788ms)
+✔ harness changes keep canonical ids and the item choice (primary literal: true, replaced while unlisted: true) (520.723869ms)
+✔ a replacement collision choice survives removing and re-adding the earlier harness (collision retained: false) (428.043582ms)
+✔ a replacement collision choice survives removing and re-adding the earlier harness (collision retained: true) (505.06718ms)
+GET http://127.0.0.1:38699/api/harnesses 500 (Internal Server Error)
+✔ join success followed by report failure retains explicit joined recovery state (21.990542ms)
+✔ a concurrent inspection is refused before it can clear the active envelope (17.636266ms)
+GET http://127.0.0.1:38909/api/setup 500 (Internal Server Error)
+GET http://127.0.0.1:38909/api/setup 500 (Internal Server Error)
+✔ a status reload certifies completed setup after a lost apply observation (44.024684ms)
+GET http://127.0.0.1:46307/api/setup 500 (Internal Server Error)
+✔ approval remains committed when its follow-up status read fails (19.121358ms)
+✔ setup stopping for human action is not reported as complete (32.959993ms)
+PUT http://127.0.0.1:40603/api/harnesses 500 (Internal Server Error)
+✔ preference retry preserves its draft and rechecks partial server progress (37.384509ms)
+✔ the Settings journal keeps an unapproved plan reviewable and approvable (56.229425ms)
+✔ Continue on Approve records the named approval and only then moves to Create (373.42157ms)
+POST http://127.0.0.1:39927/api/setup/approve 500 (Internal Server Error)
+✔ failed approval keeps the entered name available for an explicit retry (59.780614ms)
+✔ a deferred upload cannot override a newer preset (2.206138ms)
+✔ a deferred upload cannot override a newer reset (0.255522ms)
+✔ two uploads resolved out of order retain the newer image (0.341523ms)
+✔ late upload failures cannot replace a newer selection with an error (0.580285ms)
+✔ upload ownership is bound to both the machine and generation (0.658085ms)
+✔ a current upload failure retains its previous icon and can be retried (0.351043ms)
+✔ a new tour step hides immediately instead of showing text beside the previous target (179.937569ms)
+You have Reduced Motion enabled on your device. Animations may not appear as expected.. For more information and steps for solving, visit https://motion.dev/troubleshooting/reduced-motion-disabled
+✔ a backward search past a missing first target closes without retaining the previous spotlight (1053.175633ms)
+✔ the tour offer waits while the Change groups dialog is open (1029.683559ms)
+✔ the tour offer waits while the Edit secret dialog is open (1017.82678ms)
+✔ the tour offer waits while the Enable self-update dialog is open (1018.511025ms)
+✔ keeps undisclosed harness collections absent on save and sends explicit replacements (137.442217ms)
+✔ status reload invalidates an earlier available check when disabled (81.254832ms)
+✔ poll failure retains a resumable ticket, not a running progress claim (584.308632ms)
+✖ the Version page treats an installed result with a warning as success (1149.270584ms)
+▶ shared profile authoring
+  ✔ round trips field content and digests for AGENTS.md (6.766016ms)
+  ✔ round trips field content and digests for rules/style.md (16.693778ms)
+  ✔ round trips field content and digests for agents/reviewer.md (5.676047ms)
+  ✔ round trips field content and digests for commands/check.md (2.931784ms)
+  ✔ round trips field content and digests for skills/review (2.804103ms)
+  ✔ keeps unrepresented frontmatter in the exact editor (1.996977ms)
+  ✔ keeps skill trees and binary executable assets intact (1.370531ms)
+  ✔ round trips mcp through fields (0.757486ms)
+  ✔ round trips credentials through fields (1.989376ms)
+  ✔ round trips hooks through fields (0.766606ms)
+  ✔ round trips settings through fields (1.818055ms)
+  ✔ round trips resources through fields (0.586284ms)
+  ✔ keeps MCP arguments with spaces and tool recipes in exact editors (0.528804ms)
+  ✔ renames a file and memberships in one digest checked write (1.679134ms)
+  ✔ preserves empty optional fields while changing another config field (0.347243ms)
+  ✔ writes supporting hook files with field edits in one transaction (0.703165ms)
+  ✔ writes each file tree member with its own original digest (0.381803ms)
+  ✔ preserves the byte order mark in exact UTF-8 content (0.206522ms)
+  ✔ edits only changed JSONC leaves (0.263562ms)
+✔ shared profile authoring (51.161343ms)
+▶ canonical workspace routes
+  ✔ round-trips /source/overview (3.070065ms)
+  ✔ round-trips /source/profile (0.241202ms)
+  ✔ round-trips /source/machines (0.216762ms)
+  ✔ round-trips /source/revisions (0.425124ms)
+  ✔ round-trips /source/backups (0.279762ms)
+  ✔ round-trips /source/secrets (2.202339ms)
+  ✔ round-trips /source/settings/service (0.168322ms)
+  ✔ round-trips /source/settings/installers (0.228642ms)
+  ✔ round-trips /source/settings/setup (1.661253ms)
+  ✔ round-trips /source/settings/health (0.699526ms)
+  ✔ round-trips /source/settings/version (1.100769ms)
+  ✔ round-trips /follower/overview (0.159722ms)
+  ✔ round-trips /follower/machines (0.145241ms)
+  ✔ round-trips /follower/sync (0.11204ms)
+  ✔ round-trips /follower/schedule (0.105561ms)
+  ✔ round-trips /follower/local-settings (0.096681ms)
+  ✔ round-trips /follower/backups (0.092961ms)
+  ✔ round-trips /follower/secrets (0.089681ms)
+  ✔ round-trips /follower/settings/tunnel (0.358363ms)
+  ✔ round-trips /follower/settings/agent (0.117441ms)
+  ✔ round-trips /follower/settings/health (0.09596ms)
+  ✔ round-trips /follower/settings/enrollment (0.09816ms)
+  ✔ round-trips /follower/settings/version (0.094481ms)
+  ✔ round-trips /follower/settings/installers (0.157761ms)
+  ✔ round-trips /follower/settings/setup (0.108081ms)
+  ✔ round-trips profile tabs and both machine list routes (0.731686ms)
+  ✔ encodes focused rows without treating their IDs as URL syntax (0.515085ms)
+  ✔ keeps explicit empty focus distinct from the default selection (0.189801ms)
+  ✔ does not reinterpret role or variant query parameters (0.210281ms)
+  ✔ rejects unknown pages and pages belonging to the other role (0.756446ms)
+  ✔ gives the demo switcher canonical role entry points (0.217242ms)
+✔ canonical workspace routes (18.860356ms)
+✔ held plan entries never become pending, running or done (3788.522318ms)
+✔ store commands reject apply before recovery and after unenrollment (9.498279ms)
+✔ publication clears only the frozen edits, not edits saved while it runs (1764.693946ms)
+✔ older delivery completions cannot settle a newer revision delivery (4213.084218ms)
+▶ updateGate
+  ✔ leaves an idle machine unblocked (1.872456ms)
+  ✔ waits for a running source service (0.246562ms)
+  ✔ waits for a service being installed (0.493164ms)
+  ✔ waits for setup applying (0.216362ms)
+  ✔ waits for a publish (0.248402ms)
+  ✔ waits for a follower sync (0.197561ms)
+  ✔ refuses while a follower sync is interrupted (0.458484ms)
+  ✔ waits for a skill check or update on either role (0.619886ms)
+✔ updateGate (6.746935ms)
+ℹ tests 149
+ℹ suites 4
+ℹ pass 148
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 75349.972382
+
+✖ failing tests:
+
+test at ui/src/workspace/live/self-update.test.tsx:1:2942
+✖ the Version page treats an installed result with a warning as success (1149.270584ms)
+  TypeError: Cannot read properties of undefined (reading 'data')
+      at FleetUpdates (/workspace/canonfig/ui/src/workspace/settings.tsx:947:25)
+      at Object.react_stack_bottom_frame (/workspace/canonfig/ui/node_modules/react-dom/cjs/react-dom-client.development.js:28571:20)
+      at renderWithHooks (/workspace/canonfig/ui/node_modules/react-dom/cjs/react-dom-client.development.js:8030:22)
+      at updateFunctionComponent (/workspace/canonfig/ui/node_modules/react-dom/cjs/react-dom-client.development.js:10569:19)
+      at beginWork (/workspace/canonfig/ui/node_modules/react-dom/cjs/react-dom-client.development.js:12205:18)
+      at runWithFiberInDEV (/workspace/canonfig/ui/node_modules/react-dom/cjs/react-dom-client.development.js:1045:30)
+      at performUnitOfWork (/workspace/canonfig/ui/node_modules/react-dom/cjs/react-dom-client.development.js:19176:22)
+      at workLoopSync (/workspace/canonfig/ui/node_modules/react-dom/cjs/react-dom-client.development.js:19004:41)
+      at renderRootSync (/workspace/canonfig/ui/node_modules/react-dom/cjs/react-dom-client.development.js:18985:11)
+      at performWorkOnRoot (/workspace/canonfig/ui/node_modules/react-dom/cjs/react-dom-client.development.js:18094:35)
+
+
+Wall time: 76.47 seconds
+
+Command exited with code 1
