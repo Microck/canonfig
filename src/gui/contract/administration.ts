@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { TailnetReport } from "../../domain/tailnet.ts";
 import type { AgentPolicy } from "../../domain/identity.ts";
 import type { FollowerAgentHarnessConfiguration } from "../../synchronization/follower-sync-config.ts";
 import { GuiError } from "./session.ts";
@@ -30,7 +31,7 @@ export const GuiAgentHarnessRead = Schema.Union([
 ]);
 export type GuiAgentHarnessRead = typeof GuiAgentHarnessRead.Type;
 export const GuiSourceServiceInput = Schema.Struct({
-  hostname: Schema.Literals(["127.0.0.1", "::1"]),
+  hostname: Schema.Literals(["127.0.0.1", "::1", "tailnet"]),
   port: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(65535)),
 });
 export const GuiSourceServiceStatus = Schema.Struct({
@@ -40,6 +41,8 @@ export const GuiSourceServiceStatus = Schema.Struct({
   serviceName: Schema.String,
   definitionPath: Schema.optionalKey(Schema.String),
   endpoint: Schema.String,
+  requested: GuiSourceServiceInput,
+  tailnet: TailnetReport,
   manager: Schema.Struct({
     installed: Schema.Boolean, matches: Schema.Boolean, enabled: Schema.Boolean, active: Schema.Boolean,
     state: Schema.String, pid: Schema.optionalKey(Schema.Number),

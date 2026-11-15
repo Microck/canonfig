@@ -96,23 +96,23 @@ server, port forwarding, or usable credentials exist on a peer. Report these
 separately: discovered → selected → connection verified → enrolled → converged.
 Reported `online` status proves none of the later stages.
 
-Canonfig's source server and invitation endpoints remain loopback HTTPS origins.
-Do not use a 100.x Tailscale address or MagicDNS name directly as the Canonfig
-bind host or invitation endpoint. A separately approved, operator-managed,
-TLS-transparent tunnel may connect a follower loopback port to the source's
-loopback server. It must preserve the source TLS certificate and signing pins.
+Offer direct tailnet transport when `canonfig doctor --json` reports Tailscale
+ready. With operator approval, use `source serve --tailnet` or
+`source service install --tailnet`, then put its printed MagicDNS HTTPS endpoint
+in invitations. Headscale uses the same path. Preserve TLS and signing pins.
+See [the tailnet guide](https://canonfig.micr.dev/docs/how-to/connect-over-tailnet/)
+for prerequisites and policy examples.
 
-Offer Existing verified tunnel / Operator configures a tunnel / Manual handoff
-or defer / Other. Discovery creates no tunnel. Do not assume Tailscale SSH is
-enabled, is supported on a destination OS, or allows forwarding. Do not enable
-it, change ACLs, use public exposure, or disable TLS/SSH host verification.
+Loopback invitations still require an explicitly approved tunnel. Discovery
+creates no tunnel and grants no permission to change network policy or logins.
+Do not assume Tailscale SSH is enabled or supports forwarding.
 Only after explicit device, account, and connection approval may the setup agent
 perform a narrowly scoped connection check using an available authorized tool.
 
-Record source host separately from the follower-local Canonfig endpoint; local
-ports may differ. Check source process and tunnel availability before enabling a
-schedule. Without authorized remote access, give per-machine handoff instructions
-and mark remote work pending. Never claim fleet completion from local status.
+For loopback invitations, record the Source host separately from the
+Follower-local endpoint. Check the chosen transport before enabling a schedule.
+Without authorized remote access, give per-machine handoff instructions and
+mark remote work pending. Never claim fleet completion from local status.
 
 ## References
 

@@ -886,6 +886,7 @@ describe("packed Canonfig executable", () => {
         CANONFIG_SOURCE_ENDPOINT: "https://127.0.0.1:9",
         CANONFIG_SOURCE_TLS_FINGERPRINT: "packed-fingerprint",
         CANONFIG_SOURCE_CREDENTIAL_REFERENCE: secret,
+        CANONFIG_TAILSCALE_EXECUTABLE: resolve(packedRoot, "missing-tailscale"),
       },
     );
     // The injected reference is not one this machine's local-file store owns,
@@ -907,7 +908,11 @@ describe("packed Canonfig executable", () => {
         status: "unhealthy",
       },
     });
-    expect(envelope.data.probes).toHaveLength(8);
+    expect(envelope.data.probes).toContainEqual(expect.objectContaining({
+      name: "tailscale",
+      status: "skipped",
+      details: expect.objectContaining({ installed: false, backendState: "NotInstalled" }),
+    }));
     expect(envelope.data.probes).toContainEqual(expect.objectContaining({
       name: "source",
       status: "fail",

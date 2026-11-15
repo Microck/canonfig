@@ -33,12 +33,16 @@ function Controls() {
   return <><output data-testid="followers">{ws.followers.map((entry) => entry.id).join(",")}</output><output data-testid="endpoint">{ws.endpoint}</output><button onClick={ws.reload}>Reload page</button><button onClick={() => ws.setChangeGroups({ followerId: "dialog-follower" })}>Open groups</button></>;
 }
 const follower = { id: "dialog-follower", name: "Original laptop", groups: ["work"], enrolledAt: "2026-11-06T00:00:00Z", revoked: false, pending: false, credentialPresent: true, credentialLifecycle: { _tag: "Active" } };
+const serviceNetwork = {
+  requested: { hostname: "127.0.0.1", port: 17342 },
+  tailnet: { installed: false, ready: false, backendState: "NotInstalled", addresses: [], httpsAvailable: false, userspace: false, detail: "Tailscale CLI was not found." },
+};
 type Handler = (path: string, body: unknown, outgoing: ServerResponse) => boolean;
 async function fixture(handler: Handler) {
   const responses: Record<string, unknown> = {
     "/api/status": { machineRole: { role: "source" }, lifecycle: {}, tunnel: null },
     "/api/profile/items": { items: [], config: { profile: { id: "dialog", name: "Dialog" }, groups: { work: [] } }, supportedSurfaces: {} },
-    "/api/source-service": { report: { state: "not-installed", platform: "linux", mechanism: "systemd-user-service", serviceName: "dialog-fixture", endpoint: "", manager: { installed: false, matches: false, enabled: false, active: false, state: "not-installed" }, serving: false, supportedModes: "", logs: "", detail: "" }, error: null },
+    "/api/source-service": { report: { ...serviceNetwork, state: "not-installed", platform: "linux", mechanism: "systemd-user-service", serviceName: "dialog-fixture", endpoint: "", manager: { installed: false, matches: false, enabled: false, active: false, state: "not-installed" }, serving: false, supportedModes: "", logs: "", detail: "" }, error: null },
     "/api/revisions": { revisions: [] },
     "/api/machines": { followers: [follower], invitations: [] },
   };
@@ -211,7 +215,7 @@ it("invitation address starts as the Source service's address once it has loaded
   // The invitation dialog is mounted before the service report arrives, as on a real page load.
   const app = await fixture((path, _body, outgoing) => {
     if (path !== "/api/source-service") return false;
-    outgoing.end(JSON.stringify({ report: { state: "running", platform: "linux", mechanism: "systemd-user-service", serviceName: "dialog-fixture", endpoint: "https://127.0.0.1:17342", manager: { installed: true, matches: true, enabled: true, active: true, state: "running" }, serving: true, supportedModes: "", logs: "", detail: "" }, error: null }));
+    outgoing.end(JSON.stringify({ report: { ...serviceNetwork, state: "running", platform: "linux", mechanism: "systemd-user-service", serviceName: "dialog-fixture", endpoint: "https://127.0.0.1:17342", manager: { installed: true, matches: true, enabled: true, active: true, state: "running" }, serving: true, supportedModes: "", logs: "", detail: "" }, error: null }));
     return true;
   });
   try {

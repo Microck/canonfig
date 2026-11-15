@@ -143,8 +143,8 @@ Rules to apply while authoring:
 - `groups.<name>` lists `instructions` or `<category>/<name>` items (for example
   `mcp/docs`) that only followers in that group receive; unlisted items go to
   every follower.
-- `local.allow` names the categories (`rules`, `skills`, `agents`, `commands`,
-  `mcp`, `settings`) followers may add through their own `local/`.
+- `local.allow` names the categories (`instructions`, `rules`, `skills`, `agents`,
+  `commands`, `mcp`, `settings`) followers may add through their own `local/`.
 - Automatic installer recipes need an exact `version`.
 
 `source scan` is tool discovery over the folder: it reads instructions, skills,
@@ -166,7 +166,8 @@ what each harness receives.
 ## First projection on the Source
 
 `canonfig sync` on the Source projects the folder into this machine's listed,
-installed, and not excluded harnesses. Plan first:
+installed, and not excluded harnesses. Complete the
+[first-adoption review](completion.md#first-adoption-review), then plan:
 
 ```bash
 canonfig sync --plan

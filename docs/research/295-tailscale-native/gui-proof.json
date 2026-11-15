@@ -1,0 +1,84 @@
+{
+  "browser": "Playwright Chromium 1254, native executable; shared browser and agent-browser unavailable",
+  "sourceSettings": "Detected ready Tailscale, offered Tailscale (recommended), selection enabled Install service. Did not install or change a native service.",
+  "followerOnboarding": "Uploaded invitation; GUI omitted SSH controls. Compared both pins with source init output; joined as gui-tailnet-proof.",
+  "status": {
+    "schema": "canonfig.cli/v1",
+    "command": "status",
+    "status": "success",
+    "exitCode": 0,
+    "message": "status completed",
+    "data": {
+      "completionReceipt": {
+        "applied": {
+          "detail": "no completed synchronization run",
+          "status": "not-reached"
+        },
+        "clientLoaded": {
+          "detail": "no completed synchronization run",
+          "status": "not-reached"
+        },
+        "independentlyVerified": {
+          "detail": "no completed synchronization run",
+          "status": "not-reached"
+        },
+        "mcpQualifications": [],
+        "published": {
+          "detail": "no completed synchronization run",
+          "status": "not-reached"
+        },
+        "scheduled": {
+          "detail": "first apply has not completed",
+          "status": "not-reached"
+        },
+        "secondRunNoOp": false
+      },
+      "enrollmentLifecycle": "Active",
+      "follower": {
+        "credentialReference": "local-file:/tmp/canonfig-295-gui-follower-d03v9efc/credentials/b2e0f3fdcebda6c21735b9fc88ad633314ae17dd82e2b9cc025e4622ba6f148b.credential",
+        "enrolledAt": "2026-11-13T21:33:49.087Z",
+        "groups": [],
+        "id": "follower-61a4e1310b3a4881c82a44efff258344",
+        "name": "gui-tailnet-proof",
+        "revoked": false
+      },
+      "lifecycle": {
+        "converged": {
+          "detail": "revision tailnet-proof:7e262f6132ca2e467bb76878f36998efacea6694daccd6a84417f38de8c4b890 has never been applied",
+          "reached": false
+        },
+        "discovered": {
+          "detail": "source endpoint https://source.tail-example.ts.net:27495 is configured",
+          "reached": true
+        },
+        "enrolled": {
+          "detail": "enrolled as gui-tailnet-proof (follower-61a4e1310b3a4881c82a44efff258344)",
+          "reached": true
+        },
+        "reachable": {
+          "detail": "the source is reachable with pinned TLS and signing identities",
+          "reached": true
+        },
+        "selected": {
+          "detail": "following profile tailnet-proof",
+          "reached": true
+        }
+      },
+      "machineRole": {
+        "follower": "follower-61a4e1310b3a4881c82a44efff258344",
+        "role": "follower",
+        "sourceFingerprint": "09e261a9b95400d4a353369911a8d2591a67f53f68894c89a1d3da6177c4b4c8",
+        "tlsFingerprint": "5befc0d9e1d62d61f53d8bd70d22c85f83dfecd1118304f2e8d0b8863247ee27"
+      },
+      "sourceIdentity": {
+        "keyId": "ed25519:09e261a9b95400d4a353369911a8d2591a67f53f68894c89a1d3da6177c4b4c8",
+        "publicKeyFingerprint": "09e261a9b95400d4a353369911a8d2591a67f53f68894c89a1d3da6177c4b4c8"
+      },
+      "tunnel": {
+        "detail": "no tunnel has been configured",
+        "lifecycle": "not-configured",
+        "restartable": false
+      }
+    }
+  }
+}

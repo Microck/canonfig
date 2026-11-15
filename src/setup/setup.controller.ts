@@ -1,3 +1,4 @@
+import { detectTailnet } from "../enrollment/tailnet.ts";
 import { realpath, stat } from "node:fs/promises";
 import { arch, release, userInfo } from "node:os";
 import { basename, dirname, join, posix, win32 } from "node:path";
@@ -926,6 +927,7 @@ export const planSetup = (
       return yield* recordSetupDecisions(machine, journalPath, previous, decision);
     }
     const timestamp = new Date().toISOString();
+    const tailnet = yield* detectTailnet();
     const journal: SetupJournal = {
       schema: "canonfig.setup/v3",
       role,
@@ -941,7 +943,10 @@ export const planSetup = (
         `Setup role: ${role}. Canonfig checked the role before inspecting this machine.`,
         inventory.transport.initialized
           ? "This machine already has a Source identity. Setup keeps its existing connection identity."
-          : "Canonfig found no Source identity on this machine. Connections use a loopback address, which only this machine can reach.",
+          : "Canonfig found no Source identity on this machine. Choose the Source service transport after setup.",
+        tailnet.ready
+          ? `${tailnet.detail} After setup, choose Tailscale in Settings, Source service, or run canonfig source service install --tailnet.`
+          : tailnet.detail,
         catalog.length > 0
           ? `Previously verified tool installation records reused: ${catalog.length}.`
           : "Canonfig found no previously verified tool installations.",

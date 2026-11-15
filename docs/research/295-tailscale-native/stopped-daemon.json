@@ -1,0 +1,22 @@
+{
+  "before": {
+    "installed": true,
+    "ready": false,
+    "backendState": "NeedsLogin",
+    "addresses": [],
+    "controlUrl": "",
+    "httpsAvailable": false,
+    "userspace": true,
+    "detail": "Tailscale is NeedsLogin. Start the client and complete login or machine approval."
+  },
+  "after": {
+    "installed": true,
+    "ready": false,
+    "backendState": "Unavailable",
+    "addresses": [],
+    "httpsAvailable": false,
+    "userspace": false,
+    "detail": "Tailscale LocalAPI could not be read. Start the client, check local permissions and CANONFIG_TAILSCALE_SOCKET, and use a client with debug localapi support."
+  },
+  "daemonExit": 0
+}

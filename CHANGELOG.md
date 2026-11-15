@@ -2,6 +2,22 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
+## Unreleased
+
+### Tailnet
+
+- Detect Tailscale during health checks, setup planning and Source service setup.
+- Serve the Source and browser interface directly on your tailnet with `--tailnet`.
+  MagicDNS invitations enroll and sync without an SSH tunnel. Headscale custom
+  domains work through the native Tailscale client.
+- Keep TLS certificate pins and signed revisions. Tailnet startup refuses
+  unavailable, expired or userspace-only clients and never changes Serve settings.
+
+### Documentation
+
+- Document machine-local skill and MCP preservation, first-adoption review, and upgrade/UI handoff in the bundled Canonfig skills.
+- Clarify upgrade instructions: `canonfig self-update apply` previews an update; `canonfig self-update apply --apply` installs it. Source service installation starts immediately, so prepare credential access and required native overrides first.
+
 ## v7.1.12 - 2026-11-15
 
 This release lets a machine keep selected skills and its own MCP servers while
