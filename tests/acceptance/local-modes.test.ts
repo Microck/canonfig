@@ -241,6 +241,160 @@ describe("what a follower keeps of its own", () => {
     expect(existsSync(join(skills, "deploy"))).toBe(false);
   }, 600_000);
 
+  it("keeps excluded follower skills through first adoption, ownership release and Source retirement", async () => {
+    const { source, endpoint } = await startSource({
+      harnesses: ["codex"],
+      local: { appendLocal: ["skills"] },
+    }, {
+      "skills/deploy/SKILL.md": skill("deploy", "Source deploy."),
+      "skills/review/SKILL.md": skill("review", "Source review."),
+    });
+    const laptop = machine("excluded-skills", ["codex"]);
+    const skills = join(laptop.home, ".agents", "skills");
+    const localDeploy = skill("deploy", "Keep this machine's deploy.");
+    write(join(skills, "deploy", "SKILL.md"), localDeploy);
+    write(join(skills, "deploy", "local.md"), "Local supporting file.\n");
+    const localConfig = join(laptop.folder, "local", "local.jsonc");
+    write(localConfig, JSON.stringify({ excludeSkills: ["deploy"] }));
+    enroll(source, endpoint, laptop, "excluded-skills");
+
+    succeed(laptop.run(["sync", "--plan"]), "excluded skill plan");
+    expect(read(join(skills, "deploy", "SKILL.md"))).toBe(localDeploy);
+    expect(existsSync(join(skills, "review"))).toBe(false);
+    succeed(laptop.run(["sync", "--apply"]), "excluded skill apply");
+    expect(read(join(skills, "deploy", "SKILL.md"))).toBe(localDeploy);
+    expect(read(join(skills, "deploy", "local.md"))).toBe("Local supporting file.\n");
+    expect(read(join(skills, "review", "SKILL.md"))).toBe(skill("review", "Source review."));
+
+    // Excluding an already managed skill gives its current contents back,
+    // including a local edit; it must not retire or restore Source bytes.
+    const localReview = skill("review", "Review customized on the follower.");
+    write(join(skills, "review", "SKILL.md"), localReview);
+    write(localConfig, JSON.stringify({ excludeSkills: ["deploy", "review"] }));
+    succeed(laptop.run(["sync", "--apply"]), "release excluded skill");
+    expect(read(join(skills, "review", "SKILL.md"))).toBe(localReview);
+    succeed(laptop.run(["sync", "--apply"]), "stable excluded skill run");
+    const repeated = Schema.decodeUnknownSync(Schema.Struct({
+      plan: Schema.Struct({ actions: Schema.Array(Schema.Struct({ kind: Schema.String })) }),
+    }))(succeed(laptop.run(["sync", "--plan"]), "stable excluded skill plan").data);
+    expect(repeated.plan.actions.every((action) => action.kind === "no-op")).toBe(true);
+    succeed(laptop.run(["restore"]), "restore without excluded skills");
+    expect(read(join(skills, "deploy", "SKILL.md"))).toBe(localDeploy);
+    expect(read(join(skills, "review", "SKILL.md"))).toBe(localReview);
+
+    write(localConfig, JSON.stringify({ excludeSkills: ["../deploy"] }));
+    expect(laptop.run(["sync", "--plan"]).status).toBe(2);
+    expect(read(join(skills, "deploy", "SKILL.md"))).toBe(localDeploy);
+    write(localConfig, JSON.stringify({ excludeSkills: ["deploy", "review"] }));
+
+    rmSync(join(source.folder, "skills"), { recursive: true });
+    publish(source);
+    succeed(laptop.run(["sync", "--apply"]), "retire Source skills");
+    expect(read(join(skills, "deploy", "SKILL.md"))).toBe(localDeploy);
+    expect(read(join(skills, "deploy", "local.md"))).toBe("Local supporting file.\n");
+    expect(read(join(skills, "review", "SKILL.md"))).toBe(localReview);
+
+    // Removing an exclusion does not silently adopt the machine's copy.
+    write(join(source.folder, "skills", "deploy", "SKILL.md"), skill("deploy", "New Source deploy."));
+    publish(source);
+    write(localConfig, JSON.stringify({ excludeSkills: ["review"] }));
+    expect(laptop.run(["sync", "--apply"]).status).toBe(4);
+    expect(read(join(skills, "deploy", "SKILL.md"))).toBe(localDeploy);
+
+    const sourceConfig = jsonc(join(source.folder, "canonfig.jsonc"));
+    write(join(source.folder, "canonfig.jsonc"), JSON.stringify({ ...sourceConfig, local: { appendLocal: [] } }));
+    publish(source);
+    expect(laptop.run(["sync", "--plan"]).status).toBe(2);
+    expect(read(join(skills, "deploy", "SKILL.md"))).toBe(localDeploy);
+    expect(read(join(skills, "review", "SKILL.md"))).toBe(localReview);
+  }, 600_000);
+
+  it("preserves native MCP settings across Source changes and after previously managing them", async () => {
+    const { source, endpoint } = await startSource({
+      harnesses: ["codex", "claude-code"],
+      mcp: { docs: { transport: "streamable-http", url: "https://docs.example.invalid/mcp" } },
+    }, { "AGENTS.md": "Team rules.\n" });
+    const laptop = machine("native-mcp", ["codex", "claude-code"]);
+    const codex = join(laptop.home, ".codex", "config.toml");
+    const claude = join(laptop.home, ".claude.json");
+    const ownCodex = '[mcp_servers.local]\ncommand = "local-server"\nstartup_timeout_sec = 120\n';
+    const ownClaude = '{"mcpServers":{"local":{"type":"http","url":"https://local.example.invalid/mcp","oauth":{"clientId":"local-client"}}}}\n';
+    write(codex, ownCodex);
+    write(claude, ownClaude);
+    const localConfig = join(laptop.folder, "local", "local.jsonc");
+    write(localConfig, JSON.stringify({ preserveMcp: true }));
+    enroll(source, endpoint, laptop, "native-mcp");
+    succeed(laptop.run(["sync", "--apply"]), "preserve native MCP");
+    expect(read(codex)).toBe(ownCodex);
+    expect(read(claude)).toBe(ownClaude);
+    expect(read(join(laptop.home, ".codex", "AGENTS.md"))).toContain("Team rules.");
+
+    const config = jsonc(join(source.folder, "canonfig.jsonc"));
+    write(join(source.folder, "canonfig.jsonc"), JSON.stringify({ ...config, mcp: {
+      other: { transport: "streamable-http", url: "https://other.example.invalid/mcp" },
+    } }));
+    publish(source);
+    succeed(laptop.run(["sync", "--apply"]), "preserve across new Source servers");
+    expect(read(codex)).toBe(ownCodex);
+    expect(read(claude)).toBe(ownClaude);
+
+    // An enrolled machine can also opt out after Canonfig has managed MCP.
+    const desktop = machine("formerly-managed-mcp", ["codex", "claude-code"]);
+    enroll(source, endpoint, desktop, "formerly-managed-mcp");
+    succeed(desktop.run(["sync", "--apply"]), "initial managed MCP");
+    const desktopCodex = join(desktop.home, ".codex", "config.toml");
+    const desktopClaude = join(desktop.home, ".claude.json");
+    write(desktopCodex, ownCodex);
+    write(desktopClaude, ownClaude);
+    const nextConfig = jsonc(join(source.folder, "canonfig.jsonc"));
+    write(join(source.folder, "canonfig.jsonc"), JSON.stringify({ ...nextConfig, settings: { codex: { model: "team-model" } } }));
+    publish(source);
+    write(join(desktop.folder, "local", "local.jsonc"), JSON.stringify({ preserveMcp: true }));
+    succeed(desktop.run(["sync", "--apply"]), "preserve previously managed MCP");
+    expect(parseToml(read(desktopCodex))).toEqual({ model: "team-model", mcp_servers: parseToml(ownCodex).mcp_servers });
+    expect(read(desktopClaude)).toBe(ownClaude);
+  }, 600_000);
+
+  it("keeps a Source's own native MCP and excluded skills when it syncs its own folder", () => {
+    // A Source applies its folder to its own harnesses without enrolling as a follower.
+    const source = machine("source-local", ["codex", "claude-code"]);
+    write(join(source.folder, "canonfig.jsonc"), JSON.stringify({
+      version: 1,
+      profile: { id: "team", name: "Team" },
+      harnesses: ["codex", "claude-code"],
+      local: { appendLocal: ["skills"] },
+      mcp: { docs: { transport: "streamable-http", url: "https://docs.example.invalid/mcp" } },
+    }, undefined, 2));
+    write(join(source.folder, "AGENTS.md"), "Team rules.\n");
+    write(join(source.folder, "skills", "deploy", "SKILL.md"), skill("deploy", "Source deploy."));
+    write(join(source.folder, "skills", "review", "SKILL.md"), skill("review", "Source review."));
+    const codex = join(source.home, ".codex", "config.toml");
+    const claude = join(source.home, ".claude.json");
+    const ownCodex = '[mcp_servers.local]\ncommand = "local-server"\nstartup_timeout_sec = 120\n';
+    const ownClaude = '{"mcpServers":{"local":{"type":"http","url":"https://local.example.invalid/mcp","oauth":{"clientId":"local-client"}}}}\n';
+    write(codex, ownCodex);
+    write(claude, ownClaude);
+    const claudeSkills = join(source.home, ".claude", "skills");
+    const localDeploy = skill("deploy", "This Source machine's own deploy.");
+    write(join(claudeSkills, "deploy", "SKILL.md"), localDeploy);
+    write(join(source.folder, "local", "local.jsonc"), JSON.stringify({ preserveMcp: true, excludeSkills: ["deploy"] }));
+    succeed(source.run(["source", "init"]), "source init");
+
+    succeed(source.run(["sync", "--apply"]), "Source-local apply");
+    expect(read(codex)).toBe(ownCodex);
+    expect(read(claude)).toBe(ownClaude);
+    expect(read(join(claudeSkills, "deploy", "SKILL.md"))).toBe(localDeploy);
+    expect(existsSync(join(source.home, ".agents", "skills", "deploy"))).toBe(false);
+    expect(read(join(claudeSkills, "review", "SKILL.md"))).toBe(skill("review", "Source review."));
+    expect(read(join(source.home, ".agents", "skills", "review", "SKILL.md"))).toBe(skill("review", "Source review."));
+    expect(read(join(source.home, ".codex", "AGENTS.md"))).toContain("Team rules.");
+
+    const repeated = Schema.decodeUnknownSync(Schema.Struct({
+      plan: Schema.Struct({ actions: Schema.Array(Schema.Struct({ kind: Schema.String })) }),
+    }))(succeed(source.run(["sync", "--plan"]), "stable Source-local plan").data);
+    expect(repeated.plan.actions.every((action) => action.kind === "no-op")).toBe(true);
+  }, 600_000);
+
   it("lets a Local Overlay replace a published item on one machine, across revisions", async () => {
     const { source, endpoint } = await startSource({
       harnesses: ["codex"],

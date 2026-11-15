@@ -23,6 +23,7 @@ import { sourceBytesIssue } from "../domain/text-composition.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import {
   canonicalJson,
+  directoryEntriesDigest,
   directoryVerificationDigest,
   sha256BytesHex,
   sha256Hex,
@@ -737,6 +738,29 @@ export interface Projection {
   readonly isHeld: (record: AppliedResourceRecord) => boolean;
 }
 
+/** Give excluded skill entries back to the machine before planning or retirement.
+ * Only the run's working view changes here; durable ownership changes when the
+ * synchronization engine completes the plan, so a failed plan releases nothing.
+ */
+export const releaseExcludedSkillRecords = (
+  records: ReadonlyArray<AppliedResourceRecord>,
+  exclusions: ReadonlyArray<string>,
+): ReadonlyArray<AppliedResourceRecord> => {
+  if (exclusions.length === 0) return records;
+  const excluded = new Set(exclusions);
+  return records.map((record) => {
+    if (record.ownership !== "DirectoryEntries") return record;
+    const surface = parseSurfaceResourceId(record.resource);
+    if (surface?.surface !== "skills" || surface.harness === resourcesOwner) return record;
+    const ownedFiles = record.ownedFiles.filter((file) => !excluded.has(file.path.split("/", 1)[0]!));
+    return ownedFiles.length === record.ownedFiles.length ? record : {
+      ...record,
+      ownedFiles,
+      digest: directoryEntriesDigest(ownedFiles),
+    };
+  });
+};
+
 /**
  * Project the folder into its selected harnesses minus `held` ones (listed
  * but not installed). A surface not yet taken over is written with `replace`
@@ -758,13 +782,33 @@ export const buildProjection = (
         message: `${pendingTakeover.harness} surface ${pendingTakeover.surface} has ${pendingTakeover._tag.toLowerCase()} takeover state from run ${pendingTakeover.run}; run 'canonfig recover' before syncing, or explicitly abandon that run after reviewing its recovery evidence`,
       });
     }
-    const model = { ...loaded.model, harnesses: loaded.model.harnesses.filter((harness) => !held.includes(harness)) };
+    if (loaded.local.excludeSkills.length > 0 && !loaded.model.appendLocal.includes("skills")) {
+      return yield* new CanonicalFolderError({
+        path: pathsFor(context.platform).join(loaded.model.folder, "local", "local.jsonc"),
+        message: "excludeSkills requires the Source to share skill directories with local.appendLocal: [\"skills\"]",
+      });
+    }
+    const excludedSkills = new Set(loaded.local.excludeSkills);
+    const model = {
+      ...loaded.model,
+      harnesses: loaded.model.harnesses.filter((harness) => !held.includes(harness)),
+      mcp: loaded.local.preserveMcp ? [] : loaded.model.mcp,
+    };
     const projected = yield* projectSurfaces({ ...loaded, model }, context, takeovers);
     const owned = new Set(takeovers.map((takeover) => `${takeover.harness}\0${takeover.surface}`));
     const isHeldHarness = heldResource([...held, ...loaded.local.excludeHarnesses], context, loaded.model);
     // A resource this machine excludes (as `restore` does) keeps its outputs and ownership too.
     const excludedResources = new Set(loaded.local.excludeResources.map((id) => surfaceResourceId(resourcesOwner, id)));
-    const isHeldSurface = (record: AppliedResourceRecord) => isHeldHarness(record) || excludedResources.has(record.resource);
+    // Native MCP maps use these top-level keys. Separate MCP files are held;
+    // in a shared settings file the same keys are released through key claims.
+    const isMcpKey = (key: string): key is "mcp_servers" | "mcpServers" | "mcp" =>
+      key === "mcp_servers" || key === "mcpServers" || key === "mcp";
+    const isHeldMcp = (record: AppliedResourceRecord) => {
+      const surface = parseSurfaceResourceId(record.resource);
+      return loaded.local.preserveMcp && surface !== undefined && surface.harness !== resourcesOwner
+        && record.ownership === "ConfigKeys" && record.ownedKeys.length > 0 && record.ownedKeys.every(isMcpKey);
+    };
+    const isHeldSurface = (record: AppliedResourceRecord) => isHeldHarness(record) || excludedResources.has(record.resource) || isHeldMcp(record);
     const holdsOutputs = appliedResources.some(isHeldHarness);
     const applied = new Map(appliedResources.map((record) => [record.resource, record]));
     const folder = loaded.model.folder;
@@ -787,6 +831,9 @@ export const buildProjection = (
     const claimed = (harness: string, keys: ReadonlyArray<string>) =>
       Effect.gen(function*() {
         const covered = new Set<string>();
+        if (loaded.local.preserveMcp) {
+          for (const key of keys) if (isMcpKey(key)) covered.add(key);
+        }
         for (const claim of claims) {
           if (claim.harness !== harness) continue;
           for (const key of keys) {
@@ -838,11 +885,14 @@ export const buildProjection = (
       if (content.kind === "file") {
         built.push(fileResource(id, entry.surface.target, policy, bytesOf(content.content), content.executable ?? false));
       } else if (content.kind === "directory") {
+        const files = entry.surface.id === "skills" && entry.harness !== resourcesOwner && excludedSkills.size > 0
+          ? content.files.filter((file) => !excludedSkills.has(file.path.split("/", 1)[0]!))
+          : content.files;
         built.push(directoryResource(
           id,
           entry.surface.target,
           policy,
-          content.files.map((file) => ({ path: file.path, content: bytesOf(file.content), executable: file.executable ?? false })),
+          files.map((file) => ({ path: file.path, content: bytesOf(file.content), executable: file.executable ?? false })),
         ));
       } else if (entry.surface.kind === "config") {
         // Protect previously applied keys even when this revision drops all of
@@ -918,15 +968,16 @@ export const planFolder = (
   held: ReadonlyArray<TargetId> = [],
 ) =>
   Effect.gen(function*() {
-    const projection = yield* buildProjection(loaded, context, takeovers, appliedResources, held);
+    const projectionApplied = releaseExcludedSkillRecords(appliedResources, loaded.local.excludeSkills);
+    const projection = yield* buildProjection(loaded, context, takeovers, projectionApplied, held);
     const current = new Set(projection.built.map((item) => item.resource.id));
     const planned = yield* planBuilt({
       follower: localProjectionFollower,
       origin: "folder",
       originDigest: loaded.digest,
       built: projection.built,
-      retired: appliedResources.filter((record) => !current.has(record.resource) && !projection.isHeld(record)),
-      appliedResources,
+      retired: projectionApplied.filter((record) => !current.has(record.resource) && !projection.isHeld(record)),
+      appliedResources: projectionApplied,
     });
     return { ...planned, takeovers: projection.takeovers, diagnostics: projection.diagnostics, harnesses: projection.harnesses };
   });

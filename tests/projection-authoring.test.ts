@@ -33,6 +33,30 @@ describe("shared folder authoring", () => {
     expect(loaded.ignoredLocal).toEqual(["local/skills/"]);
   });
 
+  it("saves local preservation preferences before the first mirror without admitting unapproved local MCP", async () => {
+    const { target, layer } = fixture();
+    rmSync(join(target.folder, "canonfig.jsonc"));
+    const local: AuthoringTarget = { ...target, scope: "local" };
+    await Effect.runPromise(Effect.gen(function*() {
+      yield* editAuthoringConfig(local, null, [
+        { path: ["preserveMcp"], value: true },
+        { path: ["excludeSkills"], value: ["deploy"] },
+        { path: ["backups"], value: true },
+      ]);
+      const saved = yield* readAuthoringItem(local, "local.jsonc");
+      const before = readFileSync(join(target.folder, "local/local.jsonc"), "utf8");
+      const refused = yield* editAuthoringConfig(local, saved.digest, [{
+        path: ["mcp", "unapproved"], value: { transport: "stdio", command: "unapproved-server" },
+      }]).pipe(Effect.flip);
+      expect(refused._tag).toBe("AuthoringInvalid");
+      expect(readFileSync(join(target.folder, "local/local.jsonc"), "utf8")).toBe(before);
+    }).pipe(Effect.provide(layer)));
+    expect(JSON.parse(readFileSync(join(target.folder, "local/local.jsonc"), "utf8"))).toEqual({
+      preserveMcp: true, excludeSkills: ["deploy"], backups: true,
+    });
+    expect(readdirSync(target.folder)).toEqual(["local"]);
+  });
+
   it("preserves JSONC comments and atomically replaces the file", async () => {
     const { target, layer } = fixture();
     const path = join(target.folder, "canonfig.jsonc");
