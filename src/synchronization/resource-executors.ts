@@ -8,6 +8,7 @@ import {
 } from "../domain/profile.ts";
 import {
   AutomaticRecipeMethod,
+  ToolRecipeRef,
   type BuildPolicy,
   type RecipeIndexPolicy,
   type RecipeSource,
@@ -70,10 +71,12 @@ import {
   validateNpmArtifactProvenance,
   verifyNpmArtifactBytes,
   type NpmArtifactTransport,
+  type NpmArtifactRequest,
 } from "./npm-artifact.ts";
 import { relativePathAncestors } from "./resource-plans.ts";
 import { resolveInstallerInvocation, toolInstallMethods } from "./installer-bindings.ts";
 import { redactText } from "../cli/redaction.ts";
+import { installBinaryArtifact } from "./binary-artifact.ts";
 
 const isUnboundedNonNpmPackage = (value: string): boolean =>
   /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
@@ -146,6 +149,7 @@ export interface ResourceExecutionContext {
    * reviewed source or the production transport policy.
    */
   readonly npmArtifactTransport?: NpmArtifactTransport | undefined;
+  readonly binaryArtifactRequest?: NpmArtifactRequest | undefined;
 }
 
 export interface PreparedResourceAction {
@@ -1799,6 +1803,13 @@ const installerDiagnostic = (
   return redactText(bounded);
 };
 
+const BrewFormulaInfo = Schema.fromJsonString(Schema.Struct({
+  formulae: Schema.Array(Schema.Struct({
+    versions: Schema.Struct({ stable: Schema.String }),
+    revision: Schema.Number,
+  })),
+}));
+
 const installInvocation = (
   context: ResourceExecutionContext,
   method: string,
@@ -2054,6 +2065,8 @@ const installInvocation = (
           ]
           : []),
       ]
+      : method === "brew" || method === "homebrew"
+      ? [{ name: "HOMEBREW_NO_AUTO_UPDATE", value: "1" }]
       : undefined;
     const arguments_ = method === "npm"
       ? [
@@ -2072,7 +2085,7 @@ const installInvocation = (
         ...(verifiedArtifactPath !== undefined ? ["--offline"] : []),
       ]
       : method === "brew" || method === "homebrew"
-      ? ["install", version === undefined ? packageName : `${packageName}@${version}`]
+      ? ["install", "--formula", "--", packageName]
       : method === "winget"
       ? version === undefined
         ? ["install", "--id", packageName, "--silent"]
@@ -2144,6 +2157,37 @@ const installInvocation = (
       // Cancellation is observed between commands; external installs are not rolled back.
       return method === "uv" ? Effect.uninterruptible(execution) : execution;
     };
+    if (method === "brew" || method === "homebrew") {
+      // A pin is a package version, not a formula-name suffix. Query and
+      // install the authored formula without an intervening auto-update.
+      const info = yield* runInstaller(["info", "--json=v2", "--formula", "--", packageName]);
+      const metadata = yield* Schema.decodeUnknownEffect(BrewFormulaInfo)(decoder.decode(info.standardOutput)).pipe(
+        Effect.mapError(() => new ActionExecutionError({
+          action: context.action.id,
+          message: `Homebrew returned invalid formula metadata for ${packageName}; no tool was installed`,
+        })),
+      );
+      const formula = metadata.formulae[0];
+      if (
+        metadata.formulae.length !== 1 || formula === undefined
+        || formula.versions.stable.length === 0
+        || !Number.isSafeInteger(formula.revision) || formula.revision < 0
+      ) {
+        return yield* new ActionExecutionError({
+          action: context.action.id,
+          message: `Homebrew did not report one stable formula version for ${packageName}; no tool was installed`,
+        });
+      }
+      const available = formula.revision === 0
+        ? formula.versions.stable
+        : `${formula.versions.stable}_${formula.revision}`;
+      if (version === undefined || !installedVersionMatches(method, available, version)) {
+        return yield* new ActionExecutionError({
+          action: context.action.id,
+          message: `Homebrew formula ${packageName} provides ${available}, not the pinned ${version}; no tool was installed. Human Action Required: select a formula providing the exact pin or review the recipe version.`,
+        });
+      }
+    }
     if (method !== "uv") {
       yield* runInstaller(arguments_);
       return;
@@ -2230,6 +2274,12 @@ const confirmInstalledVersion = (
     timeoutMilliseconds: context.limits.processTimeoutMilliseconds,
     maximumOutputBytes: context.limits.maximumProcessOutputBytes,
   });
+  if (installed === undefined && (detail.method === "brew" || detail.method === "homebrew")) {
+    return yield* new ActionExecutionError({
+      action: context.action.id,
+      message: `Homebrew did not report an installed version for ${detail.package} after installation; the pinned ${detail.version} was not verified`,
+    });
+  }
   if (installed === undefined || installedVersionMatches(detail.method, installed, detail.version)) return;
   return yield* new ActionExecutionError({
     action: context.action.id,
@@ -2320,6 +2370,19 @@ const prepareAction = (
     case "remove-resource":
       return prepareRemoval(context, detail);
     case "install-tool":
+      if (detail.method === "binary") {
+        return Effect.succeed({
+          execute: Schema.decodeUnknownEffect(ToolRecipeRef)(detail).pipe(
+            Effect.mapError((error) => new InvalidExecutionPlanError({ message: error.message })),
+            Effect.flatMap((recipe) => installBinaryArtifact(recipe, context.binaryArtifactRequest)),
+            Effect.catchTag("BinaryArtifactError", (error) => Effect.fail(new ActionExecutionError({
+              action: context.action.id,
+              message: error.message,
+            }))),
+            Effect.asVoid,
+          ),
+        });
+      }
       return Effect.succeed({
         execute: installInvocation(
           context,

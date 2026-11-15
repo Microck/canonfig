@@ -13,6 +13,11 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
 - Keep TLS certificate pins and signed revisions. Tailnet startup refuses
   unavailable, expired or userspace-only clients and never changes Serve settings.
 
+### Installers
+
+- Keep Homebrew formula names intact, check the available version before installing, and verify the installed keg against the pin.
+- Add digest-verified single-executable binary recipes for explicit platforms and architectures. The destination directory must exist; archives, build steps, and automatic replacement of different existing bytes are not supported.
+
 ### Documentation
 
 - Document machine-local skill and MCP preservation, first-adoption review, and upgrade/UI handoff in the bundled Canonfig skills.
