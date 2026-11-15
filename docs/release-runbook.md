@@ -39,7 +39,10 @@ release.
 2. Update the root package, workspace package, lockfile, CLI version constant,
    release validator, tests, install skills, and pinned install examples.
 3. Update README and website documentation for every user-visible change.
-4. Update `RELEASE_NOTES.md` for the selected version.
+4. Add a `## vX.Y.Z - YYYY-MM-DD` section at the top of `CHANGELOG.md`, above
+   the previous release. Start from any `## Unreleased` section feature pull
+   requests left there, rename it to the version, and keep the older sections
+   untouched. Use `###` for headings inside the section.
 5. Search the repository for the previous version and explain any intentional
    remaining reference.
 6. Title the pull request `chore(release): prepare vX.Y.Z` and squash it with
@@ -77,7 +80,7 @@ receipts for the previous artifact do not transfer.
 ## 5. Publish
 
 Squash-merge the green release pull request using the required title. A release
-preparation normally changes `package.json` and `RELEASE_NOTES.md`, causing the
+preparation normally changes `package.json` and `CHANGELOG.md`, causing the
 `Publish release` workflow to start automatically on `main`. The release
 workflow file is also a trigger path so an unpublished authentication repair can
 retry without editing package contents. Other `main` pushes do not publish
@@ -89,13 +92,14 @@ any missing GitHub release metadata without republishing.
 
 The workflow performs the release in this order:
 
-1. resolve the package version and verify that the release notes describe it;
+1. resolve the package version and verify that `CHANGELOG.md` has a non-empty
+   section for it;
 2. verify that npm and Git do not already contain the version;
 3. install locked dependencies and rerun the complete validation matrix;
 4. publish `@microck/canonfig` through npm trusted publishing, which generates
    provenance automatically;
-5. create the matching `vX.Y.Z` tag and GitHub release from
-   `RELEASE_NOTES.md` only after npm accepts the package;
+5. create the matching `vX.Y.Z` tag and GitHub release from that version's
+   `CHANGELOG.md` section only after npm accepts the package;
 6. install the published package and verify `canonfig --version`.
 
 Do not create the tag or GitHub release before npm publication succeeds.
