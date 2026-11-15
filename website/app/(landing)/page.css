@@ -1,0 +1,465 @@
+/* Landing page shell: a hero holding its diagram, a band of harness chips,
+   picture cards, the product screenshot, a does/doesn't strip, a centered call
+   to action, and a footer. Diagram-specific CSS lives beside each component. */
+
+/* ------------------------------------------------------------------- nav --- */
+
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  /* Opaque. At 88 percent with a blur, terminal text from the demos underneath
+     stayed legible through the bar while scrolling. The hairline is the only
+     separator it needs. */
+  background: var(--sa-1);
+  border-block-end: 1px solid var(--sa-6);
+}
+
+.nav-inner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-s);
+  min-height: var(--nav-height);
+  padding-inline: var(--grid-edge);
+}
+
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  letter-spacing: -0.01em;
+}
+
+.nav-version {
+  font-size: var(--step--2);
+  color: var(--sa-9);
+}
+
+/* A phone has room for the brand and both buttons, not the version too. */
+@media (max-width: 30rem) {
+  .nav-version {
+    display: none;
+  }
+}
+
+/* Two pill buttons here rather than a row of text links. */
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3xs);
+  margin-inline-start: auto;
+}
+
+.nav-links .sa-btn {
+  border-radius: var(--radius-full);
+  padding-block: 0.4375rem;
+  white-space: nowrap;
+}
+
+.nav-skip:focus {
+  position: fixed;
+  top: var(--space-2xs);
+  left: var(--space-2xs);
+  z-index: 30;
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  clip-path: none;
+  background: var(--sa-3);
+  border: 1px solid var(--sa-accent);
+  border-radius: var(--radius-md);
+  font-size: var(--step--1);
+}
+
+/* ------------------------------------------------------------------ hero --- */
+
+/* The hero holds a short headline, one line under it, and the map. */
+.hero {
+  padding-block-start: var(--space-xl);
+  row-gap: var(--space-m);
+}
+
+.hero-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-xs);
+  max-width: var(--measure-hero);
+}
+
+.hero-title {
+  font-size: var(--step-5);
+  line-height: 1.12;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+.hero-title em {
+  font-style: normal;
+  color: var(--sa-accent-text);
+}
+
+.hero-lead {
+  font-size: var(--step-1);
+  color: var(--sa-10);
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2xs);
+  margin-block-start: var(--space-2xs);
+  width: 100%;
+}
+
+.hero-actions .sa-btn {
+  border-radius: var(--radius-full);
+}
+
+/* ---------------------------------------------------------------- intro --- */
+
+/* The hero's entrance, once per session (layout.tsx). Split, then stagger:
+   each headline word rises 8px out of a 2px blur, 80ms apart, then the lead,
+   the buttons and the map, with delays set in page.tsx. The map only fades:
+   a blur across that much area costs more than it gives. */
+.intro-word {
+  display: inline-block;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .intro {
+    animation: intro-rise 350ms var(--mo-ease-out) both;
+  }
+
+  .intro-fade {
+    animation-name: intro-fade;
+    animation-duration: 400ms;
+  }
+
+  [data-intro='seen'] .intro {
+    animation: none;
+  }
+}
+
+@keyframes intro-rise {
+  from {
+    opacity: 0;
+    translate: 0 8px;
+    filter: blur(2px);
+  }
+}
+
+@keyframes intro-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/* --------------------------------------------------------------- reveal --- */
+
+/* Every section below the hero rises into view once, the first time it is
+   scrolled to (RevealOnScroll in demos/offscreen.tsx sets data-revealed).
+   Its pieces (`.rv`) fade up 8px, 400ms, each after its own `--rv` delay
+   (reveal.ts): heading first, then cards 60ms apart, chips 40ms apart.
+   Hidden only when the script that reveals them can run (data-js, set in
+   layout.tsx) and motion is allowed; otherwise everything is simply there.
+   Transitions, so a reveal that starts mid-scroll never restarts. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-js] [data-reveal] .rv {
+    transition:
+      opacity 400ms var(--mo-ease-out) var(--rv, 0ms),
+      translate 400ms var(--mo-ease-out) var(--rv, 0ms);
+  }
+
+  [data-js] [data-reveal]:not([data-revealed]) .rv {
+    opacity: 0;
+    translate: 0 8px;
+  }
+}
+
+/* Full bleed, so the dithered ground runs to both window edges; the map stays
+   in the content column. */
+.hero-map {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  position: relative;
+  isolation: isolate;
+  padding-block: var(--space-m) var(--space-2xl);
+}
+
+.hero-stage {
+  grid-column: 2;
+  padding-inline: clamp(0rem, 3vw, 3rem);
+}
+
+/* ---------------------------------------------------------- the ground --- */
+
+/* The GUI's StateBand field (dither-band.tsx), densest at the bottom, behind
+   the followers. An elliptical mask centred on the map fades it out in every
+   direction, so it blends into the page instead of sitting in a box. */
+.dither-band {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--sa-accent);
+  /* Centred behind the followers and wholly inside the box (58% ± 42%), so
+     it reaches nothing at either edge and no straight line shows. */
+  mask-image: radial-gradient(ellipse 60% 42% at 50% 58%, #000 30%, transparent 100%);
+}
+
+.dither-band canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  opacity: 0.45;
+  image-rendering: pixelated;
+}
+
+/* -------------------------------------------------------- copy a command --- */
+
+.copycmd {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid var(--sa-6);
+  border-radius: var(--radius-full);
+  background: var(--sa-0);
+  overflow: hidden;
+}
+
+.copycmd-text {
+  flex: 1;
+  min-width: 0;
+  padding: 0.375rem var(--space-xs);
+  font-size: var(--step--1);
+  color: var(--sa-11);
+  overflow-wrap: anywhere;
+}
+
+/* Wide enough for one line, so keep it on one line and let the pill be a pill. */
+@media (min-width: 40rem) {
+  .copycmd-text {
+    white-space: nowrap;
+  }
+}
+
+/* Narrow, the command wraps rather than hiding two thirds of itself behind a
+   scroller with no scrollbar. A wrapped command is not pill-shaped. */
+@media (max-width: 39.999rem) {
+  .copycmd {
+    border-radius: var(--radius-lg);
+  }
+}
+
+.copycmd-btn {
+  flex: none;
+  padding-inline: var(--space-xs);
+  border-inline-start: 1px solid var(--sa-6);
+  background: var(--sa-3);
+  font-size: var(--step--2);
+  font-family: var(--font-mono);
+  color: var(--sa-11);
+  transition:
+    background var(--mo-state) var(--mo-ease-flat),
+    scale 160ms var(--mo-ease-out);
+}
+
+.copycmd-btn:hover {
+  background: var(--sa-5);
+  color: var(--sa-12);
+}
+
+.copycmd-btn:active {
+  scale: 0.97;
+}
+
+/* ---------------------------------------------------------- publish scene --- */
+
+/* The drawn publish scene (demos/publish.tsx), framed like a window. The
+   whole frame is the link into the interactive demo. */
+.shot {
+  display: flex;
+  flex-direction: column;
+  /* About a laptop window: wider and the rows turn into empty middle. */
+  max-width: 60rem;
+  margin-inline: auto;
+  width: 100%;
+  border: 1px solid var(--sa-6);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  background: var(--sa-0);
+  transition:
+    border-color var(--mo-state) var(--mo-ease-flat),
+    scale 160ms var(--mo-ease-out);
+}
+
+.shot:hover {
+  border-color: var(--sa-8);
+}
+
+/* A large surface gives less under a press than a button does. */
+.shot:active {
+  scale: 0.985;
+}
+
+.shot-caption {
+  display: flex;
+  align-items: center;
+  gap: 0.35em;
+  padding: var(--space-2xs) var(--space-xs);
+  border-block-start: 1px solid var(--sa-6);
+  font-size: var(--step--1);
+  color: var(--sa-11);
+}
+
+/* ----------------------------------------------------------- does/doesn't --- */
+
+.checks {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-m);
+}
+
+.check-list {
+  list-style: none;
+  padding: 0;
+  margin-block-start: var(--space-2xs) !important;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2xs);
+}
+
+.check-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.4rem 0.85rem;
+  border-radius: var(--radius-full);
+  background: var(--sa-2);
+  font-size: var(--step--1);
+  color: var(--sa-11);
+}
+
+.check-list li::before {
+  font-weight: 700;
+}
+
+.check-list[data-tone='ok'] li::before {
+  content: '\2713';
+  color: var(--sa-ok);
+}
+
+.check-list[data-tone='off'] li::before {
+  content: '\2715';
+  color: var(--sa-9);
+}
+
+.sa-label[data-tone='ok'] {
+  color: var(--sa-ok);
+}
+
+@media (min-width: 52rem) {
+  .checks {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+
+/* --------------------------------------------------------------- closing --- */
+
+/* A tinted full-bleed band above the footer, not a section inside main. The
+   reference's closing band sits about 8 of 255 off its page ground, enough to
+   read as a separate register without becoming another panel. */
+.closing {
+  padding-block: var(--space-xl);
+  /* A step away from the footer, or the call to action reads as footer furniture. */
+  background: var(--sa-3);
+  border-block-start: 1px solid var(--sa-6);
+}
+
+.closing > * {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-s);
+  text-align: center;
+}
+
+.closing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2xs);
+}
+
+.closing-actions .sa-btn {
+  border-radius: var(--radius-full);
+}
+
+/* ---------------------------------------------------------------- footer --- */
+
+.foot {
+  position: relative;
+  overflow: hidden;
+  background: var(--sa-2);
+}
+
+.foot > .sa-grid:not(.closing) {
+  padding-block: var(--space-xl) var(--space-4xl);
+  border-block-start: 1px solid var(--sa-6);
+}
+
+.foot-inner {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: var(--space-m);
+}
+
+.foot-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  align-self: start;
+  gap: var(--space-xs);
+  font-size: var(--step--1);
+  color: var(--sa-11);
+}
+
+.foot-brand-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+}
+
+.foot ul {
+  list-style: none;
+  padding: 0;
+  margin-block-start: var(--space-2xs);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+  font-size: var(--step--1);
+}
+
+.foot-inner a {
+  color: var(--sa-10);
+  transition: color var(--mo-state) var(--mo-ease-flat);
+}
+
+.foot-inner a:hover {
+  color: var(--sa-12);
+}
+
+@media (min-width: 52rem) {
+  .foot-inner {
+    grid-template-columns: 1.3fr repeat(4, 1fr);
+    gap: var(--space-m);
+  }
+}

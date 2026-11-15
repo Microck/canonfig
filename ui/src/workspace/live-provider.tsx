@@ -21,6 +21,8 @@ export function livePageResources(session: GuiSession, route: WorkspaceRoute): r
   // The Source service state drives the workspace-wide notice bar, so every Source page reads it.
   const shared = session.role === "source" ? ["/api/status", "/api/source-service"] : ["/api/status"];
   const pages: Partial<Record<Workspace["view"], readonly string[]>> = {
+    // The Source Overview states what was published; it has no fleet telemetry to read.
+    ...(session.role === "source" ? { overview: ["/api/revisions"] } : {}),
     profile: ["/api/profile/items", "/api/revisions", ...(route.profileTab === "items" ? ["/api/skills"] : []), ...(route.profileTab === "harnesses" ? ["/api/harnesses"] : []), ...(route.profileTab === "groups" ? ["/api/machines"] : [])],
     revisions: ["/api/revisions"],
     machines: session.role === "source" ? ["/api/machines", "/api/profile/items", "/api/source-look"] : ["/api/enrollment", "/api/source-look"],

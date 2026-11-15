@@ -1,7 +1,7 @@
 name: Publish site
 
-# Publishes https://canonfig.micr.dev: the UI demo at the root and the docs
-# under /docs, built by scripts/build-pages.mjs.
+# Publishes https://canonfig.micr.dev: the landing page at /, the demo under
+# /demo/ and docs under /docs/, built by scripts/build-pages.mjs.
 #
 # It follows the release workflow instead of listening for `release:
 # published`. release.yml creates the GitHub release with the workflow's

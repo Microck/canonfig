@@ -1,31 +1,29 @@
-# Canonfig v7.1.10
+# Canonfig v7.1.11
 
-This release cuts clutter from the Follower pages and shows the Source the way
-you customized it on every machine's map.
+This release makes the Source Overview tell the truth about what is published,
+and tidies how terms and explanations show up.
 
-## Follower pages
+## Source Overview
 
-- Overview shows each sync step (Source address set, Joined, Profile chosen,
-  Source reachable, Up to date) with a status mark instead of the word
-  "Reached", and its header turns green once the machine is up to date.
-- Sync lists only the changes it makes. Items that already match, or that were
-  verified, collapse into one line you can open. Revision and run IDs move
-  under "Technical details".
-- Commands in Sync and Schedule messages show as code. The notice about a
-  harness that cannot take an item now reads, for example, "Codex has no global
-  slash-command directory. Profile commands were not added there."
-- Enrollment keeps each fingerprint on one line, and Local settings lines up
-  the Backups switch with the table above it.
-- "Held items" and "Private adoption review" on Sync now say what they do.
+- The Overview now shows the newest published revision, for example "Revision
+  3 is published". Before, a Source with published revisions still showed a
+  gray "Publish the profile to send it to your other machines".
+- With nothing published it says "Nothing published yet", and if the
+  revisions cannot be read it says so and shows the error.
+- It never claims machines are up to date. Followers don't report which
+  revision they applied, so the Overview says it can't tell which machines
+  have it yet, and that edits saved since then need a new revision.
+- "Other machines can't reach this Source" still comes first when the Source
+  service is not serving.
+- The Revisions list and the revision details show the newest revision first.
 
 ## Everywhere
 
-- Terms that used to be underlined show a small (?) button instead, and their
-  explanations are easier to read.
-- The Source card's name, icon and colour, customized on the Source, now show
-  on every Follower's map. Close the Customize panel to share a change. An
-  uploaded icon stays in the browser where you added it, and anything you
-  customize on a Follower still applies only there.
+- A term inside a sentence, such as "as a follower", is underlined again and
+  explains itself on hover or focus. Titles and labels keep the small (?)
+  button.
+- On a Follower's Sync page, the explanations under "Your own changes" and
+  "Preview instructions files" moved into (?) tooltips next to their titles.
 
 ## Known limitation
 
@@ -39,7 +37,7 @@ during import.
 Before upgrading, finish or recover any unfinished run with the CLI build that
 created it.
 
-Install with `npm install --global @microck/canonfig@7.1.10` on every machine,
+Install with `npm install --global @microck/canonfig@7.1.11` on every machine,
 or run `canonfig self-update apply`. Stop `canonfig ui` first, and on a Source
 run `canonfig source service remove` before installing and
 `canonfig source service install` afterwards.

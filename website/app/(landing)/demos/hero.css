@@ -1,0 +1,304 @@
+/* Hero picture: the Source on top, its followers below, drawn like the GUI's
+   machine map. */
+
+.hm {
+  margin: 0;
+  display: grid;
+  justify-items: center;
+}
+
+.hm-source {
+  width: min(100%, 24rem);
+}
+
+/* A machine card, as the GUI's map node: head with the dithered icon tile,
+   foot with what it runs and its state. */
+.hm-node {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--sa-6);
+  border-radius: var(--radius-lg);
+  background: var(--sa-2);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.3);
+}
+
+/* The Source carries the GUI's selected ring in its purple. */
+.hm-node[data-source] {
+  border-color: transparent;
+  box-shadow:
+    0 0 0 1px var(--sa-dither-purple),
+    0 0 0 4px color-mix(in oklab, var(--sa-dither-purple) 16%, transparent);
+}
+
+.hm-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem;
+}
+
+.hm-tile {
+  width: 2.25rem;
+  height: 2.25rem;
+  flex: none;
+}
+
+.hm-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.hm-name b {
+  font-size: var(--step-0);
+  font-weight: 600;
+  color: var(--sa-12);
+  white-space: nowrap;
+}
+
+.hm-name span {
+  font-size: var(--step--1);
+  color: var(--sa-10);
+}
+
+.hm-folder {
+  margin-inline-start: auto;
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-sm);
+  background: var(--sa-1);
+  border: 1px solid var(--sa-6);
+  font-family: var(--font-mono);
+  font-size: var(--step--1);
+  color: var(--sa-accent-text);
+}
+
+/* Wraps the state word under the logos when a card is narrow (two to a row on
+   a phone). */
+.hm-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-block-start: 1px solid var(--sa-6);
+}
+
+.hm-logos {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  gap: 0.6rem;
+}
+
+.hm-logos li {
+  display: flex;
+  color: var(--sa-11);
+}
+
+.hm-logo {
+  width: 1.375rem;
+  height: 1.375rem;
+}
+
+.hm-role {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: var(--step--1);
+  color: var(--sa-10);
+  white-space: nowrap;
+}
+
+.hm-role-ok {
+  color: var(--sa-ok);
+}
+
+/* ----------------------------------------------------------- the edges --- */
+
+/* Stacked on a phone: one trunk from the Source into the grid. */
+.hm-edges {
+  display: none;
+}
+
+.hm-trunk {
+  width: 2px;
+  height: var(--space-m);
+  background: var(--sa-8);
+}
+
+.hm-followers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2xs);
+}
+
+/* Side by side: an edge from the Source to the top of each follower, ending
+   in the GUI map's arrowhead. */
+@media (min-width: 60rem) {
+  .hm-trunk {
+    display: none;
+  }
+
+  /* The SVG's viewBox is its own size in pixels (hero.tsx), so nothing is
+     stretched and the pulse's dash measures true. */
+  .hm-edges {
+    display: block;
+    width: 100%;
+    height: 4.5rem;
+    fill: none;
+    overflow: visible;
+  }
+
+  .hm-edge {
+    stroke: var(--sa-9);
+    stroke-width: 1.5;
+  }
+
+  /* Hidden until motion is allowed; then a short bright dash rides each edge. */
+  .hm-pulse {
+    stroke: var(--sa-accent-text);
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    stroke-dasharray: 12 120;
+    stroke-dashoffset: 12;
+    opacity: 0;
+  }
+
+  /* Four columns of exactly 25%, the gap carried as padding inside each, so
+     every column's centre sits where hero.tsx ends its edge (12.5%, 37.5%,
+     62.5%, 87.5%). The followers and the edges overhang by half a gap on
+     each side to keep the outer cards flush with the stage. */
+  .hm-edges,
+  .hm-followers {
+    width: calc(100% + var(--space-s));
+    margin-inline: calc(var(--space-s) / -2);
+  }
+
+  .hm-followers {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0;
+  }
+
+  .hm-followers > li {
+    position: relative;
+    padding-inline: calc(var(--space-s) / 2);
+  }
+
+  .hm-followers > li::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: -0.4rem;
+    translate: -50% 0;
+    border: 0.3rem solid transparent;
+    border-block-start-color: var(--sa-9);
+    border-block-end: 0;
+  }
+}
+
+/* -------------------------------------------------------------- motion --- */
+
+/* On load, after the headline (page.css `.intro`): the map fades in at 620ms,
+   its edges wipe down from the Source at 800ms and the followers settle in
+   turn from 1000ms. Then, every 4.8s, a sync: a pulse runs down each edge in
+   about a second and the follower's ring lights as it lands, then fades.
+   Only a clip, a dash offset, translate and opacities change. */
+@media (prefers-reduced-motion: no-preference) {
+  .hm-edges {
+    animation: hm-draw 520ms var(--mo-ease-out) 800ms both;
+  }
+
+  .hm-followers > li {
+    animation: hm-settle 300ms var(--mo-ease-out) both;
+  }
+
+  .hm-pulse {
+    animation: hm-pulse 4.8s var(--mo-ease-in-out) infinite backwards;
+  }
+
+  .hm-ring {
+    animation: hm-ring 4.8s linear infinite backwards;
+  }
+
+  /* Seen this session (layout.tsx): the map is simply there. The sync loop
+     still runs; it is the map's state, not its entrance. */
+  [data-intro='seen'] .hm-edges,
+  [data-intro='seen'] .hm-followers > li {
+    animation: none;
+  }
+
+  /* Off screen (hero.tsx), the loop holds still instead of running unseen. */
+  .hm[data-offscreen] .hm-pulse,
+  .hm[data-offscreen] .hm-ring {
+    animation-play-state: paused;
+  }
+}
+
+/* The follower's arrival ring, in the up-to-date green, over its border. */
+.hm-ring {
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow:
+    0 0 0 1px var(--sa-ok),
+    0 0 0 4px color-mix(in oklab, var(--sa-ok) 18%, transparent);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.hm-node {
+  position: relative;
+}
+
+@keyframes hm-pulse {
+  0% {
+    stroke-dashoffset: 12;
+    opacity: 1;
+  }
+  22% {
+    stroke-dashoffset: -100;
+    opacity: 1;
+  }
+  23%,
+  100% {
+    stroke-dashoffset: -100;
+    opacity: 0;
+  }
+}
+
+@keyframes hm-ring {
+  0%,
+  19% {
+    opacity: 0;
+  }
+  23% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes hm-draw {
+  from {
+    clip-path: inset(0 0 100% 0);
+  }
+  to {
+    clip-path: inset(0);
+  }
+}
+
+@keyframes hm-settle {
+  from {
+    opacity: 0;
+    translate: 0 0.375rem;
+  }
+}

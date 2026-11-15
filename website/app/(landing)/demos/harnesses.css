@@ -1,0 +1,8 @@
+/* Every harness logo: the SVG masks a box filled with the text colour. */
+.harness-logo {
+  flex: none;
+  background: currentColor;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+}

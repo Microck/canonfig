@@ -1,0 +1,392 @@
+/* Four picture cards: a piece of the GUI, a title, one short line. */
+
+.sf {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-s);
+}
+
+.sf-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+  height: 100%;
+  padding: 0.375rem 0.375rem var(--space-s);
+  border-radius: var(--radius-lg);
+  background: var(--sa-2);
+  border: 1px solid transparent;
+  transition:
+    border-color var(--mo-state) var(--mo-ease-flat),
+    scale 160ms var(--mo-ease-out);
+}
+
+.sf-card:hover {
+  border-color: var(--sa-7);
+}
+
+/* A large surface gives less under a press than a button does. */
+.sf-card:active {
+  scale: 0.985;
+}
+
+/* The GUI's page ground, so the fragment reads as the app. Tight on a phone,
+   where every unit of width keeps the picture's text legible. */
+.sf-art {
+  display: grid;
+  place-items: center;
+  padding: var(--space-s) 0.5rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--sa-6);
+  background: var(--sa-1);
+}
+
+.sf-svg {
+  display: block;
+  width: 100%;
+  max-width: 28rem;
+  height: auto;
+  overflow: visible;
+  font-family: var(--font-sans);
+}
+
+.sf-title {
+  margin-block-start: var(--space-xs);
+  padding-inline: var(--space-3xs);
+  font-size: var(--step-1);
+  font-weight: 600;
+  color: var(--sa-12);
+}
+
+.sf-caption {
+  padding-inline: var(--space-3xs);
+  font-size: var(--step--1);
+  color: var(--sa-10);
+}
+
+/* ------------------------------------------------------------- svg text --- */
+
+.sf-th {
+  font-size: 10px;
+  fill: var(--sa-9);
+}
+
+.sf-td {
+  font-size: 11.5px;
+  fill: var(--sa-11);
+}
+
+.sf-mono,
+.sf-node-rev {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  fill: var(--sa-11);
+}
+
+.sf-node-rev {
+  fill: var(--sa-9);
+}
+
+.sf-rule {
+  stroke: var(--sa-6);
+  stroke-width: 1;
+}
+
+.sf-tag {
+  fill: var(--sa-3);
+}
+
+.sf-tag-text {
+  font-size: 8.5px;
+  fill: var(--sa-10);
+}
+
+.sf-button {
+  fill: var(--sa-2);
+  stroke: var(--sa-7);
+}
+
+.sf-button-done {
+  fill: none;
+  stroke-dasharray: 3 2;
+}
+
+.sf-button-text {
+  font-size: 10.5px;
+  fill: var(--sa-12);
+}
+
+.sf-button-text-done {
+  fill: var(--sa-9);
+}
+
+/* ------------------------------------------------------------- map nodes --- */
+
+.sf-node {
+  fill: var(--sa-2);
+  stroke: var(--sa-6);
+}
+
+.sf-node-name {
+  font-size: 13px;
+  font-weight: 600;
+  fill: var(--sa-12);
+}
+
+/* Followers in the one-way picture are narrower: "gaming-pc" has to fit. */
+.sf-node-name-compact {
+  font-size: 12px;
+}
+
+.sf-node-role {
+  font-size: 10px;
+  fill: var(--sa-10);
+}
+
+/* A node's footer, laid out by the browser inside foreignObject. */
+.sf-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  height: 100%;
+  padding-inline: 10px;
+  font-size: 10.5px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.sf-foot-rev {
+  font-family: var(--font-mono);
+  color: var(--sa-9);
+}
+
+/* The state word with its mark; it hugs the right edge, as in the GUI. */
+.sf-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-inline-start: auto;
+}
+
+.sf-state-ok {
+  color: var(--sa-ok);
+}
+
+.sf-state-warn {
+  color: var(--sa-warn);
+}
+
+.sf-state-muted {
+  color: var(--sa-10);
+}
+
+.sf-mark-fill {
+  fill: currentColor;
+}
+
+.sf-mark-ring {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.sf-mark-check {
+  fill: none;
+  stroke: var(--sa-2);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sf-edge path {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sf-edge-ok path {
+  stroke: var(--sa-8);
+}
+
+.sf-edge-warn path {
+  stroke: var(--sa-warn);
+}
+
+.sf-legend {
+  font-size: 10px;
+  fill: var(--sa-10);
+}
+
+/* ---------------------------------------------------------------- films --- */
+
+/* Each card plays its story on a loop, like a short film: a restore runs and
+   reverses, a sync reaches studio and is held there, the matrix lights
+   machine by machine, a sync lands on every follower. Pieces stagger through
+   `--sweep` (safety.tsx). Everything pauses while the cards are off screen,
+   and reduced motion (landing.css) leaves each at its resting frame. */
+
+/* Restore… and Restored, layered (safety.tsx RestoreButton). */
+.sf-swap-next {
+  opacity: 0;
+}
+
+/* A short bright dash that runs the length of an edge (pathLength 100). */
+.sf-edge .sf-pulse {
+  stroke-width: 2.5;
+  stroke-dasharray: 14 120;
+  stroke-dashoffset: 14;
+  opacity: 0;
+}
+
+.sf-edge-ok .sf-pulse {
+  stroke: var(--sa-accent-text);
+}
+
+.sf-edge-warn .sf-pulse {
+  stroke: color-mix(in oklab, var(--sa-warn) 60%, white);
+}
+
+/* The ring a node shows as its pulse lands. */
+.sf-ring {
+  fill: none;
+  stroke-width: 1.5;
+  opacity: 0;
+}
+
+.sf-ring-ok {
+  stroke: var(--sa-ok);
+}
+
+.sf-ring-warn {
+  stroke: var(--sa-warn);
+}
+
+/* Up-to-date matrix cells, at the GUI's 30%. */
+.sf-cell-ok {
+  opacity: 0.3;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* 6s: Restored moves to the second snapshot, holds, and moves back. */
+  .sf-restore-swaps .sf-swap-now {
+    animation: sf-swap-out 6s var(--mo-ease-out) 400ms infinite both;
+  }
+
+  .sf-restore-swaps .sf-swap-next {
+    animation: sf-swap-in 6s var(--mo-ease-out) 400ms infinite both;
+  }
+
+  /* 4.8s, as the hero's sync: the pulse runs about a second, the ring lights
+     as it lands. */
+  .sf-edge .sf-pulse {
+    animation: sf-pulse 4.8s var(--mo-ease-in-out) calc(600ms + var(--sweep, 0ms)) infinite backwards;
+  }
+
+  .sf-ring {
+    animation: sf-ring 4.8s linear calc(600ms + var(--sweep, 0ms)) infinite backwards;
+  }
+
+  /* 6s: a sweep down the rows and along the machines, then back to rest. */
+  .sf-cell-ok {
+    animation: sf-cell 6s var(--mo-ease-out) calc(400ms + var(--sweep, 0ms)) infinite backwards;
+  }
+
+  .sf-films[data-offscreen] :is(.sf-swap-now, .sf-swap-next, .sf-pulse, .sf-ring, .sf-cell-ok) {
+    animation-play-state: paused;
+  }
+}
+
+@keyframes sf-swap-out {
+  0%,
+  30% {
+    opacity: 1;
+  }
+  36%,
+  82% {
+    opacity: 0;
+  }
+  88%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes sf-swap-in {
+  0%,
+  30% {
+    opacity: 0;
+  }
+  36%,
+  82% {
+    opacity: 1;
+  }
+  88%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes sf-pulse {
+  0% {
+    stroke-dashoffset: 14;
+    opacity: 1;
+  }
+  22% {
+    stroke-dashoffset: -100;
+    opacity: 1;
+  }
+  23%,
+  100% {
+    stroke-dashoffset: -100;
+    opacity: 0;
+  }
+}
+
+@keyframes sf-ring {
+  0%,
+  19% {
+    opacity: 0;
+  }
+  23% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes sf-cell {
+  0% {
+    opacity: 0.3;
+  }
+  12%,
+  40% {
+    opacity: 0.7;
+  }
+  55%,
+  100% {
+    opacity: 0.3;
+  }
+}
+
+/* ------------------------------------------------------------------ grid --- */
+
+@media (min-width: 52rem) {
+  .sf {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sf-card {
+    padding: var(--space-xs) var(--space-xs) var(--space-s);
+  }
+
+  .sf-art {
+    min-height: 15rem;
+    padding: var(--space-m) var(--space-s);
+  }
+}
