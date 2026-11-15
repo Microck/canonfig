@@ -1,0 +1,69 @@
+Focused verification after the scheduler fix and release allowance edits.
+Target: task-owned Raft paris:rf-74de7713b9e3459c.
+
+$ raft exec paris:rf-74de7713b9e3459c -- npm --prefix /workspace/canonfig test -- tests/cli.test.ts tests/integration/fleet-update.test.ts tests/acceptance/self-update.test.ts tests/acceptance/self-update-policy.test.ts tests/acceptance/gui-self-update.test.ts tests/acceptance/scheduler-runtime.test.ts --maxWorkers=1
+$ raft exec paris:rf-74de7713b9e3459c -- npm --prefix /workspace/canonfig exec -- tsc -p /workspace/canonfig/tsconfig.json --noEmit
+$ raft exec paris:rf-74de7713b9e3459c -- npm --prefix /workspace/canonfig run lint
+
+All three commands exited 0. TypeScript produced no output.
+
+
+> @microck/canonfig@7.1.9 test
+> vitest run tests/cli.test.ts tests/integration/fleet-update.test.ts tests/acceptance/self-update.test.ts tests/acceptance/self-update-policy.test.ts tests/acceptance/gui-self-update.test.ts tests/acceptance/scheduler-runtime.test.ts --maxWorkers=1
+
+
+ RUN  v4.1.12 /workspace/canonfig
+
+ ✓ tests/cli.test.ts (98 tests) 230ms
+ ✓ tests/acceptance/self-update.test.ts (39 tests) 290ms
+ ✓ tests/acceptance/gui-self-update.test.ts (6 tests) 40880ms
+     ✓ enables, checks and activates a minor without selecting the reported major before cleanly exiting and freeing its port  7832ms
+     ✓ delivers an installed result and exits when receipt publication fails  5316ms
+     ✓ defers for a second command lease and recovers after SIGINT without weakening the CLI disable refusal  6823ms
+     ✓ defers for a second command lease and recovers after SIGKILL without weakening the CLI disable refusal  6826ms
+     ✓ uses the manual selection policy through the installed CLI  7055ms
+     ✓ uses the auto selection policy through the installed CLI  7025ms
+ ✓ tests/integration/fleet-update.test.ts (2 tests) 957ms
+   ✓ binds admissions to the enrolled identity, advances only on fresh target-version health, and halts at the first failure  420ms
+   ✓ reports the published Source revision after a real follower projection converges  535ms
+ ✓ tests/acceptance/self-update-policy.test.ts (7 tests) 21544ms
+     ✓ auto picks the newest major's latest stable release over a current-line patch  3900ms
+     ✓ auto ignores an in-major minor and selects only a current-line patch  2551ms
+     ✓ manual picks a newer minor and reports but never selects the newer major  3455ms
+     ✓ manual remains current when only a newer major or prerelease exists  2580ms
+     ✓ moves the saved line after manual activation and admits the next command/check  3188ms
+     ✓ moves the saved line after auto activation and admits the next command/check  3159ms
+     ✓ retains recovery evidence and restart-required semantics when publishing the new line fails  2709ms
+ ✓ tests/acceptance/scheduler-runtime.test.ts (3 tests) 51ms
+
+ Test Files  6 passed (6)
+      Tests  155 passed (155)
+   Start at  11:56:57
+   Duration  70.78s (transform 2.28s, setup 0ms, import 5.69s, tests 63.95s, environment 1ms)
+
+
+> @microck/canonfig@7.1.9 lint
+> oxlint oxlint.config.ts vitest.config.ts tools/release src/agent src/cli src/domain src/enrollment src/gui src/logging src/machine src/profile src/projection src/runtime src/schedule src/secrets src/setup src/state src/synchronization tests/agent-resolution.test.ts tests/acceptance tests/cli.test.ts tests/cli-failure-taxonomy.test.ts tests/command-log.test.ts tests/documentation-command-validation.test.ts tests/doctor.test.ts tests/foundation.test.ts tests/packed-cli.test.ts tests/profile-contract.test.ts tests/profile-compiler.test.ts tests/discovery.test.ts tests/publication.test.ts tests/setup-controller.test.ts tests/state-repository.test.ts tests/machine-state-linux.test.ts tests/machine-state-macos.test.ts tests/machine-state-windows.test.ts tests/schedule-manager.test.ts tests/skills.test.ts tests/synchronization-planner.test.ts tests/installed-tool-version.test.ts tests/linux-credential-bootstrap.test.ts tests/contract/build-receipt.test.ts tests/contract/machine-state.contract.ts tests/contract/schedule-manager.contract.ts tests/integration/enrollment.test.ts tests/integration/transport.test.ts tests/integration/secret-transfer.test.ts tests/integration/secret-cleanup-retry.test.ts tests/integration/npm-artifact.test.ts tests/integration/synchronization-run.test.ts tests/integration/recovery.test.ts tests/integration/follower-orchestration.test.ts tests/integration/local-projection.test.ts tests/projection-adapters.test.ts tests/projection-detect.test.ts tests/projection-folder.test.ts tests/projection-authoring.test.ts tests/gui-plumbing.test.ts tests/projection-import.test.ts tests/projection-import-safety.test.ts tests/projection-translation.test.ts && npm run website:lint && npm run docs:validate && npm run skills:validate
+
+Found 0 warnings and 0 errors.
+Finished in 2.9s on 283 files with 112 rules using 1 threads.
+
+> @microck/canonfig@7.1.9 website:lint
+> npm run lint --workspace @canonfig/website
+
+
+> @canonfig/website@7.1.9 lint
+> oxlint app components lib source.config.ts next.config.mjs scripts
+
+Found 0 warnings and 0 errors.
+Finished in 407ms on 12 files with 112 rules using 1 threads.
+
+> @microck/canonfig@7.1.9 docs:validate
+> tsx website/scripts/validate-commands.ts
+
+Validated 449 Canonfig command examples across 64 documentation files.
+
+> @microck/canonfig@7.1.9 skills:validate
+> tsx website/scripts/validate-skills.ts
+
+Validated 3 Canonfig skill structures.

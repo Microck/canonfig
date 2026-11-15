@@ -259,6 +259,10 @@ const LocalJsonc = Schema.Struct({
   excludeResources: Schema.optional(Schema.Array(identifier)),
   /** Native Plugins this machine declines, without editing the Source's mirror. */
   excludePlugins: Schema.optional(Schema.Array(identifier)),
+  /** Skill names this machine leaves local in every projected skill directory. */
+  excludeSkills: Schema.optional(Schema.Array(Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]*$/u)))),
+  /** Leave this machine's native MCP configuration outside projection. */
+  preserveMcp: Schema.optional(Schema.Boolean),
   /** Local Overlays and key claims; `parseOverlay` reads each entry. */
   overlays: Schema.optional(Schema.Array(Schema.String)),
   backups: Schema.optional(Schema.Boolean),
@@ -297,6 +301,10 @@ export interface LocalPolicy {
   readonly excludeHarnesses: ReadonlyArray<TargetId>;
   /** Authored resources this machine never projects. */
   readonly excludeResources: ReadonlyArray<string>;
+  /** Skill names this machine never projects, checks, or removes. */
+  readonly excludeSkills: ReadonlyArray<string>;
+  /** Native MCP settings remain machine-owned, including unrepresentable options. */
+  readonly preserveMcp: boolean;
   /** Settings keys this machine owns; projection neither writes nor checks them. */
   readonly claims: ReadonlyArray<KeyClaim>;
   /** False turns takeover snapshots off on this machine. */
@@ -1211,6 +1219,8 @@ const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => 
   const basePolicy: LocalPolicy = {
     excludeHarnesses: localConfig.excludeHarnesses ?? [],
     excludeResources: [...excludedResources].sort(),
+    excludeSkills: [...new Set(localConfig.excludeSkills ?? [])].sort(),
+    preserveMcp: localConfig.preserveMcp ?? false,
     claims,
     backups: localConfig.backups ?? true,
   };

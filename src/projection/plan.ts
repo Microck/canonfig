@@ -23,6 +23,7 @@ import { sourceBytesIssue } from "../domain/text-composition.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import {
   canonicalJson,
+  directoryEntriesDigest,
   directoryVerificationDigest,
   sha256BytesHex,
   sha256Hex,
@@ -747,6 +748,32 @@ export interface Projection {
   readonly isHeld: (record: AppliedResourceRecord) => boolean;
 }
 
+/** Top-level config keys that hold a harness's native MCP server map; Amp writes the dotted `amp.mcpServers`. */
+const nativeMcpKeys: ReadonlySet<string> = new Set(["mcp_servers", "mcpServers", "mcp", "amp\\.mcpServers"]);
+
+/** Give excluded skill entries back to the machine before planning or retirement.
+ * Only the run's working view changes here; durable ownership changes when the
+ * synchronization engine completes the plan, so a failed plan releases nothing.
+ */
+export const releaseExcludedSkillRecords = (
+  records: ReadonlyArray<AppliedResourceRecord>,
+  exclusions: ReadonlyArray<string>,
+): ReadonlyArray<AppliedResourceRecord> => {
+  if (exclusions.length === 0) return records;
+  const excluded = new Set(exclusions);
+  return records.map((record) => {
+    if (record.ownership !== "DirectoryEntries") return record;
+    const surface = parseSurfaceResourceId(record.resource);
+    if (surface?.surface !== "skills" || surface.harness === resourcesOwner) return record;
+    const ownedFiles = record.ownedFiles.filter((file) => !excluded.has(file.path.split("/", 1)[0]!));
+    return ownedFiles.length === record.ownedFiles.length ? record : {
+      ...record,
+      ownedFiles,
+      digest: directoryEntriesDigest(ownedFiles),
+    };
+  });
+};
+
 /**
  * Project the folder into its selected harnesses minus `held` ones (listed
  * but not installed). A surface not yet taken over is written with `replace`
@@ -775,13 +802,31 @@ export const buildProjection = (
         message: `${pendingTakeover.harness} surface ${pendingTakeover.surface} has ${pendingTakeover._tag.toLowerCase()} takeover state from run ${pendingTakeover.run}; run 'canonfig recover' before syncing, or explicitly abandon that run after reviewing its recovery evidence`,
       });
     }
+    if (loaded.local.excludeSkills.length > 0 && !loaded.model.appendLocal.includes("skills")) {
+      return yield* new CanonicalFolderError({
+        path: pathsFor(context.platform).join(loaded.model.folder, "local", "local.jsonc"),
+        message: "excludeSkills requires the Source to share skill directories with local.appendLocal: [\"skills\"]",
+      });
+    }
+    const excludedSkills = new Set(loaded.local.excludeSkills);
     const model = { ...loaded.model, harnesses: loaded.model.harnesses.filter((harness) => !held.includes(harness)) };
     const projected = yield* projectSurfaces({ ...loaded, model }, context, takeovers);
     const owned = new Set(takeovers.map((takeover) => `${takeover.harness}\0${takeover.surface}`));
     const isHeldHarness = heldResource([...held, ...loaded.local.excludeHarnesses], context, loaded.model);
     // A resource this machine excludes (as `restore` does) keeps its outputs and ownership too.
     const excludedResources = new Set(loaded.local.excludeResources.map((id) => surfaceResourceId(resourcesOwner, id)));
-    const isHeldSurface = (record: AppliedResourceRecord) => isHeldHarness(record) || excludedResources.has(record.resource);
+    // Hermes projects each skill as its own `skill.<name>` surface. An excluded one is not
+    // projected, and a copy Canonfig wrote earlier is held as it is: not written, checked or retired.
+    const isExcludedSkillSurface = (harness: string, surface: string) =>
+      harness !== resourcesOwner && surface.startsWith("skill.") && excludedSkills.has(surface.slice("skill.".length));
+    const isHeldSkill = (record: AppliedResourceRecord) => {
+      const surface = parseSurfaceResourceId(record.resource);
+      return surface !== undefined && isExcludedSkillSurface(surface.harness, surface.surface);
+    };
+    const isHeldSurface = (record: AppliedResourceRecord) => isHeldHarness(record) || excludedResources.has(record.resource) || isHeldSkill(record);
+    // preserveMcp keeps model.mcp (agent files still name its servers) and drops only the native
+    // MCP maps: their keys are never written, and keys Canonfig owned before are given back.
+    const preservedMcpKeys = (keys: ReadonlyArray<string>) => new Set(loaded.local.preserveMcp ? keys.filter((key) => nativeMcpKeys.has(key)) : []);
     const holdsOutputs = appliedResources.some(isHeldHarness);
     const applied = new Map(appliedResources.map((record) => [record.resource, record]));
     const folder = loaded.model.folder;
@@ -803,7 +848,7 @@ export const buildProjection = (
     // `mcp_servers`) would need part of that value, so it is refused.
     const claimed = (harness: string, keys: ReadonlyArray<string>) =>
       Effect.gen(function*() {
-        const covered = new Set<string>();
+        const covered = preservedMcpKeys(keys);
         for (const claim of claims) {
           if (claim.harness !== harness) continue;
           for (const key of keys) {
@@ -824,14 +869,18 @@ export const buildProjection = (
     const units: Array<TakeoverUnit> = [];
     const built: Array<BuiltResource> = [];
     for (const projectedSurface of projected.surfaces) {
+      if (isExcludedSkillSurface(projectedSurface.harness, projectedSurface.surface.id)) continue;
       const id = surfaceResourceId(projectedSurface.harness, projectedSurface.surface.id);
       let entry = projectedSurface;
       let releases: ReadonlyArray<string> = [];
-      if (entry.surface.kind === "config" && entry.surface.settings !== undefined && entry.content.kind === "config") {
+      // Key claims apply to a harness's settings file; preserved MCP keys to every config surface,
+      // including the separate MCP files and Hermes's or Qwen's MCP-and-hooks surface.
+      if (entry.surface.kind === "config" && entry.content.kind === "config" && (entry.surface.settings !== undefined || loaded.local.preserveMcp)) {
         const keys = entry.content.keys;
         const previous = applied.get(id);
         const ownedKeys = previous?.ownership === "ConfigKeys" ? previous.ownedKeys : [];
-        const covered = yield* claimed(entry.harness, [...keys.map((key) => key.path), ...ownedKeys]);
+        const keyPaths = [...keys.map((key) => key.path), ...ownedKeys];
+        const covered = entry.surface.settings !== undefined ? yield* claimed(entry.harness, keyPaths) : preservedMcpKeys(keyPaths);
         releases = ownedKeys.filter((key) => covered.has(key));
         entry = { ...entry, content: { ...entry.content, keys: keys.filter((key) => !covered.has(key.path)) } };
         // Claims covering every key leave nothing to write or give back.
@@ -855,11 +904,14 @@ export const buildProjection = (
       if (content.kind === "file") {
         built.push(fileResource(id, entry.surface.target, policy, bytesOf(content.content), content.executable ?? false));
       } else if (content.kind === "directory") {
+        const files = entry.surface.id === "skills" && entry.harness !== resourcesOwner && excludedSkills.size > 0
+          ? content.files.filter((file) => !excludedSkills.has(file.path.split("/", 1)[0]!))
+          : content.files;
         built.push(directoryResource(
           id,
           entry.surface.target,
           policy,
-          content.files.map((file) => ({ path: file.path, content: bytesOf(file.content), executable: file.executable ?? false })),
+          files.map((file) => ({ path: file.path, content: bytesOf(file.content), executable: file.executable ?? false })),
         ));
       } else if (entry.surface.kind === "config") {
         // Protect previously applied keys even when this revision drops all of
@@ -880,17 +932,14 @@ export const buildProjection = (
     // A settings file this run projects nothing into would retire, and
     // retirement removes every key its record owns. Claimed keys stay: the
     // file is planned with no keys, giving the claimed ones back and removing
-    // only the others.
+    // only the others. Preserved MCP keys of any config surface stay the same way.
     const builtIds = new Set(built.map((item) => item.resource.id));
     for (const record of appliedResources) {
       const parsed = parseSurfaceResourceId(record.resource);
       const harness = TARGET_IDS.find((candidate) => candidate === parsed?.harness);
-      if (
-        harness === undefined || builtIds.has(record.resource) || isHeldSurface(record)
-        || record.ownership !== "ConfigKeys"
-        || parsed?.surface !== settingsSurfaceOf(adapterFor(harness).layout(context, loaded.model))?.id
-      ) continue;
-      const covered = yield* claimed(harness, record.ownedKeys);
+      if (harness === undefined || builtIds.has(record.resource) || isHeldSurface(record) || record.ownership !== "ConfigKeys") continue;
+      const settings = parsed?.surface === settingsSurfaceOf(adapterFor(harness).layout(context, loaded.model))?.id;
+      const covered = settings ? yield* claimed(harness, record.ownedKeys) : preservedMcpKeys(record.ownedKeys);
       if (covered.size === 0) continue;
       built.push(configResource(record.resource, record.target, "replace-if-unmodified", record.configFormat, [], [...covered]));
     }
@@ -945,17 +994,20 @@ export const planFolder = (
   held: ReadonlyArray<TargetId> = [],
 ) =>
   Effect.gen(function*() {
-    const projection = yield* buildProjection(loaded, context, takeovers, appliedResources, held);
+    const projectionApplied = releaseExcludedSkillRecords(appliedResources, loaded.local.excludeSkills);
+    const projection = yield* buildProjection(loaded, context, takeovers, projectionApplied, held);
     const current = new Set(projection.built.map((item) => item.resource.id));
     const planned = yield* planBuilt({
       follower: localProjectionFollower,
       origin: "folder",
       originDigest: loaded.digest,
       built: projection.built,
-      retired: appliedResources.filter((record) => !current.has(record.resource) && !projection.isHeld(record)),
-      appliedResources,
+      retired: projectionApplied.filter((record) => !current.has(record.resource) && !projection.isHeld(record)),
+      appliedResources: projectionApplied,
     });
-    return { ...planned, takeovers: projection.takeovers, diagnostics: projection.diagnostics, harnesses: projection.harnesses };
+    // Planning uses the released view, but the run's rollback must restore what is owned now:
+    // excluded skills leave ownership only through records a converged run writes.
+    return { ...planned, appliedResources, takeovers: projection.takeovers, diagnostics: projection.diagnostics, harnesses: projection.harnesses };
   });
 
 /** Group takeover units per harness for plan output. */

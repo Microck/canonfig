@@ -1,0 +1,5 @@
+$ node --import tsx docs/research/304-fleet-update/verify-publisher.mjs
+PASS official npm registry signature and Sigstore publisher policy: {"version":"7.1.9","integrity":"sha512-PMvh1+sZDGLqx2uaQglfEqE+lPKIrU9BiHsEA+nZyREpVzKOxJddIWqDkojdSEEBUc30zWPjPkbutLZW45DOEQ==","tarball":"https://registry.npmjs.org/@microck/canonfig/-/canonfig-7.1.9.tgz"}
+PASS official tarball SHA-512 binding
+PASS wrong tarball integrity refused before staging
+Temporary trust cache and package bytes removed.

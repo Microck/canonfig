@@ -52,7 +52,7 @@ const digest = (content: Uint8Array) => createHash("sha256").update(content).dig
 const validPath = (path: string) => path.length > 0 && !path.includes("\\") && !path.includes("\0") &&
   path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 const configurationKeys: Readonly<Record<string, true>> = Object.fromEntries(["harnesses", "surfaces", "mcp", "hooks", "settings", "tools", "credentials", "groups", "scheduleDefault", "local", "resources", "profile"].map((key) => [key, true]));
-const localKeys: Readonly<Record<string, true>> = Object.fromEntries(["mcp", "settings", "excludeHarnesses", "excludeResources", "excludePlugins", "overlays", "backups", "shield"].map((key) => [key, true]));
+const localKeys: Readonly<Record<string, true>> = Object.fromEntries(["mcp", "settings", "excludeHarnesses", "excludeResources", "excludeSkills", "preserveMcp", "overlays", "backups", "excludePlugins", "shield"].map((key) => [key, true]));
 const invalid = (path: string, message: string) => new AuthoringInvalid({ path, message });
 const conflict = (path: string) => new AuthoringConflict({ path, message: `${path} changed since it was read. Reload it before saving; no authoring files were written.` });
 
@@ -197,11 +197,16 @@ export const writeAuthoringItemsLocked = Effect.fn("Authoring.writeItemsLocked")
     try: () => prepareChanges(target, files, changes),
     catch: (error) => error instanceof AuthoringConflict || error instanceof AuthoringInvalid ? error : invalid(target.folder, String(error)),
   });
-  const loaded = yield* Effect.tryPromise({ try: () => loadCanonicalFiles(root, candidate), catch: (error) => invalid(target.folder, String(error)) });
-  if (target.scope === "canonical" && loaded.authoredResources.length > 0) {
-    // Local exclusions affect projection, never the validity of authored resources.
-    const context = yield* rootContext((name) => process.env[name]);
-    yield* projectResources({ ...loaded.model, resources: loaded.authoredResources }, context, join(root, "canonfig.jsonc"));
+  // Before the first mirror, prepareChanges validates local preferences and
+  // refuses new local items without Source permission. No canonical model
+  // exists to project yet. Canonical edits must always produce a valid model.
+  if (target.scope === "canonical" || candidate.has("canonfig.jsonc")) {
+    const loaded = yield* Effect.tryPromise({ try: () => loadCanonicalFiles(root, candidate), catch: (error) => invalid(target.folder, String(error)) });
+    if (target.scope === "canonical" && loaded.authoredResources.length > 0) {
+      // Local exclusions affect projection, never the validity of authored resources.
+      const context = yield* rootContext((name) => process.env[name]);
+      yield* projectResources({ ...loaded.model, resources: loaded.authoredResources }, context, join(root, "canonfig.jsonc"));
+    }
   }
   // Re-read after validation: hand edits and changed policy during validation must not be overwritten.
   const current = yield* readFiles(root);
