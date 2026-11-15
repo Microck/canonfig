@@ -1,0 +1,28 @@
+{
+  "Version": "1.104.7-tfb3b9b296-g0651cc45e",
+  "TUN": true,
+  "BackendState": "Running",
+  "Health": [],
+  "TailscaleIPs": [
+    "100.64.0.10",
+    "fd7a:115c:a1e0::10"
+  ],
+  "Self": {
+    "Online": true,
+    "Expired": null,
+    "KeyExpiry": null,
+    "DNSName": "source.tail-example.ts.net.",
+    "TailscaleIPs": [
+      "100.64.0.10",
+      "fd7a:115c:a1e0::10"
+    ]
+  },
+  "CurrentTailnet": {
+    "Name": "example",
+    "MagicDNSSuffix": "tail-example.ts.net",
+    "MagicDNSEnabled": true
+  },
+  "CertDomains": [
+    "source.tail-example.ts.net"
+  ]
+}

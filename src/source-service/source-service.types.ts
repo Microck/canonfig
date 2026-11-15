@@ -1,10 +1,11 @@
 import type { CertificateFingerprint } from "../domain/brand.ts";
+import type { TailnetReport } from "../domain/tailnet.ts";
 import type {
   MachinePlatform,
   ProcessEnvironmentEntry,
 } from "../machine/machine-state.types.ts";
 
-export type SourceServiceHost = "127.0.0.1" | "::1";
+export type SourceServiceHost = "127.0.0.1" | "::1" | "tailnet";
 
 /** What the supervised `canonfig source serve` listens on. */
 export interface SourceServiceInput {
@@ -76,6 +77,8 @@ export interface SourceServiceStatus {
   readonly serviceName: string;
   readonly definitionPath?: string | undefined;
   readonly endpoint: string;
+  readonly requested: SourceServiceInput;
+  readonly tailnet: TailnetReport;
   readonly manager: SourceServiceManagerState;
   /** The endpoint answered with this Source's pinned TLS and signing identity. */
   readonly serving: boolean;
