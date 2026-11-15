@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, lstatSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { homedir } from "node:os";
 import { Schema } from "effect";
 import { TaggedError } from "../../domain/tagged-error.ts";
 
@@ -25,15 +26,18 @@ export function acquireGate(directory: string): () => void {
   catch { throw new Error(`Self-update coordination is busy or interrupted: ${gate}. Never clear it while a worker is active.`); }
   return () => rmSync(gate, { recursive: true });
 }
-/** Only installations explicitly opted in pay for a lease. */
-export function commandLease(root: string): (() => void) | undefined {
+/** Coordinate installed commands independently of standalone self-update consent. */
+export function commandLease(root: string, home = homedir()): (() => void) | undefined {
   const directory = updateDirectory(root);
-  const settings = join(directory, "settings.json");
-  if (!entry(settings)) {
-    if(entry(join(directory,"pending.json")))throw new Error("Interrupted self-update: pending transaction exists without settings");
-    return;
+  if (!entry(directory)) {
+    const path = resolve(root);
+    const fromHome = relative(home, path);
+    const packagePath = join(...(process.platform === "win32" ? [] : ["lib"]), "node_modules", "@microck", "canonfig");
+    if (!path.endsWith(`${sep}${packagePath}`) || fromHome === "" || isAbsolute(fromHome)
+      || fromHome === ".." || fromHome.startsWith(`..${sep}`) || entry(join(path, "src")) || entry(join(path, ".git"))) return;
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
   }
-  regular(settings);
+  regular(join(directory, "settings.json"));
   const release = acquireGate(directory);
   try {
     if (entry(join(directory, "pending.json"))) throw new Error("Interrupted self-update: restore the retained package before running Canonfig commands.");
@@ -101,9 +105,9 @@ export class LeaseTransitionError extends TaggedError<LeaseTransitionError>()(
   "LeaseTransitionError", { message: Schema.String },
 ) {}
 /** A capability for this command's lease, never for another process's reader files. */
-export function managedCommandLease(root: string): ManagedCommandLease {
+export function managedCommandLease(root: string, home = homedir()): ManagedCommandLease {
   const acquire = (): LeaseState => {
-    const release = commandLease(root);
+    const release = commandLease(root, home);
     return release === undefined ? { _tag: "Uncoordinated" } : { _tag: "Active", release };
   };
   let state = acquire();

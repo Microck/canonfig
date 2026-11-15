@@ -1,0 +1,58 @@
+Native scheduler regression, PR #306
+
+Target: task-owned Raft paris:rf-74de7713b9e3459c, Linux arm64.
+No host HOME, schedule, Source service or harness directory was used.
+The acceptance script and its assertions were unchanged.
+
+Before the fix, baseline a7bd0f21f6cbde72b2e7a3eb4a58d2b551f103dd:
+The disposable guest root account had its own lingering systemd user manager.
+Commands inside /workspace/canonfig:
+$ npm run build:cli
+Build exited 0.
+$ node scripts/schedule-fire-acceptance.mjs
+Output:
+scheduler trigger exited 1: Job for canonfig-sync.service failed because the control process exited with error code.
+See "systemctl --user status canonfig-sync.service" and "journalctl --user -xeu canonfig-sync.service" for details.
+the native scheduler never recorded an invocation
+Script exit: 1
+
+The fixture deliberately stops its Source before firing the native schedule.
+The guest journal reported CLI exit 6 and ECONNREFUSED at 127.0.0.1:34507.
+SELECT id, state, invocation_json FROM scheduled_invocations returned [].
+Fleet Update preflight failed before FollowerCommands.synchronize could record
+that the native scheduler had invoked Canonfig.
+
+After the fix:
+Rebuilt with npm run build:cli, exit 0. Used a fresh disposable guest account,
+scheduler-fixed (uid 1001, HOME=/home/scheduler-fixed), and its own lingering
+systemd user manager. The script still uses its stopped fixture Source.
+$ node scripts/schedule-fire-acceptance.mjs
+Output:
+scheduler trigger exited 1: Job for canonfig-sync.service failed because the control process exited with error code.
+See "systemctl --user status canonfig-sync.service" and "journalctl --user -xeu canonfig-sync.service" for details.
+scheduler fire recorded at 2026-11-14T11:46:11.317Z; evidence: /home/scheduler-fixed/.canonfig/state.sqlite, invocation e461e20b-798b-459b-85bb-4f21a57eb1b9
+SCHEDULER_FIRE_OK
+Script exit: 0
+
+Read-only SQLite inspection:
+$ raft exec paris:rf-74de7713b9e3459c -- node --input-type=module -e 'import {DatabaseSync} from "node:sqlite"; const db=new DatabaseSync("/home/scheduler-fixed/.canonfig/state.sqlite",{readOnly:true}); console.log(JSON.stringify(db.prepare("SELECT state, invocation_json FROM scheduled_invocations").all().map(row=>({state:row.state,...JSON.parse(row.invocation_json)})),null,2)); db.close();'
+[
+  {
+    "state": "Failed",
+    "_tag": "Failed",
+    "id": "e461e20b-798b-459b-85bb-4f21a57eb1b9",
+    "generation": "c2bdf44ee2a808f062240fc52abf3cf9976db96b07b544350d5c6346fc532821",
+    "startedAt": "2026-11-14T11:46:11.317Z",
+    "at": "2026-11-14T11:46:11.424Z",
+    "reason": "transport: nothing answered at the Source endpoint 127.0.0.1:34123 (ECONNREFUSED); start the Source, or run `canonfig tunnel start` if it is reached through a managed tunnel"
+  }
+]
+
+The failed Source connection remains a failure. The repair records the native
+invocation and its transport failure rather than reporting that the job never
+ran. No additional regression test was added because the existing native
+acceptance script already exposed this path.
+
+A later verification batch was interrupted when its Eval worker exited. Its
+results were not retained and are not claimed. The subsequent focused checks
+use durable tool output.

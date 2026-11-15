@@ -1,0 +1,81 @@
+Release validation and installed fleet proof after the scheduler fix.
+Target: task-owned Raft paris:rf-74de7713b9e3459c.
+
+$ raft exec paris:rf-74de7713b9e3459c -- npm --prefix /workspace/canonfig run release:validate
+$ raft exec paris:rf-74de7713b9e3459c -- node /workspace/canonfig/docs/research/304-fleet-update/prove-fleet.mjs
+
+Both commands exited 0. Release validation includes the UI/CLI prepack build.
+The installed proof uses temporary packages with signed fixture publisher metadata,
+not public npm provenance. The production downloader, updater, CLI, enrollment,
+synchronization and health paths remain real. Public publisher verification is
+recorded separately in publisher-output.txt.
+
+
+> @microck/canonfig@7.1.9 release:validate
+> tsx tools/release/validate-release.ts
+
+Release validation passed: 451 files, 1307275 packed bytes, 4722989 unpacked bytes; metadata, naming, secret patterns, clean install, and binary smoke verified.
+Fixture releases: 7.1.9 -> 7.1.10; real npm tarballs, local signed publisher metadata, production SHA-512 downloader.
+[canary] canonfig self-update status --json
+exit=0
+{"schema":"canonfig.cli/v1","command":"self-update.status","status":"success","exitCode":0,"message":"Self-update result","data":{"enabled":false,"pending":false,"settings":null}}
+[failing] canonfig self-update status --json
+exit=0
+{"schema":"canonfig.cli/v1","command":"self-update.status","status":"success","exitCode":0,"message":"Self-update result","data":{"enabled":false,"pending":false,"settings":null}}
+[queued] canonfig self-update status --json
+exit=0
+{"schema":"canonfig.cli/v1","command":"self-update.status","status":"success","exitCode":0,"message":"Self-update result","data":{"enabled":false,"pending":false,"settings":null}}
+[canary] canonfig --version
+exit=0
+7.1.9
+[source] npm install --global --prefix <source-prefix> --install-strategy=nested --ignore-scripts <canonfig-7.1.10.tgz>
+exit=0
+[source] canonfig --version
+exit=0
+7.1.10
+[source] canonfig source update --canary follower-acdff5c85d4c763bb58b8eb0e2307041 --apply --json
+exit=0
+{"schema":"canonfig.cli/v1","command":"source.update","status":"success","exitCode":0,"message":"source.update completed","data":{"followers":[{"admittedAt":null,"attempt":null,"detail":"Waiting for the follower's next sync","health":null,"id":"follower-acdff5c85d4c763bb58b8eb0e2307041","name":"canary","status":"queued","version":null},{"admittedAt":null,"attempt":null,"detail":"Waiting for the follower's next sync","health":null,"id":"follower-f28f13e3f63694edf572fcf41f63e7fd","name":"failing","status":"queued","version":null},{"admittedAt":null,"attempt":null,"detail":"Waiting for the follower's next sync","health":null,"id":"follower-fb1fe3c8a14c5b120e991924b3be3031","name":"queued","status":"queued","version":null}],"id":"16618fc5-25ac-450d-8c08-77973bff8dcd","integrity":"sha512-W2H43LhNfBfwDk/FQrYy6mg/SByCaFpl9NW7n68MXZsxUK92o/jrRHNEpHDLq6elm4mFSPkhJCJqc44JAp259Q==","schema":"canonfig.fleet-update/v1","sequence":1,"source":"a16c1e3413408f5cc5ed94f841077cc0e1d3aa7ebb47ebe1bdcb3a9b96305f76","startedAt":"2026-11-14T12:01:23.435Z","stateFormat":7,"status":"running","version":"7.1.10"}}
+[canary] canonfig sync --apply --no-input --json
+exit=3
+
+{"schema":"canonfig.cli/v1","command":"sync.apply","status":"error","exitCode":3,"message":"Fleet Update deferred: another Synchronization Run is active"}
+[source] canonfig source update status --json
+exit=0
+{"schema":"canonfig.cli/v1","command":"source.update.status","status":"success","exitCode":0,"message":"source.update.status completed","data":{"followers":[{"admittedAt":"2026-11-14T12:01:24.513Z","attempt":"5bd3bf1f-bcfb-44ba-872b-e4757caa49cd","detail":"path=\"/tmp/canonfig-fleet-proof-54YZ2w/canary/.canonfig/state.sqlite.run-lock\" operation=\"sync --apply\" pid=4601 since=\"2026-11-14T12:01:22.420Z\"","health":null,"id":"follower-acdff5c85d4c763bb58b8eb0e2307041","name":"canary","status":"deferred","version":"7.1.9"},{"admittedAt":null,"attempt":null,"detail":"Waiting for the follower's next sync","health":null,"id":"follower-f28f13e3f63694edf572fcf41f63e7fd","name":"failing","status":"queued","version":null},{"admittedAt":null,"attempt":null,"detail":"Waiting for the follower's next sync","health":null,"id":"follower-fb1fe3c8a14c5b120e991924b3be3031","name":"queued","status":"queued","version":null}],"id":"16618fc5-25ac-450d-8c08-77973bff8dcd","integrity":"sha512-W2H43LhNfBfwDk/FQrYy6mg/SByCaFpl9NW7n68MXZsxUK92o/jrRHNEpHDLq6elm4mFSPkhJCJqc44JAp259Q==","schema":"canonfig.fleet-update/v1","sequence":1,"source":"a16c1e3413408f5cc5ed94f841077cc0e1d3aa7ebb47ebe1bdcb3a9b96305f76","startedAt":"2026-11-14T12:01:23.435Z","stateFormat":7,"status":"running","version":"7.1.10"}}
+[canary] canonfig sync --apply --no-input --json
+exit=0
+{"schema":"canonfig.cli/v1","command":"sync.apply","status":"success","exitCode":0,"message":"sync.apply completed","data":{"agentResolutions":[],"downloadedBlobs":0,"harnesses":[],"mode":"apply","outcome":{"outcome":"Converged","run":"run-8098faa3-a58d-431c-b7f7-4d11ceb2331d","verified":["instructions","mirror:canonfig.jsonc"]},"reusedBlobs":1,"revision":"fleet-proof:fffa217dc0bd21cc1d37ae1bd033ea02e863793e59cf4cc7f86270196984c0a3","takeovers":[]}}
+[canary] canonfig --version
+exit=0
+7.1.10
+[canary] canonfig status --json
+exit=0
+{"schema":"canonfig.cli/v1","command":"status","status":"success","exitCode":0,"message":"status completed","data":{"completionReceipt":{"applied":{"detail":"deployment receipt outcome is Converged","status":"verified"},"build":{"identity":"0d9e4766749ac9db773f90ed6c9913fc6ae3332af319a3f9169b40a0ef2c4d58","packageVersion":"7.1.10","stateFormat":7},"clientLoaded":{"detail":"the revision declared no successful client-load verification","status":"not-verified"},"independentlyVerified":{"detail":"2/2 journaled verifications passed","status":"verified"},"mcpQualifications":[],"published":{"detail":"signed revision is stored; publication approval is held by the Source","status":"verified"},"revision":"fleet-proof:fffa217dc0bd21cc1d37ae1bd033ea02e863793e59cf4cc7f86270196984c0a3:view:fb0befd127b48f114a15162306fa26378c6481b09766c19cd0a6d3fbf9932dcb","run":"run-8098faa3-a58d-431c-b7f7-4d11ceb2331d","scheduled":{"detail":"no schedule is selected; run `canonfig schedule set <calendar>` to schedule synchronization","status":"not-selected"},"secondRunNoOp":true},"enrollmentLifecycle":"Active","fleetUpdate":{"report":{"attempt":"5bd3bf1f-bcfb-44ba-872b-e4757caa49cd","detail":"Exact release activated and a fresh Synchronization Run Converged","health":{"outcome":"Converged","recordedAt":"2026-11-14T12:01:39.168Z","revision":"fleet-proof:fffa217dc0bd21cc1d37ae1bd033ea02e863793e59cf4cc7f86270196984c0a3","run":"run-8098faa3-a58d-431c-b7f7-4d11ceb2331d","version":"7.1.10"},"rollout":"16618fc5-25ac-450d-8c08-77973bff8dcd","status":"healthy","version":"7.1.10"},"reported":true,"signed":{"directive":{"attempt":"5bd3bf1f-bcfb-44ba-872b-e4757caa49cd","expiresAt":"2026-11-14T13:01:27.379Z","follower":"follower-acdff5c85d4c763bb58b8eb0e2307041","integrity":"sha512-W2H43LhNfBfwDk/FQrYy6mg/SByCaFpl9NW7n68MXZsxUK92o/jrRHNEpHDLq6elm4mFSPkhJCJqc44JAp259Q==","rollout":"16618fc5-25ac-450d-8c08-77973bff8dcd","schema":"canonfig.fleet-directive/v1","sequence":1,"source":"a16c1e3413408f5cc5ed94f841077cc0e1d3aa7ebb47ebe1bdcb3a9b96305f76","stateFormat":7,"version":"7.1.10"},"publicKey":"-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAdB34JKHNN0R5HF+V1muoRsVxJVWZpxukObwI/G1AmLo=\n-----END PUBLIC KEY-----\n","signature":"ed25519:7INvDemLEqms1cby-kTgm3Lg8FSrMW2gIyClfSjHFxbEtqcHPZ8Wp7XWGWRvZuhimh_ICWJb_yCayyvebS7gAA"},"startedAt":"2026-11-14T12:01:38.994Z"},"follower":{"credentialReference":"local-file:/tmp/canonfig-fleet-proof-54YZ2w/canary/credentials/2ef259e0c6cd762c899a66d59d1c7bcc14bc1197579af8fa3e45ebc8dfa8f205.credential","enrolledAt":"2026-11-14T12:01:04.288Z","groups":[],"id":"follower-acdff5c85d4c763bb58b8eb0e2307041","name":"canary","revoked":false},"lifecycle":{"converged":{"detail":"applied revision fleet-proof:fffa217dc0bd21cc1d37ae1bd033ea02e863793e59cf4cc7f86270196984c0a3","reached":true},"discovered":{"detail":"source endpoint https://127.0.0.1:41371 is configured","reached":true},"enrolled":{"detail":"enrolled as canary (follower-acdff5c85d4c763bb58b8eb0e2307041)","reached":true},"reachable":{"detail":"the source is reachable with pinned TLS and signing identities","reached":true},"selected":{"detail":"following profile fleet-proof","reached":true}},"machineRole":{"follower":"follower-acdff5c85d4c763bb58b8eb0e2307041","role":"follower","sourceFingerprint":"a16c1e3413408f5cc5ed94f841077cc0e1d3aa7ebb47ebe1bdcb3a9b96305f76","tlsFingerprint":"531a41ee0b3f4def221c78ae6dda61ede30c3e9b51c8e3f846345282d030a989"},"sourceIdentity":{"keyId":"ed25519:a16c1e3413408f5cc5ed94f841077cc0e1d3aa7ebb47ebe1bdcb3a9b96305f76","publicKeyFingerprint":"a16c1e3413408f5cc5ed94f841077cc0e1d3aa7ebb47ebe1bdcb3a9b96305f76"},"tunnel":{"detail":"no tunnel has been configured","lifecycle":"not-configured","restartable":false}}}
+[source] canonfig source update status --json
+exit=0
+{"schema":"canonfig.cli/v1","command":"source.update.status","status":"success","exitCode":0,"message":"source.update.status completed","data":{"followers":[{"admittedAt":"2026-11-14T12:01:27.379Z","attempt":"5bd3bf1f-bcfb-44ba-872b-e4757caa49cd","detail":"Exact release activated and a fresh Synchronization Run Converged","health":{"outcome":"Converged","recordedAt":"2026-11-14T12:01:39.168Z","revision":"fleet-proof:fffa217dc0bd21cc1d37ae1bd033ea02e863793e59cf4cc7f86270196984c0a3","run":"run-8098faa3-a58d-431c-b7f7-4d11ceb2331d","version":"7.1.10"},"id":"follower-acdff5c85d4c763bb58b8eb0e2307041","name":"canary","status":"healthy","version":"7.1.10"},{"admittedAt":null,"attempt":null,"detail":"Waiting for the follower's next sync","health":null,"id":"follower-f28f13e3f63694edf572fcf41f63e7fd","name":"failing","status":"queued","version":null},{"admittedAt":null,"attempt":null,"detail":"Waiting for the follower's next sync","health":null,"id":"follower-fb1fe3c8a14c5b120e991924b3be3031","name":"queued","status":"queued","version":null}],"id":"16618fc5-25ac-450d-8c08-77973bff8dcd","integrity":"sha512-W2H43LhNfBfwDk/FQrYy6mg/SByCaFpl9NW7n68MXZsxUK92o/jrRHNEpHDLq6elm4mFSPkhJCJqc44JAp259Q==","schema":"canonfig.fleet-update/v1","sequence":1,"source":"a16c1e3413408f5cc5ed94f841077cc0e1d3aa7ebb47ebe1bdcb3a9b96305f76","startedAt":"2026-11-14T12:01:23.435Z","stateFormat":7,"status":"running","version":"7.1.10"}}
+[canary] canonfig self-update status --json
+exit=0
+{"schema":"canonfig.cli/v1","command":"self-update.status","status":"success","exitCode":0,"message":"Self-update result","data":{"enabled":false,"pending":false,"settings":null}}
+[unsigned directive] production verifyFleetDirective refused: Fleet Update directive signature or enrollment identity is invalid
+[tampered directive] production verifyFleetDirective refused: Fleet Update directive signature or enrollment identity is invalid
+[failing] canonfig sync --apply --no-input --json
+exit=4
+
+{"schema":"canonfig.cli/v1","command":"sync.apply","status":"error","exitCode":4,"message":"follower drift conflicts with the selected revision","data":{"agentResolutions":[],"downloadedBlobs":0,"harnesses":[],"mode":"apply","outcome":{"conflicts":[{"desiredDigest":"3e640e10bf96f6d624aae12e82183ca8f0a8e0cb236f29b4d92128e5cb005026","desiredExecutable":false,"desiredMode":384,"lastAppliedDigest":"3e640e10bf96f6d624aae12e82183ca8f0a8e0cb236f29b4d92128e5cb005026","observedDigest":"2131b69d55c5e455de4f2292c214d442d30f5457b0f595d508ae7d5e15bb24aa","observedExecutable":false,"observedMode":384,"resource":"instructions","target":"/tmp/canonfig-fleet-proof-54YZ2w/failing/.canonfig/AGENTS.md"}],"outcome":"FollowerDrift","run":"run-2f9c26d2-693a-48fa-aa63-27b1726e3136"},"reusedBlobs":1,"revision":"fleet-proof:fffa217dc0bd21cc1d37ae1bd033ea02e863793e59cf4cc7f86270196984c0a3","takeovers":[]}}
+[failing] canonfig --version
+exit=0
+7.1.10
+[source] canonfig source update status --json
+exit=0
+{"schema":"canonfig.cli/v1","command":"source.update.status","status":"success","exitCode":0,"message":"source.update.status completed","data":{"followers":[{"admittedAt":"2026-11-14T12:01:27.379Z","attempt":"5bd3bf1f-bcfb-44ba-872b-e4757caa49cd","detail":"Exact release activated and a fresh Synchronization Run Converged","health":{"outcome":"Converged","recordedAt":"2026-11-14T12:01:39.168Z","revision":"fleet-proof:fffa217dc0bd21cc1d37ae1bd033ea02e863793e59cf4cc7f86270196984c0a3","run":"run-8098faa3-a58d-431c-b7f7-4d11ceb2331d","version":"7.1.10"},"id":"follower-acdff5c85d4c763bb58b8eb0e2307041","name":"canary","status":"healthy","version":"7.1.10"},{"admittedAt":"2026-11-14T12:01:44.034Z","attempt":"9b0ded56-563a-43a0-ae83-2f8327186995","detail":"Post-update Synchronization Run did not prove Convergence; rollout halted. Inspect status before manual rollback.","health":null,"id":"follower-f28f13e3f63694edf572fcf41f63e7fd","name":"failing","status":"failed","version":"7.1.10"},{"admittedAt":null,"attempt":null,"detail":"Waiting for the follower's next sync","health":null,"id":"follower-fb1fe3c8a14c5b120e991924b3be3031","name":"queued","status":"queued","version":null}],"id":"16618fc5-25ac-450d-8c08-77973bff8dcd","integrity":"sha512-W2H43LhNfBfwDk/FQrYy6mg/SByCaFpl9NW7n68MXZsxUK92o/jrRHNEpHDLq6elm4mFSPkhJCJqc44JAp259Q==","schema":"canonfig.fleet-update/v1","sequence":1,"source":"a16c1e3413408f5cc5ed94f841077cc0e1d3aa7ebb47ebe1bdcb3a9b96305f76","startedAt":"2026-11-14T12:01:23.435Z","stateFormat":7,"status":"halted","version":"7.1.10"}}
+[queued] canonfig --version
+exit=0
+7.1.9
+PASS: no follower opt-in or settings; standalone updates remain disabled; source upgrade, canary activation and Convergence, active-run deferral, signature rejection, failed health halts the rollout and leaves the remaining follower on N.
+Disposable processes stopped and machine HOMEs removed.
+
+$ raft destroy paris:rf-74de7713b9e3459c
+Destroyed paris:rf-74de7713b9e3459c
+Exit: 0

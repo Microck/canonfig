@@ -73,8 +73,8 @@ const arguments_ = process.argv.slice(2);
 const selfUpdateCommand = arguments_.filter((arg) => arg !== "--json")[0] === "self-update";
 const installedRoot = fileURLToPath(new URL("../../", import.meta.url));
 let lease: ManagedCommandLease | undefined;
-// Once opted in, every ordinary command holds a lease before loading a command
-// graph. Long-lived sources/watchers defer activation instead of losing code.
+// Supported installed commands hold a lease before loading a command graph,
+// even with standalone updates off. Long-lived workers defer fleet activation.
 if (!selfUpdateCommand) {
   try {
     lease = managedCommandLease(installedRoot);

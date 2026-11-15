@@ -1,0 +1,114 @@
+Browser: isolated Chromium, Source HOME created by prove-gui.ts, private Raft relay.
+Actions: open Source Settings > Version; choose canary-ui; Start Fleet Update; confirm Start rollout.
+
+- generic [ref=e23] clickable [onclick]
+  - link "Skip to content" [ref=e24]
+  - alert
+    - StaticText "Other machines can't get new revisions. The Source service isn't installed."
+    - button "Install" [ref=e26]
+  - complementary "Main navigation"
+    - button "rf-d458f921d2ac4f42 Source" [expanded=false, ref=e27]
+      - StaticText "rf-d458f921d2ac4f42"
+      - StaticText "Source"
+    - button "Search or jump to… Ctrl K" [ref=e28]
+      - StaticText "Search or jump to…"
+      - StaticText "Ctrl "
+      - StaticText "K"
+    - navigation
+      - link "Overview" [ref=e32]
+        - StaticText "Overview"
+      - link "Profile" [ref=e33]
+        - StaticText "Profile"
+      - link "Machines" [ref=e34]
+        - StaticText "Machines"
+      - link "Revisions" [ref=e35]
+        - StaticText "Revisions"
+      - link "Secrets" [ref=e36]
+        - StaticText "Secrets"
+    - button "Settings" [expanded=true, ref=e29]
+    - generic
+      - link "Source service" [ref=e37]
+        - StaticText "Source service"
+      - link "Installers" [ref=e38]
+        - StaticText "Installers"
+      - link "Setup" [ref=e39]
+        - StaticText "Setup"
+      - link "Health check" [ref=e40]
+        - StaticText "Health check"
+      - link "Version" [ref=e41]
+        - StaticText "Version"
+    - button "Take the tour" [ref=e30]
+    - button "Source service: not installed" [ref=e31]
+      - StaticText "Source service: not installed"
+  - main
+    - sectionheader
+      - heading "Version" [level=1, ref=e42]
+      - StaticText "in"
+      - StaticText "Settings"
+      - button "Reload status" [ref=e43]
+      - button "Turn on updates…" [ref=e44]
+    - heading "This machine" [level=2, ref=e45]
+    - StaticText "Version"
+    - StaticText "7.1.9"
+    - StaticText "Updates"
+    - StaticText "Off"
+    - region "Fleet Update" [ref=e46]
+      - heading "Follower releases" [level=2, ref=e47]
+      - paragraph
+        - StaticText "Roll out this Source's 7.1.9 release. Followers update on their next sync, one at a time, after the canary proves Convergence."
+      - form
+        - LabelText
+          - StaticText "Canary follower"
+        - combobox "Canary follower" [expanded=false, disabled, ref=e48]: canary-ui
+          - generic [ref=e58] clickable [onclick]
+            - StaticText "canary-ui"
+        - button "Start Fleet Update…" [disabled, ref=e49]
+        - button "Refresh followers" [ref=e50]
+        - button "Stop rollout…" [ref=e63]
+      - generic
+        - paragraph
+          - StaticText "7.1.9: running"
+        - StaticText "canary-ui"
+        - paragraph
+          - StaticText "Waiting for the follower's next sync and local update opt-in"
+        - StaticText "Not reported"
+        - StaticText " · "
+        - StaticText "queued"
+        - StaticText "second-ui"
+        - paragraph
+          - StaticText "Waiting for the follower's next sync and local update opt-in"
+        - StaticText "Not reported"
+        - StaticText " · "
+        - StaticText "queued"
+  - region "Notifications alt+T" [ref=e25]
+
+Actions: Stop rollout; confirm Stop rollout.
+
+- generic
+  - generic [ref=e23] clickable [onclick]
+    - main
+      - region "Fleet Update" [ref=e46]
+        - generic
+          - paragraph
+            - StaticText "7.1.9: stopped"
+          - StaticText "canary-ui"
+          - paragraph
+            - StaticText "Waiting for the follower's next sync and local update opt-in"
+          - StaticText "Not reported"
+          - StaticText " · "
+          - StaticText "queued"
+          - StaticText "second-ui"
+          - paragraph
+            - StaticText "Waiting for the follower's next sync and local update opt-in"
+          - StaticText "Not reported"
+          - StaticText " · "
+          - StaticText "queued"
+    - region "Notifications alt+T" [ref=e25]
+  - dialog "Stop this rollout?"
+    - heading "Stop this rollout?" [level=2, ref=e64]
+    - paragraph
+      - StaticText "No more followers will be admitted. A follower already activating may finish. Installed releases and applied configuration stay in place."
+    - button "Cancel" [ref=e65]
+    - button "Stop rollout" [ref=e66]
+    - button "Close" [ref=e67]
+      - StaticText "Close"

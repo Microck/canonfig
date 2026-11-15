@@ -165,12 +165,15 @@ const validatePackageMetadata = (metadataPath: string): void => {
     fail("package bin must map canonfig to dist/runtime/main.js");
   }
   const runtimeDependencies = Object.keys(metadata.dependencies).sort();
+  // Sigstore dependencies verify npm provenance for Fleet Updates.
   const expectedRuntimeDependencies = [
     "@canonfig/effect-platform-node-shared",
     "@canonfig/effect-sql-sqlite-node",
+    "@sigstore/bundle",
     "effect",
     "jsonc-parser",
     "selfsigned",
+    "sigstore",
     "smol-toml",
     "yaml",
   ];
@@ -197,8 +200,10 @@ const validatePackageContents = (
   // import review and newcomer-readable onboarding copy bring it to 1,290,637 /
   // 4,645,858. The 7.1.8-7.1.11 UI work (Source look shared to Followers, live
   // Source publication state, Follower page cleanup) brings it to 1,300,067 /
-  // 4,686,043; the ceilings keep about 10 KB packed and 54 KB unpacked headroom.
-  if (artifact.size > 1_310_000 || artifact.unpackedSize > 4_740_000) {
+  // 4,686,043. Tailnet transport, fleet updates, Shield and backups add about
+  // 93 KB packed and 430 KB unpacked together (measured per branch in CI), so the
+  // ceilings fit all four with about 55 KB packed and 180 KB unpacked headroom.
+  if (artifact.size > 1_450_000 || artifact.unpackedSize > 5_300_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );

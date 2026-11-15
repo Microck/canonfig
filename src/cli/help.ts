@@ -68,6 +68,9 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
       "source invite --endpoint <https-url> --output <path> [--expires <duration>] [--group <name>...]",
       "  [--timeout-ms <ms>]",
       "source revoke <follower-id>",
+      "source update --canary <follower-id> [--apply]",
+      "source update status",
+      "source update stop [--apply]",
     ],
     notes: [
       "publish compiles ~/.canonfig/ (canonfig.jsonc, AGENTS.md, rules/, skills/,",
@@ -81,6 +84,9 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
       "service installs a native user service that runs source serve (systemd user",
       "unit, launchd agent, or Task Scheduler at-logon task); serve runs in the foreground.",
       "invite writes a mode-0600 single-use envelope; move it over a private channel.",
+      "update rolls the Source's exact release out to enrolled followers on",
+      "their next sync. The canary runs first; failed health halts the rollout.",
+      "Preview by omitting --apply. No daemon, forced restart or automatic downgrade.",
     ],
   },
   {

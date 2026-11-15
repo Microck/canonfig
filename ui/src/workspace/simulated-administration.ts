@@ -110,6 +110,7 @@ export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): Admini
     }, 800);
   };
   return {
+    fleet: null,
     service: {
       data: {
         state: installed ? "running" : "not-installed", platform: "linux", mechanism: "systemd-user-service",
