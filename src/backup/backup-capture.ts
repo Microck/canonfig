@@ -37,8 +37,11 @@ export const captureBackupFiles = async (input: {
   readonly scratch: string;
   readonly home: string;
   readonly files: ReadonlyArray<ArchiveFile>;
-  /** `optional` roots are harness state folders or files outside the harness root; a missing one is skipped. */
-  readonly roots: ReadonlyArray<{ readonly harness: string; readonly root: string; readonly optional: boolean }>;
+  /**
+   * Harness roots, plus state folders and files outside them. A missing one is skipped: a harness can be installed
+   * with no configuration folder yet (OpenCode with only ~/.local/share/opencode), and that must not stop the backup.
+   */
+  readonly roots: ReadonlyArray<{ readonly harness: string; readonly root: string }>;
   /** Absolute paths the selected adapters declare as credentials (HarnessLayout.credentials). */
   readonly credentials: ReadonlyArray<string>;
   readonly signal: AbortSignal;
@@ -84,16 +87,14 @@ export const captureBackupFiles = async (input: {
       harness: file.harness, target: file.target, keys: file.keys }, createHash("sha256").update(file.content).digest("hex"));
   }
   for (const root of input.roots) {
-    // An optional root may be a state folder or a single file such as ~/.claude.json; a missing one is skipped.
-    let only: string | undefined;
-    if (root.optional) {
-      const info = await lstat(root.root).catch((error) => {
-        if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
-        throw error;
-      });
-      if (info === undefined || (!info.isDirectory() && !info.isFile())) continue;
-      if (info.isFile()) only = basename(root.root);
-    }
+    // A root may be a folder or a single file such as ~/.claude.json; a missing one is skipped. The empty-capture
+    // check below still refuses a selection that found no files at all.
+    const info = await lstat(root.root).catch((error) => {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (info === undefined || (!info.isDirectory() && !info.isFile())) continue;
+    const only = info.isFile() ? basename(root.root) : undefined;
     if (root.root === input.home || !below(input.home, root.root) || below(root.root, input.scratch)
       || (input.policy.destination.kind === "local" && below(root.root, input.policy.destination.path))) {
       throw new BackupIoError("BACKUP_INVALID", "A full harness root must be below HOME and cannot contain the backup destination or staging directory");

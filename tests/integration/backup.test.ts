@@ -191,10 +191,10 @@ describe("portable backup recovery", () => {
     expect(readFileSync(join(output, ".kilo", "skills", "notes", "SKILL.md"), "utf8")).toContain("name: notes");
   }, 60_000);
 
-  it("captures a live SQLite database with its uncheckpointed WAL as one consistent snapshot", async () => {
+  it("captures a live SQLite database with its uncheckpointed WAL as one consistent snapshot, with no config folder", async () => {
     const machine = fixture();
     const data = join(machine.home, ".local", "share", "opencode");
-    mkdirSync(join(machine.home, ".config", "opencode"), { recursive: true });
+    // No ~/.config/opencode: an installed harness may have only its data folder, and the backup still runs.
     mkdirSync(data, { recursive: true });
     // The harness keeps its connection open, so these committed rows live only in opencode.db-wal.
     const live = new DatabaseSync(join(data, "opencode.db"));

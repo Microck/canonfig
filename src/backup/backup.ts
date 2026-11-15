@@ -188,9 +188,9 @@ const capture = (context: BackupContext, opened: OpenBackup, scheduled: boolean)
         ];
         const outside = [...new Set([...layout.neverTouch, ...surfaces])].filter(path => !below(layout.root, path));
         const extra = outside.filter(path => !outside.some(other => other !== path && below(other, path)));
-        return [{ harness, root: layout.root, optional: false }, ...extra.map(root => ({ harness, root, optional: true }))];
+        return [{ harness, root: layout.root }, ...extra.map(root => ({ harness, root }))];
       }),
-      ...sharedSkillRoots.map(root => ({ harness: sharedSkillsOwner, root, optional: true })),
+      ...sharedSkillRoots.map(root => ({ harness: sharedSkillsOwner, root })),
     ] : [];
     const owners = new Set<string>([...opened.policy.harnesses.targets, ...(sharedSkillRoots.length > 0 ? [sharedSkillsOwner] : [])]);
     const managed = configuration.harnesses.files.filter(file => file.harness !== undefined && owners.has(file.harness));
