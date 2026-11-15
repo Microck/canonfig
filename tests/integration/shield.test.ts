@@ -19,6 +19,7 @@ import type { RootContext } from "../../src/projection/harness.ts";
 import { hookRegistryJson, hookRunnerSource } from "../../src/projection/templates/runtime.ts";
 import { appendShieldLog, readShieldLog, shieldLogPath } from "../../src/projection/shield-log.ts";
 import { npmShimEntrypoint } from "../../src/projection/shield-install.ts";
+import { shieldStatus } from "../../src/cli/shield.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -44,7 +45,7 @@ function fixture(allow: string[] = ["skills", "plugins", "mcp"]) {
   const ingest = async () => Effect.runPromise(withRunLock(statePath, "shield test", ingestShield({
     target: { folder, statePath, scope: "local" }, context, loaded: await loadCanonicalFolder(folder), applied: [],
   })).pipe(Effect.provide(layer)));
-  return { home, folder, context, sync, ingest };
+  return { home, folder, context, layer, sync, ingest };
 }
 
 describe("Shield admission and projection", () => {
@@ -97,6 +98,34 @@ describe("Shield admission and projection", () => {
     write(join(f.home, ".claude", "skills", "sample", "SKILL.md"), skill + "Local edit.\n");
     expect((await f.sync()).outcome).toMatchObject({ outcome: "FollowerDrift" });
     expect(readFileSync(join(f.folder, "skills", "sample", "SKILL.md"), "utf8")).toBe(skill);
+  });
+
+  it("admits a reinstalled skill again after its canonical copy was deleted", async () => {
+    const f = fixture();
+    // Installer staging: the ledger of earlier admissions is passed back in as `unchanged`, as redirectInstaller does.
+    const install = async (unchanged: ReadonlySet<string>) => {
+      write(join(f.home, ".claude", "skills", "fresh", "SKILL.md"), skill.replace("name: sample", "name: fresh"));
+      return Effect.runPromise(withRunLock(join(f.folder, "state.sqlite"), "shield test", ingestShield({
+        target: { folder: f.folder, statePath: join(f.folder, "state.sqlite"), scope: "local" }, context: f.context,
+        loaded: await loadCanonicalFolder(f.folder), applied: [], installer: true, unchanged,
+      })).pipe(Effect.provide(f.layer)));
+    };
+    const first = await install(new Set());
+    expect(first.imported).toContain("skills/fresh");
+    // The staged skill was removed after admission, so nothing about it stays in the ledger.
+    expect(first.digests).toEqual([]);
+    rmSync(join(f.folder, "local", "skills", "fresh"), { recursive: true, force: true });
+    const again = await install(new Set(first.digests));
+    expect(again.imported).toContain("skills/fresh");
+    expect(existsSync(join(f.folder, "local", "skills", "fresh", "SKILL.md"))).toBe(true);
+  });
+
+  it("does not count a harness whose surfaces leave out hooks as protected", async () => {
+    const f = fixture();
+    write(join(f.folder, "canonfig.jsonc"), JSON.stringify({ version: 1, harnesses: ["claude-code", "codex"], local: { allow: ["skills", "plugins", "mcp"] }, surfaces: { codex: ["skills"] } }));
+    expect((await f.sync()).outcome).toMatchObject({ outcome: "Converged" });
+    const status = await Effect.runPromise(shieldStatus(join(f.folder, "state.sqlite")).pipe(Effect.provide(f.layer)));
+    expect(status.projected).toEqual(["claude-code"]);
   });
 
   it("routes follower additions only to local and refuses disallowed categories without deleting input", async () => {

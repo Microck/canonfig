@@ -13,6 +13,7 @@ import { editAuthoringConfig, readAuthoringItem, writeAuthoringItems, type Autho
 import { CanonicalFolderError, decodeLocalConfig, loadCanonicalFolder } from "../projection/folder.ts";
 import { NativePluginManifest, NATIVE_PLUGIN_HARNESSES, nativePluginDigest } from "../projection/native-plugin.ts";
 import { parseSurfaceResourceId, rootContext } from "../projection/plan.ts";
+import { TARGET_IDS } from "../projection/model.ts";
 import { ingestShield } from "../projection/shield-ingest.ts";
 import { addNativePlugin, installerKind, redirectInstaller, shieldLaunch } from "../projection/shield-install.ts";
 import { shieldPaths } from "../projection/shield.ts";
@@ -61,8 +62,19 @@ export const shieldStatus = Effect.fn("Shield.status")(function*(statePath: stri
     }, catch: (error) => new CanonicalFolderError({ path: folder, message: `Cannot read Shield hook registry: ${String(error)}` }),
   });
   // Every hooked harness's output depends on the shared registry, so a harness carries the Shield hook once the
-  // registry has it and that harness has been applied. A harness listed since the last sync has no applied output.
-  const projected = registered ? [...new Set(applied.flatMap((record) => parseSurfaceResourceId(record.resource)?.harness ?? []))].sort() : [];
+  // registry has it, that harness has been applied, and its `surfaces` selection keeps hooks: modelFor empties hooks
+  // for a harness whose selection leaves them out, so the guard never runs there. A harness listed since the last
+  // sync has no applied output.
+  const selections = new Map(Object.entries(registered
+    ? (yield* Effect.tryPromise({ try: () => loadCanonicalFolder(folder), catch: (error) => new CanonicalFolderError({ path: folder, message: String(error) }) })).model.surfaces
+    : {}));
+  // Only real harnesses run hooks; the shared skills owner ("agents") has applied output but no hook surface.
+  const hooked = (harness: string) => {
+    if (!TARGET_IDS.some((id) => id === harness)) return false;
+    const selected = selections.get(harness);
+    return selected === undefined || selected.includes("hooks");
+  };
+  const projected = registered ? [...new Set(applied.flatMap((record) => parseSurfaceResourceId(record.resource)?.harness ?? []))].filter(hooked).sort() : [];
   return { enabled: policy.shield?.enabled ?? false, hard: policy.shield?.hard ?? false,
     scope: configuration === undefined ? "canonical" as const : "local" as const,
     destination: configuration === undefined ? folder : join(folder, "local"),

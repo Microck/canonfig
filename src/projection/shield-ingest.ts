@@ -35,7 +35,7 @@ export const ingestShield = Effect.fn("Shield.ingest")(function*(input: {
   readonly applied: ReadonlyArray<AppliedResourceRecord>;
   /** Installer staging homes are also admitted through this same reader. */
   readonly installer?: boolean;
-  /** Digests of staging items earlier installer runs admitted; their config stays in the staging home, so skip them. */
+  /** Digests of MCP entries earlier installer runs admitted; their config stays in the staging home, so skip them. */
   readonly unchanged?: ReadonlySet<string>;
 }) {
   const { target, context, loaded } = input;
@@ -173,8 +173,11 @@ export const ingestShield = Effect.fn("Shield.ingest")(function*(input: {
   }
   return {
     imported: [...new Set([...sources.map((entry) => entry.target), ...plugins.map((entry) => entry.target)])],
-    /** What this call admitted, for the installer's staging ledger. */
-    digests: sources.map((entry) => entry.digest),
+    /**
+     * What this call admitted that stays in the installer's staging home: MCP entries, whose config keys remain.
+     * Files and folders are removed after admission, so a later install that recreates one is admitted again.
+     */
+    digests: sources.filter((entry) => entry.category === "mcp").map((entry) => entry.digest),
     warnings: scan.skipped.map((entry) => `${entry.path}: ${entry.reason}`),
   };
 });
