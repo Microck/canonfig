@@ -154,7 +154,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
   const metadata = Schema.decodeUnknownSync(PackageMetadata)(
     JSON.parse(readFileSync(metadataPath, "utf8")),
   );
-  if (metadata.name !== "@microck/canonfig" || metadata.version !== "7.1.10") {
+  if (metadata.name !== "@microck/canonfig" || metadata.version !== "7.1.11") {
     fail(`unexpected package identity: ${metadata.name}@${metadata.version}`);
   }
   if (metadata.license !== "MIT") fail(`unexpected package license: ${metadata.license}`);
@@ -188,15 +188,17 @@ const validatePackageMetadata = (metadataPath: string): void => {
 const validatePackageContents = (
   artifact: typeof PackedArtifact.Type,
 ): void => {
-  if (artifact.name !== "@microck/canonfig" || artifact.version !== "7.1.10") {
+  if (artifact.name !== "@microck/canonfig" || artifact.version !== "7.1.11") {
     fail(`unexpected packed identity: ${artifact.name}@${artifact.version}`);
   }
   // The shared live screens include full authoring, enrollment, synchronization,
   // administration and the machine map. Explicit lifecycle code and declarations
   // bring the package to 1,287,025 packed / 4,642,878 unpacked bytes. The setup
   // import review and newcomer-readable onboarding copy bring it to 1,290,637 /
-  // 4,645,858; the ceilings keep about 9 KB packed and 54 KB unpacked headroom.
-  if (artifact.size > 1_300_000 || artifact.unpackedSize > 4_700_000) {
+  // 4,645,858. The 7.1.8-7.1.11 UI work (Source look shared to Followers, live
+  // Source publication state, Follower page cleanup) brings it to 1,300,067 /
+  // 4,686,043; the ceilings keep about 10 KB packed and 54 KB unpacked headroom.
+  if (artifact.size > 1_310_000 || artifact.unpackedSize > 4_740_000) {
     fail(
       `package exceeds release budget: ${artifact.size} packed, ${artifact.unpackedSize} unpacked`,
     );
@@ -250,7 +252,7 @@ const validateBinary = (executable: string): void => {
 
   const version = invokeExecutable(executable, ["--version"]);
   requireSuccess("packed executable version", version);
-  if (version.stdout !== "7.1.10\n" || version.stderr !== "") {
+  if (version.stdout !== "7.1.11\n" || version.stderr !== "") {
     fail("packed executable version output is invalid");
   }
 
