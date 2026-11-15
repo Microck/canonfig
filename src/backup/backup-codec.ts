@@ -67,20 +67,24 @@ export const encodeBackup = async (input: CodecInput & { readonly bytes: AsyncIt
   return codec;
 };
 
-/** Keep decrypted recovery material off disk. Publication waits for age's final authentication and archive verification. */
-export const decodeBackup = async <A>(input: Omit<CodecInput, "preset" | "output"> & {
+/**
+ * Keep decrypted recovery material off disk. Publication waits for age's final authentication and archive verification.
+ * Every password is offered to age, so a copy made before the policy moved to a new password alias still opens.
+ */
+export const decodeBackup = async <A>(input: Omit<CodecInput, "preset" | "output" | "password"> & {
   readonly codec: BackupCodec; readonly archive: string; readonly encrypted: boolean;
+  readonly passwords: ReadonlyArray<Redacted.Redacted<string>>;
   readonly consume: (bytes: AsyncIterable<Uint8Array>) => Promise<A>;
 }): Promise<A> => {
   const source = createReadStream(input.archive);
   let compressed: Readable = source;
   try {
     if (input.encrypted) {
-      if (input.password === undefined) throw new BackupIoError("BACKUP_INVALID", "Encrypted backup needs its local password credential reference");
+      if (input.passwords.length === 0) throw new BackupIoError("BACKUP_INVALID", "Encrypted backup needs its local password credential reference");
       const decrypter = new Decrypter();
-      decrypter.addPassphrase(Redacted.value(input.password));
+      for (const password of input.passwords) decrypter.addPassphrase(Redacted.value(password));
       try { compressed = Readable.fromWeb(await decrypter.decrypt(Readable.toWeb(source))); }
-      catch { throw new BackupIoError("BACKUP_VERIFY_FAILED", "Backup decryption failed. The password is wrong or the encrypted archive is damaged; no restore was published."); }
+      catch { throw new BackupIoError("BACKUP_VERIFY_FAILED", "Backup decryption failed. None of this machine's backup passwords opens it, or the encrypted archive is damaged; no restore was published."); }
     }
     if (input.codec === "zstd") {
       return await pipeline(compressed, createZstdDecompress({

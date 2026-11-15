@@ -391,7 +391,8 @@ function Settings({ name: initialName, initial, onClose }: { name: string; initi
 function CopiesFrom({ name, shown }: { name: string; shown: string | undefined }) {
   const backup = useWorkspace().backup;
   const own = backup.status?.owner;
-  const found = backup.owners[name];
+  // Own properties only: a policy named "constructor" must not read Object.prototype.
+  const found = Object.hasOwn(backup.owners, name) ? backup.owners[name] : undefined;
   if (found === undefined) {
     return <Button size="xs" variant="ghost" className="justify-self-start" disabled={backup.action.loading} onClick={() => void backup.run({ action: "owners", name })}>Find copies from other machines</Button>;
   }
@@ -409,7 +410,7 @@ function CopiesFrom({ name, shown }: { name: string; shown: string | undefined }
   );
 }
 
-function RestoreDialog({ name, owner, policy, copies, initial, onClose }: { name: string; owner: string | undefined; policy: BackupPolicy; copies: ReadonlyArray<BackupSnapshot>; initial: string; onClose: () => void }) {
+function RestoreDialog({ name, owner, copies, initial, onClose }: { name: string; owner: string | undefined; copies: ReadonlyArray<BackupSnapshot>; initial: string; onClose: () => void }) {
   const ws = useWorkspace();
   const backup = ws.backup;
   const [id, setId] = useState(initial);
@@ -448,7 +449,8 @@ function RestoreDialog({ name, owner, policy, copies, initial, onClose }: { name
             <legend className="mb-1 text-sm font-medium text-muted-foreground">What to do with it</legend>
             <Option name="restore-target" checked={target === "test"} onChange={() => setTarget("test")} title="Test it">Checks every file in a throwaway folder. Nothing on this machine changes.</Option>
             <Option name="restore-target" checked={target === "folder"} onChange={() => setTarget("folder")} title="Restore into a new folder">The folder must not exist yet.</Option>
-            {ws.role === "source" && policy.folder && <Option name="restore-target" checked={target === "here"} onChange={() => setTarget("here")} title="Put my Canonfig folder back">Restores ~/.canonfig here through the usual import checks. Followers get it after you publish.</Option>}
+            {/* An older copy can hold the folder even if the policy no longer captures it; restore checks the copy itself. */}
+            {ws.role === "source" && <Option name="restore-target" checked={target === "here"} onChange={() => setTarget("here")} title="Put my Canonfig folder back">Restores ~/.canonfig here through the usual import checks. Followers get it after you publish.</Option>}
           </fieldset>
           {target === "folder" && <>
             <div className="grid gap-1.5">
@@ -543,7 +545,7 @@ export function BackupsView() {
   const [running, setRunning] = useState<string | null>(null);
   const current = selected === BEFORE ? BEFORE : selected !== null && names.includes(selected) ? selected : names[0] ?? BEFORE;
   const policy = current === BEFORE || status === null ? undefined : status.policies[current];
-  const listing = backup.listings[current] ?? null;
+  const listing = Object.hasOwn(backup.listings, current) ? backup.listings[current] ?? null : null;
   const copies = listing?.snapshots ?? [];
   const shown = showAll ? copies : copies.slice(0, FIRST);
   const select = (name: string) => { setSelected(name); setShowAll(false); };
@@ -572,7 +574,8 @@ export function BackupsView() {
     listed.current = null;
     if (done) toast.success(`Backed up ${current}`);
   };
-  const testRestore = async () => { if (await backup.run({ action: "drill", name: current })) toast.success("Restore test passed: every file matched."); };
+  // Test the copies on screen: another machine's when one is picked under "Copies from".
+  const testRestore = async () => { if (await backup.run({ action: "drill", name: current, owner: listing?.owner })) toast.success("Restore test passed: every file matched."); };
 
   return (
     <>
@@ -672,7 +675,7 @@ export function BackupsView() {
         </section>
       </Body>
       {editing && <Settings key={editing.name} name={editing.name} initial={editing.policy} onClose={() => setEditing(null)} />}
-      {restoring && policy && <RestoreDialog name={current} owner={listing?.owner} policy={policy} copies={copies} initial={restoring} onClose={() => setRestoring(null)} />}
+      {restoring && policy && <RestoreDialog name={current} owner={listing?.owner} copies={copies} initial={restoring} onClose={() => setRestoring(null)} />}
       <ConfirmDialog open={consent} onOpenChange={setConsent} title={`Allow ${current} on this machine?`}
         body="It copies sign-in data or keys to its destination, encrypted with its password."
         confirm="Allow" onConfirm={() => void backup.run({ action: "allow-credentials", name: current })} />

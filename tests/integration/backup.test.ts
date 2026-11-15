@@ -83,14 +83,17 @@ describe("portable backup recovery", () => {
   it("fails closed for a wrong password and a corrupted stored object", async () => {
     const machine = fixture();
     await machine.run({ action: "password", name: "recovery", value: Redacted.make("frost library maple canvas") });
-    await machine.run({ action: "password", name: "wrong", value: Redacted.make("different backup password") });
     await machine.configure({ passwordReference: "recovery" });
     await machine.run({ action: "run", name: "daily" });
-    await machine.configure({ passwordReference: "wrong" });
+    // A machine that has none of the passwords that encrypted the copy cannot open it. (This machine keeps every
+    // alias it ever stored, so a later alias on it would still open the copy; see the rotation test.)
+    const stranger = fixture();
+    await stranger.run({ action: "password", name: "recovery", value: Redacted.make("different backup password") });
+    await stranger.configure({ passwordReference: "recovery", destination: machine.policy.destination });
+    const owner = (await machine.list()).owner;
     const output = join(machine.root, "wrong-password");
-    expect(await machine.fail({ action: "restore", name: "daily", target: { kind: "home", path: output, recoverCredentials: false } })).toMatchObject({ code: "BACKUP_VERIFY_FAILED" });
+    expect(await stranger.fail({ action: "restore", name: "daily", owner, target: { kind: "home", path: output, recoverCredentials: false } })).toMatchObject({ code: "BACKUP_VERIFY_FAILED" });
     expect(existsSync(output)).toBe(false);
-    await machine.configure({ passwordReference: "recovery" });
     const listing = await machine.list();
     const snapshot = listing.snapshots[0]!;
     const destination = join(machine.root, "destination", "canonfig-backup", "daily", listing.owner, "objects", snapshot.parts[0]!.sha256);
@@ -218,6 +221,19 @@ describe("portable backup recovery", () => {
     await machine.run({ action: "password", name: "recovery", value: Redacted.make("frost library maple canvas") });
     const saved = await machine.configure({ includeCredentials: true, passwordReference: "recovery", schedule: { kind: "daily", localTime: "03:00" } });
     expect(saved).toMatchObject({ schedules: { installed: 0, removed: 0, refused: [{ name: "daily", message: expect.stringContaining("needs local consent") }] } });
+  }, 60_000);
+
+  it("restores a copy encrypted under an earlier password alias after the policy moved to a new one", async () => {
+    const machine = fixture();
+    await machine.run({ action: "password", name: "first", value: Redacted.make("frost library maple canvas") });
+    await machine.configure({ passwordReference: "first" });
+    const old = await machine.run({ action: "run", name: "daily" });
+    await machine.run({ action: "password", name: "second", value: Redacted.make("orbit harbor violet engine") });
+    await machine.configure({ passwordReference: "second" });
+    const oldId = Schema.decodeUnknownSync(Schema.Struct({ snapshot: Schema.Struct({ id: Schema.String }) }))(old).snapshot.id;
+    const output = join(machine.root, "restored");
+    await machine.run({ action: "restore", name: "daily", snapshot: oldId, target: { kind: "home", path: output, recoverCredentials: false } });
+    expect(readFileSync(join(output, ".canonfig", "AGENTS.md"), "utf8")).toBe(machine.original);
   }, 60_000);
 
   it("requires explicit native-store recovery and never falls back to credential files", async () => {

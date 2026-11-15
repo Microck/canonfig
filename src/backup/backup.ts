@@ -6,7 +6,7 @@ import { dirname, join, matchesGlob, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Option, Redacted, Schema } from "effect";
 import { ContentDigest, CredentialReference, Timestamp } from "../domain/brand.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { adapterFor, BUILTIN_ADAPTERS } from "../projection/adapters/index.ts";
@@ -268,7 +268,16 @@ const selectSnapshot = (snapshots: ReadonlyArray<BackupSnapshot>, requested: str
 };
 
 const readSnapshot = (opened: OpenBackup, requested: string | undefined, expectKey: string | undefined) => Effect.gen(function*() {
-  const password = yield* backupPassword(opened.policy, opened.local);
+  // Snapshots don't record the alias that encrypted them, and a new password gets a new alias while older copies
+  // stay under the old one. The policy's current password is required as before; every other stored alias is
+  // offered too, and one this machine can't read is left out.
+  const machine = yield* MachineState;
+  const current = yield* backupPassword(opened.policy, opened.local);
+  const others = yield* Effect.forEach(
+    Object.entries(opened.local.passwords).filter(([alias]) => alias !== opened.policy.passwordReference),
+    ([, reference]) => machine.loadCredential({ reference }).pipe(Effect.option),
+  );
+  const passwords = [...(current === undefined ? [] : [current]), ...others.flatMap(Option.toArray)];
   return yield* backupWork("Verify backup snapshot", async signal => {
     const snapshot = selectSnapshot(await opened.storage.list(), requested);
     if (snapshot.bytes > unpackedLimit(opened.policy) || snapshot.files > opened.policy.maximumFiles) throw new BackupIoError("BACKUP_INVALID", "Snapshot exceeds this policy's recovery budget; review and raise its limits before restoring");
@@ -277,7 +286,7 @@ const readSnapshot = (opened: OpenBackup, requested: string | undefined, expectK
     const extracted = join(opened.scratch, "verified");
     await mkdir(extracted, { mode: 0o700 });
     let recovery: Recovery | undefined;
-    const verified = await decodeBackup({ archive, encrypted: snapshot.encrypted, codec: snapshot.codec, password, scratch: opened.scratch,
+    const verified = await decodeBackup({ archive, encrypted: snapshot.encrypted, codec: snapshot.codec, passwords, scratch: opened.scratch,
       maximumBytes: unpackedLimit(opened.policy), signal, consume: bytes => verifyArchiveStream({ path: snapshot.id, bytes,
       maximumBytes: opened.policy.maximumBytes, maximumFiles: opened.policy.maximumFiles, consume: async (file, content) => {
         if (!file.path.startsWith("folder/") && !file.path.startsWith("harnesses/")

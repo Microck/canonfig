@@ -52,6 +52,8 @@ export const captureBackupFiles = async (input: {
   let bytes = 0;
   let skippedCredentials = 0;
   const captured = new Set<string>();
+  /** Databases taken through SQLite's online backup; only their sidecars are already inside the copy. */
+  const snapshotted = new Set<string>();
   const SQLITE_SIDECAR = /-(?:wal|shm|journal)$/u;
   /** SQLite databases start with this 16-byte header, whatever their file name. */
   const isSqliteDatabase = async (path: string): Promise<boolean> => {
@@ -117,7 +119,7 @@ export const captureBackupFiles = async (input: {
           // path is captured once, so a restore never writes the same destination twice.
           if (captured.has(homePath)) continue;
           // A database's journal, WAL and shared memory are already inside its consistent snapshot (below).
-          if (SQLITE_SIDECAR.test(entry.name) && captured.has(homePath.replace(SQLITE_SIDECAR, ""))) continue;
+          if (SQLITE_SIDECAR.test(entry.name) && snapshotted.has(homePath.replace(SQLITE_SIDECAR, ""))) continue;
           if (info.isDirectory()) {
             if (!input.policy.includeCredentials && credentialPath(archivePath)) { skippedCredentials += 1; continue; }
             if (!input.policy.exclude.some(pattern => matchesGlob(archivePath, pattern))) await walk(absolute);
@@ -149,6 +151,7 @@ export const captureBackupFiles = async (input: {
             const snapshot = await hashBackupFile(destination);
             reserve(archivePath, snapshot.bytes);
             captured.add(homePath);
+            snapshotted.add(homePath);
             record({ path: archivePath, size: snapshot.bytes, mode: `0${(Number(info.mode) & 0o777).toString(8).padStart(3, "0")}`,
               harness: root.harness, target: `~/${homePath}` }, snapshot.sha256);
             continue;
@@ -158,7 +161,8 @@ export const captureBackupFiles = async (input: {
           const file = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
           try {
             const before = await file.stat({ bigint: true });
-            if (!before.isFile() || !sameIdentity(info, before)) throw new BackupIoError("BACKUP_CONFLICT", "A harness file changed while it was opened");
+            // Same file and same size as when it was listed and reserved, so the copy never runs past the budget.
+            if (!before.isFile() || !sameIdentity(info, before) || before.size !== info.size) throw new BackupIoError("BACKUP_CONFLICT", "A harness file changed while it was opened");
             const digest = createHash("sha256");
             const destination = join(directory, archivePath);
             await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
