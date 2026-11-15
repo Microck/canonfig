@@ -21,6 +21,34 @@ Report exactly one:
 Do not call a degraded, partially applied, or merely downloaded follower
 `Converged`.
 
+## First-adoption review
+
+Before the first takeover or a manual migration on either role:
+
+1. Inspect the approved target paths and symlink destinations. Find watchers,
+   scheduled jobs, and sync scripts that write those paths or their linked
+   sources. Get approval before pausing or retiring a competing writer; a
+   backup does not prevent it from reacting to a rename or deletion. Keep the
+   affected stage blocked until those writes can be coordinated.
+2. Preserve existing bytes and link metadata before an approved manual change.
+   A symlink refusal is an ownership boundary, not permission to dereference,
+   replace, or delete the link or its source. Review any migration separately.
+3. For append-local instructions, run the private review below. Inspect
+   `sourceAddition`, `retainedLocal`, and `proposedText` locally. First adoption
+   keeps the whole existing file, even matching Source text; identify duplicate
+   instructions before approval rather than silently deduplicating them.
+4. With append-local skills, matching bytes do not establish ownership. A
+   same-name unmanaged skill blocks adoption. Choose preservation or an approved
+   rename/removal; do not treat a no-op comparison as a completed takeover.
+
+```bash
+canonfig sync --plan --review-local
+```
+
+The review files can contain private text; keep them out of logs and chat and
+remove them after review. This flag requires interactive `--plan`, not
+`--apply`, `--scheduled`, or `--no-input`. Re-plan if target content changes.
+
 ## Evidence checklist
 
 ### CLI installation

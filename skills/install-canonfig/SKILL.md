@@ -1,12 +1,15 @@
 ---
 name: install-canonfig
-description: Install Canonfig 7.1.12 from its scoped npm package and initialize a Source Machine or securely enroll a Linux, macOS, or Windows Follower Machine. Use for Canonfig prerequisites, package installation, first-time source setup, the ~/.canonfig/ folder and its first publication, follower invitations and pinned trust, harness takeover, native schedule setup, installation verification, or installation troubleshooting.
+description: Install or upgrade Canonfig 7.1.12 from its scoped npm package on Linux, macOS, or Windows. Use for prerequisites, safe upgrades, first-time Source setup and publication, follower enrollment and pinned trust, harness takeover, native scheduling, installation verification, or troubleshooting.
 ---
 
 # Install Canonfig
 
-Install the shipped package, establish exactly one machine role, and stop at any
-security or human-action boundary.
+Install or upgrade Canonfig, preserve the machine's role, and stop at security
+or human-action boundaries.
+
+For existing installations, follow [the upgrade workflow](references/upgrades.md)
+instead of repeating role setup.
 
 ## Workflow
 
@@ -31,8 +34,8 @@ security or human-action boundary.
    takeover snapshots, schedule, and every unresolved Human Action Required
    record. Installation is complete only when these observations are explicit.
 
-For guided harness selection and a reviewed import of what the harnesses
-already hold, use `$setup-canonfig` instead of the direct commands below.
+Before first harness takeover, use `$setup-canonfig` for its adoption review.
+Use it also for guided harness selection and reviewed imports.
 
 ## Source Machine
 

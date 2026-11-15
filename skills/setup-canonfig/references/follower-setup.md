@@ -174,6 +174,9 @@ A local item named like a published one stops the run with Human Action Required
 
 ## First plan and apply
 
+Complete the [first-adoption review](completion.md#first-adoption-review) before
+taking over this machine's harnesses.
+
 ```bash
 canonfig sync --plan
 ```
