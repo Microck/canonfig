@@ -7,24 +7,32 @@
 - Keep TLS certificate pins and signed revisions. Tailnet startup refuses
   unavailable, expired or userspace-only clients and never changes Serve settings.
 
-# Canonfig v7.1.9
+# Canonfig v7.1.11
 
-This release clears a health check warning that never went away on Linux and
-Windows, and fixes two small things on the Machines page.
+This release makes the Source Overview tell the truth about what is published,
+and tidies how terms and explanations show up.
 
-## Fixes
+## Source Overview
 
-- Health check now tests the keyring on Linux (Secret Service) and Windows
-  (Credential Manager) by saving, reading back and deleting a throwaway value,
-  as macOS already did. A working keyring now passes instead of showing
-  "write and unattended access are not verified" forever. If the test fails,
-  the check says to start and unlock the keyring, with the provider's error in
-  its details.
-- Add machine fills in the Source's address in "Address it connects to"
-  instead of opening with an empty box. An address you typed is kept the next
-  time you open it.
-- A renamed machine's card shows only the name you chose. The hostname moves
-  to the name's tooltip.
+- The Overview now shows the newest published revision, for example "Revision
+  3 is published". Before, a Source with published revisions still showed a
+  gray "Publish the profile to send it to your other machines".
+- With nothing published it says "Nothing published yet", and if the
+  revisions cannot be read it says so and shows the error.
+- It never claims machines are up to date. Followers don't report which
+  revision they applied, so the Overview says it can't tell which machines
+  have it yet, and that edits saved since then need a new revision.
+- "Other machines can't reach this Source" still comes first when the Source
+  service is not serving.
+- The Revisions list and the revision details show the newest revision first.
+
+## Everywhere
+
+- A term inside a sentence, such as "as a follower", is underlined again and
+  explains itself on hover or focus. Titles and labels keep the small (?)
+  button.
+- On a Follower's Sync page, the explanations under "Your own changes" and
+  "Preview instructions files" moved into (?) tooltips next to their titles.
 
 ## Known limitation
 
@@ -38,7 +46,7 @@ during import.
 Before upgrading, finish or recover any unfinished run with the CLI build that
 created it.
 
-Install with `npm install --global @microck/canonfig@7.1.9` on every machine,
+Install with `npm install --global @microck/canonfig@7.1.11` on every machine,
 or run `canonfig self-update apply`. Stop `canonfig ui` first, and on a Source
 run `canonfig source service remove` before installing and
 `canonfig source service install` afterwards.

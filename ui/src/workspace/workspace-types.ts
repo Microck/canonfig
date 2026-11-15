@@ -1,4 +1,5 @@
 import type { FollowerLive } from "./follower-types";
+import type { PublishedLook } from "@/shared/machine-map/model";
 import type { Dispatch, SetStateAction } from "react";
 import type { AppendLocalCategory, Follower, FollowerState, Harness, HarnessId, ItemCategory, KeptSurface, LocalCategory, LocalItem, Resource, Revision, SkillSource, Snapshot, SurfaceCategory, UpstreamSkill } from "@/shared/metadata";
 import type { GuiRequestError, GuiSession, GuiStatus } from "../gui-client";
@@ -118,6 +119,8 @@ export interface SourceMachine {
   folder: string;
   endpoint: string;
   service?: string;
+  /** How the Source's card is customized on the Source, shown on every map of this setup. */
+  look?: PublishedLook | undefined;
 }
 export interface FollowerSelf {
   name: string;
@@ -309,6 +312,8 @@ export interface MachinesSlice {
   enrollment?: GuiEnrollment;
   createInvitation?: (input: { endpoint: string; expiresInMilliseconds: number; groups: string[] }) => Promise<GuiInvitationDownload>;
   revokeFollower?: (id: string) => Promise<void>;
+  /** Source only: saves the Source card's look so Followers draw the Source the same way. */
+  saveSourceLook?: (look: PublishedLook | undefined) => Promise<void>;
   sourceMachine: SourceMachine;
   followerSelf: FollowerSelf;
   selfFollower?: Follower;

@@ -110,6 +110,13 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
   const profileConfig = object(config.profile), localConfig = object(config.local);
   const resources = useMemo(() => items.data ? authoredItems(items.data).map((entry) => entry.resource) : [], [items.data]);
   const profile = { id: typeof profileConfig.id === "string" ? profileConfig.id : "", name: typeof profileConfig.name === "string" ? profileConfig.name : "", groups: Object.keys(object(config.groups)).map((name) => ({ name, description: "" })), localAllow: LOCAL_CATEGORIES.filter((category) => strings(localConfig.allow).includes(category)), appendLocal: APPEND_LOCAL_CATEGORIES.filter((category) => strings(localConfig.appendLocal).includes(category)) };
+  // Overview and Revisions don't load the profile snapshot, so the active profile id is not known here.
+  // Publishing always uses the folder's current profile, so the newest publication names it; revisions
+  // of an older profile id only remain from before an id change. Newest first, matching the demo order
+  // that `ws.revisions[0]` and the Revisions list rely on (the server lists by profile, then ascending).
+  const allRevisions = revisions.data?.revisions ?? [];
+  const newestPublication = allRevisions.reduce<(typeof allRevisions)[number] | undefined>((newest, entry) => newest === undefined || entry.publishedAt > newest.publishedAt ? entry : newest, undefined);
+  const published = allRevisions.filter((entry) => entry.profileId === newestPublication?.profileId).toSorted((left, right) => right.sequence - left.sequence);
   const listed = (Object.keys(HARNESS_NAMES) as HarnessId[]).filter((id) => strings(config.harnesses).includes(id));
   const surfaces: Partial<Record<HarnessId, SurfaceCategory[]>> = {};
   for (const id of listed) {
@@ -178,8 +185,8 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
     profile, profileName: profile.name, profileSchedule: scheduleOf(config.scheduleDefault), proposed: [], publishOpen, setPublishOpen, resources,
     setResources: (update) => { if (!items.data) return; const next = typeof update === "function" ? update(resources) : update; const changed = next.find((entry) => resources.find((before) => before.id === entry.id) !== entry); const removed = resources.find((entry) => !next.some((after) => after.id === entry.id)); if (changed) void saveItem(items.data, resources.find((entry) => entry.id === changed.id), changed, undefined, changed.change === "removed"); else if (removed) void saveItem(items.data, removed, removed, undefined, true); },
     readResources: () => resources, readQueue: () => ({ pending: [], nextSequence: undefined }),
-    revisions: (revisions.data?.revisions ?? []).map((entry) => ({ sequence: entry.sequence, digest: entry.digest, publishedAt: entry.publishedAt, reviewer: "", changes: "" })),
-    latest: revisions.data?.revisions[0]?.sequence, publicationReviewer: "", secrets: (secrets.data?.secrets ?? []).map(({ name }) => ({ name })),
+    revisions: published.map((entry) => ({ sequence: entry.sequence, digest: entry.digest, publishedAt: entry.publishedAt, reviewer: "", changes: "" })),
+    latest: published[0]?.sequence, publicationReviewer: "", secrets: (secrets.data?.secrets ?? []).map(({ name }) => ({ name })),
     setSecrets: (update) => { const current = (secrets.data?.secrets ?? []).map(({ name }) => ({ name })); const next = typeof update === "function" ? update(current) : update; const removed = current.find((entry) => !next.some((after) => after.name === entry.name)); if (removed) void profileLive.removeSecret(removed.name); },
     pending, markProfileEdit: (edit) => setPending((previous) => [...previous.filter((entry) => entry.id !== edit.id), edit]), removeProfileEdit: (edit) => setPending((previous) => previous.filter((entry) => entry.id !== edit.id)), nextSequence: undefined, publishing,
     publish: (reviewer, onDone) => { void run(async (signal) => {

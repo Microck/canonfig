@@ -1,32 +1,25 @@
 import type { Metadata, Viewport } from "next";
-import { DocsLayout } from "fumadocs-ui/layouts/docs";
-import { RootProvider } from "fumadocs-ui/provider/next";
-import "fumadocs-ui/style.css";
-import "./global.css";
 
-import { baseOptions } from "@/lib/layout";
-import { basePath, shareImage, siteUrl } from "@/lib/site";
-import { source } from "@/lib/source";
+import { shareImage, siteUrl } from "@/lib/site";
 
+// The root layout carries no stylesheet. The landing page at / and the
+// Fumadocs tree at /docs are separate visual systems, so each segment layout
+// imports its own: app/(landing)/layout.tsx and app/docs/layout.tsx. Links
+// between the two are plain <a> elements, so each page load carries only its
+// own CSS (the App Router keeps a visited segment's stylesheets loaded).
 export const metadata: Metadata = {
   metadataBase: siteUrl,
   title: {
-    default: "Canonfig documentation",
+    default: "Canonfig",
     template: "%s | Canonfig",
   },
   description:
-    "Operate deterministic, one-way configuration synchronization across Source and Follower Machines.",
-  applicationName: "Canonfig documentation",
-  keywords: [
-    "Canonfig",
-    "configuration synchronization",
-    "AI agents",
-    "Machine Profile",
-    "Follower Machine",
-  ],
-  // Every docs page replaces openGraph with its own (app/[[...slug]]/page.tsx),
-  // so it repeats the image there. No page sets twitter, so this one applies.
+    "Keep your AI agent config in ~/.canonfig/. Canonfig writes each supported agent's files and syncs changes across your machines.",
+  applicationName: "Canonfig",
+  // Pages that set their own openGraph (docs pages) repeat the image there.
+  // No page sets twitter, so this one applies everywhere.
   openGraph: {
+    siteName: "Canonfig",
     images: [shareImage],
   },
   twitter: {
@@ -35,7 +28,8 @@ export const metadata: Metadata = {
   },
 };
 
-// Dark only, like the app. The browser bar takes --color-fd-background from app/ender-chest.css (dark).
+// Dark only, like the app. The docs take their colors from .dark in
+// app/docs/ender-chest.css; the landing page sets its own ground.
 export const viewport: Viewport = {
   colorScheme: "dark",
   themeColor: "#0b0f10",
@@ -46,21 +40,7 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" className="dark" suppressHydrationWarning>
-      <body>
-        <a className="skip-link" href="#main-content">
-          Skip to content
-        </a>
-        <RootProvider
-          theme={{ enabled: false }}
-          // Next does not add the base path to fetch() URLs, so the static
-          // search index path spells it out (see app/api/search/route.ts).
-          search={{ options: { type: "static", api: `${basePath}/api/search` } }}
-        >
-          <DocsLayout tree={source.pageTree} {...baseOptions}>
-            {children}
-          </DocsLayout>
-        </RootProvider>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }

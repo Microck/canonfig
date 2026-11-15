@@ -17,8 +17,8 @@ function pages(directory = root): { route: string; title: string }[] {
   });
 }
 
-// The site exports statically under /docs with trailing slashes (website/next.config.mjs),
-// and website/scripts/serve-export.mjs serves it the way GitHub Pages does.
+// The docs export statically under /docs with trailing slashes (website/next.config.mjs,
+// website/lib/source.ts), and website/scripts/serve-export.mjs serves it the way GitHub Pages does.
 const exported = (route: string) => `/docs${route.replace(/\/?$/, "/")}`;
 
 for (const page of pages()) {

@@ -8,7 +8,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isCoarsePointer } from "@/lib/utils";
-import { AnimatedNumber, CliText, DitherProgress, Hint, Mono, StateCell, StateLabel, Term } from "@/shared/shared";
+import { AnimatedNumber, CliText, DitherProgress, Hint, Mono, StateCell, StateLabel, StatusMark, Term } from "@/shared/shared";
 import { DEMO, SECRETS_GROUP, STATE_META, type Revision } from "@/shared/metadata";
 import { ErrorNotice } from "../live/session";
 import { GuiRequestError } from "../gui-client";
@@ -62,6 +62,34 @@ function SectionLink({ onClick, children }: { onClick: () => void; children: str
   );
 }
 
+/**
+ * A live Source's head, from its published revisions only. Followers do not report which revision they
+ * applied to the Source, so this says what was published and never counts machines as up to date.
+ * It also cannot tell whether the folder changed since that revision (only some edits are tracked in
+ * this session), so it says that saved edits need a new revision instead of counting them.
+ */
+function LivePublicationState() {
+  const ws = useWorkspace();
+  const revisions = ws.profileStates.revisions;
+  const name = ws.session?.machineName ?? ws.machineName;
+  if (revisions.error) {
+    return <StateHeader tone="warn" title={name} body={`Canonfig could not read the published revisions: ${revisions.error.message}`} />;
+  }
+  if (ws.publishing) return <StateHeader tone="ok" running title={ws.latest === undefined ? "Publishing revision 1…" : `Publishing revision ${ws.latest + 1}…`} body="Followers pick it up at their next check." />;
+  if (ws.latest === undefined) {
+    return revisions.loading
+      ? <StateHeader tone="muted" title={name} body="Reading published revisions…" />
+      : <StateHeader tone="warn" title="Nothing published yet" body="Publish revision 1 to send the profile to your other machines. Machines you add get nothing until you publish." />;
+  }
+  return (
+    <StateHeader
+      tone="ok"
+      title={`Revision ${ws.latest} is published`}
+      body="Followers pick it up at their next check, and edits saved since then reach them only after you publish again. Followers don't report back which revision they applied, so this page can't tell which machines have it yet."
+    />
+  );
+}
+
 function OverviewState() {
   const ws = useWorkspace();
   const onLatest = ws.followers.filter((f) => f.revision === ws.latest).length;
@@ -70,7 +98,9 @@ function OverviewState() {
   if (service && !service.serving) {
     return <StateHeader tone="bad" title="Other machines can't reach this Source" body="They keep their current revision until the Source service runs again." />;
   }
-  if (!ws.capabilities.simulatedTelemetry || ws.latest === undefined) {
+  // A live Source has publication evidence but no fleet telemetry, so it never shows the simulated machine counts below.
+  if (!ws.capabilities.simulatedTelemetry) return <LivePublicationState />;
+  if (ws.latest === undefined) {
     return <StateHeader tone="muted" title={ws.session?.machineName ?? ws.machineName} body="Publish the profile to send it to your other machines." />;
   }
   const unreachable = ws.followers.filter((f) => f.state === "offline" && f.revision !== ws.latest);
@@ -396,6 +426,15 @@ export function SourceOverview() {
   );
 }
 
+/** A Follower's lifecycle states in the CLI's order (`canonfig status`), named in plain words. */
+const LIFECYCLE_STEPS = [
+  ["discovered", "Source address set"],
+  ["enrolled", "Joined"],
+  ["selected", "Profile chosen"],
+  ["reachable", "Source reachable"],
+  ["converged", "Up to date"],
+] as const;
+
 /** Only recorded session and status evidence belongs on a live Overview. */
 export function WorkspaceEvidence() {
   const { session, status, setView } = useWorkspace();
@@ -422,14 +461,18 @@ export function WorkspaceEvidence() {
       {/* Enrollment lifecycle and the tunnel belong to a Follower; a Source has neither. */}
       {session.role === "follower" && <>
         <section>
-          <SectionLabel>Follower lifecycle</SectionLabel>
+          <SectionLabel>Sync status</SectionLabel>
           <div className="border-t border-border">
-            {Object.entries(lifecycle).map(([name, { reached, detail }]) => (
-              <div key={name} className="border-b border-border/70 py-2">
-                <div className="flex gap-3 text-base"><span className="font-medium">{name}</span><span className="text-muted-foreground">{reached ? "Reached" : "Not reached"}</span></div>
-                {!reached && <p className="text-sm text-muted-foreground"><CliText>{detail}</CliText></p>}
-              </div>
-            ))}
+            {/* The CLI's lifecycle order, in plain words; a mark carries reached or not, and only a missed step explains itself. */}
+            {LIFECYCLE_STEPS.filter(([key]) => key in lifecycle).map(([key, label]) => {
+              const { reached, detail } = lifecycle[key]!;
+              return (
+                <div key={key} className="border-b border-border/70 py-2">
+                  <div className="flex items-center gap-2.5 text-base"><StatusMark kind={reached ? "ok" : "warn"} /><span>{label}<span className="sr-only">{reached ? ": done" : ": not yet"}</span></span></div>
+                  {!reached && <p className="mt-1 pl-6 text-sm text-muted-foreground"><CliText>{detail}</CliText></p>}
+                </div>
+              );
+            })}
           </div>
         </section>
         <Button variant="outline" size="sm" onClick={() => setView("sync")}>Open synchronization details</Button>

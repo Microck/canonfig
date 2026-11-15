@@ -11,7 +11,7 @@ with the verification you declare.
 
 Tool installs are not rolled back. A package that a run installed stays
 installed even when a later action in the same run fails. See
-[the transaction boundary](/explanation/architecture#the-transaction-boundary).
+[the transaction boundary](/docs/explanation/architecture#the-transaction-boundary).
 
 ## Find tools with `source scan`
 
@@ -71,7 +71,7 @@ server.
 entry file. Planning checks it, not the first word of the verification
 command, which can be a shared runtime such as `node` or `python`. Without
 `verify`, Canonfig checks that `executable` is present. Every field is listed
-in the [Canonical Folder reference](/reference/canonfig-folder#tools).
+in the [Canonical Folder reference](/docs/reference/canonfig-folder#tools).
 
 Package names differ between package managers. Look up the real name for each
 platform; do not reuse an npm package name as a winget ID, or a Homebrew formula
@@ -218,7 +218,7 @@ HTTPS origins it may download from. The agent runs only under the
 `agent-apply` policy, and only the tool's verification decides whether it
 succeeded. Without `agentInstall`, a tool with no usable recipe needs Human
 Action Required. See
-[Let a Configuration Agent resolve work](/how-to/configure-agent-policies).
+[Let a Configuration Agent resolve work](/docs/how-to/configure-agent-policies).
 
 ## If something fails
 
@@ -234,4 +234,4 @@ Action Required. See
 On Windows, `.cmd` and `.bat` shims such as `npm.cmd` cannot run without a
 shell. Bind the package manager to its JavaScript entry point with
 `canonfig installer set`; see
-[Windows package managers](/reference/cross-platform#windows-package-managers).
+[Windows package managers](/docs/reference/cross-platform#windows-package-managers).

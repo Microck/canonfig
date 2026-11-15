@@ -51,7 +51,7 @@ Revision.
 The Source Machine serves Profile Revisions on a loopback address only. A
 Follower Machine on another host reaches it through `canonfig tunnel`, an SSH
 tunnel Canonfig manages. See
-[Security and credentials](/reference/security#transport-trust).
+[Security and credentials](/docs/reference/security#transport-trust).
 
 ## Projection on every machine
 
@@ -74,7 +74,7 @@ such as `mcpServers` in `~/.claude.json`. Everything else in the harness,
 including logins, sessions, and history, stays the harness's own. When a
 harness has no global place for a feature, such as Cursor for instructions,
 Canonfig reports that and writes the feature nowhere else. The
-[harness reference](/reference/harnesses) lists every surface.
+[harness reference](/docs/reference/harnesses) lists every surface.
 
 ## Taking over a harness
 
@@ -88,7 +88,7 @@ snapshot keeps only that key's prior value.
 Canonfig also pins the harness's root at takeover. If a later run resolves a
 different root, for example because an environment variable such as
 `CODEX_HOME` changed, it stops with Human Action Required instead of writing a
-second copy. See [Restore a harness from a backup](/how-to/restore-from-a-backup).
+second copy. See [Restore a harness from a backup](/docs/how-to/restore-from-a-backup).
 
 ## What happens when a machine changed a managed file
 
@@ -114,12 +114,12 @@ and undo the edit, then run `canonfig sync --apply` again.
   name, not a value. Each Follower Machine must already hold the credential;
   otherwise the item needs Human Action Required. Shared secrets are a
   separate, opt-in channel; see
-  [Opt-in shared secrets](/reference/security#opt-in-shared-secrets).
+  [Opt-in shared secrets](/docs/reference/security#opt-in-shared-secrets).
 - **The local folder.** `~/.canonfig/local/` is never published and never
   replaced. Projection adds its items within the Source Machine's
   `local.allow`. A local item with the same name as a published one is Human
   Action Required, because Canonfig will not choose between them. See
-  [Add items only one machine uses](/how-to/add-machine-local-items).
+  [Add items only one machine uses](/docs/how-to/add-machine-local-items).
 - **Keys Canonfig does not own.** In a shared file, every key outside
   Canonfig's owned set stays the machine's own, with no declaration needed.
 - **Snapshots and journals.** They are never published or sent anywhere.
@@ -144,7 +144,7 @@ item and prints what to do.
 
 An agent's own report is never proof. After any change, Canonfig runs the
 item's verification, and only that verification counts. See
-[Let a Configuration Agent resolve work](/how-to/configure-agent-policies).
+[Let a Configuration Agent resolve work](/docs/how-to/configure-agent-policies).
 
 ## The transaction boundary
 
@@ -169,7 +169,7 @@ A run that stops part-way (a crash, a killed process, a reboot, or a full disk)
 stays open. `canonfig recover` finishes it or rolls it back. When a file was
 edited after the run wrote it, recovery stops and keeps both your file and the
 saved copy instead of choosing for you. See
-[Recover from a failed or blocked sync](/how-to/recover).
+[Recover from a failed or blocked sync](/docs/how-to/recover).
 
 Before a run starts, Canonfig checks free disk space on each target's
 filesystem and on its cache, and refuses the run when either is too small.
@@ -178,7 +178,7 @@ filesystem and on its cache, and refuses the run when either is too small.
 
 | Path | Contents |
 | --- | --- |
-| `~/.canonfig/` authoring entries | The folder you edit (Source Machine) or the mirror (Follower Machine); see the [Canonical Folder reference](/reference/canonfig-folder) |
+| `~/.canonfig/` authoring entries | The folder you edit (Source Machine) or the mirror (Follower Machine); see the [Canonical Folder reference](/docs/reference/canonfig-folder) |
 | `~/.canonfig/local/` | This machine's own items, exclusions, and backup setting |
 | `~/.canonfig/.backups/` | Takeover snapshots: the first of harnesses, the first of folder entries, and the 4 most recent |
 | `~/.canonfig/.runtime/` | The hook runner every projected hook calls |

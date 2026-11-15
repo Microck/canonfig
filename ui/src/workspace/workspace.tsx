@@ -7,7 +7,7 @@ import { DEMO } from "@/shared/metadata";
 import { DemoSwitcher } from "@/shared/demo-switcher";
 import { Logo } from "@/shared/shared";
 import { StarPrompt, TipHost, TourHost, TourOffer, TourPicker } from "./guide";
-import { focusPageHeading, followLink, type AppRoute } from "./routes";
+import { focusPageHeading, followLink, workspaceHref, type AppRoute } from "./routes";
 import { Palette, Sidebar } from "./frame";
 import { navItem } from "./nav";
 import { ChangeGroupsDialog, InviteDialog, MachinesView } from "./machines";
@@ -278,26 +278,16 @@ function MobileNav() {
   );
 }
 
-/** Top-level docs sections, which lived at the domain root before the docs moved under /docs/ (website/content/docs). */
-const RETIRED_DOCS_ROOT = /^\/(tutorials|how-to|explanation|reference)(\/|$)/;
-
-export function NotFound({ href = "/source/overview" }: { href?: string }) {
-  // GitHub Pages answers every unknown path on the demo's domain with this app's 404.html, mistyped or retired
-  // docs links under /docs/ included, so the demo sends those back to the docs (a plain link: they are another site).
-  const { pathname, search, hash } = window.location;
-  const docs = DEMO && pathname.startsWith("/docs/");
-  // Links from before the move (e.g. /reference/cli) go to the same page under /docs/. Never matches a /docs/ path, so it can't loop.
-  if (DEMO && RETIRED_DOCS_ROOT.test(pathname)) {
-    window.location.replace(`/docs${pathname.endsWith("/") ? pathname : `${pathname}/`}${search}${hash}`);
-    return null;
-  }
+export function NotFound({ href = workspaceHref("source", "overview") }: { href?: string }) {
+  // Pages uses the demo's entry for unknown site paths as well as demo deep links.
+  const outsideDemo = DEMO && !window.location.pathname.startsWith(import.meta.env.BASE_URL);
   return (
     <main className="flex min-h-svh flex-col items-center justify-center gap-4 bg-canvas px-6 text-center text-foreground">
       <h1 className="text-xl font-semibold">Page not found</h1>
-      <p className="text-sm text-muted-foreground">{docs ? "There is no docs page at this address." : "This address is not a page for this machine role."}</p>
+      <p className="text-sm text-muted-foreground">{outsideDemo ? "There is no page at this address." : "This address is not a page for this machine role."}</p>
       <Button asChild size="lg">
-        {docs ? (
-          <a href="/docs/">Go to the docs</a>
+        {outsideDemo ? (
+          <a href="/">Go to the home page</a>
         ) : (
           <a href={href} onClick={followLink}>
             Open Overview

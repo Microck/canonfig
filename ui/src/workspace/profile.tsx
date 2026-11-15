@@ -1063,7 +1063,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
         )}
 
         <Field
-          label={<Term term="Follower Group">Who gets it</Term>}
+          label={<Term label term="Follower Group">Who gets it</Term>}
           description={draft.groups.length === 0 ? "Every machine gets this. Tick a group to send it only to that group's machines." : "Only machines in these groups get it."}
         >
           <GroupPicker idPrefix="grp" value={draft.groups} onChange={(groups) => setDraft((d) => ({ ...d, groups }))} />
@@ -1428,14 +1428,14 @@ function DefaultsTab() {
           </Field>
         </div>
         <SectionLabel className="mt-6">
-          <Term term="Synchronization Schedule">Default schedule</Term>
+          <Term label term="Synchronization Schedule">Default schedule</Term>
         </SectionLabel>
         <p className="mb-3 text-sm text-pretty text-muted-foreground">In each machine's local time. A machine can set its own.</p>
         {ws.profileLive && <Label className="mb-3 flex min-h-8 items-center gap-2"><Checkbox checked={scheduleEnabled} onCheckedChange={(checked) => setScheduleEnabled(checked === true)} />Set a default schedule</Label>}
         {scheduleEnabled && <ScheduleFields idPrefix="def" value={schedule} onChange={setSchedule} />}
 
         <SectionLabel className="mt-6">
-          <Term term="Local folder">What machines may add locally</Term>
+          <Term label term="Local folder">What machines may add locally</Term>
         </SectionLabel>
         <p className="mb-3 text-sm text-pretty text-muted-foreground">Kinds a machine may add in <Mono>~/.canonfig/local</Mono>.</p>
         <div className="grid gap-0.5 sm:grid-cols-2">
@@ -1449,7 +1449,7 @@ function DefaultsTab() {
         </div>
 
         <SectionLabel className="mt-6">
-          <Term term="Append-local">What machines keep of their own</Term>
+          <Term label term="Append-local">What machines keep of their own</Term>
         </SectionLabel>
         <p className="mb-3 text-sm text-pretty text-muted-foreground">
           Ticked, a machine keeps its own text and skills beside Canonfig's. Unticked, Canonfig replaces the whole file or folder.

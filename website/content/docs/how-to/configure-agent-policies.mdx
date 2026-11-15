@@ -182,7 +182,7 @@ With `agent-apply`, Canonfig then checks the resource itself with the tool's
 no `verify`. The agent's own report never counts. If the
 check fails, the run fails with "verification failed for agent task
 `<resource>`" (exit 7). See
-[Recover from a failed or blocked sync](/how-to/recover).
+[Recover from a failed or blocked sync](/docs/how-to/recover).
 
 ## If something fails
 
@@ -193,7 +193,7 @@ check fails, the run fails with "verification failed for agent task
 | "Agent harness is not configured for `<task>`" (in the sync result, exit 3) | The policy is `agent-propose`, or you ran `sync --plan`, and no harness is set. | Set a harness, or run `canonfig agent policy deterministic-only`. |
 | "Configured agent harness could not safely resolve the task: `<reason>`" (in the sync result, exit 3) | With `agent-propose` or `sync --plan`: the proposal broke the limits, the agent timed out or printed too much, or its output was not a proposal. The reason says which. | Fix what the reason names, for example widen a limit you intend to allow, or do the work yourself. |
 | "Agent did not apply the requested task: `<task>`" (in the sync result, exit 3) | With `agent-apply`: the proposal was refused, or its actions did not complete. | Review the agent resolution in the sync result, then do the work yourself or adjust the limits. |
-| "verification failed for agent task `<resource>`" (exit 7) | The actions ran, but the resource does not pass its `verify` check. | See [Recover from a failed or blocked sync](/how-to/recover). |
+| "verification failed for agent task `<resource>`" (exit 7) | The actions ran, but the resource does not pass its `verify` check. | See [Recover from a failed or blocked sync](/docs/how-to/recover). |
 | "configured agent policy requires an adapter" (`doctor`, exit 2) | The policy is `agent-propose` or `agent-apply` and no harness is set. | Set a harness with `canonfig agent harness`. |
 | "configured agent adapter executable is unavailable" (`doctor`, exit 2) | The `--executable` path does not exist on this machine. | Set the harness again with the correct path. |
 | "agent harness is not configured" (exit 2) | `canonfig agent harness` has nothing to show. | Set a harness. |
