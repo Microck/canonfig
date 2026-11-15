@@ -86,11 +86,10 @@ export function ServiceView() {
   const service = admin.service;
   const report = service.data;
   const [confirm, setConfirm] = useState(false);
-  const [address, setAddress] = useState<"127.0.0.1" | "::1" | null>(null);
+  const [address, setAddress] = useState<"127.0.0.1" | "::1" | "tailnet" | null>(null);
   const [port, setPort] = useState<string | null>(null);
-  const endpoint = report ? new URL(report.endpoint) : null;
-  const hostname = address ?? (endpoint?.hostname === "[::1]" ? "::1" : "127.0.0.1");
-  const portValue = port ?? endpoint?.port ?? "17342";
+  const hostname = address ?? report?.requested.hostname ?? "127.0.0.1";
+  const portValue = port ?? String(report?.requested.port ?? 17342);
   const validPort = /^\d+$/.test(portValue) && Number(portValue) >= 1 && Number(portValue) <= 65535;
   const installed = report?.manager.installed;
   return (
@@ -98,7 +97,7 @@ export function ServiceView() {
       <PageHeader crumbs={["Settings", "Source service"]} actions={
         <>
           <Button size="sm" variant="outline" disabled={service.busy} onClick={service.reload}>Reload status</Button>
-          {report && (!installed || !service.restart) && <Button size="sm" variant="primary" disabled={service.busy || !validPort} onClick={() => service.install(hostname, Number(portValue))}>
+          {report && (!installed || !service.restart) && <Button size="sm" variant="primary" disabled={service.busy || !validPort || (hostname === "tailnet" && !report.tailnet.ready)} onClick={() => service.install(hostname, Number(portValue))}>
             {service.action === "install" ? "Installing…" : installed ? "Update service" : "Install service"}
           </Button>}
         </>
@@ -116,7 +115,7 @@ export function ServiceView() {
                 {service.since && report?.state === "running" ? `Running since ${service.since}` : report?.state.replaceAll("-", " ") ?? "Status unavailable"}
               </span>
             </SettingRow>
-            <SettingRow title="Endpoint"><Mono className="text-foreground">{report?.endpoint ?? "Not loaded"}</Mono></SettingRow>
+            <SettingRow title="Endpoint"><Mono className="text-foreground">{report?.endpoint || "Unavailable"}</Mono></SettingRow>
             {installed && report?.linger !== undefined && <SettingRow title="Keeps running">
               <span className={cn("inline-flex items-center gap-1.5 text-base", !report.linger && "text-warn")}>
                 <StatusMark kind={report.linger ? "ok" : "warn"} />
@@ -127,9 +126,9 @@ export function ServiceView() {
             </SettingRow>}
           </div>
           {report && !service.restart && <div className={cn("mt-6", settingsGroup)}>
-            <SettingRow title="Listen address" htmlFor="source-service-host"><Select value={hostname} onValueChange={(value) => setAddress(value === "::1" ? "::1" : "127.0.0.1")}>
-              <SelectTrigger id="source-service-host" className="w-40"><SelectValue /></SelectTrigger>
-              <SelectContent><SelectItem value="127.0.0.1">127.0.0.1</SelectItem><SelectItem value="::1">::1</SelectItem></SelectContent>
+            <SettingRow title="Connection" htmlFor="source-service-host" description={report.tailnet.detail}><Select value={hostname} onValueChange={(value) => setAddress(value === "tailnet" ? "tailnet" : value === "::1" ? "::1" : "127.0.0.1")}>
+              <SelectTrigger id="source-service-host" className="w-56"><SelectValue /></SelectTrigger>
+              <SelectContent><SelectItem value="tailnet" disabled={!report.tailnet.ready}>Tailscale (recommended)</SelectItem><SelectItem value="127.0.0.1">Loopback IPv4 / SSH</SelectItem><SelectItem value="::1">Loopback IPv6 / SSH</SelectItem></SelectContent>
             </Select></SettingRow>
             <SettingRow title="Port" htmlFor="source-service-port" error={!validPort ? "Enter a port from 1 to 65535." : null}>
               <Input id="source-service-port" className="w-28 font-mono" inputMode="numeric" value={portValue} onChange={(event) => setPort(event.target.value)} aria-invalid={!validPort} />

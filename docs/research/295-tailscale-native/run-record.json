@@ -1,0 +1,43 @@
+{
+  "issue": "https://github.com/Microck/canonfig/issues/295",
+  "branch": "feat/tailscale-native",
+  "pullRequest": "https://github.com/Microck/canonfig/pull/305",
+  "agent": "OMP in T3 Code",
+  "model": "maisa-codex/gpt-6-astra",
+  "agentVersion": "18.18.7",
+  "delegation": "none; child performs implementation and inline simplification review",
+  "scope": "Research, automatic detection, opt-in tailnet-only Source and GUI, direct MagicDNS enrollment and sync, Headscale, docs, isolated proof, commits, push and ready PR. No merge or watch.",
+  "spending": "Existing configured research access and Raft only. Paid upgrades not authorized.",
+  "humanTesting": "none yet; maintainer to test before merge",
+  "submissionAuthorization": "Maintainer explicitly authorized a ready-for-review PR despite no human testing; disclose agent-run checks separately and claim no human verification.",
+  "boundaries": "Live Tailscale inspection only. No Serve, ACL, login or live Canonfig changes. All application execution uses disposable HOME and credentials.",
+  "evidence": [
+    "Branch based on origin/main 7070b84. jj cannot initialize inside this Git worktree; native Git used.",
+    "Live Serve and Whois inspected read-only. LocalAPI reported Running, TUN, MagicDNS and certificate availability.",
+    "Task-owned Raft paris:rf-41f42b8080574481: 1 CPU, 4 GiB, disposable; purpose and owner verified.",
+    "Local focused tests: 158 passed for CLI, doctor and tailnet boundaries after fixes. Earlier enrollment and secret-transfer suites passed.",
+    "Source on new port 27495 with disposable HOME. Raft follower resolved MagicDNS, enrolled, synchronized to Converged, and status verified 3/3 projections. No SSH tunnel configured.",
+    "Raft container reaches tailnet through its host, not its own enrolled node. Native macOS/Windows and a real Headscale server remain untested.",
+    "Real disposable userspace tailscaled: NeedsLogin while running; Unavailable and ready=false after its SIGTERM exit 0. Live daemon untouched.",
+    "Source and GUI reject wildcard/LAN/proxy combinations with exit 2. DNS boundary tests reject public, loopback and mixed answers.",
+    "ce-simplify-code setup and all three rubrics applied inline. LocalAPI parsing takes raw JSON strings and returns the domain report; no unknown values cross this boundary. Review was not independent.",
+    "Raft: npm run typecheck, npm run lint, UI typecheck/lint and npm run build:cli passed. Docs validated 451 examples; 3 skills validated. UI lint reported 73 warnings, zero errors.",
+    "Actual packaged GUI: detected Tailscale, enabled the recommended selection, omitted SSH controls for a MagicDNS invitation, and enrolled a disposable Follower. CLI status Active and tunnel not-configured.",
+    "All three task-owned Canonfig servers and the diagnostic Chromium sessions have been stopped. No native source service was installed.",
+    "Research commit d712ea7 and implementation commit 1192e39 pushed to origin/feat/tailscale-native.",
+    "Full UI suite: 148 passed, one self-update test failed with Happy DOM AbortError: The animation was canceled. Its test process remained alive and was terminated in the task-owned Raft workspace. The isolated self-update test then passed unchanged.",
+    "After the interruption, the backend test process was absent from the task-owned Raft workspace. The previous background job and its output were unavailable, and no Vitest result artifact was found. No whole-backend-suite success is claimed.",
+    "Pristine base 7070b84 reproduced the same self-update failure: resources.test.tsx had 2 passed and 1 failed with Happy DOM AbortError: The animation was canceled. The test and animation code were left untouched.",
+    "Raft confirmed destruction of paris:rf-41f42b8080574481. Both temporary local baseline trees and the diagnostic secret-scan report were removed. No task-owned proof server, browser or workspace remains running.",
+    "PR 305 is ready for review and linked to this thread. It is not watched.",
+    "CI on 38f811d completed the backend suite: 2135 passed, 2 failed, 77 skipped. All four packed acceptance jobs failed only the fixed doctor probe-count assertion. The other backend failure was the obsolete IP SAN identity assertion.",
+    "Contract tests now assert missing-client doctor behavior and ADR 0004 certificate-pin identity, including zero HTTP requests for a wrong pin. No runtime code changed in this follow-up.",
+    "Follow-up verification: transport suite 24 passed, 1 existing Windows-only test skipped; scoped Oxlint passed. An isolated real CLI doctor run verified exit 3, missing-client skipped status and credential-reference redaction. Its temporary HOME was removed. Packed/full CI reruns are not claimed as passing.",
+    "ce-simplify-code reviewed the two contract-test edits inline under all three rubrics; no further changes were useful. No independent review was performed."
+  ],
+  "activeJobs": [],
+  "blockers": [
+    "No configured LSP/code index; semantic find unavailable due provider credits. Scoped source reads used.",
+    "docs/agents/ absent on origin/main."
+  ]
+}

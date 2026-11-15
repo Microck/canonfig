@@ -19,11 +19,12 @@ import { enrollmentRoutes } from "./routes/enrollment.ts";
 import { synchronizationRoutes } from "./routes/synchronization.ts";
 import { administrationRoutes } from "./routes/administration.ts";
 import { managedCommandLease, type ManagedCommandLease } from "../runtime/self-update/coordination.ts";
+import { detectTailnet, isTailnetAddress, tailnetBinding } from "../enrollment/tailnet.ts";
 
 export interface GuiOptions {
   readonly port: number;
   readonly open: boolean;
-  /** Address the server binds; a loopback or Tailscale address (guiHostProblem). */
+  /** Loopback/Tailscale address, or `tailnet` for automatic verified binding. */
   readonly host: string;
   /** An extra https origin that reaches this server through a TLS proxy such as `tailscale serve`, if any. */
   readonly origin: string | undefined;
@@ -163,6 +164,16 @@ const serveAsset = async (root: string, pathname: string, request: IncomingMessa
 export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: CliIo, commandLease?: ManagedCommandLease) {
   const lease = commandLease ?? managedCommandLease(fileURLToPath(new URL("../../", import.meta.url)));
   yield* Effect.addFinalizer(() => Effect.sync(lease.close));
+  const tailnet = options.host === "tailnet"
+    ? yield* detectTailnet().pipe(Effect.flatMap((report) => Effect.try({
+      try: () => {
+        if (options.origin !== undefined) throw new Error("Tailnet mode cannot use a proxy origin.");
+        return tailnetBinding(report);
+      },
+      catch: (cause) => new CliCommandFailure({ category: "usage-or-configuration", message: cause instanceof Error ? cause.message : "Tailscale is unavailable." }),
+    })))
+    : undefined;
+  const host = tailnet?.address ?? options.host;
   const stopped = yield* Deferred.make<void>();
   let updating = false;
   const updateSettled = () => { if (!lease.suspended) updating = false; };
@@ -296,18 +307,21 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
       } else response.destroy();
     }).finally(() => pending.delete(controller));
   });
+  if (tailnet !== undefined) server.on("connection", (socket) => {
+    if (!isTailnetAddress(socket.remoteAddress ?? "")) socket.destroy();
+  });
   yield* Effect.acquireRelease(
     Effect.tryPromise({
       try: () => new Promise<void>((accept, reject) => {
         server.once("error", reject);
-        server.listen(options.port, options.host, () => {
+        server.listen(options.port, host, () => {
           server.removeListener("error", reject);
           accept();
         });
       }),
       catch: (error) => new CliCommandFailure({
         category: "transport",
-        message: `Could not start the browser server on ${options.host}${options.port === 0 ? "" : ` port ${options.port}`}: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Could not start the browser server on ${host}${options.port === 0 ? "" : ` port ${options.port}`}: ${error instanceof Error ? error.message : String(error)}`,
       }),
     }),
     () => Effect.promise(() => new Promise<void>((accept) => {
@@ -319,10 +333,12 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
   const address = server.address();
   if (address === null || Schema.is(Schema.String)(address)) return yield* Effect.die("The browser server has no TCP address");
   // URL normalizes the spelling (IPv6 case and zero groups), so it matches the origin of every parsed request.
-  const bound = new URL(`http://${isIP(options.host) === 6 ? `[${options.host}]` : options.host}:${address.port}`).origin;
-  origins = options.origin === undefined ? [bound] : [bound, options.origin];
-  // The token works once, so it is printed for one origin: the proxy's when one is configured.
-  const url = `${options.origin ?? bound}/?token=${token}`;
+  const bound = new URL(`http://${isIP(host) === 6 ? `[${host}]` : host}:${address.port}`).origin;
+  // Normalized like `bound`: URL drops a default port (:80), and the request Origin check compares exact strings.
+  const advertised = tailnet === undefined ? options.origin ?? bound : new URL(`http://${tailnet.dnsName}:${address.port}`).origin;
+  origins = tailnet !== undefined ? [advertised] : options.origin === undefined ? [bound] : [bound, options.origin];
+  // Tailnet mode accepts only its discovered MagicDNS authority, not proxy or forwarded hosts.
+  const url = `${advertised}/?token=${token}`;
   io.writeStdout(`${url}\n`);
   io.writeStderr("Canonfig browser interface is running. Press Ctrl-C to stop.\n");
   if (options.open) openBrowser(url, io);

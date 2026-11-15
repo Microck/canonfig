@@ -1,0 +1,49 @@
+[
+  {
+    "arguments": [
+      "source",
+      "serve",
+      "--tailnet",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "27496"
+    ],
+    "exitCode": 2,
+    "message": "--tailnet cannot be combined with --host"
+  },
+  {
+    "arguments": [
+      "source",
+      "serve",
+      "--host",
+      "192.168.1.20",
+      "--port",
+      "27496"
+    ],
+    "exitCode": 2,
+    "message": "Invalid source host: 192.168.1.20"
+  },
+  {
+    "arguments": [
+      "ui",
+      "--tailnet",
+      "--host",
+      "0.0.0.0",
+      "--no-open"
+    ],
+    "exitCode": 2,
+    "message": "--tailnet cannot be combined with --host or --origin\nRun 'canonfig --help' for usage."
+  },
+  {
+    "arguments": [
+      "ui",
+      "--tailnet",
+      "--origin",
+      "https://public.example",
+      "--no-open"
+    ],
+    "exitCode": 2,
+    "message": "--tailnet cannot be combined with --host or --origin\nRun 'canonfig --help' for usage."
+  }
+]
