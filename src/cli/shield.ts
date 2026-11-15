@@ -16,7 +16,7 @@ import { parseSurfaceResourceId, rootContext } from "../projection/plan.ts";
 import { TARGET_IDS } from "../projection/model.ts";
 import { ingestShield } from "../projection/shield-ingest.ts";
 import { addNativePlugin, installerKind, redirectInstaller, shieldLaunch } from "../projection/shield-install.ts";
-import { shieldPaths } from "../projection/shield.ts";
+import { shieldExemptPaths, shieldPaths } from "../projection/shield.ts";
 
 export type ShieldInput =
   | { readonly action: "status" }
@@ -189,6 +189,16 @@ process.exit(result.status ?? 1);
         if (!present && files.has(path)) continue;
         if (!present) yield* Effect.tryPromise({ try: () => mkdir(path, { recursive: true, mode: 0o700 }), catch: (error) => new CanonicalFolderError({ path, message: String(error) }) });
         mounts.push("--ro-bind", path, path);
+      }
+      // Skills this machine keeps with excludeSkills stay writable, as the hook allows: bubblewrap applies mounts in
+      // order, so a writable bind of the skill's own folder after its directory's read-only bind keeps only that
+      // folder writable. A missing one is not created, and a symlinked one keeps the read-only view of its target.
+      for (const path of shieldExemptPaths(loaded.model, context, loaded.local.excludeSkills)) {
+        const directory = yield* Effect.tryPromise({ try: () => lstat(path).then((info) => info.isDirectory(), (error) => {
+          if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+          throw error;
+        }), catch: (error) => new CanonicalFolderError({ path, message: String(error) }) });
+        if (directory) mounts.push("--bind", path, path);
       }
       args = ["--die-with-parent", "--unshare-pid", "--bind", "/", "/", "--proc", "/proc", "--cap-drop", "ALL", ...mounts, "--", program.executable.absolute, ...args];
     }
