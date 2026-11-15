@@ -82,7 +82,8 @@ Serve/Funnel, or login settings as a side effect of selecting a device.
 | Hooks (`hooks[]`) | `id`, `event`, `matcher`, `run`, `timeoutMs`, `onFailure` (`block`, `warn`, `ignore`); runs code on followers | Keep; script under `hooks/`; command on PATH; none |
 | Settings (`settings.<harness>`) | Keys merged into that harness's settings file | Keep; reviewed keys; none |
 | Groups (`groups.<name>`) | Items (`instructions` or `<category>/<name>`) only that group's followers receive | Keep; no additional groups; add a justified group |
-| Local policy (`local.allow`) | Categories followers may add through `local/` | Keep; none; choose from `rules`, `skills`, `agents`, `commands`, `mcp`, `settings` |
+| Local policy (`local.allow`) | Categories followers may add through `local/` | Keep; none; choose from `instructions`, `rules`, `skills`, `agents`, `commands`, `mcp`, `settings` |
+| Shared ownership (`local.appendLocal`) | Keeps machine-owned instructions and skills alongside Source content in every harness, on the Source too; distinct from admitting `local/` items | Keep; none; `instructions`; `skills`; both; review existing content before first adoption or removing sharing |
 | Profile schedule default (`scheduleDefault`) | Offers a calendar, not implicit scheduling consent | Keep; supported daily; supported weekly |
 | Discovery inputs | Bounds which files `setup plan --file` may read for tool discovery; never selects synced content | Selected observed files (multi-select); none |
 
@@ -96,10 +97,17 @@ credential-looking literals.
 | --- | --- | --- |
 | `local/rules/`, `local/skills/`, `local/agents/`, `local/commands/` | Added to the published items on this machine only | Keep; add one in a category `local.allow` admits; none |
 | `local/local.jsonc` `mcp`, `settings` | Machine-only MCP servers and harness settings | Keep; add one; none |
+| `local/local.jsonc` `excludeSkills` | Keeps named harness skill copies local, not the Source-managed mirror; requires Source `local.appendLocal` to include `skills` | Keep; select reviewed skill names; none; removing a name requires ownership review before sync |
+| `local/local.jsonc` `preserveMcp` | Keeps native MCP maps outside projection, including future Source additions; other settings still sync | Keep; `true` to preserve existing maps; `false` only after reviewing the native settings Canonfig would manage |
 | Name collisions | A local item named like a published one is Human Action Required | Rename the local item; remove it; ask the Source |
 
 `local/` is never published and never replaced. A category the Source's
 `local.allow` does not list is reported and not projected.
+
+Report preserved skills and MCP maps separately from Source-managed content.
+Preservation does not make native MCPs match the Source or verify their startup,
+authentication, or use through a harness. Review that tradeoff before accepting
+a full MCP synchronization goal; a no-op plan can leave preserved maps untouched.
 
 ## Tools, credentials, agents, schedules
 

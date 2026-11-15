@@ -2,6 +2,13 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
+## Unreleased
+
+### Documentation
+
+- Document machine-local skill and MCP preservation, first-adoption review, and upgrade/UI handoff in the bundled Canonfig skills.
+- Clarify upgrade instructions: `canonfig self-update apply` previews an update; `canonfig self-update apply --apply` installs it. Source service installation starts immediately, so prepare credential access and required native overrides first.
+
 ## v7.1.12 - 2026-11-15
 
 This release lets a machine keep selected skills and its own MCP servers while
