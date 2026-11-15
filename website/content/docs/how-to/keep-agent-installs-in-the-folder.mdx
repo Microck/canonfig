@@ -35,6 +35,10 @@ The **Harnesses** list shows which listed harnesses are protected. A harness
 without hook support can't be stopped mid-install, so sync moves what it
 added instead.
 
+Skills this machine keeps with `excludeSkills` in `local/local.jsonc` stay
+outside Shield. Agents can edit them where they are, and sync never moves
+them. Shield still protects every other skill in the same folders.
+
 ## Review a native plugin
 
 A plugin runs code, so Shield keeps it off until someone approves it. Plugins

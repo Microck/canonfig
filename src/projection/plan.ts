@@ -791,7 +791,7 @@ export const buildProjection = (
   Effect.gen(function*() {
     if (loaded.local.shield?.enabled) {
       loaded = { ...loaded, model: yield* Effect.try({
-        try: () => shieldModel(loaded.model, context, redirectScope),
+        try: () => shieldModel(loaded.model, context, redirectScope, loaded.local.excludeSkills),
         catch: (error) => new CanonicalFolderError({ path: loaded.model.folder, message: String(error) }),
       }) };
     }

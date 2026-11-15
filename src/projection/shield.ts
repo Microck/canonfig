@@ -24,11 +24,24 @@ export const shieldPaths = (model: CanonicalModel, context: RootContext) => {
   return [...new Set([...paths, context.join(context.home, ".agents", "skills")])];
 };
 
+/**
+ * The skill folders a machine keeps with `excludeSkills`, in every skill directory Shield guards. Canonfig never
+ * writes, checks or deletes them, so agents may edit them in place; only their own folders are exempt.
+ */
+export const shieldExemptPaths = (model: CanonicalModel, context: RootContext, keptSkills: ReadonlyArray<string>) => {
+  const skillDirectories = new Set([
+    ...model.harnesses.flatMap((harness) => adapterFor(harness).layout(context, model).skillSources.map((source) => source.path)),
+    context.join(context.home, ".agents", "skills"),
+  ]);
+  return [...skillDirectories].flatMap((directory) => keptSkills.map((name) => context.join(directory, name)));
+};
+
 /** Generated, dependency-free guard. Shell inspection is advisory, not a shell parser or sandbox. */
-const guardSource = (paths: ReadonlyArray<string>, home: string, destination: string, logFile: string) => `
+const guardSource = (paths: ReadonlyArray<string>, exempt: ReadonlyArray<string>, home: string, destination: string, logFile: string) => `
 import fs from "node:fs";
 import path from "node:path";
 const protectedPaths = ${JSON.stringify(paths)};
+const exemptPaths = ${JSON.stringify(exempt)};
 const home = ${JSON.stringify(home)};
 const destination = ${JSON.stringify(destination)};
 const logFile = ${JSON.stringify(logFile)};
@@ -56,6 +69,7 @@ let blockedInstaller = "";
 const match = (value) => {
   const absolute = resolve(value);
   const actual = physical(absolute);
+  if (exemptPaths.some((root) => within(absolute, root) || within(actual, physical(root)))) return undefined;
   const root = protectedPaths.find((root) => within(absolute, root) || within(actual, physical(root)));
   if (root) {
     blockedRelative = within(actual, physical(root)) ? path.relative(physical(root), actual) : path.relative(root, absolute);
@@ -104,7 +118,7 @@ if (blocked) {
 }
 `;
 
-export const shieldModel = (model: CanonicalModel, context: RootContext, scope: "canonical" | "local"): CanonicalModel => {
+export const shieldModel = (model: CanonicalModel, context: RootContext, scope: "canonical" | "local", keptSkills: ReadonlyArray<string>): CanonicalModel => {
   if (model.hooks.some((hook) => hook.id === shieldHookId) || model.skills.some((skill) => skill.name === shieldHookId)) {
     throw new Error(`${shieldHookId} is reserved while Shield is enabled`);
   }
@@ -116,6 +130,6 @@ export const shieldModel = (model: CanonicalModel, context: RootContext, scope: 
     skills: [...model.skills, { name: shieldHookId, description: "Install agent configuration through Canonfig without contaminating harness folders.",
       files: [{ path: "SKILL.md", executable: false, content: new TextEncoder().encode(`---\nname: ${shieldHookId}\ndescription: Install skills, MCP servers and native plugins through Canonfig.\n---\n\n${instructions}`) }] }],
     hooks: [{ id: shieldHookId, event: "before_tool", matcher: { capabilities: [], tools: [] },
-      run: ["node", "--input-type=module", "-e", guardSource(shieldPaths(model, context), context.home, destination, context.join(model.folder, ...shieldLogSegments))], timeoutMs: 5000, onFailure: "block" }, ...model.hooks],
+      run: ["node", "--input-type=module", "-e", guardSource(shieldPaths(model, context), shieldExemptPaths(model, context, keptSkills), context.home, destination, context.join(model.folder, ...shieldLogSegments))], timeoutMs: 5000, onFailure: "block" }, ...model.hooks],
   };
 };

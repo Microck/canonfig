@@ -183,7 +183,7 @@ describe("Shield admission and projection", () => {
     const f = fixture();
     mkdirSync(join(f.home, ".claude", "skills"), { recursive: true });
     symlinkSync(join(f.home, ".claude", "skills"), join(f.home, "alias"), "dir");
-    const model = shieldModel({ ...emptyModel(f.folder), harnesses: ["claude-code", "codex"] }, f.context, "local");
+    const model = shieldModel({ ...emptyModel(f.folder), harnesses: ["claude-code", "codex"] }, f.context, "local", ["kept"]);
     const hook = model.hooks[0]!;
     const execute = (toolName: string, toolInput: Record<string, string> | string) => spawnSync(process.execPath, hook.run.slice(1), {
       input: JSON.stringify({ toolName, toolInput, cwd: f.home }), encoding: "utf8", cwd: f.home, timeout: 10_000,
@@ -198,6 +198,13 @@ describe("Shield admission and projection", () => {
     expect(execute("Write", { path: join(f.folder, "local", "skills", "sample", "SKILL.md") }).status).toBe(0);
     expect(execute("Write", { path: join(f.home, ".claude", ".credentials.json") }).status).toBe(0);
     expect(execute("Bash", { command: "canonfig shield install -- npx skills add public/repo" }).status).toBe(0);
+    // A skill this machine keeps with excludeSkills is its own: agents edit it in place, in every skill directory,
+    // through an alias too. A sibling skill and a write to the directory itself stay blocked.
+    expect(execute("Write", { file_path: join(f.home, ".claude", "skills", "kept", "SKILL.md"), content: skill }).status).toBe(0);
+    expect(execute("Write", { file_path: join(f.home, "alias", "kept", "SKILL.md"), content: skill }).status).toBe(0);
+    expect(execute("Write", { file_path: join(f.home, ".agents", "skills", "kept", "SKILL.md"), content: skill }).status).toBe(0);
+    expect(execute("Write", { file_path: join(f.home, ".claude", "skills", "kept-not", "SKILL.md"), content: skill }).status).toBe(2);
+    expect(execute("Bash", { command: `rm -rf ${join(f.home, ".claude", "skills")}` }).status).toBe(2);
     expect(execute("Bash", { command: "npx skills add public/repo" }).status).toBe(2);
     expect(execute("Bash", { command: "cat ~/.claude/skills/sample/SKILL.md" }).status).toBe(0);
     expect(execute("Bash", { command: "ls ~/.claude/skills/sample/SKILL.md 2>/dev/null" }).status).toBe(0);
@@ -227,7 +234,7 @@ describe("Shield admission and projection", () => {
 
   it("returns native denial envelopes and redirects Antigravity file and command writes", () => {
     const f = fixture();
-    const model = shieldModel({ ...emptyModel(f.folder), harnesses: ["claude-code"] }, f.context, "local");
+    const model = shieldModel({ ...emptyModel(f.folder), harnesses: ["claude-code"] }, f.context, "local", []);
     const hook = model.hooks[0]!;
     const runner = join(f.folder, ".runtime", "hook-runner.mjs");
     write(runner, hookRunnerSource("hooks.json"));
