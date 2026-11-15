@@ -1251,11 +1251,12 @@ export const runCli = Effect.fn("runCli")(function*(
     }
     // Scheduled invocation bookkeeping must include failed checks, not just the file run.
     return yield* executeCommand(outcome.command, (synchronize) => Effect.gen(function*() {
-      restart = yield* prepareFleetSync(root, lease);
+      const started = yield* prepareFleetSync(root, lease);
+      restart = started.restart;
       if (restart) return null;
       return yield* synchronize.pipe(Effect.matchEffect({
-        onSuccess: (data) => finishFleetSync(true).pipe(Effect.as(data)),
-        onFailure: (error) => finishFleetSync(false).pipe(Effect.andThen(Effect.fail(error))),
+        onSuccess: (data) => finishFleetSync(true, started.startedAt).pipe(Effect.as(data)),
+        onFailure: (error) => finishFleetSync(false, started.startedAt).pipe(Effect.andThen(Effect.fail(error))),
       }));
     }));
   });

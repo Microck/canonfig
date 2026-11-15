@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect, Layer, ManagedRuntime, Schema } from "effect";
@@ -122,18 +122,28 @@ it("reports the published Source revision after a real follower projection conve
       endpoint: configuration.source.endpoint, tlsFingerprint: configuration.source.tlsFingerprint,
       sourceFingerprint: configuration.source.signingFingerprint, credentialReference: configuration.credentialReference,
     }));
-    writeFleetRecord(followerFleetPath(follower.state), { signed: directive, startedAt: new Date().toISOString(), report: null, reported: false });
-    await follower.runtime.runPromise(Effect.flatMap(FollowerCommands, (commands) => commands.synchronize({ mode: "apply", noInput: true })));
+    // Two syncs overlap: the first wrote its record and converged, then the second replaced the record with a later
+    // start before the first reported. The first must leave that record alone (its receipt predates the second's
+    // start, so judging it would halt a healthy rollout); the second's own sync and receipt report health.
+    const first = new Date().toISOString();
+    writeFleetRecord(followerFleetPath(follower.state), { signed: directive, startedAt: first, report: null, reported: false });
+    const sync = () => follower.runtime.runPromise(Effect.flatMap(FollowerCommands, (commands) => commands.synchronize({ mode: "apply", noInput: true })));
+    await sync();
+    const second = new Date().toISOString();
+    writeFleetRecord(followerFleetPath(follower.state), { signed: directive, startedAt: second, report: null, reported: false });
+    await follower.runtime.runPromise(finishFleetSync(true, first));
+    expect(JSON.parse(readFileSync(followerFleetPath(follower.state), "utf8"))).toMatchObject({ startedAt: second, report: null });
+    await sync();
     const receipt = await follower.runtime.runPromise(Effect.flatMap(StateRepository, (repository) => repository.latestDeploymentReceipt(configuration.follower.id)));
     expect(receipt?.revision).not.toBe(control.revision.id);
-    await follower.runtime.runPromise(finishFleetSync(true));
+    await follower.runtime.runPromise(finishFleetSync(true, second));
     const rollout = await source.runtime.runPromise(control.controller.fleetStatus());
     expect(rollout).toMatchObject({ status: "complete", followers: [{ status: "healthy", health: { revision: control.revision.id, run: receipt?.run } }] });
     // An unreachable Source must not block the sync that would restart its tunnel: the poll is skipped, not fatal.
     await control.server.close();
     close = undefined;
     const lease = { suspended: false, close: () => {}, selfUpdate: <A>(operation: () => Promise<A>) => operation() };
-    expect(await follower.runtime.runPromise(prepareFleetSync(follower.directory, lease))).toBe(false);
+    expect(await follower.runtime.runPromise(prepareFleetSync(follower.directory, lease))).toEqual({ restart: false, startedAt: null });
   } finally {
     await close?.();
     await follower.runtime.dispose();

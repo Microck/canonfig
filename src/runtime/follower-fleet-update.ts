@@ -37,6 +37,14 @@ const fleetFailure = (cause: unknown): CliCommandFailure => {
   });
 };
 
+/**
+ * What a sync's Fleet Update preflight did: `restart` when it activated a new release, and the `startedAt` of the
+ * record it wrote (null when it wrote none). finishFleetSync reports health only for that record, so an overlapping
+ * sync that writes its own record never has its start time judged against another sync's receipt.
+ */
+export interface FleetSyncStart { readonly restart: boolean; readonly startedAt: string | null }
+const noFleetRecord: FleetSyncStart = { restart: false, startedAt: null };
+
 /** Runs only at a mutating CLI sync boundary, never in a resident follower worker. */
 export const prepareFleetSync = Effect.fn("Fleet.prepareSync")(function*(
   root: string, lease: ManagedCommandLease,
@@ -46,7 +54,7 @@ export const prepareFleetSync = Effect.fn("Fleet.prepareSync")(function*(
   const repository = yield* StateRepository;
   const machine = yield* MachineState;
   const configuration = yield* repository.getFollowerSynchronizationConfiguration().pipe(Effect.mapError(fleetFailure));
-  if (configuration === undefined || configuration.lifecycle._tag !== "Active") return false;
+  if (configuration === undefined || configuration.lifecycle._tag !== "Active") return noFleetRecord;
   const directory = updateDirectory(root);
   const state = configuration.stateLocation;
   const transport: FollowerTransportInput = {
@@ -65,7 +73,7 @@ export const prepareFleetSync = Effect.fn("Fleet.prepareSync")(function*(
   const polled = yield* Effect.tryPromise({ try: () => request(), catch: fleetFailure }).pipe(
     Effect.catch(() => Effect.succeed({ directive: null })),
   );
-  if (polled.directive === null) return false;
+  if (polled.directive === null) return noFleetRecord;
   const signed = polled.directive;
   const directive = yield* Effect.try({
     try: () => verifyFleetDirective(signed, configuration.follower.id, configuration.source.signingFingerprint), catch: fleetFailure,
@@ -75,7 +83,7 @@ export const prepareFleetSync = Effect.fn("Fleet.prepareSync")(function*(
     status, detail: detail.slice(0, 1024), health: null,
   });
   return yield* withRunLock(state, "activate Fleet Update", Effect.tryPromise({
-    try: async (signal) => {
+    try: async (signal): Promise<FleetSyncStart> => {
       const previous = readFollowerFleet(state);
       if (previous?.signed.directive.source === directive.source) {
         const earlier = previous.signed.directive;
@@ -88,7 +96,7 @@ export const prepareFleetSync = Effect.fn("Fleet.prepareSync")(function*(
             await request(previous.report);
             writeFleetRecord(followerFleetPath(state), { ...previous, reported: true });
           }
-          return false;
+          return noFleetRecord;
         }
       }
       const record: FollowerFleetRecord = { signed, startedAt: new Date().toISOString(), report: null, reported: false };
@@ -106,7 +114,7 @@ export const prepareFleetSync = Effect.fn("Fleet.prepareSync")(function*(
       writeFleetRecord(followerFleetPath(state), record);
       try {
         if (directive.stateFormat !== stateFormatVersion) throw new Error("Fleet Update requires the same state format; use the documented manual recovery procedure");
-        if (directive.version === buildIdentity.packageVersion) return false;
+        if (directive.version === buildIdentity.packageVersion) return { restart: false, startedAt: record.startedAt };
         const result = await lease.selfUpdate(() => update(root, true, {
           version: directive.version, stateFormat: directive.stateFormat,
           prepare: async (stage, abort) => {
@@ -124,9 +132,9 @@ export const prepareFleetSync = Effect.fn("Fleet.prepareSync")(function*(
         }, undefined, signal), (result) => result.status !== "updated");
         if (result.status === "deferred") {
           await persistReport(report("deferred", result.detail));
-          return false;
+          return noFleetRecord;
         }
-        return result.status === "updated";
+        return { restart: result.status === "updated", startedAt: record.startedAt };
       } catch (cause) {
         await persistReport(report("failed", String(cause)));
         throw cause;
@@ -138,13 +146,15 @@ export const prepareFleetSync = Effect.fn("Fleet.prepareSync")(function*(
   })), Effect.mapError(fleetFailure));
 });
 
-/** Only a fresh receipt from this exact package can advance the Source's rollout. */
-export const finishFleetSync = Effect.fn("Fleet.finishSync")(function*(succeeded: boolean) {
+/** Only a fresh receipt from this exact package can advance the Source's rollout, judged for this sync's own record. */
+export const finishFleetSync = Effect.fn("Fleet.finishSync")(function*(succeeded: boolean, startedAt: string | null) {
+  if (startedAt === null) return;
   const repository = yield* StateRepository;
   const machine = yield* MachineState;
   const state = yield* repository.databaseFile().pipe(Effect.mapError(fleetFailure));
   const record = yield* Effect.try({ try: () => readFollowerFleet(state), catch: fleetFailure });
-  if (record === null || record.report !== null) return;
+  // A later sync replaced the record with its own attempt; that sync reports it.
+  if (record === null || record.report !== null || record.startedAt !== startedAt) return;
   const configuration = yield* repository.getFollowerSynchronizationConfiguration().pipe(Effect.mapError(fleetFailure));
   if (configuration === undefined || configuration.source.signingFingerprint !== record.signed.directive.source) return;
   const receipt = yield* repository.latestDeploymentReceipt(configuration.follower.id).pipe(Effect.mapError(fleetFailure));
