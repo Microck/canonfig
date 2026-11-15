@@ -79,11 +79,26 @@ but now resolves to <root>, ...`): restore the environment, such as
 ## Machine-local items
 
 `~/.canonfig/local/` holds `rules/`, `skills/`, `agents/`, `commands/` as
-files, and `local.jsonc` with `mcp`, `settings`, `excludeHarnesses`, and
+files, and `local.jsonc` with `mcp`, `settings`, local ownership policies, and
 `backups`. It is never published and never replaced. Only categories the
 Source's `local.allow` names are projected; others are reported as not
 admitted. A local item named like a published one is Human Action Required
 (`local <kind> <name> has the same name as a published one; rename or remove one of them`).
+
+`excludeSkills` names skill directories this machine keeps local in every
+harness, including shared and Hermes skills. It requires Source
+`local.appendLocal` to include `skills`. Excluded harness copies are not
+written, checked for drift, or deleted; a previously managed harness copy is
+released only after a successful sync. The Source-managed copy in a follower's
+`~/.canonfig/` mirror still syncs and can report drift. Removing an exclusion
+does not silently adopt local content; resolve ownership before syncing.
+
+`preserveMcp: true` in `local/local.jsonc` keeps native MCP maps outside
+projection, even when the Source adds servers. Other settings still sync, and
+agent files still name the Source's servers. Preserving a map does not verify
+those servers or make it match the Source. Report the tradeoff and resolve it
+with the operator before promising MCP unification; never remove the policy
+silently to force convergence.
 
 ## Client trust after apply
 
