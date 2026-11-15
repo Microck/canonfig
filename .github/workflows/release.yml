@@ -63,18 +63,30 @@ jobs:
             throw new Error(`release version must be exact semver: ${version}`);
           }
           // CHANGELOG.md holds every release, newest first, under `## vX.Y.Z - YYYY-MM-DD`. The GitHub release
-          // gets only this version's section, with its headings raised one level as it appeared before.
+          // gets only this version's section, with its headings raised one level as it appeared before. Headings
+          // inside ``` or ~~~ fenced examples are text, never section boundaries.
           const lines = readFileSync("CHANGELOG.md", "utf8").split("\n");
-          const start = lines.findIndex((line) => line.startsWith(`## v${version} `) || line === `## v${version}`);
-          if (start < 0) {
-            throw new Error(`CHANGELOG.md has no "## v${version}" section`);
+          let fence = null;
+          const prose = lines.map((line) => {
+            const marker = /^(`{3,}|~{3,})/.exec(line)?.[1];
+            if (marker !== undefined && (fence === null || (marker[0] === fence[0] && marker.length >= fence.length))) {
+              fence = fence === null ? marker : null;
+              return false;
+            }
+            return fence === null;
+          });
+          const sections = lines.flatMap((line, index) => prose[index] && /^## /.test(line) ? [index] : []);
+          const matching = sections.filter((index) => lines[index] === `## v${version}` || lines[index].startsWith(`## v${version} `));
+          if (matching.length !== 1) {
+            throw new Error(matching.length === 0
+              ? `CHANGELOG.md has no "## v${version}" section`
+              : `CHANGELOG.md has ${matching.length} "## v${version}" sections; keep one`);
           }
-          const end = lines.findIndex((line, index) => index > start && /^## /.test(line));
-          let fence = false;
-          const notes = lines.slice(start + 1, end < 0 ? undefined : end).map((line) => {
-            if (line.startsWith("```")) fence = !fence;
-            return !fence && /^#{3,6} /.test(line) ? line.slice(1) : line;
-          }).join("\n").trim();
+          const start = matching[0];
+          const end = sections.find((index) => index > start) ?? lines.length;
+          const notes = lines.slice(start + 1, end)
+            .map((line, offset) => prose[start + 1 + offset] && /^#{3,6} /.test(line) ? line.slice(1) : line)
+            .join("\n").trim();
           if (notes.length === 0) {
             throw new Error(`CHANGELOG.md section v${version} is empty`);
           }
