@@ -1,24 +1,19 @@
-// Must match `basePath` in next.config.mjs.
-export const basePath = "/docs";
-
-// Absolute URL of the docs root, including the base path. Production builds
-// set it to https://canonfig.micr.dev/docs (scripts/build-pages.mjs).
+// Absolute URL of the site root. Production builds set it to
+// https://canonfig.micr.dev (scripts/build-pages.mjs).
 const configuredSiteUrl =
-  process.env.NEXT_PUBLIC_SITE_URL ?? `http://localhost:3000${basePath}`;
+  process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
 
 export const siteUrl = new URL(configuredSiteUrl);
 
-// Resolves a docs route such as `/reference/cli` to its absolute URL with the
+// Resolves a route such as `/docs/reference/cli` to its absolute URL with the
 // trailing slash the static export serves (next.config.mjs `trailingSlash`).
-// `new URL(route, siteUrl)` would drop the base path for root-relative routes.
-export function absoluteDocsUrl(route: string): string {
+export function absoluteUrl(route: string): string {
   const path = route.endsWith("/") ? route : `${route}/`;
-  return new URL(`${siteUrl.pathname.replace(/\/$/, "")}${path}`, siteUrl).href;
+  return new URL(path, siteUrl).href;
 }
 
-// The share image for og:image and twitter:image. The demo build at the site
-// root emits it (ui/vite.config.ts), so the docs point at the domain root, not
-// at their own base path.
+// The demo emits the share image; scripts/build-pages.mjs also copies it to the
+// domain root so the landing page and docs can use the same URL.
 export const shareImage = {
   url: new URL("/og-image.png", siteUrl).href,
   width: 1200,

@@ -8,7 +8,7 @@ the Source Machine you edit it, and `canonfig source publish` signs it as the
 next Profile Revision. On a Follower Machine, `canonfig sync` writes the
 authorized items into the same places in its own `~/.canonfig/` (the mirror)
 and projects the mirror plus `local/` into the harnesses. Which file goes where
-in each harness is in the [harness reference](/reference/harnesses).
+in each harness is in the [harness reference](/docs/reference/harnesses).
 
 ## Layout
 
@@ -40,9 +40,9 @@ it.
 | `rules/`, `agents/`, `commands/` | Yes | One `<id>.md` document per item. See [Documents](#documents). |
 | `skills/` | Yes | One directory per skill, each with a `SKILL.md`. |
 | `hooks/` | Yes | Scripts a hook runs. Every file here must be run by a hook. |
-| `files/` | Yes | Content of [authored resources](/how-to/manage-files-outside-harnesses). Every file here must be read by a resource. |
+| `files/` | Yes | Content of [authored resources](/docs/how-to/manage-files-outside-harnesses). Every file here must be read by a resource. |
 | `local/` | No | Items only this machine projects. See [The local folder](#the-local-folder). |
-| `.backups/` | No | Takeover snapshots, of harnesses and of folder entries `canonfig import --replace` replaced. See [Restore a harness from a backup](/how-to/restore-from-a-backup). |
+| `.backups/` | No | Takeover snapshots, of harnesses and of folder entries `canonfig import --replace` replaced. See [Restore a harness from a backup](/docs/how-to/restore-from-a-backup). |
 | `.runtime/` | No | `hook-runner.mjs`, which every projected hook calls. |
 | `state.sqlite` | No | Enrollment, Profile Revisions, run journal, Applied Resource Records, and the export and import journal. |
 | `setup.json` | No | The `canonfig setup` plan, approval, and progress. |
@@ -114,17 +114,17 @@ does not list is an error, so a typo fails instead of being ignored.
 | --- | --- | --- | --- |
 | `version` | Yes | `1` | The file format. |
 | `profile` | To publish | `{ "id": string, "name": string }` | The Machine Profile this folder publishes. `id` starts with a letter or digit and contains letters, digits, `.`, `_`, `:`, and `-`. Projection does not use it. |
-| `harnesses` | Yes | array of harness ids | The Target Harnesses to project into. Ids are listed in the [harness reference](/reference/harnesses). |
+| `harnesses` | Yes | array of harness ids | The Target Harnesses to project into. Ids are listed in the [harness reference](/docs/reference/harnesses). |
 | `mcp` | No | object: name to [MCP server](#mcp-servers) | MCP servers every listed harness gets. |
 | `hooks` | No | array of [hooks](#hooks) | Lifecycle hooks, in the order they run. |
 | `settings` | No | object: harness id to object of key path to value | Keys written into that harness's settings file. See [Settings](#settings). |
-| `surfaces` | No | object: harness id to array of categories | Gives a listed harness only these categories: any of `instructions`, `rules`, `skills`, `agents`, `commands`, `hooks`, `mcp`, `settings`. A harness not named gets every category. Naming a harness that `harnesses` does not list fails validation. See [Give a harness only some categories](/how-to/choose-harnesses#give-a-harness-only-some-categories). |
+| `surfaces` | No | object: harness id to array of categories | Gives a listed harness only these categories: any of `instructions`, `rules`, `skills`, `agents`, `commands`, `hooks`, `mcp`, `settings`. A harness not named gets every category. Naming a harness that `harnesses` does not list fails validation. See [Give a harness only some categories](/docs/how-to/choose-harnesses#give-a-harness-only-some-categories). |
 | `tools` | No | object: id to [tool](#tools) | Command-line tools every Follower Machine installs and verifies. |
 | `credentials` | No | object: id to `{ "reference": string }` | A credential each Follower Machine must already hold, by name. The value never leaves the Follower Machine. |
 | `groups` | No | object: group name to array of item references | Items only Follower Machines in that Follower Group receive. See [Groups](#groups). |
 | `scheduleDefault` | No | `daily@HH:mm` or `weekly:Mon,Thu@HH:mm` | A suggested schedule. Sync never installs it; a Follower Machine accepts it with `canonfig schedule set --default`. |
-| `local` | No | `{ "allow"?: array, "appendLocal"?: array }` | `allow`: which categories machines may add in `local/`: any of `instructions`, `rules`, `skills`, `agents`, `commands`, `mcp`, `settings`. `appendLocal`: `instructions`, `skills`, or both; those harness outputs keep each machine's own text and skills (see [Keep a machine's own instructions and skills](/how-to/keep-local-content)). Default: none. |
-| `resources` | No | object: id to resource | Files, directories, and config keys outside every harness. See [Manage files outside the harnesses](/how-to/manage-files-outside-harnesses). |
+| `local` | No | `{ "allow"?: array, "appendLocal"?: array }` | `allow`: which categories machines may add in `local/`: any of `instructions`, `rules`, `skills`, `agents`, `commands`, `mcp`, `settings`. `appendLocal`: `instructions`, `skills`, or both; those harness outputs keep each machine's own text and skills (see [Keep a machine's own instructions and skills](/docs/how-to/keep-local-content)). Default: none. |
+| `resources` | No | object: id to resource | Files, directories, and config keys outside every harness. See [Manage files outside the harnesses](/docs/how-to/manage-files-outside-harnesses). |
 
 Names used as object keys (MCP servers, hook ids, tools, credentials, groups)
 start with a letter or digit and contain only letters, digits, `-`, and `_`.
@@ -154,7 +154,7 @@ start with a letter or digit and contain only letters, digits, `-`, and `_`.
 
 A harness that cannot express a field, or the `sse` transport, gets a warning
 in the plan naming the server; Canonfig does not write the field somewhere
-else. The [harness reference](/reference/harnesses) lists what each harness
+else. The [harness reference](/docs/reference/harnesses) lists what each harness
 lacks.
 
 ### Secret values
@@ -208,7 +208,7 @@ Canonfig owns each declared key's whole value and leaves every other key in the
 file as it is. Two keys for one harness must not overlap: `mcp` and `mcp.git`
 cannot both be declared. A key must not overlap a key Canonfig already writes
 from the folder (for example `mcpServers`) or a key the harness keeps for its
-own credentials. The [harness reference](/reference/harnesses#settings-files)
+own credentials. The [harness reference](/docs/reference/harnesses#settings-files)
 lists each harness's settings file and reserved keys.
 
 ### Tools
@@ -238,7 +238,7 @@ lists each harness's settings file and reserved keys.
 `method` is `apt`, `brew`, `bun`, `cargo`, `npm`, `pnpm`, `uv`, `winget`, or
 `source`. Every method except `source` needs an exact `version`. Recipe
 fields, verification, and logins are explained in
-[How Canonfig installs and verifies tools](/explanation/tools-and-recipes).
+[How Canonfig installs and verifies tools](/docs/explanation/tools-and-recipes).
 `canonfig source scan --write` adds entries here for you.
 
 ### Groups
@@ -317,7 +317,7 @@ takes these keys:
 | `settings` | object: harness id to object of key path to value | Settings keys only this machine adds. |
 | `excludeHarnesses` | array of harness ids | Harnesses this machine never projects, even when listed. `canonfig harnesses exclude` and `canonfig restore` edit it. |
 | `excludeResources` | array of resource ids | Authored resources this machine never projects. `canonfig restore` adds the ones it gives back. |
-| `overlays` | array of `<category>/<name>` or `settings/<harness>#<key>` | Local Overlays: published items this machine's local item replaces. Key claims: settings keys Canonfig never writes, removes, or checks on this machine, while the other keys of that settings file follow the Source. `canonfig overlay set` and `remove` edit it. See [Replace a published item on one machine](/how-to/use-local-overlays). |
+| `overlays` | array of `<category>/<name>` or `settings/<harness>#<key>` | Local Overlays: published items this machine's local item replaces. Key claims: settings keys Canonfig never writes, removes, or checks on this machine, while the other keys of that settings file follow the Source. `canonfig overlay set` and `remove` edit it. See [Replace a published item on one machine](/docs/how-to/use-local-overlays). |
 | `backups` | boolean | `false` turns harness takeover snapshots off on this machine; `canonfig import --replace` still snapshots the folder entries it replaces. Default `true`. |
 
 The Source Machine decides which categories local items may add, with
@@ -329,7 +329,7 @@ name is skipped and reported in the plan:
 `excludeHarnesses` and `backups` always apply: a Source Machine cannot turn
 off a Follower Machine's exclusions or backups. On the Source Machine itself,
 `local.allow` applies the same way. See
-[Add items only one machine uses](/how-to/add-machine-local-items).
+[Add items only one machine uses](/docs/how-to/add-machine-local-items).
 
 A local item with the same name as a published one stops the run with Human
 Action Required (exit 3), because Canonfig will not choose between them:
@@ -346,7 +346,7 @@ Machine's mirror, so a machine holds one role. `canonfig follower enroll` and
 `canonfig setup plan --role follower` refuse a Source Machine, and the Source
 commands that create, scan, publish, serve or grant access refuse an enrolled
 Follower Machine. Each exits 2 and changes nothing; the
-[CLI reference](/reference/cli#source-machine) lists the messages.
+[CLI reference](/docs/reference/cli#source-machine) lists the messages.
 
 A Follower Machine's allowlist entries hold its Source Machine's mirror, so
 `canonfig follower enroll` also refuses a folder that already holds authored items:
@@ -387,7 +387,7 @@ exits 2 and names the file, in the form `<path>: <message>`.
 | `settings names unknown harness <name>` | A `settings` key is not a harness id. |
 | `settings.<harness> key <key>: <issue>` | A settings key path is malformed, for example an unknown `\` escape. |
 | `settings.<harness> keys <key> and <key> overlap` | One declared key contains another. |
-| `settings.<harness>: <harness> has no settings file Canonfig writes` | The harness has no settings file; see the [harness reference](/reference/harnesses#settings-files). |
+| `settings.<harness>: <harness> has no settings file Canonfig writes` | The harness has no settings file; see the [harness reference](/docs/reference/harnesses#settings-files). |
 | `settings.<harness>.<key> overlaps <reserved>, which <harness> keeps for itself` | The key names harness credentials or provider keys. |
 | `settings.<harness>.<key> overlaps <key>, which Canonfig already writes from the folder` | The key overlaps a key Canonfig projects from `mcp` or `hooks`. |
 
@@ -412,4 +412,4 @@ failure exits 2 and nothing is signed. Most messages start with
 Publishing content equal to the latest Profile Revision returns that
 revision. Any other content, including an older revision's, becomes the next
 sequence number, which is how you roll back. See
-[Publish changes from the folder](/how-to/publish-from-the-folder).
+[Publish changes from the folder](/docs/how-to/publish-from-the-folder).

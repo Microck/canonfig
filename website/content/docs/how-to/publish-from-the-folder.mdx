@@ -11,12 +11,12 @@ added item, a changed one, and a removal all follow the same steps.
 ## Before you start
 
 - The Source Machine is set up with `canonfig setup plan --role source`, as in
-  [Sync your first two machines](/tutorials/first-sync).
+  [Sync your first two machines](/docs/tutorials/first-sync).
 - `~/.canonfig/canonfig.jsonc` has a `profile` with an `id` and a `name`. The
-  [Canonical Folder reference](/reference/canonfig-folder) lists every key and
+  [Canonical Folder reference](/docs/reference/canonfig-folder) lists every key and
   file.
 - Follower Machines fetch from the Source Machine, so it must be serving when
-  they sync. See [Run Canonfig unattended](/how-to/run-unattended).
+  they sync. See [Run Canonfig unattended](/docs/how-to/run-unattended).
 
 ## Publish a change
 
@@ -98,7 +98,7 @@ harnesses.
 | Removed `tools` or `credentials` entry | Nothing. Canonfig never uninstalls a tool or deletes a local credential. |
 
 To keep extra items on one Follower Machine, use its local folder instead of
-editing the mirror; see [Add items to one machine only](/how-to/add-machine-local-items).
+editing the mirror; see [Add items to one machine only](/docs/how-to/add-machine-local-items).
 
 ## Send items to some Follower Machines only
 
@@ -166,7 +166,7 @@ checked them, with one Installation Recipe per platform and an exact version:
 `requires` installs the tool before Canonfig projects the server. This example
 has no Windows recipe, so a Windows Follower Machine reports Human Action
 Required for `tools:uv`.
-[How Canonfig installs and verifies tools](/explanation/tools-and-recipes)
+[How Canonfig installs and verifies tools](/docs/explanation/tools-and-recipes)
 covers recipe fields and verification.
 
 ## Roll back to earlier content
@@ -218,7 +218,7 @@ example "the publication input is not valid:
 | Message after the file name | Cause | Fix |
 | --- | --- | --- |
 | `needs "profile": { "id": ..., "name": ... } to publish; the id names the Machine Profile followers sync` | `canonfig.jsonc` has no `profile`. Setup writes one, so it was removed. | Add `"profile": { "id": "workstation", "name": "Workstation" }`. |
-| "does not exist; scaffold the folder with 'canonfig setup plan --role source', or enroll this machine as a follower" | There is no `~/.canonfig/canonfig.jsonc`. | Run Source setup, as in [Sync your first two machines](/tutorials/first-sync). |
+| "does not exist; scaffold the folder with 'canonfig setup plan --role source', or enroll this machine as a follower" | There is no `~/.canonfig/canonfig.jsonc`. | Run Source setup, as in [Sync your first two machines](/docs/tutorials/first-sync). |
 | "is not valid JSONC: ..." | `canonfig.jsonc` does not parse. The message gives the error and its offset. | Fix the syntax at that offset. |
 | "this Source publishes profile workstation; set "profile.id" in canonfig.jsonc back to workstation" | You changed `profile.id`. A Source Machine publishes one Machine Profile. | Set `profile.id` back. |
 | "config resource mcp:docs at keys.mcp.docs.headers.CONTEXT7_API_KEY contains a literal credential [REDACTED]; ..." | A value in `canonfig.jsonc` looks like a secret. | Replace it with `{ "fromEnv": "NAME" }`, or store a shared value with `canonfig secrets set`. |

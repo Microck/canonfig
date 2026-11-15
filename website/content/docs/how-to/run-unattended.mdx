@@ -105,7 +105,7 @@ canonfig schedule status
 `schedule status` reports `current` when the native job matches your
 schedule. Every scheduled run executes
 `canonfig sync --apply --no-input --scheduled`. For calendars, time zones, and
-the other states, see [Sync on a schedule](/how-to/manage-schedules).
+the other states, see [Sync on a schedule](/docs/how-to/manage-schedules).
 
 ### Give scheduled runs the same harness environment
 
@@ -121,7 +121,7 @@ things follow:
   the run with Human Action Required (exit 3), and the message begins with the
   harness id and "was taken over at". Set the variable the same way for every
   run, or leave it unset everywhere. See
-  [Keep a harness in one place](/how-to/choose-harnesses#keep-a-harness-in-one-place).
+  [Keep a harness in one place](/docs/how-to/choose-harnesses#keep-a-harness-in-one-place).
 
 `canonfig harnesses` shows which harnesses this machine detects and the root
 pinned for each.
@@ -247,5 +247,5 @@ On each Follower Machine:
 | "SSH to `<user@host>` did not open the forward at `<endpoint>` within N ms" | SSH connected, but the forward did not open in time. | Retry with a longer `canonfig tunnel start --timeout-ms 60000`. |
 
 For errors from a sync itself, see
-[Recover from a failed or blocked sync](/how-to/recover). For each `doctor`
-probe, see [Doctor probes and exit codes](/reference/diagnostics).
+[Recover from a failed or blocked sync](/docs/how-to/recover). For each `doctor`
+probe, see [Doctor probes and exit codes](/docs/reference/diagnostics).

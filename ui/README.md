@@ -25,7 +25,7 @@ The packaged UI also includes `licenses/shadcn.txt`; the CSS build strips commen
 | Command | Output | Use |
 | --- | --- | --- |
 | `npm --prefix ui run build` | `ui/dist/` | Production frontend; CLI packaging places the assets in root `dist/ui/` |
-| `npm --prefix ui run build:demo` | `ui/dist-demo/` | The public demo at https://canonfig.micr.dev/, published to GitHub Pages with the docs under `/docs/` |
+| `npm --prefix ui run build:demo` | `ui/dist-demo/` | The public demo at https://canonfig.micr.dev/demo/, beside the landing page at `/` and docs under `/docs/` |
 
 Vite's build-selected `@app` entrypoint loads `src/live-app.tsx` for production and `src/App.tsx` for development or mode `demo`. `src/gui-client.ts` sends same-origin requests with the session cookie and decodes responses using direct imports from `src/gui/contract.ts`. Area contracts are shared, not generated copies. Mutations use explicit typed endpoints, and long operations poll real results and journals. Errors preserve the CLI category, exit code and message. Reload reads fresh machine state.
 
@@ -40,11 +40,11 @@ The production build checks its module graph and fails if it imports `src/shared
 
 Demo screens use simulated data in `src/shared/data.ts` and `src/workspace/simulated-store.tsx`, including short waits for actions such as Check for updates. They are not a second backend for production. See [the screen/action inventory](../docs/plans/canonfig-ui.md) for the CLI mappings and hidden operations.
 
-The demo build also replaces the page title and adds a description, canonical URL, and Open Graph and Twitter card tags to `index.html`, and writes `404.html` as a copy of it, so GitHub Pages boots the app on deep links such as `/follower/sync`. `vite.config.ts` holds this in its `demoSite` plugin. The theme colour and viewport tags sit in `index.html` itself, so both builds have them. The site assembly (`scripts/build-pages.mjs`) adds the docs and `robots.txt`.
+The demo build sets Vite's base URL to `/demo/`. The router uses that base for links, setup and direct loads. The installed GUI and dev server keep `/`. The demo adds share metadata to `index.html` and writes `404.html` as a copy, so GitHub Pages boots deep links such as `/demo/follower/sync`. `scripts/build-pages.mjs` copies this build into `_site/demo/` and its 404 entry to the site root. Unknown paths outside `/demo/` show a not-found page with a link home.
 
 ### Share image
 
-The demo build also emits `og-image.png` at the site root and points `og:image` and `twitter:image` at `https://canonfig.micr.dev/og-image.png`; the docs use the same URL (`website/app/layout.tsx`). The file lives in `scripts/`, not `public/`, so the production build does not ship it. `scripts/og-image.html` is its source: the demo's machine map (`scripts/og-image-map.png`, a capture of `/source/machines` at 880x650 CSS pixels and 2x scale with reduced motion, the default layout and toasts hidden), cropped under the chest, the wordmark and the onboarding line, with the fonts in `public/fonts`. Recapture the map after the map's look changes; after changing either file, render and compress the image from `ui/`:
+The demo build emits `og-image.png`; site assembly also copies it to the site root. The demo, landing page and docs share `https://canonfig.micr.dev/og-image.png` (`website/lib/site.ts`). The file lives in `scripts/`, not `public/`, so the production build does not ship it. `scripts/og-image.html` is its source: the demo's machine map (`scripts/og-image-map.png`, a capture of `/source/machines` at 880x650 CSS pixels and 2x scale with reduced motion, the default layout and toasts hidden), cropped under the chest, the wordmark and the onboarding line, with the fonts in `public/fonts`. Recapture the map after the map's look changes; after changing either file, render and compress the image from `ui/`:
 
 ```bash
 npx playwright@1.58.2 screenshot --viewport-size=1200,630 --wait-for-timeout=500 "file://$PWD/scripts/og-image.html" scripts/og-image.png
@@ -57,7 +57,7 @@ Keep the wordmark and tagline inside the central 1200x600: X and Slack crop the 
 
 Production opens the actual machine's `/source/overview` or `/follower/overview`. An unconfigured machine opens `/setup`, where Source setup plans and reviews real import offers or Follower enrollment accepts an invitation. The sidebar uses the shared role-specific navigation groups. Unsupported and wrong-role paths show an unavailable page rather than switching data sources.
 
-The table below lists demo routes. In the demo, the URL selects the role, screen and view tab; links support direct loads, refresh, and browser Back/Forward. `/` opens `/source/overview`; unknown or role-invalid paths show a not-found page.
+The table lists development routes. Public demo URLs add `/demo`, so `/source/overview` becomes `/demo/source/overview`. The public entry `/demo/` opens that overview. Links support direct loads, refresh and browser Back/Forward. Unknown or role-invalid paths show a not-found page.
 
 | Screen | Source | Follower |
 | --- | --- | --- |

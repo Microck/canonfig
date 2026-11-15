@@ -508,11 +508,11 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
       )}
       <div className="px-4 py-3">
         {f.platform && <Prop label="System">{PLATFORM[f.platform]}</Prop>}
-        <Prop label={<Term term="Profile Revision">Revision</Term>}>
+        <Prop label={<Term label term="Profile Revision">Revision</Term>}>
           {f.revision === undefined ? "Revision not reported" : f.revision === null ? "None yet" : <AnimatedNumber value={f.revision} />}
           {f.revision != null && ws.latest !== undefined && f.revision < ws.latest && <span className="text-muted-foreground"> of {ws.latest}</span>}
         </Prop>
-        <Prop label={<Term term="Follower Group">{PLAIN.groups}</Term>}>
+        <Prop label={<Term label term="Follower Group">{PLAIN.groups}</Term>}>
           <span className="flex flex-wrap items-center gap-2">
             <GroupChips groups={f.groups} empty="None, base profile only" />
             <Button variant="ghost" size="xs" className="shrink-0 text-muted-foreground" onClick={() => ws.setChangeGroups({ followerId: f.id })}>
@@ -920,7 +920,7 @@ function InviteForm() {
                   </SelectContent>
                 </Select>
               </Field>
-              <Field label={<Term term="Follower Group">{PLAIN.groups}</Term>} description="Groups add items on top of the base profile. Leave empty for the base profile only.">
+              <Field label={<Term label term="Follower Group">{PLAIN.groups}</Term>} description="Groups add items on top of the base profile. Leave empty for the base profile only.">
                 <GroupChecks idPrefix="inv" value={groups} onChange={(groups) => edit({ groups })} disabled={busy} />
               </Field>
               {!ws.createInvitation && <Collapsible>
@@ -1128,7 +1128,7 @@ function ChangeGroupsForm() {
                 </Select>
               </Field>
             )}
-            <Field label={<Term term="Follower Group">{PLAIN.groups}</Term>}>
+            <Field label={<Term label term="Follower Group">{PLAIN.groups}</Term>}>
               <GroupChecks idPrefix="cg" value={groups} onChange={(groups) => dispatch({ type: "edit", patch: { groups } })} disabled={busy} />
             </Field>
             {ws.createInvitation && <Field label="Address it connects to" htmlFor="cg-endpoint">
