@@ -7,7 +7,7 @@ on:
     paths:
       - .github/workflows/release.yml
       - package.json
-      - RELEASE_NOTES.md
+      - CHANGELOG.md
   workflow_dispatch:
     inputs:
       version:
@@ -49,7 +49,8 @@ jobs:
           REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           node --input-type=module <<'NODE'
-          import { appendFileSync, readFileSync } from "node:fs";
+          import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+          import { join } from "node:path";
           const manifest = JSON.parse(readFileSync("package.json", "utf8"));
           const requested = process.env.REQUESTED_VERSION?.trim();
           const version = requested === undefined || requested.length === 0
@@ -61,10 +62,23 @@ jobs:
           if (!/^\d+\.\d+\.\d+$/.test(version)) {
             throw new Error(`release version must be exact semver: ${version}`);
           }
-          const notes = readFileSync("RELEASE_NOTES.md", "utf8");
-          if (!notes.includes(`v${version}`)) {
-            throw new Error(`RELEASE_NOTES.md does not describe v${version}`);
+          // CHANGELOG.md holds every release, newest first, under `## vX.Y.Z - YYYY-MM-DD`. The GitHub release
+          // gets only this version's section, with its headings raised one level as it appeared before.
+          const lines = readFileSync("CHANGELOG.md", "utf8").split("\n");
+          const start = lines.findIndex((line) => line.startsWith(`## v${version} `) || line === `## v${version}`);
+          if (start < 0) {
+            throw new Error(`CHANGELOG.md has no "## v${version}" section`);
           }
+          const end = lines.findIndex((line, index) => index > start && /^## /.test(line));
+          let fence = false;
+          const notes = lines.slice(start + 1, end < 0 ? undefined : end).map((line) => {
+            if (line.startsWith("```")) fence = !fence;
+            return !fence && /^#{3,6} /.test(line) ? line.slice(1) : line;
+          }).join("\n").trim();
+          if (notes.length === 0) {
+            throw new Error(`CHANGELOG.md section v${version} is empty`);
+          }
+          writeFileSync(join(process.env.RUNNER_TEMP, "release-notes.md"), `${notes}\n`);
           appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
           NODE
 
@@ -130,7 +144,7 @@ jobs:
           gh release create "v${RELEASE_VERSION}" \
             --target "${GITHUB_SHA}" \
             --title "Canonfig v${RELEASE_VERSION}" \
-            --notes-file RELEASE_NOTES.md \
+            --notes-file "${RUNNER_TEMP}/release-notes.md" \
             --fail-on-no-commits
 
 
