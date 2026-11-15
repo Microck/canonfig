@@ -100,6 +100,16 @@ describe("Shield admission and projection", () => {
     expect(readFileSync(join(f.folder, "skills", "sample", "SKILL.md"), "utf8")).toBe(skill);
   });
 
+  it("leaves a skill the machine keeps local with excludeSkills where it is", async () => {
+    const f = fixture();
+    write(join(f.folder, "canonfig.jsonc"), JSON.stringify({ version: 1, harnesses: ["claude-code", "codex"], local: { allow: ["skills", "plugins", "mcp"], appendLocal: ["skills"] } }));
+    write(join(f.folder, "local", "local.jsonc"), JSON.stringify({ shield: { enabled: true, hard: false }, excludeSkills: ["sample"] }));
+    write(join(f.home, ".claude", "skills", "sample", "SKILL.md"), skill);
+    expect((await f.sync()).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(join(f.home, ".claude", "skills", "sample", "SKILL.md"), "utf8")).toBe(skill);
+    expect(existsSync(join(f.folder, "local", "skills", "sample"))).toBe(false);
+  });
+
   it("admits a reinstalled skill again after its canonical copy was deleted", async () => {
     const f = fixture();
     // Installer staging: the ledger of earlier admissions is passed back in as `unchanged`, as redirectInstaller does.

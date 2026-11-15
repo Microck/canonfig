@@ -49,9 +49,14 @@ export const ingestShield = Effect.fn("Shield.ingest")(function*(input: {
     try: () => scanImports({ context, harnesses: loaded.model.harnesses, folder: target.folder }),
     catch: (error) => failure(target.folder, String(error)),
   });
+  // A machine's excludeSkills and preserveMcp keep those items native on purpose, so Shield leaves them where they are
+  // rather than moving them into the folder and deleting the native copy.
+  const keptLocal = (candidate: ImportCandidate) => (candidate.category === "skills" && loaded.local.excludeSkills.includes(candidate.name))
+    || (candidate.category === "mcp" && loaded.local.preserveMcp);
   const candidates = [...new Map(scan.candidates.filter((candidate) =>
     !native.roots.some((root) => candidate.path === root || candidate.path.startsWith(root + sep))
     && (!wasManaged(candidate, input.applied, loaded) || input.installer)
+    && !keptLocal(candidate)
     && input.unchanged?.has(candidate.digest) !== true)
     .map((candidate) => [`${candidate.path}\0${candidate.name}`, candidate])).values()];
   if (candidates.length === 0 && native.installs.length === 0) return { imported: [], digests: [], warnings: scan.skipped.map((entry) => `${entry.path}: ${entry.reason}`) };
