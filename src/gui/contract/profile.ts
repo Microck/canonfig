@@ -31,6 +31,8 @@ export const GuiProfileConfigWrite = Schema.Struct({ expectedDigest: Schema.Null
 export const GuiProfileSaved = Schema.Struct({ saved: Schema.Literal(true) });
 export const GuiPublicationRequest = Schema.Struct({ reviewer: Schema.NonEmptyString });
 export const GuiRevisionSelection = Schema.Struct({ revision: Schema.NonEmptyString });
+export const GuiScanAcceptance = Schema.Struct({ reviewDigest: Schema.NonEmptyString, confirmAll: Schema.Literal(true) });
+export const GuiScanReview = Schema.Struct({ reviewDigest: Schema.NonEmptyString, tools: Schema.Array(Schema.Json) });
 export const GuiRevisions = Schema.Struct({ revisions: Schema.Array(Schema.Struct({ id: Schema.String, profileId: Schema.String, sequence: Schema.Number, digest: Schema.String, publishedAt: Schema.String })) });
 export interface GuiRevisions extends Schema.Schema.Type<typeof GuiRevisions> {}
 export const GuiProfileValidation = Schema.Struct({ valid: Schema.Boolean, errors: Schema.Array(Schema.String), profile: Schema.Json });
@@ -43,4 +45,4 @@ export interface GuiSkills extends Schema.Schema.Type<typeof GuiSkills> {}
 export const GuiSkillCheck = Schema.Struct({ name: Schema.String, path: Schema.String, previousCommit: Schema.String, nextCommit: Schema.String, status: Schema.Literals(["unchanged", "update-available", "local-edits"]), added: Schema.Array(Schema.String), changed: Schema.Array(Schema.String), removed: Schema.Array(Schema.String) });
 export const GuiSkillChecks = Schema.Array(GuiSkillCheck);
 export interface GuiSkillCheck extends Schema.Schema.Type<typeof GuiSkillCheck> {}
-export const profileEndpoints = { items: "/api/profile/items", config: "/api/profile/config", validate: "/api/profile/validate", scan: "/api/profile/scan", publications: "/api/publications", revisions: "/api/revisions", revision: "/api/revisions/inspect", skills: "/api/skills", track: "/api/skills/track", check: "/api/skills/check", update: "/api/skills/update" } as const;
+export const profileEndpoints = { items: "/api/profile/items", config: "/api/profile/config", validate: "/api/profile/validate", scan: "/api/profile/scan", acceptScan: "/api/profile/scan/accept", publications: "/api/publications", revisions: "/api/revisions", revision: "/api/revisions/inspect", skills: "/api/skills", track: "/api/skills/track", check: "/api/skills/check", update: "/api/skills/update" } as const;

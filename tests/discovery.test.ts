@@ -725,6 +725,20 @@ describe("profile discovery", () => {
     expect(await readFile(join(folder, "canonfig.jsonc"), "utf8")).toBe(written);
   });
 
+  it("refuses reviewed acceptance after the authored configuration changes", async () => {
+    const folder = join(directory, ".canonfig");
+    await mkdir(folder);
+    const configPath = join(folder, "canonfig.jsonc");
+    await writeFile(configPath, '{"version":1,"harnesses":[]}');
+    await writeFile(join(folder, "AGENTS.md"), "```sh\nuv tool install ruff==0.6.9\n```\n");
+    const reviewed = await Effect.runPromise(scanFolder({ folder, write: false, path: fixtureBin }));
+    const changed = '// A new author edit\n{"version":1,"harnesses":[]}';
+    await writeFile(configPath, changed);
+    const failure = await Effect.runPromise(scanFolder({ folder, write: true, path: fixtureBin, reviewDigest: reviewed.reviewDigest }).pipe(Effect.flip));
+    expect(failure).toBeInstanceOf(InvalidDiscoveryInputError);
+    expect(await readFile(configPath, "utf8")).toBe(changed);
+  });
+
   it("reports typed input and parse errors", async () => {
     const malformed = await fixture("bad.json", "{ nope");
 

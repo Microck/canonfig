@@ -37,6 +37,13 @@ adds each accepted tool that `canonfig.jsonc` does not declare yet under
 `tools`, keeping the file's comments and layout. A tool `canonfig.jsonc`
 already declares stays as you wrote it. Review the entries, then publish.
 
+In the browser, open **Source > Profile > Discover tools**. The first scan is
+read-only. Review the findings, tick the confirmation, then choose **Add all
+accepted tools**. This writes the full accepted set, not a selected subset.
+Tools needing review are left out, and existing declarations stay unchanged.
+If the findings or configuration changed after review, scan again before
+accepting. These edits stay unpublished until you publish a revision.
+
 A proposed tool needs an upstream and at least one way to verify it. When the
 evidence is not enough, the scan marks the tool `needs-review`, says why, and
 `--write` leaves it out:

@@ -27,6 +27,8 @@ export class CliCommandFailure extends Data.TaggedError(
 export interface SourceScanInput {
   /** Insert the reviewed `tools` entries into `canonfig.jsonc`. */
   readonly write: boolean;
+  /** Bind a browser acceptance to the result and configuration it reviewed. */
+  readonly reviewDigest?: string | undefined;
 }
 
 export interface SourcePublishInput {

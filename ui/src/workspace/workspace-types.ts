@@ -231,7 +231,7 @@ export type PublicationState =
 export type DiscoveryState =
   | { kind: "Idle" }
   | { kind: "Scanning"; id: number }
-  | { kind: "Results"; id: number; tools: ScannedTool[] }
+  | { kind: "Results"; id: number; tools: ScannedTool[]; reviewDigest: string }
   | { kind: "Failed"; id: number; error: GuiRequestError };
 
 export interface ProfileSlice {
@@ -253,6 +253,7 @@ export interface ProfileSlice {
     removeSecret: (name: string) => Promise<boolean>;
     validate: () => Promise<boolean>;
     scan: () => Promise<boolean>;
+    acceptScan: () => Promise<boolean>;
     inspectRevision: (id: string) => () => void;
     trackSkill: (name: string, source: string, ref: string, subdir: string) => Promise<boolean>;
     checkSkill: (name: string) => void;

@@ -358,7 +358,7 @@ const sourceCommandsLayer = (folder: string): Layer.Layer<
       startFleetUpdate: (input) => asSource("start a Fleet Update", mapFailure(enrollment.startFleetUpdate(input)).pipe(Effect.map(payload))),
       stopFleetUpdate: (apply) => asSource("stop a Fleet Update", mapFailure(enrollment.stopFleetUpdate(apply)).pipe(Effect.map(payload))),
       scan: (input) =>
-        asSource("scan its folder for tools", mapFailure(profiles.scan({ folder, write: input.write })).pipe(Effect.map(payload))),
+        asSource("scan its folder for tools", mapFailure(profiles.scan({ folder, ...input })).pipe(Effect.map(payload))),
       publish: (input) =>
         asSource("publish a revision", profiles.publish({ folder, reviewer: input.reviewer, publishedAt: new Date().toISOString() }).pipe(
           Effect.mapError((error) =>

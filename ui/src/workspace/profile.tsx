@@ -1497,6 +1497,7 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
   const ws = useWorkspace();
   const [progress, setProgress] = useState(0);
   const [picked, setPicked] = useState<string[]>(ws.scannedTools.filter((tool) => tool.id === "node" || tool.id === "prettier").map((tool) => tool.id));
+  const [confirmAll, setConfirmAll] = useState(false);
   const returnFocus = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -1514,8 +1515,15 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
   const present = pickedTools.filter((f) => inFolder(f.id)).map((f) => f.id);
   const presentNote = present.length ? `${present.join(", ")} ${present.length === 1 ? "is" : "are"} already in the folder.` : "";
   const noneNew = picked.length === 0 ? "Tick the tools to add." : presentNote;
+  const accepted = ws.scannedTools.filter((tool) => tool.where === "accepted" && !inFolder(tool.id));
+  const busy = ws.profileLive?.busy ?? false;
+  function changeOpen(next: boolean) {
+    if (busy) return;
+    setConfirmAll(false);
+    onOpenChange(next);
+  }
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={changeOpen}>
       <DialogContent
         className="max-h-[calc(100dvh-2rem)] grid-cols-[minmax(0,1fr)] overflow-y-auto sm:max-w-lg"
         onOpenAutoFocus={() => {
@@ -1531,7 +1539,7 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
           <DialogTitle>Discover tools</DialogTitle>
           <DialogDescription className="text-base text-pretty">
             Canonfig reads the instructions, skills, hook scripts and MCP commands in <span className="font-mono text-sm text-foreground">{ws.sourceMachine.folder}</span> and proposes a
-            tool for each program they run. It runs nothing. Tools you add go into canonfig.jsonc, which keeps its comments.
+            tool for each program they run. It runs nothing. Tools you add go into canonfig.jsonc, which keeps its comments. Nothing is published until you publish a revision.
             {DEMO && " This demo reads no files and shows example results."}
           </DialogDescription>
         </DialogHeader>
@@ -1546,11 +1554,12 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
             {/* A large folder can propose many tools; the list scrolls so the title and buttons stay on screen. */}
             <div className="-mx-4 max-h-[min(50vh,440px)] overflow-y-auto overscroll-contain border-y border-border">
               {ws.scannedTools.map((f) => (
-                <label key={f.id} className="flex h-11 cursor-pointer items-center gap-3 border-b border-border/70 px-4 last:border-b-0 hover:bg-raised/50">
+                <label key={f.id} className="flex min-h-11 cursor-pointer items-center gap-3 border-b border-border/70 px-4 py-2 last:border-b-0 hover:bg-raised/50">
                   {ws.capabilities.selectiveScanWrite && <Checkbox checked={picked.includes(f.id)} onCheckedChange={(c) => setPicked((p) => (c ? [...p, f.id] : p.filter((x) => x !== f.id)))} />}
                   <span className="grid min-w-0">
                     <span className="text-base font-medium">{f.id}</span>
                     <Mono className="truncate text-faint">{f.command}</Mono>
+                    {ws.profileLive && <span className="text-sm text-muted-foreground">{f.where === "accepted" ? "Accepted" : "Needs review, will not be added"}</span>}
                   </span>
                   <span className="ml-auto shrink-0 text-sm whitespace-nowrap text-muted-foreground" title={`${f.file}, ${f.where}`}>
                     {inFolder(f.id) ? "In the folder" : f.file.split("/").pop()}
@@ -1563,11 +1572,20 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
                 {noneNew}
               </p>
             )}
+            {ws.profileLive && (
+              <div className="grid gap-3">
+                <p className="text-sm text-muted-foreground">This writes all accepted discoveries, not a selected subset. Existing tool entries stay unchanged. Tools needing review are left out.</p>
+                {accepted.length > 0 ? <label className="flex items-start gap-3 text-sm">
+                  <Checkbox checked={confirmAll} disabled={busy} onCheckedChange={(checked) => setConfirmAll(checked === true)} />
+                  <span>Add all {accepted.length} accepted {accepted.length === 1 ? "tool" : "tools"} to canonfig.jsonc. Keep these changes unpublished.</span>
+                </label> : <p className="text-sm text-muted-foreground">No new accepted tools to add.</p>}
+              </div>
+            )}
           </>
         )}
         <DialogFooter className="items-center sm:justify-between">
-          <div className="flex shrink-0 gap-2">
-            <Button variant="ghost" onClick={() => onOpenChange(false)}>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="ghost" disabled={busy} onClick={() => changeOpen(false)}>
               {ws.profileLive ? "Close" : "Cancel"}
             </Button>
             {ws.capabilities.selectiveScanWrite && <Button
@@ -1584,6 +1602,15 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
             >
               {fresh.length === 0 ? "Add tools" : `Add ${fresh.length} ${fresh.length === 1 ? "tool" : "tools"}`}
             </Button>}
+            {ws.profileLive && <>
+              <Button variant="outline" disabled={busy} onClick={() => { setConfirmAll(false); void ws.profileLive?.scan(); }}>Scan again</Button>
+              <Button variant="primary" disabled={!done || busy || !confirmAll || accepted.length === 0} onClick={async () => {
+                if (!await ws.profileLive?.acceptScan()) return;
+                setConfirmAll(false);
+                onOpenChange(false);
+                toast.success(`Added ${accepted.length} ${accepted.length === 1 ? "tool" : "tools"}`, { description: "Changes are unpublished. Publish a revision when ready." });
+              }}>{busy && done ? "Adding tools…" : "Add all accepted tools"}</Button>
+            </>}
           </div>
         </DialogFooter>
       </DialogContent>
