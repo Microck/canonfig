@@ -782,6 +782,18 @@ On the Source Machine, `list` shows every published Profile Revision with its
 id, sequence number, digest, and publication time, and `show` prints one
 Profile Revision by id.
 
+In the browser, Source > Revisions lists every stored profile history and can
+filter by profile ID. It shows publication times, fingerprints, recorded
+reviewers and resource-change counts against the preceding stored revision of
+the same profile. The first stored revision compares against an empty inventory.
+These counts do not claim to be a complete configuration diff.
+
+Select a row or enter an exact revision ID to inspect its labeled summary.
+Expand **Raw record** for the remaining fields, including resource specifications,
+groups, schedule defaults when present, signature, approval metadata and canonical
+bytes. Missing IDs show "No revision with this ID." IDs identify revisions across
+histories; sequence numbers do not. Missing approval metadata is shown as not recorded.
+
 ## Agent policy
 
 ```bash

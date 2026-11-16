@@ -5,6 +5,8 @@ import { commandFailureExitCode } from "../../cli/command-output.ts";
 import type { CliFailureCategory } from "../../cli/exit-codes.ts";
 import { ProfileRevisionId } from "../../domain/brand.ts";
 import { validateMachineProfile } from "../../domain/profile.ts";
+import type { ProfileRevision } from "../../domain/profile.ts";
+import { StateRepository } from "../../state/state-repository.service.ts";
 import { MachineState } from "../../machine/machine-state.service.ts";
 import { asJson } from "../../profile/profile-codec.ts";
 import { folderProfile } from "../../profile/publication.ts";
@@ -29,6 +31,7 @@ export const profileRoutes = Effect.gen(function*() {
   const source = yield* SourceCommands;
   const queries = yield* GuiQueries;
   const machine = yield* MachineState;
+  const repository = yield* StateRepository;
   const operations = yield* GuiOperations;
   const target = Effect.gen(function*() {
     const session = yield* queries.session();
@@ -62,6 +65,29 @@ export const profileRoutes = Effect.gen(function*() {
     // scope and command lease until they settle, including during shutdown.
     Effect.andThen(operations.start(skillCall(run).pipe(Effect.uninterruptible), () => Effect.succeed(null))),
   );
+  const revisionHistory = Effect.gen(function*() {
+    const stored = yield* repository.listRevisions().pipe(Effect.mapError(commandFailure));
+    const previous = new Map<string, ProfileRevision>();
+    return yield* Effect.forEach([...stored].sort((a, b) => a.profileId.localeCompare(b.profileId) || a.sequence - b.sequence), (revision) => Effect.gen(function*() {
+      const before = previous.get(revision.profileId);
+      previous.set(revision.profileId, revision);
+      const beforeResources = new Map(before?.resources.map((resource) => [resource.id, resource]));
+      const remaining = new Set(beforeResources.keys());
+      const added: string[] = [], changed: string[] = [];
+      for (const resource of revision.resources) {
+        const old = beforeResources.get(resource.id);
+        if (old === undefined) added.push(resource.id);
+        else if (JSON.stringify(old) !== JSON.stringify(resource)) changed.push(resource.id);
+        remaining.delete(resource.id);
+      }
+      const approval = yield* repository.loadRevisionApproval(revision.id).pipe(Effect.mapError(commandFailure));
+      return {
+        id: revision.id, profileId: revision.profileId, sequence: revision.sequence, digest: revision.digest, publishedAt: revision.publishedAt,
+        approval: approval ?? null,
+        resourceChanges: { previousRevision: before?.id ?? null, added, changed, removed: [...remaining] },
+      };
+    }));
+  }).pipe(Effect.map((revisions) => ({ revisions })));
   const routes: GuiRoute[] = [
     queryRoute(profileEndpoints.items, snapshot),
     mutationRoute("PUT", profileEndpoints.items, GuiProfileWrite, (input) => target.pipe(Effect.flatMap((location) => writeAuthoringItems(location, changesFrom(input.changes)).pipe(Effect.provideService(MachineState, machine), Effect.mapError(commandFailure))), Effect.as({ saved: true })), 200, { maximumBodyBytes: maximumAuthoringBodyBytes }),
@@ -89,8 +115,16 @@ export const profileRoutes = Effect.gen(function*() {
       );
       return yield* operations.start(publish, () => revisionId === undefined ? Effect.succeed(null) : source.inspectProfile(revisionId).pipe(Effect.map(asJson)));
     }), 202),
-    queryRoute(profileEndpoints.revisions, () => target.pipe(Effect.andThen(source.listProfiles()), Effect.map(asJson))),
-    mutationRoute("POST", profileEndpoints.revision, GuiRevisionSelection, (input) => target.pipe(Effect.andThen(Schema.decodeUnknownEffect(ProfileRevisionId)(input.revision).pipe(Effect.mapError((error) => new CliCommandFailure({ category: "usage-or-configuration", message: error.message })))), Effect.flatMap(source.inspectProfile), Effect.map(asJson))),
+    queryRoute(profileEndpoints.revisions, () => target.pipe(Effect.andThen(revisionHistory), Effect.map(asJson))),
+    mutationRoute("POST", profileEndpoints.revision, GuiRevisionSelection, (input) => target.pipe(
+      Effect.andThen(Schema.decodeUnknownEffect(ProfileRevisionId)(input.revision).pipe(Effect.mapError((error) => new CliCommandFailure({ category: "usage-or-configuration", message: error.message })))),
+      Effect.flatMap((id) => Effect.gen(function*() {
+        const revision = yield* repository.findRevision(id).pipe(Effect.mapError(commandFailure));
+        if (revision === undefined) return null;
+        const approval = yield* repository.loadRevisionApproval(id).pipe(Effect.mapError(commandFailure));
+        return asJson({ ...revision, approval: approval ?? null });
+      })),
+    )),
     queryRoute(profileEndpoints.skills, () => skillCall(listSkills)),
     mutationRoute("POST", profileEndpoints.track, GuiSkillTrack, (input) => skillOperation((location) => trackSkill(location, { ...input, path: `skills/${input.name}` })), 202),
     mutationRoute("POST", profileEndpoints.check, GuiSkillSelection, (input) => skillOperation((location) => checkSkills(location, input.names)), 202),

@@ -32,7 +32,10 @@ function Fixture({ backend }: { backend: WorkspaceBackend }) {
   </LiveWorkspaceProvider></TooltipProvider>;
 }
 
-const revision = (sequence: number, profileId = "fixture", publishedAt = `2026-11-1${sequence}T00:00:00Z`) => ({ id: `${profileId}-${sequence}`, profileId, sequence, digest: `digest-${sequence}`, publishedAt });
+const revision = (sequence: number, profileId = "fixture", publishedAt = `2026-11-1${sequence}T00:00:00Z`) => ({
+  id: `${profileId}-${sequence}`, profileId, sequence, digest: `digest-${sequence}`, publishedAt,
+  approval: null, resourceChanges: { previousRevision: null, added: [], changed: [], removed: [] },
+});
 const service = (serving: boolean): typeof GuiSourceServiceReport.Type => ({
   report: {
     state: serving ? "running" : "not-serving", platform: "linux", mechanism: "systemd-user-service", serviceName: "overview-fixture", endpoint: "https://127.0.0.1:17342",

@@ -1,4 +1,5 @@
 import { version } from "../../../package.json";
+import type { GuiRevisions } from "../../../src/gui/contract/profile";
 
 // Shared labels and presentation types. No demo records or simulated actions.
 export type Role = "source" | "follower" | "unconfigured";
@@ -64,6 +65,8 @@ export interface Follower {
 
 export interface Revision {
   id: string;
+  profileId?: string;
+  resourceChanges?: GuiRevisions["revisions"][number]["resourceChanges"];
   sequence: number;
   digest: string;
   publishedAt: string;
