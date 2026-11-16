@@ -2,7 +2,18 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
-## Unreleased
+## v7.2.0 - 2026-11-16
+
+### Fleet updates
+
+- Roll out the Source's exact stable release to enrolled Followers with
+  `canonfig source update --canary <name> --apply` or Settings > Version.
+- Followers check on their next CLI `sync --apply`, including scheduled runs.
+  The canary must converge before the rollout continues; a failed health check
+  halts it, and offline Followers stay queued.
+- Verify the Source signature, official npm publisher provenance, and package
+  integrity before activation. Active commands and unfinished runs defer updates.
+  Downgrades and state-format changes require manual recovery.
 
 ### Tailnet
 
@@ -22,6 +33,26 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
 
 - Document machine-local skill and MCP preservation, first-adoption review, and upgrade/UI handoff in the bundled Canonfig skills.
 - Clarify upgrade instructions: `canonfig self-update apply` previews an update; `canonfig self-update apply --apply` installs it. Source service installation starts immediately, so prepare credential access and required native overrides first.
+
+### Upgrading
+
+Source and Followers must run the same major.minor version. Upgrade every
+machine to 7.2.0 before resuming synchronization; 7.1.x cannot sync with 7.2.x.
+Finish or recover unfinished runs with the CLI build that created them first.
+
+Stop the browser interface before installing
+`npm install --global @microck/canonfig@7.2.0`. On a Source, remove its service
+before installation and reinstall it afterwards. Prepare unattended credential
+access and required native service overrides before reinstalling: installation
+starts the service immediately. Follow the documented upgrade procedure for
+your platform. This release does not update existing machines by itself.
+
+### Known limitation
+
+Import assumes trusted local processes and source folders that stay unchanged.
+A concurrent parent-folder swap can bypass path checks and cause private
+configuration to be read. Keep other programs from changing source folders
+during import.
 
 ## v7.1.12 - 2026-11-15
 
