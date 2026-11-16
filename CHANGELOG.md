@@ -2,13 +2,26 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
-## Unreleased
+## v7.4.0 - 2026-11-17
 
 ### Browser interface
 
 - Browse all stored Source profile histories in Revisions, with recorded reviewers
   and resource-change counts. Look up an exact revision ID and inspect its complete
   stored record, approval metadata and canonical bytes.
+- Edit agent harness bounds, HTTPS origins, leaf executables and secret bindings
+  on a follower under any agent policy. Saving them never runs an agent.
+- See stored receipt and recovery evidence on the overview after a fresh browser
+  session, enrollment details for a selected follower, and a per-probe health
+  check timeout.
+- Change a schedule's time zone from a picker, and stop automation with a
+  confirmed removal, as `canonfig schedule remove` does.
+- Check and apply upstream skill updates for all tracked skills, or a selected
+  set, in one reviewed batch. Publishing stays a separate step.
+- Set, replace and remove follower-local secrets in the browser. Source secrets
+  show where they came from.
+- Accept the tools a Source scan discovers after reviewing them, as
+  `canonfig source scan --write` does, without publishing.
 
 ### Remote shells
 
@@ -38,6 +51,28 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
   Canonfig manages, such as a harness skills folder, when nothing else there
   changed. Before, this was reported as Follower Drift and stopped every later
   run. A file missing from inside a skill is still Follower Drift.
+
+### Security
+
+The same five moderate audit findings as 7.3.0 remain in the upstream
+TUF/minimatch dependency chain under `sigstore`, whose latest release still
+depends on the affected range. This release uses an explicitly approved
+exception to the clean-audit gate; these denial-of-service advisories are not
+fixed.
+
+### Upgrading
+
+Use Node.js 24.15+ or 26+. Source and Followers must all use the 7.4 release line
+before resuming synchronization; 7.3.x and 7.4.x do not synchronize with each other.
+Finish or recover any unfinished run with the CLI build that created it before
+installing 7.4.0.
+
+A Fleet Update from a 7.4.0 Source reaches 7.3.x followers, but a 7.3.x follower
+whose clock is behind the Source's still refuses its directive as expired; the
+fix applies once the follower runs 7.4.0. Correct that machine's clock, or stop
+its browser interface and run `npm install --global @microck/canonfig@7.4.0`
+there. On a Source, stop the service and browser interface, update, then start
+them again with their original address and port.
 
 ## v7.3.0 - 2026-11-16
 
