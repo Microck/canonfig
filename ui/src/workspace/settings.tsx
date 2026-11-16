@@ -711,11 +711,12 @@ export function DoctorView() {
   const ws = useWorkspace();
   const doctor = ws.admin.doctor;
   const running = doctor.busy;
+  const [timeout, setTimeout] = useState("5000");
   const progress = doctor.progress;
   // A skipped check does not apply to this machine (a Source has no tunnel or schedule), so it is not shown.
   const relevant = (doctor.data ?? []).filter((check) => check.result !== "off");
   const issues = relevant.filter((check) => check.result === "warn" || check.result === "bad").length;
-  const run = doctor.run;
+  const run = () => doctor.run(Number(timeout));
   // Opened from ⌘K "Run doctor" or the guide: start immediately, even if this page is already open.
   const { focus, go } = ws;
   useEffect(() => {
@@ -734,13 +735,24 @@ export function DoctorView() {
       <PageHeader
         crumbs={["Settings", "Health check"]}
         actions={
-          <Button size="sm" variant="primary" disabled={running} onClick={run}>
+          <Button size="sm" variant="primary" disabled={running} type="submit" form="doctor-check">
             {running ? "Checking…" : "Run checks"}
           </Button>
         }
       />
       <Body reloading={doctor.loading}>
         <Column>
+          <form id="doctor-check" className="mb-5" onSubmit={(event) => { event.preventDefault(); run(); }}>
+            <details>
+              <summary className="cursor-pointer text-sm text-muted-foreground">Advanced checks</summary>
+              <div className="mt-3 grid max-w-sm gap-2">
+                <Label htmlFor="doctor-timeout">Probe timeout (milliseconds)</Label>
+                <Input id="doctor-timeout" type="number" required min={1} max={300000} step={1} value={timeout} disabled={running} onChange={(event) => setTimeout(event.target.value)} aria-describedby="doctor-timeout-help" />
+                <p id="doctor-timeout-help" className="text-sm text-muted-foreground">Default 5000. Increase up to 300000 for slow environments. Checks never prompt for input.</p>
+              </div>
+            </details>
+          </form>
+          {doctor.timeoutMilliseconds !== undefined && <p className="mb-3 text-sm text-muted-foreground">Last check used a {doctor.timeoutMilliseconds} ms probe timeout.</p>}
           {doctor.error && <ErrorNotice error={doctor.error} />}
           {!doctor.data && running && <p className="mb-4 text-sm text-muted-foreground">Running checks…</p>}
           {doctor.data && <p role="status" className="mb-4 text-base font-medium">

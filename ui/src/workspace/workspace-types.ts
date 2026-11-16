@@ -7,7 +7,7 @@ import type { MachinesMode, Navigate, NavigateOptions, ProfileTab, WorkspaceRole
 import type { AdministrationSlice } from "./administration-types";
 import type { Schedule } from "./schedule";
 import type { WorkspaceBackend } from "../gui-client";
-import type { GuiEnrollment, GuiInvitationDownload } from "../../../src/gui/contract/enrollment";
+import type { GuiEnrollment, GuiInvitationDownload, GuiMachines } from "../../../src/gui/contract/enrollment";
 import type { Schema } from "effect";
 import type { GuiProfileSnapshot, GuiProfileValidation, GuiProfileConfigWrite, GuiSkillCheck } from "../../../src/gui/contract/profile";
 import type { GuiArchiveDownload } from "../../../src/gui/contract/synchronization";
@@ -310,6 +310,7 @@ export interface MachinesSlice {
   machineStates: Record<"inventory" | "enrollment" | "setup", ResourceState>;
   enrollmentBackend?: WorkspaceBackend;
   enrollment?: GuiEnrollment;
+  enrollmentFollowers?: GuiMachines["followers"];
   createInvitation?: (input: { endpoint: string; expiresInMilliseconds: number; groups: string[] }) => Promise<GuiInvitationDownload>;
   revokeFollower?: (id: string) => Promise<void>;
   /** Source only: saves the Source card's look so Followers draw the Source the same way. */

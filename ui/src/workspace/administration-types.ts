@@ -90,7 +90,8 @@ export interface AdministrationSlice {
   doctor: AdministrationResource<readonly DoctorCheck[]> & {
     status: string | null;
     progress?: number;
-    run: () => void;
+    timeoutMilliseconds?: number;
+    run: (timeoutMilliseconds?: number) => void;
   };
   version: AdministrationResource<typeof GuiSelfUpdateStatus.Type> & {
     lifecycle: UpdateLifecycle;

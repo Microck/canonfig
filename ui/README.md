@@ -4,6 +4,8 @@ The browser frontend lives in `ui/`. Production and demo share the screens in `s
 
 The packaged `canonfig ui` reads the real machine through the same services as the CLI. Overview, Profile, machines, onboarding, Follower workflows and administration use the shared screens with live reads and mutations. The [Phase 2d inventory](../docs/plans/canonfig-ui.md#phase-2d-one-screen-tree-two-data-sources) records the supported operations and verification evidence. Production never mounts the simulated provider or simulates success.
 
+Overview's Technical details reads the persisted status receipt, exact applied revision/run, build and recovery evidence after a fresh browser session. Source status does not report a local completion receipt; the page says so instead of treating publication as application. Source Machines shows enrollment date, revocation, pending state and credential presence/lifecycle without exposing credentials or claiming remote convergence. Settings > Health check > Advanced checks sets a per-probe timeout from 1 through 300000 ms, defaulting to 5000 ms, and the report shows which timeout it used.
+
 Run `canonfig ui` to open the packaged interface, or `canonfig ui --port 5317 --no-open` to choose a loopback port and open the printed single-use URL yourself. Keep the terminal running; Ctrl-C or SIGTERM stops the server. Bare `canonfig` still prints help.
 
 Run from the repository root:

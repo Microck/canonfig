@@ -85,6 +85,12 @@ export const GuiInstallerCheck = Schema.Struct({
   scope: Schema.Literal("current-process"),
 });
 
+export const GuiDoctorInput = Schema.Struct({
+  timeoutMilliseconds: Schema.optionalKey(Schema.Int.check(
+    Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(300_000),
+  )),
+});
+
 export const GuiDoctorReport = Schema.Struct({
   schema: Schema.Literal("canonfig.doctor/v1"),
   status: Schema.Literals(["healthy", "degraded", "unhealthy"]),

@@ -471,6 +471,7 @@ function revokeTransition(state: RevokeState, event: RevokeEvent): RevokeState {
 
 function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follower; onClose: () => void; onCustomize: () => void }) {
   const ws = useWorkspace();
+  const enrollment = ws.enrollmentFollowers?.find((entry) => entry.id === f.id);
   const [revoke, dispatchRevoke] = useReducer(revokeTransition, { phase: "viewing" });
   const returnFocus = useRef<HTMLElement | null>(null);
   const step = nextStep(f);
@@ -531,6 +532,15 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
         >
           <Mono className="break-all text-foreground">{f.id}</Mono>
         </Prop>
+        {enrollment && <>
+          <Prop label="Enrolled at">{enrollment.enrolledAt}</Prop>
+          <Prop label="Revoked">{enrollment.revoked ? "Yes" : "No"}</Prop>
+          <Prop label="Enrollment pending">{enrollment.pending ? "Yes" : "No"}</Prop>
+          <Prop label="Credential present">{enrollment.credentialPresent ? "Yes" : "No"}</Prop>
+          <Prop label="Credential lifecycle">{enrollment.credentialLifecycle._tag}</Prop>
+          {ws.status?.machineRole.sourceFingerprint && <Prop label="Source fingerprint"><Mono className="break-all">{ws.status.machineRole.sourceFingerprint}</Mono></Prop>}
+          <p className="mt-3 text-sm text-muted-foreground">Enrollment evidence only. This Source does not receive remote sync or health reports.</p>
+        </>}
       </div>
       {f.resources && <div className="border-t border-border px-4 pt-3">
         <SectionLabel>What it has</SectionLabel>

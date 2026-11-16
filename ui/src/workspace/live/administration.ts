@@ -160,8 +160,8 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
       } catch (cause) { policyEvent({ kind: "Failed", error: requestError(cause) }); throw cause; }
     });
   };
-  const runDoctor = () => { void doctor.run(async (signal) => {
-    const report = await backend.request("/api/doctor", GuiDoctorReport, signal, { method: "POST", body: {} });
+  const runDoctor = (timeoutMilliseconds = 5_000) => { void doctor.run(async (signal) => {
+    const report = await backend.request("/api/doctor", GuiDoctorReport, signal, { method: "POST", body: { timeoutMilliseconds } });
     if (!signal.aborted) doctor.setData(report);
   }); };
   const settings = version.data?.settings;
@@ -233,7 +233,8 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
       })) ?? null,
       // Failed probes are shown in the list itself; only a request that could not run the checks is an error.
       loading: doctor.loading, busy: doctor.busy, error: doctor.error,
-      reload: runDoctor, status: doctor.data?.status ?? null, run: runDoctor,
+      reload: () => runDoctor(), status: doctor.data?.status ?? null, run: runDoctor,
+      timeoutMilliseconds: doctor.data?.timeoutMilliseconds,
     },
     version: {
       ...version,

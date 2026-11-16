@@ -5,6 +5,8 @@ import { createServer } from "node:http";
 import { after, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { Schema } from "effect";
+import { renderToStaticMarkup } from "react-dom/server";
 import { act } from "react";
 import { request, type WorkspaceBackend } from "../gui-client";
 import { GuiOperation, GuiSession, GuiSourceServiceReport, GuiStatus } from "../../../src/gui/contract";
@@ -17,6 +19,8 @@ const { LiveWorkspaceProvider } = await import("./live-provider");
 const { createRoot } = await import("react-dom/client");
 const { SourceOverview } = await import("./source");
 const { TooltipProvider } = await import("../components/ui/tooltip");
+// This evidence component shares controls with the workspace, which require the registered DOM.
+const { PersistentStatusEvidence } = await import("./follower-evidence");
 after(async () => { await GlobalRegistrator.unregister(); });
 
 function Fixture({ backend }: { backend: WorkspaceBackend }) {
@@ -122,4 +126,41 @@ it("a live Source whose revisions cannot be read says so instead of guessing", a
     assert.ok(text.includes("Canonfig could not read the published revisions"), text);
     assert.ok(!/is published|Nothing published yet|up to date/i.test(text), text);
   } finally { await page.close(); }
+});
+
+it("renders a persisted receipt and open recovery without an operation ticket", () => {
+  const stage = { status: "verified", detail: "Stored verification evidence" };
+  const persisted = Schema.decodeUnknownSync(GuiStatus)({
+    machineRole: { role: "follower" }, lifecycle: {}, tunnel: null,
+    enrollmentLifecycle: "RollbackPending", enrollmentRecovery: "Retry enrollment to finish rollback",
+    completionReceipt: {
+      revision: "profile:applied-view", run: "run-completed",
+      published: stage, applied: stage, independentlyVerified: stage,
+      clientLoaded: { status: "not-verified", detail: "Check the client yourself" },
+      scheduled: { status: "not-selected", detail: "No schedule selected" },
+      mcpQualifications: [], secondRunNoOp: true,
+      build: { packageVersion: "7.3.0", identity: "build-digest", stateFormat: 7 },
+    },
+    activeRecovery: {
+      run: "run-open", revision: "profile:pending-view", startedAt: "2026-11-16T12:00:00Z",
+      owner: { pid: 1234, operation: "sync", since: "2026-11-16T12:00:00Z" },
+      finishedActions: 1, totalActions: 2, next: "Wait for the live owner",
+      actions: [{ action: "action-open", resource: "skills:review", kind: "write-file", state: "interrupted", attempt: 2, recordedAt: "2026-11-16T12:01:00Z" }],
+      drift: [{ resource: "skills:review", target: "/fixture/skill", desiredDigest: "desired-digest", observedDigest: "observed-digest", lastAppliedDigest: "last-applied-digest" }],
+    },
+  });
+  // Rendering again has no session-local operation state to reconstruct.
+  for (let session = 0; session < 2; session++) {
+    const html = renderToStaticMarkup(<PersistentStatusEvidence status={persisted} />);
+    for (const expected of ["profile:applied-view", "run-completed", "Check the client yourself", "No schedule selected", "build-digest", "RollbackPending", "Retry enrollment", "run-open", "profile:pending-view", "PID 1234", "1 of 2", "Wait for the live owner", "action-open", "interrupted", "desired-digest", "observed-digest", "last-applied-digest"]) {
+      assert.ok(html.includes(expected), expected);
+    }
+  }
+});
+
+it("does not invent a receipt or local recovery on a Source without status evidence", () => {
+  const html = renderToStaticMarkup(<PersistentStatusEvidence status={Schema.decodeUnknownSync(GuiStatus)(status)} />);
+  assert.ok(html.includes("Status reports no completion receipt for this machine."));
+  assert.ok(html.includes("Not reported by status"));
+  assert.ok(!html.includes("verified"));
 });

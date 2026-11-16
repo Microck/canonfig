@@ -22,7 +22,7 @@ import {
 } from "../../synchronization/installer-bindings.ts";
 import {
   GuiAgentHarness, GuiAgentPolicy, type GuiAgentHarnessRead,
-  GuiInstallerSetInput, GuiSelfUpdateEnable, GuiSourceServiceInput,
+  GuiDoctorInput, GuiInstallerSetInput, GuiSelfUpdateEnable, GuiSourceServiceInput,
 } from "../contract/administration.ts";
 import { GuiQueries } from "../queries.ts";
 import { EmptyBody, commandFailure, failureBody, mutationRoute, queryRoute, type GuiRoute } from "../routing.ts";
@@ -137,7 +137,7 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
       return toJson(harnessResponse(yield* follower.setAgentHarness(configuration)));
     }))),
     // A failed probe is part of the report, not a failed request: the report's status and probes say what is wrong.
-    mutationRoute("POST", "/api/doctor", EmptyBody, () => follower.doctor({ noInput: true, timeoutMilliseconds: 10_000 }).pipe(
+    mutationRoute("POST", "/api/doctor", GuiDoctorInput, (input) => follower.doctor({ noInput: true, timeoutMilliseconds: input.timeoutMilliseconds ?? 5_000 }).pipe(
       Effect.map(toJson),
       Effect.catch((error) => error.details === undefined ? Effect.fail(error) : Effect.succeed(toJson(error.details))),
     )),

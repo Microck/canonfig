@@ -16,6 +16,40 @@ const LifecycleStep = Schema.StructWithRest(
   [Schema.Record(Schema.String, Schema.Json)],
 );
 
+const ReceiptStage = Schema.Struct({
+  status: Schema.Literals(["verified", "not-verified", "not-reached", "not-selected", "pending"]),
+  detail: Schema.String,
+});
+
+export const GuiCompletionReceipt = Schema.Struct({
+  run: Schema.optionalKey(Schema.String),
+  revision: Schema.optionalKey(Schema.String),
+  published: ReceiptStage,
+  applied: ReceiptStage,
+  independentlyVerified: ReceiptStage,
+  clientLoaded: ReceiptStage,
+  scheduled: ReceiptStage,
+  mcpQualifications: Schema.Array(Schema.Json),
+  secondRunNoOp: Schema.Boolean,
+  build: Schema.optionalKey(Schema.Struct({
+    packageVersion: Schema.String, identity: Schema.String, stateFormat: Schema.Number,
+  })),
+});
+
+export const GuiActiveRecovery = Schema.Struct({
+  run: Schema.String, revision: Schema.String, startedAt: Schema.String,
+  owner: Schema.optionalKey(Schema.Struct({
+    pid: Schema.Number, operation: Schema.String, since: Schema.String,
+  })),
+  finishedActions: Schema.Number, totalActions: Schema.Number,
+  actions: Schema.Array(Schema.Struct({
+    action: Schema.String, resource: Schema.String, kind: Schema.String,
+    state: Schema.String, attempt: Schema.Number, recordedAt: Schema.String,
+  })),
+  drift: Schema.Array(Schema.Json),
+  next: Schema.String,
+});
+
 /** Preserve the complete status payload, including role-specific run and recovery evidence. */
 export const GuiStatus = Schema.StructWithRest(
   Schema.Struct({
@@ -27,6 +61,10 @@ export const GuiStatus = Schema.StructWithRest(
     }),
     lifecycle: Schema.Record(Schema.String, LifecycleStep),
     tunnel: Schema.Json,
+    completionReceipt: Schema.optionalKey(GuiCompletionReceipt),
+    activeRecovery: Schema.optionalKey(GuiActiveRecovery),
+    enrollmentLifecycle: Schema.optionalKey(Schema.String),
+    enrollmentRecovery: Schema.optionalKey(Schema.String),
   }),
   [Schema.Record(Schema.String, Schema.Json)],
 );

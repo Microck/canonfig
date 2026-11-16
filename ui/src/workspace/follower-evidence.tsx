@@ -1,4 +1,5 @@
 import type { Schema } from "effect";
+import type { GuiStatus } from "../../../src/gui/contract/session";
 import { CliText, Mono, StateBand, StatusMark, type StatusKind } from "../shared/shared";
 import { Button } from "../components/ui/button";
 import { cn } from "@/lib/utils";
@@ -39,6 +40,75 @@ export function TunnelEvidence({ report: value }: { report: Schema.Json }) {
     {text(identity.tlsPinnedFingerprint) && <SettingRow title="Pinned TLS fingerprint"><Mono className="break-all">{text(identity.tlsPinnedFingerprint)}</Mono></SettingRow>}
     {text(identity.sourcePinnedFingerprint) && <SettingRow title="Pinned Source signing key"><Mono className="break-all">{text(identity.sourcePinnedFingerprint)}</Mono></SettingRow>}
     {text(report.recovery) && <SettingRow title="Recovery command"><Mono>{text(report.recovery)}</Mono></SettingRow>}
+  </div>;
+}
+
+const receiptStages = [
+  ["published", "Publication"], ["applied", "Application"], ["independentlyVerified", "Independent verification"],
+  ["clientLoaded", "Client loading"], ["scheduled", "Scheduling"],
+] as const;
+
+/** Persisted status survives a new browser session; operation tickets do not. */
+export function PersistentStatusEvidence({ status }: { status: GuiStatus }) {
+  const receipt = status.completionReceipt;
+  const recovery = status.activeRecovery;
+  return <div className="mt-4 space-y-5">
+    <section aria-label="Completion receipt">
+      <SectionLabel>Completion receipt</SectionLabel>
+      <div className={settingsGroup}>
+        <SettingRow title="Applied revision"><Mono className="break-all">{receipt?.revision ?? "Not reported by status"}</Mono></SettingRow>
+        {receipt?.run && <SettingRow title="Completed run"><Mono className="break-all">{receipt.run}</Mono></SettingRow>}
+        {receipt ? <>
+          {receiptStages.map(([key, label]) => <SettingRow key={key} title={label} description={<CliText>{receipt[key].detail}</CliText>}>
+            <span className="inline-flex items-center gap-2"><StatusMark kind={receipt[key].status === "verified" ? "ok" : receipt[key].status === "not-selected" ? "off" : "warn"} />{receipt[key].status.replaceAll("-", " ")}</span>
+          </SettingRow>)}
+          <SettingRow title="Second run no-op">{receipt.secondRunNoOp ? "Yes" : "No"}</SettingRow>
+          {receipt.build && <>
+            <SettingRow title="Applied with version"><Mono>{receipt.build.packageVersion}</Mono></SettingRow>
+            <SettingRow title="Build identity"><Mono className="break-all">{receipt.build.identity}</Mono></SettingRow>
+            <SettingRow title="State format">{receipt.build.stateFormat}</SettingRow>
+          </>}
+        </> : <p className="py-2 text-sm text-muted-foreground">Status reports no completion receipt for this machine.</p>}
+      </div>
+      {receipt?.mcpQualifications.map((value, index) => {
+        const qualification = record(value);
+        const stages = Array.isArray(qualification.stages) ? qualification.stages.map(record) : [];
+        const prerequisites = Array.isArray(qualification.prerequisites) ? qualification.prerequisites.map(record) : [];
+        return <details key={index} className="mt-3">
+          <summary className="cursor-pointer">MCP qualification: {text(qualification.target)} ({qualification.ready === true ? "ready" : "not ready"})</summary>
+          {stages.map((stage, stageIndex) => <SettingRow key={stageIndex} title={text(stage.stage)} description={`${text(stage.method) ?? ""}: ${text(stage.operation) ?? ""}`}>{text(stage.status)}{typeof stage.exitCode === "number" && ` (exit ${stage.exitCode})`}</SettingRow>)}
+          {prerequisites.map((prerequisite, prerequisiteIndex) => <SettingRow key={prerequisiteIndex} title={text(prerequisite.kind)} description={<CliText>{text(prerequisite.instructions) ?? ""}</CliText>}>{text(prerequisite.status)}</SettingRow>)}
+        </details>;
+      })}
+    </section>
+    <section aria-label="Recovery evidence">
+      <SectionLabel>Recovery evidence</SectionLabel>
+      <div className={settingsGroup}>
+        {status.enrollmentLifecycle && <SettingRow title="Enrollment lifecycle">{status.enrollmentLifecycle}</SettingRow>}
+        {status.enrollmentRecovery && <SettingRow title="Enrollment recovery"><CliText>{status.enrollmentRecovery}</CliText></SettingRow>}
+        {recovery ? <>
+          <SettingRow title="Open run"><Mono className="break-all">{recovery.run}</Mono></SettingRow>
+          <SettingRow title="Recovery revision"><Mono className="break-all">{recovery.revision}</Mono></SettingRow>
+          <SettingRow title="Started at">{recovery.startedAt}</SettingRow>
+          <SettingRow title="Run owner">{recovery.owner ? `${recovery.owner.operation}, PID ${recovery.owner.pid}, since ${recovery.owner.since}` : "No live owner reported"}</SettingRow>
+          <SettingRow title="Finished actions">{recovery.finishedActions} of {recovery.totalActions}</SettingRow>
+          <SettingRow title="Next step"><CliText>{recovery.next}</CliText></SettingRow>
+        </> : <SettingRow title="Open recovery run">Not reported by status</SettingRow>}
+      </div>
+      {recovery && <details className="mt-3">
+        <summary className="cursor-pointer">Recorded actions ({recovery.actions.length}) and drift ({recovery.drift.length})</summary>
+        {recovery.actions.map((action) => <SettingRow key={action.action} title={resourceLabel(action.resource)} description={`${action.kind}, attempt ${action.attempt}, ${action.recordedAt}`}><Mono className="break-all">{action.action}</Mono> {action.state}</SettingRow>)}
+        {recovery.drift.map((value, index) => {
+          const conflict = record(value);
+          return <div key={index} className="mt-3">
+            <SettingRow title={resourceLabel(text(conflict.resource))}><Mono className="break-all">{text(conflict.target)}</Mono></SettingRow>
+            {(["desiredDigest", "observedDigest", "lastAppliedDigest", "desiredExecutable", "observedExecutable", "desiredMode", "observedMode"] as const).map((key) =>
+              conflict[key] !== undefined && <SettingRow key={key} title={key}><Mono className="break-all">{String(conflict[key])}</Mono></SettingRow>,
+            )}
+          </div>;
+        })}
+      </details>}
+    </section>
   </div>;
 }
 
