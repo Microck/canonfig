@@ -76,6 +76,9 @@ stop / Other. Retiring a Source strands its followers and needs approval.
 
 ## Install and enroll
 
+Check `canonfig --version` on the Source before installing the Follower. Source
+and Followers must share the same major.minor version. If the Source is still
+on 7.1.x, stop and arrange an approved fleet upgrade before installing 7.2.0.
 Use an approved user-level install only when needed.
 
 ```bash

@@ -15,7 +15,7 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
 ### Fleet updates
 
 - Roll out the Source's exact stable release to enrolled Followers with
-  `canonfig source update --canary <name> --apply` or Settings > Version.
+  `canonfig source update --canary <follower-id> --apply` or Settings > Version.
 - Followers check on their next CLI `sync --apply`, including scheduled runs.
   The canary must converge before the rollout continues; a failed health check
   halts it, and offline Followers stay queued.
