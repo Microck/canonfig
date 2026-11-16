@@ -245,7 +245,7 @@ export interface ProfileSlice {
     skillChecks: Record<string, GuiSkillCheck>;
     skillBusy: string | null;
     discovery: DiscoveryState;
-    revisionDetail: (ResourceState & { sequence: number; data: Schema.Json | null }) | null;
+    revisionDetail: (ResourceState & { id: string; data: Schema.Json | null }) | null;
     reload: () => void;
     saveItem: (snapshot: GuiProfileSnapshot, before: Resource | undefined, next: Resource, exact?: ExactDraft, remove?: boolean) => Promise<boolean>;
     saveConfig: (snapshot: GuiProfileSnapshot, edits: typeof GuiProfileConfigWrite.Type.edits) => Promise<boolean>;
@@ -253,7 +253,7 @@ export interface ProfileSlice {
     removeSecret: (name: string) => Promise<boolean>;
     validate: () => Promise<boolean>;
     scan: () => Promise<boolean>;
-    inspectRevision: (sequence: number) => () => void;
+    inspectRevision: (id: string) => () => void;
     trackSkill: (name: string, source: string, ref: string, subdir: string) => Promise<boolean>;
     checkSkill: (name: string) => void;
     updateSkill: (name: string) => void;

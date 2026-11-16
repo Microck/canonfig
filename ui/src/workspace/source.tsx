@@ -641,7 +641,7 @@ function PublishForm() {
 export function RevisionsView() {
   const ws = useWorkspace();
   const selected = ws.focus;
-  const current = ws.revisions.find((r) => String(r.sequence) === selected);
+  const current = ws.revisions.find((r) => r.id === selected);
   const cols = "72px minmax(200px,360px) 140px 110px minmax(120px,1fr)";
   // Column minimums + 4 gaps + row inset padding; narrower screens scroll the list sideways instead of clipping it.
   const colsMin = 72 + 200 + 140 + 110 + 120 + 4 * 12 + 20;
@@ -649,7 +649,7 @@ export function RevisionsView() {
     <>
       <PageHeader crumbs={["Revisions"]} actions={ws.profileLive ? <Button size="sm" onClick={() => ws.setPublishOpen(true)}>Publish revision</Button> : <PublishButton />} />
       <ProfileActionNotice />
-      <Body detail={current && <RevisionDetail key={current.sequence} revision={current} onClose={() => ws.go("revisions")} />}>
+      <Body detail={current && <RevisionDetail key={current.id} revision={current} onClose={() => ws.go("revisions")} />}>
         {ws.revisions.length === 0 && ws.pending.length === 0 ? (
           <EmptyState title="No revisions yet" body="Publish the profile to create revision 1." />
         ) : (
@@ -678,8 +678,8 @@ export function RevisionsView() {
                 </AnimatedRow>
               )}
               {ws.revisions.map((r) => (
-                <AnimatedRow key={r.sequence}>
-                  <ListRow cols={cols} minWidth={colsMin} selected={selected === String(r.sequence)} onClick={() => ws.go("revisions", String(r.sequence))} data-tour="revisions-list">
+                <AnimatedRow key={r.id}>
+                  <ListRow cols={cols} minWidth={colsMin} selected={selected === r.id} onClick={() => ws.go("revisions", r.id)} data-tour="revisions-list">
                     <span className="font-medium tabular-nums">{r.sequence}</span>
                     <span className="truncate">{r.changes}</span>
                     <Mono className="truncate">{r.digest}</Mono>
@@ -701,9 +701,9 @@ export function RevisionsView() {
 function RevisionDetail({ revision: r, onClose }: { revision: Revision; onClose: () => void }) {
   const ws = useWorkspace();
   const on = ws.followers.filter((f) => f.revision === r.sequence);
-  const inspectRevision = useEffectEvent((sequence: number) => ws.profileLive?.inspectRevision(sequence));
-  useEffect(() => inspectRevision(r.sequence), [r.sequence]);
-  const detail = ws.profileLive?.revisionDetail?.sequence === r.sequence ? ws.profileLive.revisionDetail : null;
+  const inspectRevision = useEffectEvent((id: string) => ws.profileLive?.inspectRevision(id));
+  useEffect(() => inspectRevision(r.id), [r.id]);
+  const detail = ws.profileLive?.revisionDetail?.id === r.id ? ws.profileLive.revisionDetail : null;
   const inspected = object(detail?.data ?? undefined);
   const publishedResources = Array.isArray(inspected.resources) ? inspected.resources.map(object) : [];
   return (

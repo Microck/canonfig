@@ -28,6 +28,10 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
 
 - Reset the Publish dialog's reviewer to the workspace default after Cancel or Escape, without losing the draft when validation fails.
 
+### Fixes
+
+- Load Source revision details by their unique ID so profile histories with the same revision number cannot show each other's published resources.
+
 ### Tailnet
 
 - Detect Tailscale during health checks, setup planning and Source service setup.
