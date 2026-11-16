@@ -24,6 +24,10 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
   integrity before activation. Active commands and unfinished runs defer updates.
   Downgrades and state-format changes require manual recovery.
 
+### Fixes
+
+- Reset the Publish dialog's reviewer to the workspace default after Cancel or Escape, without losing the draft when validation fails.
+
 ### Tailnet
 
 - Detect Tailscale during health checks, setup planning and Source service setup.
