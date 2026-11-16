@@ -12,6 +12,7 @@ import { GuiBackupList } from "../../src/gui/contract/backup.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 import { SynchronizationLive } from "../../src/synchronization/synchronization.layer.ts";
+import { synchronizeLocal } from "../../src/projection/sync.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -37,10 +38,31 @@ const fixture = (path = process.env.PATH ?? "") => {
   const policy = defaultBackupPolicy({ kind: "local", path: join(root, "destination") });
   const configure = (patch: Partial<BackupPolicy> = {}, allowCredentials = false) => run({ action: "configure", name: "daily", policy: { ...policy, ...patch }, allowCredentials });
   const list = async () => Schema.decodeUnknownSync(GuiBackupList)(await run({ action: "list", name: "daily" }));
-  return { root, home, folder, original, run, fail, policy, configure, list };
+  // Apply the folder to this home's harnesses, so managed backups have applied records to collect.
+  const sync = () => Effect.runPromise(synchronizeLocal(statePath, "apply", { environment: (name) => name === "HOME" ? home : name === "PATH" ? path : undefined }).pipe(Effect.provide(layer)));
+  return { root, home, folder, original, run, fail, policy, configure, list, sync };
 };
 
 describe("portable backup recovery", () => {
+  it("reads only the selected harness's managed files, so another harness's oversized file can't fail the backup", async () => {
+    const bin = mkdtempSync(join(tmpdir(), "canonfig-backup-bin-"));
+    roots.push(bin);
+    for (const command of ["claude", "codex"]) { writeFileSync(join(bin, command), "#!/bin/sh\nexit 0\n"); chmodSync(join(bin, command), 0o755); }
+    const machine = fixture(bin);
+    writeFileSync(join(machine.folder, "canonfig.jsonc"), '{"version":1,"harnesses":["claude-code","codex"]}\n');
+    mkdirSync(join(machine.home, ".claude"), { recursive: true });
+    mkdirSync(join(machine.home, ".codex"), { recursive: true });
+    expect((await machine.sync()).outcome).toMatchObject({ outcome: "Converged" });
+    // Claude's projected instructions grow past the 8 MiB a backup reads from one harness file.
+    writeFileSync(join(machine.home, ".claude", "CLAUDE.md"), Buffer.alloc(9 * 1024 * 1024, 97));
+    await machine.configure({ folder: false, harnesses: { mode: "managed", targets: ["codex"] } });
+    await machine.run({ action: "run", name: "daily" });
+    const output = join(machine.root, "restored");
+    await machine.run({ action: "restore", name: "daily", target: { kind: "home", path: output, recoverCredentials: false } });
+    expect(readFileSync(join(output, ".codex", "AGENTS.md"), "utf8")).toBe(machine.original);
+    expect(existsSync(join(output, ".claude"))).toBe(false);
+  }, 60_000);
+
   it.each(["fast", "balanced"] as const)("restores %s bytes without copying runtime state and refuses occupied destinations", async compression => {
     const machine = fixture();
     await machine.configure({ compression });

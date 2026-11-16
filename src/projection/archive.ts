@@ -742,7 +742,7 @@ const surfaceFiles = (record: AppliedResourceRecord, target: MachinePath, home: 
  * surface that changed since Canonfig applied it is left out and reported, so
  * an archive never holds content Canonfig did not write.
  */
-const collectHarnesses = (records: ReadonlyArray<AppliedResourceRecord>, budget: ContentBudget) =>
+const collectHarnesses = (records: ReadonlyArray<AppliedResourceRecord>, budget: ContentBudget, leftOut: (path: string, harness: string) => boolean) =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const home = (yield* machine.userDirectories()).home;
@@ -760,6 +760,9 @@ const collectHarnesses = (records: ReadonlyArray<AppliedResourceRecord>, budget:
         continue;
       }
       const belowHome = fromHome.split(paths.sep).join("/");
+      // A record the caller leaves out (an unselected harness or an excluded path) is never read, so it can neither
+      // fail the capture nor use up the content budget.
+      if (leftOut(`${HARNESS_PREFIX}${parsed.harness}/${belowHome}`, parsed.harness)) continue;
       const target = yield* machine.normalizePath({ path: paths.join(realHome, fromHome) });
       const captured = yield* surfaceFiles(record, target, realHome, budget);
       if ("leftOut" in captured) {
@@ -786,8 +789,11 @@ export const collectArchiveConfiguration = (input: {
   readonly folder: string;
   readonly includeFolder: boolean;
   readonly includeHarnesses: boolean;
-  /** Archive paths (`folder/...`) a backup excludes; they are never read, so they don't count against the budget. */
-  readonly skip?: (path: string) => boolean;
+  /**
+   * Archive paths a backup excludes: `folder/...` files, and `harnesses/<harness>/...` records with that harness.
+   * They are never read, so they don't count against the budget or fail the capture.
+   */
+  readonly skip?: (path: string, harness?: string) => boolean;
 }) => Effect.gen(function*() {
   const repository = yield* StateRepository;
   const identity = yield* machineIdentity;
@@ -803,7 +809,7 @@ export const collectArchiveConfiguration = (input: {
     mode: intendedExecutable(file.path.slice(FOLDER_PREFIX.length), file.executable, enabledScripts) ? 0o755 : 0o644,
   })) : [];
   const harnesses = input.includeHarnesses
-    ? yield* collectHarnesses(yield* repository.loadAppliedResources(identity.follower), budget)
+    ? yield* collectHarnesses(yield* repository.loadAppliedResources(identity.follower), budget, input.skip ?? (() => false))
     : { files: [], skipped: [] };
   return { folderFiles, harnesses };
 });

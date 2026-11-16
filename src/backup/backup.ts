@@ -165,9 +165,15 @@ const capture = (context: BackupContext, opened: OpenBackup, scheduled: boolean)
     const folder = dirname(context.statePath);
     const identity = yield* machineIdentity;
     const roots = yield* rootContext(context.environment);
-    // Excluded folder files are never read, so excluding a large file is enough to back up the rest. Capture applies
+    const layouts = opened.policy.harnesses.targets.map(harness => ({ harness, layout: adapterFor(harness).layout(roots, emptyModel(folder)) }));
+    // Harnesses that read ~/.agents/skills share it, so it is captured once under the shared owner Canonfig uses for it.
+    const sharedSkillRoots = [...new Set(layouts.flatMap(({ layout }) => layout.skillSources.filter(source => source.shared === true).map(source => source.path)))];
+    const owners = new Set<string>([...opened.policy.harnesses.targets, ...(sharedSkillRoots.length > 0 ? [sharedSkillsOwner] : [])]);
+    // Excluded folder files, and managed files of unselected harnesses or excluded paths, are never read: excluding a
+    // large file is enough to back up the rest, and another harness's files can't fail this backup. Capture applies
     // the same include/exclude rule again to everything it stages.
-    const filtered = (path: string) => (opened.policy.include.length > 0 && !opened.policy.include.some(pattern => matchesGlob(path, pattern)))
+    const filtered = (path: string, harness?: string) => (harness !== undefined && !owners.has(harness))
+      || (opened.policy.include.length > 0 && !opened.policy.include.some(pattern => matchesGlob(path, pattern)))
       || opened.policy.exclude.some(pattern => matchesGlob(path, pattern));
     const configuration = opened.policy.folder || opened.policy.harnesses.mode === "managed"
       ? yield* collectArchiveConfiguration({ folder, includeFolder: opened.policy.folder, includeHarnesses: opened.policy.harnesses.mode === "managed", skip: filtered })
@@ -176,9 +182,6 @@ const capture = (context: BackupContext, opened: OpenBackup, scheduled: boolean)
     // A full capture takes the harness root plus what the adapter keeps outside it: state folders (OpenCode keeps
     // opencode.db under the XDG data directory), config files (Claude's ~/.claude.json) and other surfaces (Devin's
     // ~/.devin/rules), each path once. Paths that don't exist yet are skipped.
-    const layouts = opened.policy.harnesses.targets.map(harness => ({ harness, layout: adapterFor(harness).layout(roots, emptyModel(folder)) }));
-    // Harnesses that read ~/.agents/skills share it, so it is captured once under the shared owner Canonfig uses for it.
-    const sharedSkillRoots = [...new Set(layouts.flatMap(({ layout }) => layout.skillSources.filter(source => source.shared === true).map(source => source.path)))];
     const full = opened.policy.harnesses.mode === "full" ? [
       ...layouts.flatMap(({ harness, layout }) => {
         // Native skill folders count too (Kilo reads ~/.kilo/skills); shared ones are captured once below.
@@ -192,7 +195,6 @@ const capture = (context: BackupContext, opened: OpenBackup, scheduled: boolean)
       }),
       ...sharedSkillRoots.map(root => ({ harness: sharedSkillsOwner, root })),
     ] : [];
-    const owners = new Set<string>([...opened.policy.harnesses.targets, ...(sharedSkillRoots.length > 0 ? [sharedSkillsOwner] : [])]);
     const managed = configuration.harnesses.files.filter(file => file.harness !== undefined && owners.has(file.harness));
     const staged = yield* backupWork("Capture backup files", signal => captureBackupFiles({
       policy: opened.policy, scratch: opened.scratch, home: roots.home, files: [...configuration.folderFiles, ...managed, ...recovery.files], signal,
