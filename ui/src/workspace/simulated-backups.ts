@@ -47,7 +47,7 @@ function seed(role: "source" | "follower", owner: string) {
     local: { version: 1, policies: local, passwords: { nightly: "canonfig-backup-demo-1", "drive-full": "canonfig-backup-demo-2" }, disabled: [], allowCredentials: role === "source" ? ["drive-full"] : [] },
     declared, policies: { ...declared, ...local },
     runs: {
-      nightly: { run: { at: at(3), ok: true, bytes: 49_758_568, files: 11_288 }, drill: { at: at(4, lastSunday), ok: true, files: 11_270 } },
+      nightly: { run: { at: at(3), ok: true, bytes: 49_758_568, files: 11_288 }, drill: { at: at(4, lastSunday), ok: true, files: 11_270, owner } },
       github: { run: { at: at(9), ok: true, bytes: 523_044, files: 182 } },
       "laptop-extra": { run: { at: at(9), ok: true, bytes: 523_044, files: 182 } },
       "drive-full": { run: { at: at(2, lastSunday), ok: false, message: "rclone could not reach gdrive: its sign-in expired. Run rclone config reconnect gdrive:, then back up again." } },
@@ -95,7 +95,7 @@ export function useSimulatedBackups(role: "source" | "follower", owner: string):
       case "configure": update((status) => {
         const policies = { ...status.local.policies, [request.name]: request.policy };
         const allowCredentials = request.allowCredentials ? [...new Set([...status.local.allowCredentials, request.name])] : status.local.allowCredentials;
-        const disabled = status.local.disabled.filter((name) => name !== request.name);
+        const disabled = request.paused ? [...new Set([...status.local.disabled, request.name])] : status.local.disabled.filter((name) => name !== request.name);
         return { status: { ...status, local: { ...status.local, policies, allowCredentials, disabled }, policies: { ...status.declared, ...policies } } };
       }); break;
       case "password": update((status) => ({ status: Schema.decodeUnknownSync(GuiBackupStatus)({ ...status, local: { ...status.local, passwords: { ...status.local.passwords, [request.name]: `canonfig-backup-demo-${request.name}` } } }) })); break;
@@ -111,7 +111,7 @@ export function useSimulatedBackups(role: "source" | "follower", owner: string):
         if (request.name in listings) setListings((previous) => ({ ...previous, [request.name]: { owner, snapshots: [copy, ...previous[request.name]!.snapshots] } }));
         break;
       }
-      case "drill": update((status) => ({ status: withRuns(status, request.name, "drill", { at, ok: true, files: state.snapshots[request.name]?.[0]?.files ?? 0 }) })); break;
+      case "drill": update((status) => ({ status: withRuns(status, request.name, "drill", { at, ok: true, files: state.snapshots[request.name]?.[0]?.files ?? 0, owner: request.owner ?? owner }) })); break;
       // The demo machine is the only writer, so another writer's copies list empty.
       case "list": setListings((previous) => ({ ...previous, [request.name]: { owner: request.owner ?? owner, snapshots: (request.owner ?? owner) === owner ? state.snapshots[request.name] ?? [] : [] } })); break;
       case "owners": setOwners((previous) => ({ ...previous, [request.name]: [owner] })); break;

@@ -20,7 +20,7 @@ const selection = {
   expectKey: Schema.optional(SnapshotId),
 };
 export const GuiBackupRequest = Schema.Union([
-  Schema.Struct({ action: Schema.Literal("configure"), name: BackupName, policy: BackupPolicy, allowCredentials: Schema.Boolean }),
+  Schema.Struct({ action: Schema.Literal("configure"), name: BackupName, policy: BackupPolicy, allowCredentials: Schema.Boolean, paused: Schema.Boolean }),
   /** The save-time preflight on its own; without `policy` it checks the saved one. */
   Schema.Struct({ action: Schema.Literal("check"), name: BackupName, policy: Schema.optional(BackupPolicy) }),
   Schema.Struct({ action: Schema.Literal("password"), name: BackupName,

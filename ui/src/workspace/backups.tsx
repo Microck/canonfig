@@ -210,10 +210,9 @@ function Settings({ name: initialName, initial, onClose }: { name: string; initi
       if (encrypted && savedAlias === undefined && !(await backup.run({ action: "password", name: alias!, password }))) return;
       const next = { ...policy, passwordReference: alias, include: policy.include.filter((glob) => glob.trim()), exclude: policy.exclude.filter((glob) => glob.trim()) };
       // configure checks the destination, password and tools before saving; a refusal shows at the top of the sheet.
-      const saved = await backup.run({ action: "configure", name, policy: next, allowCredentials: capturesCredentials(next) && consent });
+      // A backup left off is saved paused in the same write, so its schedule is never armed in between.
+      const saved = await backup.run({ action: "configure", name, policy: next, allowCredentials: capturesCredentials(next) && consent, paused: !enabled });
       if (saved === null) { form.current?.scrollTo({ top: 0 }); return; }
-      // configure always turns the backup on, so a backup left off is paused again afterwards.
-      if (!enabled && !(await backup.run({ action: "disable", name }))) return;
       toast.success(isNew ? `Created ${name}` : `Saved ${name}`);
       for (const warning of saved.warnings) toast.warning(warning);
       onClose();
@@ -508,7 +507,9 @@ function BeforeCanonfig({ reduced }: { reduced: boolean }) {
       {shown.length === 0 ? <p className="py-8 text-center text-sm text-muted-foreground">Canonfig saves one the first time it writes to a harness here.</p> : (
         <ul aria-label="Before Canonfig" className="grid">
           {shown.map((snapshot) => {
-            const done = snapshot.harnesses.length > 0 && snapshot.harnesses.every((id) => ws.excluded.includes(id));
+            // The live workspace keeps no record of a completed restore, and excluding a harness doesn't write its
+            // files back, so only the simulated demo marks a snapshot restored; the live page keeps Restore… offered.
+            const done = ws.capabilities.simulatedTelemetry && snapshot.harnesses.length > 0 && snapshot.harnesses.every((id) => ws.excluded.includes(id));
             return (
               <motion.li key={snapshot.id} layout={reduced ? false : "position"} className="flex min-h-11 items-center gap-3 border-t border-border/70 text-sm first:border-t-0">
                 <span className="flex-1">{snapshotDate(snapshot.id)}{snapshot.first && <span className="ml-2 text-faint">original</span>}</span>
@@ -563,7 +564,9 @@ export function BackupsView() {
 
   if (status === null) return <PageHeader crumbs={["Backups"]} />;
   const run = status.runs[current]?.run;
-  const drill = status.runs[current]?.drill;
+  // A restore test counts only for the copies on screen: the outcome records which owner's copies it tested.
+  const recordedDrill = status.runs[current]?.drill;
+  const drill = recordedDrill !== undefined && listing !== null && recordedDrill.owner !== listing.owner ? undefined : recordedDrill;
   const paused = status.local.disabled.includes(current);
   const consentMissing = policy !== undefined && capturesCredentials(policy) && !status.local.allowCredentials.includes(current);
   const backUp = async () => {

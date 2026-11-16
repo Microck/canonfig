@@ -657,7 +657,8 @@ type SurfaceCapture = { readonly files: ReadonlyArray<CapturedFile> } | { readon
  * directory and bounded by the budget; a surface left out gives its bytes
  * back to the budget.
  */
-const surfaceFiles = (record: AppliedResourceRecord, target: MachinePath, home: string, budget: ContentBudget) =>
+/** For a directory surface, `wanted` gets each owned file's path below it; a file it rejects is never read. */
+const surfaceFiles = (record: AppliedResourceRecord, target: MachinePath, home: string, budget: ContentBudget, wanted: (below: string) => boolean) =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const kindOf = (path: MachinePath) =>
@@ -701,6 +702,8 @@ const surfaceFiles = (record: AppliedResourceRecord, target: MachinePath, home: 
           if (owned.objectKind === "symlink" || owned.symlinkTo !== undefined) return leftOut("holds a link Canonfig applied, which an export does not hold");
           const child = yield* machine.normalizePath({ path: owned.path, base: target });
           if ((yield* kindOf(child)) !== "regular") return leftOut(changedSinceApply);
+          // A file the caller doesn't want (a backup's include/exclude) stays out without being read.
+          if (!wanted(owned.path)) continue;
           const content = yield* read(child);
           if (content === undefined || sha256BytesHex(content) !== owned.digest) return leftOut(changedSinceApply);
           files.push({ below: owned.path, content, mode: (yield* machine.permissions(child)).mode });
@@ -742,7 +745,7 @@ const surfaceFiles = (record: AppliedResourceRecord, target: MachinePath, home: 
  * surface that changed since Canonfig applied it is left out and reported, so
  * an archive never holds content Canonfig did not write.
  */
-const collectHarnesses = (records: ReadonlyArray<AppliedResourceRecord>, budget: ContentBudget, leftOut: (path: string, harness: string) => boolean) =>
+const collectHarnesses = (records: ReadonlyArray<AppliedResourceRecord>, budget: ContentBudget, owners: ReadonlySet<string> | undefined, excluded: (path: string) => boolean) =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const home = (yield* machine.userDirectories()).home;
@@ -760,11 +763,13 @@ const collectHarnesses = (records: ReadonlyArray<AppliedResourceRecord>, budget:
         continue;
       }
       const belowHome = fromHome.split(paths.sep).join("/");
-      // A record the caller leaves out (an unselected harness or an excluded path) is never read, so it can neither
-      // fail the capture nor use up the content budget.
-      if (leftOut(`${HARNESS_PREFIX}${parsed.harness}/${belowHome}`, parsed.harness)) continue;
+      // Another harness's records and files the caller excludes are never read, so they can neither fail the
+      // capture nor use up the content budget. A directory is kept whole here; its files are filtered one by one.
+      if (owners !== undefined && !owners.has(parsed.harness)) continue;
+      const archivePath = `${HARNESS_PREFIX}${parsed.harness}/${belowHome}`;
+      if (record.kind !== "directory" && excluded(archivePath)) continue;
       const target = yield* machine.normalizePath({ path: paths.join(realHome, fromHome) });
-      const captured = yield* surfaceFiles(record, target, realHome, budget);
+      const captured = yield* surfaceFiles(record, target, realHome, budget, (below) => !excluded(`${archivePath}/${below}`));
       if ("leftOut" in captured) {
         skip(captured.leftOut);
         continue;
@@ -790,10 +795,12 @@ export const collectArchiveConfiguration = (input: {
   readonly includeFolder: boolean;
   readonly includeHarnesses: boolean;
   /**
-   * Archive paths a backup excludes: `folder/...` files, and `harnesses/<harness>/...` records with that harness.
-   * They are never read, so they don't count against the budget or fail the capture.
+   * Archive paths a backup leaves out (`folder/...` and `harnesses/<harness>/...` files). They are never read, so
+   * they don't count against the budget or fail the capture.
    */
-  readonly skip?: (path: string, harness?: string) => boolean;
+  readonly skip?: (path: string) => boolean;
+  /** The harnesses whose managed files to collect; absent means every harness. */
+  readonly harnessOwners?: ReadonlySet<string>;
 }) => Effect.gen(function*() {
   const repository = yield* StateRepository;
   const identity = yield* machineIdentity;
@@ -809,7 +816,7 @@ export const collectArchiveConfiguration = (input: {
     mode: intendedExecutable(file.path.slice(FOLDER_PREFIX.length), file.executable, enabledScripts) ? 0o755 : 0o644,
   })) : [];
   const harnesses = input.includeHarnesses
-    ? yield* collectHarnesses(yield* repository.loadAppliedResources(identity.follower), budget, input.skip ?? (() => false))
+    ? yield* collectHarnesses(yield* repository.loadAppliedResources(identity.follower), budget, input.harnessOwners, input.skip ?? (() => false))
     : { files: [], skipped: [] };
   return { folderFiles, harnesses };
 });

@@ -93,7 +93,7 @@ const configure = (folder: string, request: Extract<BackupRequest, { readonly ac
   yield* withRunLock(localBackupPath(folder), "configure backup", Effect.gen(function*() {
     const local = yield* readLocalBackups(folder);
     yield* writeLocalBackups(folder, { ...local, policies: { ...local.policies, [request.name]: policy },
-      disabled: local.disabled.filter(name => name !== request.name),
+      disabled: request.paused === true ? [...new Set([...local.disabled, request.name])] : local.disabled.filter(name => name !== request.name),
       allowCredentials: request.allowCredentials === undefined ? local.allowCredentials
         : request.allowCredentials ? [...new Set([...local.allowCredentials, request.name])]
         : local.allowCredentials.filter(name => name !== request.name) });
@@ -148,9 +148,14 @@ const withStorage = <A, E, R>(folder: string, name: string, owner: string | unde
     return yield* withRunLock(join(folder, `backup-${name}`), "access backup repository", Effect.acquireUseRelease(
       backupWork("Create private backup staging", () => mkdtemp(join(tmpdir(), "canonfig-backup-"))),
       scratch => Effect.acquireUseRelease(
-        backupWork("Open backup destination", signal => openBackupStorage({ destination: policy.destination, policy: name, owner: identity, scratch, signal })),
-        storage => use({ name, owner: identity, policy, local, scratch, storage }),
-        storage => Effect.promise(() => storage.close()),
+        // The storage keeps this signal for every remote command it runs later, so it must outlive the opening call:
+        // it aborts when opening is interrupted or when the storage is released. close then waits for whatever is
+        // still running before the scratch folder and the policy lock are let go.
+        Effect.sync(() => new AbortController()).pipe(Effect.flatMap(lifetime => backupWork("Open backup destination", signal =>
+          openBackupStorage({ destination: policy.destination, policy: name, owner: identity, scratch, signal: AbortSignal.any([signal, lifetime.signal]) }))
+          .pipe(Effect.map(storage => ({ storage, lifetime }))))),
+        ({ storage }) => use({ name, owner: identity, policy, local, scratch, storage }),
+        ({ storage, lifetime }) => Effect.promise(() => { lifetime.abort(); return storage.close(); }),
       ),
       scratch => Effect.promise(() => rm(scratch, { recursive: true, force: true })),
     ));
@@ -169,16 +174,13 @@ const capture = (context: BackupContext, opened: OpenBackup, scheduled: boolean)
     // Harnesses that read ~/.agents/skills share it, so it is captured once under the shared owner Canonfig uses for it.
     const sharedSkillRoots = [...new Set(layouts.flatMap(({ layout }) => layout.skillSources.filter(source => source.shared === true).map(source => source.path)))];
     const owners = new Set<string>([...opened.policy.harnesses.targets, ...(sharedSkillRoots.length > 0 ? [sharedSkillsOwner] : [])]);
-    // Excluded folder files, and managed files of unselected harnesses or excluded paths, are never read: excluding a
-    // large file is enough to back up the rest, and another harness's files can't fail this backup. A harness record
-    // names a whole file or directory, so include globs, which name files below it (`.../skills/**`), are left to the
-    // per-file check: capture applies the same include/exclude rule again to everything it stages.
-    const excluded = (path: string) => opened.policy.exclude.some(pattern => matchesGlob(path, pattern));
-    const filtered = (path: string, harness?: string) => harness !== undefined
-      ? !owners.has(harness) || excluded(path)
-      : (opened.policy.include.length > 0 && !opened.policy.include.some(pattern => matchesGlob(path, pattern))) || excluded(path);
+    // Excluded folder files, and managed files of unselected harnesses or left out by include/exclude, are never read:
+    // excluding a large file is enough to back up the rest, and another harness's files can't fail this backup.
+    // Collection checks a managed directory's files one by one, so `.../skills/**` selects files inside it.
+    const filtered = (path: string) => (opened.policy.include.length > 0 && !opened.policy.include.some(pattern => matchesGlob(path, pattern)))
+      || opened.policy.exclude.some(pattern => matchesGlob(path, pattern));
     const configuration = opened.policy.folder || opened.policy.harnesses.mode === "managed"
-      ? yield* collectArchiveConfiguration({ folder, includeFolder: opened.policy.folder, includeHarnesses: opened.policy.harnesses.mode === "managed", skip: filtered })
+      ? yield* collectArchiveConfiguration({ folder, includeFolder: opened.policy.folder, includeHarnesses: opened.policy.harnesses.mode === "managed", skip: filtered, harnessOwners: owners })
       : { folderFiles: [], harnesses: { files: [], skipped: [] } };
     const recovery = yield* captureRecovery({ folder, statePath: context.statePath, policy: opened.policy, scratch: opened.scratch });
     // A full capture takes the harness root plus what the adapter keeps outside it: state folders (OpenCode keeps
@@ -417,7 +419,7 @@ export const backupCommand = Effect.fn("Backup.command")(function*(context: Back
     if (request.action === "drill") {
       const restored = yield* withRecoveryCredentials({ recovery: verified.recovery, recoverCredentials: true, keep: false }, references =>
         backupWork("Run restore drill", () => restoreHome(verified, join(opened.scratch, "drill"), opened.scratch, references)));
-      yield* record("drill", { ok: true, files: restored.files });
+      yield* record("drill", { ok: true, files: restored.files, owner: opened.owner });
       return { snapshot: verified.snapshot.id, verified: true, restoredFiles: restored.files, sourceIdentity: restored.source, secrets: restored.secrets };
     }
     if (request.target.kind === "apply") {
@@ -432,7 +434,12 @@ export const backupCommand = Effect.fn("Backup.command")(function*(context: Back
     const restored = yield* withRecoveryCredentials({ recovery: verified.recovery, recoverCredentials, keep: true }, references =>
       backupWork("Restore into new private HOME", () => restoreHome(verified, output, opened.scratch, references)));
     return { snapshot: verified.snapshot.id, signer: verified.signer, ...restored };
-  })).pipe(Effect.tapError((error) => request.action === "run" || request.action === "drill"
-    ? record(request.action, { ok: false, message: error instanceof BackupError ? error.message : "The backup failed. Run it from the command line to see why." })
-    : Effect.void));
+  })).pipe(Effect.tapError((error) => {
+    const message = error instanceof BackupError ? error.message : "The backup failed. Run it from the command line to see why.";
+    if (request.action === "run") return record("run", { ok: false, message });
+    // A failed test still names whose copies it tried: the one asked for, or this machine's own.
+    if (request.action === "drill") return (owner === undefined ? readBackupOwner(folder) : Effect.succeed(owner)).pipe(
+      Effect.flatMap(tested => record("drill", { ok: false, message, owner: tested })), Effect.ignore);
+    return Effect.void;
+  }));
 });

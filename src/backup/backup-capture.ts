@@ -191,7 +191,10 @@ export const captureBackupFiles = async (input: {
     await (only === undefined ? walk(root.root) : walk(dirname(root.root), only));
   }
   if (files.length === 0) throw new BackupIoError("BACKUP_INVALID", "This policy selected no regular files");
-  if (caseCollision(files.map(file => file.path)) !== undefined) throw new BackupIoError("BACKUP_INVALID", "Captured paths collide on a case-insensitive filesystem");
+  // Directories count too: `projects/Foo/a.json` and `projects/foo/b.json` differ as paths but would merge into one
+  // folder on a case-insensitive recovery filesystem.
+  const spellings = new Set(files.flatMap(file => file.path.split("/").map((_, index, parts) => parts.slice(0, index + 1).join("/"))));
+  if (caseCollision([...spellings]) !== undefined) throw new BackupIoError("BACKUP_INVALID", "Captured paths collide on a case-insensitive filesystem");
   return { files, directory, skippedCredentials, skippedLinks };
 };
 

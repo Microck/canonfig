@@ -95,14 +95,42 @@ const checkGitRemote = (remote: string): void => {
   throw new BackupIoError("BACKUP_INVALID", "Git backup needs an HTTPS, SSH, file URL or absolute local repository path. Keep tokens in the Git credential helper, never in the URL.");
 };
 
-/** One writer owns one namespace. A restored machine gets a new owner id, never a copied lease. */
-export const openBackupStorage = async (input: {
+/**
+ * One writer owns one namespace. A restored machine gets a new owner id, never a copied lease.
+ *
+ * `signal` lives as long as the storage, not one call: every Git and rclone command it starts uses it. The owner
+ * aborts it to cancel, then calls `close`, which waits for every operation still running (each tool run settles only
+ * after its process exits), so scratch files and the policy lock are released only once nothing touches the remote.
+ */
+export const openBackupStorage = async (input: StorageInput): Promise<BackupStorage> => {
+  const storage = await openStorage(input);
+  const running = new Set<Promise<unknown>>();
+  const track = <A>(operation: Promise<A>): Promise<A> => {
+    running.add(operation);
+    void operation.finally(() => running.delete(operation)).catch(() => undefined);
+    return operation;
+  };
+  return {
+    list: () => track(storage.list()),
+    save: (snapshot, archive) => track(storage.save(snapshot, archive)),
+    download: (snapshot, output) => track(storage.download(snapshot, output)),
+    prune: (removed, kept) => track(storage.prune(removed, kept)),
+    close: async () => {
+      await Promise.allSettled([...running]);
+      await storage.close();
+    },
+  };
+};
+
+interface StorageInput {
   readonly destination: BackupDestination;
   readonly policy: string;
   readonly owner: string;
   readonly scratch: string;
   readonly signal: AbortSignal;
-}): Promise<BackupStorage> => {
+}
+
+const openStorage = async (input: StorageInput): Promise<BackupStorage> => {
   const policy = Schema.decodeUnknownSync(BackupName)(input.policy);
   const owner = Schema.decodeUnknownSync(BackupName)(input.owner);
   const namespace = `canonfig-backup/${policy}/${owner}`;

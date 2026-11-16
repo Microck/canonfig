@@ -52,6 +52,7 @@ describe("portable backup recovery", () => {
     writeFileSync(join(machine.folder, "canonfig.jsonc"), '{"version":1,"harnesses":["claude-code","codex"]}\n');
     mkdirSync(join(machine.folder, "skills", "notes"), { recursive: true });
     writeFileSync(join(machine.folder, "skills", "notes", "SKILL.md"), "---\nname: notes\ndescription: Notes\n---\n");
+    writeFileSync(join(machine.folder, "skills", "notes", "reference.md"), "Reference\n");
     mkdirSync(join(machine.home, ".claude"), { recursive: true });
     mkdirSync(join(machine.home, ".codex"), { recursive: true });
     expect((await machine.sync()).outcome).toMatchObject({ outcome: "Converged" });
@@ -72,6 +73,25 @@ describe("portable backup recovery", () => {
     await machine.run({ action: "restore", name: "daily", target: { kind: "home", path: included, recoverCredentials: false } });
     expect(readFileSync(join(included, ".claude", "skills", "notes", "SKILL.md"), "utf8")).toContain("name: notes");
     expect(existsSync(join(included, ".claude", "CLAUDE.md"))).toBe(false);
+    // Excluding one file inside a managed directory stops it being read, so an oversized one can't fail the backup.
+    writeFileSync(join(machine.home, ".claude", "skills", "notes", "SKILL.md"), Buffer.alloc(9 * 1024 * 1024, 97));
+    await machine.configure({ folder: false, harnesses: { mode: "managed", targets: ["claude-code"] }, exclude: ["harnesses/claude-code/.claude/skills/notes/SKILL.md"] });
+    await machine.run({ action: "run", name: "daily" });
+    const excluded = join(machine.root, "excluded");
+    await machine.run({ action: "restore", name: "daily", target: { kind: "home", path: excluded, recoverCredentials: false } });
+    expect(readFileSync(join(excluded, ".claude", "skills", "notes", "reference.md"), "utf8")).toBe("Reference\n");
+    expect(existsSync(join(excluded, ".claude", "skills", "notes", "SKILL.md"))).toBe(false);
+  }, 60_000);
+
+  it("refuses folders whose names differ only by case, which a case-insensitive restore would merge", async () => {
+    const machine = fixture();
+    for (const [spelling, file] of [["Foo", "a.json"], ["foo", "b.json"]] as const) {
+      mkdirSync(join(machine.home, ".claude", "projects", spelling), { recursive: true });
+      writeFileSync(join(machine.home, ".claude", "projects", spelling, file), "{}\n");
+    }
+    await machine.run({ action: "password", name: "recovery", value: Redacted.make("frost library maple canvas") });
+    await machine.configure({ folder: false, harnesses: { mode: "full", targets: ["claude-code"] }, passwordReference: "recovery" });
+    expect(await machine.fail({ action: "run", name: "daily" })).toMatchObject({ code: "BACKUP_INVALID", message: "Captured paths collide on a case-insensitive filesystem" });
   }, 60_000);
 
   it.each(["fast", "balanced"] as const)("restores %s bytes without copying runtime state and refuses occupied destinations", async compression => {
@@ -257,6 +277,21 @@ describe("portable backup recovery", () => {
     await machine.run({ action: "password", name: "recovery", value: Redacted.make("frost library maple canvas") });
     const saved = await machine.configure({ includeCredentials: true, passwordReference: "recovery", schedule: { kind: "daily", localTime: "03:00" } });
     expect(saved).toMatchObject({ schedules: { installed: 0, removed: 0, refused: [{ name: "daily", message: expect.stringContaining("needs local consent") }] } });
+  }, 60_000);
+
+  it("saves a scheduled policy paused in one write, so no schedule is armed", async () => {
+    const machine = fixture();
+    const saved = await machine.run({ action: "configure", name: "daily", policy: { ...machine.policy, schedule: { kind: "daily", localTime: "03:00" } }, paused: true });
+    expect(saved).toMatchObject({ schedules: { installed: 0, removed: 0, refused: [] } });
+    expect(await machine.run({ action: "status" })).toMatchObject({ local: { disabled: ["daily"] } });
+  }, 60_000);
+
+  it("records whose copies a restore test checked", async () => {
+    const machine = fixture();
+    await machine.configure();
+    await machine.run({ action: "run", name: "daily" });
+    await machine.run({ action: "drill", name: "daily" });
+    expect(await machine.run({ action: "status" })).toMatchObject({ runs: { daily: { drill: { ok: true, owner: (await machine.list()).owner } } } });
   }, 60_000);
 
   it("restores a copy encrypted under an earlier password alias after the policy moved to a new one", async () => {

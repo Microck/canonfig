@@ -70,6 +70,8 @@ export const BackupOutcome = Schema.Struct({
   files: Schema.optional(Count),
   /** Canonfig's own diagnostic for a failure; tool and filesystem output never reaches it. */
   message: Schema.optional(Schema.String),
+  /** For a restore drill, whose copies it tested; the GUI shows the result only beside that owner's copies. */
+  owner: Schema.optional(BackupName),
 });
 export type BackupOutcome = typeof BackupOutcome.Type;
 export const BackupRuns = Schema.Record(BackupName, Schema.Struct({ run: Schema.optional(BackupOutcome), drill: Schema.optional(BackupOutcome) }));
@@ -78,7 +80,8 @@ export type BackupRuns = typeof BackupRuns.Type;
 export type BackupRequest =
   | { readonly action: "status" }
   | { readonly action: "schedule" }
-  | { readonly action: "configure"; readonly name: string; readonly policy: BackupPolicy; readonly allowCredentials?: boolean }
+  /** `paused` saves the policy with its schedule off in the same write; otherwise saving turns it on. */
+  | { readonly action: "configure"; readonly name: string; readonly policy: BackupPolicy; readonly allowCredentials?: boolean; readonly paused?: boolean }
   | { readonly action: "configure-file"; readonly name: string; readonly file: string; readonly allowCredentials: boolean }
   | { readonly action: "check"; readonly name: string; readonly policy?: BackupPolicy }
   | { readonly action: "disable"; readonly name: string }
