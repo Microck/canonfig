@@ -1540,8 +1540,7 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
         <DialogHeader>
           <DialogTitle>Discover tools</DialogTitle>
           <DialogDescription className="text-base text-pretty">
-            Canonfig reads the instructions, skills, hook scripts and MCP commands in <span className="font-mono text-sm text-foreground">{ws.sourceMachine.folder}</span> and proposes a
-            tool for each program they run. It runs nothing. Tools you add go into canonfig.jsonc, which keeps its comments. Nothing is published until you publish a revision.
+            Tools found in <span className="font-mono text-sm text-foreground">{ws.sourceMachine.folder}</span>.
             {DEMO && " This demo reads no files and shows example results."}
           </DialogDescription>
         </DialogHeader>
@@ -1561,7 +1560,7 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
                   <span className="grid min-w-0">
                     <span className="text-base font-medium">{f.id}</span>
                     <Mono className="truncate text-faint">{f.command}</Mono>
-                    {ws.profileLive && <span className="text-sm text-muted-foreground">{f.where === "accepted" ? "Accepted" : "Needs review, will not be added"}</span>}
+                    {ws.profileLive && <span className="text-sm text-muted-foreground">{f.where === "accepted" ? "Accepted" : "Needs review"}</span>}
                   </span>
                   <span className="ml-auto shrink-0 text-sm whitespace-nowrap text-muted-foreground" title={`${f.file}, ${f.where}`}>
                     {inFolder(f.id) ? "In the folder" : f.file.split("/").pop()}
@@ -1574,15 +1573,10 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
                 {noneNew}
               </p>
             )}
-            {ws.profileLive && (
-              <div className="grid gap-3">
-                <p className="text-sm text-muted-foreground">This writes all accepted discoveries, not a selected subset. Existing tool entries stay unchanged. Tools needing review are left out.</p>
-                {accepted.length > 0 ? <label className="flex items-start gap-3 text-sm">
-                  <Checkbox checked={confirmAll} disabled={busy} onCheckedChange={(checked) => setConfirmAll(checked === true)} />
-                  <span>Add all {accepted.length} accepted {accepted.length === 1 ? "tool" : "tools"} to canonfig.jsonc. Keep these changes unpublished.</span>
-                </label> : <p className="text-sm text-muted-foreground">No new accepted tools to add.</p>}
-              </div>
-            )}
+            {ws.profileLive && (accepted.length > 0 ? <label className="flex items-start gap-3 text-sm">
+              <Checkbox checked={confirmAll} disabled={busy} onCheckedChange={(checked) => setConfirmAll(checked === true)} />
+              <span>Write all {accepted.length} accepted {accepted.length === 1 ? "tool" : "tools"} to canonfig.jsonc; publish separately.</span>
+            </label> : <p className="text-sm text-muted-foreground">No new accepted tools.</p>)}
           </>
         )}
         <DialogFooter className="items-center sm:justify-between">
@@ -1610,7 +1604,7 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
                 if (!await ws.profileLive?.acceptScan()) return;
                 setConfirmAll(false);
                 onOpenChange(false);
-                toast.success(`Added ${accepted.length} ${accepted.length === 1 ? "tool" : "tools"}`, { description: "Changes are unpublished. Publish a revision when ready." });
+                toast.success(`Added ${accepted.length} ${accepted.length === 1 ? "tool" : "tools"}`);
               }}>{busy && done ? "Adding tools…" : "Add all accepted tools"}</Button>
             </>}
           </div>

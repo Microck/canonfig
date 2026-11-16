@@ -493,7 +493,7 @@ it("requires consent to add all accepted tools and retains a failed acceptance f
   try {
     await until(() => !app.container.querySelector('[aria-busy="true"]'), "Profile did not load");
     await click("Discover tools");
-    await until(() => document.body.textContent?.includes("Add all 1 accepted tool") === true, "Findings did not load");
+    await until(() => document.body.textContent?.includes("Write all 1 accepted tool") === true, "Findings did not load");
     const add = [...document.querySelectorAll("button")].find((button) => button.textContent === "Add all accepted tools")!;
     assert.equal(add.disabled, true);
     await act(async () => { (document.querySelector('[role="dialog"] [role="checkbox"]') as HTMLButtonElement).click(); });
@@ -529,10 +529,10 @@ it("counts and labels additions from each reviewed scan instead of cached Profil
     await until(() => !app.container.querySelector('[aria-busy="true"]'), "Profile did not load");
     assert.ok(document.body.textContent?.includes("tools.ruff"), "Cached Profile must contain ruff");
     await click("Discover tools");
-    await until(() => document.body.textContent?.includes("Add all 1 accepted tool") === true, "Initial declaration was not respected");
+    await until(() => document.body.textContent?.includes("Write all 1 accepted tool") === true, "Initial declaration was not respected");
     assert.ok(document.querySelector('[role="dialog"]')?.textContent?.includes("In the folder"));
     await click("Scan again");
-    await until(() => document.body.textContent?.includes("Add all 2 accepted tools") === true, "Rescan did not include the removed declaration");
+    await until(() => document.body.textContent?.includes("Write all 2 accepted tools") === true, "Rescan did not include the removed declaration");
     assert.equal(document.querySelector('[role="dialog"]')?.textContent?.includes("In the folder"), false);
     assert.equal(app.requests.filter((request) => request === "GET /api/profile/items").length, 1, "Rescan should not depend on a refreshed Profile cache");
     await act(async () => { (document.querySelector('[role="dialog"] [role="checkbox"]') as HTMLButtonElement).click(); });
