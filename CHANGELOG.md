@@ -2,6 +2,17 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
+## Unreleased
+
+### Features
+
+- Manage kept-local skill names and native MCP preservation from `canonfig local` and the machine-local settings page. Both preserve concurrent edits and keep these choices on this machine.
+
+### Fixes
+
+- Reset the Publish dialog's reviewer to the workspace default after Cancel or Escape, without losing the draft when validation fails.
+- Load Source revision details by their unique ID so profile histories with the same revision number cannot show each other's published resources.
+
 ## v7.2.0 - 2026-11-16
 
 ### Security
@@ -23,18 +34,6 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
 - Verify the Source signature, official npm publisher provenance, and package
   integrity before activation. Active commands and unfinished runs defer updates.
   Downgrades and state-format changes require manual recovery.
-
-### Fixes
-
-- Reset the Publish dialog's reviewer to the workspace default after Cancel or Escape, without losing the draft when validation fails.
-
-### Fixes
-
-- Load Source revision details by their unique ID so profile histories with the same revision number cannot show each other's published resources.
-
-### Features
-
-- Manage kept-local skill names and native MCP preservation from `canonfig local` and the machine-local settings page. Both preserve concurrent edits and keep these choices on this machine.
 
 ### Tailnet
 
