@@ -1101,6 +1101,26 @@ describe("synchronization crash recovery", () => {
     expect(readFileSync(value.target, "utf8")).toBe("canonical content");
   });
 
+  it("on recovery, runs a write that was held only for a prerequisite once that prerequisite succeeds", async () => {
+    const value = fixture(temporaryDirectory());
+    const base = persistedPlan(value);
+    const first = base.actions[0]!;
+    const held = { ...first, id: decode(ActionId)("action:settings:held:write-file"), before: [first.id] };
+    const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)({
+      revision: base.revision, follower: base.follower, requiredBlobs: base.requiredBlobs,
+      actions: [first, held], agentTasks: base.agentTasks,
+    }));
+    const plan = { ...base, actions: [first, held], encoded, digest: sha256Hex(encoded) };
+    await seed(value, plan);
+    // The prerequisite failed before the interruption, so its dependent was held.
+    await journal(value, first.id, "failed");
+    await journal(value, held.id, "blocked");
+    const outcome = await recover(value);
+    expect(outcome.outcome, JSON.stringify(outcome)).toBe("Converged");
+    expect(readFileSync(value.target, "utf8")).toBe("canonical content");
+    expect(runRows(value).filter((row) => row.action_id === held.id).at(-1)?.state).toBe("succeeded");
+  });
+
   it("preserves executable execution-model metadata across persisted plan hydration", async () => {
     const value = fixture(temporaryDirectory(), { kind: "tool" });
     const base = persistedPlan(value);

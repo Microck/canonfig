@@ -503,7 +503,14 @@ export const recoverSynchronizationPlan = (
         : blockedByPrerequisite(state.action, blocked);
       if (waiting !== undefined) {
         result = waiting;
-      } else if (last.state === "blocked" && state.action.detail.kind !== "install-tool") {
+      } else if (
+        last.state === "blocked"
+        // Only these block on their own. Any other action journaled `blocked` was
+        // held for a prerequisite, and that prerequisite is not blocked now, so it
+        // runs through the normal path below instead of failing recovery.
+        && (state.action.detail.kind === "human-action" || state.action.detail.kind === "agent-task"
+          || state.action.detail.kind === "drift-conflict")
+      ) {
         result = preservedOutcome(input, state.action);
       } else if (
         last.state === "succeeded"
