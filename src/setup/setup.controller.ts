@@ -16,7 +16,7 @@ import { canonicalJson, sha256BytesHex, sha256Hex, type JsonValue } from "../pro
 import { scanDiscovery } from "../profile/discovery.ts";
 import type { DiscoveredTool, InstallationRecipe } from "../profile/tool-catalog.ts";
 import {
-  minimumSupportedNodeMajor,
+  supportedNodeVersions,
   nodeRuntimeIsSupported,
 } from "../runtime/build-identity.ts";
 import { proveCredentialStorage } from "../runtime/readiness.ts";
@@ -254,9 +254,9 @@ export const runSetupPreflight = (
     if (!nodeRuntimeIsSupported(process.versions.node)) {
       return yield* fail(
         "setup preflight",
-        `Node.js ${process.versions.node} is unsupported; Canonfig requires Node.js ${minimumSupportedNodeMajor} or newer`,
+        `Node.js ${process.versions.node} is unsupported; Canonfig requires Node.js ${supportedNodeVersions}`,
         "prerequisite",
-        `Install Node.js ${minimumSupportedNodeMajor} or newer, then restart setup.`,
+        `Install Node.js ${supportedNodeVersions}, then restart setup.`,
       );
     }
     const machine = yield* MachineState;
