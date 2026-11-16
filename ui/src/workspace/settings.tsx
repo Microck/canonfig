@@ -297,7 +297,15 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
   const save = async (confirmed?: SavedPolicy) => {
     if (confirmed) {
       setReview(null);
-      if (await agent.save(confirmed)) setTried(false);
+      if (await agent.save(confirmed)) {
+        setTried(false);
+        if (confirmed.harness) {
+          setOriginsText(confirmed.harness.origins.join("\n"));
+          setExecutablesText(confirmed.harness.executables.join("\n"));
+          setBindingsText(confirmed.harness.secretBindings.map(({ name, secret }) => `${name}=${secret}`).join("\n"));
+          setMaximumInputBytes(String(confirmed.harness.maximumInputBytes));
+        }
+      }
       return;
     }
     if (mode === null) return;

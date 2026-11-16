@@ -568,6 +568,14 @@ it("reviews and saves complete harness bounds while deterministic-only stays sel
       Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(model, "test-model");
       model.dispatchEvent(new window.Event("input", { bubbles: true }));
     });
+    await act(async () => {
+      for (const id of ["ap-origins", "ap-executables", "ap-bindings"]) {
+        const input = app.container.querySelector<HTMLTextAreaElement>(`#${id}`);
+        assert.ok(input);
+        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(input, ` ${input.value} \n`);
+        input.dispatchEvent(new window.Event("input", { bubbles: true }));
+      }
+    });
     await click("Review settings");
     assert.equal(app.mutations.length, 0);
     assert.ok(document.querySelector('[role="dialog"]')?.textContent?.includes("May restart services or applications"));
@@ -575,5 +583,13 @@ it("reviews and saves complete harness bounds while deterministic-only stays sel
     await until(() => app.mutations.length === 2, "Harness settings did not save");
     assert.equal(app.mutations[0]?.body, "deterministic-only");
     assert.deepEqual(app.mutations[1]?.body, { ...harness, model: "test-model" });
+    await until(() => app.container.textContent?.includes("Policy and harness saved.") === true, "Save did not settle");
+    assert.equal(app.container.querySelector<HTMLTextAreaElement>("#ap-origins")?.value, "https://api.example.com");
+    assert.equal(app.container.querySelector<HTMLTextAreaElement>("#ap-executables")?.value, "printf");
+    assert.equal(app.container.querySelector<HTMLTextAreaElement>("#ap-bindings")?.value, "API_TOKEN=api-token");
+    const buttons = [...app.container.querySelectorAll("button")];
+    assert.equal(buttons.find((button) => button.textContent === "Reload settings")?.disabled, false);
+    assert.equal(buttons.find((button) => button.textContent === "Review settings")?.disabled, true);
+    assert.equal(buttons.some((button) => button.textContent === "Discard"), false);
   } finally { await app.close(); }
 });
