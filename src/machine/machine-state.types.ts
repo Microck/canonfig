@@ -406,6 +406,10 @@ export interface SchedulerBackend {
   readonly install: (
     definition: RenderedSchedulerJob,
   ) => Effect.Effect<void, MachineStateError>;
+  /** Start the existing native job without installing or enabling it. */
+  readonly start: (
+    definition: RenderedSchedulerJob,
+  ) => Effect.Effect<void, MachineStateError>;
   readonly remove: (
     definition: RenderedSchedulerJob,
   ) => Effect.Effect<void, MachineStateError>;

@@ -19,6 +19,7 @@ import { ExecutableAuthorizationSchema } from "../domain/synchronization.ts";
 import { parseOverlay, keptLocalSkillName } from "../projection/folder.ts";
 import { TARGET_IDS, type TargetId } from "../projection/model.ts";
 import {
+  defaultScheduleRunTimeoutMilliseconds,
   scheduleWeekdays,
   type SyncSchedule,
 } from "../schedule/schedule-manager.types.ts";
@@ -190,6 +191,7 @@ export type CliCommand =
   }
   | { readonly _tag: "ScheduleSetDefault" }
   | { readonly _tag: "ScheduleStatus" }
+  | { readonly _tag: "ScheduleRun"; readonly timeoutMilliseconds: number }
   | { readonly _tag: "ScheduleRemove" };
 
 export type CliOutcome =
@@ -389,6 +391,14 @@ const evaluateScheduleCommand = (
       // Separate options from positionals before judging the argument count, so
       // a stray argument is reported as the stray argument rather than making
       // the action itself look unknown.
+      if (action === "run") {
+        const options = parseOptions(rest, new Set(["--timeout-ms"]), new Set());
+        if (options.positionals.length > 0) return invalid("canonfig schedule run accepts no positional arguments");
+        return command({
+          _tag: "ScheduleRun",
+          timeoutMilliseconds: parsePositiveInteger(one(options, "--timeout-ms") ?? String(defaultScheduleRunTimeoutMilliseconds), "schedule run timeout", Number.MAX_SAFE_INTEGER),
+        }, format);
+      }
       if (action === "status" || action === "remove") {
         const options = parseOptions(rest, new Set(), new Set());
         if (options.positionals.length > 0) {
@@ -1089,6 +1099,7 @@ export const commandName = (value: CliCommand): string => {
     case "ScheduleSet":
     case "ScheduleSetDefault": return "schedule.set";
     case "ScheduleStatus": return "schedule.status";
+    case "ScheduleRun": return "schedule.run";
     case "ScheduleRemove": return "schedule.remove";
   }
 };
@@ -1195,6 +1206,7 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
       );
     case "ScheduleSetDefault": return yield* follower.setSchedule({ profileDefault: true });
     case "ScheduleStatus": return yield* follower.scheduleStatus();
+    case "ScheduleRun": return yield* follower.runSchedule({ timeoutMilliseconds: value.timeoutMilliseconds });
     case "ScheduleRemove": return yield* follower.removeSchedule();
   }
 });

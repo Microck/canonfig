@@ -126,6 +126,7 @@ const fakeExecutable = (platform: MachinePlatform, bin: string, name: string): s
 class RecordingScheduler implements SchedulerBackend {
   definition: RenderedSchedulerJob | undefined;
   installs = 0;
+  readonly start = () => Effect.die("unused");
 
   readonly inspect = (
     expected: RenderedSchedulerJob,

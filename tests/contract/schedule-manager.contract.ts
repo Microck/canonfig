@@ -33,6 +33,7 @@ class RecordingScheduler implements SchedulerBackend {
   removals = 0;
   timezoneChangedSinceBoot = false;
   native: string | undefined;
+  readonly start = () => Effect.void;
 
   readonly inspect = (
     expected: RenderedSchedulerJob,

@@ -342,12 +342,15 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
       "schedule set <daily@HH:mm|weekly:Day[,Day...]@HH:mm> [--timezone <IANA>] [--executable <path>]",
       "schedule set --default",
       "schedule status",
+      "schedule run [--timeout-ms <ms>]",
       "schedule remove",
     ],
     notes: [
       "Times are local to --timezone, or to this machine's zone. set prints the zone,",
       "the next run, and a warning when the time does not exist on a daylight-saving",
       "day. --default installs the profile's suggested schedule; sync never installs one.",
+      "run starts the installed native job in the user's session and waits up to two",
+      "hours for its result. Use it over SSH when the credential store is unavailable.",
     ],
   },
   {

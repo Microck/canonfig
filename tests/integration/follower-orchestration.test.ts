@@ -548,6 +548,7 @@ process.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringi
           enabled: true, servicePresent: true, schedulePresent: true, service: installedJob.service, schedule: installedJob.schedule,
         }),
       install: (definition) => Effect.sync(() => { installedJob = definition; installs += 1; }),
+      start: () => Effect.die("unused"),
       remove: () => Effect.sync(() => { installedJob = undefined; }),
       restore: () => Effect.die("unused"),
     };
@@ -605,6 +606,7 @@ process.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringi
       })),
       snapshot: () => Effect.die("unused"),
       install: (definition) => Effect.sync(() => { installedJob = definition; disabled = false; installs += 1; }),
+      start: () => Effect.die("unused"),
       remove: () => Effect.sync(() => { installedJob = undefined; }),
       restore: () => Effect.die("unused"),
     };
@@ -877,6 +879,7 @@ process.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringi
     // decision of this follower.
     const profileScheduleManager = ScheduleManager.of({
       install: () => Effect.die("unused"),
+      run: () => Effect.die("unused"),
       inspect: () => Effect.die("unused"),
       reconcile: () => Effect.die("unused"),
       update: (input) => Effect.sync(() => {

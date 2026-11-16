@@ -9,6 +9,9 @@ import type {
 } from "../machine/machine-state.types.ts";
 import type { FollowerSynchronizationConfiguration } from "../synchronization/follower-sync-config.ts";
 
+/** Wait at most two hours for the native invocation, including its startup. */
+export const defaultScheduleRunTimeoutMilliseconds = 2 * 60 * 60 * 1000;
+
 export const scheduleWeekdays = [
   "Mon",
   "Tue",
@@ -79,6 +82,10 @@ export type SyncSchedule =
 export interface SetScheduleInput {
   readonly schedule?: SyncSchedule | undefined;
   readonly executable?: string | undefined;
+}
+
+export interface RunScheduleInput extends SetScheduleInput {
+  readonly timeoutMilliseconds?: number | undefined;
 }
 
 /** A schedule input whose calendar is already decided: what status and doctor probe against. */

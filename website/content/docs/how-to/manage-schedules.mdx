@@ -131,6 +131,37 @@ If the Follower Machine reaches the Source Machine through a managed SSH
 tunnel, a scheduled run restarts the tunnel once, if it is down, before it
 fetches. See [Run Canonfig unattended](/docs/how-to/run-unattended).
 
+## Run the installed job now
+
+From an SSH shell on the Follower Machine, use:
+
+```bash
+canonfig schedule run
+canonfig schedule run --timeout-ms 600000 --json
+```
+
+This starts the same native job as the schedule, with the same installed
+identity and logon. Unlike `canonfig sync --apply` in the remote shell, it runs
+in the user's native session. Use it when Windows Credential Manager is
+unavailable to an OpenSSH key network logon, or when the macOS login Keychain
+is unavailable to SSH.
+
+The command refuses a missing, disabled, stopped, or changed job. Restore it
+with `canonfig schedule set` and your chosen calendar first. Windows still
+requires the user to be logged on, and macOS needs the GUI session with the
+login Keychain unlocked. On Linux, the systemd user manager must be available.
+
+It waits up to two hours by default and reports the invocation's outcome and
+synchronization run id. `--timeout-ms` sets a positive wait limit in
+milliseconds. Converged exits 0, Human Action Required exits 3, Follower Drift
+exits 4, and failed or interrupted synchronization exits 7. `--json` uses the
+standard `canonfig.cli/v1` envelope.
+
+A timeout exits 7 but does not stop the job. Check `canonfig schedule status`
+and `canonfig status` before retrying. The command waits for a new invocation,
+not one that started before the request. If the native scheduler coalesces a
+request into an already-running job, it can time out.
+
 ## Check that the schedule works
 
 ```bash

@@ -906,6 +906,7 @@ canonfig schedule set weekly:Mon,Thu@12:30 --timezone Europe/Paris
 canonfig schedule set daily@09:00 --executable /usr/local/bin/canonfig
 canonfig schedule set --default
 canonfig schedule status
+canonfig schedule run --timeout-ms 600000 --json
 canonfig schedule remove
 ```
 
@@ -917,6 +918,20 @@ the next run, and a warning when the time does not exist on a daylight-saving
 day; it never starts a run for a time already past today. `set` refuses while a
 native override of the job exists. See
 [Sync on a schedule](/docs/how-to/manage-schedules).
+
+`schedule run [--timeout-ms <ms>]` starts the installed native job now with
+the same identity and logon as the schedule. Use it over SSH when the remote
+shell cannot access Windows Credential Manager or the macOS login Keychain.
+Windows requires the user to be logged on; macOS requires the GUI session.
+It refuses missing, disabled, stopped, or drifted jobs with exit 3 and directs
+you to `canonfig schedule set`.
+
+The default wait is 7200000 milliseconds (two hours). The command reports the
+next invocation's synchronization outcome and run id in human output or the
+`canonfig.cli/v1` JSON envelope. Converged exits 0, Human Action Required exits
+3, Follower Drift exits 4, and failed or interrupted synchronization exits 7.
+Timeout exits 7 and does not stop the job, which may still be running. Check
+`canonfig schedule status` and `canonfig status` before retrying.
 
 ## Shared secrets
 

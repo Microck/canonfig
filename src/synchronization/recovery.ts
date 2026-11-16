@@ -31,9 +31,12 @@ import type {
 } from "../state/state-repository.types.ts";
 import {
   appliedResourceFor,
+  blockedByPrerequisite,
+  recordsVerifiedResources,
   restoreAction,
   reduceActionResult,
   actionProgressOutcome,
+  startActionProgress,
   blockRunRollback,
   withRollbackOutcome,
   type RunRollback,
@@ -472,7 +475,9 @@ export const recoverSynchronizationPlan = (
     const verified = new Set<ResourceId>();
     const removedResources = new Set<ResourceId>();
     let runRollback: RunRollback = { _tag: "Complete" };
-    let progress: ActionProgress = { _tag: "Running", verified };
+    let progress: ActionProgress = startActionProgress(verified);
+    // Actions that needed a person in this replay, and their resources.
+    const blocked = new Map<ActionId, ResourceId>();
     const completedRollbacks: Array<{
       readonly action: PlannedAction;
       readonly attempt: number;
@@ -491,7 +496,10 @@ export const recoverSynchronizationPlan = (
         readonly resource: ResourceId;
         readonly previousApplied?: AppliedResourceRecord | undefined;
       } | undefined;
-      if (last.state === "blocked" && state.action.detail.kind !== "install-tool") {
+      const waiting = blockedByPrerequisite(state.action, blocked);
+      if (waiting !== undefined) {
+        result = waiting;
+      } else if (last.state === "blocked" && state.action.detail.kind !== "install-tool") {
         result = preservedOutcome(input, state.action);
       } else if (
         last.state === "succeeded"
@@ -645,8 +653,9 @@ export const recoverSynchronizationPlan = (
       if (result.kind === "verified" && result.resource !== undefined
         && recoveryInput.revision.removedResources?.includes(result.resource) === true) removedResources.add(result.resource);
       progress = yield* reduceActionResult(progress, result);
+      if (result.kind === "human") blocked.set(state.action.id, state.action.resource);
       if (result.kind === "failed") failedReason = result.reason;
-      if (result.kind !== "verified") {
+      if (result.kind === "drift" || result.kind === "failed") {
         if (result.kind === "failed") {
           for (const completed of completedRollbacks.reverse()) {
             const rollback = yield* restoreAction(completed.rollback, appendJournal(
@@ -669,10 +678,11 @@ export const recoverSynchronizationPlan = (
       ? { outcome: "Failed", run: input.id, reason: failedReason }
       : actionProgressOutcome(input.id, progress);
     const appliedResources: Array<AppliedResourceRecord> = [];
-    if (outcome.outcome === "Converged") {
+    if (recordsVerifiedResources(outcome)) {
       const appliedAt = yield* now;
+      const blockedResources = new Set(blocked.values());
       for (const state of states) {
-        if (!verified.has(state.action.resource) || removedResources.has(state.action.resource)) continue;
+        if (!verified.has(state.action.resource) || removedResources.has(state.action.resource) || blockedResources.has(state.action.resource)) continue;
         const record = appliedResourceFor(input, state, appliedAt);
         if (record !== undefined) appliedResources.push(record);
       }
@@ -681,7 +691,7 @@ export const recoverSynchronizationPlan = (
       outcome: withRollbackOutcome(outcome, runRollback),
       rollback: runRollback,
       appliedResources,
-      removedResources: outcome.outcome === "Converged"
+      removedResources: recordsVerifiedResources(outcome)
         ? [...removedResources].sort()
         : [],
     };

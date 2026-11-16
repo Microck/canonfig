@@ -17,6 +17,11 @@ import type { AuthenticatedFollower, SourceCredentials } from "./enrollment.type
 
 export const fleetPath = (state: string): string => `${state}.fleet-update.json`;
 const maximumAdmissionAge = 60 * 60 * 1000;
+// The Source stamps expiresAt from its own clock (admission + one hour) and the
+// follower judges it with its clock. A follower even slightly behind the Source
+// saw a lifetime just over one hour and refused every directive, so the upper
+// bound allows this much difference between the two machines' clocks.
+const maximumClockSkew = 5 * 60 * 1000;
 
 export function readFleetUpdate(state: string): FleetUpdate | null {
   const path = fleetPath(state);
@@ -45,7 +50,7 @@ export function verifyFleetDirective(signed: SignedFleetDirective, follower: str
     throw new Error("Fleet Update directive signature or enrollment identity is invalid");
   }
   const expiry = Date.parse(directive.expiresAt);
-  if (!Number.isFinite(expiry) || expiry <= now || expiry > now + maximumAdmissionAge) throw new Error("Fleet Update directive is expired or has an invalid lifetime");
+  if (!Number.isFinite(expiry) || expiry <= now || expiry > now + maximumAdmissionAge + maximumClockSkew) throw new Error("Fleet Update directive is expired or has an invalid lifetime");
   return directive;
 }
 

@@ -1462,6 +1462,11 @@ const systemdBackend = (
           "enable the Canonfig systemd user timer",
         );
       }),
+    start: (definition) =>
+      requireSuccess(
+        ["start", "--no-block", definition.serviceName],
+        "start the Canonfig systemd user service",
+      ),
     remove: (definition) =>
       Effect.gen(function*() {
         const path = paths(definition);
@@ -2241,6 +2246,7 @@ export const linuxMachineStateLayer = (
         inspectSchedulerJob: Effect.fn("MachineState.inspectSchedulerJob")(scheduler.inspect),
         snapshotSchedulerJob: Effect.fn("MachineState.snapshotSchedulerJob")(scheduler.snapshot),
         installSchedulerJob: Effect.fn("MachineState.installSchedulerJob")(scheduler.install),
+        startSchedulerJob: Effect.fn("MachineState.startSchedulerJob")(scheduler.start),
         removeSchedulerJob: Effect.fn("MachineState.removeSchedulerJob")(scheduler.remove),
         restoreSchedulerJob: Effect.fn("MachineState.restoreSchedulerJob")(scheduler.restore),
       });

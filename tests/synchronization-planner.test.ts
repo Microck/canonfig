@@ -821,6 +821,45 @@ describe("resource and Apply Policy coverage", () => {
     },
   );
 
+  describe("an owned directory that lost some of its items", () => {
+    // Two skills Canonfig wrote into one harness skills directory; "two" holds two files.
+    const entry = (path: string, digest: typeof digestA) => ({ path, digest, executable: false, mode: 0o600 });
+    const ownedFiles = [entry("one/SKILL.md", digestA), entry("two/SKILL.md", digestB), entry("two/README.md", digestC)]
+      .map((file) => ({ ...file, objectKind: "regular" as const }));
+    const planWith = (present: ReadonlyArray<{ readonly path: string; readonly digest: typeof digestA }>, mode = 0o700) => {
+      const subject = resource("skills", "directory", "replace-if-unmodified");
+      return runPlan(plannerInput([subject], {
+        desired: [{ kind: "directory", mode: 0o700, directories: [], files: ownedFiles.map(({ objectKind: _kind, ...file }) => file) }],
+        observed: [{
+          state: "directory", mode, objectKind: "directory",
+          files: [
+            { path: "one", digest: digestC, executable: true, mode: 0o700, objectKind: "directory" },
+            ...present.map((file) => ({ ...entry(file.path, file.digest), objectKind: "regular" as const })),
+          ],
+        }],
+        applied: [{
+          resource: subject.id, revision: "previous", digest: directoryEntriesDigest(ownedFiles), appliedAt: "2026-08-15T00:00:00Z",
+          ownership: "DirectoryEntries", kind: "directory", policy: "replace-if-unmodified", target: subject.target, mode: 0o700, ownedFiles,
+        }],
+      }));
+    };
+
+    it("puts a whole missing item back when everything still there is unchanged", () => {
+      const plan = planWith([{ path: "one/SKILL.md", digest: digestA }]);
+      expect(plan.actions.map((action) => action.kind)).toEqual(["mirror-directory"]);
+      expect(plan.actions[0]?.detail).toMatchObject({ kind: "mirror-directory", adds: ["two/README.md", "two/SKILL.md"], removes: [] });
+    });
+
+    it.each([
+      ["an edited owned entry", [{ path: "one/SKILL.md", digest: digestC }], 0o700],
+      ["an added entry", [{ path: "one/SKILL.md", digest: digestA }, { path: "one/notes.md", digest: digestC }], 0o700],
+      ["a file missing from an item still there", [{ path: "one/SKILL.md", digest: digestA }, { path: "two/SKILL.md", digest: digestB }], 0o700],
+      ["a changed root mode", [{ path: "one/SKILL.md", digest: digestA }], 0o755],
+    ] as const)("still reports Follower Drift for %s", (_name, present, mode) => {
+      expect(planWith(present, mode).actions.map((action) => action.kind)).toEqual(["drift-conflict"]);
+    });
+  });
+
   it.each([
     ["file", "file"],
     ["skill", "skill"],

@@ -1,7 +1,10 @@
 import { Context, type Effect } from "effect";
+import type { StateRepository } from "../state/state-repository.service.ts";
+import type { ScheduledInvocation } from "../state/state-repository.types.ts";
 
 import type { ScheduleManagerError } from "./schedule-manager.errors.ts";
 import type {
+  RunScheduleInput,
   RemoveScheduleResult,
   ScheduleChange,
   ScheduleReconciliation,
@@ -11,6 +14,9 @@ import type {
 } from "./schedule-manager.types.ts";
 
 export class ScheduleManager extends Context.Service<ScheduleManager, {
+  readonly run: (
+    input?: RunScheduleInput,
+  ) => Effect.Effect<Exclude<ScheduledInvocation, { readonly _tag: "Running" }>, ScheduleManagerError, StateRepository>;
   readonly install: (
     input?: SetScheduleInput,
   ) => Effect.Effect<ScheduleChange, ScheduleManagerError>;

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect, Layer } from "effect";
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
+import { MachineState } from "../src/machine/machine-state.service.ts";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import type { ScheduleDefault } from "../src/domain/profile.ts";
@@ -221,6 +222,7 @@ describe("Windows logged-on-only task status", () => {
       }),
       snapshot: () => Effect.die("unused"),
       install: () => Effect.void,
+      start: () => Effect.void,
       remove: () => Effect.void,
       restore: () => Effect.void,
     };
@@ -366,9 +368,19 @@ exit 0
     const run = <Value, Error>(
       effect: (manager: ScheduleManager["Service"]) => Effect.Effect<Value, Error>,
     ) => Effect.runPromise(Effect.flatMap(ScheduleManager, effect).pipe(Effect.provide(layer)));
-    return { home, state, run };
+    return { home, state, run, machine };
   };
   const input = { executable: linuxFixture, schedule: { kind: "daily", localTime: "04:00" } } as const;
+
+  it("starts only the installed service without enabling or restarting its timer", async () => {
+    const host = await simulatedHost();
+    const installed = await host.run((manager) => manager.install(input));
+    await writeFile(join(host.state, "calls"), "");
+    await Effect.runPromise(Effect.flatMap(MachineState, (machine) =>
+      machine.startSchedulerJob(installed.status.definition)
+    ).pipe(Effect.provide(host.machine)));
+    expect(await readFile(join(host.state, "calls"), "utf8")).toBe("--user start --no-block canonfig-sync.service\n");
+  });
 
   it("keeps a matching complex wrapper installed but unverified", async () => {
     const host = await simulatedHost();

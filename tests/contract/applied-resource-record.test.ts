@@ -10,25 +10,44 @@ import {
 import { removedResourceState, removedResourceVerification } from "../../src/synchronization/observation.ts";
 import { planRemoved } from "../../src/synchronization/resource-plans.ts";
 import type { DesiredResource } from "../../src/synchronization/synchronization.types.ts";
-import { actionProgressOutcome, blockRunRollback, reduceActionResult, restoreAction, withRollbackOutcome, type ActionResult } from "../../src/synchronization/executor.ts";
+import { actionProgressOutcome, blockedByPrerequisite, blockRunRollback, reduceActionResult, restoreAction, startActionProgress, withRollbackOutcome, type ActionResult } from "../../src/synchronization/executor.ts";
 
 describe("Action result transitions", () => {
   const run = Schema.decodeUnknownSync(RunId)("action-result-contract");
   const resource = Schema.decodeUnknownSync(ResourceId)("action-resource");
   it.each([
-    [{ kind: "human", human: { reason: "human step", instructions: "finish the step" } }, "HumanActionRequired"],
     [{ kind: "drift", drift: { resource, target: "/disposable/target", desiredDigest: "a".repeat(64), observedDigest: "b".repeat(64), lastAppliedDigest: "c".repeat(64) } }, "FollowerDrift"],
     [{ kind: "failed", reason: "write failed", rollbackState: { _tag: "NotRequired" } }, "Failed"],
-  ] satisfies ReadonlyArray<readonly [ActionResult, string]>)("never reports convergence after %j", (result, outcome) => {
-    const progress = Effect.runSync(reduceActionResult({ _tag: "Running", verified: new Set() }, result));
+  ] satisfies ReadonlyArray<readonly [ActionResult, string]>)("stops and never reports convergence after %j", (result, outcome) => {
+    const progress = Effect.runSync(reduceActionResult(startActionProgress(new Set()), result));
     expect(actionProgressOutcome(run, progress).outcome).toBe(outcome);
     expect(Effect.runSync(Effect.flip(reduceActionResult(progress, { kind: "verified", resource })))).toMatchObject({
       _tag: "InvalidExecutionPlanError",
     });
   });
 
+  it("keeps going after an action that needs a person and reports every such action", () => {
+    const first = { reason: "no recipe for agent-tui", instructions: "install agent-tui" };
+    const second = { reason: "no recipe for tesseract", instructions: "install tesseract" };
+    let progress = Effect.runSync(reduceActionResult(startActionProgress(new Set()), { kind: "human", human: first }));
+    progress = Effect.runSync(reduceActionResult(progress, { kind: "verified", resource }));
+    progress = Effect.runSync(reduceActionResult(progress, { kind: "human", human: second }));
+    expect(actionProgressOutcome(run, progress)).toEqual({ outcome: "HumanActionRequired", run, actions: [first, second] });
+  });
+
+  it("blocks an action whose prerequisite needed a person, naming what it waits for", () => {
+    const tool = Schema.decodeUnknownSync(ResourceId)("tools:agent-tui");
+    const prerequisite = Schema.decodeUnknownSync(ActionId)("action:tools:agent-tui:0:human-action");
+    const blocked = new Map([[prerequisite, tool]]);
+    expect(blockedByPrerequisite({ resource, before: [] }, blocked)).toBeUndefined();
+    expect(blockedByPrerequisite({ resource, before: [prerequisite] }, blocked)).toEqual({
+      kind: "human",
+      human: { reason: `${resource} waits for ${tool}, which needs human action`, instructions: `Resolve ${tool}, then run synchronization again.`, resource },
+    });
+  });
+
   it("adds only verified resource results to convergence", () => {
-    let progress = Effect.runSync(reduceActionResult({ _tag: "Running", verified: new Set() }, { kind: "verified" }));
+    let progress = Effect.runSync(reduceActionResult(startActionProgress(new Set()), { kind: "verified" }));
     progress = Effect.runSync(reduceActionResult(progress, { kind: "verified", resource }));
     expect(actionProgressOutcome(run, progress)).toEqual({ outcome: "Converged", run, verified: [resource] });
   });

@@ -1010,6 +1010,39 @@ describe("synchronization crash recovery", () => {
     expect(await readFile(value.target, "utf8")).toBe("canonical content");
   });
 
+  it.each([
+    ["runs an action that does not depend on it", false],
+    ["blocks an action that waits for it", true],
+  ] as const)("after an action that needs a person, the run %s", async (_name, dependent) => {
+    const value = fixture(temporaryDirectory());
+    const base = persistedPlan(value);
+    const write = base.actions[0]!;
+    const human = {
+      ...write,
+      id: decode(ActionId)("action:tool:0:human-action"),
+      kind: "human-action" as const,
+      detail: { kind: "human-action" as const, reason: "No usable installation recipe for this platform", instructions: "Install it manually" },
+      before: [],
+    };
+    const tail = { ...write, before: dependent ? [human.id] : [] };
+    const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)({
+      revision: base.revision, follower: base.follower, requiredBlobs: base.requiredBlobs,
+      actions: [human, tail], agentTasks: base.agentTasks,
+    }));
+    const plan = { ...base, actions: [human, tail], encoded, digest: sha256Hex(encoded) };
+    await seed(value, plan);
+    const execution = await Effect.runPromise(executeSynchronizationPlan({
+      id: decode(RunId)("run-recovery"), plan, revision: value.revision, artifacts: [value.artifact],
+    }).pipe(Effect.provide(applicationLayer(value))));
+    expect(execution.outcome.outcome, JSON.stringify(execution.outcome)).toBe("HumanActionRequired");
+    if (execution.outcome.outcome !== "HumanActionRequired") return;
+    expect(execution.outcome.actions.map((action) => action.reason)).toEqual(dependent
+      ? ["No usable installation recipe for this platform", `${write.resource} waits for ${write.resource}, which needs human action`]
+      : ["No usable installation recipe for this platform"]);
+    expect(existsSync(value.target)).toBe(!dependent);
+    expect(runRows(value).filter((row) => row.action_id === tail.id).map((row) => row.state).at(-1)).toBe(dependent ? "blocked" : "succeeded");
+  });
+
   it("preserves executable execution-model metadata across persisted plan hydration", async () => {
     const value = fixture(temporaryDirectory(), { kind: "tool" });
     const base = persistedPlan(value);

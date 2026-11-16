@@ -4,9 +4,40 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
 
 ## Unreleased
 
+### Browser interface
+
 - Browse all stored Source profile histories in Revisions, with recorded reviewers
   and resource-change counts. Look up an exact revision ID and inspect its complete
   stored record, approval metadata and canonical bytes.
+
+### Remote shells
+
+- Add `canonfig schedule run` to start this machine's installed synchronization
+  job now and wait for its result. Use it over SSH, where Windows Credential
+  Manager and the macOS login Keychain are unavailable and `canonfig sync`
+  cannot read the follower credential: the job runs in your signed-in session.
+  It reports the run's outcome and id, supports `--timeout-ms` and `--json`,
+  and refuses a missing, disabled or changed job. A timeout leaves a job that
+  is still running alone.
+
+### Synchronization
+
+- Keep applying a run past a resource that needs a person, such as a tool with
+  no installation recipe for this platform. Resources that depend on it wait,
+  the run still ends Human Action Required, and it lists every resource that
+  needs attention. Before, one such tool stopped everything after it.
+- Record the resources a Human Action Required run applied and verified, so the
+  next run does not report Canonfig's own writes as Follower Drift.
+
+### Fixes
+
+- Accept Fleet Update directives on a follower whose clock is up to five minutes
+  behind the Source. Any follower even slightly behind refused every directive
+  as expired, so rollouts never reached it.
+- Put back skills or other items that are missing entirely from a directory
+  Canonfig manages, such as a harness skills folder, when nothing else there
+  changed. Before, this was reported as Follower Drift and stopped every later
+  run. A file missing from inside a skill is still Follower Drift.
 
 ## v7.3.0 - 2026-11-16
 

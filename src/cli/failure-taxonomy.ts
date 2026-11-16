@@ -832,6 +832,10 @@ export const failureTaxonomy = {
     (error) =>
       `${text(error.operation)} left the schedule ${text(error.state)}`,
   ),
+  ScheduleRunTimeoutError: declared(
+    "verification-or-apply-failure",
+    () => "the native synchronization job did not finish before the wait timed out",
+  ),
   ProcessStartError: declared(
     "verification-or-apply-failure",
     (error) => `${text(error.executable)} could not be started`,

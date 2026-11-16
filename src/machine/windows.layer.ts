@@ -1559,6 +1559,23 @@ export const windowsMachineStateLayer = (
               windowsTaskXml(desired, currentUser, new Date().toISOString().replace(/\.\d{3}Z$/u, "Z")),
             );
         },
+        start: (definition) => Effect.gen(function*() {
+          const query = yield* queryScheduledTask(definition.serviceName);
+          if (query.exitCode !== 0) {
+            return yield* schedulerAccessError("start the Canonfig scheduled task");
+          }
+          const settings = xmlElement(decodeWindowsTaskXml(query.standardOutput), "Settings") ?? "";
+          if (xmlElement(settings, "Enabled") === "false") {
+            return yield* new HumanActionRequiredError({
+              action: "start the Canonfig scheduled task",
+              recovery: "The task is disabled. Run `canonfig schedule set` to restore it before retrying.",
+            });
+          }
+          const result = yield* runSchedulerCommand(["/Run", "/TN", definition.serviceName]);
+          if (result.exitCode !== 0) {
+            return yield* schedulerAccessError("start the Canonfig scheduled task");
+          }
+        }),
         remove: (definition) =>
           removeScheduledTaskIfPresent(
             definition.serviceName,
@@ -1942,6 +1959,7 @@ export const windowsMachineStateLayer = (
         inspectSchedulerJob: scheduler.inspect,
         snapshotSchedulerJob: scheduler.snapshot,
         installSchedulerJob: scheduler.install,
+        startSchedulerJob: scheduler.start,
         removeSchedulerJob: scheduler.remove,
         restoreSchedulerJob: scheduler.restore,
       });

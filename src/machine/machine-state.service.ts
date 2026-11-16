@@ -146,6 +146,9 @@ export class MachineState extends Context.Service<MachineState, {
   readonly installSchedulerJob: (
     definition: RenderedSchedulerJob,
   ) => Effect.Effect<void, MachineStateError>;
+  readonly startSchedulerJob: (
+    definition: RenderedSchedulerJob,
+  ) => Effect.Effect<void, MachineStateError>;
   readonly removeSchedulerJob: (
     definition: RenderedSchedulerJob,
   ) => Effect.Effect<void, MachineStateError>;

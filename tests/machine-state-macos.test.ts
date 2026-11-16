@@ -104,6 +104,13 @@ describe("macOS native scheduler inspection", () => {
     );
     expect(invocations.map((argv) => argv[0])).toEqual(["bootout", "enable", "bootstrap"]);
 
+    invocations.length = 0;
+    await runWith(
+      layerFor(undefined),
+      Effect.flatMap(MachineState, (machine) => machine.startSchedulerJob(rendered)),
+    );
+    expect(invocations).toEqual([["kickstart", `gui/${process.getuid?.() ?? 0}/${label}`]]);
+
     // Running as the agent's own process: the plist is written and launchd
     // picks it up on the next login, but nothing boots this process out.
     invocations.length = 0;

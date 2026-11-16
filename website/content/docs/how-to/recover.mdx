@@ -31,11 +31,13 @@ blocked. `doctor` checks this machine; see
 - **An apply failure (exit 7) rolls back.** Canonfig restores every file,
   directory, and config it changed in that run, deletes the Takeover Snapshot
   the run took, then names the resource and the cause.
-- **Human Action Required (exit 3) and Follower Drift (exit 4) stop the run
-  without rolling back.** Resources applied before the blocked one stay
-  applied, the blocked resource is unchanged, and later resources are skipped.
-  `canonfig sync --plan` lists the blocked resource as `human-action` or
-  `drift-conflict`.
+- **Human Action Required (exit 3) does not roll back or stop the run.** The
+  blocked resource is unchanged, resources that depend on it wait, and every
+  other resource is applied. The run lists each resource that needs you.
+- **Follower Drift (exit 4) stops the run without rolling back.** Resources
+  applied before the conflict stay applied, the drifted resource is unchanged,
+  and later resources are skipped. `canonfig sync --plan` lists blocked
+  resources as `human-action` or `drift-conflict`.
 - **Tool installs are never rolled back.** A package an installer installed
   stays installed, and the next run finds it in place.
 
