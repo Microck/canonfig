@@ -49,7 +49,7 @@ import type {
   SynchronizationOutcome,
 } from "../../src/domain/synchronization.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
-import { ExecutableNotFoundError, MachineFilesystemError, UnconfirmedPublicationError } from "../../src/machine/machine-state.errors.ts";
+import { ExecutableNotFoundError, FileSizeLimitError, MachineFilesystemError, UnconfirmedPublicationError } from "../../src/machine/machine-state.errors.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import {
   canonicalJson,
@@ -462,8 +462,8 @@ const windowsVerifierFixture = (
         operation: "read fixture file", path: path.absolute, message: "ENOENT",
       }));
       const bytes = new TextEncoder().encode(text);
-      if (bytes.length > maximumBytes) return Effect.fail(new MachineFilesystemError({
-        operation: "read fixture file", path: path.absolute, message: "file exceeds maximumBytes",
+      if (bytes.length > maximumBytes) return Effect.fail(new FileSizeLimitError({
+        path: path.absolute, maximumBytes,
       }));
       return Effect.succeed(prefixBytes === undefined ? bytes : bytes.slice(0, prefixBytes));
     },
@@ -1175,7 +1175,7 @@ process.exit(1);
   it("rejects a Windows npm native shim whose shell suffix is beyond the bounded header", async () => {
     const fixture = windowsVerifierFixture(windowsNativeShim + "\r\n".repeat(2048) + "calc.exe\r\n");
     await expect(Effect.runPromise(verifyResource(fixture.context).pipe(Effect.provide(fixture.machine))))
-      .rejects.toMatchObject({ _tag: "MachineFilesystemError" });
+      .rejects.toMatchObject({ _tag: "FileSizeLimitError" });
     expect(fixture.invocations).toEqual([]);
   });
 
@@ -1184,7 +1184,7 @@ process.exit(1);
       'node "%~dp0\\node_modules\\agent-browser\\cli.js" %*\r\n' + "\r\n".repeat(2048) + windowsNativeShim,
     );
     await expect(Effect.runPromise(verifyResource(fixture.context).pipe(Effect.provide(fixture.machine))))
-      .rejects.toMatchObject({ _tag: "MachineFilesystemError" });
+      .rejects.toMatchObject({ _tag: "FileSizeLimitError" });
     expect(fixture.invocations).toEqual([]);
   });
 

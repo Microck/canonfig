@@ -32,9 +32,9 @@ gate; these denial-of-service advisories are not fixed.
 
 Use Node.js 24.15+ or 26+. Source and Followers must all use the 7.3 release line
 before resuming synchronization; 7.2.x and 7.3.x do not synchronize with each other.
-Preserve unfinished journals and rollback snapshots. If recovery on the build
-that created a run fails, keep that evidence and follow its reported recovery
-instructions before applying another revision.
+Before installing 7.3.0, finish or recover any unfinished run with the CLI build
+that created it. If recovery fails, retain its journals and rollback snapshots,
+follow the reported recovery instructions, and do not switch packages.
 
 Stop the browser interface before installing
 `npm install --global @microck/canonfig@7.3.0`. On a Source, record and remove

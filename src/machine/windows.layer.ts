@@ -278,6 +278,8 @@ using Microsoft.Win32.SafeHandles;
 public static class CanonfigPermissionRestore {
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
   static extern SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+  [DllImport("kernel32.dll", SetLastError=true)]
+  static extern SafeFileHandle ReOpenFile(SafeFileHandle file, uint access, uint share, uint flags);
   [DllImport("advapi32.dll", SetLastError=true)]
   static extern bool GetKernelObjectSecurity(SafeFileHandle file, uint information, byte[] descriptor, uint length, out uint needed);
   [DllImport("ntdll.dll")]
@@ -285,10 +287,10 @@ public static class CanonfigPermissionRestore {
   [DllImport("ntdll.dll")]
   static extern uint RtlNtStatusToDosError(int status);
   public static void Restore(string path, byte[] descriptor) {
-    // MAXIMUM_ALLOWED obtains the rights already granted by the object's ACL,
-    // without requiring WRITE_OWNER for a DACL-only restore. No privileges are enabled.
-    // Share read/write/delete; OPEN_EXISTING; BACKUP_SEMANTICS | OPEN_REPARSE_POINT.
-    using (var handle = CreateFileW(path, 0x02000000, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
+    // READ_CONTROL | WRITE_DAC does not request content access or WRITE_OWNER.
+    // No privileges are enabled. Share read/write/delete; OPEN_EXISTING;
+    // BACKUP_SEMANTICS (directories) | OPEN_REPARSE_POINT.
+    using (var handle = CreateFileW(path, 0x00060000, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
       if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
       uint needed;
       if (!GetKernelObjectSecurity(handle, 3, null, 0, out needed) && Marshal.GetLastWin32Error() != 122)
@@ -309,8 +311,19 @@ public static class CanonfigPermissionRestore {
         ? 0x80000000u : 0x20000000u); // DACL | PROTECTED_DACL or UNPROTECTED_DACL.
       if (!Object.Equals(current.Owner, expected.Owner)) information |= 1;
       if (!Object.Equals(current.Group, expected.Group)) information |= 2;
-      int status = NtSetSecurityObject(handle, information, descriptor);
-      if (status < 0) throw new Win32Exception((int)RtlNtStatusToDosError(status));
+      SafeFileHandle ownerHandle = null;
+      try {
+        if ((information & 3) != 0) {
+          // Reopen the same object, not its path: a rename cannot redirect the
+          // owner update. READ_CONTROL | WRITE_DAC | WRITE_OWNER, no content access.
+          ownerHandle = ReOpenFile(handle, 0x000e0000, 7, 0x02200000);
+          if (ownerHandle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        int status = NtSetSecurityObject(ownerHandle ?? handle, information, descriptor);
+        if (status < 0) throw new Win32Exception((int)RtlNtStatusToDosError(status));
+      } finally {
+        if (ownerHandle != null) ownerHandle.Dispose();
+      }
     }
   }
 }
