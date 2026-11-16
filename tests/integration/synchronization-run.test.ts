@@ -18,7 +18,7 @@ import {
 import { createHash } from "node:crypto";
 import { access, mkdir, readFile, writeFile, type statfs } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, win32 } from "node:path";
 import { gzipSync } from "node:zlib";
 import { DatabaseSync } from "node:sqlite";
 
@@ -49,7 +49,7 @@ import type {
   SynchronizationOutcome,
 } from "../../src/domain/synchronization.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
-import { MachineFilesystemError, UnconfirmedPublicationError } from "../../src/machine/machine-state.errors.ts";
+import { ExecutableNotFoundError, MachineFilesystemError, UnconfirmedPublicationError } from "../../src/machine/machine-state.errors.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import {
   canonicalJson,
@@ -402,6 +402,108 @@ const decorateMachine = (
     MachineState,
     Effect.map(MachineState, transform),
   ).pipe(Layer.provide(machineLayer(root)));
+
+const windowsNativeShim = '@ECHO off\r\n"%~dp0node_modules\\agent-browser\\bin\\agent-browser-win32-x64.exe" %*\r\n';
+
+const windowsVerifierFixture = (
+  shim: string,
+  options: {
+    readonly object?: "symlink" | "reparse-point" | "directory";
+    readonly objectPath?: string;
+    readonly exitCode?: number;
+    readonly output?: string;
+    readonly shimDirectory?: string;
+  } = {},
+) => {
+  const home = "C:\\Users\\fixture";
+  const prefix = win32.join(home, "AppData", "Roaming", "npm");
+  const node = "C:\\Program Files\\nodejs\\node.exe";
+  const npmCli = "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js";
+  const packagePrefix = options.shimDirectory ?? prefix;
+  const launcher = win32.join(packagePrefix, "agent-browser.cmd");
+  const native = win32.join(packagePrefix, "node_modules", "agent-browser", "bin", "agent-browser-win32-x64.exe");
+  const files = new Map([
+    [win32.join(home, ".canonfig", "installers", "npm.json"), JSON.stringify({
+      schema: "canonfig.installer/v1", method: "npm", platform: "windows", executable: node, arguments: [npmCli],
+    })],
+    [node, "native Node fixture"],
+    [npmCli, "npm entrypoint fixture"],
+    [launcher, shim],
+    [native, "native verifier fixture"],
+  ]);
+  const invocations: Array<{ readonly executable: string; readonly arguments: ReadonlyArray<string> }> = [];
+  const machine = decorateMachine(temporaryDirectory(), (service) => ({
+    ...service,
+    userDirectories: () => Effect.succeed({
+      home: { platform: "windows", absolute: home },
+      config: { platform: "windows", absolute: win32.join(home, "AppData", "Roaming") },
+      data: { platform: "windows", absolute: win32.join(home, "AppData", "Local") },
+      cache: { platform: "windows", absolute: win32.join(home, "AppData", "Local", "Cache") },
+    }),
+    normalizePath: ({ path, base }) => Effect.succeed({
+      platform: "windows",
+      absolute: win32.resolve(base?.absolute ?? home, path),
+    }),
+    inspectPath: (path) => {
+      if (options.object !== undefined && path.absolute === (options.objectPath ?? native)) {
+        return Effect.succeed({ kind: options.object });
+      }
+      if (files.has(path.absolute)) return Effect.succeed({ kind: "regular" });
+      if ([...files.keys()].some((file) => file.startsWith(`${path.absolute}\\`))) {
+        return Effect.succeed({ kind: "directory" });
+      }
+      return Effect.fail(new MachineFilesystemError({
+        operation: "inspect fixture path", path: path.absolute, message: "ENOENT",
+      }));
+    },
+    readFile: ({ path, maximumBytes, prefixBytes }) => {
+      const text = files.get(path.absolute);
+      if (text === undefined) return Effect.fail(new MachineFilesystemError({
+        operation: "read fixture file", path: path.absolute, message: "ENOENT",
+      }));
+      const bytes = new TextEncoder().encode(text);
+      if (bytes.length > maximumBytes) return Effect.fail(new MachineFilesystemError({
+        operation: "read fixture file", path: path.absolute, message: "file exceeds maximumBytes",
+      }));
+      return Effect.succeed(prefixBytes === undefined ? bytes : bytes.slice(0, prefixBytes));
+    },
+    findExecutable: (query) => {
+      expect(["agent-browser", "agent-browser.cmd"]).toContain(query.name);
+      expect(query.installMethods).toEqual([{ method: "npm", installer: { platform: "windows", absolute: node } }]);
+      if (query.searchPath !== undefined && packagePrefix !== prefix) {
+        return Effect.fail(new ExecutableNotFoundError({ executable: query.name, searched: [prefix] }));
+      }
+      return Effect.succeed({ name: query.name, path: { platform: "windows", absolute: launcher } });
+    },
+    runProcess: (input) => {
+      invocations.push({ executable: input.executable.absolute, arguments: input.arguments });
+      // Only model the package's native verifier or its bound Node interpreter.
+      // Running a shell, the shim, or a PATH shadow is a fixture failure.
+      expect([native, node]).toContain(input.executable.absolute);
+      return Effect.succeed({
+        exitCode: options.exitCode ?? 0, signal: null,
+        standardOutput: new TextEncoder().encode(options.output ?? "agent-browser 1.2.3"),
+        standardError: new Uint8Array(),
+      });
+    },
+  }));
+  const id = decode(ResourceId)("agent-browser");
+  const context: ResourceExecutionContext = {
+    run: decode(RunId)("run-windows-native-verifier"),
+    action: {
+      id: decode(ActionId)("action:agent-browser:0"), resource: id, kind: "no-op",
+      detail: { kind: "no-op", reason: "tool already present" }, before: [],
+    },
+    resource: { id, kind: "tool", policy: "ensure", target: "agent-browser", dependsOn: [], blobs: [] },
+    desired: {
+      kind: "tool", toolId: "agent-browser", loginRequired: false,
+      recipes: [{ platform: "windows", method: "npm", package: "agent-browser", version: "1.2.3" }],
+    },
+    verification: { method: "command", command: ["agent-browser", "--version"], expectContains: "1.2.3" },
+    artifacts: new Map(), limits: defaultSynchronizationExecutionLimits,
+  };
+  return { context, machine, invocations, native, node };
+};
 
 const reencodePlan = (
   plan: SynchronizationRunInput["plan"],
@@ -1035,6 +1137,102 @@ process.exit(1);
       }).pipe(Effect.provide(machineLayer(root))),
     ));
     expect(timedOut._tag).toBe("ProcessTimeoutError");
+  });
+
+  it("verifies a standard Windows npm native shim without a shell and preserves argument boundaries", async () => {
+    const fixture = windowsVerifierFixture(windowsNativeShim);
+    const arguments_ = ["--version", "two words", "", "literal&|<>^", "%PATH%", '"quoted"', "trailing\\"];
+    const result = await Effect.runPromise(verifyResource({
+      ...fixture.context,
+      verification: { method: "command", command: ["agent-browser", ...arguments_], expectContains: "1.2.3" },
+    }).pipe(Effect.provide(fixture.machine)));
+    expect(result.passed).toBe(true);
+    expect(fixture.invocations).toEqual([{ executable: fixture.native, arguments: arguments_ }]);
+  });
+
+  it.each([
+    ["conflicting native entrypoints", windowsNativeShim + '"%~dp0node_modules\\agent-browser\\other.exe" %*\r\n'],
+    ["mixed native and Node entrypoints", windowsNativeShim + 'node "%~dp0\\node_modules\\agent-browser\\cli.js" %*\r\n'],
+    ["shell prelude", "echo unexpected\r\n" + windowsNativeShim],
+    ["shell suffix", windowsNativeShim.trimEnd() + " & calc.exe\r\n"],
+    ["fixed extra arguments", windowsNativeShim.replace(" %*", " --unsafe %*")],
+    ["environment expansion", windowsNativeShim.replace("bin\\", "%PAYLOAD%\\")],
+    ["delayed expansion", windowsNativeShim.replace("bin\\", "!PAYLOAD!\\")],
+    ["parent traversal", windowsNativeShim.replace("bin\\", "bin\\..\\..\\..\\")],
+    ["absolute entrypoint", '@ECHO off\r\n"C:\\outside\\tool.exe" %*\r\n'],
+    ["different package", windowsNativeShim.replace("node_modules\\agent-browser\\", "node_modules\\other-package\\")],
+    ["package prefix collision", windowsNativeShim.replace("node_modules\\agent-browser\\", "node_modules\\agent-browser-extra\\")],
+    ["alternate data stream", windowsNativeShim.replace("bin\\", "bin:stream\\")],
+    ["unsupported batch script", windowsNativeShim.replace(".exe", ".bat")],
+    ["unsupported launcher variable", '@ECHO off\r\n"%NATIVE%" %*\r\n'],
+  ])("rejects a Windows npm native shim with %s before spawning", async (_reason, shim) => {
+    const fixture = windowsVerifierFixture(shim);
+    await expect(Effect.runPromise(verifyResource(fixture.context).pipe(Effect.provide(fixture.machine))))
+      .rejects.toMatchObject({ _tag: "InvalidExecutionPlanError" });
+    expect(fixture.invocations).toEqual([]);
+  });
+
+  it("rejects a Windows npm native shim whose shell suffix is beyond the bounded header", async () => {
+    const fixture = windowsVerifierFixture(windowsNativeShim + "\r\n".repeat(2048) + "calc.exe\r\n");
+    await expect(Effect.runPromise(verifyResource(fixture.context).pipe(Effect.provide(fixture.machine))))
+      .rejects.toMatchObject({ _tag: "MachineFilesystemError" });
+    expect(fixture.invocations).toEqual([]);
+  });
+
+  it("rejects a Windows npm shim with a native launch beyond the bounded Node prefix", async () => {
+    const fixture = windowsVerifierFixture(
+      'node "%~dp0\\node_modules\\agent-browser\\cli.js" %*\r\n' + "\r\n".repeat(2048) + windowsNativeShim,
+    );
+    await expect(Effect.runPromise(verifyResource(fixture.context).pipe(Effect.provide(fixture.machine))))
+      .rejects.toMatchObject({ _tag: "MachineFilesystemError" });
+    expect(fixture.invocations).toEqual([]);
+  });
+
+  it("rejects a Windows npm native package from an unrelated PATH directory", async () => {
+    const fixture = windowsVerifierFixture(windowsNativeShim, { shimDirectory: "C:\\unrelated" });
+    await expect(Effect.runPromise(verifyResource(fixture.context).pipe(Effect.provide(fixture.machine))))
+      .rejects.toMatchObject({ _tag: "InvalidExecutionPlanError" });
+    expect(fixture.invocations).toEqual([]);
+  });
+
+  it.each(["symlink", "reparse-point", "directory"] as const)(
+    "rejects a Windows npm native entrypoint that is a %s",
+    async (object) => {
+      const fixture = windowsVerifierFixture(windowsNativeShim, { object });
+      await expect(Effect.runPromise(verifyResource(fixture.context).pipe(Effect.provide(fixture.machine))))
+        .rejects.toMatchObject({ _tag: "InvalidExecutionPlanError" });
+      expect(fixture.invocations).toEqual([]);
+    },
+  );
+
+  it("rejects a Windows npm native package directory that redirects outside its tree", async () => {
+    const fixture = windowsVerifierFixture(windowsNativeShim, {
+      object: "reparse-point",
+      objectPath: "C:\\Users\\fixture\\AppData\\Roaming\\npm\\node_modules\\agent-browser",
+    });
+    await expect(Effect.runPromise(verifyResource(fixture.context).pipe(Effect.provide(fixture.machine))))
+      .rejects.toMatchObject({ _tag: "InvalidExecutionPlanError" });
+    expect(fixture.invocations).toEqual([]);
+  });
+
+  it.each([
+    { exitCode: 1, output: "agent-browser 1.2.3" },
+    { exitCode: 0, output: "agent-browser wrong-version" },
+  ])("keeps Windows npm native verifier failure visible: %j", async (options) => {
+    const fixture = windowsVerifierFixture(windowsNativeShim, options);
+    const result = await Effect.runPromise(verifyResource(fixture.context).pipe(Effect.provide(fixture.machine)));
+    expect(result.passed).toBe(false);
+    expect(fixture.invocations).toEqual([{ executable: fixture.native, arguments: ["--version"] }]);
+  });
+
+  it("keeps Windows npm Node-script verification bound to the approved Node executable", async () => {
+    const fixture = windowsVerifierFixture('@ECHO off\r\nnode "%~dp0\\node_modules\\agent-browser\\cli.js" %*\r\n');
+    const result = await Effect.runPromise(verifyResource(fixture.context).pipe(Effect.provide(fixture.machine)));
+    expect(result.passed).toBe(true);
+    expect(fixture.invocations).toEqual([{
+      executable: fixture.node,
+      arguments: ["C:\\Users\\fixture\\AppData\\Roaming\\npm\\node_modules\\agent-browser\\cli.js", "--version"],
+    }]);
   });
 
   it("verifies an executable-present check that names a path", async () => {

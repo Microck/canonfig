@@ -1,6 +1,6 @@
 ---
 name: install-canonfig
-description: Install or upgrade Canonfig 7.2.0 from its scoped npm package on Linux, macOS, or Windows. Use for prerequisites, safe upgrades, first-time Source setup and publication, follower enrollment and pinned trust, harness takeover, native scheduling, installation verification, or troubleshooting.
+description: Install or upgrade Canonfig 7.3.0 from its scoped npm package on Linux, macOS, or Windows. Use for prerequisites, safe upgrades, first-time Source setup and publication, follower enrollment and pinned trust, harness takeover, native scheduling, installation verification, or troubleshooting.
 ---
 
 # Install Canonfig
@@ -20,7 +20,7 @@ instead of repeating role setup.
    - macOS: [references/macos.md](references/macos.md)
    - Windows: [references/windows.md](references/windows.md)
 3. Confirm Node.js 24.15+ or 26+ and npm are available.
-4. Install the exact `@microck/canonfig@7.2.0` package version. The installed
+4. Install the exact `@microck/canonfig@7.3.0` package version. The installed
    executable remains `canonfig`. The Source and followers must run the same
    major.minor release; a mismatch fails with "source/follower version
    mismatch" (exit 2).

@@ -265,39 +265,52 @@ const readWindowsAcl = (nativeType: "File" | "Directory"): ReadonlyArray<string>
   `$acl=if($PSVersionTable.PSEdition -eq 'Core'){[IO.FileSystemAclExtensions]::GetAccessControl($item,$sections)}else{[IO.${nativeType}]::GetAccessControl($path,$sections)}`,
 ];
 
-// BackupWrite restores captured ACLs verbatim. SetAccessControl recalculates
-// inheritance from the temporary guard parent and propagates changes to children.
-// Open only the permission rights needed for restoration; do not enable privileges.
+// Set native security directly: SetAccessControl recalculates inheritance from
+// the temporary guard parent and propagates changes to children. BackupWrite
+// also reassigns an unchanged owner, which can require restore privileges.
+// Keep the full descriptor but request owner/group assignment only when changed.
 const nativePermissionRestore = `
 using System;
 using System.ComponentModel;
-using System.IO;
+using System.Security.AccessControl;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 public static class CanonfigPermissionRestore {
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
   static extern SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
-  [DllImport("kernel32.dll", SetLastError=true)]
-  static extern bool BackupWrite(SafeFileHandle file, byte[] bytes, uint length, out uint written, bool abort, bool security, ref IntPtr context);
+  [DllImport("advapi32.dll", SetLastError=true)]
+  static extern bool GetKernelObjectSecurity(SafeFileHandle file, uint information, byte[] descriptor, uint length, out uint needed);
+  [DllImport("ntdll.dll")]
+  static extern int NtSetSecurityObject(SafeFileHandle file, uint information, byte[] descriptor);
+  [DllImport("ntdll.dll")]
+  static extern uint RtlNtStatusToDosError(int status);
   public static void Restore(string path, byte[] descriptor) {
-    // READ_CONTROL | WRITE_DAC | WRITE_OWNER; share read/write/delete;
-    // OPEN_EXISTING; BACKUP_SEMANTICS (directories) | OPEN_REPARSE_POINT.
-    using (var handle = CreateFileW(path, 0x000e0000, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
+    // MAXIMUM_ALLOWED obtains the rights already granted by the object's ACL,
+    // without requiring WRITE_OWNER for a DACL-only restore. No privileges are enabled.
+    // Share read/write/delete; OPEN_EXISTING; BACKUP_SEMANTICS | OPEN_REPARSE_POINT.
+    using (var handle = CreateFileW(path, 0x02000000, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
       if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
-      byte[] stream;
-      using (var buffer = new MemoryStream()) {
-        using (var writer = new BinaryWriter(buffer)) {
-          // WIN32_STREAM_ID for BACKUP_SECURITY_DATA, followed by its descriptor.
-          writer.Write((uint)3); writer.Write((uint)0); writer.Write((long)descriptor.Length);
-          writer.Write((uint)0); writer.Write(descriptor); stream = buffer.ToArray();
-        }
+      uint needed;
+      if (!GetKernelObjectSecurity(handle, 3, null, 0, out needed) && Marshal.GetLastWin32Error() != 122)
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+      var currentBytes = new byte[needed];
+      if (!GetKernelObjectSecurity(handle, 3, currentBytes, needed, out needed))
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+      var current = new RawSecurityDescriptor(currentBytes, 0);
+      var expected = new RawSecurityDescriptor(descriptor, 0);
+      // NtSetSecurityObject retains AUTO_INHERITED only when inheritance is
+      // explicitly requested. Unlike SetAccessControl, it does not walk children.
+      if ((expected.ControlFlags & ControlFlags.DiscretionaryAclAutoInherited) != 0) {
+        expected.SetFlags(expected.ControlFlags | ControlFlags.DiscretionaryAclAutoInheritRequired);
+        expected.GetBinaryForm(descriptor, 0);
       }
-      IntPtr context = IntPtr.Zero; uint written;
-      try {
-        if (!BackupWrite(handle, stream, (uint)stream.Length, out written, false, true, ref context))
-          throw new Win32Exception(Marshal.GetLastWin32Error());
-        if (written != stream.Length) throw new IOException("Incomplete security stream write");
-      } finally { BackupWrite(handle, null, 0, out written, true, false, ref context); }
+      // Protection is an update flag, not inferred from the supplied descriptor.
+      uint information = 4 | ((expected.ControlFlags & ControlFlags.DiscretionaryAclProtected) != 0
+        ? 0x80000000u : 0x20000000u); // DACL | PROTECTED_DACL or UNPROTECTED_DACL.
+      if (!Object.Equals(current.Owner, expected.Owner)) information |= 1;
+      if (!Object.Equals(current.Group, expected.Group)) information |= 2;
+      int status = NtSetSecurityObject(handle, information, descriptor);
+      if (status < 0) throw new Win32Exception((int)RtlNtStatusToDosError(status));
     }
   }
 }
@@ -725,7 +738,10 @@ export const windowsMachineStateLayer = (
               : Effect.fail(new MachineFilesystemError({
                 operation: "restrict Windows ACL",
                 path,
-                message: "icacls did not apply the requested current-user ACL",
+                message: `icacls did not apply the requested current-user ACL (exit ${result.exitCode}): ${
+                  new TextDecoder().decode(result.standardError).trim()
+                  || new TextDecoder().decode(result.standardOutput).trim()
+                }`,
               }))
           ),
         );

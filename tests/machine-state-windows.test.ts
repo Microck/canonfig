@@ -284,6 +284,95 @@ describe.skipIf(process.platform !== "win32")("Windows file permission ownership
     }
   }, 60_000);
 
+  // The parent provisions this disposable directory with a non-user owner.
+  // An ordinary user cannot manufacture a foreign-owner fixture without the
+  // very owner-assignment authority whose absence this regression exercises.
+  it.skipIf(process.env.CANONFIG_TEST_FOREIGN_OWNER_DIRECTORY === undefined)(
+    "restores a changed DACL on a guarded directory without reassigning its non-user owner",
+    async () => {
+      const target = process.env.CANONFIG_TEST_FOREIGN_OWNER_DIRECTORY!;
+      const root = dirname(target);
+      const relative = win32.relative(tmpdir(), root);
+      if (relative.startsWith("..") || win32.isAbsolute(relative)
+        || !win32.basename(root).startsWith("canonfig-foreign-owner-")) {
+        throw new Error("Foreign-owner fixture must be inside a disposable canonfig-foreign-owner-* temporary directory");
+      }
+      const child = join(target, `child-${randomUUID()}.txt`);
+      try {
+        const identity = await promisify(execFile)(powershell, [
+          "-NoProfile", "-NonInteractive", "-Command",
+          "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+        ]);
+        const originalAcl = await inspectAcl(target);
+        expect(originalAcl).not.toContain(`O:${identity.stdout.trim()}G:`);
+        await writeFile(child, "keep child content");
+        await Effect.runPromise(Effect.gen(function*() {
+          const machine = yield* MachineState;
+          const path = yield* machine.normalizePath({ path: target });
+          const managedRoot = yield* machine.normalizePath({ path: root });
+          const permissions = yield* machine.snapshotPermissions(path);
+          yield* machine.setPermissions({ path, mode: 0o700 });
+          expect(yield* Effect.promise(() => inspectAcl(target))).not.toBe(originalAcl);
+          const childAcl = yield* Effect.promise(() => inspectAcl(child));
+          yield* machine.mutateWithinRoot({
+            root: managedRoot,
+            path,
+            mutation: { kind: "directory", permissions },
+          });
+          expect(yield* Effect.promise(() => inspectAcl(target))).toBe(originalAcl);
+          expect(yield* Effect.promise(() => inspectAcl(child))).toBe(childAcl);
+          expect(yield* Effect.promise(() => readFile(child, "utf8"))).toBe("keep child content");
+        }).pipe(Effect.provide(windowsMachineStateLayer({
+          environment: [
+            ...Object.entries(process.env).flatMap(([name, value]) =>
+              value === undefined || name.toUpperCase() === "LOCALAPPDATA" ? [] : [{ name, value }]
+            ),
+            { name: "LOCALAPPDATA", value: join(root, "cache") },
+          ],
+        }))));
+      } finally {
+        await rm(child, { force: true });
+      }
+    },
+    60_000,
+  );
+
+  it("reports an impossible owner change without accepting a partial permission restore", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-owner-change-"));
+    const target = join(root, "managed");
+    try {
+      await mkdir(target);
+      const originalAcl = await inspectAcl(target);
+      const error = await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const path = yield* machine.normalizePath({ path: target });
+        const snapshot = yield* machine.snapshotPermissions(path);
+        if (snapshot.platform !== "windows") throw new Error("expected a Windows snapshot");
+        // SYSTEM is not the user or an owner-eligible group in an ordinary
+        // interactive token. WRITE_OWNER alone does not authorize this SID.
+        const securityDescriptor = snapshot.securityDescriptor.replace(/^O:[^G]+G:/u, "O:SYG:");
+        expect(securityDescriptor).not.toBe(snapshot.securityDescriptor);
+        return yield* machine.setPermissions({
+          path, permissions: { ...snapshot, securityDescriptor },
+        }).pipe(Effect.flip);
+      }).pipe(Effect.provide(windowsMachineStateLayer({
+        environment: [
+          ...Object.entries(process.env).flatMap(([name, value]) =>
+            value === undefined || name.toUpperCase() === "LOCALAPPDATA" ? [] : [{ name, value }]
+          ),
+          { name: "LOCALAPPDATA", value: join(root, "cache") },
+        ],
+      }))));
+      expect(error).toMatchObject({
+        _tag: "MachineFilesystemError",
+        operation: "restore Windows permissions",
+      });
+      expect(await inspectAcl(target)).toBe(originalAcl);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it.each([{ parents: [] }, { parents: ["new", "nested"] }])(
     "preserves existing ACLs and protects new file paths ($parents)",
     async ({ parents }) => {

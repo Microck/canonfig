@@ -2583,11 +2583,12 @@ const regularExecutablePath = (executable: MachinePath) => Effect.gen(function*(
   return undefined;
 });
 
-/** npm bin scripts use the same approved Node binding as their installer. */
+/** npm scripts use their installer's Node; native npm shims run their package binary directly. */
 const toolVerifierInvocation = (
   executable: MachinePath,
   arguments_: ReadonlyArray<string>,
   methods: ReadonlyArray<InstallDestinationHint>,
+  context: ResourceExecutionContext,
 ) => Effect.gen(function*() {
   const node = methods.find((hint) =>
     (hint.method === "npm" || hint.method === "pnpm")
@@ -2604,12 +2605,62 @@ const toolVerifierInvocation = (
       message: `npm verification executable is not a regular file: ${executable.absolute}`,
     });
   }
-  const header = decoder.decode(yield* machine.readFile({
-    path: script,
-    maximumBytes: Number.MAX_SAFE_INTEGER,
-    prefixBytes: 4096,
-  }));
+  const header = decoder.decode(yield* machine.readFile(windowsShim
+    ? { path: script, maximumBytes: 4096 }
+    : { path: script, maximumBytes: Number.MAX_SAFE_INTEGER, prefixBytes: 4096 }));
   if (windowsShim) {
+    let nativeLaunch = false;
+    for (const match of header.matchAll(/"%(?:dp0%|~dp0%?)[\\/]?([^"\r\n]+\.exe)"/gi)) {
+      if (!/^[\\/]?node\.exe$/i.test(match[1]!)) {
+        nativeLaunch = true;
+        break;
+      }
+    }
+    if (nativeLaunch) {
+      // Native cmd-shim output has no interpreter or control flow. Accept the
+      // complete file, not a matching line inside arbitrary batch instructions.
+      const launch = /^(?:@ECHO off\r?\n)?"%~dp0([^"\r\n]+\.exe)" %\*(?:\r?\n)*$/i.exec(header);
+      const segments = launch?.[1]?.split(/[\\/]/);
+      const recipes = context.desired.kind === "tool" ? context.desired.recipes : [];
+      const ownsPackage = segments !== undefined && recipes.some((recipe) =>
+        recipe.platform === "windows"
+        && methods.some((hint) => hint.method === recipe.method && hint.installer?.absolute === node.absolute)
+        && ["npm", "pnpm"].includes(recipe.method)
+        && segments.join("/").startsWith(`node_modules/${recipe.package}/`)
+      );
+      if (segments === undefined || !ownsPackage || segments.some((segment) =>
+        !/^[a-z0-9_@.-]+$/i.test(segment) || segment === "." || segment === ".." || segment.endsWith(".")
+      )) {
+        return yield* new InvalidExecutionPlanError({
+          message: `npm verification shim has no unambiguous package-native launch: ${script.absolute}`,
+        });
+      }
+      // Reject PATH shadows while reusing the installer's own destination rules.
+      const approved = yield* machine.findExecutable({
+        name: win32.basename(executable.absolute),
+        installMethods: methods,
+        searchPath: [],
+      }).pipe(Effect.catchTag("ExecutableNotFoundError", () => Effect.succeed(undefined)));
+      if (approved === undefined || approved.path.absolute.toLowerCase() !== script.absolute.toLowerCase()) {
+        return yield* new InvalidExecutionPlanError({
+          message: `npm verification native shim is outside its approved installation destinations: ${script.absolute}`,
+        });
+      }
+      // Reject links and reparse points at every package-relative component,
+      // so a lexically contained entrypoint cannot redirect outside its tree.
+      let target = win32.dirname(script.absolute);
+      for (const [index, segment] of segments.entries()) {
+        target = win32.join(target, segment);
+        const path = yield* machine.normalizePath({ path: target });
+        const expected = index === segments.length - 1 ? "regular" : "directory";
+        if ((yield* machine.inspectPath(path)).kind !== expected) {
+          return yield* new InvalidExecutionPlanError({
+            message: `npm verification native entrypoint is not a ${expected}: ${target}`,
+          });
+        }
+      }
+      return { executable: yield* machine.normalizePath({ path: target }), arguments: arguments_ };
+    }
     // Decode only Node launch lines in npm/pnpm-generated shims; never execute
     // their shell text, expand environment expressions or run cmd.exe.
     const launch = /(?:^|[\s&|(])(?:node(?:\.exe)?|"%_prog%"|"%~dp0%?[\\/]node(?:\.exe)?")\s+"%(?:dp0%|~dp0%?)[\\/]([^"\r\n]+)"\s+%\*/gi;
@@ -2681,7 +2732,7 @@ const verifyCommand = (
       return { passed: false, method, reason: missingVerifierReason(executable) };
     }
     const invocation = bareName
-      ? yield* toolVerifierInvocation(executable, arguments_, installMethods)
+      ? yield* toolVerifierInvocation(executable, arguments_, installMethods, context)
       : { executable, arguments: arguments_ };
     const result = yield* machine.runProcess({
       ...invocation,
