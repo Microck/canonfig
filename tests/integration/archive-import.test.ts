@@ -159,6 +159,16 @@ describe("import refuses archives a Canonfig export never produces", () => {
     expect(readdirSync(target.folder).filter((name) => !name.startsWith("state.sqlite"))).toEqual([]);
   });
 
+  it("takes a caller's file limit in place of an export's, as a backup's in-place recovery does", async () => {
+    const target = machine();
+    const path = join(target.root, "three.tar.gz");
+    writeFileSync(path, archiveOf([config, { path: "folder/files/a", content: "a" }, { path: "folder/files/b", content: "b" }]));
+    const plan = (maximumFiles?: number) => importLocal(target.statePath, path, "plan", false, undefined, maximumFiles).pipe(Effect.provide(target.layer));
+    expect(await Effect.runPromise(Effect.flip(plan(2)))).toMatchObject({ _tag: "ArchiveIntegrityError", message: "manifest exceeds the configured file count limit" });
+    expect(await Effect.runPromise(plan(3))).toMatchObject({ folderFiles: 3 });
+    expect(await Effect.runPromise(plan())).toMatchObject({ folderFiles: 3 });
+  });
+
   it("refuses tar data after the end-of-archive marker", async () => {
     const target = machine();
     const tar = gunzipSync(archiveOf([config]));
