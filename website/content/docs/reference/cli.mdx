@@ -309,6 +309,31 @@ in progress. Rollback is manual because restoring code does not reverse applied
 configuration. See the [fleet and recovery guide](https://github.com/Microck/canonfig/blob/main/docs/self-update.md#roll-out-the-sources-release).
 
 
+## Machine-local preservation
+
+```bash
+canonfig local skills list
+canonfig local skills add deploy
+canonfig local skills remove deploy
+canonfig local mcp status
+canonfig local mcp preserve
+canonfig local mcp project
+```
+
+These commands work on Sources and Followers and edit only
+`~/.canonfig/local/local.jsonc`. Concurrent edits are refused; read the current
+settings before retrying. The list and status commands report `excludeSkills`
+and `preserveMcp`.
+
+Skill changes require the Source's `local.appendLocal` to include `skills`.
+Names use lowercase letters, digits and hyphens, starting with a letter or digit.
+Kept names stay outside projection in every skill directory.
+
+`mcp preserve` keeps native MCP maps on this machine; it does not disable servers
+or verify startup, authentication or connectivity. `mcp project` turns preservation
+off. Removing either policy does not adopt conflicting local content.
+The machine-local settings page exposes the same choices under **Kept on this machine**.
+
 ## Follower enrollment
 
 ```bash

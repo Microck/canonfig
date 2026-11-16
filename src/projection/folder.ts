@@ -249,6 +249,7 @@ export type FolderMcpServer = Schema.Schema.Type<typeof McpServerInput>;
 export type FolderHook = Schema.Schema.Type<typeof HookInput>;
 export type FolderTool = Schema.Schema.Type<typeof ToolInput>;
 
+export const keptLocalSkillName = /^[a-z0-9][a-z0-9-]*$/u;
 const LocalJsonc = Schema.Struct({
   mcp: Schema.optional(McpMap),
   settings: Schema.optional(SettingsMap),
@@ -256,7 +257,7 @@ const LocalJsonc = Schema.Struct({
   /** Authored resources this machine never projects; `restore` adds the ones it gives back. */
   excludeResources: Schema.optional(Schema.Array(identifier)),
   /** Skill names this machine leaves local in every projected skill directory. */
-  excludeSkills: Schema.optional(Schema.Array(Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]*$/u)))),
+  excludeSkills: Schema.optional(Schema.Array(Schema.String.check(Schema.isPattern(keptLocalSkillName)))),
   /** Leave this machine's native MCP configuration outside projection. */
   preserveMcp: Schema.optional(Schema.Boolean),
   /** Local Overlays and key claims; `parseOverlay` reads each entry. */

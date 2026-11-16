@@ -4,6 +4,10 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
 
 ## Unreleased
 
+### Features
+
+- Manage kept-local skill names and native MCP preservation from `canonfig local` and the machine-local settings page. Both preserve concurrent edits and keep these choices on this machine.
+
 ### Tailnet
 
 - Detect Tailscale during health checks, setup planning and Source service setup.

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
-import { maximumAuthoringBytes, readAuthoringItem, readAuthoringItems, writeAuthoringItems, editAuthoringConfig, type AuthoringTarget } from "../src/projection/authoring.ts";
+import { maximumAuthoringBytes, readAuthoringItem, readAuthoringItems, writeAuthoringItems, editAuthoringConfig, localPreservation, type AuthoringTarget } from "../src/projection/authoring.ts";
 import { loadCanonicalFiles } from "../src/projection/folder.ts";
 import { commandFailure, failureBody } from "../src/gui/routing.ts";
 
@@ -40,7 +40,6 @@ describe("shared folder authoring", () => {
     await Effect.runPromise(Effect.gen(function*() {
       yield* editAuthoringConfig(local, null, [
         { path: ["preserveMcp"], value: true },
-        { path: ["excludeSkills"], value: ["deploy"] },
         { path: ["backups"], value: true },
       ]);
       const saved = yield* readAuthoringItem(local, "local.jsonc");
@@ -52,9 +51,44 @@ describe("shared folder authoring", () => {
       expect(readFileSync(join(target.folder, "local/local.jsonc"), "utf8")).toBe(before);
     }).pipe(Effect.provide(layer)));
     expect(JSON.parse(readFileSync(join(target.folder, "local/local.jsonc"), "utf8"))).toEqual({
-      preserveMcp: true, excludeSkills: ["deploy"], backups: true,
+      preserveMcp: true, backups: true,
     });
     expect(readdirSync(target.folder)).toEqual(["local"]);
+  });
+
+  it("lists, adds and removes kept skills and toggles native MCP preservation", async () => {
+    const { target, layer } = fixture('{"version":1,"harnesses":[],"local":{"appendLocal":["skills"]}}');
+    const local: AuthoringTarget = { ...target, scope: "local" };
+    await Effect.runPromise(Effect.gen(function*() {
+      expect(yield* localPreservation(local)).toEqual({ excludeSkills: [], preserveMcp: false });
+      expect((yield* localPreservation(local, { skill: "deploy", action: "add" })).excludeSkills).toEqual(["deploy"]);
+      expect((yield* localPreservation(local, { skill: "deploy", action: "add" })).excludeSkills).toEqual(["deploy"]);
+      expect((yield* localPreservation(local, { preserveMcp: true })).preserveMcp).toBe(true);
+      expect((yield* localPreservation(local, { preserveMcp: false })).preserveMcp).toBe(false);
+      expect((yield* localPreservation(local, { skill: "deploy", action: "remove" })).excludeSkills).toEqual([]);
+      const bad = yield* localPreservation(local, { skill: "../bad", action: "add" }).pipe(Effect.flip);
+      expect(bad._tag).toBe("AuthoringInvalid");
+      const original = yield* readAuthoringItem(local, "local.jsonc");
+      const path = join(target.folder, "local/local.jsonc");
+      writeFileSync(path, '{"preserveMcp":true}');
+      const stale = yield* editAuthoringConfig(local, original.digest, [{ path: ["excludeSkills"], value: ["deploy"] }]).pipe(Effect.flip);
+      expect(stale._tag).toBe("AuthoringConflict");
+      expect(readFileSync(path, "utf8")).toBe('{"preserveMcp":true}');
+    }).pipe(Effect.provide(layer)));
+  });
+
+  it("refuses kept-skill changes without Source append-local permission through both authoring entry points", async () => {
+    const { target, layer } = fixture();
+    const local: AuthoringTarget = { ...target, scope: "local" };
+    await Effect.runPromise(Effect.gen(function*() {
+      const denied = yield* localPreservation(local, { skill: "deploy", action: "add" }).pipe(Effect.flip);
+      expect(denied.message).toContain("local.appendLocal");
+      const direct = yield* editAuthoringConfig(local, null, [{ path: ["excludeSkills"], value: ["deploy"] }]).pipe(Effect.flip);
+      expect(direct.message).toContain("local.appendLocal");
+      const bad = yield* editAuthoringConfig(local, null, [{ path: ["excludeSkills"], value: ["../bad"] }]).pipe(Effect.flip);
+      expect(bad._tag).toBe("AuthoringInvalid");
+      expect(readdirSync(target.folder)).toEqual(["canonfig.jsonc"]);
+    }).pipe(Effect.provide(layer)));
   });
 
   it("preserves JSONC comments and atomically replaces the file", async () => {
