@@ -111,7 +111,9 @@ export function openCodeFamilyAdapter(family: OpenCodeFamily): HarnessAdapter {
           },
         ],
         neverTouch: [...family.state(context)],
-        credentials: family.credentials?.(context) ?? [],
+        // The config file's `provider` map holds API keys, so a full backup takes it only with credential consent,
+        // like Claude's ~/.claude.json. Its managed `mcp` keys are still captured by managed-surface backups.
+        credentials: [...family.credentials?.(context) ?? [], context.join(root, family.config), context.join(root, family.alternative)],
         sharedSkills: family.id === "kilo",
         // Native global directories, not mutation surfaces. Both tools also read shared skills.
         skillSources: [

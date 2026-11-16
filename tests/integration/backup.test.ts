@@ -136,7 +136,9 @@ describe("portable backup recovery", () => {
     const data = join(machine.home, ".local", "share", "opencode");
     mkdirSync(config, { recursive: true });
     mkdirSync(data, { recursive: true });
-    writeFileSync(join(config, "opencode.json"), "{}\n");
+    // opencode.json holds provider API keys, so without consent it stays out, like ~/.claude.json.
+    writeFileSync(join(config, "opencode.json"), '{"provider":{"anthropic":{"options":{"apiKey":"fixture-key"}}}}\n');
+    writeFileSync(join(config, "AGENTS.md"), "OpenCode instructions\n");
     writeFileSync(join(data, "opencode.db"), "fixture database");
     expect(spawnSync("mkfifo", [join(data, "events.pipe")]).status).toBe(0);
     // Claude keeps its user config, with its OAuth state, beside ~/.claude; without consent it stays out.
@@ -154,7 +156,8 @@ describe("portable backup recovery", () => {
     const output = join(machine.root, "restored");
     await machine.run({ action: "restore", name: "daily", target: { kind: "home", path: output, recoverCredentials: false } });
     expect(readFileSync(join(output, ".local", "share", "opencode", "opencode.db"), "utf8")).toBe("fixture database");
-    expect(readFileSync(join(output, ".config", "opencode", "opencode.json"), "utf8")).toBe("{}\n");
+    expect(existsSync(join(output, ".config", "opencode", "opencode.json"))).toBe(false);
+    expect(readFileSync(join(output, ".config", "opencode", "AGENTS.md"), "utf8")).toBe("OpenCode instructions\n");
     expect(existsSync(join(output, ".local", "share", "opencode", "events.pipe"))).toBe(false);
     expect(existsSync(join(output, ".claude.json"))).toBe(false);
     expect(readFileSync(join(output, ".claude", "settings.json"), "utf8")).toBe("{}\n");
