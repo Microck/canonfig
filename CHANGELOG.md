@@ -4,6 +4,14 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
 
 ## v7.2.0 - 2026-11-16
 
+### Security
+
+- Update Sigstore to 4.1.1, which fixes verification silently dropping
+  `certificateOIDs` constraints.
+- This release retains moderate upstream `glob` and `minimatch` denial-of-service
+  advisories in Sigstore's dependency chain. Publication uses an explicitly
+  approved exception to the clean-audit gate; these advisories are not fixed.
+
 ### Fleet updates
 
 - Roll out the Source's exact stable release to enrolled Followers with
