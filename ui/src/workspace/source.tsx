@@ -485,7 +485,7 @@ export function WorkspaceEvidence() {
 
 export function PublishDialog() {
   const ws = useWorkspace();
-  if (ws.capabilities.profileWrite) return <PublishForm />;
+  if (ws.capabilities.profileWrite) return ws.publishOpen ? <PublishForm /> : null;
   return (
     <Dialog open={ws.publishOpen} onOpenChange={ws.setPublishOpen}>
       <DialogContent>
