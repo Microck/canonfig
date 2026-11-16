@@ -88,7 +88,8 @@ export const validateBackupPolicy = (policy: BackupPolicy): string | undefined =
 
 export const backupPassword = (policy: BackupPolicy, local: LocalBackups) => Effect.gen(function*() {
   if (policy.passwordReference === undefined) return undefined;
-  const reference = local.passwords[policy.passwordReference];
+  // Own properties only: an alias named `constructor` must not read Object.prototype.
+  const reference = Object.hasOwn(local.passwords, policy.passwordReference) ? local.passwords[policy.passwordReference] : undefined;
   if (reference === undefined) return yield* new BackupError({ code: "BACKUP_CREDENTIAL_REQUIRED",
     message: `Set the local password alias with 'canonfig backup password ${policy.passwordReference} --stdin' before running this policy.` });
   const machine = yield* MachineState;

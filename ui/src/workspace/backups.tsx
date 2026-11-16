@@ -185,7 +185,7 @@ function Settings({ name: initialName, initial, onClose }: { name: string; initi
   const required = requiresEncryption(policy);
   const [encrypt, setEncrypt] = useState(initial.passwordReference !== undefined);
   const encrypted = encrypt || required;
-  const savedAlias = policy.passwordReference !== undefined && status?.local.passwords[policy.passwordReference] !== undefined ? policy.passwordReference : undefined;
+  const savedAlias = policy.passwordReference !== undefined && status !== null && Object.hasOwn(status.local.passwords, policy.passwordReference) ? policy.passwordReference : undefined;
   const destination = policy.destination;
   const listed = ws.harnesses.filter((harness) => harness.listed).map((harness) => harness.id);
   const targetChoices = listed.length > 0 ? listed : TARGET_IDS.filter((id): id is HarnessId => id in HARNESS_NAMES);
@@ -206,7 +206,7 @@ function Settings({ name: initialName, initial, onClose }: { name: string; initi
       // existing copies stay encrypted with the old one. A taken alias gets a time suffix, with the name cut so the
       // whole alias stays within a backup name's 64 characters.
       const suffix = `-${Date.now()}`;
-      const alias = !encrypted ? undefined : savedAlias ?? (status?.local.passwords[name] === undefined ? name : `${name.slice(0, 64 - suffix.length)}${suffix}`);
+      const alias = !encrypted ? undefined : savedAlias ?? (status === null || !Object.hasOwn(status.local.passwords, name) ? name : `${name.slice(0, 64 - suffix.length)}${suffix}`);
       if (encrypted && savedAlias === undefined && !(await backup.run({ action: "password", name: alias!, password }))) return;
       const next = { ...policy, passwordReference: alias, include: policy.include.filter((glob) => glob.trim()), exclude: policy.exclude.filter((glob) => glob.trim()) };
       // configure checks the destination, password and tools before saving; a refusal shows at the top of the sheet.

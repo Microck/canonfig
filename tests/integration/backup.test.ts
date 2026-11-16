@@ -272,6 +272,16 @@ describe("portable backup recovery", () => {
     expect(readFileSync(join(output, ".canonfig", "AGENTS.md"), "utf8")).toBe(machine.original);
   }, 60_000);
 
+  it("treats a password alias named like an Object.prototype member as an ordinary new alias", async () => {
+    const machine = fixture();
+    // Before any password is saved, `constructor` is missing, not an inherited value.
+    expect(await machine.fail({ action: "configure", name: "daily", policy: { ...machine.policy, passwordReference: "constructor" }, allowCredentials: false }))
+      .toMatchObject({ code: "BACKUP_CREDENTIAL_REQUIRED", message: expect.stringContaining("canonfig backup password constructor") });
+    await machine.run({ action: "password", name: "constructor", value: Redacted.make("frost library maple canvas") });
+    await machine.configure({ passwordReference: "constructor" });
+    expect(await machine.run({ action: "run", name: "daily" })).toMatchObject({ snapshot: { encrypted: true } });
+  }, 60_000);
+
   it("requires explicit native-store recovery and never falls back to credential files", async () => {
     const machine = fixture();
     await machine.run({ action: "password", name: "recovery", value: Redacted.make("synthetic recovery credential") });

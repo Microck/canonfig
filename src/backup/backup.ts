@@ -383,7 +383,7 @@ export const backupCommand = Effect.fn("Backup.command")(function*(context: Back
   if (request.action === "disable" || request.action === "enable" || request.action === "allow-credentials" || request.action === "deny-credentials") return yield* changeConfiguration(folder, request);
   if (request.action === "password") return yield* withRunLock(localBackupPath(folder), "set backup password", Effect.gen(function*() {
     const local = yield* readLocalBackups(folder);
-    if (local.passwords[request.name] !== undefined) return yield* new BackupError({ code: "BACKUP_CONFLICT", message: "That password alias already protects snapshots. Use a new alias rather than replacing a recovery password." });
+    if (Object.hasOwn(local.passwords, request.name)) return yield* new BackupError({ code: "BACKUP_CONFLICT", message: "That password alias already protects snapshots. Use a new alias rather than replacing a recovery password." });
     const value = request.value ?? (yield* readPasswordInput());
     const reference = yield* machine.storeCredential({ name: `canonfig-backup-${randomUUID()}`, value });
     yield* writeLocalBackups(folder, { ...local, passwords: { ...local.passwords, [request.name]: reference } }).pipe(
