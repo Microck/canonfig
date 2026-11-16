@@ -19,7 +19,7 @@ instead of repeating role setup.
    - Linux: [references/linux.md](references/linux.md)
    - macOS: [references/macos.md](references/macos.md)
    - Windows: [references/windows.md](references/windows.md)
-3. Confirm Node.js 24 or newer and npm are available.
+3. Confirm Node.js 24.15+ or 26+ and npm are available.
 4. Install the exact `@microck/canonfig@7.2.0` package version. The installed
    executable remains `canonfig`. The Source and followers must run the same
    major.minor release; a mismatch fails with "source/follower version

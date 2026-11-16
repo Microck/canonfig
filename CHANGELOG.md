@@ -6,11 +6,12 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
 
 ### Security
 
-- Update Sigstore to 4.1.1, which fixes verification silently dropping
-  `certificateOIDs` constraints.
-- This release retains moderate upstream `glob` and `minimatch` denial-of-service
-  advisories in Sigstore's dependency chain. Publication uses an explicitly
-  approved exception to the clean-audit gate; these advisories are not fixed.
+- Update Sigstore and its bundle library to 5.0.1, including the fix for
+  verification silently dropping `certificateOIDs` constraints and patched
+  filesystem traversal dependencies.
+- Five moderate audit findings remain in TUF's `minimatch` dependency chain.
+  Publication uses an explicitly approved exception to the clean-audit gate;
+  these denial-of-service advisories are not fixed.
 
 ### Fleet updates
 
@@ -43,6 +44,9 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
 - Clarify upgrade instructions: `canonfig self-update apply` previews an update; `canonfig self-update apply --apply` installs it. Source service installation starts immediately, so prepare credential access and required native overrides first.
 
 ### Upgrading
+
+The updated dependencies require Node.js 24.15+ or 26+. Update Node.js before
+installing this release; Node.js 25 is not supported by these dependencies.
 
 Source and Followers must run the same major.minor version. Upgrade every
 machine to 7.2.0 before resuming synchronization; 7.1.x cannot sync with 7.2.x.

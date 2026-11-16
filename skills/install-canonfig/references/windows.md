@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Use Windows 10 or 11 with Node.js 24 or newer and npm in PowerShell.
+- Use Windows 10 or 11 with Node.js 24.15+ or 26+ and npm in PowerShell.
 - Confirm Credential Manager is available to the user that will run Canonfig.
 - Confirm per-user Task Scheduler access before installing a schedule.
 

@@ -15,7 +15,7 @@ Configure npm trusted publishing for `@microck/canonfig` with:
 - environment: empty.
 
 Every value is case-sensitive. The workflow runs on a GitHub-hosted runner with
-Node.js 24 and `id-token: write`, so npm can exchange the GitHub OpenID Connect
+Node.js 24.15+ and `id-token: write`, so npm can exchange the GitHub OpenID Connect
 identity for a short-lived publishing credential and attach provenance.
 
 The publish job intentionally does not set `registry-url`, `NODE_AUTH_TOKEN`,
@@ -51,7 +51,7 @@ release.
 
 ## 4. Validate
 
-Run from a clean checkout with Node.js 24:
+Run from a clean checkout with Node.js 24.15+:
 
 ```bash
 npm ci
@@ -176,7 +176,7 @@ in an isolated temporary directory and checks its reported version.
 Publication and verification are separate jobs. If publication and tag creation
 succeeded but verification failed, rerun only the failed verification job. Never
 rerun publication or reuse the version. Verification can also be run independently
-with Node.js 24 and npm on the release runner:
+with Node.js 24.15+ and npm on the release runner:
 
 ```bash
 node tools/release/verify-published.mjs 7.2.0

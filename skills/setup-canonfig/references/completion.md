@@ -53,7 +53,7 @@ remove them after review. This flag requires interactive `--plan`, not
 
 ### CLI installation
 
-- Node.js 24 or newer and npm observed;
+- Node.js 24.15+ or 26+ and npm observed;
 - exact installed Canonfig version observed;
 - intended user can resolve the `canonfig` executable;
 - bounded diagnostics reported.

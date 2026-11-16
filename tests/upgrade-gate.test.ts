@@ -137,9 +137,13 @@ describe("build identity", () => {
     expect(identity.commit).toBeNull();
   });
 
-  it("accepts Node 24 and newer but rejects older or malformed versions", () => {
-    expect(nodeRuntimeIsSupported("24.0.0")).toBe(true);
-    expect(nodeRuntimeIsSupported("25.1.2")).toBe(true);
+  it("enforces the Sigstore runtime range", () => {
+    expect(nodeRuntimeIsSupported("24.15.0")).toBe(true);
+    expect(nodeRuntimeIsSupported("24.21.0")).toBe(true);
+    expect(nodeRuntimeIsSupported("26.0.0")).toBe(true);
+    expect(nodeRuntimeIsSupported("27.1.0")).toBe(true);
+    expect(nodeRuntimeIsSupported("24.14.99")).toBe(false);
+    expect(nodeRuntimeIsSupported("25.1.2")).toBe(false);
     expect(nodeRuntimeIsSupported("23.99.0")).toBe(false);
     expect(nodeRuntimeIsSupported("not-a-version")).toBe(false);
   });

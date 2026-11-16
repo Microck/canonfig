@@ -7,7 +7,7 @@ Simple/Advanced mode and numbered question contract from
 
 ## Inspect and select
 
-Confirm user, Node.js 24+, npm, installed Canonfig version, secure credential
+Confirm user, Node.js 24.15+ or 26+, npm, installed Canonfig version, secure credential
 capability, existing role, revisions, folder contents, harness state, and
 diagnostics. Never initialize over a Follower identity or unknown state. These
 are conditional observations:

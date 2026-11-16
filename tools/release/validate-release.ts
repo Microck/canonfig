@@ -160,7 +160,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
     fail(`unexpected package identity: ${metadata.name}@${metadata.version}`);
   }
   if (metadata.license !== "MIT") fail(`unexpected package license: ${metadata.license}`);
-  if (metadata.engines.node !== ">=24") {
+  if (metadata.engines.node !== "^24.15.0 || >=26.0.0") {
     fail(`unexpected Node.js engine: ${metadata.engines.node}`);
   }
   if (metadata.bin.canonfig !== "dist/runtime/main.js") {
