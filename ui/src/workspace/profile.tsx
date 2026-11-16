@@ -1497,7 +1497,6 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
   const ws = useWorkspace();
   const [progress, setProgress] = useState(0);
   const [picked, setPicked] = useState<string[]>(ws.scannedTools.filter((tool) => tool.id === "node" || tool.id === "prettier").map((tool) => tool.id));
-  const [confirmAll, setConfirmAll] = useState(false);
   const returnFocus = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -1521,7 +1520,6 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
   const busy = ws.profileLive?.busy ?? false;
   function changeOpen(next: boolean) {
     if (busy) return;
-    setConfirmAll(false);
     onOpenChange(next);
   }
   return (
@@ -1573,41 +1571,35 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
                 {noneNew}
               </p>
             )}
-            {ws.profileLive && (accepted.length > 0 ? <label className="flex items-start gap-3 text-sm">
-              <Checkbox checked={confirmAll} disabled={busy} onCheckedChange={(checked) => setConfirmAll(checked === true)} />
-              <span>Write all {accepted.length} accepted {accepted.length === 1 ? "tool" : "tools"} to canonfig.jsonc; publish separately.</span>
-            </label> : <p className="text-sm text-muted-foreground">No new accepted tools.</p>)}
+            {ws.profileLive && accepted.length === 0 && <p className="text-sm text-muted-foreground">No new accepted tools.</p>}
           </>
         )}
-        <DialogFooter className="items-center sm:justify-between">
-          <div className="flex flex-wrap gap-2">
-            <Button variant="ghost" disabled={busy} onClick={() => changeOpen(false)}>
-              {ws.profileLive ? "Close" : "Cancel"}
-            </Button>
-            {ws.capabilities.selectiveScanWrite && <Button
-              variant="primary"
-              disabled={!done || fresh.length === 0}
-              aria-describedby={done && fresh.length === 0 ? "discover-none" : undefined}
-              onClick={() => {
-                ws.setResources((prev) => [...prev, ...fresh.map(ws.toolFromScan)]);
-                onOpenChange(false);
-                toast.success(`Added ${fresh.length} ${fresh.length === 1 ? "tool" : "tools"}`, {
-                  description: `${presentNote ? `${presentNote}\n` : ""}Publish to send ${fresh.length === 1 ? "it" : "them"} to your machines.`,
-                });
-              }}
-            >
-              {fresh.length === 0 ? "Add tools" : `Add ${fresh.length} ${fresh.length === 1 ? "tool" : "tools"}`}
-            </Button>}
-            {ws.profileLive && <>
-              <Button variant="outline" disabled={busy} onClick={() => { setConfirmAll(false); void ws.profileLive?.scan(); }}>Scan again</Button>
-              <Button variant="primary" disabled={!done || busy || !confirmAll || accepted.length === 0} onClick={async () => {
-                if (!await ws.profileLive?.acceptScan()) return;
-                setConfirmAll(false);
-                onOpenChange(false);
-                toast.success(`Added ${accepted.length} ${accepted.length === 1 ? "tool" : "tools"}`);
-              }}>{busy && done ? "Adding tools…" : "Add all accepted tools"}</Button>
-            </>}
-          </div>
+        <DialogFooter>
+          <Button variant="ghost" disabled={busy} onClick={() => changeOpen(false)}>
+            {ws.profileLive ? "Close" : "Cancel"}
+          </Button>
+          {ws.capabilities.selectiveScanWrite && <Button
+            variant="primary"
+            disabled={!done || fresh.length === 0}
+            aria-describedby={done && fresh.length === 0 ? "discover-none" : undefined}
+            onClick={() => {
+              ws.setResources((prev) => [...prev, ...fresh.map(ws.toolFromScan)]);
+              onOpenChange(false);
+              toast.success(`Added ${fresh.length} ${fresh.length === 1 ? "tool" : "tools"}`, {
+                description: `${presentNote ? `${presentNote}\n` : ""}Publish to send ${fresh.length === 1 ? "it" : "them"} to your machines.`,
+              });
+            }}
+          >
+            {fresh.length === 0 ? "Add tools" : `Add ${fresh.length} ${fresh.length === 1 ? "tool" : "tools"}`}
+          </Button>}
+          {ws.profileLive && <>
+            <Button variant="outline" disabled={busy} onClick={() => void ws.profileLive?.scan()}>Scan again</Button>
+            <Button variant="primary" disabled={!done || busy || accepted.length === 0} onClick={async () => {
+              if (!await ws.profileLive?.acceptScan()) return;
+              onOpenChange(false);
+              toast.success(`Added ${accepted.length} ${accepted.length === 1 ? "tool" : "tools"}`);
+            }}>{busy && done ? "Adding tools…" : `Add ${accepted.length} accepted ${accepted.length === 1 ? "tool" : "tools"}`}</Button>
+          </>}
         </DialogFooter>
       </DialogContent>
     </Dialog>
