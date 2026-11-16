@@ -182,7 +182,7 @@ const MAX_EVIDENCE_BYTES = 1024 * 1024;
 const MODEL_EXAMPLE: Record<string, string> = { codex: "gpt-5-codex", claude: "opus" };
 const CAPABILITIES = [
   { value: "elevation", label: "Elevation", consequence: "May request elevated privileges to change protected system state." },
-  { value: "login", label: "Login", consequence: "May perform login actions that establish an authenticated session." },
+  { value: "login", label: "Login", consequence: "May establish an authenticated session." },
   { value: "restart", label: "Restart", consequence: "May restart services or applications, interrupting their work." },
   { value: "reboot", label: "Reboot", consequence: "May reboot this machine, interrupting all running work." },
 ] as const;
@@ -242,7 +242,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
   let bindings: NonNullable<typeof initialHarness>["secretBindings"] = [];
   let bindingError: string | null = null;
   try { bindings = boundLines(bindingsText).map(parseAgentSecretBinding); }
-  catch { bindingError = "Use ENV_NAME=secret-name, one binding per line. Enter names only, never secret values."; }
+  catch { bindingError = "Use ENV_NAME=secret-name, one binding per line."; }
   const originError = origins.map(agentHarnessOriginProblem).find((problem) => problem !== undefined);
   const custom = harness === "custom";
   const args = splitArguments(argsText);
@@ -374,7 +374,6 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
           </RadioGroup>
 
           {!agent.harnessConfigured && !agent.harnessError && <p className="mt-4 text-sm text-muted-foreground">Harness not saved yet.</p>}
-          <p className="mt-4 text-sm text-muted-foreground">Prepare harness bounds with any policy. Deterministic only never calls the agent.</p>
           {harness !== null && <div className="mt-8 grid gap-4" inert={agent.busy}>
             <SectionLabel>Harness bounds</SectionLabel>
             <div className={cn(settingsGroup, "max-sm:[&>div]:flex-col max-sm:[&>div]:items-start max-sm:[&>div]:gap-2")}>
@@ -413,7 +412,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
                     htmlFor="ap-args"
                     description={
                       <>
-                        {initialHarness?.kind === "custom" && !initialHarness.argumentsDisclosed && " Stored arguments are write-only. Leave [] unchanged to keep them, or enter replacement arguments."}
+                        {initialHarness?.kind === "custom" && !initialHarness.argumentsDisclosed && " Stored arguments are hidden. Leave [] to keep them, or enter replacement arguments."}
                         Enter a JSON array of arguments, passed without a shell. Include your agent's own plan or read-only flag.
                         <Hint label="How a custom agent talks to Canonfig">
                           Canonfig writes the task as JSON to the command's standard input and reads a proposal as JSON from its standard output.{"\n"}Anything else is refused, and every proposed action is still checked against the bounds on this page.
@@ -511,26 +510,25 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
                 </form>
               </div>
             </Field>
-            <Field label="Allowed network origins" htmlFor="ap-origins" hint="One exact HTTPS origin per line, such as https://api.example.com. No paths, credentials or trailing slash. Requests elsewhere are blocked." error={tried ? originError : undefined}>
+            <Field label="Allowed network origins" htmlFor="ap-origins" hint="One exact HTTPS origin per line, e.g. https://api.example.com." error={tried ? originError : undefined}>
               <Textarea id="ap-origins" value={originsText} onChange={(event) => setOriginsText(event.target.value)} autoComplete="off" spellCheck={false} aria-invalid={tried && !!originError} className="font-mono text-sm" rows={3} />
             </Field>
             <details className="grid gap-4">
               <summary className="cursor-pointer text-sm font-medium">Advanced authorization bounds</summary>
               <div className="mt-4 grid gap-4">
-                <Field label="Allowed executables" htmlFor="ap-executables" hint="One leaf executable per line. Nested command launchers such as env, git and xargs are refused, just as in the CLI.">
+                <Field label="Allowed executables" htmlFor="ap-executables" hint="One leaf executable per line.">
                   <Textarea id="ap-executables" value={executablesText} onChange={(event) => setExecutablesText(event.target.value)} autoComplete="off" spellCheck={false} className="font-mono text-sm" rows={3} />
                 </Field>
-                {initialHarness?.executableAuthorizations.some(({ behavior }) => behavior === "script-interpreter") && <p className="text-sm text-muted-foreground">Saved execution models: {initialHarness.executableAuthorizations.map(({ executable, behavior }) => `${executable} (${behavior})`).join(", ")}. Retained entries keep their execution model.</p>}
-                <Field label="Secret bindings" htmlFor="ap-bindings" hint="One ENV_NAME=secret-name per line. These are symbolic names only. Saving does not read secret values or check whether they exist." error={tried ? bindingError : undefined}>
+                {initialHarness?.executableAuthorizations.some(({ behavior }) => behavior === "script-interpreter") && <p className="text-sm text-muted-foreground">Saved execution models: {initialHarness.executableAuthorizations.map(({ executable, behavior }) => `${executable} (${behavior})`).join(", ")}.</p>}
+                <Field label="Secret bindings" htmlFor="ap-bindings" hint="One ENV_NAME=secret-name per line." error={tried ? bindingError : undefined}>
                   <Textarea id="ap-bindings" value={bindingsText} onChange={(event) => setBindingsText(event.target.value)} autoComplete="off" spellCheck={false} aria-invalid={tried && !!bindingError} className="font-mono text-sm" rows={3} />
                 </Field>
                 <div className={settingsGroup}>
-                  <SettingRow title="Stored environment" description="Values are never shown here. This editor preserves the stored collection.">
-                    <span className="text-sm">{initialHarness?.environmentNames === null ? "Write-only collection" : initialHarness?.environmentNames.join(", ") || "None"}</span>
+                  <SettingRow title="Environment names">
+                    <span className="text-sm">{initialHarness?.environmentNames === null ? "Not disclosed" : initialHarness?.environmentNames.join(", ") || "None"}</span>
                   </SettingRow>
                 </div>
                 <SectionLabel>Capabilities</SectionLabel>
-                <p className="text-sm text-muted-foreground">These permissions bound proposed actions. A task's own restrictions still apply.</p>
                 <div className={settingsGroup}>
                   {CAPABILITIES.map(({ value, label, consequence }) => <Label key={value} className="flex cursor-pointer items-start gap-3 px-4 py-3 font-normal">
                     <Checkbox checked={capabilities.includes(value)} onCheckedChange={(checked) => setCapabilities(checked === true ? [...capabilities, value] : capabilities.filter((entry) => entry !== value))} />
@@ -539,16 +537,15 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
                 </div>
               </div>
             </details>
-            <p className="text-sm text-muted-foreground">Capability bounds: {capabilities.length ? capabilities.join(", ") : "none allowed"}.</p>
+            <p className="text-sm text-muted-foreground">Allowed capabilities: {capabilities.length ? capabilities.join(", ") : "none"}.</p>
           </div>}
         </Column>
       </Body>
       <ConfirmDialog open={review !== null} onOpenChange={(open) => { if (!open) setReview(null); }} title="Save agent settings?" confirm="Save settings" onConfirm={() => { if (review) void save(review); }}
         body={<div className="grid gap-3">
-          <p>Policy: {review?.mode}. Saving only configures future agent tasks. It does not run an agent, publish a profile or apply changes.</p>
-          <p>{review?.harness?.paths.length ?? 0} writable paths, {review?.harness?.origins.length ?? 0} network origins, {review?.harness?.executables.length ?? 0} executables and {review?.harness?.secretBindings.length ?? 0} symbolic secret bindings.</p>
+          <p>Policy: {review?.mode}.</p>
           {CAPABILITIES.filter(({ value }) => review?.harness?.capabilities.includes(value)).map(({ value, label, consequence }) => <p key={value}><strong>{label}:</strong> {consequence}</p>)}
-          {!review?.harness?.capabilities.length && <p>No elevation, login, restart or reboot permission.</p>}
+          {!review?.harness?.capabilities.length && <p>Capabilities: none.</p>}
         </div>} />
       {leaveDialog}
     </>
