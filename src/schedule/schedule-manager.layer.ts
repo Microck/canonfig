@@ -402,20 +402,37 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
         }
         const repository = yield* StateRepository;
         const startedAt = yield* Clock.currentTimeMillis;
+        // Records that exist before the start request are never this run, even one
+        // stamped in the same millisecond.
+        const earlier = new Set((yield* repository.listScheduledInvocations()).map((entry) => entry.id));
         const wait = Effect.gen(function*() {
           yield* machine.startSchedulerJob(status.definition);
           // Keep following the first new invocation, even when another finishes first.
+          // A Fleet Update hands the run to a replacement process: follow that one next.
           let invocationId: string | undefined;
+          let handedOffAt: number | undefined;
           return yield* repository.listScheduledInvocations().pipe(
             Effect.map((invocations) => {
-              const invocation = invocationId === undefined
-                ? invocations.find((entry) =>
-                  Date.parse(entry.startedAt) >= startedAt
-                  && (status.generation === undefined || entry.generation === status.generation)
-                )
-                : invocations.find((entry) => entry.id === invocationId);
-              if (invocation !== undefined) invocationId = invocation.id;
-              return invocation?._tag === "Running" ? undefined : invocation;
+              // A handoff and its replacement can both be in this list, so keep
+              // looking in it after each handoff rather than waiting for the next poll.
+              for (;;) {
+                const invocation = invocationId === undefined
+                  ? invocations.find((entry) =>
+                    !earlier.has(entry.id)
+                    && Date.parse(entry.startedAt) >= (handedOffAt ?? startedAt)
+                    && (handedOffAt !== undefined || status.generation === undefined || entry.generation === status.generation)
+                  )
+                  : invocations.find((entry) => entry.id === invocationId);
+                if (invocation === undefined) return undefined;
+                if (invocation._tag === "Completed" && invocation.restarted === true) {
+                  earlier.add(invocation.id);
+                  handedOffAt = Date.parse(invocation.startedAt);
+                  invocationId = undefined;
+                  continue;
+                }
+                invocationId = invocation.id;
+                return invocation._tag === "Running" ? undefined : invocation;
+              }
             }),
             Effect.repeat({
               schedule: Schedule.spaced(1_000),

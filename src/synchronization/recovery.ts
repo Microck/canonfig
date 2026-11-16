@@ -496,7 +496,11 @@ export const recoverSynchronizationPlan = (
         readonly resource: ResourceId;
         readonly previousApplied?: AppliedResourceRecord | undefined;
       } | undefined;
-      const waiting = blockedByPrerequisite(state.action, blocked);
+      // Drift is never held, and an action that already succeeded is reverified
+      // through the success path below, which keeps its rollback for the run.
+      const waiting = state.action.detail.kind === "drift-conflict" || last.state === "succeeded"
+        ? undefined
+        : blockedByPrerequisite(state.action, blocked);
       if (waiting !== undefined) {
         result = waiting;
       } else if (last.state === "blocked" && state.action.detail.kind !== "install-tool") {

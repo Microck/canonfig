@@ -826,14 +826,14 @@ describe("resource and Apply Policy coverage", () => {
     const entry = (path: string, digest: typeof digestA) => ({ path, digest, executable: false, mode: 0o600 });
     const ownedFiles = [entry("one/SKILL.md", digestA), entry("two/SKILL.md", digestB), entry("two/README.md", digestC)]
       .map((file) => ({ ...file, objectKind: "regular" as const }));
-    const planWith = (present: ReadonlyArray<{ readonly path: string; readonly digest: typeof digestA }>, mode = 0o700) => {
+    const planWith = (present: ReadonlyArray<{ readonly path: string; readonly digest: typeof digestA }>, mode = 0o700, directories: ReadonlyArray<string> = []) => {
       const subject = resource("skills", "directory", "replace-if-unmodified");
       return runPlan(plannerInput([subject], {
         desired: [{ kind: "directory", mode: 0o700, directories: [], files: ownedFiles.map(({ objectKind: _kind, ...file }) => file) }],
         observed: [{
           state: "directory", mode, objectKind: "directory",
           files: [
-            { path: "one", digest: digestC, executable: true, mode: 0o700, objectKind: "directory" },
+            ...["one", ...directories].map((path) => ({ path, digest: digestC, executable: true, mode: 0o700, objectKind: "directory" as const })),
             ...present.map((file) => ({ ...entry(file.path, file.digest), objectKind: "regular" as const })),
           ],
         }],
@@ -857,6 +857,11 @@ describe("resource and Apply Policy coverage", () => {
       ["a changed root mode", [{ path: "one/SKILL.md", digest: digestA }], 0o755],
     ] as const)("still reports Follower Drift for %s", (_name, present, mode) => {
       expect(planWith(present, mode).actions.map((action) => action.kind)).toEqual(["drift-conflict"]);
+    });
+
+    it("still reports Follower Drift when an item is reduced to its empty directory", () => {
+      expect(planWith([{ path: "one/SKILL.md", digest: digestA }], 0o700, ["two"]).actions.map((action) => action.kind))
+        .toEqual(["drift-conflict"]);
     });
   });
 

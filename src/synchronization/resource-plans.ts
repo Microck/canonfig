@@ -858,7 +858,8 @@ const onlyWholeOwnedEntriesMissing = (
     owned.has(file.path) || file.objectKind !== "directory" || !ancestors.has(file.path)
   );
   if (present.length >= owned.size || present.some((file) => owned.get(file.path) !== fileSignature(file))) return false;
-  const presentEntries = new Set(present.map((file) => topLevelEntry(file.path)));
+  // An entry still there counts as present even when only its directory is left.
+  const presentEntries = new Set(presentObservedFiles(observed.files).map((file) => topLevelEntry(file.path)));
   const presentPaths = new Set(present.map((file) => file.path));
   return [...owned.keys()].every((path) => presentPaths.has(path) || !presentEntries.has(topLevelEntry(path)));
 };

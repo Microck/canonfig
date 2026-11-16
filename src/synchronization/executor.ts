@@ -1239,7 +1239,8 @@ export const executeSynchronizationPlan = (
     const runActions = Effect.gen(function*() {
       for (let index = 0; index < states.length; index += 1) {
         const state = states[index]!;
-        const waiting = blockedByPrerequisite(state.action, blocked);
+        // Drift is never held: it must reach its own branch and stop the run.
+        const waiting = state.action.detail.kind === "drift-conflict" ? undefined : blockedByPrerequisite(state.action, blocked);
         const result: ActionResult = waiting === undefined
           ? yield* executeSynchronizationAction(input, state)
           : yield* journal(input.id, state.action.id, "blocked", undefined, undefined, 1).pipe(

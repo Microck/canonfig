@@ -146,6 +146,34 @@ describe("starting the installed schedule", () => {
       expect(host.scheduler.starts).toHaveLength(1);
     }).pipe(Effect.provide(host.layer));
   });
+
+  it.effect("ignores a record that existed before the request, even from the same millisecond", () => {
+    const host = fixture();
+    return Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      const manager = yield* ScheduleManager;
+      const now = new Date(yield* Clock.currentTimeMillis).toISOString();
+      yield* record(repository, "old", now);
+      host.scheduler.onStart = record(repository, "new", now).pipe(Effect.orDie);
+      expect(yield* manager.run()).toMatchObject({ id: "new", outcome: converged });
+    }).pipe(Effect.provide(host.layer));
+  });
+
+  it.effect("follows a Fleet Update handoff to the replacement process's outcome", () => {
+    const host = fixture();
+    return Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      const manager = yield* ScheduleManager;
+      const now = yield* Clock.currentTimeMillis;
+      const parent = { id: "parent", startedAt: new Date(now).toISOString() };
+      host.scheduler.onStart = Effect.gen(function*() {
+        yield* repository.transitionScheduledInvocation({ ...parent, _tag: "Running" });
+        yield* repository.transitionScheduledInvocation({ ...parent, _tag: "Completed", at: parent.startedAt, restarted: true });
+        yield* record(repository, "replacement", new Date(now + 1).toISOString());
+      }).pipe(Effect.orDie);
+      expect(yield* manager.run()).toMatchObject({ id: "replacement", _tag: "Completed", outcome: converged });
+    }).pipe(Effect.provide(host.layer));
+  });
 });
 
 const enroll = (repository: StateRepository["Service"], statePath: string) =>

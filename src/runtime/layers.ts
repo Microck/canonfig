@@ -1246,8 +1246,11 @@ const followerCommandsLayer = (
               })) : Effect.void;
               return failed.pipe(Effect.andThen(Effect.fail(error)));
             }));
+            // A null result means a Fleet Update activated and this run continues in a
+            // replacement process; mark the handoff so `schedule run` follows that process.
             if (scheduled) yield* mapFailure(repository.transitionScheduledInvocation({
-              ...identity, _tag: "Completed", at: new Date().toISOString(), outcome: scheduledOutcome(result),
+              ...identity, _tag: "Completed", at: new Date().toISOString(),
+              ...(result === null ? { restarted: true as const } : { outcome: scheduledOutcome(result) }),
             }));
             return result;
           })));
