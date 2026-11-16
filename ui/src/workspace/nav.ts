@@ -15,6 +15,7 @@ import {
   Package,
   Plug,
   Robot,
+  ShieldCheck,
   SquaresFour,
   Stack,
   Stethoscope,
@@ -36,6 +37,7 @@ const SOURCE_NAV: NavItem[] = [
   { view: "machines", label: "Machines", icon: Devices },
   { view: "revisions", label: "Revisions", icon: ClockCounterClockwise },
   { view: "backups", label: "Backups", icon: ArrowCounterClockwise },
+  { view: "shield", label: "Shield", icon: ShieldCheck },
   { view: "secrets", label: "Secrets", icon: Key },
 ];
 
@@ -54,6 +56,7 @@ const FOLLOWER_NAV: NavItem[] = [
   { view: "schedule", label: "Schedule", icon: CalendarDots },
   { view: "local", label: PLAIN.localNav, icon: Stack },
   { view: "backups", label: "Backups", icon: ArrowCounterClockwise },
+  { view: "shield", label: "Shield", icon: ShieldCheck },
   { view: "secrets", label: "Secrets", icon: Key },
 ];
 

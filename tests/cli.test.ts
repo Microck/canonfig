@@ -85,6 +85,7 @@ const recordingLayers = (
     abandon: () => invoke("abandon", {}),
     restore: (input) => invoke("restore", input),
     harnesses: (input) => invoke("harnesses", input),
+    shield: (input) => invoke("shield", input),
     overlays: (input) => invoke("overlays", input),
     localPreservation: (input) => invoke("local.preservation", input),
     status: (input) => invoke("status", input),

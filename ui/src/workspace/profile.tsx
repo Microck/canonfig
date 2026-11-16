@@ -105,6 +105,7 @@ const FIELDS: Record<ItemCategory, FieldSpec[]> = {
     BODY,
   ],
   skills: [{ label: "Description", key: "description", required: true, placeholder: "Review a diff for correctness and tests." }, BODY],
+  plugins: [],
   agents: [
     { label: "Description", key: "description", required: true, placeholder: "Finds sources and summarizes them." },
     { label: "Model", key: "model", placeholder: "Each harness's default" },
@@ -166,6 +167,7 @@ const NAME_PLACEHOLDER: Record<ItemCategory, string> = {
   instructions: "",
   rules: "typescript",
   skills: "code-review",
+  plugins: "review-tools",
   agents: "researcher",
   commands: "ship",
   mcp: "context7",
@@ -197,6 +199,8 @@ function summaryOf(r: Resource): string {
       return d.Paths?.trim() ? d.Paths.trim() : "applies everywhere";
     case "skills":
       return d.Files ? `${d.Files.split(",").length} files` : "SKILL.md";
+    case "plugins":
+      return r.summary || "Native package";
     case "agents":
       return d.Writable === "true" ? "may write" : "read-only";
     case "commands":
@@ -696,7 +700,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
   const others = ws.resources.filter((r) => r.id !== resource.id);
   const Icon = CATEGORY_ICON[category];
   // AGENTS.md is one file, so a folder that has it offers no second one; each harness has one settings entry.
-  const categories = CATEGORIES.filter((c) => c !== "instructions" || !others.some((r) => r.id === "instructions"));
+  const categories = CATEGORIES.filter((c) => c !== "plugins" && (c !== "instructions" || !others.some((r) => r.id === "instructions")));
   const freeHarnesses = (Object.keys(HARNESS_NAMES) as HarnessId[]).filter((h) => !others.some((r) => r.id === `settings/${h}`));
 
   // Settings keys are edited as rows so a key can be renamed, including a new one that has no name yet.

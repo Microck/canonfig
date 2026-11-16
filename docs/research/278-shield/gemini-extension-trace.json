@@ -1,0 +1,18 @@
+{
+  "command": [
+    "gemini",
+    "extensions",
+    "install",
+    "/tmp/canonfig-shield-278.1PQfGP/gemini-fixture",
+    "--consent"
+  ],
+  "exit": null,
+  "outcome": "timed out after 60 seconds; disposable child processes terminated",
+  "home": "/tmp/canonfig-shield-278.1PQfGP/trace-gemini-vq3srbiu",
+  "files": [
+    ".gemini/projects.json",
+    ".gemini/tmp/trace-gemini-vq3srbiu/.project_root",
+    ".gemini/history/trace-gemini-vq3srbiu/.project_root"
+  ],
+  "limitation": "Extension installation did not complete. Only startup paths are observed. Gemini is not a Target Harness."
+}

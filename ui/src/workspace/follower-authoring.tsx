@@ -65,8 +65,8 @@ function draftFile(file: Pick<typeof GuiLocalFile.Type, "path" | "base64" | "exe
 }
 function newDraft(category: LocalCategory): LocalDraft {
   if (category === "mcp" || category === "settings") return { kind: "config-entry", category, name: "", json: "{}" };
-  const path = category === "instructions" ? "AGENTS.md" : category === "skills" ? "skills/new-skill" : `${category}/new-item.md`;
-  return { kind: "file-item", category, path, files: [draftFile({ path: category === "skills" ? `${path}/SKILL.md` : path, base64: "", executable: false })] };
+  const path = category === "instructions" ? "AGENTS.md" : category === "skills" ? "skills/new-skill" : category === "plugins" ? "plugins/new-plugin" : `${category}/new-item.md`;
+  return { kind: "file-item", category, path, files: [draftFile({ path: category === "skills" ? `${path}/SKILL.md` : category === "plugins" ? `${path}/plugin.jsonc` : path, base64: "", executable: false })] };
 }
 function draftSignature(draft: LocalDraft) {
   return JSON.stringify(draft.kind === "config-entry" ? draft : { ...draft, files: draft.files.map(({ id: _id, upload: _upload, ...file }) => file) });
@@ -114,20 +114,20 @@ function transition(flow: DraftFlow, event: DraftEvent): DraftFlow {
   if (draft.kind !== "file-item") throw illegal();
   if (event.type === "path") return next({ tag: "editing", draft: { ...draft, path: event.value, files: draft.files.map((file) => ({ ...file, path: file.path === draft.path ? event.value : file.path.startsWith(`${draft.path}/`) ? event.value + file.path.slice(draft.path.length) : file.path })) } });
   if (event.type === "add-file") {
-    if (draft.category !== "skills") throw illegal();
+    if (draft.category !== "skills" && draft.category !== "plugins") throw illegal();
     return next({ tag: "editing", draft: { ...draft, files: [...draft.files, draftFile({ path: `${draft.path}/`, base64: "", executable: false })] } });
   }
   if (!("id" in event)) throw illegal();
   const file = draft.files.find((entry) => entry.id === event.id);
   if (!file) throw illegal();
   if (event.type === "remove-file") {
-    if (draft.category !== "skills") throw illegal();
+    if (draft.category !== "skills" && draft.category !== "plugins") throw illegal();
     return next({ tag: "editing", draft: { ...draft, files: draft.files.filter((entry) => entry.id !== event.id) } });
   }
   let updated: FileDraft;
   switch (event.type) {
     case "file-path":
-      if (draft.category !== "skills") throw illegal();
+      if (draft.category !== "skills" && draft.category !== "plugins") throw illegal();
       updated = { ...file, path: event.value }; break;
     case "file-text":
       if (file.kind !== "text") throw illegal();
@@ -247,13 +247,14 @@ export function LocalAuthoringEditor({ live, item, onClose }: { live: FollowerLi
       {draft.kind === "config-entry" ? <><Field label={draft.category === "mcp" ? "Server name" : "Harness"} htmlFor="local-name"><Input id="local-name" value={draft.name} onChange={(event) => send({ type: "name", value: event.target.value })} /></Field><Field label={draft.category === "mcp" ? "Server configuration" : "Settings keys"} htmlFor="local-value"><Textarea id="local-value" className="min-h-48 font-mono" value={draft.json} onChange={(event) => send({ type: "json", value: event.target.value })} /></Field><p className="text-sm text-muted-foreground">Enter JSON. Canonfig preserves other keys and comments in local.jsonc.</p></> : <>
         <Field label="Item path" htmlFor="local-path"><Input id="local-path" value={draft.path} onChange={(event) => send({ type: "path", value: event.target.value })} /></Field>
         {draft.files.map((file, index) => <div key={file.id} className="space-y-3 border-t border-border pt-4">
-          {draft.category === "skills" && <Field label="File path" htmlFor={`local-file-${index}`}><Input id={`local-file-${index}`} value={file.path} onChange={(event) => send({ type: "file-path", id: file.id, value: event.target.value })} /></Field>}
+          {(draft.category === "skills" || draft.category === "plugins") && <Field label="File path" htmlFor={`local-file-${index}`}><Input id={`local-file-${index}`} value={file.path} onChange={(event) => send({ type: "file-path", id: file.id, value: event.target.value })} /></Field>}
           {file.kind === "binary" ? <p className="text-sm text-muted-foreground">Binary asset. Original bytes are kept.</p> : <Field label="Content" htmlFor={`local-content-${index}`}><Textarea id={`local-content-${index}`} className="min-h-48 font-mono" value={file.text} onChange={(event) => send({ type: "file-text", id: file.id, value: event.target.value })} /></Field>}
           <Field label="Replace with file" htmlFor={`local-upload-${index}`}><Input id={`local-upload-${index}`} type="file" onChange={(event) => { const fileUpload = event.target.files?.[0]; if (fileUpload) void upload(file.id, fileUpload); }} /></Field>
           <label className="flex min-h-10 items-center gap-2 text-sm"><input type="checkbox" checked={file.executable} onChange={(event) => send({ type: "executable", id: file.id, value: event.target.checked })} />Executable</label>
-          {draft.category === "skills" && <Button variant="outline" size="sm" onClick={() => send({ type: "remove-file", id: file.id })}>Remove file</Button>}
+          {(draft.category === "skills" || draft.category === "plugins") && <Button variant="outline" size="sm" onClick={() => send({ type: "remove-file", id: file.id })}>Remove file</Button>}
         </div>)}
-        {draft.category === "skills" && <><Button variant="outline" size="sm" onClick={() => send({ type: "add-file" })}>Add file</Button>{draft.files.length === 0 && <p className="text-sm text-muted-foreground">Add a file to save this skill. Use Remove to delete the item.</p>}</>}
+        {(draft.category === "skills" || draft.category === "plugins") && <><Button variant="outline" size="sm" onClick={() => send({ type: "add-file" })}>Add file</Button>{draft.files.length === 0 && <p className="text-sm text-muted-foreground">Add a file to save this item. Use Remove to delete it.</p>}</>}
+        {draft.category === "plugins" && <p className="text-sm text-muted-foreground">After changing package files, review the new digest with canonfig shield review before activation.</p>}
         <p className="text-sm text-muted-foreground">Save checks the complete item and its digest. Reload after a conflict before retrying.</p>
       </>}
     </fieldset>

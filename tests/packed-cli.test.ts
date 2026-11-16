@@ -909,6 +909,11 @@ describe("packed Canonfig executable", () => {
       },
     });
     expect(envelope.data.probes).toContainEqual(expect.objectContaining({
+      name: "shield",
+      status: "pass",
+      details: expect.objectContaining({ enabled: false }),
+    }));
+    expect(envelope.data.probes).toContainEqual(expect.objectContaining({
       name: "tailscale",
       status: "skipped",
       details: expect.objectContaining({ installed: false, backendState: "NotInstalled" }),

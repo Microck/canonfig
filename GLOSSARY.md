@@ -28,6 +28,14 @@ _Avoid_: Client, integration
 Writing the Canonical Folder's items into a Target Harness's own global files and keys.
 _Avoid_: Export, install
 
+**Native Plugin**:
+A reviewed package of harness-specific capabilities kept in the Canonical Folder and projected only into compatible Target Harnesses. A machine may exclude a Native Plugin without changing the Source's declaration.
+_Avoid_: Extension bundle, portable plugin
+
+**Shield**:
+The machine's policy for redirecting installations from Target Harness configuration into the Canonical Folder, or into the Local folder on a Follower Machine. Redirected changes do not publish themselves.
+_Avoid_: Firewall, sandbox
+
 **Takeover Snapshot**:
 The backup, kept under `~/.canonfig/.backups/`, of content Canonfig is about to overwrite: a Target Harness's owned surfaces before Canonfig's first write to that harness, or the Canonical Folder entries that `canonfig import --replace` (or a restore of such a backup) replaces.
 _Avoid_: Journal, run backup

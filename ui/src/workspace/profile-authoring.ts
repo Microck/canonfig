@@ -64,7 +64,7 @@ export function authoredItems(snapshot: GuiProfileSnapshot): AuthoredItem[] {
         }
       }
     }
-    return { itemPath: item.path, resource: { id, category, path: category === "skills" ? `${item.path}/` : item.path, groups: membership(id), detail, summary: `${files.length} ${files.length === 1 ? "file" : "files"}` }, ...(exact ? { exact: { files } } : {}) };
+    return { itemPath: item.path, resource: { id, category, path: category === "skills" || category === "plugins" ? `${item.path}/` : item.path, groups: membership(id), detail, summary: `${files.length} ${files.length === 1 ? "file" : "files"}` }, ...(exact ? { exact: { files } } : {}) };
   });
   for (const category of ["mcp", "hooks", "settings", "tools", "credentials", "resources"] as const) {
     const value = snapshot.config[category];
@@ -130,7 +130,7 @@ export function itemWrite(snapshot: GuiProfileSnapshot, before: Resource | undef
       }
     }
   } else {
-    const path = next.category === "instructions" ? "AGENTS.md" : next.category === "skills" ? next.id : original?.exact ? original.itemPath! : `${next.id}.md`;
+    const path = next.category === "instructions" ? "AGENTS.md" : next.category === "skills" || next.category === "plugins" ? next.id : original?.exact ? original.itemPath! : `${next.id}.md`;
     const previous = snapshot.items.find((item) => item.path === original?.itemPath);
     let files = exact?.files;
     if (!files) {
@@ -145,7 +145,7 @@ export function itemWrite(snapshot: GuiProfileSnapshot, before: Resource | undef
       const content = before && before.id === next.id && JSON.stringify(before.detail) === JSON.stringify(next.detail) ? oldText : next.category === "instructions" ? next.detail.Body ?? "" : `${Object.keys(values).length || match ? `---\n${document.toString()}---\n` : ""}${next.detail.Body ?? ""}`;
       files = [{ path: next.category === "skills" ? `${path}/SKILL.md` : path, content, encoding: "text", executable: previous?.files[0]?.executable ?? false }];
     }
-    if (exact && next.category !== "skills") {
+    if (exact && next.category !== "skills" && next.category !== "plugins") {
       for (const filePath of new Set([...(previous?.files.map((file) => file.path) ?? []), ...files.map((file) => file.path)])) {
         const file = remove ? undefined : files.find((file) => file.path === filePath);
         changes.push({ path: filePath, expectedDigest: snapshot.items.find((item) => item.path === filePath)?.digest ?? null, files: file ? [{ path: filePath, base64: file.encoding === "text" ? encodeText(file.content) : file.content, executable: file.executable }] : [] });

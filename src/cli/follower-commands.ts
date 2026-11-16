@@ -4,6 +4,7 @@ import type { AgentPolicy } from "../domain/identity.ts";
 import type { FollowerId } from "../domain/brand.ts";
 import type { EnrollmentInvitationGrant } from "../enrollment/enrollment.types.ts";
 import type { TargetId } from "../projection/model.ts";
+import type { ShieldInput } from "./shield.ts";
 import type { SyncSchedule } from "../schedule/schedule-manager.types.ts";
 import type {
   CliCommandFailure,
@@ -116,6 +117,7 @@ export interface FollowerCommandsService {
     input: SynchronizeInput,
     execute?: SynchronizationExecution<Requirements>,
   ) => Effect.Effect<CliPayload, CliCommandFailure, Requirements>;
+  readonly shield: (input: ShieldInput) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly recover: (
     input: RecoverInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;

@@ -17,6 +17,8 @@ import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
 import { ExecutableAuthorizationSchema } from "../domain/synchronization.ts";
 import { parseOverlay, keptLocalSkillName } from "../projection/folder.ts";
 import { TARGET_IDS, type TargetId } from "../projection/model.ts";
+import { NATIVE_PLUGIN_HARNESSES } from "../projection/native-plugin.ts";
+import type { ShieldInput } from "./shield.ts";
 import {
   scheduleWeekdays,
   type SyncSchedule,
@@ -105,6 +107,7 @@ export type CliCommand =
     /** With `--plan`: write private append-local adoption reviews. */
     readonly reviewLocal: boolean;
   }
+  | { readonly _tag: "Shield"; readonly input: ShieldInput }
   | { readonly _tag: "Restore"; readonly snapshot?: string | undefined }
   | {
     readonly _tag: "Export";
@@ -822,6 +825,35 @@ const evaluateAgentHarnessCommand = (
   }, format);
 };
 
+const evaluateShieldCommand = (action: string | undefined, rest: ReadonlyArray<string>, format: CliOutputFormat): CliOutcome => {
+  if (action === "install" || action === "run") {
+    const [separator, executable, ...args] = rest;
+    if (separator !== "--" || executable === undefined || executable.length === 0) return invalid(`Usage: canonfig shield ${action} -- <command> [arguments...]`);
+    return command({ _tag: "Shield", input: { action, argv: [executable, ...args] } }, format);
+  }
+  const options = parseOptions(rest, new Set(action === "review" ? ["--digest", "--reviewer"] : action === "add-plugin" ? ["--harness", "--entry"] : []), new Set(action === "enable" ? ["--hard"] : []));
+  if (action === "status" || action === "disable" || action === "ingest" || action === "enable") {
+    if (options.positionals.length !== 0) return invalid(`shield ${action} accepts no positional arguments`);
+    return command({ _tag: "Shield", input: action === "enable" ? { action, hard: options.switches.has("--hard") } : { action } }, format);
+  }
+  const [id] = options.positionals;
+  if (options.positionals.length !== 1 || id === undefined) return invalid("Use canonfig shield --help for commands and required arguments");
+  if (action === "add-plugin") {
+    const harness = NATIVE_PLUGIN_HARNESSES.find((candidate) => candidate === one(options, "--harness", true));
+    if (harness === undefined) return invalid(`Native plugin harness must be one of ${NATIVE_PLUGIN_HARNESSES.join(", ")}`);
+    return command({ _tag: "Shield", input: { action, directory: id, harness, entry: one(options, "--entry") } }, format);
+  }
+  if (!/^[a-z0-9][a-z0-9-]*$/u.test(id)) return invalid("Plugin id must use lowercase letters, digits and hyphens");
+  if (action === "include" || action === "exclude") return command({ _tag: "Shield", input: { action, id } }, format);
+  if (action === "review") {
+    const digest = one(options, "--digest", true)!;
+    const reviewer = one(options, "--reviewer", true)!;
+    if (!/^[a-f0-9]{64}$/u.test(digest) || reviewer.trim().length === 0) return invalid("Review requires a SHA-256 digest and a nonempty reviewer name");
+    return command({ _tag: "Shield", input: { action, id, digest, reviewer } }, format);
+  }
+  return invalid("Unknown Shield command; use canonfig shield --help");
+};
+
 const evaluateLocalCommand = (arguments_: ReadonlyArray<string>, format: CliOutputFormat): CliOutcome => {
   const options = parseOptions(arguments_.slice(1), new Set(), new Set());
   const [policy, action, name, ...extra] = options.positionals;
@@ -870,6 +902,7 @@ const evaluateCommand = (
         origin: origin?.origin,
       }, format);
     }
+    if (area === "shield") return evaluateShieldCommand(action, rest, format);
     if (area === "source") return evaluateSourceCommand(action, rest, format);
     // The positional invitation below serves the private `--stdin`
     // redispatch built in main.ts from in-memory argv. Real process argv
@@ -1061,9 +1094,10 @@ const evaluateCommand = (
 export const evaluateCli = (arguments_: ReadonlyArray<string>): CliOutcome => {
   const early = helpOrVersion(arguments_);
   if (early !== undefined) return early;
-  // `--json` right after `--argument` is a custom harness's own flag, not Canonfig's output format.
+  // Forwarded child arguments are opaque, including its own --json and --help.
+  const separator = arguments_.indexOf("--");
   const isOutputFlag = (argument: string, index: number) =>
-    argument === "--json" && arguments_[index - 1] !== "--argument";
+    argument === "--json" && arguments_[index - 1] !== "--argument" && (separator < 0 || index < separator);
   const format: CliOutputFormat = arguments_.some(isOutputFlag) ? "json" : "human";
   const rest = arguments_.filter((argument, index) => !isOutputFlag(argument, index));
   const outcome = rest.length === 0
@@ -1090,6 +1124,7 @@ export const commandName = (value: CliCommand): string => {
     case "FollowerEnroll": return "follower.enroll";
     case "FollowerUnenroll": return "follower.unenroll";
     case "Synchronize": return `sync.${value.mode}`;
+    case "Shield": return `shield.${value.input.action}`;
     case "Overlays": return value.change === undefined ? "overlay.list" : `overlay.${value.change.action}`;
     case "LocalPreservation": return "local.preservation";
     case "Restore": return "restore";
@@ -1170,6 +1205,7 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
         noBackup: value.noBackup,
         reviewLocal: value.reviewLocal,
       }, executeSynchronization);
+    case "Shield": return yield* follower.shield(value.input);
     case "Overlays": return yield* follower.overlays({ change: value.change });
     case "LocalPreservation": return yield* follower.localPreservation(value.change);
     case "Restore": return yield* follower.restore({ snapshot: value.snapshot });

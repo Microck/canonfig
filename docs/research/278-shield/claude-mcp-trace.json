@@ -1,0 +1,23 @@
+{
+  "label": "claude-mcp",
+  "command": [
+    "claude",
+    "mcp",
+    "add",
+    "--scope",
+    "user",
+    "shield-fixture",
+    "--",
+    "echo",
+    "shield-proof"
+  ],
+  "exit": 0,
+  "stdout": "Added stdio MCP server shield-fixture with command: echo shield-proof to user config\nFile modified: /tmp/canonfig-shield-278.1PQfGP/trace-claude-mcp/.claude.json\n",
+  "stderr": "",
+  "home": "/tmp/canonfig-shield-278.1PQfGP/trace-claude-mcp",
+  "trace": "/tmp/canonfig-shield-278.1PQfGP/claude-mcp.strace",
+  "files": [
+    ".claude.json",
+    ".claude/backups/.claude.json.backup.1794603746492"
+  ]
+}

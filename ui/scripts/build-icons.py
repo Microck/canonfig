@@ -71,6 +71,7 @@ ICONS = {
     "RadioButton": "circle-dot",
     "Robot": "bot",
     "FoldedMap": "map",
+    "ShieldCheck": "shield-check",
     "SlidersHorizontal": "tuning-2",
     "Sparkle": "stars-minimalistic",
     "SquaresFour": "widget",

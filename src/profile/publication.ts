@@ -52,7 +52,7 @@ import {
   PublicationSourceError,
   type ProfileCatalogPublishError,
 } from "./profile-catalog.errors.ts";
-import { asJson, canonicalJson } from "./profile-codec.ts";
+import { asJson, canonicalJson, sha256BytesHex } from "./profile-codec.ts";
 
 /**
  * Publication: `canonfig source publish` compiles the Canonical Folder into
@@ -194,6 +194,31 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
     });
   }
 
+  // One manifest owns every payload file, so group filtering cannot expose a
+  // partial package. The existing blob digests and revision signature cover code.
+  // Each file declares the digest of the bytes the review checked, so a file that
+  // changes on disk before signing fails publication instead of shipping unreviewed.
+  const reviewed = (item: ProfileResourceInput, content: Uint8Array): ProfileResourceInput => ({ ...item, verify: { method: "digest", digest: sha256BytesHex(content) } });
+  const pluginFileUsers = new Map<string, ReadonlyArray<string>>();
+  for (const plugin of authored.plugins) {
+    if (!plugin.reviewed) throw refuse(`plugins/${plugin.id} needs review of digest ${plugin.digest}; run 'canonfig shield review ${plugin.id} --digest ${plugin.digest} --reviewer <name>' after inspecting its files`);
+    const requires = [...new Set(plugin.manifest.variants.flatMap((variant) => variant.requires ?? []))];
+    for (const reference of requires) {
+      if (config.tools?.[reference.slice("tools/".length)] === undefined) throw refuse(`plugins/${plugin.id} requires undeclared ${reference}`);
+    }
+    const dependencies: Array<string> = requires.map(itemResourceId);
+    for (const file of plugin.files) {
+      if (file.path === "plugin.jsonc") continue;
+      const id = `plugin-files:${plugin.id}:${Buffer.from(file.path).toString("base64url")}`;
+      resources.push(reviewed(fileItem(id, `plugins/${plugin.id}/${file.path}`, file.executable), file.content));
+      dependencies.push(id);
+      pluginFileUsers.set(id, [`plugins:${plugin.id}`]);
+    }
+    const manifest = plugin.files.find((file) => file.path === "plugin.jsonc");
+    if (manifest === undefined) throw refuse(`plugins/${plugin.id} has no plugin.jsonc`);
+    resources.push({ ...reviewed(fileItem(`plugins:${plugin.id}`, `plugins/${plugin.id}/plugin.jsonc`, false), manifest.content), dependsOn: dependencies });
+  }
+
   // Hooks: the definition is a JSON item, the script it runs a file item.
   const scripts = new Map((await listFolderFiles(folder, "hooks")).map((file) => [`hooks/${file.path}`, file.executable]));
   const scriptUsers = new Map<string, Array<string>>();
@@ -325,6 +350,7 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
   for (const [id, users] of [
     ...[...scriptUsers].map(([script, users]) => [hookScriptId(script, configPath), users] as const),
     ...[...fileUsers].map(([path, users]) => [pathItemId("files", "files", path, configPath), users] as const),
+    ...pluginFileUsers,
   ]) {
     if (users.some((user) => !groupsOf.has(user))) continue;
     groupsOf.set(id, [...new Set(users.flatMap((user) => groupsOf.get(user)!))].sort(compareText));

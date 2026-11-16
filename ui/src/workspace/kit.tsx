@@ -19,6 +19,7 @@ export const CATEGORY_ICON: Record<ItemCategory, IconComponent> = {
   instructions: FileText,
   rules: ListBullets,
   skills: Sparkle,
+  plugins: Plug,
   agents: Robot,
   commands: FileCode,
   mcp: Plug,

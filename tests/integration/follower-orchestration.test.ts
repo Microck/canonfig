@@ -1,5 +1,5 @@
 import { createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -34,6 +34,7 @@ import { MachineState } from "../../src/machine/machine-state.service.ts";
 import type { RenderedSchedulerJob, SchedulerBackend } from "../../src/machine/machine-state.types.ts";
 import { adapterFor } from "../../src/projection/adapters/index.ts";
 import type { TargetId } from "../../src/projection/model.ts";
+import { nativePluginDigest } from "../../src/projection/native-plugin.ts";
 import { canonicalJson, sha256Hex } from "../../src/profile/profile-codec.ts";
 import { makePublication, type ProfileRevisionSigner } from "../../src/profile/publication.ts";
 import { scheduleManagerLayer } from "../../src/schedule/schedule-manager.layer.ts";
@@ -291,6 +292,44 @@ const asJson = <Value>(value: Value) =>
   decode(Schema.MutableJson)(JSON.parse(JSON.stringify(value)));
 
 describe("production follower orchestration", () => {
+  it("keeps Shield ingestion and plugin exclusion local to an enrolled follower", async () => {
+    const root = realpathSync(temporaryRoot("shield-local"));
+    const declaration = { version: 1, variants: [{
+      id: "linux", harness: "claude-code", platforms: ["linux"], directory: "package",
+    }] } as const;
+    const payload = [
+      { path: "package/.claude-plugin/plugin.json", content: new TextEncoder().encode('{"name":"native-proof"}'), executable: false },
+      { path: "package/skills/native/SKILL.md", content: new TextEncoder().encode("---\nname: native\ndescription: Native skill\n---\nUse the native command.\n"), executable: false },
+    ];
+    const manifest = JSON.stringify({ ...declaration, review: { reviewer: "fixture", digest: nativePluginDigest(declaration, payload) } });
+    const source = await startSource(root, (folder) => authorFolder(folder, {
+      local: { allow: ["skills", "plugins"] },
+    }, {
+      "plugins/native-proof/plugin.jsonc": manifest,
+      ...Object.fromEntries(payload.map((file) => [`plugins/native-proof/${file.path}`, new TextDecoder().decode(file.content)])),
+    }));
+    const follower = await enroll(root, source, { name: "Shield follower", harnesses: ["claude-code"] });
+    expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
+    const projectedPlugin = join(follower.home, ".claude", "skills", "native-proof");
+    expect(read(join(projectedPlugin, "skills", "native", "SKILL.md"))).toBe(new TextDecoder().decode(payload[1]!.content));
+    const mirroredConfig = read(join(follower.folder, "canonfig.jsonc"));
+    const foreign = "---\nname: local-proof\ndescription: Local skill\n---\nKeep this on the follower.\n";
+    write(join(follower.folder, "local", "local.jsonc"), JSON.stringify({
+      shield: { enabled: true, hard: false }, excludePlugins: ["native-proof"],
+    }));
+    write(join(follower.home, ".claude", "skills", "local-proof", "SKILL.md"), foreign);
+
+    expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
+    expect(existsSync(projectedPlugin)).toBe(false);
+    expect(read(join(follower.folder, "plugins", "native-proof", "plugin.jsonc"))).toBe(manifest);
+    expect(read(join(follower.folder, "canonfig.jsonc"))).toBe(mirroredConfig);
+    expect(read(join(follower.folder, "local", "skills", "local-proof", "SKILL.md"))).toBe(foreign);
+    expect(read(join(follower.home, ".claude", "skills", "local-proof", "SKILL.md"))).toBe(foreign);
+    expect(existsSync(join(follower.folder, "skills", "local-proof"))).toBe(false);
+    expect(existsSync(join(source.folder, "skills", "local-proof"))).toBe(false);
+    expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
+  });
+
   it("observes the installed tool independently of its verifier runtime without running commands", async () => {
     const root = temporaryRoot("tool-observation");
     const followerHome = join(root, "tool-follower", "home");
