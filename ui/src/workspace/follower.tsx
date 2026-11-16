@@ -970,7 +970,7 @@ function ScheduleForm() {
             </SettingRow>
             <SettingRow title="If asleep">Runs when it wakes up</SettingRow>
           </div>}
-          {(ws.followerLive?.schedule || saved) && <Button size="sm" variant="ghost" className="mt-6 text-destructive not-disabled:hover:text-destructive" disabled={busy || stopped !== null} onClick={() => setRemoveOpen(true)}>
+          {(ws.followerLive?.schedule || saved) && <Button size="sm" variant="ghost" className="mt-6 h-10 border-0 px-0 text-destructive not-disabled:hover:text-destructive" disabled={busy || stopped !== null} onClick={() => setRemoveOpen(true)}>
             {pending === "remove" ? "Removing…" : "Remove schedule"}
           </Button>}
         </Column>
