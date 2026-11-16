@@ -539,6 +539,7 @@ it("a failed harness save retains the committed policy as an explicit partial su
     await click("Save agent");
     await until(() => app.mutations.some(({ path }) => path === "/api/agent/harness"), "Harness save did not start");
     await until(() => app.container.querySelector('[data-testid="policy-save"]')?.textContent?.includes("HarnessFailed") === true, "Partial commit was not represented");
+    assert.equal(app.container.textContent?.split("Policy saved. Harness has not been saved.").length, 2);
     assert.equal(app.container.querySelector('[data-testid="policy"]')?.textContent, "agent-propose");
   } finally { await app.close(); }
 });
@@ -603,6 +604,8 @@ it("reviews and saves complete harness bounds while deterministic-only stays sel
     await click("Review settings");
     assert.equal(app.mutations.length, 0);
     assert.ok(document.querySelector('[role="dialog"]')?.textContent?.includes("May restart services or applications"));
+    assert.ok(document.querySelector('[role="dialog"]')?.textContent?.includes("Deterministic only"));
+    assert.ok(!document.querySelector('[role="dialog"]')?.textContent?.includes("deterministic-only"));
     await click("Save settings");
     await until(() => app.mutations.length === 2, "Harness settings did not save");
     assert.equal(app.mutations[0]?.body, "deterministic-only");
@@ -637,6 +640,8 @@ for (const initialPolicy of ["deterministic-only", "agent-propose"]) {
       });
       try {
         await until(() => !!app.container.querySelector("#ap-origins"), "Harness did not load");
+        assert.ok(!app.container.textContent?.includes("Environment names"));
+        assert.ok(!app.container.textContent?.includes("Allowed capabilities:"));
         await click("Save apply agent");
         const terminal = failure === "harness" ? "HarnessFirstFailed" : failure === "policy" ? "PolicyLastFailed" : "Saved";
         await until(() => {
@@ -649,7 +654,7 @@ for (const initialPolicy of ["deterministic-only", "agent-propose"]) {
         assert.deepEqual(app.mutations[0]?.body, { ...harness, allowedExecutables: ["env"],
           executableAuthorizations: [{ executable: "env", behavior: "leaf" }], secretBindings: [], allowedCapabilities: [] });
         assert.ok(!app.container.textContent?.includes("Policy saved. Harness has not been saved."));
-        if (failure === "policy") assert.ok(app.container.textContent?.includes("Harness saved. Policy has not been saved."));
+        if (failure === "policy") assert.equal(app.container.textContent?.split("Harness saved. Policy has not been saved.").length, 2);
       } finally { await app.close(); }
     });
   }

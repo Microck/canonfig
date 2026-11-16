@@ -45,6 +45,7 @@ function ConfirmDialog({
   body,
   confirm,
   onConfirm,
+  confirmVariant = "destructive",
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
@@ -52,6 +53,7 @@ function ConfirmDialog({
   body: React.ReactNode;
   confirm: string;
   onConfirm: () => void;
+  confirmVariant?: "destructive" | "primary";
 }) {
   // Cancel returns to the button that asked; confirming often removes it, so focus then goes to the page heading.
   const returnFocus = useDialogReturnFocus(focusPageHeading);
@@ -67,7 +69,7 @@ function ConfirmDialog({
             Cancel
           </Button>
           <Button
-            variant="destructive"
+            variant={confirmVariant}
             onClick={() => {
               onConfirm();
               onOpenChange(false);
@@ -357,9 +359,9 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
       />
       <Body reloading={agent.loading || agent.harnessLoading}>
         <Column>
-          {agent.error && <ErrorNotice error={agent.error} />}
-          {agent.harnessError && <ErrorNotice title={agent.saveState.kind === "HarnessFailed" || agent.saveState.kind === "HarnessFirstFailed" ? "Harness not saved" : "Harness unavailable"} error={agent.harnessError} />}
-          {agent.savedMessage && <p role="status" className="mb-4 text-sm">{agent.savedMessage}</p>}
+          {agent.error && <ErrorNotice title={agent.saveState.kind === "PolicyLastFailed" ? agent.savedMessage : undefined} error={agent.error} />}
+          {agent.harnessError && <ErrorNotice title={agent.saveState.kind === "HarnessFailed" ? agent.savedMessage : agent.saveState.kind === "HarnessFirstFailed" ? "Harness not saved" : "Harness unavailable"} error={agent.harnessError} />}
+          {agent.savedMessage && !agent.error && !agent.harnessError && <p role="status" className="mb-4 text-sm">{agent.savedMessage}</p>}
           <RadioGroup value={mode ?? ""} onValueChange={(value) => { if (value === "deterministic-only" || value === "agent-propose" || value === "agent-apply") setMode(value); }} disabled={agent.busy} aria-label="Agent policy" className={settingsGroup} data-tour="agent-mode">
             {MODES.map((m) => (
               <Label
@@ -516,8 +518,8 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
             <Field label="Allowed network origins" htmlFor="ap-origins" hint="One exact HTTPS origin per line, e.g. https://api.example.com." error={tried ? originError : undefined}>
               <Textarea id="ap-origins" value={originsText} onChange={(event) => setOriginsText(event.target.value)} autoComplete="off" spellCheck={false} aria-invalid={tried && !!originError} className="font-mono text-sm" rows={3} />
             </Field>
-            <details className="grid gap-4">
-              <summary className="cursor-pointer text-sm font-medium">Advanced authorization bounds</summary>
+            <details className="mt-2">
+              <summary className="h-7 cursor-pointer text-base leading-7 font-medium text-muted-foreground">Advanced authorization bounds</summary>
               <div className="mt-4 grid gap-4">
                 <Field label="Allowed executables" htmlFor="ap-executables" hint="One leaf executable per line.">
                   <Textarea id="ap-executables" value={executablesText} onChange={(event) => setExecutablesText(event.target.value)} autoComplete="off" spellCheck={false} className="font-mono text-sm" rows={3} />
@@ -526,12 +528,12 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
                 <Field label="Secret bindings" htmlFor="ap-bindings" hint="One ENV_NAME=secret-name per line." error={tried ? bindingError : undefined}>
                   <Textarea id="ap-bindings" value={bindingsText} onChange={(event) => setBindingsText(event.target.value)} autoComplete="off" spellCheck={false} aria-invalid={tried && !!bindingError} className="font-mono text-sm" rows={3} />
                 </Field>
-                <div className={settingsGroup}>
+                {!!initialHarness?.environmentNames?.length && <div className={settingsGroup}>
                   <SettingRow title="Environment names">
-                    <span className="text-sm">{initialHarness?.environmentNames === null ? "Not disclosed" : initialHarness?.environmentNames.join(", ") || "None"}</span>
+                    <span className="text-sm">{initialHarness.environmentNames.join(", ")}</span>
                   </SettingRow>
-                </div>
-                <SectionLabel>Capabilities</SectionLabel>
+                </div>}
+                <SectionLabel className="mt-2">Capabilities</SectionLabel>
                 <div className={settingsGroup}>
                   {CAPABILITIES.map(({ value, label, consequence }) => <Label key={value} className="flex cursor-pointer items-start gap-3 px-4 py-3 font-normal">
                     <Checkbox checked={capabilities.includes(value)} onCheckedChange={(checked) => setCapabilities(checked === true ? [...capabilities, value] : capabilities.filter((entry) => entry !== value))} />
@@ -540,13 +542,12 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
                 </div>
               </div>
             </details>
-            <p className="text-sm text-muted-foreground">Allowed capabilities: {capabilities.length ? capabilities.join(", ") : "none"}.</p>
           </div>}
         </Column>
       </Body>
-      <ConfirmDialog open={review !== null} onOpenChange={(open) => { if (!open) setReview(null); }} title="Save agent settings?" confirm="Save settings" onConfirm={() => { if (review) void save(review); }}
+      <ConfirmDialog open={review !== null} onOpenChange={(open) => { if (!open) setReview(null); }} title="Save agent settings?" confirm="Save settings" confirmVariant="primary" onConfirm={() => { if (review) void save(review); }}
         body={<div className="grid gap-3">
-          <p>Policy: {review?.mode}.</p>
+          <p>{MODES.find(({ value }) => value === review?.mode)?.label}</p>
           {CAPABILITIES.filter(({ value }) => review?.harness?.capabilities.includes(value)).map(({ value, label, consequence }) => <p key={value}><strong>{label}:</strong> {consequence}</p>)}
           {!review?.harness?.capabilities.length && <p>Capabilities: none.</p>}
         </div>} />
