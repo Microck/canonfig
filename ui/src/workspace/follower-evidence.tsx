@@ -140,7 +140,7 @@ export function FollowerOperationEvidence() {
       {text(outcome.reason) && <p className="mt-2 text-sm text-muted-foreground">{text(outcome.reason)}</p>}
       {operation.state === "failed" && <p className="mt-2 text-sm text-bad">{operation.failure.message}</p>}
     </div>
-    <div className="px-[18px] py-4">
+    <div className="px-[18px] has-[>:not(:empty)]:py-4">
       <div className={settingsGroup}>
         {typeof report.downloadedBlobs === "number" && <SettingRow title="Files downloaded">{report.downloadedBlobs}</SettingRow>}
         {typeof report.reusedBlobs === "number" && <SettingRow title="Files reused">{report.reusedBlobs}</SettingRow>}

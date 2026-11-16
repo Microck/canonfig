@@ -3,6 +3,11 @@ import { TARGET_IDS } from "../../projection/model.ts";
 import { SyncScheduleSchema } from "../../schedule/schedule-manager.types.ts";
 import { GuiBase64 } from "./profile.ts";
 
+export const GuiTunnelStartInput = Schema.Struct({
+  timeoutMilliseconds: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 300_000 }))),
+});
+export const GuiTunnelStopInput = Schema.Struct({ forget: Schema.Boolean });
+
 export const GuiSynchronizationResult = Schema.Record(Schema.String, Schema.Json);
 export interface GuiSynchronizationResult extends Schema.Schema.Type<typeof GuiSynchronizationResult> {}
 /** The scheduler runs on the GUI host, which can be in a different zone from the browser. */

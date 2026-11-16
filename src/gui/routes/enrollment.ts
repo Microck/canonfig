@@ -98,7 +98,7 @@ export const enrollmentRoutes = Effect.gen(function*() {
       yield* requireRole(["unconfigured", "follower"]);
       yield* decodeEnvelope(input.envelope);
       return yield* operations.start(withInvitationFile((path) => io(() => writeFile(path, input.envelope, { mode: 0o600 })).pipe(
-        Effect.andThen(follower.startTunnel({ invitationPath: path, sshHost: input.sshHost, sshUser: input.sshUser, sshPort: input.sshPort, sshHostKeyPath: input.sshHostKeyPath, localHost: "127.0.0.1", localPort: input.localPort, sshArguments: [], timeoutMilliseconds: 10_000 })),
+        Effect.andThen(follower.startTunnel({ invitationPath: path, sshHost: input.sshHost, sshUser: input.sshUser, sshPort: input.sshPort, sshHostKeyPath: input.sshHostKeyPath, localHost: input.localHost, localPort: input.localPort, sshArguments: [], timeoutMilliseconds: input.timeoutMilliseconds })),
         Effect.flatMap(json),
       )), () => Effect.succeed(null));
     }), 202),

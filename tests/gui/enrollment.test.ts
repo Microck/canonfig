@@ -1,9 +1,10 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { Effect, Schema } from "effect";
 import { withRunLock } from "../../src/synchronization/run-lock.ts";
@@ -60,9 +61,7 @@ async function finish(server: GuiTestServer, ticket: { id: string }, pollStatus?
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     const operation = Schema.decodeUnknownSync(GuiOperation)(response.body);
     if (operation.state !== "running") return operation;
-    const { promise, resolve } = Promise.withResolvers<void>();
-    setImmediate(resolve);
-    await promise;
+    await delay(20);
   }
   throw new Error("Operation did not finish");
 }
@@ -254,7 +253,7 @@ describe("real enrollment and setup endpoints", () => {
     const tunnelRefusal = await targetGui.request("/api/enrollment/tunnel", {
       envelope: invitation.body.envelope, sshHost: "127.0.0.1", sshUser: "test",
       sshPort: 22, sshHostKeyPath: join(target.home, "missing-host-key"),
-      localPort: 17342, trustConfirmed: false,
+      localPort: 17342, localHost: "127.0.0.1", timeoutMilliseconds: 30000, trustConfirmed: false,
     });
     expect(tunnelRefusal.body).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
     const joinTicket = await targetGui.request("/api/enrollment", { envelope: invitation.body.envelope, followerName: "Real follower", replace: false });
@@ -278,5 +277,88 @@ describe("real enrollment and setup endpoints", () => {
     const replaced = await finish(targetGui, replacing.body);
     expect(replaced.state, JSON.stringify(replaced)).toBe("succeeded");
     expect((await targetGui.request("/api/enrollment")).body.follower.name).toBe("Replacement follower");
+  }, 120_000);
+  it.skipIf(process.platform === "win32")("configures transport independently, forwards IPv6 and timeouts, restarts and forgets without reenrollment", async () => {
+    const source = fixture();
+    expect(source.invoke(["source", "init"]).status).toBe(0);
+    writeFileSync(join(source.home, ".canonfig", "canonfig.jsonc"), JSON.stringify({ version: 1, profile: { id: "tunnel", name: "Tunnel" }, harnesses: [] }));
+    expect(source.invoke(["source", "publish", "--reviewer", "test"]).status).toBe(0);
+    const listener = createServer().listen(0, "127.0.0.1");
+    await once(listener, "listening");
+    const address = listener.address();
+    if (!address || typeof address === "string") throw new Error("No disposable Source port");
+    listener.close(); await once(listener, "close");
+    const serving = await start(source.env, ["source", "serve", "--port", String(address.port)]);
+    const sourceGui = await gui(source.env);
+    const invitation = await sourceGui.request("/api/invitations", { endpoint: serving.url, groups: [], expiresInMilliseconds: 3_600_000 });
+    const target = fixture();
+    const bin = join(target.home, "bin");
+    mkdirSync(bin);
+    // Only a loopback TCP forwarder is launched. No SSH server, credentials or native manager.
+    writeFileSync(join(bin, "ssh"), `#!${process.execPath}
+const net = require("node:net");
+const fs = require("node:fs");
+fs.writeFileSync(${JSON.stringify(join(target.home, "ssh.pid"))}, String(process.pid));
+const args = process.argv.slice(2);
+const forward = args[args.indexOf("-L") + 1];
+const match = forward.match(/^(\\[[^\\]]+\\]|[^:]+):(\\d+):(\\[[^\\]]+\\]|[^:]+):(\\d+)$/);
+if (!match) process.exit(2);
+const host = (value) => value.replace(/[\\[\\]]/g, "");
+net.createServer((client) => {
+  const upstream = net.connect(Number(match[4]), host(match[3]));
+  client.pipe(upstream).pipe(client);
+  upstream.on("error", () => client.destroy());
+  client.on("error", () => upstream.destroy());
+}).listen(Number(match[2]), host(match[1]));
+`, { mode: 0o700 });
+    const api = await gui({ ...target.env, PATH: bin, INVOCATION_ID: "", CANONFIG_SYSTEMCTL: "/bin/false", CANONFIG_SYSTEMD_RUN: "/bin/false" });
+    const joined = await api.request("/api/enrollment", { envelope: invitation.body.envelope, followerName: "Tunnel follower", replace: false });
+    expect((await finish(api, joined.body)).state).toBe("succeeded");
+    const before = (await api.request("/api/enrollment")).body;
+    const keyPath = join(target.home, "source.pub");
+    writeFileSync(keyPath, `ssh-ed25519 ${Buffer.alloc(32, 1).toString("base64")}`);
+    const input = { envelope: invitation.body.envelope, sshHost: "disposable.invalid", sshUser: "test", sshPort: 2222, sshHostKeyPath: keyPath, localHost: "::1", localPort: address.port, timeoutMilliseconds: 11000, trustConfirmed: true };
+    for (const invalid of [{ localHost: "0.0.0.0" }, { timeoutMilliseconds: 300001 }, { timeoutMilliseconds: 999 }, { trustConfirmed: false }]) {
+      expect((await api.request("/api/enrollment/tunnel", { ...input, ...invalid })).body).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+    }
+    const journalPath = join(target.home, ".canonfig", "tunnel", "tunnel.json");
+    const stoppedPids = new Set<number>();
+    const endFake = async () => {
+      const pidPath = join(target.home, "ssh.pid");
+      if (!existsSync(pidPath)) return;
+      const pid = Number(readFileSync(pidPath, "utf8"));
+      if (stoppedPids.has(pid)) return;
+      stoppedPids.add(pid);
+      try { process.kill(pid, "SIGKILL"); } catch { return; }
+      for (let attempt = 0; attempt < 500; attempt++) {
+        try { process.kill(pid, 0); } catch { return; }
+        await delay(10);
+      }
+      throw new Error("Disposable forwarder did not stop");
+    };
+    try {
+      const configured = await api.request("/api/enrollment/tunnel", input);
+      expect(configured.status).toBe(202);
+      const completed = await finish(api, configured.body);
+      expect(completed, JSON.stringify(completed)).toMatchObject({ state: "succeeded", result: { lifecycle: "running", endpoint: `https://[::1]:${address.port}` } });
+      expect(JSON.parse(readFileSync(journalPath, "utf8")).state.config).toMatchObject({ localHost: "::1", timeoutMilliseconds: 11000 });
+      expect((await api.request("/api/enrollment")).body).toEqual(before);
+      await endFake();
+      expect((await api.request("/api/tunnel/stop", { forget: false })).body).toMatchObject({ restartable: true });
+      expect((await api.request("/api/tunnel/start", { timeoutMilliseconds: 300001 })).status).toBe(400);
+      const savedStart = await api.request("/api/tunnel/start", {});
+      expect(await finish(api, savedStart.body)).toMatchObject({ state: "succeeded", result: { lifecycle: "running" } });
+      expect(JSON.parse(readFileSync(journalPath, "utf8")).state.config.timeoutMilliseconds).toBe(11000);
+      await endFake();
+      await api.request("/api/tunnel/stop", { forget: false });
+      const restarting = await api.request("/api/tunnel/start", { timeoutMilliseconds: 12000 });
+      expect(restarting.status).toBe(202);
+      expect(await finish(api, restarting.body)).toMatchObject({ state: "succeeded", result: { lifecycle: "running" } });
+      expect(JSON.parse(readFileSync(journalPath, "utf8")).state.config.timeoutMilliseconds).toBe(12000);
+      await endFake();
+      expect((await api.request("/api/tunnel/stop", { forget: true })).body).toMatchObject({ restartable: false });
+      expect((await api.request("/api/tunnel")).body.lifecycle).toBe("not-configured");
+      expect((await api.request("/api/enrollment")).body).toEqual(before);
+    } finally { await endFake(); }
   }, 120_000);
 });

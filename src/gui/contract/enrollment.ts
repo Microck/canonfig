@@ -98,5 +98,7 @@ export const GuiEnrollmentTunnelInput = Schema.Struct({
   sshPort: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 })),
   sshHostKeyPath: Schema.NonEmptyString,
   localPort: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 })),
+  localHost: Schema.Literals(["127.0.0.1", "::1"]),
+  timeoutMilliseconds: Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 300_000 })),
   trustConfirmed: Schema.Literal(true),
 });

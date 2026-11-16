@@ -62,6 +62,8 @@ import { LocalAuthoringEditor } from "./follower-authoring";
 import { record, text } from "./live/follower";
 import { LocalPreservationControls, type PreservationPreferences } from "./local-preservation";
 export { FollowerOperationEvidence } from "./follower-evidence";
+import { TunnelConfigure, useTunnelConfigureDraft } from "./tunnel-configure";
+import { TunnelTimeoutField, tunnelTimeoutError } from "@/shared/tunnel-fields";
 
 const ACTION: Record<PlanAction, { label: string; cls: string; hint: string }> = {
   write: { label: "Write", cls: "bg-ok/12 text-ok", hint: "Replace the harness file or folder with the revision's copy." },
@@ -1977,8 +1979,20 @@ function TunnelForm() {
   const [startedHere, setStartedHere] = useSharedState(TUNNEL_STARTED_KEY, false);
   const [simulatedBusy, setBusy] = useSharedState(TUNNEL_BUSY_KEY, false);
   const busy = ws.followerLive ? ws.followerLive.action.loading : simulatedBusy;
+  const [configure, setConfigure] = useState(false);
+  const configurationDraft = useTunnelConfigureDraft();
+  const [forget, setForget] = useState(false);
+  const [timeoutMilliseconds, setTimeoutMilliseconds] = useState("");
+  const [tried, setTried] = useState(false);
   const toggle = () => {
-    if (ws.followerLive) { ws.followerLive.toggleTunnel(); return; }
+    if (ws.followerLive) {
+      if (up) void ws.followerLive.stopTunnel(false);
+      else {
+        setTried(true);
+        if (timeoutMilliseconds === "" || !tunnelTimeoutError(timeoutMilliseconds)) ws.followerLive.startTunnel(timeoutMilliseconds === "" ? undefined : Number(timeoutMilliseconds));
+      }
+      return;
+    }
     const next = !up;
     setBusy(true);
     ws.later(() => {
@@ -1990,29 +2004,33 @@ function TunnelForm() {
       else toast("Tunnel stopped", { description: "Applying changes, checking for updates and updating secrets wait until you start it again." });
     }, 700);
   };
-  if (!ws.tunnelConfigured) {
-    return (
-      <>
-        <PageHeader crumbs={["Settings", "SSH tunnel"]} actions={ws.followerLive && <Button size="sm" variant="outline" onClick={ws.reload}>Reload</Button>} />
-        <Body>
-          <EmptyState title="No SSH tunnel" body="This machine connects to the Source directly." />
-        </Body>
-      </>
-    );
-  }
+  if (!ws.followerLive && !ws.tunnelConfigured) return <>
+    <PageHeader crumbs={["Settings", "SSH tunnel"]} />
+    <Body><EmptyState title="No SSH tunnel" body="This machine connects to the Source directly." /></Body>
+  </>;
   return (
     <>
       <PageHeader
         crumbs={["Settings", "SSH tunnel"]}
         actions={
-          <Button size="sm" variant={up ? "outline" : "primary"} disabled={busy} onClick={toggle}>
-            {busy ? (up ? "Stopping…" : "Starting…") : up ? "Stop tunnel" : "Start tunnel"}
-          </Button>
+          <>
+            {ws.followerLive && <Button size="sm" variant="outline" disabled={busy} onClick={ws.reload}>Reload</Button>}
+            {ws.followerLive && !configure && <Button size="sm" variant={ws.tunnelConfigured ? "outline" : "primary"} disabled={busy} onClick={() => setConfigure(true)}>{ws.tunnelConfigured ? "Change tunnel" : "Configure tunnel"}</Button>}
+            {ws.tunnelConfigured && !configure && <Button size="sm" variant={up ? "outline" : "primary"} disabled={busy} onClick={toggle}>
+              {busy ? "Working…" : up ? "Stop tunnel" : "Start tunnel"}
+            </Button>}
+          </>
         }
       />
       <Body>
+        {ws.followerLive && "command" in ws.followerLive.command && ws.followerLive.command.command.startsWith("tunnel-") && <FollowerOperationEvidence />}
         <Column>
-          <SectionLabel>Status</SectionLabel>
+          <SectionLabel action={ws.followerLive && ws.tunnelConfigured && <DropdownMenu>
+            <DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="SSH tunnel: more actions" disabled={busy}><DotsThree className="size-4" /></Button></DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-60">
+              <DropdownMenuItem variant="destructive" onSelect={() => setForget(true)}>Stop and forget tunnel…</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>}>Status</SectionLabel>
           {ws.followerLive ? <TunnelEvidence report={ws.followerLive.tunnel ?? {}} /> : <div data-tour="tunnel-status" className={cn("mt-1", settingsGroup)}>
             <SettingRow title="State">
               <span className="inline-flex items-center gap-1.5 text-base">
@@ -2028,8 +2046,11 @@ function TunnelForm() {
               <Mono className="text-foreground">SHA256:mG3k…Q9a</Mono>
             </SettingRow>
           </div>}
+          {ws.followerLive && ws.tunnelConfigured && !up && !configure && <details className="mt-5"><summary className="cursor-pointer text-sm">Advanced start options</summary><div className="mt-4 max-w-sm"><TunnelTimeoutField value={timeoutMilliseconds} onChange={setTimeoutMilliseconds} showErrors={tried} optional /></div></details>}
+          {ws.followerLive && configure && <TunnelConfigure live={ws.followerLive} configured={ws.tunnelConfigured} form={configurationDraft} onCancel={() => { setConfigure(false); configurationDraft.reset(); }} />}
         </Column>
       </Body>
+      <ConfirmDialog open={forget} onOpenChange={setForget} title="Stop and forget this tunnel?" body="Restarting afterward requires an invitation and verified SSH host key." confirm="Stop and forget tunnel" onConfirm={() => { if (!busy) void ws.followerLive?.stopTunnel(true); }} />
     </>
   );
 }

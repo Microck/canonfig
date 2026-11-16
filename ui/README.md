@@ -108,6 +108,20 @@ local entries and refuses same-name ownership conflicts. Both roles require the
 CLI's secure noninteractive credential store.
 
 Source Revisions lists every stored profile history, newest publication first. Filter by profile ID or enter an exact revision ID, including one outside the filtered list. Rows show the recorded reviewer and resource additions, changes and removals relative to the preceding stored revision of the same profile. The first stored revision compares against an empty resource inventory. These counts describe resources, not a full configuration diff. A missing approval is labeled "Not recorded". Details show each summary field once, with the remaining stored fields, approval metadata and canonical bytes under the collapsed **Raw record** disclosure. An absent ID shows "No revision with this ID."; actual read failures retain their diagnostic and retry action. Selection uses the unique revision ID; sequence numbers belong only to their own profile history.
+
+### Follower SSH tunnel
+
+Settings > SSH tunnel supports Configure tunnel without reenrollment, Change tunnel, Start, Stop, and confirmed Stop and forget tunnel. Paste an invitation, inspect its Source/TLS fingerprints, and compare them and the SSH public host key through a trusted connection. Advanced fields are shared with onboarding: the key-file path is on the GUI host, local loopback is `127.0.0.1` or `::1`, and the start timeout is 1000 to 300000 ms (default 30000). Saved starts offer the same timeout under Advanced start options.
+
+Replace and start tunnel confirms replacement of a saved tunnel. Stop and forget tunnel is in the Status section's actions menu and opens a separate confirmation.
+
+Leave the saved-start timeout blank to reuse the recorded timeout. Enter a value only to override it for this start and subsequent saved starts.
+
+Configuration does not consume the invitation or change enrollment. Sync keeps its enrolled Source endpoint, so match that endpoint's local loopback address and port when replacing transport. A change can stop the previous tunnel before the new one is ready. Stop retains the restart configuration; forget removes it and requires an invitation and verified key to configure again. Applied files and enrollment remain. Start operations retain tickets and support Resume observation after a lost poll.
+
+A failed start keeps the connection draft for correction. Canceling or closing the form clears it.
+
+Custom SSH executables and arbitrary SSH arguments stay CLI-only. Use `canonfig tunnel start --invitation <path> --ssh-host <host> --ssh-user <user> --ssh-host-key-file <public-key-path> --ssh-executable <executable>` and repeat `--ssh-argument` only for deliberate process configuration. The GUI does not accept host-key bypasses.
 ## Demo guidance and presentation
 
 Guidance lives in `src/workspace/guide.tsx`, with the spotlight component in `src/tour/`. It has three parts, remembered per role in localStorage: a tour offer on the first visit that opens the tour picker (a four-stop quick tour, then one chapter per area), a Get started list on Overview, and one tip on the first visit to a complex page. Take the tour, in the sidebar or the command palette, opens a picker with that short tour and one chapter of three to five stops per area (`src/workspace/tour-steps.tsx`). Selecting a chapter previews its steps and the pages it visits, numbered in order on a copy of the sidebar, so each chapter's `pages` list must match where its steps go. Finished chapters get a tick, can run again, and end with a button to the next chapter. Append `?tour=1` to start the short tour; reopen a page tip from its "?" button.

@@ -48,7 +48,7 @@ async function fixture(category: LocalCategory = "skills", existing = false) {
     ] }] : [])], config: {}, canonicalConfig: {} },
     schedule: null, tunnel: null, enrollment: null, secrets: [], archive: null,
     saveItems: save, savePreferences: save, check: unexpected, createReview: unexpected, saveSchedule: unexpected, removeSchedule: unexpected,
-    refreshSecrets: unexpected, setSecret: unexpected, removeSecret: unexpected, toggleTunnel: unexpected, exportArchive: unexpected,
+    refreshSecrets: unexpected, setSecret: unexpected, removeSecret: unexpected, inspectTunnelInvitation: unexpected, configureTunnel: unexpected, startTunnel: unexpected, stopTunnel: unexpected, exportArchive: unexpected,
   };
   let closed = 0;
   window.history.replaceState(null, "", "/follower/local-settings");
