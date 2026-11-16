@@ -1245,6 +1245,18 @@ export const runCli = Effect.fn("runCli")(function*(
   const root = fileURLToPath(new URL("../../", import.meta.url));
   const execution: Effect.Effect<CliPayload, CliCommandFailure, SourceCommands | FollowerCommands | SetupCommands | GuiQueries | MachineState | StateRepository> = Effect.gen(function*() {
     if (outcome.command._tag === "Ui") return yield* runGui(outcome.command, io, lease);
+    if (outcome.command._tag === "ScheduleRun" && lease !== undefined) {
+      // The job this command waits for may activate a Fleet Update, and activation
+      // waits for every command lease. Holding ours while waiting would block the
+      // update it waits for, so the lease is suspended for the wait and taken back after.
+      const command = outcome.command;
+      const context = yield* Effect.context<SourceCommands | FollowerCommands | SetupCommands | GuiQueries | MachineState | StateRepository>();
+      const exit = yield* Effect.tryPromise({
+        try: () => lease.selfUpdate(() => Effect.runPromiseExitWith(context)(executeCommand(command)), () => true),
+        catch: (cause) => new CliCommandFailure({ category: "human-action-required", message: String(cause) }),
+      });
+      return yield* exit;
+    }
     if (outcome.command._tag !== "Synchronize" || outcome.command.mode !== "apply" || lease === undefined) {
       return yield* executeCommand(outcome.command);
     }

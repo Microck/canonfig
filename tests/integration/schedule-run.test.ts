@@ -20,6 +20,7 @@ import { ScheduleManager } from "../../src/schedule/schedule-manager.service.ts"
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
 import type { ScheduledInvocation } from "../../src/state/state-repository.types.ts";
+import type { ManagedCommandLease } from "../../src/runtime/self-update/coordination.ts";
 import { defaultScheduledInvocation, FollowerSynchronizationConfiguration } from "../../src/synchronization/follower-sync-config.ts";
 
 const roots: Array<string> = [];
@@ -248,6 +249,34 @@ describe("schedule run CLI through the real runtime and SQLite", () => {
     }).pipe(Effect.provide(runtimeLayer({ statePath: host.statePath }, host.machine)));
   });
 
+  it.effect("holds no command lease while the job runs, so a Fleet Update can activate", () => {
+    const host = fixture();
+    // Same state transitions as the real lease, without reader files.
+    let suspended = false;
+    const lease: ManagedCommandLease = {
+      get suspended() { return suspended; },
+      close: () => undefined,
+      selfUpdate: async (operation, keepsRunning) => {
+        suspended = true;
+        try { const result = await operation(); suspended = !keepsRunning(result); return result; }
+        catch (error) { suspended = false; throw error; }
+      },
+    };
+    const suspendedDuringRun: Array<boolean> = [];
+    return Effect.gen(function*() {
+      const repository = yield* StateRepository;
+      yield* enroll(repository, host.statePath);
+      host.scheduler.onStart = Effect.gen(function*() {
+        suspendedDuringRun.push(lease.suspended);
+        yield* record(repository, "invocation", new Date(yield* Clock.currentTimeMillis).toISOString());
+      }).pipe(Effect.orDie);
+      const io: CliIo = { writeStdout: () => undefined, writeStderr: () => undefined, setExitCode: (code) => expect(code).toBe(0) };
+      yield* runCli(["schedule", "run"], io, lease);
+      expect(suspendedDuringRun).toEqual([true]);
+      expect(lease.suspended).toBe(false);
+    }).pipe(Effect.provide(runtimeLayer({ statePath: host.statePath }, host.machine)));
+  });
+
   it.effect("records scheduled command outcomes and run ids on both terminal paths", () => {
     const host = fixture();
     return Effect.gen(function*() {
@@ -262,6 +291,19 @@ describe("schedule run CLI through the real runtime and SQLite", () => {
         { _tag: "Completed", outcome: converged },
         { _tag: "Failed", outcome: { outcome: "HumanActionRequired", run } },
       ]);
+    }).pipe(Effect.provide(runtimeLayer({ statePath: host.statePath }, host.machine)));
+  });
+
+  it.effect("records a Fleet Update handoff as a restarted completion, not a result", () => {
+    const host = fixture();
+    return Effect.gen(function*() {
+      const commands = yield* FollowerCommands;
+      const repository = yield* StateRepository;
+      yield* commands.synchronize({ mode: "apply", noInput: true, scheduled: true }, () => Effect.succeed(null));
+      const invocations: ReadonlyArray<ScheduledInvocation> = yield* repository.listScheduledInvocations();
+      expect(invocations).toHaveLength(1);
+      expect(invocations[0]).toMatchObject({ _tag: "Completed", restarted: true });
+      expect(invocations[0]).not.toHaveProperty("outcome");
     }).pipe(Effect.provide(runtimeLayer({ statePath: host.statePath }, host.machine)));
   });
 });
