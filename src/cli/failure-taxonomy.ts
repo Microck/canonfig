@@ -806,6 +806,10 @@ export const failureTaxonomy = {
     "verification-or-apply-failure",
     (error) => `${text(error.operation)} failed for the npm artifact`,
   ),
+  BinaryArtifactError: declared(
+    "verification-or-apply-failure",
+    () => "the native binary artifact could not be installed",
+  ),
   RollbackCleanupError: declared(
     "verification-or-apply-failure",
     (error) =>

@@ -680,7 +680,7 @@ const releaseCacheLock = async (
   await rm(cacheLockPathFor(path), { force: true }).catch(() => undefined);
 };
 
-const incomingMessageRequest = (
+export const incomingMessageRequest = (
   source: string,
   options: NpmArtifactRequestOptions,
 ): Promise<NpmArtifactResponse> =>

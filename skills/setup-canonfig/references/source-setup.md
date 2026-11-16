@@ -7,7 +7,7 @@ Simple/Advanced mode and numbered question contract from
 
 ## Inspect and select
 
-Confirm user, Node.js 24+, npm, installed Canonfig version, secure credential
+Confirm user, Node.js 24.15+ or 26+, npm, installed Canonfig version, secure credential
 capability, existing role, revisions, folder contents, harness state, and
 diagnostics. Never initialize over a Follower identity or unknown state. These
 are conditional observations:
@@ -45,7 +45,7 @@ import flags so the plan shows what is offered. `--file` names approved
 tool-discovery inputs only.
 
 ```bash
-npm install --global @microck/canonfig@7.1.12
+npm install --global @microck/canonfig@7.2.0
 canonfig --version
 canonfig setup plan --role source --mode simple --intent "prepare source"
 ```

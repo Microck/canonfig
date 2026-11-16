@@ -273,9 +273,19 @@ refuses an automatic recipe without an exact version, so an unversioned recipe
 never reaches a follower.
 
 Recipe methods are closed to the supported set: npm, pnpm, bun, brew, homebrew,
-winget, uv, cargo, apt, and source. Unknown methods are rejected during
+winget, uv, cargo, apt, binary, and source. Unknown methods are rejected during
 authoring, planning, persisted-plan decoding, and execution; Canonfig does not
 coerce unrecognized aliases.
+
+Binary recipes declare one native executable, an explicit platform and x64/arm64
+architecture, exact version, canonical credential-free HTTPS URL, and full
+sha256/sha512 SRI digest. Downloads allow at most five HTTPS redirects, 128 MiB,
+and a 30-second total deadline. Installation verifies integrity and native format
+before an anchored, no-replace write into an existing real `~/.local/bin` directory.
+It never creates that directory by relocating home. Different existing bytes
+require explicit operator removal. Installed bytes identify the pin only when
+their integrity, native format, architecture, and executable permissions match.
+Archives, scripts, universal Mach-O files, and build steps are not supported.
 
 Reviewed package recipes retain optional `source` and `integrity` metadata from
 discovery through the signed profile, transport, plan, and execution boundary.

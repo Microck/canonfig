@@ -112,6 +112,25 @@ export const parseDpkgQuery = (output: string): string | undefined => {
     : undefined;
 };
 
+const BrewInstalledInfo = Schema.fromJsonString(Schema.Struct({
+  formulae: Schema.Array(Schema.Struct({
+    installed: Schema.Array(Schema.Struct({ version: Schema.NonEmptyString })),
+    linked_keg: Schema.optional(Schema.Union([Schema.String, Schema.Null])),
+  })),
+}));
+
+/** A linked Homebrew keg wins over older installed kegs; ambiguous unlinked versions stay unknown. */
+export const parseBrewInstalledInfo = (output: string): string | undefined => {
+  const decoded = Schema.decodeUnknownOption(BrewInstalledInfo)(output);
+  if (Option.isNone(decoded) || decoded.value.formulae.length !== 1) return undefined;
+  const formula = decoded.value.formulae[0];
+  if (formula === undefined) return undefined;
+  if (formula.linked_keg) {
+    return formula.installed.find((keg) => keg.version === formula.linked_keg)?.version;
+  }
+  return formula.installed.length === 1 ? formula.installed[0]?.version : undefined;
+};
+
 const corepackEnvironment: ReadonlyArray<ProcessEnvironmentEntry> = [
   { name: "COREPACK_ENABLE_NETWORK", value: "0" },
   { name: "COREPACK_ENABLE_AUTO_PIN", value: "0" },
@@ -147,9 +166,8 @@ const run = (
  * or undefined when it does not list the package or cannot say. Undefined is
  * not evidence of absence: the executable may come from somewhere else, and
  * `ensure` leaves such an installation alone.
- *
- * Homebrew is not queried: a versioned recipe installs the `<formula>@<version>`
- * formula, whose name already carries the version.
+ * Homebrew reports installed keg versions separately from its available
+ * formula version. Never use the latter as evidence of installation.
  */
 export const installedToolVersion = (
   query: InstalledVersionQuery,
@@ -157,6 +175,16 @@ export const installedToolVersion = (
   Effect.gen(function*() {
     const machine = yield* MachineState;
     switch (query.method) {
+      case "brew":
+      case "homebrew": {
+        const installer = yield* resolveInstallerInvocation(query.method);
+        const output = yield* run(query, installer.executable, [
+          ...installer.arguments, "info", "--json=v2", "--formula", "--", query.package,
+        ], {
+          environment: [{ name: "HOMEBREW_NO_AUTO_UPDATE", value: "1" }],
+        });
+        return output === undefined ? undefined : parseBrewInstalledInfo(output);
+      }
       case "uv": {
         const installer = yield* resolveInstallerInvocation("uv");
         // The same UV_/PIP_-free environment the install uses, so uv reads

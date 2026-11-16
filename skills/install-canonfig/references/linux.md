@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Use a supported Linux user account with Node.js 24 or newer and npm.
+- Use a supported Linux user account with Node.js 24.15+ or 26+ and npm.
 - Confirm Secret Service is available for secure noninteractive credentials,
   and that the login keyring is unlocked (a password login unlocks it).
 - Confirm a systemd user session is available before installing a schedule or
@@ -13,7 +13,7 @@
 Install the exact public package version for the current Node installation.
 
 ```bash
-npm install --global @microck/canonfig@7.1.12
+npm install --global @microck/canonfig@7.2.0
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```

@@ -23,7 +23,7 @@ that instead.
 
 ## Before you start
 
-- **Node.js 24 or newer and npm** on both machines, installed for the user
+- **Node.js 24.15+ or 26+ and npm** on both machines, installed for the user
   account you run Claude Code and Codex under. Get Node.js from
   [nodejs.org](https://nodejs.org/en/download) or your package manager.
 - **Linux or macOS with a POSIX shell.** The commands below use one. For
@@ -54,12 +54,12 @@ user on both machines. Replace them with your own.
 Run on A and on B:
 
 ```bash
-npm install --global @microck/canonfig@7.1.12
+npm install --global @microck/canonfig@7.2.0
 canonfig --version
 canonfig doctor --no-input
 ```
 
-`canonfig --version` prints `7.1.12`. `doctor` prints one line per check. Look
+`canonfig --version` prints `7.2.0`. `doctor` prints one line per check. Look
 at the `credentials` line: Canonfig keeps its keys in the system credential
 store (Secret Service on Linux, Keychain on macOS). If that line reports a
 problem, follow the fix it prints, or see

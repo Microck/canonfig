@@ -890,12 +890,13 @@ describe("authenticated content-addressed transport", () => {
 });
 
 describe("Source/follower version handshake", () => {
-  it("accepts the 7.1 release line but rejects mismatched minor and major peers", () => {
-    expect(peerVersionCompatible("7.1.0")).toBe(true);
-    expect(peerVersionCompatible("7.1.6")).toBe(true);
-    expect(peerVersionCompatible("7.0.0")).toBe(false);
-    expect(peerVersionCompatible("7.2.0")).toBe(false);
-    expect(peerVersionCompatible("6.1.1")).toBe(false);
+  it("accepts current-line patches but rejects mismatched minor and major peers", () => {
+    const [major, minor] = buildIdentity.packageVersion.split(".").map(Number);
+    expect(peerVersionCompatible(`${major}.${minor}.0`)).toBe(true);
+    expect(peerVersionCompatible(`${major}.${minor}.999`)).toBe(true);
+    expect(peerVersionCompatible(`${major}.${minor! + 1}.0`)).toBe(false);
+    expect(peerVersionCompatible(`${major! + 1}.${minor}.0`)).toBe(false);
+    expect(peerVersionCompatible("7.1.12")).toBe(false);
   });
 
   it("refuses a follower from before the handshake with a version message it renders", async () => {

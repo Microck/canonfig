@@ -6,7 +6,7 @@
   to import into `~/.canonfig/`, then plans and verifies the requested Source
   Machine or Follower Machine outcome.
 - [`install-canonfig`](install-canonfig/SKILL.md): direct installation and safe
-  upgrades of `@microck/canonfig@7.1.12`, first-time role establishment, the first
+  upgrades of `@microck/canonfig@7.2.0`, first-time role establishment, the first
   `~/.canonfig/` projection and publication, and follower enrollment.
 - [`operate-canonfig`](operate-canonfig/SKILL.md): evidence-first folder edits
   and publication, tool discovery, the Source service and tunnel,

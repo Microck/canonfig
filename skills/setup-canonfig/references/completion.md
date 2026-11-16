@@ -53,7 +53,7 @@ remove them after review. This flag requires interactive `--plan`, not
 
 ### CLI installation
 
-- Node.js 24 or newer and npm observed;
+- Node.js 24.15+ or 26+ and npm observed;
 - exact installed Canonfig version observed;
 - intended user can resolve the `canonfig` executable;
 - bounded diagnostics reported.
@@ -175,7 +175,7 @@ Setup result: complete
 Machine
 - role: Follower Machine
 - name: laptop
-- Canonfig: 7.1.12
+- Canonfig: 7.2.0
 
 Trust
 - Source endpoint: https://127.0.0.1:17342

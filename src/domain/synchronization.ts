@@ -221,7 +221,7 @@ export type ActionDetail =
   }
   | { readonly kind: "mirror-directory"; readonly target: string; readonly adds: ReadonlyArray<string>; readonly removes: ReadonlyArray<string> }
   | { readonly kind: "remove-resource"; readonly target: string; readonly paths: ReadonlyArray<string>; readonly keys: ReadonlyArray<string> }
-  | { readonly kind: "install-tool"; readonly toolId: string; readonly method: AutomaticRecipeMethod; readonly package: string; readonly version?: string | undefined; /** The different version the installer reported before this install. */ readonly replaces?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly source?: RecipeSource | undefined; readonly buildPolicy?: BuildPolicy | undefined; readonly provenance?: InstallerRecipeProvenanceType | undefined }
+  | { readonly kind: "install-tool"; readonly toolId: string; readonly method: AutomaticRecipeMethod; readonly package: string; readonly version?: string | undefined; readonly replaces?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly source?: RecipeSource | undefined; readonly buildPolicy?: BuildPolicy | undefined; readonly provenance?: InstallerRecipeProvenanceType | undefined; readonly platform?: "linux" | "macos" | "windows" | undefined; readonly architecture?: string | undefined; readonly entrypoint?: string | undefined }
   | { readonly kind: "verify-only"; readonly method: string }
   | { readonly kind: "human-action"; readonly reason: string; readonly instructions: string }
   | { readonly kind: "agent-task"; readonly taskId: AgentTaskId; readonly summary: string }
@@ -409,6 +409,9 @@ const InstallToolActionDetailSchema = Schema.Struct({
   package: Schema.NonEmptyString,
   version: Schema.optional(Schema.NonEmptyString),
   replaces: Schema.optional(Schema.NonEmptyString),
+  platform: Schema.optional(Schema.Literals(["linux", "macos", "windows"])),
+  architecture: Schema.optional(Schema.NonEmptyString),
+  entrypoint: Schema.optional(Schema.NonEmptyString),
   indexPolicy: Schema.optional(RecipeIndexPolicy),
   source: Schema.optional(Schema.Union([
     Schema.NonEmptyString,
@@ -420,6 +423,9 @@ const InstallToolActionDetailSchema = Schema.Struct({
   Schema.makeFilter((detail) => {
     const issue = recipeValidationIssue(detail);
     if (issue !== undefined) return issue;
+    if (detail.method === "binary" && (detail.platform === undefined || detail.architecture === undefined || !Schema.is(RecipeSourceMetadata)(detail.source) || detail.source.integrity === undefined)) {
+      return { path: ["source"], issue: new SchemaIssue.InvalidValue({ expected: "binary installation requires platform, architecture, HTTPS source, and integrity" }) };
+    }
     return isMissingAutomaticRecipeVersion(detail)
       ? {
         path: ["version"],

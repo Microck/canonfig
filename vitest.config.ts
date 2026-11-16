@@ -4,6 +4,7 @@ export default defineProject({
   test: {
     include: [
       "tests/agent-resolution.test.ts",
+      "tests/brew-install.test.ts",
       "tests/cli.test.ts",
       "tests/cli-failure-taxonomy.test.ts",
       "tests/command-log.test.ts",

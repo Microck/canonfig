@@ -5,9 +5,10 @@ description: Understand how Canonfig finds the tools your folder uses, installs 
 
 Your hooks, MCP servers, and skills call command-line tools. You declare each
 one under `tools` in `~/.canonfig/canonfig.jsonc`, with an Installation Recipe
-per platform. Every Follower Machine that receives the tool installs the exact
-version you pin, leaves a correct installation alone, and checks the result
-with the verification you declare.
+per platform. A Follower Machine installs a tool when its recipe and required
+installer are usable, leaves a matching installation alone, and checks the
+result with the verification you declare. A declared recipe is not proof that
+the tool can install on every platform.
 
 Tool installs are not rolled back. A package that a run installed stays
 installed even when a later action in the same run fails. See
@@ -78,7 +79,7 @@ platform; do not reuse an npm package name as a winget ID, or a Homebrew formula
 name as an apt package.
 
 Every automatic method (`npm`, `pnpm`, `bun`, `brew`, `apt`, `winget`, `uv`,
-`cargo`) needs an exact `version`. Publishing refuses a recipe without one, so
+`cargo`, `binary`) needs an exact `version`. Publishing refuses a recipe without one, so
 you find the mistake on the Source Machine instead of on each Follower Machine:
 
 > installer uv requires an exact "version" so every follower installs the same build
@@ -109,11 +110,13 @@ a tool `canonfig.jsonc` declares; otherwise publication fails with
 | The tool is missing | `install-tool` with the pinned version |
 | The tool is present, and its installer reports the pinned version | Leaves it in place |
 | The tool is present, and its installer reports another version | `install-tool` with `replaces` set to the installed version. Apply installs the pin, downgrading if needed. |
-| The tool is present, but its installer does not list it (for example it came from somewhere else, or Homebrew) | Leaves it in place |
+| The tool is present, but its installer does not list it (for example it came from somewhere else) | Leaves it in place |
 
 To learn the installed version, planning only reads installer state, for example
 `uv tool list --offline`, `npm ls --global --json`, `winget list --id <id>
---exact`, or `dpkg-query`. Planning never runs your verification command.
+--exact`, `brew info --json=v2 --formula`, or `dpkg-query`. Planning never runs
+your verification command. Homebrew observation uses the linked installed keg,
+or the sole installed keg when none is linked, not the available formula version.
 
 After an install, the installer must report the pinned version. Otherwise the
 action fails:
@@ -150,6 +153,65 @@ decides whether a harness is installed. When the executable is not found,
 verification fails and lists every directory it searched:
 
 > verification failed for resource `<id>`: verification executable ruff was not found (searched: …)
+
+## Homebrew formula names and versions
+
+`package` is the formula name. `version` is the exact package version you want.
+Do not append the package version to the formula name unless Homebrew actually
+publishes that versioned formula. A formula such as `python@3.13` has its own
+package version; the `@3.13` suffix is not a substitute for an exact pin.
+
+Before installing, Canonfig checks the formula's available version and refuses
+a mismatch. It keeps Homebrew auto-update disabled for that check and install.
+It does not extract historical formulae, add taps, or install a newer version
+instead of your pin. After installation, it checks the installed version too.
+
+## Verified native binaries
+
+Use `method: "binary"` for a single prebuilt executable. Declare its platform,
+`architecture` (`x64` or `arm64`), exact `version`, executable name in `package`,
+and `source: { source: "https://…", integrity: "sha256-…" }` with the real URL
+and full SRI digest. SHA-512 integrity is also supported. The source URL must
+not contain credentials, a query, or a fragment. HTTPS redirects are allowed;
+downloads are limited to 128 MiB and 30 seconds.
+
+Canonfig verifies the digest and native format before publishing the executable
+under `~/.local/bin` (`%USERPROFILE%\.local\bin` on Windows, with `.exe` appended
+when needed). Create that directory first. Its parents must be real directories,
+not symlinks. Archives, scripts, universal macOS binaries, and build steps are
+not supported by this method.
+On Windows, a package name containing a dot must end in `.exe`: use
+`tool.v1.exe`, not `tool.v1`, so command and presence verification find the file.
+
+An existing executable is accepted only when its bytes match. Canonfig does not
+replace different bytes automatically, including an older binary version. Move
+that file aside explicitly before applying the recipe. Planning recognizes the
+pinned version from matching installed bytes, native format, architecture, and
+executable permissions, not from the download URL.
+Command and presence verification using the selected binary's name resolve its
+exact installed path, not a same-named executable from another installer or PATH.
+Explicitly different verification commands keep their declared meaning.
+A missing or non-executable selected binary fails command verification with a
+diagnostic. A tool already present on the machine does not need installation
+merely because its profile's binary recipes target another platform.
+
+## Packages that run build scripts
+
+The default build policy disables package scripts. npm-family installs use
+`--ignore-scripts`; uv installs use `--no-build`. Some packages need those
+scripts to download or compile their executable, so installing their package
+without scripts would not make the tool usable.
+
+Declaring a reviewed `buildPolicy` with `mode: "required"` does not enable
+scripts. Canonfig records the declared limits, but cannot enforce them on
+processes a build starts. Such recipes stop with Human Action Required. Cargo
+also stops because it has no mode that disables build scripts and procedural
+macros. `source` recipes do not automatically fetch or build source code.
+
+Use a supported prebuilt distribution when one exists. Do not remove the build
+requirement or replace command verification with a presence check to make the
+recipe appear successful. Configuration Agent policies do not remove these
+execution limits.
 
 ## `uv` recipes
 
