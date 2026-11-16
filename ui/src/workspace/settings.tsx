@@ -746,13 +746,12 @@ export function DoctorView() {
             <details>
               <summary className="cursor-pointer text-sm text-muted-foreground">Advanced checks</summary>
               <div className="mt-3 grid max-w-sm gap-2">
-                <Label htmlFor="doctor-timeout">Probe timeout (milliseconds)</Label>
-                <Input id="doctor-timeout" type="number" required min={1} max={300000} step={1} value={timeout} disabled={running} onChange={(event) => setTimeout(event.target.value)} aria-describedby="doctor-timeout-help" />
-                <p id="doctor-timeout-help" className="text-sm text-muted-foreground">Default 5000. Increase up to 300000 for slow environments. Checks never prompt for input.</p>
+                <Label htmlFor="doctor-timeout">Timeout per probe (ms)</Label>
+                <Input id="doctor-timeout" type="number" required min={1} max={300000} step={1} value={timeout} disabled={running} onChange={(event) => setTimeout(event.target.value)} />
               </div>
             </details>
           </form>
-          {doctor.timeoutMilliseconds !== undefined && <p className="mb-3 text-sm text-muted-foreground">Last check used a {doctor.timeoutMilliseconds} ms probe timeout.</p>}
+          {doctor.timeoutMilliseconds !== undefined && <p className="mb-3 text-sm text-muted-foreground">Last check: {doctor.timeoutMilliseconds} ms per probe.</p>}
           {doctor.error && <ErrorNotice error={doctor.error} />}
           {!doctor.data && running && <p className="mb-4 text-sm text-muted-foreground">Running checks…</p>}
           {doctor.data && <p role="status" className="mb-4 text-base font-medium">

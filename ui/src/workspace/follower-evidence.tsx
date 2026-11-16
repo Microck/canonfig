@@ -56,9 +56,9 @@ export function PersistentStatusEvidence({ status }: { status: GuiStatus }) {
     <section aria-label="Completion receipt">
       <SectionLabel>Completion receipt</SectionLabel>
       <div className={settingsGroup}>
-        <SettingRow title="Applied revision"><Mono className="break-all">{receipt?.revision ?? "Not reported by status"}</Mono></SettingRow>
-        {receipt?.run && <SettingRow title="Completed run"><Mono className="break-all">{receipt.run}</Mono></SettingRow>}
-        {receipt ? <>
+        <SettingRow title="Applied revision"><Mono className="break-all">{receipt?.revision ?? "Not reported"}</Mono></SettingRow>
+        {receipt?.run && <SettingRow title="Run"><Mono className="break-all">{receipt.run}</Mono></SettingRow>}
+        {receipt && <>
           {receiptStages.map(([key, label]) => <SettingRow key={key} title={label} description={<CliText>{receipt[key].detail}</CliText>}>
             <span className="inline-flex items-center gap-2"><StatusMark kind={receipt[key].status === "verified" ? "ok" : receipt[key].status === "not-selected" ? "off" : "warn"} />{receipt[key].status.replaceAll("-", " ")}</span>
           </SettingRow>)}
@@ -68,7 +68,7 @@ export function PersistentStatusEvidence({ status }: { status: GuiStatus }) {
             <SettingRow title="Build identity"><Mono className="break-all">{receipt.build.identity}</Mono></SettingRow>
             <SettingRow title="State format">{receipt.build.stateFormat}</SettingRow>
           </>}
-        </> : <p className="py-2 text-sm text-muted-foreground">Status reports no completion receipt for this machine.</p>}
+        </>}
       </div>
       {receipt?.mcpQualifications.map((value, index) => {
         const qualification = record(value);
@@ -81,8 +81,8 @@ export function PersistentStatusEvidence({ status }: { status: GuiStatus }) {
         </details>;
       })}
     </section>
-    <section aria-label="Recovery evidence">
-      <SectionLabel>Recovery evidence</SectionLabel>
+    <section aria-label="Recovery">
+      <SectionLabel>Recovery</SectionLabel>
       <div className={settingsGroup}>
         {status.enrollmentLifecycle && <SettingRow title="Enrollment lifecycle">{status.enrollmentLifecycle}</SettingRow>}
         {status.enrollmentRecovery && <SettingRow title="Enrollment recovery"><CliText>{status.enrollmentRecovery}</CliText></SettingRow>}
@@ -90,13 +90,13 @@ export function PersistentStatusEvidence({ status }: { status: GuiStatus }) {
           <SettingRow title="Open run"><Mono className="break-all">{recovery.run}</Mono></SettingRow>
           <SettingRow title="Recovery revision"><Mono className="break-all">{recovery.revision}</Mono></SettingRow>
           <SettingRow title="Started at">{recovery.startedAt}</SettingRow>
-          <SettingRow title="Run owner">{recovery.owner ? `${recovery.owner.operation}, PID ${recovery.owner.pid}, since ${recovery.owner.since}` : "No live owner reported"}</SettingRow>
+          <SettingRow title="Run owner">{recovery.owner ? `${recovery.owner.operation}, PID ${recovery.owner.pid}, since ${recovery.owner.since}` : "Not reported"}</SettingRow>
           <SettingRow title="Finished actions">{recovery.finishedActions} of {recovery.totalActions}</SettingRow>
           <SettingRow title="Next step"><CliText>{recovery.next}</CliText></SettingRow>
-        </> : <SettingRow title="Open recovery run">Not reported by status</SettingRow>}
+        </> : <SettingRow title="Open recovery run">Not reported</SettingRow>}
       </div>
       {recovery && <details className="mt-3">
-        <summary className="cursor-pointer">Recorded actions ({recovery.actions.length}) and drift ({recovery.drift.length})</summary>
+        <summary className="cursor-pointer">Actions ({recovery.actions.length}), drift ({recovery.drift.length})</summary>
         {recovery.actions.map((action) => <SettingRow key={action.action} title={resourceLabel(action.resource)} description={`${action.kind}, attempt ${action.attempt}, ${action.recordedAt}`}><Mono className="break-all">{action.action}</Mono> {action.state}</SettingRow>)}
         {recovery.drift.map((value, index) => {
           const conflict = record(value);

@@ -165,7 +165,8 @@ it("renders a persisted receipt and open recovery without an operation ticket", 
 
 it("does not invent a receipt or local recovery on a Source without status evidence", () => {
   const html = renderToStaticMarkup(<PersistentStatusEvidence status={Schema.decodeUnknownSync(GuiStatus)(status)} />);
-  assert.ok(html.includes("Status reports no completion receipt for this machine."));
-  assert.ok(html.includes("Not reported by status"));
+  assert.ok(html.includes("Applied revision"));
+  assert.ok(html.includes("Open recovery run"));
+  assert.ok(html.includes("Not reported"));
   assert.ok(!html.includes("verified"));
 });

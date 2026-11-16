@@ -120,14 +120,14 @@ it("shows stored enrollment evidence without remote convergence claims", async (
   const app = await fixture(() => false);
   try {
     const text = document.body.textContent ?? "";
-    for (const expected of ["Enrolled at", follower.enrolledAt, "Revoked", "Enrollment pending", "Credential present", "Credential lifecycle", "Active", "Enrollment evidence only."]) {
+    for (const expected of ["Enrolled at", follower.enrolledAt, "Revoked", "Enrollment pending", "Credential present", "Credential lifecycle", "Active"]) {
       assert.ok(text.includes(expected), expected);
     }
     assert.ok(!text.includes("local-file:"));
     app.responses["/api/machines"] = { followers: [{ ...follower, revoked: true, pending: true, credentialPresent: false, credentialLifecycle: { _tag: "Retired" } }], invitations: [] };
     await click("Reload page");
     await until(() => document.body.textContent?.includes("Retired") === true, "Updated credential lifecycle missing");
-    assert.ok(document.body.textContent?.includes("Enrollment evidence only."));
+    assert.ok(document.body.textContent?.includes("Credential present"));
   } finally { await app.close(); }
 });
 
