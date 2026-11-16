@@ -4,8 +4,8 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Schema } from "effect";
 import { Button } from "@/components/ui/button";
 import { cn } from "cn";
-import { Check, Circle, FileArrowUp, HourglassMedium, Question, Warning, X } from "@/components/icons";
-import { SectionLabel, settingsGroup } from "@/workspace/kit";
+import { Check, Circle, Copy, FileArrowUp, HourglassMedium, Question, Warning, X } from "@/components/icons";
+import { copy, SectionLabel, settingsGroup } from "@/workspace/kit";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { isCoarsePointer, SNAP } from "@/lib/utils";
 import { HARNESS_NAMES, type HarnessId } from "@/shared/metadata";
@@ -140,7 +140,7 @@ export function useEnrollmentController(backend: WorkspaceBackend, session: GuiS
           const choices = journal.items.find((item) => item.kind === "folder-scaffold")?.detail.harnesses;
           setSelectedHarnesses(TARGET_IDS.filter((id) => Array.isArray(choices) && choices.includes(id)));
         }
-        if (imports === undefined) setImportReview(journal);
+        if (imports === undefined || importReview === null) setImportReview(journal);
         sendSource({ kind: "planned", journal }); next();
       }, (error) => sendSource({ kind: "failed", error }));
     },
@@ -220,9 +220,9 @@ export function useEnrollmentController(backend: WorkspaceBackend, session: GuiS
 }
 
 /** The same wizard renders both providers. Only this controller knows the browser API. */
-export function EnrollmentOnboarding({ backend, session, onCancel }: { backend: WorkspaceBackend; session: GuiSession; onCancel?: () => void }) {
+export function EnrollmentOnboarding({ backend, session, onCancel, embedded }: { backend: WorkspaceBackend; session: GuiSession; onCancel?: () => void; embedded?: boolean }) {
   const controller = useEnrollmentController(backend, session);
-  return <Onboarding data={controller.data} live={controller} onCancel={onCancel} archiveImport={session.role === "unconfigured" ? <ArchiveImportButton backend={backend} trigger={(open) => <HeaderAction icon={FileArrowUp} label="Import archive" onClick={open} />} /> : undefined} onDone={(setup) => { window.location.href = `/${setup.role}/overview`; }} />;
+  return <Onboarding data={controller.data} live={controller} onCancel={onCancel} embedded={embedded} archiveImport={session.role === "unconfigured" ? <ArchiveImportButton backend={backend} trigger={(open) => <HeaderAction icon={FileArrowUp} label="Import archive" onClick={open} />} /> : undefined} onDone={(setup) => { window.location.href = `/${setup.role}/overview`; }} />;
 }
 
 function setupRecordEvidence(record: GuiSetupStatus["items"][number]): string | undefined {
@@ -494,7 +494,42 @@ export function SetupJournal({ backend, session, frame }: { backend: WorkspaceBa
         <details className="text-sm">
           <summary className="min-h-6 cursor-pointer text-muted-foreground">Technical details</summary>
           <div className="mt-3 space-y-3">
-            <Facts items={[["Plan identifier", <Mono className="break-all">{current.planDigest}</Mono>], ["Stage", current.stage]]} />
+            <Facts items={[
+              ["Plan identifier", <Mono className="break-all">{current.planDigest}</Mono>],
+              ["Stage", current.stage],
+              ...(current.role ? [["Role", current.role] as [ReactNode, ReactNode]] : []),
+              ...(current.scope ? [["Scope", current.scope] as [ReactNode, ReactNode]] : []),
+              ...(current.mode ? [["Mode", current.mode] as [ReactNode, ReactNode]] : []),
+              ...(current.intent ? [["Intent", current.intent] as [ReactNode, ReactNode]] : []),
+              ...(current.discoveryPaths.length ? [["Discovery paths", <SetupFields value={current.discoveryPaths} />] as [ReactNode, ReactNode]] : []),
+            ]} />
+            {current.approvals.length > 0 && <section aria-label="Approvals" className="space-y-2">
+              <h3 className="font-medium">Approvals for this plan</h3>
+              {current.approvals.map((approval, index) => <Facts key={index} items={[
+                ["Approver", approval.approver], ["Approved at", approval.approvedAt],
+              ]} />)}
+            </section>}
+            {current.stages.length > 0 && <section aria-label="Stages" className="space-y-2">
+              <h3 className="font-medium">Stages</h3>
+              <div className="overflow-x-auto rounded-lg border border-border">
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b border-border text-muted-foreground">
+                    <tr><th className="px-4 py-2 font-medium">Stage</th><th className="px-4 py-2 font-medium">Completed at</th><th className="px-4 py-2 font-medium">Digest</th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {current.stages.map((record) => <tr key={record.stage}>
+                      <td className="px-4 py-2">{record.stage}</td>
+                      <td className="px-4 py-2 whitespace-nowrap tabular-nums"><time dateTime={record.completedAt}>{record.completedAt}</time></td>
+                      <td className="px-4 py-2"><span className="flex items-center gap-2">
+                        <span title={record.digest}><Mono>{record.digest.slice(0, 12)}…</Mono></span>
+                        <Button type="button" size="icon-xs" variant="ghost" aria-label={`Copy ${record.stage} digest`} title={`Copy ${record.stage} digest`} onClick={() => void copy(record.digest, "Digest copied")}><Copy /></Button>
+                      </span></td>
+                    </tr>)}
+                  </tbody>
+                </table>
+              </div>
+            </section>}
+            <SetupFields value={{ discoveryInputs: current.discoveryInputs, items: current.items, catalog: current.catalog }} />
             {c.plan && <SetupFields value={{ decisions: c.plan.decisions, exclusions: c.plan.exclusions, evidence: c.plan.evidence, imports: c.plan.imports }} />}
           </div>
         </details>

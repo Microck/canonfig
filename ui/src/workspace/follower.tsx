@@ -61,6 +61,7 @@ import {
   copy,
 } from "./kit";
 import { Column, ConfirmDialog } from "./settings";
+import { EnrollmentOnboarding } from "@/onboarding/enrollment-controller";
 import { ScheduleFields, nextCheck, scheduleError, type Schedule } from "./schedule";
 import { FollowerOperationEvidence, TunnelEvidence } from "./follower-evidence";
 import { LocalAuthoringEditor } from "./follower-authoring";
@@ -2000,6 +2001,11 @@ export function UnenrollDialog() {
 
 export function MachineView() {
   const ws = useWorkspace();
+  const [replacing, setReplacing] = useState(false);
+  if (replacing && ws.enrollmentBackend && ws.session) return <>
+    <PageHeader crumbs={["Settings", "Enrollment"]} />
+    <Body><Column><EnrollmentOnboarding backend={ws.enrollmentBackend} session={ws.session} embedded onCancel={() => setReplacing(false)} /></Column></Body>
+  </>;
   return (
     <>
       <PageHeader crumbs={["Settings", "Enrollment"]} actions={ws.followerLive && <Button size="sm" variant="outline" onClick={ws.reload}>Reload</Button>} />
@@ -2028,6 +2034,7 @@ export function MachineView() {
               {([["Source signing fingerprint", ws.followerLive.enrollment.source.signingFingerprint], ["TLS fingerprint", ws.followerLive.enrollment.source.tlsFingerprint]] as const).map(([label, value]) => <SettingRow key={label} title={label}><span className="flex min-w-0 items-center gap-2"><span className="min-w-0 truncate" title={value}><Mono>{value}</Mono></span><Button variant="outline" size="xs" onClick={() => { void copy(value, "Fingerprint copied"); }}>Copy</Button></span></SettingRow>)}
             </>}
           </div>
+          {ws.enrollmentBackend && !ws.unenrolled && <Button variant="outline" size="sm" className="mt-8" onClick={() => setReplacing(true)}>Replace enrollment with a new invitation</Button>}
 
           <SectionLabel className="mt-10">{PLAIN.unenroll}</SectionLabel>
           <div data-tour="enrollment-stop" className="flex flex-col items-start gap-3 rounded-md border border-bad/30 px-4 py-3 sm:flex-row sm:items-center sm:gap-4">

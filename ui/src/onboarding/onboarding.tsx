@@ -148,20 +148,13 @@ type Stage = "choose" | Role;
 
 type OnboardingStage =
   | { kind: "choosing"; returnedFrom: Role | null }
-  | { kind: "inspecting-source"; returnedFrom: Role | null }
   | { kind: Role };
-type StageEvent = { kind: "choose"; role: Role; live: boolean } | { kind: "source-ready" } | { kind: "inspection-failed" } | { kind: "back"; from: Role };
+type StageEvent = { kind: "choose"; role: Role } | { kind: "back"; from: Role };
 function transitionStage(state: OnboardingStage, event: StageEvent): OnboardingStage {
   switch (event.kind) {
     case "choose":
       if (state.kind !== "choosing") break;
-      return event.role === "source" && event.live ? { kind: "inspecting-source", returnedFrom: state.returnedFrom } : { kind: event.role };
-    case "source-ready":
-      if (state.kind === "inspecting-source") return { kind: "source" };
-      break;
-    case "inspection-failed":
-      if (state.kind === "inspecting-source") return { kind: "choosing", returnedFrom: state.returnedFrom };
-      break;
+      return { kind: event.role };
     case "back":
       if (state.kind === event.from) return { kind: "choosing", returnedFrom: event.from };
       break;
@@ -219,9 +212,9 @@ const DEFAULT_PORT = 17342;
 export type ImportOffer = SetupImportOffer;
 
 
-export function Onboarding({ onDone, data, live, onCancel, archiveImport }: { onDone: (setup: Setup) => void; data: OnboardingData; live?: EnrollmentController; onCancel?: () => void; archiveImport?: ReactNode }) {
+export function Onboarding({ onDone, data, live, onCancel, archiveImport, embedded = false }: { onDone: (setup: Setup) => void; data: OnboardingData; live?: EnrollmentController; onCancel?: () => void; archiveImport?: ReactNode; embedded?: boolean }) {
   const stageFlow = useStateMachine<OnboardingStage, StageEvent>(live?.session.role === "follower" ? { kind: "follower" } : { kind: "choosing", returnedFrom: null }, transitionStage);
-  const stage: Stage = stageFlow.state.kind === "inspecting-source" || stageFlow.state.kind === "choosing" ? "choose" : stageFlow.state.kind;
+  const stage: Stage = stageFlow.state.kind === "choosing" ? "choose" : stageFlow.state.kind;
   const back = (from: Role) => {
     if (onCancel) { onCancel(); return; }
     stageFlow.send({ kind: "back", from });
@@ -238,35 +231,27 @@ export function Onboarding({ onDone, data, live, onCancel, archiveImport }: { on
     );
   };
 
-  return (
-    // Secondary ways to start sit in the header only while the role is still being chosen.
-    <OnboardingShell hostname={data.hostname} actions={stage === "choose" && !live?.state.loading ? <>{archiveImport}{live?.session.role === "unconfigured" && <HeaderAction icon={Folder} label="Use locally" href="/local/sync" />}</> : undefined} backdrop={<SetupBackdrop busy={!!live?.state.loading} job={live ? live.applied ? { progress: 100, steps: 1, done: true } : null : job} />}>
-      {/* In the demo, md:pb-40 clears the fixed demo panel (220px wide and about 122px tall, 12px
+  /* In the demo, md:pb-40 clears the fixed demo panel (220px wide and about 122px tall, 12px
           from the left and from the bottom, App.tsx) at the end of the scroll, where the cards can
           reach under it. From xl the cards start right of it, so normal padding returns and a
           card that fits the window doesn't scroll. Below md the panel is a button in the header
           (kit.tsx), so only normal padding remains, as in production. Every screen is centred vertically, where the
           backdrop's rings meet; a step that changes height grows the card evenly up and down
-          (the height tween keeps that smooth). A card taller than the window just scrolls. */}
-      <div className={cn("relative isolate flex min-h-full flex-col items-center overflow-hidden px-4 pt-8 pb-12 xl:pb-16 [overflow-wrap:anywhere] justify-center sm:px-6 sm:pt-16", DEMO && "md:pb-40")}>
+          (the height tween keeps that smooth). A card taller than the window just scrolls. */
+  const content = (
+      <div className={cn("relative isolate flex min-h-full flex-col items-center [overflow-wrap:anywhere]", !embedded && "overflow-hidden px-4 pt-8 pb-12 xl:pb-16 justify-center sm:px-6 sm:pt-16", !embedded && DEMO && "md:pb-40")}>
         {/* popLayout takes the leaving screen out of flow, so the next one lays out at once and
             the picked card's shell (CardShell) can grow straight into the wizard card's place.
             `custom` tells the leaving choice which card was picked. */}
         <AnimatePresence mode="popLayout" custom={stage}>
-          {stage === "choose" && <Choose key="choose" busy={stageFlow.state.kind === "inspecting-source"} returnedFrom={"returnedFrom" in stageFlow.state ? stageFlow.state.returnedFrom : null} onPick={(role) => {
-            stageFlow.send({ kind: "choose", role, live: !!live });
-            if (live && role === "source") void live.planSetup(undefined, undefined, () => stageFlow.send({ kind: "source-ready" })).then(() => {
-              if (stageFlow.current.current.kind === "inspecting-source") stageFlow.send({ kind: "inspection-failed" });
-            });
-          }} />}
+          {stage === "choose" && <Choose key="choose" returnedFrom={"returnedFrom" in stageFlow.state ? stageFlow.state.returnedFrom : null} onPick={(role) => stageFlow.send({ kind: "choose", role })} />}
           {stage === "source" && <SourceWizard key="source" data={data} live={live} job={job} onRun={run} onBack={() => back("source")} onDone={onDone} />}
-          {stage === "follower" && <FollowerWizard key="follower" data={data} live={live} job={job} onRun={run} onBack={() => back("follower")} onDone={onDone} />}
+          {stage === "follower" && <FollowerWizard key="follower" data={data} live={live} embedded={embedded} job={job} onRun={run} onBack={() => back("follower")} onDone={onDone} />}
         </AnimatePresence>
-        {stage === "choose" && live?.state.loading && <p role="status">Checking this machine…</p>}
-        {stage === "choose" && live?.state.error && <ErrorNotice error={live.state.error} title="This machine could not be checked" recovery="Follow the instructions above, then choose a role again to retry. If you need to restart the browser session, run canonfig ui in a terminal and open its new sign-in link." />}
       </div>
-    </OnboardingShell>
   );
+  // Secondary ways to start sit in the header only while the role is still being chosen.
+  return embedded ? content : <OnboardingShell hostname={data.hostname} actions={stage === "choose" && !live?.state.loading ? <>{archiveImport}{live?.session.role === "unconfigured" && <HeaderAction icon={Folder} label="Use locally" href="/local/sync" />}</> : undefined} backdrop={<SetupBackdrop busy={!!live?.state.loading} job={live ? live.applied ? { progress: 100, steps: 1, done: true } : null : job} />}>{content}</OnboardingShell>;
 }
 
 // The shared card's grow and shrink between choice and wizard. A spring with a little bounce
@@ -360,7 +345,7 @@ function choiceVariants(role: Role, returning: boolean): { card: Variants; conte
 }
 
 // popLayout finds a leaving screen through its outermost motion element, so screens need no ref.
-function Choose({ returnedFrom, onPick, busy }: { returnedFrom: Role | null; onPick: (role: Role) => void; busy: boolean }) {
+function Choose({ returnedFrom, onPick }: { returnedFrom: Role | null; onPick: (role: Role) => void }) {
   const heading = useFocusOnMount<HTMLHeadingElement>();
   const present = useIsPresent();
   const reduced = useReducedMotion();
@@ -368,7 +353,7 @@ function Choose({ returnedFrom, onPick, busy }: { returnedFrom: Role | null; onP
   const item = reduced ? undefined : CHOOSE_ITEM;
   return (
     // Leaving, it sits above the wizard so the picked card's text clears over the growing shell; inert, so it can't be picked twice.
-    <motion.div inert={!present || busy} variants={screen} initial="hidden" animate="shown" exit="exit" className={cn("w-full max-w-[680px] pb-10 text-center", !present && "z-10")}>
+    <motion.div inert={!present} variants={screen} initial="hidden" animate="shown" exit="exit" className={cn("w-full max-w-[680px] pb-10 text-center", !present && "z-10")}>
       <motion.div variants={item}>
         <h1 ref={heading} tabIndex={-1} className="text-[28px] leading-tight font-semibold tracking-[-0.025em] outline-none">
           What should this machine do?
@@ -529,6 +514,7 @@ function Wizard({
   done,
   wide = false,
   children,
+  embedded = false,
 }: {
   role: Role;
   title: string;
@@ -546,6 +532,7 @@ function Wizard({
   done?: ReactNode;
   wide?: boolean;
   children: ReactNode;
+  embedded?: boolean;
 }) {
   const heading = useFocusOnMount<HTMLHeadingElement>();
   const stepHeading = useRef<HTMLHeadingElement>(null);
@@ -607,10 +594,10 @@ function Wizard({
       initial="hidden"
       animate="shown"
       exit="exit"
-      className={cn("w-full", wide ? "max-w-4xl" : "max-w-[600px]", !present && "z-10")}
+      className={cn("w-full", !embedded && (wide ? "max-w-4xl" : "max-w-[600px]"), !present && "z-10")}
     >
       {/* Kept in layout (invisible, so not focusable) once done, so the card doesn't jump. */}
-      <Button
+      {!embedded && <Button
         type="button"
         variant="ghost"
         onClick={onBack}
@@ -619,24 +606,24 @@ function Wizard({
         className={cn("mb-4 min-h-11 text-muted-foreground transition-[opacity,visibility] duration-150 ease-snap sm:min-h-10", done && "invisible opacity-0")}
       >
         <ArrowLeft className="size-3.5" /> Back to machine choice
-      </Button>
+      </Button>}
       <form ref={card} noValidate onSubmit={submit} className="relative isolate rounded-xl">
-        <CardShell role={role} side="wizard" />
-        {done && (
+        {!embedded && <CardShell role={role} side="wizard" />}
+        {done && !embedded && (
           <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 overflow-hidden rounded-[inherit]">
             <div className="finish-sweep absolute inset-0 opacity-40" style={SWEEP_STYLE} />
           </div>
         )}
         <LayoutGroup id={group}>
           {!done && (
-            <div data-rise className="border-b border-border px-4 pt-5 pb-4 sm:px-6">
+            <div data-rise className={cn(embedded ? "pb-4" : "border-b border-border px-4 pt-5 pb-4 sm:px-6")}>
               <h1 ref={heading} tabIndex={-1} className="text-[15px] font-medium outline-none">
                 {title}
               </h1>
               <Stepper steps={steps} step={step} />
             </div>
           )}
-          <div ref={body} className="px-4 py-6 sm:px-6">
+          <div ref={body} className={cn(embedded ? "py-6" : "px-4 py-6 sm:px-6")}>
             {done ?? (
               <>
                 {/* Keyed, so each step's heading is a new element that screen readers announce on focus. */}
@@ -651,7 +638,8 @@ function Wizard({
           </div>
         </LayoutGroup>
         {!done && (
-          <div data-rise className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-4 py-3 sm:px-6">
+          <div data-rise className={cn("flex flex-wrap items-center justify-end gap-2 border-t border-border py-3", !embedded && "px-4 sm:px-6")}>
+            {embedded && <Button type="button" variant="ghost" disabled={busy} className="mr-auto" onClick={onBack}>Cancel</Button>}
             {step > 0 && (
               <Button type="button" variant="ghost" disabled={busy} onClick={() => go(step - 1)}>
                 Back
@@ -783,11 +771,13 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
   const INSTALLED = harnesses.filter((h) => h.installed);
   const NOT_INSTALLED = harnesses.filter((h) => !h.installed);
   const [step, setStep] = useState(0);
+  const [skipReading, setSkipReading] = useState(false);
   const [tried, setTried] = useState(false);
   const [name, setName] = useState(data.profileName);
   // Setup lists the installed harnesses until the person edits the list, as `setup plan` does without --harness.
   // Any harness can be listed, installed or not, as `--harness` allows.
-  const [listed, setListed] = useState<HarnessId[]>(() => (live ? harnesses.filter((h) => h.listed) : INSTALLED).map((h) => h.id));
+  const [listedDraft, setListed] = useState<HarnessId[] | null>(null);
+  const listed = listedDraft ?? (live ? harnesses.filter((h) => h.listed) : INSTALLED).map((h) => h.id);
   // A target keeps its chosen offer id while its harness is unlisted, so re-listing the harness restores the choice.
   const [choices, setChoices] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [scan, setScan] = useState(true);
@@ -805,6 +795,7 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
   [data.offers, data.present, data.collisions, listed]);
   const collisionTargets = useMemo(() => new Set(data.collisions.filter((collision) => collision.kind === "candidates").map((collision) => collision.target)), [data.collisions]);
   const imported = useMemo(() => {
+    if (skipReading) return [];
     const offeredIds = new Set(offered.map((offer) => offer.id));
     const primary = new Map<string, ImportOffer>();
     const chosen = new Map<string, string>();
@@ -817,7 +808,7 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
       }
     }
     return [...chosen.values()];
-  }, [offered, choices, collisionTargets]);
+  }, [offered, choices, collisionTargets, skipReading]);
 
   // Validated as typed, never rewritten: stripping characters would turn "1.5" into a different port.
   const portNumber = Number(port);
@@ -843,7 +834,8 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
       wide={step === SOURCE_STEP.import}
       onStep={(s) => {
         setTried(false);
-        if (live && s === SOURCE_STEP.import && step === SOURCE_STEP.harnesses) void live.planSetup(selected, undefined, () => setStep(s));
+        if (live && s === SOURCE_STEP.harnesses && step === SOURCE_STEP.profile) void live.planSetup(undefined, skipReading ? [] : undefined, () => setStep(s));
+        else if (live && s === SOURCE_STEP.import && step === SOURCE_STEP.harnesses) void live.planSetup(selected, skipReading ? [] : undefined, () => setStep(s));
         else if (live && s === SOURCE_STEP.service && step === SOURCE_STEP.import) void live.planSetup(selected, imported, () => setStep(s));
         // Continue on Approve is the approval itself: record it, then move to Create.
         else if (live && s === SOURCE_STEP.create && !live.approved) void live.approveSetup(() => setStep(s));
@@ -897,6 +889,10 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
           {live ? <Facts items={[["Profile name", data.profileName], ["Naming", "The profile uses this machine's name. You can rename it later in Profile, Defaults."]]} /> : <Field label="Profile name" htmlFor="ob-name" hint="Choose a name for the shared setup. Canonfig saves it in ~/.canonfig/canonfig.jsonc." error={nameError} className="sm:max-w-80">
             <Input id="ob-name" value={name} onChange={(e) => setName(e.target.value)} aria-invalid={!!nameError} aria-describedby={nameError ? "ob-name-error" : undefined} />
           </Field>}
+          {live && <label className={CHECK_ROW}>
+            <Checkbox checked={skipReading} onCheckedChange={(checked) => setSkipReading(checked === true)} className="mt-px" />
+            <span>Skip reading existing tool configuration</span>
+          </label>}
         </div>
       )}
       {step === SOURCE_STEP.harnesses && (
@@ -911,7 +907,7 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
                 <label className={CHECK_ROW}>
                   <Checkbox
                     checked={listed.includes(h.id)}
-                    onCheckedChange={(c) => setListed((ids) => (c === true ? [...ids, h.id] : ids.filter((id) => id !== h.id)))}
+                    onCheckedChange={(c) => setListed(c === true ? [...listed, h.id] : listed.filter((id) => id !== h.id))}
                     className="mt-px"
                   />
                   <span className="min-w-0 font-medium">{h.name}</span>
@@ -928,7 +924,7 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
                     <label className={CHECK_ROW}>
                       <Checkbox
                         checked={listed.includes(h.id)}
-                        onCheckedChange={(c) => setListed((ids) => (c === true ? [...ids, h.id] : ids.filter((id) => id !== h.id)))}
+                        onCheckedChange={(c) => setListed(c === true ? [...listed, h.id] : listed.filter((id) => id !== h.id))}
                         className="mt-px"
                       />
                       <span className="min-w-0 font-medium">{h.name}</span>
@@ -942,7 +938,7 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
       )}
       {step === SOURCE_STEP.import && (
         <div className="space-y-5">
-          <ImportReview data={data} listed={listed} choices={choices} onChoices={setChoices} />
+          {skipReading ? <p className="text-muted-foreground">Import skipped.</p> : <ImportReview data={data} listed={listed} choices={choices} onChoices={setChoices} />}
           {!live && <label className={CHECK_ROW}>
             <Checkbox checked={scan} onCheckedChange={(c) => setScan(c === true)} className="mt-px" />
             <span>Suggest tools this setup needs so I can review them later</span>
@@ -1025,7 +1021,7 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
 /* Follower enroll                                                     */
 /* ------------------------------------------------------------------ */
 
-function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<FollowerSetup>) {
+function FollowerWizard({ job, onRun, onBack, onDone, data, live, embedded }: WizardProps<FollowerSetup> & { embedded?: boolean }) {
   const LISTED = data.harnesses.filter((h) => h.listed);
   const FOLLOWER_INSTALLED = data.followerInstalled;
   const [step, setStep] = useState(0);
@@ -1108,6 +1104,7 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
   return (
     <Wizard
       role="follower"
+      embedded={embedded}
       title={`Copy the setup from ${sourceName}`}
       steps={["Invitation", "Connection", "This machine"]}
       step={step}
@@ -1331,7 +1328,7 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
         <div className="space-y-5">
           {progress === null ? (
             <>
-              <p className="text-muted-foreground">Name this follower so you can recognize it on the Source, then join to give it access to the shared setup.</p>
+              {live?.session.role !== "follower" && <p className="text-muted-foreground">Name this follower so you can recognize it on the Source, then join to give it access to the shared setup.</p>}
               <Field label="Name for this machine" htmlFor="ob-mname" hint={`Shown in Machines on ${sourceName}.`} error={shown("name")} className="sm:max-w-80">
                 <Input
                   id="ob-mname"
@@ -1382,10 +1379,17 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
                 <Checkbox checked={useSchedule} onCheckedChange={(c) => setUseSchedule(c === true)} className="mt-px" />
                 <span className="font-medium">Sync daily at 09:00, the profile's default schedule</span>
               </label>}
-              <p className="text-sm text-muted-foreground">
+              {live?.session.role !== "follower" && <p className="text-sm text-muted-foreground">
                 {live ? "Joining registers this machine with the Source so it can copy the published setup. It does not apply the setup to your AI coding tools. Open Sync afterwards to review and apply the changes. You can choose tools and a sync schedule after joining." : <>Joining downloads <Term term="Profile Revision">revision 7</Term>, the version of the setup atlas published. It does not apply that setup to your AI coding tools. Open Sync afterwards to review and apply the changes.</>}
-              </p>
-              {live?.session.role === "follower" && <label className={CHECK_ROW}><Checkbox checked={replace} onCheckedChange={(checked) => setReplace(checked === true)} />Replace this machine's current connection to its Source with this invitation. It will follow the Source and groups in this invitation instead.</label>}
+              </p>}
+              {live?.session.role === "follower" && <section className="space-y-3" aria-label="Replacement consequences">
+                <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+                  <li>A new identity revokes the previous identity and removes its credential.</li>
+                  <li>Agent policy resets to deterministic-only, and the agent harness and its secret bindings are removed.</li>
+                  <li>Stored schedule choices, local-execution settings and invocation settings reset.</li>
+                </ul>
+                <label className={CHECK_ROW}><Checkbox checked={replace} onCheckedChange={(checked) => setReplace(checked === true)} />Replace this machine's enrollment</label>
+              </section>}
               {shown("replace") && <FieldError>{shown("replace")}</FieldError>}
             </>
           ) : (

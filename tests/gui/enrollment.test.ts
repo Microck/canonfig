@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
@@ -103,6 +103,25 @@ describe("real enrollment and setup endpoints", () => {
     expect(cli.stderr).toContain("was written by an earlier Canonfig");
     expect(cli.stderr).toContain("move it aside and start setup again");
     expect(readFileSync(path, "utf8")).toBe(legacy);
+  }, 60_000);
+
+  it.runIf(process.platform === "linux")("does not read existing tool configuration when planning with no-import", async () => {
+    const machine = fixture();
+    mkdirSync(join(machine.home, ".codex"), { recursive: true });
+    const instructions = join(machine.home, ".codex", "AGENTS.md");
+    writeFileSync(instructions, "Private instructions must not be read without import consent.\n");
+    utimesSync(instructions, new Date(0), new Date());
+    const server = await gui(machine.env);
+    const input = { role: "source", scope: "full", mode: "simple", files: [], harnesses: ["codex"] };
+    const skipped = await server.request("/api/setup/plan", { ...input, imports: { kind: "none" } });
+    expect(skipped.status).toBe(200);
+    expect(skipped.body.imports).toEqual({ request: "none", offered: [], present: [], skipped: [], collisions: [] });
+    expect(statSync(instructions).atimeMs).toBe(0);
+    // Confirm the access-time witness detects the normal read path on this filesystem.
+    const offered = await server.request("/api/setup/plan", { ...input, imports: { kind: "offer" } });
+    expect(offered.status).toBe(200);
+    expect(offered.body.imports.offered).toContainEqual(expect.objectContaining({ id: "codex/instructions/AGENTS.md" }));
+    expect(statSync(instructions).atimeMs).toBeGreaterThan(0);
   }, 60_000);
 
   it("carries structured skips and collisions with home-relative source paths", async () => {

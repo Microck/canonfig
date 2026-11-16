@@ -49,7 +49,13 @@ for (const role of ["source", "follower"] as const) {
   it(`${role} Overview fetches only session/status and revisits retain page reads`, async () => {
     const requests: string[] = [];
     const mutations: { path: string; body: unknown }[] = [];
-    const setup = { discoveryPaths: [], stage: "approved", approved: true, approvals: [], stages: [], items: [], catalog: [], planDigest: "navigation-plan" };
+    const setup = {
+      role: "source", scope: "full", mode: "advanced", intent: "Persisted setup rationale",
+      discoveryPaths: ["/tmp/discovery/package.json"], discoveryInputs: [{ path: "/tmp/discovery/package.json", digest: "discovery-digest" }],
+      stage: "approved", approved: true,
+      approvals: [{ approver: "Persisted reviewer", approvedAt: "2026-11-16T12:00:00Z", digest: "navigation-plan" }],
+      stages: [{ stage: "approve", completedAt: "2026-11-16T12:00:01Z", digest: "stage-digest-01234567890123456789012345678901234567890123456789" }], items: [], catalog: [], planDigest: "navigation-plan",
+    };
     const responses: Record<string, unknown> = {
       "/api/session": { role, machineName: "Navigation fixture", folderPath: "/tmp/navigation-fixture", version: "7.1.0" },
       "/api/status": { machineRole: { role }, lifecycle: {}, tunnel: null },
@@ -81,7 +87,10 @@ for (const role of ["source", "follower"] as const) {
             responses[path] = { configured: true, value: parsed };
             outgoing.end(JSON.stringify(parsed));
           } else {
-            if (path === "/api/setup/apply") setup.stage = "complete";
+            if (path === "/api/setup/apply") {
+              setup.stage = "complete";
+              responses["/api/setup"] = { ...setup, mode: undefined, discoveryPaths: [] };
+            }
             outgoing.end(JSON.stringify(responses[path]));
           }
         });
@@ -146,11 +155,26 @@ for (const role of ["source", "follower"] as const) {
       await act(async () => { navigate(`/${role}/settings/setup`); });
       await settle("Apply approved setup");
       assert.equal(requests.filter((path) => path === "/api/setup").length, 1);
+      // This controller has never planned: all details must come from persisted GET status.
+      for (const value of ["Role", "Scope", "Mode", "advanced", "Persisted setup rationale", "/tmp/discovery/package.json", "discovery-digest", "Persisted reviewer", "2026-11-16T12:00:00Z"]) {
+        assert.ok(container.textContent?.includes(value), `Missing persisted setup detail: ${value}`);
+      }
+      const stageRow = container.querySelector('section[aria-label="Stages"] tbody tr');
+      assert.ok(stageRow?.textContent?.includes("2026-11-16T12:00:01Z"));
+      assert.ok(stageRow?.textContent?.includes("stage-digest…"));
+      assert.ok(!stageRow?.textContent?.includes(setup.stages[0].digest), "Stage rows show a short digest");
+      const copyDigest = stageRow?.querySelector<HTMLButtonElement>('button[aria-label="Copy approve digest"]');
+      assert.ok(copyDigest);
+      await act(async () => copyDigest.click());
+      assert.equal(await navigator.clipboard.readText(), setup.stages[0].digest);
       const apply = [...container.querySelectorAll("button")].find((button) => button.textContent === "Apply approved setup");
       assert.ok(apply);
       const statusReadsBeforeApply = requests.filter((path) => path === "/api/status").length;
       await act(async () => { apply.click(); });
       await settle("Done");
+      const labels = [...container.querySelectorAll("details dt")].map((label) => label.textContent);
+      assert.ok(!labels.includes("Mode"), "Absent setup mode has no metadata row");
+      assert.ok(!labels.includes("Discovery paths"), "Empty discovery paths have no metadata row");
       assert.deepEqual(mutations.at(-1), { path: "/api/setup/apply", body: { planDigest: "navigation-plan" } });
       assert.equal(requests.filter((path) => path === "/api/setup").length, 2, "Apply refreshes setup exactly once");
       const afterApply = requests.filter((path) => path !== "/api/status").length;
