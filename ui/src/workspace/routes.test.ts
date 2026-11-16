@@ -10,6 +10,7 @@ const pages: [WorkspaceRole, View, string][] = [
   ["source", "machines", "machines"],
   ["source", "revisions", "revisions"],
   ["source", "sync", "sync"],
+  ["source", "local", "local-settings"],
   ["source", "backups", "backups"],
   ["source", "secrets", "secrets"],
   ["source", "service", "settings/service"],
@@ -87,7 +88,7 @@ describe("canonical workspace routes", () => {
   it("rejects unknown pages and pages belonging to the other role", () => {
     for (const href of [
       "/source/settings/tunnel", "/source/settings/enrollment", "/source/settings/agent", "/source/profile/items",
-      "/source/machines/map", "/source/doctor", "/source/profile/", "/source", "/source/no-such-page", "/source/local-settings",
+      "/source/machines/map", "/source/doctor", "/source/profile/", "/source", "/source/no-such-page",
       "/follower/profile", "/follower/profile/groups", "/follower/profile/harnesses", "/follower/revisions", "/follower/settings/service",
       "/follower/local", "/follower/machine",
     ]) {

@@ -17,6 +17,7 @@ const SOURCE_PATHS: Record<SourceView, string> = {
   machines: "machines",
   revisions: "revisions",
   sync: "sync",
+  local: "local-settings",
   backups: "backups",
   secrets: "secrets",
   service: "settings/service",

@@ -66,7 +66,7 @@ export const synchronizationRoutes = Effect.gen(function*() {
     role(["follower"]).pipe(Effect.andThen(operation), Effect.map(printable));
   const both = <A>(operation: Effect.Effect<A, CliCommandFailure>) =>
     role(["source", "follower"]).pipe(Effect.andThen(operation), Effect.map(printable));
-  const localTarget = role(["follower"]).pipe(Effect.map((session) => ({
+  const localTarget = role(["source", "follower"]).pipe(Effect.map((session) => ({
     folder: session.folderPath, scope: "local" as const, statePath: join(session.folderPath, "state.sqlite"),
   })));
   const localItems = () => localTarget.pipe(
@@ -87,7 +87,7 @@ export const synchronizationRoutes = Effect.gen(function*() {
   const changeOverlay = (action: "set" | "remove", item: string) => {
     // The command service expects the same boundary validation as the CLI parser.
     const parsed = parseOverlay(item);
-    return follower(parsed.kind === "invalid"
+    return both(parsed.kind === "invalid"
       ? Effect.fail(invalid(parsed.reason))
       : commands.overlays({ change: { action, item } }));
   };
@@ -154,7 +154,7 @@ export const synchronizationRoutes = Effect.gen(function*() {
     mutationRoute("PUT", "/api/schedule", GuiScheduleRequest, (input) => follower(commands.setSchedule(input))),
     mutationRoute("DELETE", "/api/schedule", EmptyBody, () => follower(commands.removeSchedule())),
     queryRoute("/api/harnesses", () => both(commands.harnesses({}))),
-    mutationRoute("PUT", "/api/harnesses", GuiHarnessRequest, (change) => follower(commands.harnesses({ change }))),
+    mutationRoute("PUT", "/api/harnesses", GuiHarnessRequest, (change) => both(commands.harnesses({ change }))),
     queryRoute("/api/local/overlays", () => localTarget.pipe(
       Effect.flatMap((target) => Effect.gen(function*() {
         const root = yield* Effect.tryPromise({

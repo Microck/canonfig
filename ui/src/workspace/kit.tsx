@@ -3,10 +3,11 @@ import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useRef
 import { toast } from "sonner";
 import { AnimatePresence, motion, usePresence, useReducedMotion, type Transition } from "motion/react";
 import { Skeleton } from "skullet/react";
-import { Check, Circuitry, Copy, FileCode, FileText, Folder, Key, ListBullets, Plug, Question, Robot, SlidersHorizontal, Sparkle, WarningCircle, Wrench, X, type IconComponent } from "@/components/icons";
+import { Check, Circuitry, Copy, FileCode, FileText, Folder, Key, ListBullets, Plug, Plus, Question, Robot, SlidersHorizontal, Sparkle, WarningCircle, Wrench, X, type IconComponent } from "@/components/icons";
 import { cn, SNAP, SNAP_EASING } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Kbd } from "@/components/ui/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -930,6 +931,85 @@ export function SettingRow({
       </div>
       {children && <div className="flex min-w-0 max-w-[60%] items-center gap-2 [overflow-wrap:anywhere]">{children}</div>}
     </div>
+  );
+}
+
+/**
+ * A row of `settingsGroup` that lists named entries as chips: a label on the left, the chips and an
+ * in-place add on the right. Used where a list of short names (overlays, kept skills, key claims)
+ * would otherwise need a paragraph, a list and a form each.
+ */
+export function ChipRow({ label, children }: { label: ReactNode; children: ReactNode }) {
+  return (
+    <div className="grid min-h-[48px] items-center gap-x-4 gap-y-2 px-[16px] py-2 sm:grid-cols-[150px_minmax(0,1fr)]">
+      <span className="text-sm">{label}</span>
+      <span className="flex min-w-0 flex-wrap items-center gap-1.5">{children}</span>
+    </div>
+  );
+}
+
+/** One removable entry: status mark, mono name, remove icon. `note` explains its state on hover. */
+export function Chip({ name, label, kind, note, removeLabel, busy, onRemove }: {
+  name: string;
+  label?: ReactNode;
+  kind: StatusKind;
+  note: string;
+  removeLabel: string;
+  busy?: boolean;
+  onRemove: () => void;
+}) {
+  return (
+    <span title={note} className="inline-flex h-7 max-w-full items-center gap-1.5 rounded-md border border-border/80 bg-background/40 pr-0.5 pl-2 text-sm">
+      <StatusMark kind={kind} />
+      <span className="truncate font-mono">{label ?? name}</span>
+      <button type="button" aria-label={removeLabel} disabled={busy} onClick={onRemove}
+        className="grid size-6 shrink-0 place-items-center rounded text-faint hover:bg-raised hover:text-foreground disabled:opacity-50">
+        <X className="size-3" />
+      </button>
+    </span>
+  );
+}
+
+/**
+ * The add control at the end of a chip list: an "Add" button that opens a small field in place.
+ * `validate` runs as the value changes (an error disables submit); `onAdd` may still refuse with a
+ * message, which stays under the field. Escape, or leaving the field empty, closes it.
+ */
+export function ChipAdd({ label, placeholder, busy, validate, onAdd }: {
+  label: string;
+  placeholder: string;
+  busy?: boolean;
+  validate?: (value: string) => string | null;
+  onAdd: (value: string) => string | null | Promise<string | null>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState("");
+  const [refused, setRefused] = useState<string | null>(null);
+  const trimmed = value.trim();
+  const error = (trimmed && validate?.(trimmed)) || refused;
+  if (!open) {
+    return (
+      <button type="button" aria-label={label} disabled={busy} onClick={() => setOpen(true)}
+        className="inline-flex h-7 items-center gap-1 rounded-md border border-dashed border-border px-2 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50">
+        <Plus className="size-3" />Add
+      </button>
+    );
+  }
+  return (
+    <form className="inline-flex flex-wrap items-center gap-1.5" onSubmit={async (event) => {
+      event.preventDefault();
+      if (!trimmed || error || busy) return;
+      const problem = await onAdd(trimmed);
+      setRefused(problem);
+      if (!problem) { setValue(""); setOpen(false); }
+    }}>
+      <Input autoFocus aria-label={label} aria-invalid={!!error} className="h-7 w-[170px] font-mono text-sm" value={value} placeholder={placeholder} spellCheck={false}
+        onChange={(event) => { setValue(event.target.value); setRefused(null); }}
+        onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); }}
+        onBlur={() => { if (!value) setOpen(false); }} />
+      <Button type="submit" size="xs" variant="outline" disabled={busy || !trimmed || !!error}>Add</Button>
+      {error && <span role="alert" className="w-full text-xs text-bad">{error}</span>}
+    </form>
   );
 }
 

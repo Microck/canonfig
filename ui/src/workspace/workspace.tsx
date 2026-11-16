@@ -15,8 +15,7 @@ import { ProfileView } from "./profile";
 import { PublishDialog, RevisionsView, SecretsView, SourceOverview } from "./source";
 import { AgentPolicyView, DoctorView, InstallersView, ServiceView, SetupView, VersionView } from "./settings";
 import { BackupsView } from "./harnesses";
-// A session is one role, so the Follower screens load only when a Follower workspace opens. All of them share
-// one chunk: after the first Follower page suspends once, page changes inside the role never suspend.
+// Local settings is shared by both roles. Load this chunk only when one of its screens opens.
 const follower = () => import("./follower");
 const FollowerOverview = lazy(() => follower().then((m) => ({ default: m.FollowerOverview })));
 const FollowerSecretsView = lazy(() => follower().then((m) => ({ default: m.FollowerSecretsView })));
@@ -38,6 +37,7 @@ const SOURCE_SCREENS: Partial<Record<View, React.ComponentType>> = {
   machines: MachinesView,
   revisions: RevisionsView,
   sync: SyncView,
+  local: LocalView,
   backups: BackupsView,
   secrets: SecretsView,
   service: ServiceView,

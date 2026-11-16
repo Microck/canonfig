@@ -1,8 +1,6 @@
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { SectionLabel, SettingRow, settingsGroup } from "./kit";
+import { Chip, ChipAdd, ChipRow } from "./kit";
 import { record, strings } from "./live/follower";
 import type { FollowerLive } from "./follower-types";
 
@@ -11,14 +9,17 @@ export interface PreservationPreferences {
   preserveMcp: boolean;
 }
 
-/** A save always carries the digest of the snapshot displayed here, never a freshly fetched digest. */
+/**
+ * The kept-skills and native MCP rows of Local settings' "Kept on this machine" group; the caller
+ * supplies the group. A save always carries the digest of the snapshot displayed here, never a
+ * freshly fetched digest.
+ */
 export function LocalPreservationControls({ live, sharedSkills, preferences, saveDemo }: {
   live?: Pick<FollowerLive, "local" | "action" | "savePreferences">;
   sharedSkills: boolean;
   preferences: PreservationPreferences;
   saveDemo: (next: PreservationPreferences) => void;
 }) {
-  const [skill, setSkill] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const snapshot = live?.local;
@@ -28,8 +29,8 @@ export function LocalPreservationControls({ live, sharedSkills, preferences, sav
   } : preferences;
   const allowed = live ? strings(record(snapshot?.canonicalConfig.local).appendLocal).includes("skills") : sharedSkills;
   const busy = saving || live?.action.loading || (live !== undefined && !snapshot);
-  const valid = /^[a-z0-9][a-z0-9-]*$/u.test(skill);
-  const save = async (key: "excludeSkills" | "preserveMcp", next: PreservationPreferences) => {
+  /** Saves one preference; false when the server refused it (the error alert below then says why). */
+  const save = async (key: "excludeSkills" | "preserveMcp", next: PreservationPreferences): Promise<boolean> => {
     setSaving(true);
     setError(null);
     try {
@@ -38,40 +39,27 @@ export function LocalPreservationControls({ live, sharedSkills, preferences, sav
           expectedDigest: snapshot?.items.find((item) => item.path === "local.jsonc")?.digest ?? null,
           edits: [{ path: [key], value: next[key] }],
         });
-        if (!saved) { setError("Preferences were not saved. Reload and review the current settings before trying again."); return; }
+        if (!saved) { setError("Preferences were not saved. Reload and review the current settings before trying again."); return false; }
       } else saveDemo(next);
-      setSkill("");
+      return true;
     } finally { setSaving(false); }
   };
-  return <div className="px-4 pt-8 sm:px-[18px]">
-    <SectionLabel>Kept on this machine</SectionLabel>
-    <p className="pb-2 text-sm text-pretty text-muted-foreground">These choices stay in ~/.canonfig/local/local.jsonc and never change the Source.</p>
-    <div className={settingsGroup}>
-      <SettingRow title="Keep native MCP on this machine" description={current.preserveMcp
-        ? "Preserved, not disabled: Canonfig leaves native MCP maps alone. Server startup, authentication and connectivity are not verified."
-        : "Native MCP follows the Source. Turning preservation off does not adopt conflicting local configuration."}>
-        <Switch aria-label="Keep native MCP on this machine" checked={current.preserveMcp} disabled={busy} onCheckedChange={(preserveMcp) => { void save("preserveMcp", { ...current, preserveMcp }); }} />
-      </SettingRow>
-      <div className="px-4 py-3">
-        <p className="text-sm font-medium">Kept-local skills</p>
-        <p className="pb-2 text-sm text-muted-foreground">Named skills stay outside projection in every skill directory. Removing a name does not adopt or overwrite its local copy.</p>
-        {!allowed && <p role="note" className="pb-2 text-sm">The Source must include skills in local.appendLocal before you can change this list.</p>}
-        {current.excludeSkills.length === 0 && <p className="pb-2 text-sm text-muted-foreground">No skills kept local by name.</p>}
-        <ul>{current.excludeSkills.map((name) => <li key={name} className="flex items-center justify-between gap-3 py-1">
-          <span className="font-mono text-sm">{name}</span>
-          <Button variant="outline" size="xs" disabled={busy || !allowed} aria-label={`Remove kept-local skill ${name}`} onClick={() => { void save("excludeSkills", { ...current, excludeSkills: current.excludeSkills.filter((entry) => entry !== name) }); }}>Remove</Button>
-        </li>)}</ul>
-        <form className="flex flex-wrap gap-2 pt-2" onSubmit={(event) => {
-          event.preventDefault();
-          if (!valid || !allowed || busy) return;
-          void save("excludeSkills", { ...current, excludeSkills: [...new Set([...current.excludeSkills, skill])].sort() });
-        }}>
-          <Input aria-label="Skill name to keep local" value={skill} disabled={busy || !allowed} placeholder="my-skill" onChange={(event) => setSkill(event.target.value)} />
-          <Button type="submit" variant="outline" size="sm" disabled={busy || !allowed || !valid || current.excludeSkills.includes(skill)}>Keep skill local</Button>
-        </form>
-        {skill && !valid && <p role="alert" className="pt-2 text-sm">Use lowercase letters, digits and hyphens, starting with a letter or digit.</p>}
-        {error && <p role="alert" className="pt-2 text-sm">{error}</p>}
-      </div>
-    </div>
-  </div>;
+  return <>
+    <ChipRow label="Kept skills">
+      {current.excludeSkills.map((name) => <Chip key={name} name={name} kind="ok" note="Canonfig leaves this skill alone in every skill folder. Removing it here doesn't adopt or overwrite your copy."
+        removeLabel={`Remove kept-local skill ${name}`} busy={busy || !allowed} onRemove={() => { void save("excludeSkills", { ...current, excludeSkills: current.excludeSkills.filter((entry) => entry !== name) }); }} />)}
+      {allowed
+        ? <ChipAdd label="Skill name to keep local" placeholder="my-skill" busy={busy}
+          validate={(name) => /^[a-z0-9][a-z0-9-]*$/u.test(name) ? current.excludeSkills.includes(name) ? "Already kept." : null : "Use lowercase letters, digits and hyphens, starting with a letter or digit."}
+          // A refused save keeps the typed name in the field; the group's alert says why.
+          onAdd={async (name) => ((await save("excludeSkills", { ...current, excludeSkills: [...new Set([...current.excludeSkills, name])].sort() })) ? null : "Not saved.")} />
+        : <span className="text-sm text-faint">The Source must share skills folders (local.appendLocal) first.</span>}
+    </ChipRow>
+    <ChipRow label="Native MCP">
+      <Switch aria-label="Keep native MCP on this machine" checked={current.preserveMcp} disabled={busy} onCheckedChange={(preserveMcp) => { void save("preserveMcp", { ...current, preserveMcp }); }} />
+      {/* Preserved is not disabled or verified: say so while it is on. */}
+      <span className="text-sm text-muted-foreground">{current.preserveMcp ? "Kept as is. Canonfig doesn't check that the servers start." : "Follows the Source"}</span>
+    </ChipRow>
+    {error && <p role="alert" className="px-[16px] py-2 text-sm text-bad">{error}</p>}
+  </>;
 }
