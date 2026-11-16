@@ -44,6 +44,12 @@ function Probe() {
     <p data-testid="can-apply">{String(ws.followerLive?.canApply)}</p>
     <p data-testid="validation">{String(ws.profileLive?.validation?.valid)}</p>
     <button onClick={() => { if (ws.admin.agent.data) void ws.admin.agent.save({ ...ws.admin.agent.data, mode: "agent-propose" }); }}>Save agent</button>
+    <button onClick={() => {
+      const saved = ws.admin.agent.data;
+      if (saved?.harness) void ws.admin.agent.save({ mode: "agent-apply", harness: {
+        ...saved.harness, executables: ["env"], executableAuthorizations: [{ executable: "env", behavior: "leaf" }], capabilities: [],
+      } });
+    }}>Save apply agent</button>
     <p data-testid="policy-save">{JSON.stringify(ws.admin.agent.saveState)}</p>
     <p data-testid="policy">{ws.admin.agent.data?.mode}</p>
   </div>;
@@ -519,7 +525,7 @@ it("a secret submission freezes its draft and cannot close as if it cancelled th
 it("a failed harness save retains the committed policy as an explicit partial success", async () => {
   const responses: Record<string, unknown> = {
     "/api/status": { machineRole: { role: "follower" }, lifecycle: {}, tunnel: null },
-    "/api/agent/policy": "deterministic-only",
+    "/api/agent/policy": "agent-apply",
     "/api/agent/harness": { configured: false },
   };
   const app = await fixture("/follower/settings/agent", responses, (path, method, _body, outgoing) => {
@@ -562,6 +568,24 @@ it("reviews and saves complete harness bounds while deterministic-only stays sel
     assert.equal(app.container.querySelector<HTMLTextAreaElement>("#ap-bindings")?.value, "API_TOKEN=api-token");
     assert.ok(app.container.textContent?.includes("PLAIN_NAME"));
     assert.ok(!app.container.textContent?.includes("not-rendered-environment-value"));
+    const bindingInput = app.container.querySelector<HTMLTextAreaElement>("#ap-bindings");
+    assert.ok(bindingInput);
+    const advanced = bindingInput.closest("details");
+    assert.ok(advanced);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(bindingInput, "invalid binding");
+      bindingInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+      advanced.open = false;
+    });
+    await click("Review settings");
+    assert.equal(advanced.open, true);
+    assert.equal(document.activeElement, bindingInput);
+    assert.equal(bindingInput.getAttribute("aria-invalid"), "true");
+    assert.equal(app.mutations.length, 0);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(bindingInput, "API_TOKEN=api-token");
+      bindingInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+    });
     const model = app.container.querySelector<HTMLInputElement>("#ap-model");
     assert.ok(model);
     await act(async () => {
@@ -593,3 +617,40 @@ it("reviews and saves complete harness bounds while deterministic-only stays sel
     assert.equal(buttons.some((button) => button.textContent === "Discard"), false);
   } finally { await app.close(); }
 });
+
+for (const initialPolicy of ["deterministic-only", "agent-propose"]) {
+  for (const failure of ["harness", "policy", null]) {
+    it(`saves bounds before enabling agent-apply from ${initialPolicy} when ${failure ?? "nothing"} fails`, async () => {
+      const harness = { kind: "codex", executable: "codex", maximumInputBytes: 4096,
+        allowedPaths: [], allowedExecutables: ["printf"], allowedOrigins: [], allowedCapabilities: ["reboot"] };
+      const app = await fixture("/follower/settings/agent", {
+        "/api/status": { machineRole: { role: "follower" }, lifecycle: {}, tunnel: null },
+        "/api/agent/policy": initialPolicy,
+        "/api/agent/harness": { configured: true, value: harness },
+      }, (path, method, body, outgoing) => {
+        if (method !== "PUT") return false;
+        if (path === `/api/agent/${failure}`) {
+          outgoing.statusCode = 500;
+          outgoing.end(JSON.stringify({ category: "internal", exitCode: 1, message: "Save refused" }));
+        } else outgoing.end(JSON.stringify(path === "/api/agent/policy" ? "agent-apply" : body));
+        return true;
+      });
+      try {
+        await until(() => !!app.container.querySelector("#ap-origins"), "Harness did not load");
+        await click("Save apply agent");
+        const terminal = failure === "harness" ? "HarnessFirstFailed" : failure === "policy" ? "PolicyLastFailed" : "Saved";
+        await until(() => {
+          const state = app.container.querySelector('[data-testid="policy-save"]')?.textContent;
+          return !!state && JSON.parse(state).kind === terminal;
+        }, "Save did not settle");
+        assert.deepEqual(app.mutations.map(({ path }) => path), failure === "harness"
+          ? ["/api/agent/harness"] : ["/api/agent/harness", "/api/agent/policy"]);
+        assert.equal(app.container.querySelector('[data-testid="policy"]')?.textContent, failure ? initialPolicy : "agent-apply");
+        assert.deepEqual(app.mutations[0]?.body, { ...harness, allowedExecutables: ["env"],
+          executableAuthorizations: [{ executable: "env", behavior: "leaf" }], secretBindings: [], allowedCapabilities: [] });
+        assert.ok(!app.container.textContent?.includes("Policy saved. Harness has not been saved."));
+        if (failure === "policy") assert.ok(app.container.textContent?.includes("Harness saved. Policy has not been saved."));
+      } finally { await app.close(); }
+    });
+  }
+}

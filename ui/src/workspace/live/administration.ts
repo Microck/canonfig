@@ -59,12 +59,12 @@ function useAdministrationResource<T>(load: ((signal: AbortSignal) => Promise<T>
 }
 
 type PolicyEvent =
-  | { kind: "Save"; draft: SavedPolicy }
+  | { kind: "Save"; draft: SavedPolicy; harnessFirst: boolean }
   | { kind: "PolicyCommitted"; harness: HarnessDraft | null }
   | { kind: "HarnessCommitted" }
   | { kind: "Failed"; error: GuiRequestError };
 function policyTransition(state: PolicySave, event: PolicyEvent): PolicySave {
-  if (event.kind === "Save" && state.kind !== "SavingPolicy" && state.kind !== "SavingHarness") return { kind: "SavingPolicy", submitted: event.draft };
+  if (event.kind === "Save" && !state.kind.startsWith("Saving")) return { kind: event.harnessFirst ? "SavingHarnessFirst" : "SavingPolicy", submitted: event.draft };
   if (state.kind === "SavingPolicy") {
     if (event.kind === "PolicyCommitted") return event.harness ? { kind: "SavingHarness", committedPolicy: state.submitted.mode, draftHarness: event.harness } : { kind: "Saved", policy: state.submitted.mode, harness: null };
     if (event.kind === "Failed") return { kind: "PolicyFailed", draft: state.submitted, error: event.error };
@@ -72,6 +72,14 @@ function policyTransition(state: PolicySave, event: PolicyEvent): PolicySave {
   if (state.kind === "SavingHarness") {
     if (event.kind === "HarnessCommitted") return { kind: "Saved", policy: state.committedPolicy, harness: state.draftHarness };
     if (event.kind === "Failed") return { kind: "HarnessFailed", committedPolicy: state.committedPolicy, draftHarness: state.draftHarness, error: event.error };
+  }
+  if (state.kind === "SavingHarnessFirst") {
+    if (event.kind === "HarnessCommitted") return { kind: "SavingPolicyLast", submitted: state.submitted };
+    if (event.kind === "Failed") return { kind: "HarnessFirstFailed", draft: state.submitted, error: event.error };
+  }
+  if (state.kind === "SavingPolicyLast") {
+    if (event.kind === "PolicyCommitted") return { kind: "Saved", policy: state.submitted.mode, harness: state.submitted.harness };
+    if (event.kind === "Failed") return { kind: "PolicyLastFailed", draft: state.submitted, error: event.error };
   }
   throw new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: `Cannot ${event.kind.toLowerCase()} the agent policy while it is ${state.kind}.` });
 }
@@ -99,6 +107,7 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
   const saveStateRef = useRef(saveState);
   const policyEvent = (event: PolicyEvent) => { const next = policyTransition(saveStateRef.current, event); saveStateRef.current = next; setSaveState(next); };
   const savedMessage = saveState.kind === "SavingHarness" || saveState.kind === "HarnessFailed" ? "Policy saved. Harness has not been saved."
+    : saveState.kind === "SavingPolicyLast" || saveState.kind === "PolicyLastFailed" ? "Harness saved. Policy has not been saved."
     : saveState.kind === "Saved" ? saveState.harness ? "Policy and harness saved." : "Policy saved." : "";
 
   const changeService = (action: "install" | "remove", hostname?: "127.0.0.1" | "::1" | "tailnet", port?: number) => {
@@ -135,24 +144,27 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
     },
   };
   const savePolicy = async (next: SavedPolicy) => {
-    if (policy.busy || harness.busy || saveStateRef.current.kind === "SavingPolicy" || saveStateRef.current.kind === "SavingHarness") {
+    if (policy.busy || harness.busy || saveStateRef.current.kind.startsWith("Saving")) {
       policy.setError(new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: "An agent policy save is already running." }));
       return false;
     }
-    policyEvent({ kind: "Save", draft: next });
     const draftHarness = next.harness;
-    const policySaved = await policy.run(async (signal) => {
+    const policyRank = { "deterministic-only": 0, "agent-propose": 1, "agent-apply": 2 };
+    // Enabling more execution must never expose the previously saved, possibly broader bounds.
+    const harnessFirst = draftHarness !== null && policyRank[next.mode] > policyRank[policy.data ?? "deterministic-only"];
+    policyEvent({ kind: "Save", draft: next, harnessFirst });
+    const savePolicyStep = () => policy.run(async (signal) => {
       try {
         const saved = await backend.request("/api/agent/policy", GuiAgentPolicy, signal, { method: "PUT", body: next.mode });
         if (!signal.aborted) { policy.setData(saved); policyEvent({ kind: "PolicyCommitted", harness: draftHarness }); }
       } catch (cause) { policyEvent({ kind: "Failed", error: requestError(cause) }); throw cause; }
     });
-    if (!policySaved || !draftHarness) return policySaved;
     // Preserve undisclosed credential-bearing collections unless the person replaces them.
     const { model: _model, arguments: _arguments, ...bounds } = savedHarness ?? {
       model: undefined, arguments: undefined, allowedExecutables: [], allowedOrigins: [], allowedCapabilities: [],
     };
-    return harness.run(async (signal) => {
+    const saveHarnessStep = () => harness.run(async (signal) => {
+      if (!draftHarness) return;
       try {
         const body = {
           ...bounds, kind: draftHarness.kind, executable: draftHarness.executable || draftHarness.kind,
@@ -168,6 +180,12 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
         if (!signal.aborted) { harness.setData({ configured: true, value: updatedHarness }); policyEvent({ kind: "HarnessCommitted" }); }
       } catch (cause) { policyEvent({ kind: "Failed", error: requestError(cause) }); throw cause; }
     });
+    if (harnessFirst) {
+      if (!await saveHarnessStep()) return false;
+      return savePolicyStep();
+    }
+    if (!await savePolicyStep()) return false;
+    return draftHarness ? saveHarnessStep() : true;
   };
   const runDoctor = () => { void doctor.run(async (signal) => {
     const report = await backend.request("/api/doctor", GuiDoctorReport, signal, { method: "POST", body: {} });
@@ -202,7 +220,7 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
     },
     agent: {
       harnessConfigured: harness.data?.configured ?? false,
-      data: savedPolicy, loading: policy.loading, busy: policy.busy || harness.busy || saveState.kind === "SavingPolicy" || saveState.kind === "SavingHarness", error: policy.error,
+      data: savedPolicy, loading: policy.loading, busy: policy.busy || harness.busy || saveState.kind.startsWith("Saving"), error: policy.error,
       harnessLoading: harness.loading, harnessError: harness.error, savedMessage, saveState, save: savePolicy,
       reload: () => { policy.reload(); harness.reload(); }, harnessLabels: { codex: "codex", claude: "claude" },
     },

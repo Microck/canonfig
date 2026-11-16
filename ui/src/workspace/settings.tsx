@@ -324,7 +324,10 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
     ];
     const firstInvalid = checks.find(([bad]) => bad);
     if (firstInvalid) {
-      document.getElementById(firstInvalid[1])?.focus();
+      const field = document.getElementById(firstInvalid[1]);
+      const section = field?.closest("details");
+      if (section) section.open = true;
+      field?.focus();
       return;
     }
     const next: SavedPolicy = { mode, harness: harness === null ? null : {
@@ -355,7 +358,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
       <Body reloading={agent.loading || agent.harnessLoading}>
         <Column>
           {agent.error && <ErrorNotice error={agent.error} />}
-          {agent.harnessError && <ErrorNotice title={agent.saveState.kind === "HarnessFailed" ? "Harness not saved" : "Harness unavailable"} error={agent.harnessError} />}
+          {agent.harnessError && <ErrorNotice title={agent.saveState.kind === "HarnessFailed" || agent.saveState.kind === "HarnessFirstFailed" ? "Harness not saved" : "Harness unavailable"} error={agent.harnessError} />}
           {agent.savedMessage && <p role="status" className="mb-4 text-sm">{agent.savedMessage}</p>}
           <RadioGroup value={mode ?? ""} onValueChange={(value) => { if (value === "deterministic-only" || value === "agent-propose" || value === "agent-apply") setMode(value); }} disabled={agent.busy} aria-label="Agent policy" className={settingsGroup} data-tour="agent-mode">
             {MODES.map((m) => (

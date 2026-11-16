@@ -45,9 +45,13 @@ export type PolicySave =
   | { kind: "Idle" }
   | { kind: "SavingPolicy"; submitted: SavedPolicy }
   | { kind: "SavingHarness"; committedPolicy: SavedPolicy["mode"]; draftHarness: HarnessDraft }
+  | { kind: "SavingHarnessFirst"; submitted: SavedPolicy }
+  | { kind: "SavingPolicyLast"; submitted: SavedPolicy }
   | { kind: "Saved"; policy: SavedPolicy["mode"]; harness: HarnessDraft | null }
   | { kind: "PolicyFailed"; draft: SavedPolicy; error: GuiRequestError }
-  | { kind: "HarnessFailed"; committedPolicy: SavedPolicy["mode"]; draftHarness: HarnessDraft; error: GuiRequestError };
+  | { kind: "HarnessFailed"; committedPolicy: SavedPolicy["mode"]; draftHarness: HarnessDraft; error: GuiRequestError }
+  | { kind: "HarnessFirstFailed"; draft: SavedPolicy; error: GuiRequestError }
+  | { kind: "PolicyLastFailed"; draft: SavedPolicy; error: GuiRequestError };
 
 export interface DoctorCheck {
   check: string;

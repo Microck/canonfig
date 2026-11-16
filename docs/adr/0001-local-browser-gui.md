@@ -67,7 +67,7 @@ The live Follower keeps command submission, ticket observation, lost observation
 
 Profile editors own their baseline, draft mode and submitted revision. A save refresh accepts only the submitted generation as clean, preserving any newer edits against the refreshed digests. Local-item and secret forms freeze their submitted drafts until the write settles. Local file reads belong to file identities and upload generations, so removing a file, changing its mode or choosing a newer upload cannot accept an older read.
 
-Publication review belongs to the observed folder snapshot and is invalidated by a write or changed observation. Discovery distinguishes scanning, results and failure, with an explicit retry. Agent policy save records policy commitment separately from harness commitment, retaining the partial-success state if the second write fails. Built-in harness drafts carry a model; custom drafts carry arguments.
+Publication review belongs to the observed folder snapshot and is invalidated by a write or changed observation. Discovery distinguishes scanning, results and failure, with an explicit retry. Agent policy save records policy commitment separately from harness commitment, retaining the partial-success state if the second write fails. Increasing execution permission saves the reviewed harness bounds before the policy; reducing permission saves the policy first. Built-in harness drafts carry a model; custom drafts carry arguments.
 
 Invitation dialogs retain immutable submitted values, including the selected follower, after creation even if inventory refresh removes that follower. Revocation cannot be dismissed while its server request is running; reopening a failed confirmation starts without the earlier error.
 
