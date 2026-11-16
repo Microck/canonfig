@@ -13,7 +13,7 @@ import type { NpmArtifactRequest } from "../../src/synchronization/npm-artifact.
 import { observeFollowerResource } from "../../src/synchronization/observation.ts";
 import { ActionId, ResourceId, RunId } from "../../src/domain/brand.ts";
 import { defaultSynchronizationExecutionLimits } from "../../src/synchronization/executor.ts";
-import { prepareResourceAction, type ResourceExecutionContext } from "../../src/synchronization/resource-executors.ts";
+import { prepareResourceAction, verifyResource, type ResourceExecutionContext } from "../../src/synchronization/resource-executors.ts";
 
 const integrity = (bytes: Uint8Array) => `sha256-${createHash("sha256").update(bytes).digest("base64")}`;
 const recipeFor = (bytes: Uint8Array): ToolRecipeRef => ({
@@ -91,6 +91,10 @@ describe("native binary artifacts", () => {
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
     const bytes = readFileSync("/bin/true");
     const recipe = recipeFor(bytes);
+    const shadowDirectory = join(home, ".npm-global", "bin");
+    mkdirSync(shadowDirectory, { recursive: true });
+    writeFileSync(join(shadowDirectory, recipe.package), "#!/bin/sh\nexit 73\n", { mode: 0o755 });
+    const layer = linuxMachineStateLayer({ environment: [{ name: "HOME", value: home }, { name: "PATH", value: shadowDirectory }] });
     try {
       const checked = await Effect.runPromise(Effect.gen(function* () {
         const id = Schema.decodeUnknownSync(ResourceId)("binary-tool");
@@ -101,7 +105,7 @@ describe("native binary artifacts", () => {
             detail: { ...recipe, method: "binary", kind: "install-tool", toolId: recipe.package },
           },
           resource: { id, kind: "tool", policy: "ensure", target: recipe.package, dependsOn: [], blobs: [] },
-          desired: { kind: "tool", toolId: recipe.package, recipes: [recipe], loginRequired: false },
+          desired: { kind: "tool", toolId: recipe.package, recipes: [recipe, { method: "npm", platform: "linux", package: recipe.package, version: "0.9.0" }], loginRequired: false },
           verification: { method: "command", command: [recipe.package] },
           artifacts: new Map(), limits: defaultSynchronizationExecutionLimits,
           binaryArtifactRequest: transport(bytes),
@@ -116,13 +120,21 @@ describe("native binary artifacts", () => {
         const observed = yield* observeFollowerResource({ resource: { kind: "tool", target: recipe.package, policy: "ensure" } },
           { kind: "tool", toolId: "fixture-true", recipes: [recipe], loginRequired: false },
           { method: "command", command: [recipe.package] });
-        return { installed, repeated, discovered, result, observed };
-      }).pipe(Effect.provide(linuxMachineStateLayer({ environment: [{ name: "HOME", value: home }] }))));
+        const commandVerification = yield* verifyResource(context);
+        const presenceContext: ResourceExecutionContext = { ...context, verification: { method: "executable-present", executable: recipe.package } };
+        const presenceVerification = yield* verifyResource(presenceContext);
+        return { installed, repeated, discovered, result, observed, commandVerification, presenceVerification, presenceContext };
+      }).pipe(Effect.provide(layer)));
       expect(checked.result.exitCode).toBe(0);
       expect(checked.discovered.path).toEqual(checked.installed.path);
       expect(checked.repeated.digest).toBe(checked.installed.digest);
       expect(checked.observed).toMatchObject({ state: "present", installedVersion: "1.0.0", digest: checked.installed.digest });
       expect(readFileSync(checked.installed.path.absolute)).toEqual(bytes);
+      expect(checked.commandVerification.passed).toBe(true);
+      expect(checked.presenceVerification.passed).toBe(true);
+      rmSync(checked.installed.path.absolute);
+      const missingBinary = await Effect.runPromise(verifyResource(checked.presenceContext).pipe(Effect.provide(layer)));
+      expect(missingBinary.passed).toBe(false);
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 

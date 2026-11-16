@@ -73,10 +73,10 @@ import {
   type NpmArtifactTransport,
   type NpmArtifactRequest,
 } from "./npm-artifact.ts";
-import { relativePathAncestors } from "./resource-plans.ts";
+import { relativePathAncestors, selectToolRecipe } from "./resource-plans.ts";
 import { resolveInstallerInvocation, toolInstallMethods } from "./installer-bindings.ts";
 import { redactText } from "../cli/redaction.ts";
-import { installBinaryArtifact } from "./binary-artifact.ts";
+import { binaryDestination, installBinaryArtifact } from "./binary-artifact.ts";
 
 const isUnboundedNonNpmPackage = (value: string): boolean =>
   /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
@@ -2547,6 +2547,21 @@ const verifierInstallMethods = (context: ResourceExecutionContext) =>
     ? toolInstallMethods(context.desired.recipes)
     : Effect.succeed([]);
 
+/** A selected binary's own name must resolve to the artifact, never a PATH shadow. */
+const binaryVerifierPath = (context: ResourceExecutionContext, name: string) => Effect.gen(function*() {
+  if (context.desired.kind !== "tool" || name.includes("/") || name.includes("\\")) return undefined;
+  const machine = yield* MachineState;
+  const platform = (yield* machine.userDirectories()).home.platform;
+  const recipe = selectToolRecipe(context.desired, platform);
+  if (recipe?.method !== "binary") return undefined;
+  const normalizedName = platform === "windows" ? name.toLowerCase().replace(/\.exe$/u, "") : name;
+  const packageName = platform === "windows" ? recipe.package.toLowerCase().replace(/\.exe$/u, "") : recipe.package;
+  if (normalizedName !== packageName) return undefined;
+  return (yield* binaryDestination(recipe).pipe(
+    Effect.mapError((error) => new InvalidExecutionPlanError({ message: error.message })),
+  )).path;
+});
+
 const missingVerifierReason = (error: ExecutableNotFoundError): string =>
   `verification executable ${error.executable} was not found (searched: ${
     error.searched.join(", ") || "no directories"
@@ -2647,8 +2662,9 @@ const verifyCommand = (
     const method = `${proves === "client-load" ? "client-load" : "command"}:${name}`;
     const bareName = !isAbsolute(name) && !win32.isAbsolute(name)
       && !name.includes("/") && !name.includes("\\");
-    const installMethods = bareName ? yield* verifierInstallMethods(context) : [];
-    const executable = isAbsolute(name) || win32.isAbsolute(name)
+    const binaryPath = yield* binaryVerifierPath(context, name);
+    const installMethods = binaryPath === undefined && bareName ? yield* verifierInstallMethods(context) : [];
+    const executable = binaryPath !== undefined ? binaryPath : isAbsolute(name) || win32.isAbsolute(name)
       ? yield* machine.normalizePath({ path: name })
       : yield* machine.findExecutable({
         name,
@@ -2826,10 +2842,12 @@ const verifyMcpQualification = (
 const verifyExecutable = (
   context: ResourceExecutionContext,
   executable: string,
-): Effect.Effect<ResourceVerification, MachineStateError, MachineState> =>
+): Effect.Effect<ResourceVerification, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const method = `executable:${executable}`;
+    const binaryPath = yield* binaryVerifierPath(context, executable);
+    if (binaryPath !== undefined) return yield* verifyExecutable(context, binaryPath.absolute);
     // An explicit path must resolve to the executable at that exact location.
     // npm's POSIX global bin entries are symlinks to scripts in its package
     // tree; inspectPath and permissions intentionally use lstat, so resolve
