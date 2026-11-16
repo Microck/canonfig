@@ -210,6 +210,7 @@ describe("Shield admission and projection", () => {
     expect(execute("Bash", { command: "ls ~/.claude/skills/sample/SKILL.md 2>/dev/null" }).status).toBe(0);
     expect(execute("Bash", { command: "printf bad > ~/.claude/skills/sample/SKILL.md" }).status).toBe(2);
     expect(execute("Bash", { command: "cp ./sample ~/.claude/skills/sample/SKILL.md" }).status).toBe(2);
+    expect(execute("Bash", { command: "D=~/.claude/skills; cp ./sample $D/sample" }).status).toBe(2);
     // Every block left one log line with a home-relative path or the bare installer phrase, never the content.
     const log = readFileSync(shieldLogPath(f.folder), "utf8");
     expect(log).not.toContain("content");

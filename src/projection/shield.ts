@@ -99,7 +99,8 @@ if (shellTool) {
   if (!canonfig) {
     // Paths alone are not writes: agents must still be able to read projected instructions.
     const mutates = /(?:\\b(?:mkdir|touch|cp|mv|rm|install|tee|dd|ln|chmod|chown|truncate|Set-Content|Add-Content|Remove-Item|New-Item)\\b|\\bsed\\s+[^;]*-i|\\b(?:node|python[0-9.]*|perl|ruby)\\s+[^;]*-[ec]|\\b(?:writeFile|write_text|write_bytes|appendFile)\\s*\\()/i.test(command);
-    if (mutates) for (const token of command.split(/[\\s'";|&<>]+/)) if (token && (token.includes("/") || token.includes("\\\\"))) blocked ??= match(token);
+    // A shell assignment (D=~/.claude/skills) tilde-expands its value, so the name is dropped before matching.
+    if (mutates) for (const token of command.split(/[\\s'";|&<>]+/)) if (token && (token.includes("/") || token.includes("\\\\"))) blocked ??= match(token.replace(/^[A-Za-z_][A-Za-z0-9_]*=/, ""));
     for (const redirect of command.matchAll(/>{1,2}\\s*(?:"([^"]+)"|'([^']+)'|([^\\s;&|<>]+))/g)) blocked ??= match(redirect[1] ?? redirect[2] ?? redirect[3]);
     const installer = command.match(/(?:\\bskills\\s+(?:add|install)|\\b(?:claude|codex|gemini|qwen)\\s+(?:mcp\\s+add|plugins?\\s+(?:install|add)|extensions\\s+(?:install|link)))/);
     if (installer) { blocked ??= "installer"; blockedInstaller ||= installer[0].replace(/\\s+/g, " "); }
