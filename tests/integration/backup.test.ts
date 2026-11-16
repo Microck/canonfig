@@ -50,6 +50,8 @@ describe("portable backup recovery", () => {
     for (const command of ["claude", "codex"]) { writeFileSync(join(bin, command), "#!/bin/sh\nexit 0\n"); chmodSync(join(bin, command), 0o755); }
     const machine = fixture(bin);
     writeFileSync(join(machine.folder, "canonfig.jsonc"), '{"version":1,"harnesses":["claude-code","codex"]}\n');
+    mkdirSync(join(machine.folder, "skills", "notes"), { recursive: true });
+    writeFileSync(join(machine.folder, "skills", "notes", "SKILL.md"), "---\nname: notes\ndescription: Notes\n---\n");
     mkdirSync(join(machine.home, ".claude"), { recursive: true });
     mkdirSync(join(machine.home, ".codex"), { recursive: true });
     expect((await machine.sync()).outcome).toMatchObject({ outcome: "Converged" });
@@ -61,6 +63,15 @@ describe("portable backup recovery", () => {
     await machine.run({ action: "restore", name: "daily", target: { kind: "home", path: output, recoverCredentials: false } });
     expect(readFileSync(join(output, ".codex", "AGENTS.md"), "utf8")).toBe(machine.original);
     expect(existsSync(join(output, ".claude"))).toBe(false);
+    // An include glob naming files below a managed skill directory keeps them: the directory record isn't dropped
+    // before its files are checked one by one. (The oversized CLAUDE.md is now drift, which a backup leaves out.)
+    writeFileSync(join(machine.home, ".claude", "CLAUDE.md"), "edited\n");
+    await machine.configure({ folder: false, harnesses: { mode: "managed", targets: ["claude-code"] }, include: ["harnesses/claude-code/.claude/skills/**"] });
+    await machine.run({ action: "run", name: "daily" });
+    const included = join(machine.root, "included");
+    await machine.run({ action: "restore", name: "daily", target: { kind: "home", path: included, recoverCredentials: false } });
+    expect(readFileSync(join(included, ".claude", "skills", "notes", "SKILL.md"), "utf8")).toContain("name: notes");
+    expect(existsSync(join(included, ".claude", "CLAUDE.md"))).toBe(false);
   }, 60_000);
 
   it.each(["fast", "balanced"] as const)("restores %s bytes without copying runtime state and refuses occupied destinations", async compression => {

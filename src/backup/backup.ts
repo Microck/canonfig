@@ -170,11 +170,13 @@ const capture = (context: BackupContext, opened: OpenBackup, scheduled: boolean)
     const sharedSkillRoots = [...new Set(layouts.flatMap(({ layout }) => layout.skillSources.filter(source => source.shared === true).map(source => source.path)))];
     const owners = new Set<string>([...opened.policy.harnesses.targets, ...(sharedSkillRoots.length > 0 ? [sharedSkillsOwner] : [])]);
     // Excluded folder files, and managed files of unselected harnesses or excluded paths, are never read: excluding a
-    // large file is enough to back up the rest, and another harness's files can't fail this backup. Capture applies
-    // the same include/exclude rule again to everything it stages.
-    const filtered = (path: string, harness?: string) => (harness !== undefined && !owners.has(harness))
-      || (opened.policy.include.length > 0 && !opened.policy.include.some(pattern => matchesGlob(path, pattern)))
-      || opened.policy.exclude.some(pattern => matchesGlob(path, pattern));
+    // large file is enough to back up the rest, and another harness's files can't fail this backup. A harness record
+    // names a whole file or directory, so include globs, which name files below it (`.../skills/**`), are left to the
+    // per-file check: capture applies the same include/exclude rule again to everything it stages.
+    const excluded = (path: string) => opened.policy.exclude.some(pattern => matchesGlob(path, pattern));
+    const filtered = (path: string, harness?: string) => harness !== undefined
+      ? !owners.has(harness) || excluded(path)
+      : (opened.policy.include.length > 0 && !opened.policy.include.some(pattern => matchesGlob(path, pattern))) || excluded(path);
     const configuration = opened.policy.folder || opened.policy.harnesses.mode === "managed"
       ? yield* collectArchiveConfiguration({ folder, includeFolder: opened.policy.folder, includeHarnesses: opened.policy.harnesses.mode === "managed", skip: filtered })
       : { folderFiles: [], harnesses: { files: [], skipped: [] } };
