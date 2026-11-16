@@ -934,10 +934,7 @@ function ScheduleForm() {
     <>
       <PageHeader
         crumbs={["Schedule"]}
-        actions={<>
-          {(ws.followerLive?.schedule || saved) && <Button size="sm" variant="destructive" disabled={busy || stopped !== null} onClick={() => setRemoveOpen(true)}>
-            {pending === "remove" ? "Removing…" : "Remove schedule"}
-          </Button>}
+        actions={
           <Button
             data-tour="schedule-save"
             size="sm"
@@ -948,7 +945,7 @@ function ScheduleForm() {
           >
             {pending === "save" ? "Saving…" : "Save schedule"}
           </Button>
-        </>}
+        }
       />
       <Body>
         <Column>
@@ -961,7 +958,6 @@ function ScheduleForm() {
           {ws.followerLive ? <div className={cn("mt-8", settingsGroup)}>
             {/* "Not selected" tells you to run a CLI command; Save schedule above does that. */}
             <SettingRow title="Native schedule" description={text(ws.followerLive.schedule?.state) === "not-selected" || !text(ws.followerLive.schedule?.detail) ? undefined : <CliText>{text(ws.followerLive.schedule?.detail)!}</CliText>}>{text(ws.followerLive.schedule?.state)?.replaceAll("-", " ") ?? "Not reported"}</SettingRow>
-            {text(ws.followerLive.schedule?.timezone) && <SettingRow title="Saved time zone">{text(ws.followerLive.schedule?.timezone)}</SettingRow>}
             <SettingRow title="Machine time zone">{ws.followerLive.schedule?.machineTimezone ?? "Not reported"}</SettingRow>
             {text(ws.followerLive.schedule?.nextRun) && <SettingRow title="Next check">{text(ws.followerLive.schedule?.nextRun)}</SettingRow>}
             {text(ws.followerLive.schedule?.platform) && <SettingRow title="Platform">{text(ws.followerLive.schedule?.platform)}</SettingRow>}
@@ -974,6 +970,9 @@ function ScheduleForm() {
             </SettingRow>
             <SettingRow title="If asleep">Runs when it wakes up</SettingRow>
           </div>}
+          {(ws.followerLive?.schedule || saved) && <Button size="sm" variant="ghost" className="mt-6 text-destructive not-disabled:hover:text-destructive" disabled={busy || stopped !== null} onClick={() => setRemoveOpen(true)}>
+            {pending === "remove" ? "Removing…" : "Remove schedule"}
+          </Button>}
         </Column>
       </Body>
       <ConfirmDialog

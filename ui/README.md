@@ -91,7 +91,7 @@ Self-update status and checks are live. Enable, disable and apply remain termina
 
 The follower's stored Source identity does not include a machine name. Its map card uses "Source" as the title and shows the enrollment endpoint below it. Long revision identifiers, fingerprints and paths wrap inside setting rows and detail panels instead of widening the page. Status pages show named evidence, not raw JSON responses; exact configuration editors still show the authored file contents.
 
-Follower Schedule supports an IANA time zone for daily, weekly and custom calendars, with selectable zone suggestions. A blank zone uses the GUI host's time zone, not the browser's. The page shows the machine zone and the saved effective zone separately. Named zones work on Linux only, matching the CLI; Source-default schedules use the published calendar without a zone override. Confirmed Remove schedule deletes the native job and keeps automation off across future applies. It does not stop a sync already running or change applied files.
+Follower Schedule supports an IANA time zone for daily, weekly and custom calendars, with selectable zone suggestions. A blank zone uses the GUI host's time zone, not the browser's. The saved zone fills the Time zone field; Machine time zone shows its default. Named zones work on Linux only, matching the CLI; Source-default schedules use the published calendar without a zone override. Confirmed Remove schedule at the end of the form deletes the native job and keeps automation off across future applies. It does not stop a sync already running or change applied files.
 
 ## Demo guidance and presentation
 

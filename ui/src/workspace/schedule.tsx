@@ -194,6 +194,7 @@ export function ScheduleFields({
               onBlur={() => setTimeBlurred(true)}
               invalid={!!timeError}
               describedBy={timeError ? `${idPrefix}-time-note` : undefined}
+              className={machineTimezone ? "w-64 max-w-full" : undefined}
             />
           </Field>
         </div>
@@ -202,6 +203,7 @@ export function ScheduleFields({
         <Field label="Time zone" htmlFor={`${idPrefix}-timezone`} error={zoneError}>
           <Input
             id={`${idPrefix}-timezone`}
+            className="w-64 max-w-full"
             list={`${idPrefix}-timezones`}
             value={value.timezone ?? ""}
             placeholder={`Machine local (${machineTimezone})`}
@@ -209,15 +211,11 @@ export function ScheduleFields({
             spellCheck={false}
             onBlur={() => setZoneBlurred(true)}
             aria-invalid={zoneError !== null}
-            aria-describedby={`${idPrefix}-timezone-note`}
             onChange={(event) => onChange({ ...value, timezone: event.target.value || undefined })}
           />
           <datalist id={`${idPrefix}-timezones`}>
             {TIMEZONES.map((zone) => <option key={zone} value={zone} />)}
           </datalist>
-          <p id={`${idPrefix}-timezone-note`} className="text-sm text-muted-foreground">
-            Named time zones require Linux.
-          </p>
         </Field>
       )}
     </div>
@@ -235,7 +233,7 @@ const SLOTS = Array.from({ length: 48 }, (_, i) => `${String(Math.floor(i / 2)).
  * choices with one click. ArrowDown moves into the list, arrows walk it, Enter picks,
  * Escape closes and keeps focus in the field.
  */
-export function TimeField({ id, value, onChange, onBlur, invalid, describedBy }: { id: string; value: string; onChange: (time: string) => void; onBlur?: () => void; invalid: boolean; describedBy?: string }) {
+export function TimeField({ id, value, onChange, onBlur, invalid, describedBy, className }: { id: string; value: string; onChange: (time: string) => void; onBlur?: () => void; invalid: boolean; describedBy?: string; className?: string }) {
   const [open, setOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -278,7 +276,7 @@ export function TimeField({ id, value, onChange, onBlur, invalid, describedBy }:
               setOpen(false);
             }
           }}
-          className="w-24 font-mono text-sm tabular-nums"
+          className={cn("w-24 font-mono text-sm tabular-nums", className)}
         />
       </PopoverAnchor>
       <PopoverContent

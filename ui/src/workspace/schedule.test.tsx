@@ -24,7 +24,7 @@ after(async () => { await GlobalRegistrator.unregister(); });
 
 function Screen() {
   const ws = useWorkspace();
-  return <>{ws.followerStates.schedule.error && <ErrorNotice error={ws.followerStates.schedule.error} />}<ScheduleView /></>;
+  return <div id="schedule-fixture" aria-busy={ws.followerStates.schedule.loading}>{ws.followerStates.schedule.error && <ErrorNotice error={ws.followerStates.schedule.error} />}<ScheduleView /></div>;
 }
 function Fixture({ backend }: { backend: WorkspaceBackend }) {
   const route = useAppRoute();
@@ -121,15 +121,15 @@ async function fillZone(zone: string) {
   });
 }
 
-it("edits the zone, shows saved and machine zones, and retains a refused draft", async () => {
+it("edits the saved zone, shows the machine default, and retains a refused draft", async () => {
   const page = await schedulePage();
   try {
-    await page.until(() => document.body.textContent?.includes("Saved time zone") === true);
+    await page.until(() => document.body.textContent?.includes("Pacific/Honolulu") === true);
     assert.equal((document.getElementById("sch-timezone") as HTMLInputElement).value, "Europe/Paris");
     assert.ok(document.body.textContent?.includes("Pacific/Honolulu"));
     await fillZone("America/New_York");
     await act(async () => { page.button("Save schedule").click(); });
-    await page.until(() => page.writes.length === 1 && document.body.textContent?.includes("Saved time zoneAmerica/New_York") === true && !page.button("Save schedule").disabled);
+    await page.until(() => page.writes.length === 1 && document.getElementById("schedule-fixture")?.getAttribute("aria-busy") === "false" && (document.getElementById("sch-timezone") as HTMLInputElement).value === "America/New_York" && !page.button("Save schedule").disabled);
     assert.deepEqual(page.writes[0], { method: "PUT", body: { schedule: { kind: "daily", localTime: "09:00", timezone: "America/New_York" } } });
     await fillZone("+05:30");
     assert.equal(page.button("Save schedule").disabled, true);
@@ -137,7 +137,7 @@ it("edits the zone, shows saved and machine zones, and retains a refused draft",
     await act(async () => { page.button("Save schedule").click(); });
     await page.until(() => page.writes.length === 2);
     assert.deepEqual(page.writes[1].body, { schedule: { kind: "daily", localTime: "09:00" } });
-    await page.until(() => document.body.textContent?.includes("Saved time zonePacific/Honolulu") === true && !page.button("Save schedule").disabled);
+    await page.until(() => document.getElementById("schedule-fixture")?.getAttribute("aria-busy") === "false" && (document.getElementById("sch-timezone") as HTMLInputElement).value === "" && !page.button("Save schedule").disabled);
     page.failSave();
     await fillZone("Asia/Tokyo");
     await act(async () => { page.button("Save schedule").click(); });
@@ -149,7 +149,7 @@ it("edits the zone, shows saved and machine zones, and retains a refused draft",
 it("confirms removal, cancels without a request, blocks duplicates and retries failure", async () => {
   const page = await schedulePage();
   try {
-    await page.until(() => document.body.textContent?.includes("Saved time zone") === true);
+    await page.until(() => document.body.textContent?.includes("Pacific/Honolulu") === true);
     await act(async () => { page.button("Remove schedule").click(); });
     assert.ok(document.body.textContent?.includes("even if the Source suggests a schedule"));
     assert.equal(page.writes.length, 0);
