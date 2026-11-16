@@ -41,6 +41,8 @@ const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
  */
 export function scheduleError(s: Schedule): string | null {
   if (s.cadence === "default") return null;
+  const zoneError = timezoneError(s.timezone);
+  if (zoneError) return zoneError;
   if (s.cadence === "custom") return s.expression?.trim() ? null : "Enter a schedule expression.";
   if (s.cadence === "days" && s.days.length === 0) return DAYS_ERROR;
   if (!TIME.test(s.time)) return TIME_ERROR;
@@ -48,6 +50,19 @@ export function scheduleError(s: Schedule): string | null {
 }
 const DAYS_ERROR = "Pick at least one day.";
 const TIME_ERROR = "Enter a complete time, like 09:00.";
+
+function timezoneError(timezone: string | undefined): string | null {
+  if (timezone === undefined) return null;
+  try {
+    const zone = new Intl.DateTimeFormat("en", { timeZone: timezone }).resolvedOptions().timeZone;
+    if (timezone.trim() !== timezone || !timezone || /^[+-]/.test(zone)) return ZONE_ERROR;
+    return null;
+  } catch {
+    return ZONE_ERROR;
+  }
+}
+const ZONE_ERROR = "Choose an IANA time zone, like Europe/Paris, not a numeric offset.";
+const TIMEZONES = ["UTC", ...Intl.supportedValuesOf("timeZone")];
 
 export function scheduleSummary(s: Schedule, defaultLabel: string) {
   if (s.cadence === "default") return defaultLabel;
@@ -95,6 +110,7 @@ export function ScheduleFields({
   onChange,
   defaultLabel,
   allowCustom = false,
+  machineTimezone,
 }: {
   idPrefix: string;
   value: Schedule;
@@ -102,10 +118,13 @@ export function ScheduleFields({
   /** Offer "use the profile's default" first, labelled with what that default is. */
   defaultLabel?: string;
   allowCustom?: boolean;
+  /** Only the Follower editor accepts timezone overrides, never Profile defaults. */
+  machineTimezone?: string;
 }) {
   // A half-typed time ("10:") is not a mistake yet, so its error waits until the field loses focus. Both forms
   // disable Save while the schedule is incomplete, so no Save attempt has to reveal it sooner.
   const [timeBlurred, setTimeBlurred] = useState(false);
+  const [zoneBlurred, setZoneBlurred] = useState(false);
   const choices = allowCustom ? [...OPTIONS, { value: "custom" as const, label: "Custom expression" }] : OPTIONS;
   const options = defaultLabel ? [{ value: "default" as const, label: `Same as the Source (${defaultLabel})` }, ...choices] : choices;
   const shownDays = daysOf(value);
@@ -113,6 +132,7 @@ export function ScheduleFields({
   // Both problems can hold at once, so each shows under its own control.
   const daysError = value.cadence === "days" && value.days.length === 0 ? DAYS_ERROR : null;
   const timeError = timeBlurred && custom && !TIME.test(value.time) ? TIME_ERROR : null;
+  const zoneError = zoneBlurred ? timezoneError(value.timezone) : null;
   const toggle = (d: Day) => {
     const next = shownDays.includes(d) ? shownDays.filter((x) => x !== d) : WEEK.filter((x) => x === d || shownDays.includes(x));
     // Changing weekdays turns it into a custom set; selecting all seven uses the daily cadence.
@@ -176,10 +196,32 @@ export function ScheduleFields({
                 invalid={!!timeError}
                 describedBy={timeError ? `${idPrefix}-time-note` : undefined}
               />
-              <span className="text-sm text-faint">local time</span>
+              <span className="text-sm text-faint">{value.timezone ? "in the selected time zone" : "machine local time"}</span>
             </div>
           </Field>
         </div>
+      )}
+      {machineTimezone && value.cadence !== "default" && (
+        <Field label="Time zone" htmlFor={`${idPrefix}-timezone`} error={zoneError}>
+          <Input
+            id={`${idPrefix}-timezone`}
+            list={`${idPrefix}-timezones`}
+            value={value.timezone ?? ""}
+            placeholder={`Machine local (${machineTimezone})`}
+            autoComplete="off"
+            spellCheck={false}
+            onBlur={() => setZoneBlurred(true)}
+            aria-invalid={zoneError !== null}
+            aria-describedby={`${idPrefix}-timezone-note`}
+            onChange={(event) => onChange({ ...value, timezone: event.target.value || undefined })}
+          />
+          <datalist id={`${idPrefix}-timezones`}>
+            {TIMEZONES.map((zone) => <option key={zone} value={zone} />)}
+          </datalist>
+          <p id={`${idPrefix}-timezone-note`} className="text-sm text-muted-foreground">
+            Leave blank to use this machine's zone ({machineTimezone}), not your browser's. Named zones require Linux.
+          </p>
+        </Field>
       )}
     </div>
   );

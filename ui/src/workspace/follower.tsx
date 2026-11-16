@@ -908,43 +908,61 @@ function ScheduleForm() {
   // This is an unsaved form draft, not evidence of an installed schedule.
   const initial: Schedule = saved ?? { cadence: "default", days: [], time: ws.profileSchedule?.time ?? "" };
   const [draft, setDraft] = useState<Schedule>(initial);
+  const [removeOpen, setRemoveOpen] = useState(false);
+  const [pending, setPending] = useState<"save" | "remove" | null>(null);
+  const busy = pending !== null || !!ws.followerLive?.action.loading;
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
   // With nothing saved, the untouched form is only the Source's default on offer, not an edit to lose.
   const { dialog: leaveDialog } = useLeaveGuard(JSON.stringify(draft) !== JSON.stringify(initial), "the schedule");
   const error = scheduleError(draft);
   const defaultLabel = ws.followerLive ? "published default" : "every day at 09:00";
   const { stopped } = useSyncBlocks();
+  const save = async () => {
+    if (error || stopped || busy) return;
+    if (ws.followerLive) {
+      setPending("save");
+      try {
+        if (await ws.followerLive.saveSchedule(draft)) toast.success("Schedule saved");
+      } finally { setPending(null); }
+      return;
+    }
+    setSaved(draft);
+    ws.reach("schedule");
+    toast.success("Schedule saved", { description: `${scheduleSummary(draft, `Same as the Source: ${defaultLabel}`)}.${DEMO ? "\nSaved in this demo workspace." : ""}` });
+  };
   return (
     <>
       <PageHeader
         crumbs={["Schedule"]}
-        actions={
+        actions={<>
+          {(ws.followerLive?.schedule || saved) && <Button size="sm" variant="destructive" disabled={busy || stopped !== null} onClick={() => setRemoveOpen(true)}>
+            {pending === "remove" ? "Removing…" : "Remove schedule"}
+          </Button>}
           <Button
             data-tour="schedule-save"
             size="sm"
             variant="primary"
-            disabled={(!dirty && !ws.followerLive) || error !== null || stopped !== null || ws.followerLive?.action.loading}
-            onClick={async () => {
-              if (ws.followerLive) {
-                if (await ws.followerLive.saveSchedule(draft)) toast.success("Schedule saved");
-                return;
-              }
-              setSaved(draft);
-              ws.reach("schedule");
-              toast.success("Schedule saved", { description: `${scheduleSummary(draft, `Same as the Source: ${defaultLabel}`)}.${DEMO ? "\nSaved in this demo workspace." : ""}` });
-            }}
+            form="schedule-form"
+            type="submit"
+            disabled={(!dirty && !ws.followerLive) || error !== null || stopped !== null || busy}
           >
-            Save schedule
+            {pending === "save" ? "Saving…" : "Save schedule"}
           </Button>
-        }
+        </>}
       />
       <Body>
         <Column>
           {(stopped || saved === null) && <p role="status" className="mb-6 text-sm text-muted-foreground">{stopped ? `${stopped} Its schedule was removed.` : "No schedule is set, so this machine only updates when you apply from Sync."}</p>}
-          <ScheduleFields idPrefix="sch" value={draft} onChange={setDraft} defaultLabel={defaultLabel} allowCustom={!!ws.followerLive} />
+          <form id="schedule-form" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+            <fieldset disabled={busy} className="min-w-0">
+              <ScheduleFields idPrefix="sch" value={draft} onChange={setDraft} defaultLabel={defaultLabel} allowCustom={!!ws.followerLive} machineTimezone={ws.followerLive?.schedule?.machineTimezone} />
+            </fieldset>
+          </form>
           {ws.followerLive ? <div className={cn("mt-8", settingsGroup)}>
             {/* "Not selected" tells you to run a CLI command; Save schedule above does that. */}
             <SettingRow title="Native schedule" description={text(ws.followerLive.schedule?.state) === "not-selected" || !text(ws.followerLive.schedule?.detail) ? undefined : <CliText>{text(ws.followerLive.schedule?.detail)!}</CliText>}>{text(ws.followerLive.schedule?.state)?.replaceAll("-", " ") ?? "Not reported"}</SettingRow>
+            {text(ws.followerLive.schedule?.timezone) && <SettingRow title="Saved time zone">{text(ws.followerLive.schedule?.timezone)}</SettingRow>}
+            <SettingRow title="Machine time zone">{ws.followerLive.schedule?.machineTimezone ?? "Not reported"}</SettingRow>
             {text(ws.followerLive.schedule?.nextRun) && <SettingRow title="Next check">{text(ws.followerLive.schedule?.nextRun)}</SettingRow>}
             {text(ws.followerLive.schedule?.platform) && <SettingRow title="Platform">{text(ws.followerLive.schedule?.platform)}</SettingRow>}
             {text(ws.followerLive.schedule?.unattendedRuns) && <SettingRow title="Recorded runs">{text(ws.followerLive.schedule?.unattendedRuns)}</SettingRow>}
@@ -958,6 +976,29 @@ function ScheduleForm() {
           </div>}
         </Column>
       </Body>
+      <ConfirmDialog
+        open={removeOpen}
+        onOpenChange={setRemoveOpen}
+        title="Remove schedule?"
+        body="This removes the native scheduled job and keeps scheduled sync off, even if the Source suggests a schedule. A sync already running and applied files stay unchanged. Unsaved schedule edits are discarded after removal. You can save a new schedule to turn automation back on."
+        confirm="Remove schedule"
+        onConfirm={async () => {
+          if (busy) return;
+          if (ws.followerLive) {
+            setPending("remove");
+            try {
+              if (await ws.followerLive.removeSchedule()) {
+                setDraft({ cadence: "default", days: [], time: ws.profileSchedule?.time ?? "" });
+                toast.success("Schedule removed");
+              }
+            } finally { setPending(null); }
+            return;
+          }
+          setSaved(null);
+          setDraft({ cadence: "default", days: [], time: ws.profileSchedule?.time ?? "" });
+          toast.success("Schedule removed");
+        }}
+      />
       {leaveDialog}
     </>
   );

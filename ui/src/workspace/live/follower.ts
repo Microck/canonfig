@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { Schema } from "effect";
-import { GuiArchiveDownload, GuiBackups, GuiHarnessReport, GuiLocalItems, GuiSecrets, GuiSecretSync, GuiSynchronizationResult } from "../../../../src/gui/contract/synchronization";
+import { GuiArchiveDownload, GuiBackups, GuiHarnessReport, GuiLocalItems, GuiScheduleStatus, GuiSecrets, GuiSecretSync, GuiSynchronizationResult } from "../../../../src/gui/contract/synchronization";
 import { GuiEnrollment } from "../../../../src/gui/contract/enrollment";
 import { GuiOperationTicket, type GuiOperation } from "../../../../src/gui/contract/operations";
 import { GuiRequestError, type GuiSession, type GuiStatus, type WorkspaceBackend } from "../../gui-client";
@@ -70,7 +70,7 @@ export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, 
   const follower = session.role === "follower";
   const harnesses = useLiveResource(backend, "/api/harnesses", GuiHarnessReport, session.role !== "unconfigured");
   const local = useLiveResource(backend, "/api/local/items", GuiLocalItems, follower);
-  const schedule = useLiveResource(backend, "/api/schedule", GuiSynchronizationResult, follower);
+  const schedule = useLiveResource(backend, "/api/schedule", GuiScheduleStatus, follower);
   const backups = useLiveResource(backend, "/api/backups", GuiBackups, follower);
   const overlays = useLiveResource(backend, "/api/local/overlays", GuiSynchronizationResult, follower);
   const tunnel = useLiveResource(backend, "/api/tunnel", GuiSynchronizationResult, follower);
@@ -156,6 +156,7 @@ export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, 
         { kind: "daily", localTime: draft.time, timezone: draft.timezone } :
         { kind: "weekly", localTime: draft.time, weekdays: draft.cadence === "weekdays" ? ["Mon", "Tue", "Wed", "Thu", "Fri"] : draft.days, timezone: draft.timezone },
     }),
+    removeSchedule: () => mutation("/api/schedule", "DELETE", {}),
     saveItems: (input) => run((signal) => backend.request("/api/local/items", GuiLocalItems, signal, { method: "PUT", body: input })),
     savePreferences,
     refreshSecrets: () => { void run(async (signal) => {

@@ -24,6 +24,19 @@ profile or running `sync` never installs one.
   turned on. See [Keep the job running while you are logged
   out](#keep-the-job-running-while-you-are-logged-out).
 
+## Use the browser
+
+Open `canonfig ui` on the Follower Machine and choose **Schedule**. Pick a
+cadence, time and days, or use the Source's suggested schedule, then choose
+**Save schedule**. For an explicit calendar, **Time zone** offers IANA names.
+Leave it blank to use the Follower Machine's zone, not the browser's zone.
+Named zones work on Linux only. The page shows the saved effective zone and
+the machine zone separately.
+
+Choose **Remove schedule** and confirm to delete the native job and keep
+scheduled sync off across later applies, even if the Source suggests a
+schedule. Applied files and a sync already running stay unchanged.
+
 ## Schedule a daily or weekly sync
 
 On the Follower Machine, sync every day at 09:00 in the machine's time zone:

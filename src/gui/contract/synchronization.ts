@@ -5,6 +5,12 @@ import { GuiBase64 } from "./profile.ts";
 
 export const GuiSynchronizationResult = Schema.Record(Schema.String, Schema.Json);
 export interface GuiSynchronizationResult extends Schema.Schema.Type<typeof GuiSynchronizationResult> {}
+/** The scheduler runs on the GUI host, which can be in a different zone from the browser. */
+export const GuiScheduleStatus = Schema.StructWithRest(
+  Schema.Struct({ machineTimezone: Schema.NonEmptyString }),
+  [Schema.Record(Schema.String, Schema.Json)],
+);
+export type GuiScheduleStatus = typeof GuiScheduleStatus.Type;
 export const GuiScheduleRequest = Schema.Union([
   Schema.Struct({ profileDefault: Schema.Literal(true) }),
   Schema.Struct({ schedule: SyncScheduleSchema }),

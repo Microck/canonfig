@@ -1,20 +1,20 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Schema } from "effect";
 import { afterEach, expect, it } from "vitest";
-import { GuiArchiveDownload, GuiBackups, GuiLocalItems, GuiOperation, GuiOperationTicket } from "../../src/gui/contract.ts";
+import { GuiArchiveDownload, GuiBackups, GuiLocalItems, GuiOperation, GuiOperationTicket, GuiScheduleStatus } from "../../src/gui/contract.ts";
 
 const project = resolve(import.meta.dirname, "../..");
 const children = new Set<ChildProcess>();
 const homes: string[] = [];
 const write = (path: string, contents: string, mode = 0o600) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, contents, { mode }); };
 
-function fixture(label: string) {
+function fixture(label: string, built = false) {
   const home = mkdtempSync(join(tmpdir(), `canonfig-gui-sync-${label}-`));
   homes.push(home);
   const bin = join(home, "bin");
@@ -24,13 +24,46 @@ function fixture(label: string) {
     XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local/share"),
     XDG_CACHE_HOME: join(home, ".cache"), CANONFIG_LOCAL_CREDENTIAL_ROOT: join(home, "credentials"), CANONFIG_LOG: "off",
   };
-  const invoke = (args: string[], input?: string) => spawnSync(process.execPath, ["--import", "tsx", "src/runtime/main.ts", ...args, "--json"], { cwd: project, env, input, encoding: "utf8", timeout: 120_000 });
-  return { home, folder: join(home, ".canonfig"), bin, env, invoke };
+  // Native jobs bind main.js, so scheduler tests must run the built installation.
+  const runtime = built ? ["dist/runtime/main.js"] : ["--import", "tsx", "src/runtime/main.ts"];
+  const invoke = (args: string[], input?: string) => spawnSync(process.execPath, [...runtime, ...args, "--json"], { cwd: project, env, input, encoding: "utf8", timeout: 120_000 });
+  return { home, folder: join(home, ".canonfig"), bin, env, runtime, invoke };
 }
 
 type Fixture = ReturnType<typeof fixture>;
 const success = (result: ReturnType<Fixture["invoke"]>) => { expect(result.status, result.stdout + result.stderr).toBe(0); return result; };
 
+
+/** Same marker-file user-manager seam as schedule-manager.test.ts, never the host's systemd. */
+function scheduleHost(machine: Fixture) {
+  const systemctl = join(machine.bin, "systemctl");
+  const loginctl = join(machine.bin, "loginctl");
+  const active = join(machine.home, "timer-active");
+  const calls = join(machine.home, "scheduler-calls");
+  const timer = join(machine.home, ".config/systemd/user/canonfig-sync.timer");
+  write(systemctl, `#!/bin/sh
+echo "$*" >> '${calls}'
+case "$2" in
+  show)
+    state=inactive; enabled=disabled
+    if test -f '${active}'; then state=active; enabled=enabled; fi
+    calendar=
+    while IFS= read -r line; do
+      case "$line" in OnCalendar=*) calendar="\${line#OnCalendar=}";; esac
+    done < '${timer}'
+    printf 'Id=canonfig-sync.timer\\nLoadState=loaded\\nActiveState=%s\\nUnitFileState=%s\\nDropInPaths=\\nTimersCalendar={ OnCalendar=%s ; next_elapse=n/a }\\n\\nId=canonfig-sync.service\\nLoadState=loaded\\nActiveState=inactive\\nResult=success\\nExecMainStatus=0\\n' "$state" "$enabled" "$calendar"
+    ;;
+  enable|start) : > '${active}' ;;
+  disable|stop) /bin/rm -f '${active}' ;;
+esac
+exit 0
+`, 0o755);
+  write(loginctl, "#!/bin/sh\nprintf 'Linger=yes\\n'\n", 0o755);
+  machine.env.CANONFIG_SYSTEMCTL = systemctl;
+  machine.env.CANONFIG_LOGINCTL = loginctl;
+  machine.env.TZ = "Pacific/Honolulu";
+  return { timer, calls };
+}
 async function unusedPort() {
   const server = createServer();
   server.listen(0, "127.0.0.1");
@@ -44,7 +77,7 @@ async function unusedPort() {
 }
 
 async function launch(machine: Fixture, args: string[], ready: RegExp) {
-  const child = spawn(process.execPath, ["--import", "tsx", "src/runtime/main.ts", ...args], { cwd: project, env: machine.env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [...machine.runtime, ...args], { cwd: project, env: machine.env, stdio: ["ignore", "pipe", "pipe"] });
   children.add(child);
   const { promise, resolve: resolveReady, reject } = Promise.withResolvers<string>();
   let stdout = "";
@@ -121,6 +154,7 @@ it("serves real role-gated secrets and a verified Source archive without leaking
     ["/api/sync/plan", "POST", {}], ["/api/sync/apply", "POST", {}], ["/api/sync/reviews", "POST", {}],
     ["/api/recovery", "POST", {}], ["/api/recovery/abandon", "POST", {}], ["/api/secrets/sync", "POST", {}],
     ["/api/schedule", "GET", undefined], ["/api/schedule", "PUT", { profileDefault: true }],
+    ["/api/schedule", "DELETE", {}],
     ["/api/local/items", "GET", undefined], ["/api/local/items", "PUT", { changes: [] }],
     ["/api/local/preferences", "PUT", { expectedDigest: null, edits: [] }],
     ["/api/harnesses", "PUT", { harness: "codex", action: "include" }], ["/api/local/overlays", "GET", undefined],
@@ -128,6 +162,8 @@ it("serves real role-gated secrets and a verified Source archive without leaking
     ["/api/backups", "GET", undefined], ["/api/backups/restore", "POST", { snapshot: "missing" }],
     ["/api/tunnel", "GET", undefined], ["/api/tunnel/start", "POST", {}], ["/api/tunnel/stop", "POST", {}], ["/api/enrollment", "DELETE", {}],
   ] as const) expect((await api.call(path, method, body)).payload, path).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  const unconfigured = await gui(fixture("unconfigured"));
+  expect((await unconfigured.call("/api/schedule", "DELETE", {})).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   const exported = await api.call("/api/exports", "POST", { includeHarnesses: false });
   expect(exported.status).toBe(200);
   const archive = Schema.decodeUnknownSync(GuiArchiveDownload)(exported.payload);
@@ -146,7 +182,8 @@ it("plans and applies an enrolled follower and performs digest-checked local ope
   success(source.invoke(["source", "publish", "--reviewer", "gui-test"]));
   const port = await unusedPort();
   await launch(source, ["source", "serve", "--host", "127.0.0.1", "--port", String(port), "--json"], /"endpoint":"https:\/\/127\.0\.0\.1:\d+"/u);
-  const follower = fixture("follower");
+  const follower = fixture("follower", process.platform === "linux");
+  const scheduler = process.platform === "linux" ? scheduleHost(follower) : null;
   write(join(follower.bin, "codex"), "", 0o755);
   const invitation = join(source.home, "invitation");
   success(source.invoke(["source", "invite", "--endpoint", `https://127.0.0.1:${port}`, "--output", invitation]));
@@ -154,9 +191,9 @@ it("plans and applies an enrolled follower and performs digest-checked local ope
   const api = await gui(follower);
   for (const path of [
     "/api/sync/plan", "/api/sync/apply", "/api/sync/reviews", "/api/recovery",
-    "/api/recovery/abandon", "/api/secrets/sync", "/api/tunnel/start", "/api/tunnel/stop", "/api/enrollment",
+    "/api/recovery/abandon", "/api/secrets/sync", "/api/tunnel/start", "/api/tunnel/stop", "/api/enrollment", "/api/schedule",
   ]) {
-    const refused = await api.call(path, path === "/api/enrollment" ? "DELETE" : "POST", { unexpected: true });
+    const refused = await api.call(path, path === "/api/enrollment" || path === "/api/schedule" ? "DELETE" : "POST", { unexpected: true });
     expect(refused.payload, path).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   }
   expect((await api.operation("/api/sync/plan")).state).toBe("succeeded");
@@ -246,6 +283,27 @@ it("plans and applies an enrolled follower and performs digest-checked local ope
   expect((await api.call("/api/schedule", "PUT", { schedule: { kind: "daily", localTime: "99:99" } })).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   const noDefault = await api.call("/api/schedule", "PUT", { profileDefault: true });
   expect(noDefault.payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  expect((await api.call("/api/schedule", "PUT", { schedule: { kind: "daily", localTime: "09:00", timezone: "Mars/Olympus" } })).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  if (scheduler) {
+    const selected = { kind: "weekly", localTime: "12:30", weekdays: ["Mon"], timezone: "europe/paris" };
+    const saved = await api.call("/api/schedule", "PUT", { schedule: selected });
+    expect(saved.status, JSON.stringify(saved.payload)).toBe(200);
+    const status = Schema.decodeUnknownSync(GuiScheduleStatus)((await api.call("/api/schedule")).payload);
+    expect(status).toMatchObject({
+      machineTimezone: "Pacific/Honolulu", timezone: "Europe/Paris",
+      schedule: { ...selected, timezone: "Europe/Paris" }, state: "current",
+    });
+    expect(readFileSync(scheduler.timer, "utf8")).toContain("Europe/Paris");
+    expect((await api.call("/api/schedule", "DELETE", {})).payload).toEqual({ change: "removed" });
+    expect(existsSync(scheduler.timer)).toBe(false);
+    expect(readFileSync(scheduler.calls, "utf8")).toContain("--user disable --now canonfig-sync.timer");
+    expect((await api.call("/api/schedule")).payload).toMatchObject({ state: "not-selected", machineTimezone: "Pacific/Honolulu" });
+    expect((await api.call("/api/schedule", "DELETE", {})).payload).toEqual({ change: "unchanged" });
+    // The CLI sees the same disabled decision, and applying cannot recreate the removed job.
+    expect(JSON.parse(success(follower.invoke(["schedule", "status"])).stdout).data.state).toBe("not-selected");
+    expect((await api.operation("/api/sync/apply")).state).toBe("succeeded");
+    expect(existsSync(scheduler.timer)).toBe(false);
+  }
   expect((await api.call("/api/tunnel")).status).toBe(200);
   expect((await api.call("/api/tunnel/start", "POST", {})).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   expect((await api.call("/api/tunnel/stop", "POST", {})).status).toBe(200);
