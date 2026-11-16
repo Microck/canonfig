@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   installedVersionMatches,
+  parseBrewInstalledInfo,
   parseBunGlobalList,
   parseCargoInstalls,
   parseDpkgQuery,
@@ -68,6 +69,32 @@ describe("installed tool version listings", () => {
     expect(parseDpkgQuery("ii |14.1.0-1")).toBe("14.1.0-1");
     expect(parseDpkgQuery("rc |14.1.0-1")).toBeUndefined();
     expect(parseDpkgQuery("un |")).toBeUndefined();
+  });
+
+  it("reads the linked Homebrew keg rather than the available formula or an older installed keg", () => {
+    expect(parseBrewInstalledInfo(JSON.stringify({ formulae: [{
+      versions: { stable: "5.0.0" },
+      installed: [{ version: "4.0.1" }, { version: "4.1.0_2" }],
+      linked_keg: "4.1.0_2",
+    }] }))).toBe("4.1.0_2");
+  });
+
+  it("recognizes a single installed keg-only formula without inventing an active version", () => {
+    expect(parseBrewInstalledInfo(JSON.stringify({ formulae: [{
+      installed: [{ version: "3.13.9" }], linked_keg: null,
+    }] }))).toBe("3.13.9");
+    expect(parseBrewInstalledInfo(JSON.stringify({ formulae: [{
+      installed: [{ version: "3.13.8" }, { version: "3.13.9" }], linked_keg: null,
+    }] }))).toBeUndefined();
+  });
+
+  it.each([
+    "not JSON",
+    JSON.stringify({ formulae: [] }),
+    JSON.stringify({ formulae: [{ versions: { stable: "4.1.0" }, installed: [] }] }),
+    JSON.stringify({ formulae: [{ installed: [{ version: "4.0.1" }], linked_keg: "4.1.0" }] }),
+  ])("does not mistake unavailable Homebrew installation evidence for a version: %s", (output) => {
+    expect(parseBrewInstalledInfo(output)).toBeUndefined();
   });
 
   it("compares versions the way each installer resolves them", () => {

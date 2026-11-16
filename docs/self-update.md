@@ -22,7 +22,7 @@ require standalone self-updates to be enabled. See [Roll out the Source's releas
 
 ## Supported installations and first enable
 
-Use a user-owned global npm prefix under your own home, with Node.js 24+ and the
+Use a user-owned global npm prefix under your own home, with Node.js 24.15+ or 26+ and the
 official npm CLI installed. System-wide/admin prefixes, project installs,
 checkouts, Homebrew-managed packages and other package managers are unsupported.
 The updater never elevates permissions. It only updates `@microck/canonfig` from

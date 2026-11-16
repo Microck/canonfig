@@ -141,6 +141,9 @@ export interface FollowerCommandsService {
   readonly overlays: (
     input: OverlaysInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
+  readonly localPreservation: (
+    change?: { readonly skill: string; readonly action: "add" | "remove" } | { readonly preserveMcp: boolean },
+  ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly status: (
     follower?: FollowerId,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;

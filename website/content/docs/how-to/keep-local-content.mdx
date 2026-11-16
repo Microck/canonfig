@@ -136,14 +136,18 @@ Otherwise rename or remove your copy before syncing.
 
 ## Keep a same-name skill local
 
-With `skills` in the Source's `local.appendLocal`, add skill names to this
-machine's `~/.canonfig/local/local.jsonc`:
+With `skills` in the Source's `local.appendLocal`, run on this machine:
 
-```json
-{
-  "excludeSkills": ["deploy", "review"]
-}
+```bash
+canonfig local skills add deploy
+canonfig local skills add review
+canonfig local skills list
 ```
+
+This saves `excludeSkills` in `~/.canonfig/local/local.jsonc`. Names use lowercase
+letters, digits and hyphens, starting with a letter or digit. In the browser,
+open the machine-local settings page and use **Kept on this machine**.
+To remove a name, run `canonfig local skills remove deploy`.
 
 Those names stay local in every harness skill directory, including shared
 `~/.agents/skills`. Sync can still add and update other Source skills. It does
@@ -159,15 +163,19 @@ sync with a configuration error instead of allowing a whole-directory takeover.
 
 ## Keep native MCP options
 
-To keep a machine's MCP configuration outside synchronization, set
-`"preserveMcp": true` in its `~/.canonfig/local/local.jsonc`.
+To keep a machine's MCP configuration outside synchronization, run
+`canonfig local mcp preserve` or turn on **Keep native MCP on this machine**
+in the machine-local settings page. This saves `"preserveMcp": true` in
+`~/.canonfig/local/local.jsonc`. Use `canonfig local mcp status` to inspect it
+and `canonfig local mcp project` to turn preservation off.
 Canonfig leaves those native server maps unchanged, including options such
 as OAuth settings or startup timeouts that the canonical format cannot express.
 New Source servers do not replace them on later syncs. Other harness settings
 and the selected instruction, skill, and command surfaces still synchronize.
 
-This does not turn the local MCP servers off. Each harness continues using
-its existing native configuration and credentials.
+This preserves MCP rather than disabling it. It does not verify server startup,
+authentication or connectivity. Each harness keeps its native configuration
+and credentials. Turning preservation off does not adopt conflicting local data.
 
 ## Keep text and skills in the local folder
 

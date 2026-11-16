@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { request, type WorkspaceBackend } from "../gui-client";
-import { GuiOperation, GuiSession, GuiStatus } from "../../../src/gui/contract";
+import { GuiOperation, GuiSession, GuiSourceServiceReport, GuiStatus } from "../../../src/gui/contract";
 import { useAppRoute } from "./routes";
 
 GlobalRegistrator.register({ url: "http://localhost/source/overview", settings: { device: { prefersReducedMotion: "reduce" } } });
@@ -29,7 +29,16 @@ function Fixture({ backend }: { backend: WorkspaceBackend }) {
 }
 
 const revision = (sequence: number, profileId = "fixture", publishedAt = `2026-11-1${sequence}T00:00:00Z`) => ({ id: `${profileId}-${sequence}`, profileId, sequence, digest: `digest-${sequence}`, publishedAt });
-const service = (serving: boolean) => ({ report: { state: serving ? "running" : "not-serving", platform: "linux", mechanism: "systemd-user-service", serviceName: "overview-fixture", endpoint: "https://127.0.0.1:17342", manager: { installed: true, matches: true, enabled: true, active: serving, state: serving ? "running" : "not-running" }, serving, supportedModes: "", logs: "", detail: "" }, error: null });
+const service = (serving: boolean): typeof GuiSourceServiceReport.Type => ({
+  report: {
+    state: serving ? "running" : "not-serving", platform: "linux", mechanism: "systemd-user-service", serviceName: "overview-fixture", endpoint: "https://127.0.0.1:17342",
+    requested: { hostname: "127.0.0.1", port: 17342 },
+    tailnet: { installed: false, ready: false, backendState: "not-installed", addresses: [], httpsAvailable: false, userspace: false, detail: "" },
+    manager: { installed: true, matches: true, enabled: true, active: serving, state: serving ? "running" : "not-running" },
+    serving, supportedModes: "", logs: "", detail: "",
+  },
+  error: null,
+});
 
 /** Renders the live Source Overview against a real HTTP server that answers with the given Source evidence. */
 async function overview(responses: Record<string, unknown>) {

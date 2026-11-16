@@ -238,14 +238,14 @@ projection, and publication.
 
 ### 4. Execute and resume idempotently
 
-Read the selected branch and execute only approved stages. Node.js 24 or newer
+Read the selected branch and execute only approved stages. Node.js 24.15+ or 26+
 and npm are required.
 
 Check installed help when it differs; do not downgrade silently. On a new
 installation, use:
 
 ```bash
-npm install --global @microck/canonfig@7.1.12
+npm install --global @microck/canonfig@7.2.0
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```

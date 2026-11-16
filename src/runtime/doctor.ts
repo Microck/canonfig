@@ -15,7 +15,7 @@ import { programVersion } from "../cli/help.ts";
 import { shieldStatus } from "../cli/shield.ts";
 import {
   buildIdentity,
-  minimumSupportedNodeMajor,
+  supportedNodeVersions,
   nodeRuntimeIsSupported,
 } from "./build-identity.ts";
 import { canonfigVersionHeader } from "../enrollment/version-handshake.ts";
@@ -231,7 +231,7 @@ const runtimeProbe = (): Effect.Effect<DoctorProbe> =>
       : failed(
         "runtime",
         "human-action-required",
-        `Node.js ${runtimeVersion} is unsupported; Canonfig requires Node.js ${minimumSupportedNodeMajor} or newer`,
+        `Node.js ${runtimeVersion} is unsupported; Canonfig requires Node.js ${supportedNodeVersions}`,
         details,
       );
   });

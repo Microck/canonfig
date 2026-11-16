@@ -15,7 +15,7 @@ import { AgentPolicy } from "../domain/identity.ts";
 import type { EnrollmentInvitationGrant } from "../enrollment/enrollment.types.ts";
 import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
 import { ExecutableAuthorizationSchema } from "../domain/synchronization.ts";
-import { parseOverlay } from "../projection/folder.ts";
+import { parseOverlay, keptLocalSkillName } from "../projection/folder.ts";
 import { TARGET_IDS, type TargetId } from "../projection/model.ts";
 import { NATIVE_PLUGIN_HARNESSES } from "../projection/native-plugin.ts";
 import type { ShieldInput } from "./shield.ts";
@@ -130,6 +130,7 @@ export type CliCommand =
     readonly _tag: "Overlays";
     readonly change?: { readonly action: "set" | "remove"; readonly item: string } | undefined;
   }
+  | { readonly _tag: "LocalPreservation"; readonly change?: { readonly skill: string; readonly action: "add" | "remove" } | { readonly preserveMcp: boolean } }
   | { readonly _tag: "Recover"; readonly noInput: boolean }
   | { readonly _tag: "Abandon" }
   | { readonly _tag: "Status"; readonly follower?: typeof FollowerId.Type | undefined }
@@ -853,6 +854,21 @@ const evaluateShieldCommand = (action: string | undefined, rest: ReadonlyArray<s
   return invalid("Unknown Shield command; use canonfig shield --help");
 };
 
+const evaluateLocalCommand = (arguments_: ReadonlyArray<string>, format: CliOutputFormat): CliOutcome => {
+  const options = parseOptions(arguments_.slice(1), new Set(), new Set());
+  const [policy, action, name, ...extra] = options.positionals;
+  if (policy === "skills" && action === "list" && name === undefined) return command({ _tag: "LocalPreservation" }, format);
+  if (policy === "skills" && (action === "add" || action === "remove") && name !== undefined && extra.length === 0) {
+    if (!keptLocalSkillName.test(name)) return invalid("Invalid skill name: use lowercase letters, digits and hyphens, starting with a letter or digit.");
+    return command({ _tag: "LocalPreservation", change: { skill: name, action } }, format);
+  }
+  if (policy === "mcp" && name === undefined) {
+    if (action === "status") return command({ _tag: "LocalPreservation" }, format);
+    if (action === "preserve" || action === "project") return command({ _tag: "LocalPreservation", change: { preserveMcp: action === "preserve" } }, format);
+  }
+  return invalid("Usage: canonfig local skills list|add <name>|remove <name> | canonfig local mcp status|preserve|project");
+};
+
 const evaluateCommand = (
   arguments_: ReadonlyArray<string>,
   format: CliOutputFormat,
@@ -956,6 +972,7 @@ const evaluateCommand = (
       if (parsed.kind === "invalid") return invalid(parsed.reason);
       return command({ _tag: "Overlays", change: { action, item } }, format);
     }
+    if (area === "local") return evaluateLocalCommand(arguments_, format);
     if (area === "restore") {
       const options = parseOptions(arguments_.slice(1), new Set(), new Set());
       if (options.positionals.length > 1) return invalid("Usage: canonfig restore [<snapshot>]");
@@ -1109,6 +1126,7 @@ export const commandName = (value: CliCommand): string => {
     case "Synchronize": return `sync.${value.mode}`;
     case "Shield": return `shield.${value.input.action}`;
     case "Overlays": return value.change === undefined ? "overlay.list" : `overlay.${value.change.action}`;
+    case "LocalPreservation": return "local.preservation";
     case "Restore": return "restore";
     case "Export": return "export";
     case "Import": return value.dryRun ? "import.dry-run" : "import";
@@ -1189,6 +1207,7 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
       }, executeSynchronization);
     case "Shield": return yield* follower.shield(value.input);
     case "Overlays": return yield* follower.overlays({ change: value.change });
+    case "LocalPreservation": return yield* follower.localPreservation(value.change);
     case "Restore": return yield* follower.restore({ snapshot: value.snapshot });
     case "Export":
       return yield* follower.exportArchive({

@@ -29,13 +29,15 @@ const embedded = substituted === undefined
   ? { sourceDigest: "unbuilt", commit: null }
   : (JSON.parse(substituted) as { sourceDigest: string; commit: string | null });
 
-export const packageVersion = "7.1.12";
+export const packageVersion = "7.2.0";
 
-export const minimumSupportedNodeMajor = 24;
+export const supportedNodeVersions = "24.15+ or 26+";
 
 export const nodeRuntimeIsSupported = (version: string): boolean => {
-  const match = /^(\d+)\./u.exec(version);
-  return match !== null && Number(match[1]) >= minimumSupportedNodeMajor;
+  const match = /^(\d+)\.(\d+)\.\d+$/u.exec(version);
+  if (match === null) return false;
+  const major = Number(match[1]);
+  return major >= 26 || (major === 24 && Number(match[2]) >= 15);
 };
 
 export interface BuildIdentity {

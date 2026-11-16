@@ -2,7 +2,39 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
-## Unreleased
+## v7.2.0 - 2026-11-16
+
+### Security
+
+- Update Sigstore and its bundle library to 5.0.1, including the fix for
+  verification silently dropping `certificateOIDs` constraints and patched
+  filesystem traversal dependencies.
+- Five moderate audit findings remain in TUF's `minimatch` dependency chain.
+  Publication uses an explicitly approved exception to the clean-audit gate;
+  these denial-of-service advisories are not fixed.
+
+### Fleet updates
+
+- Roll out the Source's exact stable release to enrolled Followers with
+  `canonfig source update --canary <follower-id> --apply` or Settings > Version.
+- Followers check on their next CLI `sync --apply`, including scheduled runs.
+  The canary must converge before the rollout continues; a failed health check
+  halts it, and offline Followers stay queued.
+- Verify the Source signature, official npm publisher provenance, and package
+  integrity before activation. Active commands and unfinished runs defer updates.
+  Downgrades and state-format changes require manual recovery.
+
+### Fixes
+
+- Reset the Publish dialog's reviewer to the workspace default after Cancel or Escape, without losing the draft when validation fails.
+
+### Fixes
+
+- Load Source revision details by their unique ID so profile histories with the same revision number cannot show each other's published resources.
+
+### Features
+
+- Manage kept-local skill names and native MCP preservation from `canonfig local` and the machine-local settings page. Both preserve concurrent edits and keep these choices on this machine.
 
 ### Tailnet
 
@@ -13,10 +45,38 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
 - Keep TLS certificate pins and signed revisions. Tailnet startup refuses
   unavailable, expired or userspace-only clients and never changes Serve settings.
 
+### Installers
+
+- Keep Homebrew formula names intact, check the available version before installing, and verify the installed keg against the pin.
+- Add digest-verified single-executable binary recipes for explicit platforms and architectures. The destination directory must exist; archives, build steps, and automatic replacement of different existing bytes are not supported.
+
 ### Documentation
 
 - Document machine-local skill and MCP preservation, first-adoption review, and upgrade/UI handoff in the bundled Canonfig skills.
 - Clarify upgrade instructions: `canonfig self-update apply` previews an update; `canonfig self-update apply --apply` installs it. Source service installation starts immediately, so prepare credential access and required native overrides first.
+
+### Upgrading
+
+The updated dependencies require Node.js 24.15+ or 26+. Update Node.js before
+installing this release; Node.js 25 is not supported by these dependencies.
+
+Source and Followers must run the same major.minor version. Upgrade every
+machine to 7.2.0 before resuming synchronization; 7.1.x cannot sync with 7.2.x.
+Finish or recover unfinished runs with the CLI build that created them first.
+
+Stop the browser interface before installing
+`npm install --global @microck/canonfig@7.2.0`. On a Source, remove its service
+before installation and reinstall it afterwards. Prepare unattended credential
+access and required native service overrides before reinstalling: installation
+starts the service immediately. Follow the documented upgrade procedure for
+your platform. This release does not update existing machines by itself.
+
+### Known limitation
+
+Import assumes trusted local processes and source folders that stay unchanged.
+A concurrent parent-folder swap can bypass path checks and cause private
+configuration to be read. Keep other programs from changing source folders
+during import.
 
 ## v7.1.12 - 2026-11-15
 

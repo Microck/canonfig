@@ -132,14 +132,18 @@ describe("build identity", () => {
       sourceDigest: string;
       commit: string | null;
     };
-    expect(identity.packageVersion).toBe("7.1.12");
+    expect(identity.packageVersion).toBe("7.2.0");
     expect(identity.sourceDigest).toBe("unbuilt");
     expect(identity.commit).toBeNull();
   });
 
-  it("accepts Node 24 and newer but rejects older or malformed versions", () => {
-    expect(nodeRuntimeIsSupported("24.0.0")).toBe(true);
-    expect(nodeRuntimeIsSupported("25.1.2")).toBe(true);
+  it("enforces the Sigstore runtime range", () => {
+    expect(nodeRuntimeIsSupported("24.15.0")).toBe(true);
+    expect(nodeRuntimeIsSupported("24.21.0")).toBe(true);
+    expect(nodeRuntimeIsSupported("26.0.0")).toBe(true);
+    expect(nodeRuntimeIsSupported("27.1.0")).toBe(true);
+    expect(nodeRuntimeIsSupported("24.14.99")).toBe(false);
+    expect(nodeRuntimeIsSupported("25.1.2")).toBe(false);
     expect(nodeRuntimeIsSupported("23.99.0")).toBe(false);
     expect(nodeRuntimeIsSupported("not-a-version")).toBe(false);
   });
@@ -147,7 +151,7 @@ describe("build identity", () => {
   it("keeps the plain --version output as the release version", () => {
     expect(evaluateCli(["--version"])).toEqual({
       _tag: "Version",
-      text: "7.1.12",
+      text: "7.2.0",
       exitCode: 0,
     });
   });
@@ -164,7 +168,7 @@ describe("upgrade gate", () => {
     }));
     expect(open).toEqual({
       run: "run-gate-1",
-      creatingVersion: "7.1.12",
+      creatingVersion: "7.2.0",
       creatingIdentity: "unbuilt",
       stateFormat: stateFormatVersion,
     });
@@ -269,7 +273,7 @@ describe("deployment receipts", () => {
       };
       expect(receipt).toEqual({
         run_id: "run-gate-1",
-        package_version: "7.1.12",
+        package_version: "7.2.0",
         build_identity: "unbuilt",
         state_format: stateFormatVersion,
         outcome: "Converged",

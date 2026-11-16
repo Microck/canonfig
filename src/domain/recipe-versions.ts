@@ -14,6 +14,7 @@ export const RecipeMethod = Schema.Literals([
   "uv",
   "cargo",
   "source",
+  "binary",
 ]);
 export type RecipeMethod = Schema.Schema.Type<typeof RecipeMethod>;
 
@@ -28,6 +29,7 @@ export const AutomaticRecipeMethod = Schema.Literals([
   "winget",
   "uv",
   "cargo",
+  "binary",
 ]);
 export type AutomaticRecipeMethod = Schema.Schema.Type<typeof AutomaticRecipeMethod>;
 
@@ -133,6 +135,7 @@ const versionPatternFor = (
     case "npm":
     case "pnpm":
     case "bun":
+    case "binary":
       return npmVersion;
     case "brew":
     case "homebrew":
@@ -154,11 +157,14 @@ const versionPatternFor = (
 
 export interface RecipeValidationInput {
   readonly method: string;
+  readonly platform?: string | undefined;
   readonly package: string;
   readonly version?: string | undefined;
   readonly source?: RecipeSource | undefined;
   readonly integrity?: string | undefined;
   readonly indexPolicy?: RecipeIndexPolicy | undefined;
+  readonly architecture?: string | undefined;
+  readonly entrypoint?: string | undefined;
 }
 
 export interface RecipeValidationIssue {
@@ -180,6 +186,15 @@ export const recipeValidationIssue = (
   const { method, package: packageName, version } = input;
   if (!Schema.is(RecipeMethod)(method)) {
     return recipeIssue(["method"], "unknown installer method");
+  }
+  if (method === "binary") {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(packageName) || packageName.endsWith(".") || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(packageName)) return recipeIssue(["package"], "binary package must be a single non-reserved executable name");
+    if (input.platform === "windows" && packageName.includes(".") && !packageName.toLowerCase().endsWith(".exe")) {
+      return recipeIssue(["package"], "Windows binary names containing a dot must end in .exe; declare the full executable name so verification can find it");
+    }
+    if (version === undefined) return recipeIssue(["version"], "binary recipes require an exact version");
+    if (input.architecture !== undefined && !["x64", "arm64"].includes(input.architecture)) return recipeIssue(["architecture"], "binary architecture must be x64 or arm64");
+    if (input.entrypoint !== undefined && input.entrypoint !== packageName) return recipeIssue(["entrypoint"], "binary entrypoint must equal the executable package name, not a path");
   }
   if (
     (method === "npm" || method === "pnpm" || method === "bun")
@@ -316,6 +331,20 @@ const recipeSourceValidationIssue = (
 ): RecipeValidationIssue | undefined => {
   const metadata = sourceValue(input.source);
   const integrity = metadata?.integrity ?? input.integrity;
+  if (input.method === "binary") {
+    if (input.integrity !== undefined && metadata?.integrity !== undefined) return recipeIssue(["integrity"], "recipe source integrity is duplicated");
+    if (metadata === undefined) return undefined;
+    try {
+      const url = new URL(metadata.source);
+      if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.href !== metadata.source) {
+        return recipeIssue(["source"], "binary source must be a canonical credential-free HTTPS URL without query or fragment");
+      }
+    } catch {
+      return recipeIssue(["source"], "binary source must be an HTTPS artifact URL");
+    }
+    if (integrity !== undefined && !/^(?:sha256-[A-Za-z0-9+/]{43}=|sha512-[A-Za-z0-9+/]{86}==)$/u.test(integrity)) return recipeIssue(["integrity"], "binary integrity must be a full sha256 or sha512 SRI digest");
+    return undefined;
+  }
   if (input.integrity !== undefined && metadata?.integrity !== undefined) {
     return recipeIssue(["integrity"], "recipe source integrity is duplicated");
   }

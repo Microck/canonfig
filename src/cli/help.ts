@@ -7,7 +7,7 @@ import { CliExitCode } from "./exit-codes.ts";
 
 export const programName = "canonfig";
 export const programDisplayName = "Canonfig";
-export const programVersion = "7.1.12";
+export const programVersion = "7.2.0";
 
 const helpHeader = `${programDisplayName} ${programVersion}`;
 
@@ -227,6 +227,25 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
       "~/.local/bin, then PATH, without running it; Cursor's generic agent counts only",
       "with ~/.cursor present.",
       "exclude and include edit only this machine's exclusions in ~/.canonfig/local/local.jsonc.",
+    ],
+  },
+  {
+    title: "Machine-local preservation",
+    areas: ["local"],
+    usage: [
+      "local skills list",
+      "local skills add <name>",
+      "local skills remove <name>",
+      "local mcp status",
+      "local mcp preserve",
+      "local mcp project",
+    ],
+    notes: [
+      "Edits ~/.canonfig/local/local.jsonc on Sources and Followers; concurrent edits are refused.",
+      "Kept-local skill names require Source local.appendLocal to include skills.",
+      "Names use lowercase letters, digits and hyphens, starting with a letter or digit.",
+      "MCP preservation leaves native maps alone, not disabled; it does not verify servers work.",
+      "Removing preservation does not adopt conflicting local skills or MCP configuration.",
     ],
   },
   {

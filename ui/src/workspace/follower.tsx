@@ -60,6 +60,7 @@ import { ScheduleFields, nextCheck, scheduleError, scheduleSummary, type Schedul
 import { FollowerOperationEvidence, TunnelEvidence } from "./follower-evidence";
 import { LocalAuthoringEditor } from "./follower-authoring";
 import { record, text } from "./live/follower";
+import { LocalPreservationControls, type PreservationPreferences } from "./local-preservation";
 export { FollowerOperationEvidence } from "./follower-evidence";
 
 const ACTION: Record<PlanAction, { label: string; cls: string; hint: string }> = {
@@ -1094,6 +1095,7 @@ function LocalForm() {
   const [removingOverlay, setRemovingOverlay] = useState<string | null>(null);
   const [disableBackups, setDisableBackups] = useState(false);
   const [overlayDraft, setOverlayDraft] = useState("");
+  const [preservation, setPreservation] = useSharedState<PreservationPreferences>("local-preservation", { excludeSkills: [], preserveMcp: false });
   // local.jsonc keeps item overlays and key claims in one list; this section shows the items, KeyClaims the claims.
   const itemOverlays = ws.overlays.filter((o) => claimOf(o) === null);
   const collisions = unsettledCollisions(ws.local, ws.overlays, ws);
@@ -1257,6 +1259,7 @@ function LocalForm() {
           </div>
         </div>
 
+        <LocalPreservationControls live={ws.followerLive} sharedSkills={ws.profile.appendLocal.includes("skills")} preferences={preservation} saveDemo={setPreservation} />
         <KeyClaims />
         {ws.followerLive?.archive && <div className="px-[18px] pt-8"><SectionLabel>Verified export</SectionLabel><div className={settingsGroup}>
           <SettingRow title="Archive checksum"><Mono className="break-all">{ws.followerLive.archive.sha256}</Mono></SettingRow>

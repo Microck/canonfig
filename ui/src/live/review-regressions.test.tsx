@@ -18,7 +18,7 @@ const { LiveWorkspaceProvider } = await import("../workspace/live-provider");
 const { createRoot } = await import("react-dom/client");
 const { ProfileView } = await import("../workspace/profile");
 const { LocalView } = await import("../workspace/follower");
-const { SecretsView } = await import("../workspace/source");
+const { RevisionsView, SecretsView } = await import("../workspace/source");
 const { FollowerOperationEvidence } = await import("../workspace/follower-evidence");
 const { SetupJournal } = await import("../onboarding/enrollment-controller");
 const { TooltipProvider } = await import("../components/ui/tooltip");
@@ -31,7 +31,7 @@ function Probe() {
     <p data-testid="followers">{ws.followers.map((follower) => follower.name).join(", ")}</p>
     <p data-testid="profile-name">{ws.profileName}</p>
     <button onClick={ws.reload}>Reload page</button>
-    {ws.revisions.map((revision) => <button key={revision.sequence} onClick={() => ws.profileLive?.inspectRevision(revision.sequence)}>Inspect {revision.sequence}</button>)}
+    {ws.revisions.map((revision) => <button key={revision.id} onClick={() => ws.profileLive?.inspectRevision(revision.id)}>Inspect {revision.sequence}</button>)}
     <p data-testid="revision">{JSON.stringify(ws.profileLive?.revisionDetail)}</p>
     <button onClick={() => { void ws.profileLive?.validate(); }}>Validate</button>
     <button onClick={ws.followerLive?.check}>Check follower</button>
@@ -57,6 +57,7 @@ function Fixture({ backend, session }: { backend: WorkspaceBackend; session: Gui
     {route.view === "profile" && (route.profileTab === "items" || route.profileTab === "harnesses") && <ProfileView />}
     {route.view === "local" && <LocalView />}
     {route.view === "secrets" && <SecretsView />}
+    {route.view === "revisions" && <RevisionsView />}
     {route.role === "follower" && <FollowerOperationEvidence />}
   </LiveWorkspaceProvider></TooltipProvider>;
 }
@@ -162,6 +163,36 @@ for (const path of ["/source/secrets", "/source/profile/groups"]) {
     } finally { await app.close(); }
   });
 }
+
+it("revision details use the displayed revision ID when profile histories share a sequence", async () => {
+  const older = { id: "aaa-old-1", profileId: "aaa-old", sequence: 1, digest: "old-fingerprint", publishedAt: "2026-11-01T00:00:00Z" };
+  const current = { id: "zzz-current-1", profileId: "zzz-current", sequence: 1, digest: "current-fingerprint", publishedAt: "2026-11-06T00:00:00Z" };
+  const resources = {
+    [older.id]: [{ id: "rules/old-profile", digest: "old-resource-digest" }],
+    [current.id]: [{ id: "rules/current-profile", digest: "current-resource-digest" }],
+  };
+  const app = await fixture("/source/revisions", { ...sourceResponses(), "/api/revisions": { revisions: [older, current] } }, (path, _method, body, outgoing) => {
+    if (path !== "/api/revisions/inspect") return false;
+    assert.ok(body && typeof body === "object" && "revision" in body && typeof body.revision === "string");
+    outgoing.end(JSON.stringify({ resources: resources[body.revision] }));
+    return true;
+  });
+  try {
+    await until(() => app.container.textContent?.includes(current.digest) === true, "Current revision not listed");
+    assert.ok(!app.container.textContent?.includes(older.digest), "Older profile must not be listed");
+    const row = [...app.container.querySelectorAll<HTMLElement>('[data-tour="revisions-list"]')].find((element) => element.textContent?.includes(current.digest));
+    assert.ok(row);
+    await act(async () => { row.click(); });
+    await until(() => app.mutations.some((mutation) => mutation.path === "/api/revisions/inspect"), "Revision inspection did not start");
+    assert.deepEqual(app.mutations.filter((mutation) => mutation.path === "/api/revisions/inspect"), [{ path: "/api/revisions/inspect", body: { revision: current.id } }]);
+    assert.equal(new URLSearchParams(window.location.search).get("focus"), current.id);
+    await until(() => app.container.textContent?.includes("current-resource-digest") === true, "Current revision resources not displayed");
+    assert.ok(app.container.textContent?.includes("rules/current-profile"));
+    assert.ok(!app.container.textContent?.includes("rules/old-profile"));
+    const detail: unknown = JSON.parse(app.container.querySelector('[data-testid="revision"]')?.textContent ?? "null");
+    assert.deepEqual(detail, { id: current.id, data: { resources: resources[current.id] }, loading: false, error: null });
+  } finally { await app.close(); }
+});
 
 it("revision inspection cancels superseded reads and does not share the mutation lock", async () => {
   const pending = new Map<string, ServerResponse>();

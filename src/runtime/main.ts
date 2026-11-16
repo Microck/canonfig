@@ -9,7 +9,7 @@ import type { CliIo } from "../cli/cli.ts";
 import { CliExitCode } from "../cli/exit-codes.ts";
 import { helpOrVersion } from "../cli/help.ts";
 import { installCommandLog, observedSignalExitCode } from "../logging/command-log.ts";
-import { minimumSupportedNodeMajor, nodeRuntimeIsSupported } from "./build-identity.ts";
+import { supportedNodeVersions, nodeRuntimeIsSupported } from "./build-identity.ts";
 import {
   isSkillsCommand,
   skillsArguments,
@@ -177,7 +177,7 @@ if (early !== undefined) {
   const { renderCliResult } = await import("../cli/render.ts");
   nodeCliIo.writeStderr(renderCliResult({
     command: "runtime",
-    message: `Node.js ${process.versions.node} is unsupported; Canonfig requires Node.js ${minimumSupportedNodeMajor} or newer. Install a supported Node.js runtime, then retry.`,
+    message: `Node.js ${process.versions.node} is unsupported; Canonfig requires Node.js ${supportedNodeVersions}. Install a supported Node.js runtime, then retry.`,
     exitCode: CliExitCode.humanActionRequired,
   }, format));
   nodeCliIo.setExitCode(CliExitCode.humanActionRequired);

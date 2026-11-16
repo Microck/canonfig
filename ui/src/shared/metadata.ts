@@ -63,6 +63,7 @@ export interface Follower {
 }
 
 export interface Revision {
+  id: string;
   sequence: number;
   digest: string;
   publishedAt: string;

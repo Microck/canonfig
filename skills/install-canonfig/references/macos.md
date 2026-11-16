@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Use a supported macOS user account with Node.js 24 or newer and npm.
+- Use a supported macOS user account with Node.js 24.15+ or 26+ and npm.
 - Confirm Keychain is available to the user that will run Canonfig.
 - Confirm the user launchd domain is available before installing a schedule.
 
@@ -11,7 +11,7 @@
 Install the exact public package version.
 
 ```bash
-npm install --global @microck/canonfig@7.1.12
+npm install --global @microck/canonfig@7.2.0
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```

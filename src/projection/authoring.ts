@@ -7,7 +7,7 @@ import { applyEdits, modify } from "jsonc-parser";
 import { TaggedError } from "../domain/tagged-error.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { withRunLock } from "../synchronization/run-lock.ts";
-import { AUTHORING_ENTRIES, LOCAL_CATEGORIES, decodeFolderConfig, decodeLocalConfig, listFolderFiles, loadCanonicalFiles, type FolderFile } from "./folder.ts";
+import { AUTHORING_ENTRIES, LOCAL_CATEGORIES, keptLocalSkillName, decodeFolderConfig, decodeLocalConfig, listFolderFiles, loadCanonicalFiles, type FolderFile } from "./folder.ts";
 import { projectResources, rootContext } from "./plan.ts";
 
 export class AuthoringConflict extends TaggedError<AuthoringConflict>()("AuthoringConflict", {
@@ -140,7 +140,8 @@ const prepareChanges = (target: AuthoringTarget, files: Map<string, FolderFile>,
   const candidate = new Map(files);
   const changed = new Set<string>();
   const configBytes = files.get("canonfig.jsonc")?.content;
-  const allow = configBytes === undefined ? [] : decodeFolderConfig("canonfig.jsonc", new TextDecoder().decode(configBytes)).local?.allow ?? [];
+  const canonical = configBytes === undefined ? undefined : decodeFolderConfig("canonfig.jsonc", new TextDecoder().decode(configBytes));
+  const allow = canonical?.local?.allow ?? [];
   for (const change of changes) {
     if (!itemPath(change.path, target.scope) || changed.has(change.path)) throw invalid(change.path, "Invalid or repeated folder item.");
     changed.add(change.path);
@@ -173,6 +174,9 @@ const prepareChanges = (target: AuthoringTarget, files: Map<string, FolderFile>,
       const next = decodeLocalConfig("local/local.jsonc", new TextDecoder().decode(local.content));
       const previousBytes = files.get("local/local.jsonc")?.content;
       const previous = previousBytes === undefined ? {} : decodeLocalConfig("local/local.jsonc", new TextDecoder().decode(previousBytes));
+      if (!isDeepStrictEqual(next.excludeSkills ?? [], previous.excludeSkills ?? []) && !canonical?.local?.appendLocal?.includes("skills")) {
+        throw invalid("local/local.jsonc", 'Keeping skills local requires local.appendLocal to include "skills" on the Source first.');
+      }
       for (const category of ["mcp", "settings"] as const) {
         if (!allow.includes(category) && Object.entries(next[category] ?? {}).some(([name, entry]) =>
           !isDeepStrictEqual(entry, previous[category]?.[name]))) {
@@ -273,4 +277,34 @@ export const editAuthoringConfig = Effect.fn("Authoring.editConfig")(function*(t
     catch: (error) => error instanceof AuthoringInvalid ? error : invalid(path, String(error)),
   });
   return yield* writeAuthoringItems(target, [...changes, { path, expectedDigest, files: [{ path, content, executable: false }] }]);
+});
+
+/** Read and edit machine-local preservation through the same digest-checked path as the GUI. */
+export const localPreservation = Effect.fn("Authoring.localPreservation")(function*(
+  target: AuthoringTarget,
+  change?: { readonly skill: string; readonly action: "add" | "remove" } | { readonly preserveMcp: boolean },
+) {
+  const item = yield* readAuthoringItem(target, "local.jsonc");
+  const config = item.files[0] === undefined ? {} : yield* Effect.try({
+    try: () => decodeLocalConfig("local.jsonc", new TextDecoder().decode(item.files[0].content)),
+    catch: (cause) => invalid("local.jsonc", String(cause)),
+  });
+  let excludeSkills = [...new Set(config.excludeSkills ?? [])].sort();
+  let preserveMcp = config.preserveMcp ?? false;
+  if (change !== undefined) {
+    if ("skill" in change) {
+      if (!keptLocalSkillName.test(change.skill)) return yield* Effect.fail(invalid("local.jsonc", "Invalid skill name: use lowercase letters, digits and hyphens, starting with a letter or digit."));
+      const canonical = yield* readAuthoringItem({ ...target, scope: "canonical" }, "canonfig.jsonc");
+      const shared = canonical.files[0] !== undefined && (yield* Effect.try({
+        try: () => decodeFolderConfig("canonfig.jsonc", new TextDecoder().decode(canonical.files[0].content)).local?.appendLocal?.includes("skills"),
+        catch: (cause) => invalid("canonfig.jsonc", String(cause)),
+      }));
+      if (!shared) return yield* Effect.fail(invalid("local.jsonc", 'Keeping skills local requires local.appendLocal to include "skills" on the Source first.'));
+      excludeSkills = change.action === "add" ? [...new Set([...excludeSkills, change.skill])].sort() : excludeSkills.filter((name) => name !== change.skill);
+    } else preserveMcp = change.preserveMcp;
+    yield* editAuthoringConfig(target, item.digest, "skill" in change
+      ? [{ path: ["excludeSkills"], value: excludeSkills }]
+      : [{ path: ["preserveMcp"], value: preserveMcp }]);
+  }
+  return { excludeSkills, preserveMcp };
 });

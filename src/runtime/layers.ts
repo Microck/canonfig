@@ -1,3 +1,4 @@
+import { localPreservation } from "../projection/authoring.ts";
 import { readFollowerFleet } from "./follower-fleet-update.ts";
 import { readFleetUpdate } from "../enrollment/fleet-update.ts";
 import { runtimeCredentialPolicy } from "./credential-policy.ts";
@@ -1314,6 +1315,9 @@ const followerCommandsLayer = (
         mapFailure(overlaysLocal(statePath, (name) => process.env[name], input.change).pipe(
           Effect.provideService(MachineState, machine),
         )).pipe(Effect.map(payload)),
+      localPreservation: (change) => mapFailure(localPreservation({
+        folder: dirname(statePath), scope: "local", statePath,
+      }, change).pipe(Effect.provideService(MachineState, machine))).pipe(Effect.map(payload)),
       status: (follower) =>
         follower === undefined
           ? mapFailure(

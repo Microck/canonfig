@@ -87,6 +87,7 @@ const recordingLayers = (
     harnesses: (input) => invoke("harnesses", input),
     shield: (input) => invoke("shield", input),
     overlays: (input) => invoke("overlays", input),
+    localPreservation: (input) => invoke("local.preservation", input),
     status: (input) => invoke("status", input),
     setAgentPolicy: (input) => invoke("agent.policy.set", input),
     getAgentPolicy: () => invoke("agent.policy.get"),
@@ -277,6 +278,27 @@ describe("typed CLI command boundary", () => {
     const unknown = await execute(["harnesses", "include", "notepad", "--json"]);
     expect(unknown.exitCode).toBe(CliExitCode.usageOrConfiguration);
     expect(unknown.invocations).toEqual([]);
+  });
+
+  it("routes machine-local preservation commands and rejects invalid skill names", async () => {
+    for (const args of [["local", "skills", "list"], ["local", "mcp", "status"]]) {
+      expect((await execute([...args, "--json"])).invocations).toEqual([{ route: "local.preservation" }]);
+    }
+    for (const action of ["add", "remove"]) {
+      expect((await execute(["local", "skills", action, "deploy", "--json"])).invocations).toEqual([
+        { route: "local.preservation", input: { action, skill: "deploy" } },
+      ]);
+    }
+    for (const action of ["preserve", "project"]) {
+      expect((await execute(["local", "mcp", action, "--json"])).invocations).toEqual([
+        { route: "local.preservation", input: { preserveMcp: action === "preserve" } },
+      ]);
+    }
+    for (const name of ["../deploy", "UPPER", "-deploy", "two words"]) {
+      const refused = await execute(["local", "skills", "add", name, "--json"]);
+      expect(refused.exitCode).toBe(CliExitCode.usageOrConfiguration);
+      expect(refused.invocations).toEqual([]);
+    }
   });
 
   it("decodes symbolic secret bindings into harness configuration", async () => {
@@ -859,7 +881,7 @@ describe("CLI rendering and exit semantics", () => {
     expect(evaluateCli(["--help"])._tag).toBe("Help");
     expect(evaluateCli(["--version"])).toEqual({
       _tag: "Version",
-      text: "7.1.12",
+      text: "7.2.0",
       exitCode: 0,
     });
   });

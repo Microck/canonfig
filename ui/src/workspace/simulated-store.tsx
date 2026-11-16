@@ -213,7 +213,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
       const mark = { added: "+", modified: "~", removed: "−" } as const;
       const summary = started.frozen.map((change) => `${mark[change.change]}${change.area === "group" ? `group ${change.id}` : change.id}`).join(", ");
       const reachable = followers.filter((follower) => follower.state !== "offline").map((follower) => follower.id);
-      sendPublication({ kind: "published", generation: started.generation, revision: { sequence: seq, digest: demoDigest(seq, summary), publishedAt: "Just now", reviewer, changes: summary }, followers: reachable });
+      sendPublication({ kind: "published", generation: started.generation, revision: { id: `demo-revision-${seq}`, sequence: seq, digest: demoDigest(seq, summary), publishedAt: "Just now", reviewer, changes: summary }, followers: reachable });
       setProposed((previous) => previous.filter((id) => !started.frozen.some((change) => change.area === "item" && change.id === id)));
       onDone();
       toast.success(`Published revision ${seq}`, { description: `Reachable machines receive it next and apply it on their next check.${DEMO ? "\nSaved in this demo workspace." : ""}` });
