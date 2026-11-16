@@ -77,12 +77,12 @@ stop / Other. Retiring a Source strands its followers and needs approval.
 ## Install and enroll
 
 Check `canonfig --version` on the Source before installing the Follower. Source
-and Followers must share the same major.minor version. If the Source is still
-on 7.1.x, stop and arrange an approved fleet upgrade before installing 7.2.0.
+and Followers must share the same major.minor version. If the Source is not on
+7.3.x, stop and arrange an approved fleet upgrade before installing 7.3.0.
 Use an approved user-level install only when needed.
 
 ```bash
-npm install --global @microck/canonfig@7.2.0
+npm install --global @microck/canonfig@7.3.0
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```

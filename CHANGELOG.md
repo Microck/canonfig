@@ -2,6 +2,52 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
+## v7.3.0 - 2026-11-16
+
+### Machine-local controls
+
+- Manage kept-local skill names and native MCP preservation from `canonfig local`
+  and the machine-local settings page. Both preserve concurrent edits and keep
+  these choices on this machine.
+
+### Fixes
+
+- Verify Windows npm packages whose command shims launch native executables
+  directly, without invoking a shell or changing their arguments.
+- Restore captured Windows permissions without reassigning an unchanged owner,
+  while preserving inheritance flags and leaving child permissions unchanged.
+
+- Reset the Publish dialog's reviewer to the workspace default after Cancel or
+  Escape, without losing the draft when validation fails.
+- Load Source revision details by their unique ID so profile histories with the
+  same revision number cannot show each other's published resources.
+
+### Security
+
+Five moderate audit findings remain in the upstream TUF/minimatch dependency
+chain. This release uses an explicitly approved exception to the clean-audit
+gate; these denial-of-service advisories are not fixed.
+
+### Upgrading
+
+Use Node.js 24.15+ or 26+. Source and Followers must all use the 7.3 release line
+before resuming synchronization; 7.2.x and 7.3.x do not synchronize with each other.
+Before installing 7.3.0, finish or recover any unfinished run with the CLI build
+that created it. If recovery fails, retain its journals and rollback snapshots,
+follow the reported recovery instructions, and do not switch packages.
+
+Stop the browser interface before installing
+`npm install --global @microck/canonfig@7.3.0`. On a Source, record and remove
+the service first, prepare credential access and required native overrides,
+then reinstall the service with its original address and port.
+
+### Known limitation
+
+Import assumes trusted local processes and source folders that stay unchanged.
+A concurrent parent-folder swap can bypass path checks and cause private
+configuration to be read. Keep other programs from changing source folders
+during import.
+
 ## v7.2.0 - 2026-11-16
 
 ### Security
@@ -23,18 +69,6 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
 - Verify the Source signature, official npm publisher provenance, and package
   integrity before activation. Active commands and unfinished runs defer updates.
   Downgrades and state-format changes require manual recovery.
-
-### Fixes
-
-- Reset the Publish dialog's reviewer to the workspace default after Cancel or Escape, without losing the draft when validation fails.
-
-### Fixes
-
-- Load Source revision details by their unique ID so profile histories with the same revision number cannot show each other's published resources.
-
-### Features
-
-- Manage kept-local skill names and native MCP preservation from `canonfig local` and the machine-local settings page. Both preserve concurrent edits and keep these choices on this machine.
 
 ### Tailnet
 

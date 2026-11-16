@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { dirname, join } from "node:path";
 import { win32 } from "node:path";
 import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 
 import { describe, expect, it } from "vitest";
 import { Cause, Effect, Layer, Redacted } from "effect";
@@ -279,6 +280,180 @@ describe.skipIf(process.platform !== "win32")("Windows file permission ownership
       expect(await readdir(join(root, "cache", "canonfig", "native"))).toEqual([
         expect.stringMatching(/^CanonfigPermissionRestore-[0-9a-f]{16}\.dll$/u),
       ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  // The parent provisions this disposable directory with a non-user owner.
+  // An ordinary user cannot manufacture a foreign-owner fixture without the
+  // very owner-assignment authority whose absence this regression exercises.
+  it.skipIf(process.env.CANONFIG_TEST_FOREIGN_OWNER_DIRECTORY === undefined)(
+    "restores a changed DACL on a guarded directory without reassigning its non-user owner",
+    async () => {
+      const target = process.env.CANONFIG_TEST_FOREIGN_OWNER_DIRECTORY!;
+      const root = dirname(target);
+      const relative = win32.relative(tmpdir(), root);
+      if (relative.startsWith("..") || win32.isAbsolute(relative)
+        || !win32.basename(root).startsWith("canonfig-foreign-owner-")) {
+        throw new Error("Foreign-owner fixture must be inside a disposable canonfig-foreign-owner-* temporary directory");
+      }
+      const child = join(target, `child-${randomUUID()}.txt`);
+      try {
+        const identity = await promisify(execFile)(powershell, [
+          "-NoProfile", "-NonInteractive", "-Command",
+          "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+        ]);
+        const originalAcl = await inspectAcl(target);
+        expect(originalAcl).not.toContain(`O:${identity.stdout.trim()}G:`);
+        await writeFile(child, "keep child content");
+        await Effect.runPromise(Effect.gen(function*() {
+          const machine = yield* MachineState;
+          const path = yield* machine.normalizePath({ path: target });
+          const managedRoot = yield* machine.normalizePath({ path: root });
+          const permissions = yield* machine.snapshotPermissions(path);
+          yield* machine.setPermissions({ path, mode: 0o700 });
+          expect(yield* Effect.promise(() => inspectAcl(target))).not.toBe(originalAcl);
+          const childAcl = yield* Effect.promise(() => inspectAcl(child));
+          yield* machine.mutateWithinRoot({
+            root: managedRoot,
+            path,
+            mutation: { kind: "directory", permissions },
+          });
+          expect(yield* Effect.promise(() => inspectAcl(target))).toBe(originalAcl);
+          expect(yield* Effect.promise(() => inspectAcl(child))).toBe(childAcl);
+          expect(yield* Effect.promise(() => readFile(child, "utf8"))).toBe("keep child content");
+        }).pipe(Effect.provide(windowsMachineStateLayer({
+          environment: [
+            ...Object.entries(process.env).flatMap(([name, value]) =>
+              value === undefined || name.toUpperCase() === "LOCALAPPDATA" ? [] : [{ name, value }]
+            ),
+            { name: "LOCALAPPDATA", value: join(root, "cache") },
+          ],
+        }))));
+      } finally {
+        await rm(child, { force: true });
+      }
+    },
+    60_000,
+  );
+
+  it("keeps real bounded reads on the FileSizeLimitError contract", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-size-limit-"));
+    const target = join(root, "oversized.cmd");
+    try {
+      await writeFile(target, "@ECHO off\r\n" + "\r\n".repeat(2048));
+      const error = await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const path = yield* machine.normalizePath({ path: target });
+        return yield* machine.readFile({ path, maximumBytes: 4096 }).pipe(Effect.flip);
+      }).pipe(Effect.provide(windowsMachineStateLayer({ environment: environment(root) }))));
+      expect(error).toMatchObject({ _tag: "FileSizeLimitError", maximumBytes: 4096 });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports an impossible owner change without accepting a partial permission restore", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-owner-change-"));
+    const target = join(root, "managed");
+    try {
+      await mkdir(target);
+      const originalAcl = await inspectAcl(target);
+      const error = await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const path = yield* machine.normalizePath({ path: target });
+        const snapshot = yield* machine.snapshotPermissions(path);
+        if (snapshot.platform !== "windows") throw new Error("expected a Windows snapshot");
+        // SYSTEM is not the user or an owner-eligible group in an ordinary
+        // interactive token. WRITE_OWNER alone does not authorize this SID.
+        const securityDescriptor = snapshot.securityDescriptor.replace(/^O:[^G]+G:/u, "O:SYG:");
+        expect(securityDescriptor).not.toBe(snapshot.securityDescriptor);
+        return yield* machine.setPermissions({
+          path, permissions: { ...snapshot, securityDescriptor },
+        }).pipe(Effect.flip);
+      }).pipe(Effect.provide(windowsMachineStateLayer({
+        environment: [
+          ...Object.entries(process.env).flatMap(([name, value]) =>
+            value === undefined || name.toUpperCase() === "LOCALAPPDATA" ? [] : [{ name, value }]
+          ),
+          { name: "LOCALAPPDATA", value: join(root, "cache") },
+        ],
+      }))));
+      expect(error).toMatchObject({
+        _tag: "MachineFilesystemError",
+        operation: "restore Windows permissions",
+      });
+      expect(await inspectAcl(target)).toBe(originalAcl);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("restores exact permissions while a reader denies content-write sharing", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-read-share-"));
+    const target = join(root, "managed.txt");
+    const script = join(root, "restore.mjs");
+    const cache = join(root, "cache");
+    try {
+      await writeFile(target, "preserved content");
+      const originalAcl = await inspectAcl(target);
+      const permissions = await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const path = yield* machine.normalizePath({ path: target });
+        const snapshot = yield* machine.snapshotPermissions(path);
+        yield* machine.setPermissions({ path, mode: 0o700 });
+        return snapshot;
+      }).pipe(Effect.provide(windowsMachineStateLayer({
+        environment: [
+          ...Object.entries(process.env).flatMap(([name, value]) =>
+            value === undefined || name.toUpperCase() === "LOCALAPPDATA" ? [] : [{ name, value }]
+          ),
+          { name: "LOCALAPPDATA", value: cache },
+        ],
+      }))));
+      expect(await inspectAcl(target)).not.toBe(originalAcl);
+      const moduleUrl = (relative: string) => JSON.stringify(pathToFileURL(
+        join(import.meta.dirname, "../src", relative),
+      ).href);
+      await writeFile(script, `
+        import { Effect } from ${JSON.stringify(pathToFileURL(createRequire(import.meta.url).resolve("effect")).href)};
+        import { MachineState } from ${moduleUrl("machine/machine-state.service.ts")};
+        import { windowsMachineStateLayer } from ${moduleUrl("machine/windows.layer.ts")};
+        await Effect.runPromise(Effect.gen(function*() {
+          const machine = yield* MachineState;
+          const path = yield* machine.normalizePath({ path: process.env.CANONFIG_TEST_TARGET });
+          yield* machine.setPermissions({
+            path, permissions: JSON.parse(process.env.CANONFIG_TEST_PERMISSIONS),
+          });
+        }).pipe(Effect.provide(windowsMachineStateLayer())));
+      `);
+      await promisify(execFile)(powershell, [
+        "-NoProfile", "-NonInteractive", "-Command",
+        "$ErrorActionPreference='Stop'; "
+          + "$reader=[IO.File]::Open($env:CANONFIG_TEST_TARGET,[IO.FileMode]::Open,[IO.FileAccess]::Read,"
+          + "([IO.FileShare]::Read -bor [IO.FileShare]::Delete)); "
+          + "try { $blocked=$false; "
+          + "try { $writer=[IO.File]::Open($env:CANONFIG_TEST_TARGET,[IO.FileMode]::Open,[IO.FileAccess]::Write,"
+          + "([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)); $writer.Dispose() } "
+          + "catch [IO.IOException] { $cause=$_.Exception; while($cause.InnerException){$cause=$cause.InnerException}; "
+          + "if(($cause.HResult -band 0xffff) -ne 32){throw}; $blocked=$true }; "
+          + "if(-not $blocked){throw 'Fixture reader did not deny content writes'}; "
+          + "& $env:CANONFIG_TEST_NODE --import=tsx $env:CANONFIG_TEST_SCRIPT; "
+          + "if($LASTEXITCODE -ne 0){throw 'Native permission restore failed with the reader open'} "
+          + "} finally { $reader.Dispose() }",
+      ], {
+        cwd: dirname(import.meta.dirname),
+        env: {
+          ...process.env, LOCALAPPDATA: cache,
+          CANONFIG_TEST_TARGET: target, CANONFIG_TEST_SCRIPT: script,
+          CANONFIG_TEST_NODE: process.execPath,
+          CANONFIG_TEST_PERMISSIONS: JSON.stringify(permissions),
+        },
+        timeout: 30_000,
+      });
+      expect(await inspectAcl(target)).toBe(originalAcl);
+      expect(await readFile(target, "utf8")).toBe("preserved content");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -11,7 +11,7 @@
 Install the exact public package version.
 
 ```powershell
-npm install --global @microck/canonfig@7.2.0
+npm install --global @microck/canonfig@7.3.0
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```

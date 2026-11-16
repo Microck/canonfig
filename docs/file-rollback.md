@@ -117,12 +117,14 @@ explains why original content must be recorded and flushed before mutation,
 and why rollback material must remain until restoration or commit finishes.
 Canonfig uses its action journal rather than a second transaction engine.
 
-[Windows BackupWrite](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-backupwrite)
-restores the native security stream with write-owner and write-DACL access.
-Ordinary access-rule setters recalculate inheritance from the current parent,
-which is not the original parent during a guarded mutation. Backup restoration
-must preserve the captured descriptor instead. Canonfig does not enable account
-privileges or request access to audit rules for this operation.
+[Windows NtSetSecurityObject](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetsecurityobject)
+restores a captured descriptor without recalculating inheritance from a temporary
+guard parent or propagating changes into children. Canonfig opens the object with
+read-control and write-DACL access, then uses
+[ReOpenFile](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-reopenfile)
+to request write-owner access on the same object only when its owner or group
+must change. It requests no content access and enables no account privileges or
+access to audit rules.
 
 Increasing the memory cap retains whole-file allocations and base64 expansion.
 Hard links are not backups of mutable files. Mandatory reflinks would restrict
