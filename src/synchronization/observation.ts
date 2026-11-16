@@ -13,6 +13,9 @@ import { toolInstallMethods } from "./installer-bindings.ts";
 import { installedToolVersion } from "./installed-tool-version.ts";
 import { relativePathAncestors, selectToolRecipe } from "./resource-plans.ts";
 import type { DesiredResource } from "./synchronization.types.ts";
+import { binaryDestination, binaryFormatProblem, binaryRecipeProblem } from "./binary-artifact.ts";
+import { recipeSourceDetails } from "../domain/recipe-versions.ts";
+import { verifyNpmArtifactBytes } from "./npm-artifact.ts";
 
 /**
  * Observing a resource on this machine, and the desired state of a resource
@@ -376,6 +379,25 @@ export const observeFollowerResource = (
       return Effect.gen(function*() {
         const machine = yield* MachineState;
         const platform = (yield* machine.userDirectories()).home.platform;
+        const binary = selectToolRecipe(desired, platform);
+        if (binary?.method === "binary") {
+          const problem = binaryRecipeProblem(binary);
+          if (problem !== undefined) return { state: "absent" } as const;
+          const { home, path } = yield* binaryDestination(binary);
+          return yield* Effect.gen(function* () {
+            yield* machine.validatePathWithinRoot({ root: home, path });
+            const object = yield* machine.inspectPath(path);
+            if (object.kind !== "regular") return { state: "unverifiable", reason: "Binary destination is not a regular file" } as const;
+            const bytes = yield* machine.readFile({ path, maximumBytes: 128 * 1024 * 1024 });
+            const permissions = yield* machine.permissions(path);
+            const integrity = recipeSourceDetails(binary.source).integrity!;
+            return { state: "present", digest: sha256BytesHex(bytes), executable: permissions.executableByOwner,
+              installedVersion: verifyNpmArtifactBytes(bytes, integrity)
+                && binaryFormatProblem(bytes, platform, binary.architecture!) === undefined
+                && (platform === "windows" || permissions.executableByOwner) ? binary.version : undefined } as const;
+          }).pipe(Effect.catchTag("MachineFilesystemError", (error) =>
+            isNotFoundFilesystemError(error) ? Effect.succeed({ state: "absent" } as const) : Effect.fail(error)));
+        }
         const qualifiedEntrypoint = desired.qualification === undefined
           ? undefined
           : selectToolRecipe(desired, platform)?.entrypoint;

@@ -1623,6 +1623,18 @@ describe("stable planning and bounded resolution", () => {
     expect(JSON.parse(unversioned.encoded).actions[0].detail.kind).toBe("human-action");
   });
 
+  it("keeps a present tool without a matching binary recipe and refuses an absent one", () => {
+    const subject = resource("tool", "tool", "ensure");
+    const desired: DesiredResource = {
+      kind: "tool", toolId: "tool", loginRequired: false,
+      recipes: [{ platform: "macos", method: "binary", package: "tool", version: "1.0.0", architecture: "arm64", entrypoint: "tool", source: "https://example.com/tool", integrity: `sha256-${Buffer.alloc(32).toString("base64")}` }],
+    };
+    const planFor = (observed: ObservedResourceState) =>
+      runPlan(plannerInput([subject], { desired: [desired], observed: [observed] }));
+    expect(planFor({ state: "present", digest: sha256Hex("tool"), executable: true }).actions.map((action) => action.kind)).toEqual(["no-op"]);
+    expect(planFor({ state: "absent" }).actions.map((action) => action.kind)).toEqual(["human-action"]);
+  });
+
   it("reinstalls a present tool whose installer reports a version other than the pin", () => {
     const subject = resource("isort", "tool", "ensure");
     const desired: DesiredResource = {

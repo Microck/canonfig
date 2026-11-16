@@ -8,6 +8,7 @@ import {
 } from "../domain/profile.ts";
 import {
   AutomaticRecipeMethod,
+  ToolRecipeRef,
   type BuildPolicy,
   type RecipeIndexPolicy,
   type RecipeSource,
@@ -70,10 +71,12 @@ import {
   validateNpmArtifactProvenance,
   verifyNpmArtifactBytes,
   type NpmArtifactTransport,
+  type NpmArtifactRequest,
 } from "./npm-artifact.ts";
-import { relativePathAncestors } from "./resource-plans.ts";
+import { relativePathAncestors, selectToolRecipe } from "./resource-plans.ts";
 import { resolveInstallerInvocation, toolInstallMethods } from "./installer-bindings.ts";
 import { redactText } from "../cli/redaction.ts";
+import { binaryDestination, installBinaryArtifact } from "./binary-artifact.ts";
 
 const isUnboundedNonNpmPackage = (value: string): boolean =>
   /^(?:git\+|git:\/\/|github:|gitlab:|bitbucket:|git@|file:|link:|workspace:|https?:\/\/)/iu
@@ -146,6 +149,7 @@ export interface ResourceExecutionContext {
    * reviewed source or the production transport policy.
    */
   readonly npmArtifactTransport?: NpmArtifactTransport | undefined;
+  readonly binaryArtifactRequest?: NpmArtifactRequest | undefined;
 }
 
 export interface PreparedResourceAction {
@@ -1799,6 +1803,13 @@ const installerDiagnostic = (
   return redactText(bounded);
 };
 
+const BrewFormulaInfo = Schema.fromJsonString(Schema.Struct({
+  formulae: Schema.Array(Schema.Struct({
+    versions: Schema.Struct({ stable: Schema.String }),
+    revision: Schema.Number,
+  })),
+}));
+
 const installInvocation = (
   context: ResourceExecutionContext,
   method: string,
@@ -2054,6 +2065,8 @@ const installInvocation = (
           ]
           : []),
       ]
+      : method === "brew" || method === "homebrew"
+      ? [{ name: "HOMEBREW_NO_AUTO_UPDATE", value: "1" }]
       : undefined;
     const arguments_ = method === "npm"
       ? [
@@ -2072,7 +2085,7 @@ const installInvocation = (
         ...(verifiedArtifactPath !== undefined ? ["--offline"] : []),
       ]
       : method === "brew" || method === "homebrew"
-      ? ["install", version === undefined ? packageName : `${packageName}@${version}`]
+      ? ["install", "--formula", "--", packageName]
       : method === "winget"
       ? version === undefined
         ? ["install", "--id", packageName, "--silent"]
@@ -2144,6 +2157,37 @@ const installInvocation = (
       // Cancellation is observed between commands; external installs are not rolled back.
       return method === "uv" ? Effect.uninterruptible(execution) : execution;
     };
+    if (method === "brew" || method === "homebrew") {
+      // A pin is a package version, not a formula-name suffix. Query and
+      // install the authored formula without an intervening auto-update.
+      const info = yield* runInstaller(["info", "--json=v2", "--formula", "--", packageName]);
+      const metadata = yield* Schema.decodeUnknownEffect(BrewFormulaInfo)(decoder.decode(info.standardOutput)).pipe(
+        Effect.mapError(() => new ActionExecutionError({
+          action: context.action.id,
+          message: `Homebrew returned invalid formula metadata for ${packageName}; no tool was installed`,
+        })),
+      );
+      const formula = metadata.formulae[0];
+      if (
+        metadata.formulae.length !== 1 || formula === undefined
+        || formula.versions.stable.length === 0
+        || !Number.isSafeInteger(formula.revision) || formula.revision < 0
+      ) {
+        return yield* new ActionExecutionError({
+          action: context.action.id,
+          message: `Homebrew did not report one stable formula version for ${packageName}; no tool was installed`,
+        });
+      }
+      const available = formula.revision === 0
+        ? formula.versions.stable
+        : `${formula.versions.stable}_${formula.revision}`;
+      if (version === undefined || !installedVersionMatches(method, available, version)) {
+        return yield* new ActionExecutionError({
+          action: context.action.id,
+          message: `Homebrew formula ${packageName} provides ${available}, not the pinned ${version}; no tool was installed. Human Action Required: select a formula providing the exact pin or review the recipe version.`,
+        });
+      }
+    }
     if (method !== "uv") {
       yield* runInstaller(arguments_);
       return;
@@ -2230,6 +2274,12 @@ const confirmInstalledVersion = (
     timeoutMilliseconds: context.limits.processTimeoutMilliseconds,
     maximumOutputBytes: context.limits.maximumProcessOutputBytes,
   });
+  if (installed === undefined && (detail.method === "brew" || detail.method === "homebrew")) {
+    return yield* new ActionExecutionError({
+      action: context.action.id,
+      message: `Homebrew did not report an installed version for ${detail.package} after installation; the pinned ${detail.version} was not verified`,
+    });
+  }
   if (installed === undefined || installedVersionMatches(detail.method, installed, detail.version)) return;
   return yield* new ActionExecutionError({
     action: context.action.id,
@@ -2320,6 +2370,19 @@ const prepareAction = (
     case "remove-resource":
       return prepareRemoval(context, detail);
     case "install-tool":
+      if (detail.method === "binary") {
+        return Effect.succeed({
+          execute: Schema.decodeUnknownEffect(ToolRecipeRef)(detail).pipe(
+            Effect.mapError((error) => new InvalidExecutionPlanError({ message: error.message })),
+            Effect.flatMap((recipe) => installBinaryArtifact(recipe, context.binaryArtifactRequest)),
+            Effect.catchTag("BinaryArtifactError", (error) => Effect.fail(new ActionExecutionError({
+              action: context.action.id,
+              message: error.message,
+            }))),
+            Effect.asVoid,
+          ),
+        });
+      }
       return Effect.succeed({
         execute: installInvocation(
           context,
@@ -2484,6 +2547,21 @@ const verifierInstallMethods = (context: ResourceExecutionContext) =>
     ? toolInstallMethods(context.desired.recipes)
     : Effect.succeed([]);
 
+/** A selected binary's own name must resolve to the artifact, never a PATH shadow. */
+const binaryVerifierPath = (context: ResourceExecutionContext, name: string) => Effect.gen(function*() {
+  if (context.desired.kind !== "tool" || name.includes("/") || name.includes("\\")) return undefined;
+  const machine = yield* MachineState;
+  const platform = (yield* machine.userDirectories()).home.platform;
+  const recipe = selectToolRecipe(context.desired, platform);
+  if (recipe?.method !== "binary") return undefined;
+  const normalizedName = platform === "windows" ? name.toLowerCase().replace(/\.exe$/u, "") : name;
+  const packageName = platform === "windows" ? recipe.package.toLowerCase().replace(/\.exe$/u, "") : recipe.package;
+  if (normalizedName !== packageName) return undefined;
+  return (yield* binaryDestination(recipe).pipe(
+    Effect.mapError((error) => new InvalidExecutionPlanError({ message: error.message })),
+  )).path;
+});
+
 const missingVerifierReason = (error: ExecutableNotFoundError): string =>
   `verification executable ${error.executable} was not found (searched: ${
     error.searched.join(", ") || "no directories"
@@ -2584,8 +2662,13 @@ const verifyCommand = (
     const method = `${proves === "client-load" ? "client-load" : "command"}:${name}`;
     const bareName = !isAbsolute(name) && !win32.isAbsolute(name)
       && !name.includes("/") && !name.includes("\\");
-    const installMethods = bareName ? yield* verifierInstallMethods(context) : [];
-    const executable = isAbsolute(name) || win32.isAbsolute(name)
+    const binaryPath = yield* binaryVerifierPath(context, name);
+    if (binaryPath !== undefined) {
+      const presence = yield* verifyExecutable(context, binaryPath.absolute);
+      if (!presence.passed) return { passed: false, method, reason: `Verification executable is missing or not executable: ${binaryPath.absolute}` };
+    }
+    const installMethods = binaryPath === undefined && bareName ? yield* verifierInstallMethods(context) : [];
+    const executable = binaryPath !== undefined ? binaryPath : isAbsolute(name) || win32.isAbsolute(name)
       ? yield* machine.normalizePath({ path: name })
       : yield* machine.findExecutable({
         name,
@@ -2763,10 +2846,12 @@ const verifyMcpQualification = (
 const verifyExecutable = (
   context: ResourceExecutionContext,
   executable: string,
-): Effect.Effect<ResourceVerification, MachineStateError, MachineState> =>
+): Effect.Effect<ResourceVerification, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const method = `executable:${executable}`;
+    const binaryPath = yield* binaryVerifierPath(context, executable);
+    if (binaryPath !== undefined) return yield* verifyExecutable(context, binaryPath.absolute);
     // An explicit path must resolve to the executable at that exact location.
     // npm's POSIX global bin entries are symlinks to scripts in its package
     // tree; inspectPath and permissions intentionally use lstat, so resolve

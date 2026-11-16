@@ -31,6 +31,7 @@ import type {
   SkillDriftState,
   ToolRecipe,
 } from "./synchronization.types.ts";
+import { binaryRecipeProblem } from "./binary-artifact.ts";
 
 export interface ResourceActionDraft {
   readonly kind: Exclude<PlannedActionKind, "transfer-blob">;
@@ -49,6 +50,9 @@ interface InstallToolActionDetail {
   source?: ToolRecipe["source"];
   buildPolicy?: BuildPolicy;
   provenance?: InstallerRecipeProvenance;
+  platform?: ToolRecipe["platform"];
+  architecture?: string;
+  entrypoint?: string;
 }
 
 interface WriteFileActionDetail {
@@ -1014,7 +1018,7 @@ export const selectToolRecipe = (
     .filter((candidate) =>
       candidate.platform === platform
       && (
-        desired.qualification === undefined
+        (desired.qualification === undefined && candidate.method !== "binary")
         || candidate.architecture === process.arch
       )
     )
@@ -1038,6 +1042,16 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     return [unresolvedAgentTask(context, `Verify or install tool ${context.desired.toolId}`)];
   }
   const recipe = selectToolRecipe(context.desired, context.platform);
+  if (context.observed.state !== "present" && recipe === undefined && context.desired.recipes.some((candidate) => candidate.method === "binary")) {
+    return [{ kind: "human-action", detail: { kind: "human-action", reason: `No binary recipe matches ${context.platform}/${process.arch}`, instructions: "Declare a binary recipe for this platform and architecture with an exact version, HTTPS source, and integrity." } }];
+  }
+  if (recipe?.method === "binary") {
+    const problem = binaryRecipeProblem(recipe);
+    if (problem !== undefined) return [{ kind: "human-action", detail: { kind: "human-action", reason: problem, instructions: "Declare an exact native binary recipe with platform, architecture, HTTPS source, and sha256 or sha512 integrity." } }];
+    if (context.observed.state === "present" && context.observed.installedVersion !== recipe.version) {
+      return [{ kind: "human-action", detail: { kind: "human-action", reason: "The binary destination does not match the reviewed artifact", instructions: "Move the existing executable aside explicitly, then synchronize. Canonfig will not overwrite an unmanaged executable." } }];
+    }
+  }
   // The installed version, when the recipe's installer reports one that
   // differs from the pin. A present executable alone left a tool at its old
   // version after the profile pinned a new one.
@@ -1157,6 +1171,11 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
   if (recipe.indexPolicy !== undefined) detail.indexPolicy = recipe.indexPolicy;
   if (recipe.source !== undefined) detail.source = recipe.source;
   if (recipe.buildPolicy !== undefined) detail.buildPolicy = recipe.buildPolicy;
+  if (recipe.method === "binary") {
+    detail.platform = recipe.platform;
+    if (recipe.architecture !== undefined) detail.architecture = recipe.architecture;
+    if (recipe.entrypoint !== undefined) detail.entrypoint = recipe.entrypoint;
+  }
   if (provenance !== undefined) detail.provenance = provenance;
   if (detail.buildPolicy?.mode === "required") {
     return [{
