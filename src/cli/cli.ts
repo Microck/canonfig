@@ -14,6 +14,7 @@ import {
 import { AgentPolicy } from "../domain/identity.ts";
 import type { EnrollmentInvitationGrant } from "../enrollment/enrollment.types.ts";
 import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
+import { AgentSecretBindingSchema, agentHarnessOriginProblem, parseAgentSecretBinding } from "../domain/agent-harness-bounds.ts";
 import { ExecutableAuthorizationSchema } from "../domain/synchronization.ts";
 import { parseOverlay, keptLocalSkillName } from "../projection/folder.ts";
 import { TARGET_IDS, type TargetId } from "../projection/model.ts";
@@ -306,25 +307,6 @@ const parsePositiveInteger = (
   return number;
 };
 
-interface ParsedSecretBinding {
-  readonly name: string;
-  readonly secret: string;
-}
-
-const parseSecretBinding = (
-  value: string,
-): ParsedSecretBinding => {
-  const separator = value.indexOf("=");
-  const name = separator < 0 ? "" : value.slice(0, separator);
-  const secret = separator < 0 ? "" : value.slice(separator + 1);
-  if (
-    !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)
-    || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(secret)
-  ) {
-    throw new Error("Invalid secret binding; expected ENV_NAME=shared-secret-name");
-  }
-  return { name, secret };
-};
 
 const durationMilliseconds = (value: string): number => {
   const match = /^(?<amount>[1-9]\d*)(?<unit>ms|s|m|h)$/u.exec(value);
@@ -754,15 +736,8 @@ const evaluateAgentHarnessCommand = (
   }
   const origins = options.values.get("--allow-origin") ?? [];
   for (const origin of origins) {
-    let url: URL;
-    try {
-      url = new URL(origin);
-    } catch {
-      return invalid(`Invalid agent harness origin: ${origin}`);
-    }
-    if (url.protocol !== "https:" || url.origin !== origin) {
-      return invalid(`Agent harness origin must be an exact HTTPS origin: ${origin}`);
-    }
+    const problem = agentHarnessOriginProblem(origin);
+    if (problem !== undefined) return invalid(problem);
   }
   const configuration = Schema.decodeUnknownOption(
     Schema.Struct({
@@ -777,10 +752,7 @@ const evaluateAgentHarnessCommand = (
       allowedPaths: Schema.Array(Schema.NonEmptyString),
       allowedExecutables: Schema.Array(Schema.NonEmptyString),
       executableAuthorizations: Schema.Array(ExecutableAuthorizationSchema),
-      secretBindings: Schema.Array(Schema.Struct({
-        name: Schema.NonEmptyString,
-        secret: Schema.NonEmptyString,
-      })),
+      secretBindings: Schema.Array(AgentSecretBindingSchema),
       allowedOrigins: Schema.Array(Schema.NonEmptyString),
       allowedCapabilities: Schema.Array(AgentHarnessCapability),
     }),
@@ -799,7 +771,7 @@ const evaluateAgentHarnessCommand = (
       ...new Set(options.values.get("--allow-leaf-executable") ?? []),
     ],
     secretBindings: (options.values.get("--bind-secret") ?? [])
-      .map(parseSecretBinding),
+      .map(parseAgentSecretBinding),
     executableAuthorizations: (options.values.get("--allow-leaf-executable") ?? [])
       .map((executable) => ({ executable, behavior: "leaf" as const })),
     allowedOrigins: origins,

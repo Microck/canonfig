@@ -125,6 +125,12 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
       executable: savedHarness?.executable === savedHarness?.kind ? "" : savedHarness?.executable ?? "",
       paths: [...(savedHarness?.allowedPaths ?? [])], maximumInputBytes: savedHarness?.maximumInputBytes ?? 1024 * 1024,
       origins: savedHarness?.allowedOrigins ?? [],
+      executables: [...(savedHarness?.allowedExecutables ?? [])],
+      executableAuthorizations: savedHarness?.executableAuthorizations ?? [],
+      secretBindings: savedHarness?.secretBindings ?? [],
+      capabilities: savedHarness?.allowedCapabilities ?? [],
+      environmentNames: savedHarness ? savedHarness.environment?.map(({ name }) => name) ?? null : [],
+      argumentsDisclosed: savedHarness?.kind !== "custom" || savedHarness.arguments !== undefined,
       ...(savedHarness?.kind === "custom" ? { kind: "custom", args: [...(savedHarness.arguments ?? [])] } : { kind: savedHarness?.kind ?? "codex", model: savedHarness?.model ?? "" }),
     },
   };
@@ -134,7 +140,7 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
       return false;
     }
     policyEvent({ kind: "Save", draft: next });
-    const draftHarness = next.mode !== "deterministic-only" ? next.harness : null;
+    const draftHarness = next.harness;
     const policySaved = await policy.run(async (signal) => {
       try {
         const saved = await backend.request("/api/agent/policy", GuiAgentPolicy, signal, { method: "PUT", body: next.mode });
@@ -154,6 +160,9 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
             ? savedHarness?.arguments === undefined && draftHarness.args.length === 0 ? {} : { arguments: draftHarness.args }
             : draftHarness.model ? { model: draftHarness.model } : {}),
           allowedPaths: draftHarness.paths, maximumInputBytes: draftHarness.maximumInputBytes,
+          allowedOrigins: draftHarness.origins, allowedExecutables: draftHarness.executables,
+          executableAuthorizations: draftHarness.executableAuthorizations,
+          secretBindings: draftHarness.secretBindings, allowedCapabilities: draftHarness.capabilities,
         };
         const updatedHarness = await backend.request("/api/agent/harness", GuiAgentHarness, signal, { method: "PUT", body });
         if (!signal.aborted) { harness.setData({ configured: true, value: updatedHarness }); policyEvent({ kind: "HarnessCommitted" }); }

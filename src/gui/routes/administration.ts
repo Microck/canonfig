@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Effect, Schema } from "effect";
 import { isNestedCommandLauncher } from "../../agent/agent-resolution.service.ts";
+import { agentHarnessOriginProblem } from "../../domain/agent-harness-bounds.ts";
 import { FollowerCommands } from "../../cli/follower-commands.ts";
 import { CliCommandFailure, SourceCommands, type CliPayload } from "../../cli/source-commands.ts";
 import { sanitizeCliData } from "../../cli/render.ts";
@@ -116,9 +117,9 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
         message = "Invalid agent harness configuration";
       }
       for (const origin of input.allowedOrigins) {
-        const url = URL.canParse(origin) ? new URL(origin) : undefined;
-        if (url === undefined || url.protocol !== "https:" || url.origin !== origin) {
-          message = `Agent harness origin must be an exact HTTPS origin: ${origin}`;
+        const problem = agentHarnessOriginProblem(origin);
+        if (problem !== undefined) {
+          message = problem;
           break;
         }
       }

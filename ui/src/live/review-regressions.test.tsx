@@ -22,6 +22,7 @@ const { RevisionsView, SecretsView } = await import("../workspace/source");
 const { FollowerOperationEvidence } = await import("../workspace/follower-evidence");
 const { SetupJournal } = await import("../onboarding/enrollment-controller");
 const { TooltipProvider } = await import("../components/ui/tooltip");
+const { AgentPolicyView } = await import("../workspace/settings");
 after(async () => { await GlobalRegistrator.unregister(); });
 
 function Probe() {
@@ -58,6 +59,7 @@ function Fixture({ backend, session }: { backend: WorkspaceBackend; session: Gui
     {route.view === "local" && <LocalView />}
     {route.view === "secrets" && <SecretsView />}
     {route.view === "revisions" && <RevisionsView />}
+    {route.view === "agent" && <AgentPolicyView />}
     {route.role === "follower" && <FollowerOperationEvidence />}
   </LiveWorkspaceProvider></TooltipProvider>;
 }
@@ -532,5 +534,46 @@ it("a failed harness save retains the committed policy as an explicit partial su
     await until(() => app.mutations.some(({ path }) => path === "/api/agent/harness"), "Harness save did not start");
     await until(() => app.container.querySelector('[data-testid="policy-save"]')?.textContent?.includes("HarnessFailed") === true, "Partial commit was not represented");
     assert.equal(app.container.querySelector('[data-testid="policy"]')?.textContent, "agent-propose");
+  } finally { await app.close(); }
+});
+
+it("reviews and saves complete harness bounds while deterministic-only stays selected", async () => {
+  const harness = {
+    kind: "codex", executable: "codex", maximumInputBytes: 4096,
+    allowedPaths: ["/tmp/agent-work"], allowedExecutables: ["printf"],
+    executableAuthorizations: [{ executable: "printf", behavior: "leaf" }],
+    allowedOrigins: ["https://api.example.com"], allowedCapabilities: ["restart"],
+    secretBindings: [{ name: "API_TOKEN", secret: "api-token" }],
+    environment: [{ name: "PLAIN_NAME", value: "not-rendered-environment-value" }],
+  };
+  const app = await fixture("/follower/settings/agent", {
+    "/api/status": { machineRole: { role: "follower" }, lifecycle: {}, tunnel: null },
+    "/api/agent/policy": "deterministic-only",
+    "/api/agent/harness": { configured: true, value: harness },
+  }, (path, method, body, outgoing) => {
+    if (method !== "PUT") return false;
+    outgoing.end(JSON.stringify(path === "/api/agent/policy" ? "deterministic-only" : body));
+    return true;
+  });
+  try {
+    await until(() => !!app.container.querySelector("#ap-origins"), "Harness form did not load");
+    assert.equal(app.container.querySelector<HTMLTextAreaElement>("#ap-origins")?.value, "https://api.example.com");
+    assert.equal(app.container.querySelector<HTMLTextAreaElement>("#ap-executables")?.value, "printf");
+    assert.equal(app.container.querySelector<HTMLTextAreaElement>("#ap-bindings")?.value, "API_TOKEN=api-token");
+    assert.ok(app.container.textContent?.includes("PLAIN_NAME"));
+    assert.ok(!app.container.textContent?.includes("not-rendered-environment-value"));
+    const model = app.container.querySelector<HTMLInputElement>("#ap-model");
+    assert.ok(model);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(model, "test-model");
+      model.dispatchEvent(new window.Event("input", { bubbles: true }));
+    });
+    await click("Review settings");
+    assert.equal(app.mutations.length, 0);
+    assert.ok(document.querySelector('[role="dialog"]')?.textContent?.includes("May restart services or applications"));
+    await click("Save settings");
+    await until(() => app.mutations.length === 2, "Harness settings did not save");
+    assert.equal(app.mutations[0]?.body, "deterministic-only");
+    assert.deepEqual(app.mutations[1]?.body, { ...harness, model: "test-model" });
   } finally { await app.close(); }
 });

@@ -1,7 +1,7 @@
 import type { FleetUpdate } from "../../../src/domain/fleet-update";
 import type { Schema } from "effect";
 import type { UpdateLifecycle } from "./live/self-update";
-import type { GuiAgentPolicy, GuiInstallerMethod, GuiSourceServiceStatus, GuiSelfUpdateCheck, GuiSelfUpdateStatus, GuiSelfUpdateProgress } from "../../../src/gui/contract/administration";
+import type { GuiAgentHarness, GuiAgentPolicy, GuiInstallerMethod, GuiSourceServiceStatus, GuiSelfUpdateCheck, GuiSelfUpdateStatus, GuiSelfUpdateProgress } from "../../../src/gui/contract/administration";
 import type { GuiRequestError } from "../gui-client";
 
 export interface AdministrationResource<T> {
@@ -24,6 +24,13 @@ interface HarnessBounds {
   /** Bytes, without rounding the CLI's exact evidence limit. */
   maximumInputBytes: number;
   origins: readonly string[];
+  executables: string[];
+  executableAuthorizations: NonNullable<typeof GuiAgentHarness.Type.executableAuthorizations>;
+  secretBindings: NonNullable<typeof GuiAgentHarness.Type.secretBindings>;
+  capabilities: typeof GuiAgentHarness.Type.allowedCapabilities;
+  /** Values are never exposed in this summary. Null means the collection is write-only. */
+  environmentNames: readonly string[] | null;
+  argumentsDisclosed: boolean;
 }
 export type HarnessDraft = HarnessBounds & (
   | { kind: "codex" | "claude"; model: string }

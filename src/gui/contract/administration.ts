@@ -3,6 +3,7 @@ import { TailnetReport } from "../../domain/tailnet.ts";
 import type { AgentPolicy } from "../../domain/identity.ts";
 import type { FollowerAgentHarnessConfiguration } from "../../synchronization/follower-sync-config.ts";
 import { GuiError } from "./session.ts";
+import { AgentSecretBindingSchema } from "../../domain/agent-harness-bounds.ts";
 
 export const GuiAgentPolicy = Schema.Literals(["deterministic-only", "agent-propose", "agent-apply"]) satisfies Schema.Codec<AgentPolicy>;
 /** Browser-safe wire fields. Domain configuration modules also define Node-only errors. */
@@ -14,7 +15,7 @@ export const GuiAgentHarness = Schema.Struct({
   arguments: Schema.optionalKey(Schema.Array(Schema.String)),
   /** Omitted in responses when credential-bearing; an explicit array replaces the stored collection. */
   environment: Schema.optionalKey(Schema.Array(Schema.Struct({ name: Schema.NonEmptyString, value: Schema.String }))),
-  secretBindings: Schema.optionalKey(Schema.Array(Schema.Struct({ name: Schema.NonEmptyString, secret: Schema.NonEmptyString }))),
+  secretBindings: Schema.optionalKey(Schema.Array(AgentSecretBindingSchema)),
   maximumInputBytes: Schema.Int.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(1024 * 1024)),
   allowedPaths: Schema.Array(Schema.NonEmptyString),
   allowedExecutables: Schema.Array(Schema.NonEmptyString),

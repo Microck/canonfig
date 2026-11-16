@@ -16,6 +16,8 @@ const POLICY_SEED: SavedPolicy = {
   mode: agentPolicy.mode, harness: {
     kind: "codex", model: "", executable: "", paths: agentPolicy.writablePaths,
     maximumInputBytes: agentPolicy.maxInputKb * 1024, origins: agentPolicy.origins,
+    executables: [], executableAuthorizations: [], secretBindings: [], capabilities: [],
+    environmentNames: [], argumentsDisclosed: true,
   },
 };
 const JOURNAL_SEED: SetupJournal = { phase: "planned", at: 0 };
