@@ -1,0 +1,64 @@
+{
+  "seed": 279,
+  "tier": "primary",
+  "platform": "Linux-6.8.0-1058-oracle-aarch64-with-glibc2.35",
+  "memory_limit_mib": 1536,
+  "timeout_seconds_per_operation": 300,
+  "disk_reserve_bytes": 2000000000,
+  "population": {
+    "binaries": {
+      "files": 12671,
+      "bytes": 4952015001
+    },
+    "caches": {
+      "files": 8074,
+      "bytes": 636941818
+    },
+    "dependencies": {
+      "files": 150306,
+      "bytes": 3606822594
+    },
+    "folder": {
+      "files": 182,
+      "bytes": 1663512
+    },
+    "harness-configuration": {
+      "files": 11106,
+      "bytes": 197271166
+    },
+    "logs": {
+      "files": 640,
+      "bytes": 45029027
+    },
+    "other-runtime": {
+      "files": 29281,
+      "bytes": 5117693543
+    },
+    "sessions-history": {
+      "files": 37238,
+      "bytes": 12407033386
+    }
+  },
+  "excluded": {
+    "symlinks": 3120,
+    "special_files": 1,
+    "unreadable": 0,
+    "changed_during_primary_copy": 0
+  },
+  "rows": [
+    {
+      "corpus": "folder-and-harness-configuration",
+      "algorithm": "brotli-11",
+      "sample_files": 11288,
+      "sample_bytes": 198934678,
+      "compression": {
+        "seconds": 66.669515,
+        "peak_rss_kib": null,
+        "exit_code": -9,
+        "failure": "disk-reserve"
+      },
+      "tar_bytes": 0,
+      "status": "disk-reserve"
+    }
+  ]
+}

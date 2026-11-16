@@ -172,6 +172,8 @@ const validatePackageMetadata = (metadataPath: string): void => {
     "@canonfig/effect-platform-node-shared",
     "@canonfig/effect-sql-sqlite-node",
     "@sigstore/bundle",
+    // Password-encrypted backups use the age v1 format (docs/adr/0004-backup.md).
+    "age-encryption",
     "effect",
     "jsonc-parser",
     "selfsigned",
@@ -217,6 +219,8 @@ const validatePackageContents = (
     "package.json",
     "dist/runtime/main.js",
     "dist/ui/index.html",
+    // Source for the `max` preset's ZPAQ helper, which users compile (docs: back up and restore).
+    "tools/backup/zpaq-stream.cpp",
   ]) {
     if (!paths.includes(required)) fail(`package omits required file: ${required}`);
   }
@@ -225,6 +229,7 @@ const validatePackageContents = (
       path === "LICENSE"
       || path === "README.md"
       || path === "package.json"
+      || path === "tools/backup/zpaq-stream.cpp"
       || /^dist\/.+\.(?:js|d\.ts)$/u.test(path)
       || /^dist\/ui\/.+\.(?:html|js|css|svg|png|ico|woff2?|txt)$/u.test(path)
     ) continue;

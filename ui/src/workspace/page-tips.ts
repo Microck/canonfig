@@ -22,8 +22,8 @@ export const PAGE_TIPS: Record<"source" | "follower", Partial<Record<View, TourS
     },
     backups: {
       target: ["page-help"],
-      title: "What a restore does",
-      body: "Restoring puts back what a harness had before Canonfig first wrote to it, then excludes that harness on this machine so the next sync leaves it alone.",
+      title: "Restore any copy",
+      body: "Test a copy without changing anything, restore it into a new folder for a new machine, or put your Canonfig folder back. Before Canonfig holds the harness files Canonfig replaced.",
     },
   },
   follower: {
@@ -39,8 +39,8 @@ export const PAGE_TIPS: Record<"source" | "follower", Partial<Record<View, TourS
     },
     backups: {
       target: ["page-help"],
-      title: "What a restore does",
-      body: "Restoring puts back what a harness had before Canonfig first wrote to it, then excludes that harness on this machine so the next update leaves it alone.",
+      title: "Restore any copy",
+      body: "Test a copy without changing anything, or restore it into a new folder for a new machine. Before Canonfig holds the harness files Canonfig replaced; putting one back stops syncing that harness here.",
     },
   },
 };

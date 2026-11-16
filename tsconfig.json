@@ -16,6 +16,7 @@
   },
   "include": [
     "src/agent/**/*.ts",
+    "src/backup/**/*.ts",
     "src/cli/**/*.ts",
     "src/domain/**/*.ts",
     "src/gui/**/*.ts",

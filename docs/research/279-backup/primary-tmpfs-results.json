@@ -1,0 +1,166 @@
+{
+  "seed": 279,
+  "tier": "primary",
+  "platform": "Linux-6.8.0-1058-oracle-aarch64-with-glibc2.35",
+  "memory_limit_mib": 1536,
+  "timeout_seconds_per_operation": 900,
+  "disk_reserve_bytes": 2000000000,
+  "population": {
+    "binaries": {
+      "files": 12690,
+      "bytes": 4952838450
+    },
+    "caches": {
+      "files": 8074,
+      "bytes": 636941818
+    },
+    "dependencies": {
+      "files": 150306,
+      "bytes": 3606822594
+    },
+    "folder": {
+      "files": 182,
+      "bytes": 1663512
+    },
+    "harness-configuration": {
+      "files": 11106,
+      "bytes": 197271166
+    },
+    "logs": {
+      "files": 640,
+      "bytes": 45029027
+    },
+    "other-runtime": {
+      "files": 29300,
+      "bytes": 5118558224
+    },
+    "sessions-history": {
+      "files": 37285,
+      "bytes": 12424326877
+    }
+  },
+  "excluded": {
+    "symlinks": 3120,
+    "special_files": 1,
+    "unreadable": 0,
+    "changed_during_primary_copy": 0
+  },
+  "rows": [
+    {
+      "corpus": "folder-and-harness-configuration",
+      "algorithm": "brotli-11",
+      "sample_files": 11288,
+      "sample_bytes": 198934678,
+      "compression": {
+        "seconds": 344.394185,
+        "peak_rss_kib": 226700,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 207697920,
+      "compressed_bytes": 35005374,
+      "ratio": 0.16853984,
+      "decompression": {
+        "seconds": 5.213938,
+        "peak_rss_kib": 19392,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    },
+    {
+      "corpus": "folder-and-harness-configuration",
+      "algorithm": "bzip3-32",
+      "sample_files": 11288,
+      "sample_bytes": 198934678,
+      "compression": {
+        "seconds": 22.241299,
+        "peak_rss_kib": 200576,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 207697920,
+      "compressed_bytes": 37034383,
+      "ratio": 0.17830888,
+      "decompression": {
+        "seconds": 10.233414,
+        "peak_rss_kib": 201224,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    },
+    {
+      "corpus": "folder-and-harness-configuration",
+      "algorithm": "lz4-9",
+      "sample_files": 11288,
+      "sample_bytes": 198934678,
+      "compression": {
+        "seconds": 3.941169,
+        "peak_rss_kib": 53120,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 207697920,
+      "compressed_bytes": 106062149,
+      "ratio": 0.51065581,
+      "decompression": {
+        "seconds": 0.395345,
+        "peak_rss_kib": 34176,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    },
+    {
+      "corpus": "folder-and-harness-configuration",
+      "algorithm": "7z-ultra",
+      "sample_files": 11288,
+      "sample_bytes": 198934678,
+      "compression": {
+        "seconds": 63.873668,
+        "peak_rss_kib": 692096,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 207697920,
+      "compressed_bytes": 31682163,
+      "ratio": 0.15253963,
+      "decompression": {
+        "seconds": 2.747839,
+        "peak_rss_kib": 237696,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    },
+    {
+      "corpus": "folder-and-harness-configuration",
+      "algorithm": "zpaq-max",
+      "sample_files": 11288,
+      "sample_bytes": 198934678,
+      "compression": {
+        "seconds": 662.49744,
+        "peak_rss_kib": 306776,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 207697920,
+      "compressed_bytes": 33489906,
+      "ratio": 0.16124334,
+      "decompression": {
+        "seconds": 685.511023,
+        "peak_rss_kib": 295516,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    }
+  ],
+  "private_copies_removed": true
+}

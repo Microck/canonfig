@@ -1,3 +1,5 @@
+import { backupCommand } from "../backup/backup.ts";
+import { reconcileBackupSchedules } from "../backup/backup-schedule.ts";
 import { localPreservation } from "../projection/authoring.ts";
 import { readFollowerFleet } from "./follower-fleet-update.ts";
 import { readFleetUpdate } from "../enrollment/fleet-update.ts";
@@ -88,6 +90,7 @@ import {
 import {
   defaultScheduledInvocation,
   FollowerConfigurationFields,
+  FollowerSynchronizationConfigurationError,
 } from "../synchronization/follower-sync-config.ts";
 import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
@@ -165,6 +168,10 @@ const doctorAgentFromEnvironment = (): DoctorAgentConfiguration | undefined => {
     executable: executable ?? "",
   };
 };
+
+/** `recover` or `abandon` on a machine with no open local run and no follower enrollment. */
+const nothingUnfinished = new FollowerSynchronizationConfigurationError({ reason: "missing",
+  message: "this machine has no unfinished run to recover or abandon" });
 
 const payload = <Value>(value: Value): CliPayload =>
   Schema.decodeUnknownSync(Schema.MutableJson)(
@@ -837,6 +844,15 @@ const followerCommandsLayer = (
       });
 
     const service: FollowerCommandsService = {
+      backup: request => mapFailure(backupCommand({ statePath,
+        sourceSigner: loadSourceSigner(enrollment).pipe(Effect.map(({ archiveSigner }) => archiveSigner)),
+        environment: name => process.env[name],
+      }, request).pipe(
+        Effect.provideService(StateRepository, repository), Effect.provideService(MachineState, machine),
+        Effect.provideService(Synchronization, synchronization),
+        // A restore --apply carries the import's result; anything but a converged run fails the command like import does.
+      )).pipe(Effect.flatMap((value) => "outcome" in value && value.outcome !== undefined
+        ? Effect.flatMap(outcomePayload(value.outcome), () => Effect.succeed(payload(value))) : Effect.succeed(payload(value)))),
       enroll: (input) =>
         Effect.gen(function*() {
             // A Source's folder is what it authors and publishes; enrolling
@@ -1233,6 +1249,11 @@ const followerCommandsLayer = (
                   details: result,
                 })),
               ) : Effect.void),
+              Effect.tap((completed) => input.mode === "apply" ? reconcileBackupSchedules(dirname(statePath)).pipe(
+                Effect.provideService(MachineState, machine),
+                Effect.mapError((error) => new CliCommandFailure({ category: commandFailure(error).category,
+                  message: `File synchronization completed, but backup schedule reconciliation failed: ${commandFailure(error).message}`, details: completed })),
+              ) : Effect.void),
             );
             const result = yield* (execute === undefined ? synchronize : execute(synchronize)).pipe(Effect.catch((error) => {
               const failed = scheduled ? mapFailure(repository.transitionScheduledInvocation({
@@ -1247,21 +1268,22 @@ const followerCommandsLayer = (
           })));
         }));
       },
-      // An open local projection run is resolved before any follower run.
+      // An open local projection run is resolved before any follower run. A Source or standalone machine has no
+      // follower run, so with no local run open it is told there is nothing to resolve.
       abandon: () =>
         mapFailure(Effect.gen(function*() {
-          return (yield* hasOpenLocalRun)
-            ? yield* abandonLocal(statePath)
-            : yield* abandonFollowerRun(statePath);
+          if (yield* hasOpenLocalRun) return yield* abandonLocal(statePath);
+          if ((yield* repository.getFollowerSynchronizationConfiguration()) === undefined) return yield* nothingUnfinished;
+          return yield* abandonFollowerRun(statePath);
         }).pipe(
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),
         )).pipe(Effect.map(payload)),
       recover: () =>
         mapFailure(Effect.gen(function*() {
-          return (yield* hasOpenLocalRun)
-            ? yield* recoverLocal(statePath)
-            : yield* recoverFollower(statePath);
+          if (yield* hasOpenLocalRun) return yield* recoverLocal(statePath);
+          if ((yield* repository.getFollowerSynchronizationConfiguration()) === undefined) return yield* nothingUnfinished;
+          return yield* recoverFollower(statePath);
         }).pipe(
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),

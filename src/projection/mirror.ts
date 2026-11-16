@@ -92,6 +92,7 @@ export const mirrorItem = (
     case "mcp":
     case "settings":
     case "resources":
+    case "backupPolicies":
       return entryOf(resource.spec, `${category}.${rest}`);
     case "tools":
       return resource.kind === "tool" && resource.spec.kind === "tool" ? { kind: "apply" } : undefined;

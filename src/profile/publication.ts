@@ -1,3 +1,4 @@
+import { validateBackupPolicy } from "../backup/backup-config.ts";
 import { assertProfileMetadataBudget } from "./metadata-budget.ts";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
@@ -308,6 +309,11 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
       spec: { kind: "credential", reference: credential.reference },
       verify: { method: "credential-present", reference: credential.reference },
     });
+  }
+  for (const [name, policy] of Object.entries(config.backupPolicies ?? {})) {
+    const problem = validateBackupPolicy(policy);
+    if (problem !== undefined) throw refuse(`backupPolicies.${name}: ${problem}`);
+    resources.push(jsonItem(`backupPolicies:${name}`, `backupPolicies.${name}`, policy));
   }
 
   // A grouped item reaches only followers in one of its groups. A script

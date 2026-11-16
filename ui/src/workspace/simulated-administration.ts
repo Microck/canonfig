@@ -35,7 +35,7 @@ function startedNow() {
   return `today ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`;
 }
 
-export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): AdministrationSlice {
+export function useSimulatedAdministration(ws: Omit<Workspace, "admin" | "backup">): AdministrationSlice {
   const [installed, setInstalled] = useSharedState("service-installed", true);
   const [boundInstallers, setBoundInstallers] = useSharedState("installers", INSTALLERS);
   const [serviceAction, setServiceAction] = useSharedState<"install" | "remove" | "restart" | null>("service-busy", null);

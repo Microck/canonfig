@@ -65,6 +65,7 @@ export const ompAdapter: HarnessAdapter = {
         ...under(context, root, ["agent.db", "history.db", "models.db", "sessions", "blobs", "memories"]),
         ...under(context, base, ["logs", "install-id"]),
       ],
+      credentials: under(context, root, ["agent.db"]),
       sharedSkills: false,
       // discovery/agents.ts also reads the shared user directory, independently of native writes.
       skillSources: [

@@ -114,7 +114,7 @@ export const validateSchedule = (
   }
 };
 
-const calendarFor = (
+export const calendarFor = (
   platform: MachinePlatform,
   schedule: SyncSchedule,
 ): Effect.Effect<SchedulerCalendar, ScheduleManagerError> => {

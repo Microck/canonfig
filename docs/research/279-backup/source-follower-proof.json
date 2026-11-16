@@ -1,0 +1,38 @@
+{
+  "node": "v24.21.0",
+  "mode": "source-follower",
+  "evidence": [
+    {
+      "check": "signed-source-policy-to-follower",
+      "receivedAndExecuted": true
+    },
+    {
+      "check": "native-recovery-rollback-and-drill",
+      "existingCredentialsPreserved": true,
+      "temporaryReferencesRemoved": true
+    },
+    {
+      "check": "source-identity-and-shared-secret-recovery",
+      "keysByteIdentical": true,
+      "registryIdentical": true,
+      "newNativeReferences": true,
+      "authenticatedFollowerSync": true
+    },
+    {
+      "check": "native-systemd-backup-and-drill",
+      "timerFired": true,
+      "newSnapshot": true,
+      "exitCodes": [
+        0,
+        0
+      ],
+      "removedAfterDisable": true
+    },
+    {
+      "check": "locked-native-store",
+      "exit": 3,
+      "destinationAbsent": true,
+      "noPlaintextCredentialWrites": true
+    }
+  ]
+}

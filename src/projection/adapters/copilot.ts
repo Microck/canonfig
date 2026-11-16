@@ -90,6 +90,7 @@ export const copilotAdapter: HarnessAdapter = {
         "config.json", "mcp-oauth-config", "mcp-secrets", "session-state", "session-store.db",
         "command-history-state", "logs", "ide", "plugin-data", "permissions-config.json", "providers.json",
       ]),
+      credentials: under(context, root, ["mcp-oauth-config", "mcp-secrets"]),
       sharedSkills: false,
       skillSources: [
         { path: context.join(root, "skills"), depth: 1 },

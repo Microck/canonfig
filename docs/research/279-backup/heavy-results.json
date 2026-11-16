@@ -1,0 +1,596 @@
+{
+  "seed": 279,
+  "tier": "heavy",
+  "platform": "Linux-6.8.0-1058-oracle-aarch64-with-glibc2.35",
+  "memory_limit_mib": 1536,
+  "timeout_seconds_per_operation": 300,
+  "disk_reserve_bytes": 2000000000,
+  "population": {
+    "binaries": {
+      "files": 12837,
+      "bytes": 5423836712
+    },
+    "caches": {
+      "files": 8386,
+      "bytes": 759804100
+    },
+    "dependencies": {
+      "files": 188863,
+      "bytes": 5113063411
+    },
+    "folder": {
+      "files": 182,
+      "bytes": 1663512
+    },
+    "harness-configuration": {
+      "files": 11098,
+      "bytes": 197233875
+    },
+    "logs": {
+      "files": 1849,
+      "bytes": 116786784
+    },
+    "other-runtime": {
+      "files": 38399,
+      "bytes": 5931603483
+    },
+    "sessions-history": {
+      "files": 37423,
+      "bytes": 12472511909
+    }
+  },
+  "excluded": {
+    "symlinks": 3333,
+    "special_files": 14,
+    "unreadable": 0
+  },
+  "rows": [
+    {
+      "corpus": "binaries",
+      "algorithm": "zstd-1",
+      "sample_files": 1955,
+      "sample_bytes": 363800946,
+      "compression": {
+        "seconds": 10.137803,
+        "peak_rss_kib": 16896,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 365312000,
+      "compressed_bytes": 282338260,
+      "ratio": 0.77286884,
+      "decompression": {
+        "seconds": 1.477686,
+        "peak_rss_kib": 5376,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok",
+      "extrapolated_full_category": {
+        "compressed_bytes": 4209325557,
+        "compression_seconds": 151.143,
+        "decompression_seconds": 22.031
+      }
+    },
+    {
+      "corpus": "binaries",
+      "algorithm": "zstd-6",
+      "sample_files": 1955,
+      "sample_bytes": 363800946,
+      "compression": {
+        "seconds": 4.970583,
+        "peak_rss_kib": 56832,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 365312000,
+      "compressed_bytes": 273062677,
+      "ratio": 0.74747798,
+      "decompression": {
+        "seconds": 0.692764,
+        "peak_rss_kib": 7040,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok",
+      "extrapolated_full_category": {
+        "compressed_bytes": 4071037716,
+        "compression_seconds": 74.105,
+        "decompression_seconds": 10.328
+      }
+    },
+    {
+      "corpus": "binaries",
+      "algorithm": "xz-9e",
+      "sample_files": 1955,
+      "sample_bytes": 363800946,
+      "compression": {
+        "seconds": 185.245296,
+        "peak_rss_kib": null,
+        "exit_code": -9,
+        "failure": "source-changed"
+      },
+      "tar_bytes": 0,
+      "status": "source-changed"
+    },
+    {
+      "corpus": "binaries",
+      "algorithm": "zpaq-max",
+      "sample_files": 1955,
+      "sample_bytes": 363800946,
+      "compression": {
+        "seconds": 300.728362,
+        "peak_rss_kib": null,
+        "exit_code": -9,
+        "failure": "timeout"
+      },
+      "tar_bytes": 0,
+      "status": "timeout"
+    },
+    {
+      "corpus": "caches",
+      "algorithm": "zstd-1",
+      "sample_files": 717,
+      "sample_bytes": 50963453,
+      "compression": {
+        "seconds": 2.183154,
+        "peak_rss_kib": 17152,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 51527680,
+      "compressed_bytes": 29907509,
+      "ratio": 0.58041637,
+      "decompression": {
+        "seconds": 0.304482,
+        "peak_rss_kib": 5504,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok",
+      "extrapolated_full_category": {
+        "compressed_bytes": 445885171,
+        "compression_seconds": 32.548,
+        "decompression_seconds": 4.539
+      }
+    },
+    {
+      "corpus": "caches",
+      "algorithm": "zstd-6",
+      "sample_files": 717,
+      "sample_bytes": 50963453,
+      "compression": {
+        "seconds": 0.492886,
+        "peak_rss_kib": 48512,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 51527680,
+      "compressed_bytes": 28268983,
+      "ratio": 0.54861742,
+      "decompression": {
+        "seconds": 0.112459,
+        "peak_rss_kib": 7168,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok",
+      "extrapolated_full_category": {
+        "compressed_bytes": 421456709,
+        "compression_seconds": 7.348,
+        "decompression_seconds": 1.677
+      }
+    },
+    {
+      "corpus": "caches",
+      "algorithm": "xz-9e",
+      "sample_files": 717,
+      "sample_bytes": 50963453,
+      "compression": {
+        "seconds": 17.663101,
+        "peak_rss_kib": 520704,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 51527680,
+      "compressed_bytes": 24654828,
+      "ratio": 0.47847735,
+      "decompression": {
+        "seconds": 0.875467,
+        "peak_rss_kib": 52224,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok",
+      "extrapolated_full_category": {
+        "compressed_bytes": 367573983,
+        "compression_seconds": 263.336,
+        "decompression_seconds": 13.052
+      }
+    },
+    {
+      "corpus": "caches",
+      "algorithm": "zpaq-max",
+      "sample_files": 717,
+      "sample_bytes": 50963453,
+      "compression": {
+        "seconds": 191.508628,
+        "peak_rss_kib": 295936,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 51527680,
+      "compressed_bytes": 24277550,
+      "ratio": 0.4711555,
+      "decompression": {
+        "seconds": 209.658223,
+        "peak_rss_kib": 279296,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok",
+      "extrapolated_full_category": {
+        "compressed_bytes": 361949219,
+        "compression_seconds": 2855.164,
+        "decompression_seconds": 3125.753
+      }
+    },
+    {
+      "corpus": "dependencies",
+      "algorithm": "zstd-1",
+      "sample_files": 11026,
+      "sample_bytes": 342955993,
+      "compression": {
+        "seconds": 43.621971,
+        "peak_rss_kib": 14976,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 351610880,
+      "compressed_bytes": 109402001,
+      "ratio": 0.3111451,
+      "decompression": {
+        "seconds": 0.64456,
+        "peak_rss_kib": 5248,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok",
+      "extrapolated_full_category": {
+        "compressed_bytes": 1631052904,
+        "compression_seconds": 650.351,
+        "decompression_seconds": 9.61
+      }
+    },
+    {
+      "corpus": "dependencies",
+      "algorithm": "zstd-6",
+      "sample_files": 11026,
+      "sample_bytes": 342955993,
+      "compression": {
+        "seconds": 7.570633,
+        "peak_rss_kib": 46592,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 351610880,
+      "compressed_bytes": 91330319,
+      "ratio": 0.25974827,
+      "decompression": {
+        "seconds": 0.685812,
+        "peak_rss_kib": 6784,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok",
+      "extrapolated_full_category": {
+        "compressed_bytes": 1361625754,
+        "compression_seconds": 112.869,
+        "decompression_seconds": 10.225
+      }
+    },
+    {
+      "corpus": "dependencies",
+      "algorithm": "xz-9e",
+      "sample_files": 11026,
+      "sample_bytes": 342955993,
+      "compression": {
+        "seconds": 231.46274,
+        "peak_rss_kib": 690816,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 351610880,
+      "compressed_bytes": 67490508,
+      "ratio": 0.19194659,
+      "decompression": {
+        "seconds": 7.360164,
+        "peak_rss_kib": 67328,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok",
+      "extrapolated_full_category": {
+        "compressed_bytes": 1006202703,
+        "compression_seconds": 3450.832,
+        "decompression_seconds": 109.731
+      }
+    },
+    {
+      "corpus": "dependencies",
+      "algorithm": "zpaq-max",
+      "sample_files": 11026,
+      "sample_bytes": 342955993,
+      "compression": {
+        "seconds": 300.36771,
+        "peak_rss_kib": null,
+        "exit_code": -9,
+        "failure": "timeout"
+      },
+      "tar_bytes": 0,
+      "status": "timeout"
+    },
+    {
+      "corpus": "logs",
+      "algorithm": "zstd-1",
+      "sample_files": 111,
+      "sample_bytes": 7833411,
+      "compression": {
+        "seconds": 0.164684,
+        "peak_rss_kib": 11776,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 7925760,
+      "compressed_bytes": 675552,
+      "ratio": 0.08523498,
+      "decompression": {
+        "seconds": 0.105863,
+        "peak_rss_kib": 4480,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok",
+      "extrapolated_full_category": {
+        "compressed_bytes": 10071672,
+        "compression_seconds": 2.455,
+        "decompression_seconds": 1.578
+      }
+    },
+    {
+      "corpus": "logs",
+      "algorithm": "zstd-6",
+      "sample_files": 111,
+      "sample_bytes": 7833411,
+      "compression": {
+        "seconds": 0.107403,
+        "peak_rss_kib": 14720,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 7925760,
+      "compressed_bytes": 572599,
+      "ratio": 0.07224531,
+      "decompression": {
+        "seconds": 0.014803,
+        "peak_rss_kib": 6144,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok",
+      "extrapolated_full_category": {
+        "compressed_bytes": 8536766,
+        "compression_seconds": 1.601,
+        "decompression_seconds": 0.221
+      }
+    },
+    {
+      "corpus": "logs",
+      "algorithm": "xz-9e",
+      "sample_files": 111,
+      "sample_bytes": 7833411,
+      "compression": {
+        "seconds": 8.493827,
+        "peak_rss_kib": 121472,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 7925760,
+      "compressed_bytes": 341400,
+      "ratio": 0.04307473,
+      "decompression": {
+        "seconds": 0.049144,
+        "peak_rss_kib": 9728,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok",
+      "extrapolated_full_category": {
+        "compressed_bytes": 5089865,
+        "compression_seconds": 126.633,
+        "decompression_seconds": 0.733
+      }
+    },
+    {
+      "corpus": "logs",
+      "algorithm": "zpaq-max",
+      "sample_files": 111,
+      "sample_bytes": 7833411,
+      "compression": {
+        "seconds": 28.597283,
+        "peak_rss_kib": 224640,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 7925760,
+      "compressed_bytes": 217678,
+      "ratio": 0.02746462,
+      "decompression": {
+        "seconds": 25.251986,
+        "peak_rss_kib": 216960,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok",
+      "extrapolated_full_category": {
+        "compressed_bytes": 3245318,
+        "compression_seconds": 426.351,
+        "decompression_seconds": 376.477
+      }
+    },
+    {
+      "corpus": "other-runtime",
+      "algorithm": "zstd-1",
+      "sample_files": 2966,
+      "sample_bytes": 397859130,
+      "compression": {
+        "seconds": 1.277638,
+        "peak_rss_kib": null,
+        "exit_code": -9,
+        "failure": "source-changed"
+      },
+      "tar_bytes": 0,
+      "status": "source-changed"
+    },
+    {
+      "corpus": "other-runtime",
+      "algorithm": "zstd-6",
+      "sample_files": 2966,
+      "sample_bytes": 397859130,
+      "compression": {
+        "seconds": 0.264015,
+        "peak_rss_kib": null,
+        "exit_code": -9,
+        "failure": "source-changed"
+      },
+      "tar_bytes": 0,
+      "status": "source-changed"
+    },
+    {
+      "corpus": "other-runtime",
+      "algorithm": "xz-9e",
+      "sample_files": 2966,
+      "sample_bytes": 397859130,
+      "compression": {
+        "seconds": 15.982273,
+        "peak_rss_kib": null,
+        "exit_code": -9,
+        "failure": "source-changed"
+      },
+      "tar_bytes": 0,
+      "status": "source-changed"
+    },
+    {
+      "corpus": "other-runtime",
+      "algorithm": "zpaq-max",
+      "sample_files": 2966,
+      "sample_bytes": 397859130,
+      "compression": {
+        "seconds": 114.918692,
+        "peak_rss_kib": null,
+        "exit_code": -9,
+        "failure": "source-changed"
+      },
+      "tar_bytes": 0,
+      "status": "source-changed"
+    },
+    {
+      "corpus": "sessions-history",
+      "algorithm": "zstd-1",
+      "sample_files": 2474,
+      "sample_bytes": 836587064,
+      "compression": {
+        "seconds": 4.205301,
+        "peak_rss_kib": 16896,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 838461440,
+      "compressed_bytes": 354684591,
+      "ratio": 0.42301837,
+      "decompression": {
+        "seconds": 1.389169,
+        "peak_rss_kib": 5376,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok",
+      "extrapolated_full_category": {
+        "compressed_bytes": 5287922770,
+        "compression_seconds": 62.696,
+        "decompression_seconds": 20.711
+      }
+    },
+    {
+      "corpus": "sessions-history",
+      "algorithm": "zstd-6",
+      "sample_files": 2474,
+      "sample_bytes": 836587064,
+      "compression": {
+        "seconds": 7.275452,
+        "peak_rss_kib": 56576,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 838461440,
+      "compressed_bytes": 326593320,
+      "ratio": 0.38951501,
+      "decompression": {
+        "seconds": 8.035115,
+        "peak_rss_kib": 7040,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok",
+      "extrapolated_full_category": {
+        "compressed_bytes": 4869115539,
+        "compression_seconds": 108.468,
+        "decompression_seconds": 119.794
+      }
+    },
+    {
+      "corpus": "sessions-history",
+      "algorithm": "xz-9e",
+      "sample_files": 2474,
+      "sample_bytes": 836587064,
+      "compression": {
+        "seconds": 300.147796,
+        "peak_rss_kib": null,
+        "exit_code": -9,
+        "failure": "timeout"
+      },
+      "tar_bytes": 0,
+      "status": "timeout"
+    },
+    {
+      "corpus": "sessions-history",
+      "algorithm": "zpaq-max",
+      "sample_files": 2474,
+      "sample_bytes": 836587064,
+      "compression": {
+        "seconds": 300.14842,
+        "peak_rss_kib": null,
+        "exit_code": -9,
+        "failure": "timeout"
+      },
+      "tar_bytes": 0,
+      "status": "timeout"
+    }
+  ],
+  "private_copies_removed": true
+}

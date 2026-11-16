@@ -1,4 +1,5 @@
 import type { FollowerLive } from "./follower-types";
+import type { GuiBackupList, GuiBackupRequest, GuiBackupStatus } from "../../../src/gui/contract/backup";
 import type { PublishedLook } from "@/shared/machine-map/model";
 import type { Dispatch, SetStateAction } from "react";
 import type { AppendLocalCategory, Follower, FollowerState, Harness, HarnessId, ItemCategory, KeptSurface, LocalCategory, LocalItem, Resource, Revision, SkillSource, Snapshot, SurfaceCategory, UpstreamSkill } from "@/shared/metadata";
@@ -390,7 +391,25 @@ export interface FollowerSlice {
   isStopped: () => boolean;
 }
 
+/**
+ * Portable backups on this machine: policies, their latest run and drill, and one operation channel. Live reads
+ * /api/backup/status and posts operations to /api/backup; the demo simulates the same shapes.
+ */
+export interface BackupSlice {
+  status: GuiBackupStatus | null;
+  state: ResourceState;
+  /** The running or last operation: loading while it runs, its error after a failure. */
+  action: ResourceState;
+  /** Each policy's copies from its last `list`: this machine's, or another writer's when one was picked. A run or prune drops that policy's entry. */
+  listings: Readonly<Record<string, GuiBackupList>>;
+  /** The writers with copies at each policy's destination, from its last `owners`. */
+  owners: Readonly<Record<string, ReadonlyArray<string>>>;
+  /** Resolves to the action's warnings once it succeeded (empty for actions without a preflight), or null when it failed. */
+  run: (request: GuiBackupRequest) => Promise<{ readonly warnings: ReadonlyArray<string> } | null>;
+}
+
 /** The single store contract consumed by all workspace screens. */
 export interface Workspace extends OverviewSlice, ProfileSlice, MachinesSlice, FollowerSlice {
   admin: AdministrationSlice;
+  backup: BackupSlice;
 }

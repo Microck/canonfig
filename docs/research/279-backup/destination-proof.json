@@ -1,0 +1,50 @@
+{
+  "node": "v24.21.0",
+  "mode": "destinations",
+  "evidence": [
+    {
+      "check": "encrypted-fast",
+      "restoredByteIdentical": true,
+      "codec": "zstd"
+    },
+    {
+      "check": "encrypted-balanced",
+      "restoredByteIdentical": true,
+      "codec": "zstd"
+    },
+    {
+      "check": "encrypted-small",
+      "restoredByteIdentical": true,
+      "codec": "xz"
+    },
+    {
+      "check": "encrypted-max",
+      "restoredByteIdentical": true,
+      "codec": "xz"
+    },
+    {
+      "check": "wrong-password",
+      "exit": 7,
+      "destinationAbsent": true
+    },
+    {
+      "check": "git",
+      "plaintextScan": true,
+      "restoredByteIdentical": true
+    },
+    {
+      "check": "rclone",
+      "plaintextScan": false,
+      "restoredByteIdentical": true
+    },
+    {
+      "check": "plaintext-git-secret-scan",
+      "exit": 2,
+      "snapshotsUnchanged": true
+    },
+    {
+      "check": "forgejo-17.0.1-ssh",
+      "restoredByteIdentical": true
+    }
+  ]
+}

@@ -1,0 +1,437 @@
+{
+  "seed": 279,
+  "tier": "primary",
+  "platform": "Linux-6.8.0-1058-oracle-aarch64-with-glibc2.35",
+  "memory_limit_mib": 1536,
+  "timeout_seconds_per_operation": 300,
+  "disk_reserve_bytes": 2000000000,
+  "population": {
+    "binaries": {
+      "files": 12664,
+      "bytes": 4951714628
+    },
+    "caches": {
+      "files": 8070,
+      "bytes": 636941621
+    },
+    "dependencies": {
+      "files": 150306,
+      "bytes": 3606822594
+    },
+    "folder": {
+      "files": 182,
+      "bytes": 1663512
+    },
+    "harness-configuration": {
+      "files": 11106,
+      "bytes": 197271166
+    },
+    "logs": {
+      "files": 640,
+      "bytes": 45029027
+    },
+    "other-runtime": {
+      "files": 29276,
+      "bytes": 5117747298
+    },
+    "sessions-history": {
+      "files": 37218,
+      "bytes": 12399625230
+    }
+  },
+  "excluded": {
+    "symlinks": 3120,
+    "special_files": 1,
+    "unreadable": 0,
+    "changed_during_primary_copy": 0
+  },
+  "rows": [
+    {
+      "corpus": "folder",
+      "algorithm": "gzip-9",
+      "sample_files": 182,
+      "sample_bytes": 1663512,
+      "compression": {
+        "seconds": 0.064888,
+        "peak_rss_kib": 1408,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 1812480,
+      "compressed_bytes": 471732,
+      "ratio": 0.2602688,
+      "decompression": {
+        "seconds": 0.011782,
+        "peak_rss_kib": 1280,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    },
+    {
+      "corpus": "folder",
+      "algorithm": "zstd-1",
+      "sample_files": 182,
+      "sample_bytes": 1663512,
+      "compression": {
+        "seconds": 0.034429,
+        "peak_rss_kib": 6016,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 1812480,
+      "compressed_bytes": 523044,
+      "ratio": 0.28857918,
+      "decompression": {
+        "seconds": 0.006868,
+        "peak_rss_kib": 4224,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    },
+    {
+      "corpus": "folder",
+      "algorithm": "zstd-6",
+      "sample_files": 182,
+      "sample_bytes": 1663512,
+      "compression": {
+        "seconds": 0.039927,
+        "peak_rss_kib": 8576,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 1812480,
+      "compressed_bytes": 436070,
+      "ratio": 0.240593,
+      "decompression": {
+        "seconds": 0.007529,
+        "peak_rss_kib": 4992,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    },
+    {
+      "corpus": "folder",
+      "algorithm": "zstd-19",
+      "sample_files": 182,
+      "sample_bytes": 1663512,
+      "compression": {
+        "seconds": 0.390327,
+        "peak_rss_kib": 88320,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 1812480,
+      "compressed_bytes": 396272,
+      "ratio": 0.21863524,
+      "decompression": {
+        "seconds": 0.006042,
+        "peak_rss_kib": 4864,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    },
+    {
+      "corpus": "folder",
+      "algorithm": "zstd-22-long31",
+      "sample_files": 182,
+      "sample_bytes": 1663512,
+      "compression": {
+        "seconds": 0.009519,
+        "peak_rss_kib": 3328,
+        "exit_code": 11,
+        "failure": "BrokenPipeError"
+      },
+      "tar_bytes": 0,
+      "status": "BrokenPipeError"
+    },
+    {
+      "corpus": "folder",
+      "algorithm": "xz-9e",
+      "sample_files": 182,
+      "sample_bytes": 1663512,
+      "compression": {
+        "seconds": 0.585136,
+        "peak_rss_kib": 79488,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 1812480,
+      "compressed_bytes": 387248,
+      "ratio": 0.21365643,
+      "decompression": {
+        "seconds": 0.024309,
+        "peak_rss_kib": 3840,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    },
+    {
+      "corpus": "folder",
+      "algorithm": "brotli-11",
+      "sample_files": 182,
+      "sample_bytes": 1663512,
+      "compression": {
+        "seconds": 2.168961,
+        "peak_rss_kib": 37664,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 1812480,
+      "compressed_bytes": 382861,
+      "ratio": 0.21123599,
+      "decompression": {
+        "seconds": 0.009017,
+        "peak_rss_kib": 3968,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    },
+    {
+      "corpus": "folder",
+      "algorithm": "bzip3-32",
+      "sample_files": 182,
+      "sample_bytes": 1663512,
+      "compression": {
+        "seconds": 0.288237,
+        "peak_rss_kib": 139264,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 1812480,
+      "compressed_bytes": 346952,
+      "ratio": 0.19142391,
+      "decompression": {
+        "seconds": 0.154626,
+        "peak_rss_kib": 139264,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    },
+    {
+      "corpus": "folder",
+      "algorithm": "lz4-9",
+      "sample_files": 182,
+      "sample_bytes": 1663512,
+      "compression": {
+        "seconds": 0.066736,
+        "peak_rss_kib": 3968,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 1812480,
+      "compressed_bytes": 554472,
+      "ratio": 0.30591896,
+      "decompression": {
+        "seconds": 0.0068,
+        "peak_rss_kib": 3712,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    },
+    {
+      "corpus": "folder",
+      "algorithm": "7z-ultra",
+      "sample_files": 182,
+      "sample_bytes": 1663512,
+      "compression": {
+        "seconds": 0.457007,
+        "peak_rss_kib": 85504,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 1812480,
+      "compressed_bytes": 389656,
+      "ratio": 0.21498499,
+      "decompression": {
+        "seconds": 0.022305,
+        "peak_rss_kib": 6016,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    },
+    {
+      "corpus": "folder",
+      "algorithm": "zpaq-max",
+      "sample_files": 182,
+      "sample_bytes": 1663512,
+      "compression": {
+        "seconds": 5.336272,
+        "peak_rss_kib": 103040,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 1812480,
+      "compressed_bytes": 293867,
+      "ratio": 0.16213531,
+      "decompression": {
+        "seconds": 7.436467,
+        "peak_rss_kib": 101248,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    },
+    {
+      "corpus": "folder-and-harness-configuration",
+      "algorithm": "gzip-9",
+      "sample_files": 11288,
+      "sample_bytes": 198934678,
+      "compression": {
+        "seconds": 31.371677,
+        "peak_rss_kib": 1408,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 207697920,
+      "compressed_bytes": 92843734,
+      "ratio": 0.44701331,
+      "decompression": {
+        "seconds": 1.30832,
+        "peak_rss_kib": 1280,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    },
+    {
+      "corpus": "folder-and-harness-configuration",
+      "algorithm": "zstd-1",
+      "sample_files": 11288,
+      "sample_bytes": 198934678,
+      "compression": {
+        "seconds": 3.236888,
+        "peak_rss_kib": 15872,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 207697920,
+      "compressed_bytes": 65168244,
+      "ratio": 0.31376455,
+      "decompression": {
+        "seconds": 0.279342,
+        "peak_rss_kib": 5248,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    },
+    {
+      "corpus": "folder-and-harness-configuration",
+      "algorithm": "zstd-6",
+      "sample_files": 11288,
+      "sample_bytes": 198934678,
+      "compression": {
+        "seconds": 1.593449,
+        "peak_rss_kib": 47872,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 207697920,
+      "compressed_bytes": 49758568,
+      "ratio": 0.23957182,
+      "decompression": {
+        "seconds": 0.386321,
+        "peak_rss_kib": 6912,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    },
+    {
+      "corpus": "folder-and-harness-configuration",
+      "algorithm": "zstd-19",
+      "sample_files": 11288,
+      "sample_bytes": 198934678,
+      "compression": {
+        "seconds": 44.79629,
+        "peak_rss_kib": 227712,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 207697920,
+      "compressed_bytes": 39021917,
+      "ratio": 0.18787823,
+      "decompression": {
+        "seconds": 0.393728,
+        "peak_rss_kib": 13056,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    },
+    {
+      "corpus": "folder-and-harness-configuration",
+      "algorithm": "zstd-22-long31",
+      "sample_files": 11288,
+      "sample_bytes": 198934678,
+      "compression": {
+        "seconds": 0.032588,
+        "peak_rss_kib": 3072,
+        "exit_code": 11,
+        "failure": "BrokenPipeError"
+      },
+      "tar_bytes": 0,
+      "status": "BrokenPipeError"
+    },
+    {
+      "corpus": "folder-and-harness-configuration",
+      "algorithm": "xz-9e",
+      "sample_files": 11288,
+      "sample_bytes": 198934678,
+      "compression": {
+        "seconds": 71.068142,
+        "peak_rss_kib": 690944,
+        "exit_code": 0,
+        "failure": null
+      },
+      "tar_bytes": 207697920,
+      "compressed_bytes": 31563864,
+      "ratio": 0.15197005,
+      "decompression": {
+        "seconds": 1.88314,
+        "peak_rss_kib": 67328,
+        "exit_code": 0,
+        "failure": null
+      },
+      "round_trip": true,
+      "status": "ok"
+    },
+    {
+      "corpus": "folder-and-harness-configuration",
+      "algorithm": "brotli-11",
+      "sample_files": 11288,
+      "sample_bytes": 198934678,
+      "compression": {
+        "seconds": 82.555017,
+        "peak_rss_kib": null,
+        "exit_code": -9,
+        "failure": "disk-reserve"
+      },
+      "tar_bytes": 0,
+      "status": "disk-reserve"
+    }
+  ]
+}

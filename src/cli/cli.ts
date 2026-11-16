@@ -1,3 +1,4 @@
+import { BackupName, SnapshotId, type BackupRequest } from "../backup/backup.types.ts";
 import { fileURLToPath } from "node:url";
 import { prepareFleetSync, finishFleetSync, restartFleetSync } from "../runtime/follower-fleet-update.ts";
 import { Effect, Option, Schema } from "effect";
@@ -53,6 +54,7 @@ import type { StateRepository } from "../state/state-repository.service.ts";
 import { sourceEndpointUrl } from "../enrollment/tailnet.ts";
 
 export type CliCommand =
+  | { readonly _tag: "Backup"; readonly request: BackupRequest }
   | { readonly _tag: "Ui"; readonly port: number; readonly open: boolean; readonly host: string; readonly origin: string | undefined }
   | { readonly _tag: "SourceInit" }
   | {
@@ -822,6 +824,55 @@ const evaluateAgentHarnessCommand = (
   }, format);
 };
 
+const evaluateBackupCommand = (action: string | undefined, rest: ReadonlyArray<string>, format: CliOutputFormat): CliOutcome => {
+  if (action === "status" || action === "schedule") {
+    const options = parseOptions(rest, new Set(), new Set());
+    if (options.positionals.length !== 0) return invalid(`backup ${action} accepts no arguments`);
+    return command({ _tag: "Backup", request: { action } }, format);
+  }
+  if (action === "configure") {
+    const options = parseOptions(rest, new Set(["--policy"]), new Set(["--allow-credentials"]));
+    if (options.positionals.length !== 1) return invalid("Usage: canonfig backup configure <name> --policy <policy.json> [--allow-credentials]");
+    const name = decodeOption(Schema.decodeUnknownOption(BackupName), options.positionals[0]!, "backup policy name");
+    return command({ _tag: "Backup", request: { action: "configure-file", name, file: one(options, "--policy", true)!, allowCredentials: options.switches.has("--allow-credentials") } }, format);
+  }
+  if (action === "password" || action === "disable" || action === "enable" || action === "allow-credentials" || action === "deny-credentials" || action === "owners" || action === "prune" || action === "run" || action === "check") {
+    const switches = action === "password" ? ["--stdin"] : action === "prune" ? ["--apply"] : action === "run" ? ["--scheduled"] : [];
+    const options = parseOptions(rest, new Set(), new Set(switches));
+    if (options.positionals.length !== 1) return invalid(`Usage: canonfig backup ${action} <name>${action === "password" ? " --stdin" : ""}`);
+    const name = decodeOption(Schema.decodeUnknownOption(BackupName), options.positionals[0]!, "backup name");
+    if (action === "password" && !options.switches.has("--stdin")) return invalid("Backup passwords must be piped through --stdin, never passed as arguments");
+    const request: BackupRequest = action === "prune" ? { action, name, apply: options.switches.has("--apply") }
+      : action === "run" ? { action, name, scheduled: options.switches.has("--scheduled") } : { action, name };
+    return command({ _tag: "Backup", request }, format);
+  }
+  if (action === "list" || action === "verify" || action === "drill" || action === "restore") {
+    const values = action === "restore" ? ["--owner", "--expect-key", "--to"] : action === "list" ? ["--owner"] : ["--owner", "--expect-key"];
+    const switches = action === "restore" ? ["--apply", "--dry-run", "--replace", "--recover-credentials"] : action === "drill" ? ["--scheduled"] : [];
+    const options = parseOptions(rest, new Set(values), new Set(switches));
+    if (options.positionals.length < 1 || options.positionals.length > (action === "list" ? 1 : 2)) return invalid(`Usage: canonfig backup ${action} <name>${action === "list" ? "" : " [<snapshot>]"}`);
+    const name = decodeOption(Schema.decodeUnknownOption(BackupName), options.positionals[0]!, "backup policy name");
+    const ownerValue = one(options, "--owner");
+    const owner = ownerValue === undefined ? undefined : decodeOption(Schema.decodeUnknownOption(BackupName), ownerValue, "backup owner");
+    if (action === "list") return command({ _tag: "Backup", request: { action, name, owner } }, format);
+    const snapshotValue = options.positionals[1];
+    const snapshot = snapshotValue === undefined ? undefined : decodeOption(Schema.decodeUnknownOption(SnapshotId), snapshotValue, "backup snapshot id");
+    const key = one(options, "--expect-key");
+    const expectKey = key === undefined ? undefined : decodeOption(Schema.decodeUnknownOption(SnapshotId), key, "Source key fingerprint");
+    if (action === "verify" || action === "drill") return command({ _tag: "Backup", request: { action, name, owner, snapshot, expectKey, scheduled: options.switches.has("--scheduled") } }, format);
+    const path = one(options, "--to");
+    const apply = options.switches.has("--apply");
+    if ((path === undefined) === !apply) return invalid("Choose exactly one restore destination: --to <new-home> or --apply");
+    if (path !== undefined && (options.switches.has("--replace") || options.switches.has("--dry-run"))) return invalid("--replace and --dry-run require --apply");
+    if (apply && options.switches.has("--recover-credentials")) return invalid("--recover-credentials requires offline recovery with --to");
+    const target = path === undefined
+      ? { kind: "apply" as const, replace: options.switches.has("--replace"), dryRun: options.switches.has("--dry-run") }
+      : { kind: "home" as const, path, recoverCredentials: options.switches.has("--recover-credentials") };
+    return command({ _tag: "Backup", request: { action, name, owner, snapshot, expectKey, target } }, format);
+  }
+  return invalid("Choose a backup command; run 'canonfig backup --help' for usage");
+};
+
 const evaluateLocalCommand = (arguments_: ReadonlyArray<string>, format: CliOutputFormat): CliOutcome => {
   const options = parseOptions(arguments_.slice(1), new Set(), new Set());
   const [policy, action, name, ...extra] = options.positionals;
@@ -871,6 +922,7 @@ const evaluateCommand = (
       }, format);
     }
     if (area === "source") return evaluateSourceCommand(action, rest, format);
+    if (area === "backup") return evaluateBackupCommand(action, rest, format);
     // The positional invitation below serves the private `--stdin`
     // redispatch built in main.ts from in-memory argv. Real process argv
     // carrying a positional invitation is refused there before parsing.
@@ -1074,6 +1126,7 @@ export const evaluateCli = (arguments_: ReadonlyArray<string>): CliOutcome => {
 
 export const commandName = (value: CliCommand): string => {
   switch (value._tag) {
+    case "Backup": return `backup.${value.request.action}`;
     case "Ui": return "ui";
     case "SourceInit": return "source.init";
     case "SourceScan": return "source.scan";
@@ -1133,6 +1186,7 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
   const follower = yield* FollowerCommands;
   const setup = yield* SetupCommands;
   switch (value._tag) {
+    case "Backup": return yield* follower.backup(value.request);
     case "SourceInit": return yield* source.initialize();
     case "SourceScan": return yield* source.scan({ write: value.write });
     case "SourcePublish": return yield* source.publish({ reviewer: value.reviewer });

@@ -32,4 +32,5 @@ export const kiloAdapter = openCodeFamilyAdapter({
     context.join(xdgStateHome(context), "kilo", "daemon.json"),
     context.join(xdgCacheHome(context), "kilo"),
   ],
+  credentials: (context) => [context.join(xdgStateHome(context), "kilo", "daemon.json")],
 });
