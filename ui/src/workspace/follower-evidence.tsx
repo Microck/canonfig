@@ -75,7 +75,7 @@ export function PersistentStatusEvidence({ status }: { status: GuiStatus }) {
         const stages = Array.isArray(qualification.stages) ? qualification.stages.map(record) : [];
         const prerequisites = Array.isArray(qualification.prerequisites) ? qualification.prerequisites.map(record) : [];
         return <details key={index} className="mt-3">
-          <summary className="cursor-pointer">MCP qualification: {text(qualification.target)} ({qualification.ready === true ? "ready" : "not ready"})</summary>
+          <summary className="cursor-pointer">MCP qualification: {text(qualification.resource)} for {text(qualification.target)} ({qualification.ready === true ? "ready" : "not ready"})</summary>
           {stages.map((stage, stageIndex) => <SettingRow key={stageIndex} title={text(stage.stage)} description={`${text(stage.method) ?? ""}: ${text(stage.operation) ?? ""}`}>{text(stage.status)}{typeof stage.exitCode === "number" && ` (exit ${stage.exitCode})`}</SettingRow>)}
           {prerequisites.map((prerequisite, prerequisiteIndex) => <SettingRow key={prerequisiteIndex} title={text(prerequisite.kind)} description={<CliText>{text(prerequisite.instructions) ?? ""}</CliText>}>{text(prerequisite.status)}</SettingRow>)}
         </details>;

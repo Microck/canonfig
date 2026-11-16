@@ -138,7 +138,10 @@ it("renders a persisted receipt and open recovery without an operation ticket", 
       published: stage, applied: stage, independentlyVerified: stage,
       clientLoaded: { status: "not-verified", detail: "Check the client yourself" },
       scheduled: { status: "not-selected", detail: "No schedule selected" },
-      mcpQualifications: [], secondRunNoOp: true,
+      mcpQualifications: [
+        { resource: "mcp:github", target: "claude-code", ready: true, stages: [], prerequisites: [] },
+        { resource: "mcp:filesystem", target: "claude-code", ready: true, stages: [], prerequisites: [] },
+      ], secondRunNoOp: true,
       build: { packageVersion: "7.3.0", identity: "build-digest", stateFormat: 7 },
     },
     activeRecovery: {
@@ -155,6 +158,8 @@ it("renders a persisted receipt and open recovery without an operation ticket", 
     for (const expected of ["profile:applied-view", "run-completed", "Check the client yourself", "No schedule selected", "build-digest", "RollbackPending", "Retry enrollment", "run-open", "profile:pending-view", "PID 1234", "1 of 2", "Wait for the live owner", "action-open", "interrupted", "desired-digest", "observed-digest", "last-applied-digest"]) {
       assert.ok(html.includes(expected), expected);
     }
+    assert.ok(html.includes("MCP qualification: mcp:github for claude-code (ready)"));
+    assert.ok(html.includes("MCP qualification: mcp:filesystem for claude-code (ready)"));
   }
 });
 
