@@ -200,7 +200,8 @@ process.exit(result.status ?? 1);
         }), catch: (error) => new CanonicalFolderError({ path, message: String(error) }) });
         if (directory) mounts.push("--bind", path, path);
       }
-      args = ["--die-with-parent", "--unshare-pid", "--bind", "/", "/", "--proc", "/proc", "--cap-drop", "ALL", ...mounts, "--", program.executable.absolute, ...args];
+      // `--bind / /` remounts the host /dev nodev, which makes /dev/null and the terminal unusable; `--dev` mounts a fresh one.
+      args = ["--die-with-parent", "--unshare-pid", "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--cap-drop", "ALL", ...mounts, "--", program.executable.absolute, ...args];
     }
     // `shield run` wraps agent sessions, so the child shares this terminal: inherited stdin, stdout and stderr, and
     // no deadline. machine.runProcess captures output for bounded commands, which an interactive harness can't use.
