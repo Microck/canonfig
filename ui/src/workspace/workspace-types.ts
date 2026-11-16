@@ -244,6 +244,9 @@ export interface ProfileSlice {
     archive: GuiArchiveDownload | null;
     skillChecks: Record<string, GuiSkillCheck>;
     skillBusy: string | null;
+    skillResult: { kind: "check" | "update"; names: readonly string[]; checks: readonly GuiSkillCheck[] } | null;
+    skillObservationLost: boolean;
+    resumeSkillObservation: () => void;
     discovery: DiscoveryState;
     revisionDetail: (ResourceState & { id: string; data: Schema.Json | null }) | null;
     reload: () => void;
@@ -256,8 +259,8 @@ export interface ProfileSlice {
     acceptScan: () => Promise<boolean>;
     inspectRevision: (id: string) => () => void;
     trackSkill: (name: string, source: string, ref: string, subdir: string) => Promise<boolean>;
-    checkSkill: (name: string) => void;
-    updateSkill: (name: string) => void;
+    checkSkills: (names: readonly string[]) => void;
+    updateSkills: (checks: readonly GuiSkillCheck[]) => void;
   };
   profileState: ResourceState;
   profileStates: Record<"items" | "revisions" | "skills" | "secrets", ResourceState>;

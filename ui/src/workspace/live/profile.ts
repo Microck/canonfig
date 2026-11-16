@@ -3,6 +3,7 @@ import { Schema } from "effect";
 import { HARNESS_NAMES, LOCAL_CATEGORIES, APPEND_LOCAL_CATEGORIES, SURFACE_CATEGORIES, type HarnessId, type SurfaceCategory } from "@/shared/metadata";
 import { GuiProfileSnapshot, GuiProfileSaved, GuiProfileValidation, GuiRevisions, GuiScanReview, GuiSkills, GuiTrackedSkill, GuiSkillChecks, profileEndpoints, type GuiProfileConfigWrite, type GuiSkillCheck } from "../../../../src/gui/contract/profile";
 import { GuiArchiveDownload, GuiSecrets, GuiSecretSummary, GuiSecretRemoval } from "../../../../src/gui/contract/synchronization";
+import { GuiOperationTicket } from "../../../../src/gui/contract/operations";
 import { GuiRequestError, type GuiSession, type WorkspaceBackend } from "../../gui-client";
 import type { DiscoveryState, PublicationState, ProfileSlice, ProfileEdit } from "../workspace-types";
 import { authoredItems, itemWrite, object, strings } from "../profile-authoring";
@@ -51,9 +52,12 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
   const operations = useLiveActions(backend, reload);
   const active = useRef<AbortController | null>(null);
   const [actionState, setActionState] = useState({ loading: false, error: null as GuiRequestError | null });
+  type SkillTicket = { id: string; kind: "check" | "update" };
+  const skillTicket = useRef<SkillTicket | null>(null);
+  const [skillResult, setSkillResult] = useState<NonNullable<ProfileSlice["profileLive"]>["skillResult"]>(null);
   useEffect(() => () => active.current?.abort(), []);
-  async function run(action: (signal: AbortSignal) => Promise<unknown>, refresh = true) {
-    if (active.current) {
+  async function run(action: (signal: AbortSignal) => Promise<unknown>, refresh = true, resumeSkill = false) {
+    if (active.current || skillTicket.current && !resumeSkill) {
       setActionState((state) => ({ ...state, error: new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: "Another profile action is running. Wait for it to finish, then retry." }) }));
       return false;
     }
@@ -125,21 +129,47 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
   const saveConfig = (snapshot: GuiProfileSnapshot, edits: typeof GuiProfileConfigWrite.Type.edits) => run((signal) => backend.request(profileEndpoints.config, GuiProfileSaved, signal, { method: "PUT", body: { expectedDigest: snapshot.items.find((item) => item.path === "canonfig.jsonc")?.digest ?? null, edits, changes: [] } }));
   const saveItem: NonNullable<ProfileSlice["profileLive"]>["saveItem"] = (snapshot, before, next, exact, remove) => run(async (signal) => {
     await backend.request(profileEndpoints.config, GuiProfileSaved, signal, { method: "PUT", body: itemWrite(snapshot, before, next, exact, remove) });
-    if (next.category === "skills") setSkillChecks((checks) => Object.fromEntries(Object.entries(checks).filter(([id]) => id !== before?.id && id !== next.id)));
+    if (next.category === "skills") {
+      setSkillChecks((checks) => Object.fromEntries(Object.entries(checks).filter(([id]) => id !== before?.id && id !== next.id)));
+      setSkillResult(null);
+    }
   });
-  function skillAction(kind: "check" | "update", name: string) {
+  async function observeSkills(ticket: SkillTicket, signal: AbortSignal) {
+    let completed = await backend.operation(ticket.id, signal);
+    while (completed.state === "running") {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      window.setTimeout(resolve, 500);
+      await promise;
+      signal.throwIfAborted();
+      completed = await backend.operation(ticket.id, signal);
+    }
+    // Keep the ticket on a lost poll. Only a terminal response permits another write.
+    skillTicket.current = null;
+    setSkillBusy(null);
+    if (completed.state === "failed") throw new GuiRequestError(completed.failure);
+    const checks = Schema.decodeUnknownSync(GuiSkillChecks)(completed.result);
+    setSkillResult({ kind: ticket.kind, names: checks.map(({ name }) => name), checks });
+    setSkillChecks((previous) => ({ ...previous, ...Object.fromEntries(checks.map((check) => [`skills/${check.name}`, ticket.kind === "update" ? { ...check, status: "unchanged" as const, added: [], changed: [], removed: [] } : check])) }));
+  }
+  function skillAction(request: { kind: "check"; names: readonly string[] } | { kind: "update"; expected: readonly GuiSkillCheck[] }) {
+    const { kind } = request;
+    const names = request.kind === "check" ? request.names : request.expected.map(({ name }) => name);
+    const body = request.kind === "check" ? { names } : { expected: request.expected.map(({ name, path, previousCommit, nextCommit, previousDigest, nextDigest }) => ({ name, path, previousCommit, nextCommit, previousDigest, nextDigest })) };
     void run(async (signal) => {
-      setSkillBusy(`${kind}:skills/${name}`);
-      setSkillChecks(({ [`skills/${name}`]: _previous, ...checks }) => checks);
+      setSkillResult(null);
+      setSkillBusy(names.length === 1 ? `${kind}:skills/${names[0]}` : `${kind}:batch`);
       try {
-        const completed = await operations.operation(profileEndpoints[kind], { name }, signal);
-        const checks = Schema.decodeUnknownSync(GuiSkillChecks)(completed.result);
-        setSkillChecks((previous) => ({ ...previous, ...Object.fromEntries(checks.map((check) => [`skills/${check.name}`, kind === "update" ? { ...check, status: "unchanged" as const } : check])) }));
-      } finally { setSkillBusy(null); }
-    });
+        const ticket = await backend.request(profileEndpoints[kind], GuiOperationTicket, signal, { method: "POST", body });
+        skillTicket.current = { id: ticket.id, kind };
+        await observeSkills(skillTicket.current, signal);
+      } finally { if (!skillTicket.current) setSkillBusy(null); }
+    }, kind === "update");
   }
   const profileLive: NonNullable<ProfileSlice["profileLive"]> = {
-    snapshot: items.data, busy: actionState.loading, error: actionState.error, validation, publication, archive, skillChecks, skillBusy, discovery, revisionDetail,
+    snapshot: items.data, busy: actionState.loading || skillTicket.current !== null, error: actionState.error, validation, publication, archive, skillChecks, skillBusy, skillResult,
+    skillObservationLost: skillTicket.current !== null && !actionState.loading,
+    resumeSkillObservation: () => { const ticket = skillTicket.current; if (ticket) void run((signal) => observeSkills(ticket, signal), ticket.kind === "update", true); },
+    discovery, revisionDetail,
     reload: () => { publishEvent({ kind: "Invalidate" }); refresh(); }, saveItem, saveConfig,
     setSecret: (name, value) => run((signal) => backend.request("/api/secrets", GuiSecretSummary, signal, { method: "PUT", body: { name, value } })),
     removeSecret: (name) => run((signal) => backend.request("/api/secrets", GuiSecretRemoval, signal, { method: "DELETE", body: { name } })),
@@ -184,7 +214,7 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
       }
       finally { setSkillBusy(null); }
     }),
-    checkSkill: (name) => skillAction("check", name), updateSkill: (name) => skillAction("update", name),
+    checkSkills: (names) => skillAction({ kind: "check", names }), updateSkills: (expected) => skillAction({ kind: "update", expected }),
   };
   return {
     profileLive, profileState: resourceState([items, revisions, skills, secrets]), profileStates: { items, revisions, skills, secrets },

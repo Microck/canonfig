@@ -39,7 +39,7 @@ import { GuiRequestError } from "../gui-client";
 import { ExactItemFields, ProfileActionNotice } from "./profile-authoring-controls";
 import { ScheduleFields, WEEK, scheduleError, scheduleSummary, type Schedule } from "./schedule";
 import { HarnessTable } from "./harnesses";
-import { SkillSummary, SkillUpstream, useMoveSkillTracking, useSkillLocked } from "./skills";
+import { SkillUpdatesDialog, SkillSummary, SkillUpstream, useMoveSkillTracking, useSkillLocked } from "./skills";
 import {
   AnimatedRow,
   Body,
@@ -393,6 +393,8 @@ export function ProfileView() {
   const selected = ws.focus;
   const creating = selected === "new";
   const [discoverOpen, setDiscoverOpen] = useState(false);
+  const [skillUpdatesOpen, setSkillUpdatesOpen] = useState(false);
+  const skillUpdatesTrigger = useRef<HTMLButtonElement>(null);
 
   const proposed = ws.proposed.filter((id) => ws.resources.some((r) => r.id === id));
   const grouped = useMemo(() => CATEGORIES.map((c) => ({ category: c, items: ws.resources.filter((r) => r.category === c) })).filter((g) => g.items.length), [ws.resources]);
@@ -441,7 +443,7 @@ export function ProfileView() {
           </>
         }
       />
-      {!detail && !discoverOpen && !ws.publishOpen && <ProfileActionNotice />}
+      {!detail && !discoverOpen && !skillUpdatesOpen && !ws.publishOpen && <ProfileActionNotice />}
       {ws.profileLive?.archive && <div className="border-b border-border px-4 py-3"><SectionLabel>Export verification</SectionLabel><Prop label="Archive">{ws.profileLive.archive.filename}</Prop><Prop label="Archive fingerprint"><Mono>{ws.profileLive.archive.sha256}</Mono></Prop><Prop label="Manifest fingerprint"><Mono>{ws.profileLive.archive.manifestSha256}</Mono></Prop><Prop label="Signer"><Mono>{ws.profileLive.archive.signer}</Mono></Prop></div>}
       <Toolbar
         right={
@@ -522,6 +524,7 @@ export function ProfileView() {
                     count={g.items.length}
                     hint={`${CATEGORY_LABEL[g.category].where}\n${CATEGORY_LABEL[g.category].hint}`}
                     minWidth={COLS_MIN}
+                    action={g.category === "skills" && ws.profileLive && ws.skillSources.length > 0 && <Button ref={skillUpdatesTrigger} type="button" variant="outline" size="xs" disabled={!ws.capabilities.profileWrite || ws.profileLive.busy && !ws.profileLive.skillObservationLost} onClick={() => setSkillUpdatesOpen(true)}>Skill updates</Button>}
                   />
                   <RowPresence>
                     {g.items.map((r) => (
@@ -565,6 +568,7 @@ export function ProfileView() {
       {tab === "groups" && <GroupsTab />}
       {tab === "defaults" && (ws.capabilities.profileWrite ? <DefaultsTab key={ws.profileLive?.snapshot?.items.find((item) => item.path === "canonfig.jsonc")?.digest} /> : <Body><EmptyState title="Defaults form is not available yet" body="Use the Canonfig CLI to edit defaults." /></Body>)}
       <DiscoverDialog open={discoverOpen} onOpenChange={setDiscoverOpen} />
+      <SkillUpdatesDialog open={skillUpdatesOpen} onOpenChange={setSkillUpdatesOpen} onReturnFocus={() => skillUpdatesTrigger.current?.focus()} />
     </>
   );
 }

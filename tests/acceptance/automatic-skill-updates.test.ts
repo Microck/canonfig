@@ -7,7 +7,7 @@ import { parseSkillsArguments, runSkillsCli } from "../../src/skills/cli.ts";
 import type { TrackedSkill, SkillCheck } from "../../src/skills/manager.ts";
 
 const skill: TrackedSkill = { name: "demo", path: "skills/demo", source: "https://example.invalid/skills.git", ref: "main", subdir: "demo", commit: "a".repeat(40), digest: "b".repeat(64) };
-const check: SkillCheck = { name: "demo", path: skill.path, previousCommit: skill.commit, nextCommit: "c".repeat(40), status: "update-available", added: [], changed: ["SKILL.md"], removed: [] };
+const check: SkillCheck = { name: "demo", path: skill.path, previousCommit: skill.commit, nextCommit: "c".repeat(40), previousDigest: skill.digest, nextDigest: "d".repeat(64), status: "update-available", added: [], changed: ["SKILL.md"], removed: [] };
 const location = { root: process.cwd(), config: "skills-sources.json" };
 function fixture(): AutomaticSkillOperations {
   return {

@@ -6,8 +6,10 @@ import { after, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
+import { Schema } from "effect";
 import { request, type WorkspaceBackend } from "../gui-client";
 import { GuiOperation, GuiSession, GuiStatus } from "../../../src/gui/contract";
+import { GuiSkillSelection, GuiSkillUpdate, type GuiSkillCheck } from "../../../src/gui/contract/profile";
 import { useWorkspace } from "../workspace/store";
 import { navigate, useAppRoute } from "../workspace/routes";
 
@@ -722,3 +724,125 @@ for (const initialPolicy of ["deterministic-only", "agent-propose"]) {
     });
   }
 }
+
+const trackedSkills = ["review", "testing", "conflict"].map((name) => ({
+  name, path: `skills/${name}`, source: "/tmp/upstream", ref: "main", subdir: name,
+  commit: "a".repeat(40), digest: "b".repeat(64),
+}));
+const trackedProfile = {
+  ...profile,
+  items: trackedSkills.map(({ name, path }) => ({
+    path, digest: "e".repeat(64),
+    files: [{ path: `${path}/SKILL.md`, base64: Buffer.from(`---\nname: ${name}\ndescription: Review ${name}.\n---\nSkill instructions.\n`).toString("base64"), executable: false }],
+  })),
+};
+const skillCheck = (name: string, status: "update-available" | "local-edits" = "update-available") => ({
+  name, path: `skills/${name}`, previousCommit: "a".repeat(40), nextCommit: "c".repeat(40),
+  previousDigest: "b".repeat(64), nextDigest: "d".repeat(64),
+  status, added: ["reference.txt"], changed: ["SKILL.md"], removed: [],
+});
+
+it("reviews all tracked skills, invalidates preview on selection changes and applies one selected-set operation", async () => {
+  let checks: readonly GuiSkillCheck[] = [];
+  let applying = false;
+  let refuse = true;
+  const app = await fixture("/source/profile", { ...sourceResponses(), "/api/profile/items": trackedProfile, "/api/skills": { version: 1, skills: trackedSkills } }, (path, method, body, outgoing) => {
+    if (method === "POST" && (path === "/api/skills/check" || path === "/api/skills/update")) {
+      applying = path.endsWith("/update");
+      const names = applying
+        ? Schema.decodeUnknownSync(GuiSkillUpdate)(body).expected.map(({ name }) => name)
+        : Schema.decodeUnknownSync(GuiSkillSelection)(body).names;
+      checks = (names.length ? names : trackedSkills.map(({ name }) => name)).map((name) => skillCheck(name, name === "conflict" ? "local-edits" : "update-available"));
+      outgoing.end(JSON.stringify({ id: "skills-ticket" })); return true;
+    }
+    if (path !== "/api/operations/skills-ticket") return false;
+    outgoing.end(JSON.stringify(applying && refuse
+      ? { id: "skills-ticket", state: "failed", journal: null, failure: { category: "conflict-or-drift", exitCode: 4, message: "Local edits detected. No skill was updated." } }
+      : { id: "skills-ticket", state: "succeeded", journal: null, result: checks }));
+    return true;
+  });
+  const toggle = async (name: string) => {
+    const label = [...document.querySelectorAll("label")].find((entry) => entry.textContent?.startsWith(name));
+    const checkbox = label?.querySelector<HTMLButtonElement>('[role="checkbox"]');
+    assert.ok(checkbox, `Missing selection for ${name}`);
+    await act(async () => { checkbox.click(); });
+  };
+  try {
+    await until(() => !app.container.querySelector('[aria-busy="true"]'), "Profile did not load");
+    const entry = [...document.querySelectorAll("button")].find((button) => button.textContent === "Skill updates");
+    assert.ok(entry);
+    assert.ok(entry.closest('[class~="group/band"]'));
+    assert.equal(entry.closest("header"), null);
+    await click("Skill updates");
+    assert.equal(document.querySelector('[aria-label="Update preview"]'), null);
+    assert.deepEqual([...document.querySelectorAll('[data-slot="dialog-footer"] button')].map((button) => button.textContent), ["Cancel", "Check"]);
+    assert.equal(document.body.textContent?.includes("Select all"), false);
+    assert.equal(document.body.textContent?.includes("Clear selection"), false);
+    await click("Check");
+    await until(() => document.body.textContent?.includes("Deselect skills with local edits or reconcile them, then check again.") === true, "Batch preview did not show conflicts");
+    assert.deepEqual(app.mutations.at(-1), { path: "/api/skills/check", body: { names: [] } });
+    assert.equal([...document.querySelectorAll("button")].find((entry) => entry.textContent === "Apply 2 updates")?.disabled, true);
+    assert.ok(document.querySelector('[aria-label="Update preview"]')?.textContent?.includes("reference.txt"));
+    assert.deepEqual([...document.querySelectorAll('[data-slot="dialog-footer"] button')].map((button) => button.textContent), ["Cancel", "Apply 2 updates"]);
+    await toggle("conflict");
+    assert.equal(document.querySelector('[aria-label="Update preview"]'), null);
+    await click("Check");
+    await until(() => document.querySelector('[aria-label="Update preview"]') !== null, "Selected preview did not load");
+    assert.deepEqual(app.mutations.at(-1), { path: "/api/skills/check", body: { names: ["review", "testing"] } });
+    await click("Apply 2 updates");
+    await until(() => document.body.textContent?.includes("No skill was updated.") === true, "Apply conflict did not render");
+    assert.equal(document.querySelector('[aria-label="Update result"]'), null);
+    assert.equal(document.querySelectorAll('[role="alert"]').length, 1);
+    assert.ok(document.querySelector('[role="alert"]')?.closest('[role="dialog"]'));
+    assert.equal([...document.querySelectorAll("button")].some((button) => button.textContent === "Reload"), false);
+    refuse = false;
+    await click("Check");
+    await until(() => document.querySelector('[aria-label="Update preview"]') !== null, "Retry preview did not load");
+    await click("Apply 2 updates");
+    await until(() => document.querySelector('[aria-label="Update result"]') !== null, "Batch result did not render");
+    assert.deepEqual([...document.querySelectorAll('[data-slot="dialog-footer"] button')].map((button) => button.textContent), ["Close", "Check"]);
+    const result = document.querySelector('[aria-label="Update result"]');
+    assert.equal([...result!.querySelectorAll("span")].filter((entry) => entry.textContent === "Updated").length, 2);
+    assert.ok(result?.textContent?.includes("ccccccc"));
+    assert.deepEqual(app.mutations.filter(({ path }) => path === "/api/skills/update").map(({ body }) => body), [
+      { expected: ["review", "testing"].map((name) => ({ name, path: `skills/${name}`, previousCommit: "a".repeat(40), nextCommit: "c".repeat(40), previousDigest: "b".repeat(64), nextDigest: "d".repeat(64) })) },
+      { expected: ["review", "testing"].map((name) => ({ name, path: `skills/${name}`, previousCommit: "a".repeat(40), nextCommit: "c".repeat(40), previousDigest: "b".repeat(64), nextDigest: "d".repeat(64) })) },
+    ]);
+    assert.equal(app.mutations.some(({ path }) => path === "/api/publications"), false);
+  } finally { await app.close(); }
+});
+
+it("resumes a lost batch poll without resubmitting and applies its explicit reviewed set", async () => {
+  let lost = true;
+  const app = await fixture("/source/profile", { ...sourceResponses(), "/api/profile/items": trackedProfile, "/api/skills": { version: 1, skills: trackedSkills } }, (path, method, _body, outgoing) => {
+    if (path === "/api/skills/update" && method === "POST") { outgoing.end('{"id":"applied-skills"}'); return true; }
+    if (path === "/api/operations/applied-skills") {
+      outgoing.end(JSON.stringify({ id: "applied-skills", state: "succeeded", journal: null, result: trackedSkills.map(({ name }) => skillCheck(name)) })); return true;
+    }
+    if (path === "/api/skills/check" && method === "POST") { outgoing.end('{"id":"lost-skills"}'); return true; }
+    if (path !== "/api/operations/lost-skills") return false;
+    if (lost) {
+      outgoing.statusCode = 503;
+      outgoing.end(JSON.stringify({ category: "transport", exitCode: 6, message: "Operation observation interrupted." }));
+    } else outgoing.end(JSON.stringify({ id: "lost-skills", state: "succeeded", journal: null, result: trackedSkills.map(({ name }) => skillCheck(name)) }));
+    return true;
+  });
+  try {
+    await until(() => !app.container.querySelector('[aria-busy="true"]'), "Profile did not load");
+    await click("Skill updates"); await click("Check");
+    await until(() => document.body.textContent?.includes("Resume status check") === true, "Lost observation did not offer resume");
+    assert.deepEqual([...document.querySelectorAll('[data-slot="dialog-footer"] button')].map((button) => button.textContent), ["Cancel", "Resume status check"]);
+    assert.equal(document.querySelectorAll('[role="alert"]').length, 1);
+    lost = false;
+    await click("Resume status check");
+    await until(() => document.querySelector('[aria-label="Update preview"]') !== null, "Original batch observation did not resume");
+    assert.equal(app.mutations.filter(({ path }) => path === "/api/skills/check").length, 1);
+    assert.equal(app.requests.filter((entry) => entry === "GET /api/operations/lost-skills").length, 2);
+    await click("Apply 3 updates");
+    await until(() => document.querySelector('[aria-label="Update result"]') !== null, "Reviewed all-skills set did not apply");
+    const submitted = app.mutations.find(({ path }) => path === "/api/skills/update");
+    assert.ok(submitted);
+    const { expected } = Schema.decodeUnknownSync(GuiSkillUpdate)(submitted.body);
+    assert.deepEqual(expected.map(({ name }) => name), trackedSkills.map(({ name }) => name));
+  } finally { await app.close(); }
+});
