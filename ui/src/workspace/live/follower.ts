@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { Schema } from "effect";
-import { GuiArchiveDownload, GuiBackups, GuiHarnessReport, GuiLocalItems, GuiScheduleStatus, GuiSecrets, GuiSecretSync, GuiSynchronizationResult } from "../../../../src/gui/contract/synchronization";
+import { GuiArchiveDownload, GuiBackups, GuiHarnessReport, GuiLocalItems, GuiScheduleStatus, GuiSecrets, GuiSecretSummary, GuiSecretRemoval, GuiSecretSync, GuiSynchronizationResult } from "../../../../src/gui/contract/synchronization";
 import { GuiEnrollment } from "../../../../src/gui/contract/enrollment";
 import { GuiOperationTicket, type GuiOperation } from "../../../../src/gui/contract/operations";
 import { GuiRequestError, type GuiSession, type GuiStatus, type WorkspaceBackend } from "../../gui-client";
@@ -159,6 +159,8 @@ export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, 
     removeSchedule: () => mutation("/api/schedule", "DELETE", {}),
     saveItems: (input) => run((signal) => backend.request("/api/local/items", GuiLocalItems, signal, { method: "PUT", body: input })),
     savePreferences,
+    setSecret: (name, value) => run((signal) => backend.request("/api/secrets", GuiSecretSummary, signal, { method: "PUT", body: { name, value } })),
+    removeSecret: (name) => run((signal) => backend.request("/api/secrets", GuiSecretRemoval, signal, { method: "DELETE", body: { name } })),
     refreshSecrets: () => { void run(async (signal) => {
       const report = await backend.request("/api/secrets/sync", GuiSecretSync, signal, { method: "POST", body: {} });
       setSecretMessage(report.status === "synchronized" ? `Updated ${report.secrets.length} secrets.` : report.status === "not-shared" ? "This enrollment does not receive shared secrets." : "This machine is not enrolled.");

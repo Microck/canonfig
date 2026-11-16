@@ -178,9 +178,9 @@ export const synchronizationRoutes = Effect.gen(function*() {
       Effect.map((entries) => ({ secrets: entries.map(({ name, origin }) => ({ name, origin })) })),
     ))),
     privateRequest(mutationRoute("PUT", "/api/secrets", GuiSecretSet, ({ name, value }) =>
-      role(["source"]).pipe(Effect.andThen(secrets(storeSecret(name, value)).pipe(Effect.map(({ name, origin }) => ({ name, origin }))))))),
+      both(secrets(storeSecret(name, value, "local")).pipe(Effect.map(({ name, origin }) => ({ name, origin })))))),
     privateRequest(mutationRoute("DELETE", "/api/secrets", GuiSecretName, ({ name }) =>
-      role(["source"]).pipe(Effect.andThen(secrets(removeSecret(name)).pipe(Effect.map((removed) => ({ name, removed }))))))),
+      both(secrets(removeSecret(name)).pipe(Effect.map((removed) => ({ name, removed })))))),
     mutationRoute("POST", "/api/secrets/sync", EmptyBody, () => follower(secrets(synchronizeSharedSecrets()))),
     queryRoute("/api/tunnel", () => follower(commands.tunnelStatus())),
     mutationRoute("POST", "/api/tunnel/start", EmptyBody, () => follower(commands.restartTunnel({}))),

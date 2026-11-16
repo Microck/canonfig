@@ -97,7 +97,7 @@ The rows below record the integrated state: live, browser-local, demo-only, hidd
 
 Area B uses the same profile, publication, revision, skill and Source Secret screens for both providers. Live field editors preserve supported frontmatter and JSONC values. Tool recipes, unknown fields, hook scripts, `files/` content and full skill trees use exact-text/tree controls inside the same detail panel. Saves check the captured config and item digests. After a conflict, Reload keeps the draft and shows the new disk version beside it. The person must choose **Discard my edits** or **Re-apply my edits** before saving against the new digests. Revision inspection has its own cancellable, revision-keyed request, separate from mutations; a superseded response cannot replace the selected revision. Live publication shows real validation and committed revisions, without predicted sequence numbers or synthetic progress. The demo retains its simulated flows.
 
-Source Secrets is live through D's shared contract: list metadata, set/replace a write-only value, and confirmed removal. Values never enter browser persistence. Sharing membership changes remain replacement invitations, not an invented membership mutation. B adds no duplicate secrets or export handlers.
+Source Secrets is live through D's shared contract: names and origins, set/replace a write-only value, and confirmed removal. The Updated column is omitted when no update times are recorded. Values never enter browser persistence. Sharing membership changes remain replacement invitations, not an invented membership mutation. B adds no duplicate secrets or export handlers.
 
 Canonical authoring also runs projection's `projectResources` boundary check on the full authored resource set before any candidate writes, before machine-local `excludeResources` filtering. Authored targets inside any adapter-owned or never-touch path are refused with the projection diagnostic, without writing the config or its associated files.
 
@@ -159,18 +159,22 @@ and remote telemetry never become live machine facts.
 | Managed harness include/exclude | `FollowerCommands.harnesses`; `GuiHarnessReport` exposes actual installed/listed/excluded state for this screen and enrollment preferences. | `GET`/`PUT /api/harnesses` | Live |
 | Retained append-local content details | No protected content-read API exists. | None | Hidden |
 | Backups list, restore confirmation and outcome | `listSnapshots` lists real takeover snapshots; `FollowerCommands.restore` supplies actual restore/exclusion evidence as a polled operation. | `GET /api/backups`; `POST /api/backups/restore` | Live |
-| Follower Secrets list and update | `listSecrets` and `synchronizeSharedSecrets`; only names and origins are returned. | `GET /api/secrets`; `POST /api/secrets/sync` | Live |
+| Follower Secrets list, Set local secret, Replace value, Remove local copy and Update secrets | `listSecrets/storeSecret/removeSecret` manage this machine's credential store. Source-owned values cannot be replaced locally; deleting their cached copy does not revoke the Source value and an update can restore it. `synchronizeSharedSecrets` preserves local entries and refuses name collisions. Names and origins only, never values. | `GET`/`PUT`/`DELETE /api/secrets`; `POST /api/secrets/sync` | Live |
 | Tunnel status, start and stop | `FollowerCommands.tunnelStatus/restartTunnel/stopTunnel`; start uses recorded configuration, stop keeps it. First-time configuration belongs to enrollment. | `GET /api/tunnel`; `POST /api/tunnel/start`, `/api/tunnel/stop` | Live |
 | Enrollment details, copy fingerprints and unenroll | C supplies the safe `GuiEnrollment` read contract and handler. D calls `FollowerCommands.unenroll` exactly: applied files, native schedule and tunnel configuration remain. | `GET`/`DELETE /api/enrollment` | Live; integrated with C |
 | Local settings Export | `FollowerCommands.exportArchive`; the server checks the returned archive hash, downloads actual bytes and removes its unique temporary file. No arbitrary output path is accepted. | `POST /api/exports` | Live |
 
-D also owns the Source secrets handlers used by B: `GET /api/secrets` returns
+D owns the secret handlers used by both role screens: `GET /api/secrets` returns
 `GuiSecrets`, `PUT /api/secrets` accepts write-only `{ name, value }` and returns
-`GuiSecretSummary`, and `DELETE /api/secrets` accepts `{ name }` and returns
-`GuiSecretRemoval`. Follower sync returns `GuiSecretSync`. These shapes and
+`GuiSecretSummary` for a local-origin entry, and `DELETE /api/secrets` accepts `{ name }` and returns
+`GuiSecretRemoval`. Both configured roles can set/remove; Follower sync returns `GuiSecretSync`. These shapes and
 `GuiArchiveDownload` are defined in `src/gui/contract/synchronization.ts`.
 Secret values never enter responses, URLs, logs or browser storage; even malformed
 secret-request diagnostics omit the submitted input.
+Follower-local values support local agent secret bindings and are never sent upstream.
+Both roles retain the CLI's secure noninteractive credential-storage requirement.
+Follower removal requires confirmation that only this machine's copy is deleted,
+not the upstream secret or other machines' copies.
 
 The polished Follower screens now use `workspace/live/follower.ts` through the
 typed workspace interface. Plan, apply, recovery, abandonment and restore render

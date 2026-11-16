@@ -78,6 +78,24 @@ it("refreshes newly shared secrets before a GUI apply succeeds and preserves ref
     const cookie = exchange.headers.get("set-cookie")?.split(";")[0];
     if (!cookie) throw new Error("No GUI session cookie");
     const headers = { Cookie: cookie, Origin: origin, "Content-Type": "application/json", "x-canonfig-request": "browser" };
+    async function secretRequest(method: "GET" | "PUT" | "DELETE", body?: unknown) {
+      const response = await fetch(`${origin}/api/secrets`, {
+        method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      const payload: unknown = await response.json();
+      expect(JSON.stringify(payload)).not.toContain("gui-private-value");
+      return { status: response.status, payload };
+    }
+    // The same write-only route now reaches follower-local storage and symbolic bindings.
+    expect(await secretRequest("PUT", { name: "agent-key", value: "gui-private-value" })).toEqual({
+      status: 200, payload: { name: "agent-key", origin: "local" },
+    });
+    expect((await secretRequest("PUT", { name: "agent-key", value: "gui-private-value-rotated" })).status).toBe(200);
+    expect(await follower.runPromise(resolveSecretBindings([{ name: "LOCAL_TOKEN", secret: "agent-key" }]))).toEqual([
+      { name: "LOCAL_TOKEN", value: "gui-private-value-rotated" },
+    ]);
+    const invalidSecret = await secretRequest("PUT", { name: "bad", value: { private: "gui-private-value" } });
+    expect(invalidSecret).toMatchObject({ status: 400, payload: { category: "usage-or-configuration", exitCode: 2 } });
     async function apply() {
       const response = await fetch(`${origin}/api/sync/apply`, { method: "POST", headers, body: "{}" });
       expect(response.status).toBe(202);
@@ -93,7 +111,25 @@ it("refreshes newly shared secrets before a GUI apply succeeds and preserves ref
     }
     const applied = await apply();
     expect(applied.state, JSON.stringify(applied)).toBe("succeeded");
-    expect(await follower.runPromise(listSecrets())).toMatchObject([{ name: "after-enrollment", origin: "source" }]);
+    expect((await secretRequest("GET")).payload).toEqual({ secrets: [
+      { name: "after-enrollment", origin: "source" }, { name: "agent-key", origin: "local" },
+    ] });
+    const refusedReplacement = await secretRequest("PUT", { name: "after-enrollment", value: "gui-private-value" });
+    expect(refusedReplacement).toMatchObject({ status: 400, payload: { category: "usage-or-configuration", exitCode: 2 } });
+    expect(JSON.stringify(refusedReplacement.payload)).toContain("Source-owned");
+    expect(await secretRequest("DELETE", { name: "agent-key" })).toEqual({
+      status: 200, payload: { name: "agent-key", removed: true },
+    });
+    expect(await secretRequest("DELETE", { name: "agent-key" })).toEqual({
+      status: 200, payload: { name: "agent-key", removed: false },
+    });
+    expect((await secretRequest("DELETE", { name: "../invalid" })).status).toBe(400);
+    // Deleting a transferred copy does not revoke its upstream value. A refresh restores it.
+    expect((await secretRequest("DELETE", { name: "after-enrollment" })).status).toBe(200);
+    expect(await source.runPromise(listSecrets())).toEqual([{ name: "after-enrollment", origin: "local" }]);
+    const refreshed = await fetch(`${origin}/api/secrets/sync`, { method: "POST", headers, body: "{}" });
+    expect(refreshed.status).toBe(200);
+    expect(await follower.runPromise(listSecrets())).toEqual([{ name: "after-enrollment", origin: "source" }]);
     expect(await follower.runPromise(resolveSecretBindings([{ name: "API_TOKEN", secret: "after-enrollment" }]))).toEqual([
       { name: "API_TOKEN", value: "synthetic-private-value" },
     ]);
