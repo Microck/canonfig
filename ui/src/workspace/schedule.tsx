@@ -61,7 +61,7 @@ function timezoneError(timezone: string | undefined): string | null {
     return ZONE_ERROR;
   }
 }
-const ZONE_ERROR = "Choose an IANA time zone, like Europe/Paris, not a numeric offset.";
+const ZONE_ERROR = "Enter an IANA time zone, such as Europe/Paris.";
 const TIMEZONES = ["UTC", ...Intl.supportedValuesOf("timeZone")];
 
 export function scheduleSummary(s: Schedule, defaultLabel: string) {
@@ -187,17 +187,14 @@ export function ScheduleFields({
             </Field>
           )}
           <Field label="Time" htmlFor={`${idPrefix}-time`} error={timeError}>
-            <div className="flex items-center gap-2">
-              <TimeField
-                id={`${idPrefix}-time`}
-                value={value.time}
-                onChange={(time) => onChange({ ...value, time })}
-                onBlur={() => setTimeBlurred(true)}
-                invalid={!!timeError}
-                describedBy={timeError ? `${idPrefix}-time-note` : undefined}
-              />
-              <span className="text-sm text-faint">{value.timezone ? "in the selected time zone" : "machine local time"}</span>
-            </div>
+            <TimeField
+              id={`${idPrefix}-time`}
+              value={value.time}
+              onChange={(time) => onChange({ ...value, time })}
+              onBlur={() => setTimeBlurred(true)}
+              invalid={!!timeError}
+              describedBy={timeError ? `${idPrefix}-time-note` : undefined}
+            />
           </Field>
         </div>
       )}
@@ -219,7 +216,7 @@ export function ScheduleFields({
             {TIMEZONES.map((zone) => <option key={zone} value={zone} />)}
           </datalist>
           <p id={`${idPrefix}-timezone-note`} className="text-sm text-muted-foreground">
-            Leave blank to use this machine's zone ({machineTimezone}), not your browser's. Named zones require Linux.
+            Named time zones require Linux.
           </p>
         </Field>
       )}

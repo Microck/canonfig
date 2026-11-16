@@ -56,7 +56,7 @@ import {
   copy,
 } from "./kit";
 import { Column, ConfirmDialog } from "./settings";
-import { ScheduleFields, nextCheck, scheduleError, scheduleSummary, type Schedule } from "./schedule";
+import { ScheduleFields, nextCheck, scheduleError, type Schedule } from "./schedule";
 import { FollowerOperationEvidence, TunnelEvidence } from "./follower-evidence";
 import { LocalAuthoringEditor } from "./follower-authoring";
 import { record, text } from "./live/follower";
@@ -928,7 +928,7 @@ function ScheduleForm() {
     }
     setSaved(draft);
     ws.reach("schedule");
-    toast.success("Schedule saved", { description: `${scheduleSummary(draft, `Same as the Source: ${defaultLabel}`)}.${DEMO ? "\nSaved in this demo workspace." : ""}` });
+    toast.success("Schedule saved");
   };
   return (
     <>
@@ -980,7 +980,7 @@ function ScheduleForm() {
         open={removeOpen}
         onOpenChange={setRemoveOpen}
         title="Remove schedule?"
-        body="This removes the native scheduled job and keeps scheduled sync off, even if the Source suggests a schedule. A sync already running and applied files stay unchanged. Unsaved schedule edits are discarded after removal. You can save a new schedule to turn automation back on."
+        body="Scheduled sync stays off across future applies, even if the Source suggests a schedule."
         confirm="Remove schedule"
         onConfirm={async () => {
           if (busy) return;
