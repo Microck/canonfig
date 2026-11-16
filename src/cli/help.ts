@@ -243,6 +243,25 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     ],
   },
   {
+    title: "Machine-local preservation",
+    areas: ["local"],
+    usage: [
+      "local skills list",
+      "local skills add <name>",
+      "local skills remove <name>",
+      "local mcp status",
+      "local mcp preserve",
+      "local mcp project",
+    ],
+    notes: [
+      "Edits ~/.canonfig/local/local.jsonc on Sources and Followers; concurrent edits are refused.",
+      "Kept-local skill names require Source local.appendLocal to include skills.",
+      "Names use lowercase letters, digits and hyphens, starting with a letter or digit.",
+      "MCP preservation leaves native maps alone, not disabled; it does not verify servers work.",
+      "Removing preservation does not adopt conflicting local skills or MCP configuration.",
+    ],
+  },
+  {
     title: "Local overlays",
     areas: ["overlay"],
     usage: [

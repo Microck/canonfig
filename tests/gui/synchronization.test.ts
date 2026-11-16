@@ -227,6 +227,15 @@ it("plans and applies an enrolled follower and performs digest-checked local ope
   expect((await api.call("/api/local/preferences", "PUT", preference)).status).toBe(200);
   expect((await api.call("/api/local/items")).payload).toMatchObject({ config: { backups: false } });
   expect((await api.call("/api/local/preferences", "PUT", preference)).payload).toMatchObject({ category: "conflict-or-drift", exitCode: 4 });
+  const preservation = { expectedDigest: (await getConfig())?.digest ?? null, edits: [{ path: ["preserveMcp"], value: true }] };
+  expect((await api.call("/api/local/preferences", "PUT", preservation)).status).toBe(200);
+  expect((await api.call("/api/local/items")).payload).toMatchObject({ config: { preserveMcp: true } });
+  expect((await api.call("/api/local/preferences", "PUT", preservation)).payload).toMatchObject({ category: "conflict-or-drift", exitCode: 4 });
+  const deniedSkill = await api.call("/api/local/preferences", "PUT", {
+    expectedDigest: (await getConfig())?.digest ?? null, edits: [{ path: ["excludeSkills"], value: ["deploy"] }],
+  });
+  expect(deniedSkill.payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  expect(JSON.stringify(deniedSkill.payload)).toContain("local.appendLocal");
   const beforeInvalidOverlay = readFileSync(join(follower.folder, "local/local.jsonc"), "utf8");
   for (const method of ["PUT", "DELETE"]) {
     const refused = await api.call("/api/local/overlays", method, { item: "instructions" });

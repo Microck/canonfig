@@ -91,17 +91,16 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
   const [revisionDetail, setRevisionDetail] = useState<NonNullable<ProfileSlice["profileLive"]>["revisionDetail"]>(null);
   const revisionRequest = useRef<AbortController | null>(null);
   useEffect(() => () => revisionRequest.current?.abort(), []);
-  function inspectRevision(sequence: number) {
+  function inspectRevision(id: string) {
     revisionRequest.current?.abort();
     const controller = new AbortController();
     revisionRequest.current = controller;
-    const entry = revisions.data?.revisions.find((revision) => revision.sequence === sequence);
-    setRevisionDetail({ sequence, data: null, loading: !!entry, error: null });
-    if (entry) void backend.request(profileEndpoints.revision, Schema.Json, controller.signal, {
-      method: "POST", body: { revision: entry.id },
+    setRevisionDetail({ id, data: null, loading: true, error: null });
+    void backend.request(profileEndpoints.revision, Schema.Json, controller.signal, {
+      method: "POST", body: { revision: id },
     }).then(
-      (data) => { if (!controller.signal.aborted) setRevisionDetail({ sequence, data, loading: false, error: null }); },
-      (cause: unknown) => { if (!controller.signal.aborted) setRevisionDetail({ sequence, data: null, loading: false, error: requestError(cause) }); },
+      (data) => { if (!controller.signal.aborted) setRevisionDetail({ id, data, loading: false, error: null }); },
+      (cause: unknown) => { if (!controller.signal.aborted) setRevisionDetail({ id, data: null, loading: false, error: requestError(cause) }); },
     );
     return () => controller.abort();
   }
@@ -185,7 +184,7 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
     profile, profileName: profile.name, profileSchedule: scheduleOf(config.scheduleDefault), proposed: [], publishOpen, setPublishOpen, resources,
     setResources: (update) => { if (!items.data) return; const next = typeof update === "function" ? update(resources) : update; const changed = next.find((entry) => resources.find((before) => before.id === entry.id) !== entry); const removed = resources.find((entry) => !next.some((after) => after.id === entry.id)); if (changed) void saveItem(items.data, resources.find((entry) => entry.id === changed.id), changed, undefined, changed.change === "removed"); else if (removed) void saveItem(items.data, removed, removed, undefined, true); },
     readResources: () => resources, readQueue: () => ({ pending: [], nextSequence: undefined }),
-    revisions: published.map((entry) => ({ sequence: entry.sequence, digest: entry.digest, publishedAt: entry.publishedAt, reviewer: "", changes: "" })),
+    revisions: published.map((entry) => ({ id: entry.id, sequence: entry.sequence, digest: entry.digest, publishedAt: entry.publishedAt, reviewer: "", changes: "" })),
     latest: published[0]?.sequence, publicationReviewer: "", secrets: (secrets.data?.secrets ?? []).map(({ name }) => ({ name })),
     setSecrets: (update) => { const current = (secrets.data?.secrets ?? []).map(({ name }) => ({ name })); const next = typeof update === "function" ? update(current) : update; const removed = current.find((entry) => !next.some((after) => after.name === entry.name)); if (removed) void profileLive.removeSecret(removed.name); },
     pending, markProfileEdit: (edit) => setPending((previous) => [...previous.filter((entry) => entry.id !== edit.id), edit]), removeProfileEdit: (edit) => setPending((previous) => previous.filter((entry) => entry.id !== edit.id)), nextSequence: undefined, publishing,

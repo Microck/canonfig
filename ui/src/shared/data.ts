@@ -276,10 +276,10 @@ export const followers: Follower[] = [
 ];
 
 export const revisions: Revision[] = [
-  { sequence: 7, digest: "sha256:4f1c…a09e", publishedAt: "Today 08:41", reviewer: "maria", changes: "+agents/researcher, ~instructions" },
-  { sequence: 6, digest: "sha256:91de…77b2", publishedAt: "Oct 24", reviewer: "maria", changes: "~skills/code-review" },
-  { sequence: 5, digest: "sha256:0b3a…c4d1", publishedAt: "Oct 19", reviewer: "maria", changes: "+gpu group, +tools/cuda-toolkit" },
-  { sequence: 4, digest: "sha256:e27f…1180", publishedAt: "Oct 11", reviewer: "maria", changes: "~settings/codex" },
+  { id: "demo-revision-7", sequence: 7, digest: "sha256:4f1c…a09e", publishedAt: "Today 08:41", reviewer: "maria", changes: "+agents/researcher, ~instructions" },
+  { id: "demo-revision-6", sequence: 6, digest: "sha256:91de…77b2", publishedAt: "Oct 24", reviewer: "maria", changes: "~skills/code-review" },
+  { id: "demo-revision-5", sequence: 5, digest: "sha256:0b3a…c4d1", publishedAt: "Oct 19", reviewer: "maria", changes: "+gpu group, +tools/cuda-toolkit" },
+  { id: "demo-revision-4", sequence: 4, digest: "sha256:e27f…1180", publishedAt: "Oct 11", reviewer: "maria", changes: "~settings/codex" },
 ];
 
 export const secrets = [
