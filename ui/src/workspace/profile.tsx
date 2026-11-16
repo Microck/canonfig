@@ -37,6 +37,7 @@ import { authoredItems, draftFiles, type ExactDraft } from "./profile-authoring"
 import type { GuiProfileSnapshot } from "../../../src/gui/contract/profile";
 import { GuiRequestError } from "../gui-client";
 import { ExactItemFields, ProfileActionNotice } from "./profile-authoring-controls";
+import { ArchiveExportButton, ArchiveImportButton } from "./archive-transfer";
 import { ScheduleFields, WEEK, scheduleError, scheduleSummary, type Schedule } from "./schedule";
 import { HarnessTable } from "./harnesses";
 import { SkillUpdatesDialog, SkillSummary, SkillUpstream, useMoveSkillTracking, useSkillLocked } from "./skills";
@@ -424,10 +425,9 @@ export function ProfileView() {
         crumbs={(ws.profileLive ? ws.profileName : defaults.name) ? ["Profile", ws.profileLive ? ws.profileName : defaults.name] : ["Profile"]}
         actions={
           <>
-            {/* `canonfig export`: the whole folder, not just the profile items listed here, signed with the Source key. */}
-            <Button variant="outline" size="sm" onClick={ws.exportArchive} title="Download ~/.canonfig/ as a .tar.gz with a checksum manifest signed by this Source">
-              Export
-            </Button>
+            {/* Import writes authored entries only. Publication remains an explicit, separate review. */}
+            {ws.enrollmentBackend && <ArchiveImportButton backend={ws.enrollmentBackend} onImported={ws.reload} />}
+            <ArchiveExportButton onExport={ws.exportArchive} disabled={ws.profileLive?.busy} />
             <Button variant="outline" size="sm" disabled={!ws.capabilities.profileWrite || ws.profileLive?.busy} onClick={() => { setDiscoverOpen(true); if (ws.profileLive) void ws.profileLive.scan(); }} data-tour="profile-add">
               Discover tools
             </Button>

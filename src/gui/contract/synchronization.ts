@@ -99,3 +99,29 @@ export const GuiArchiveDownload = Schema.Struct({
   signer: Schema.String,
 });
 export interface GuiArchiveDownload extends Schema.Schema.Type<typeof GuiArchiveDownload> {}
+
+/** Archive bytes stay in memory in the browser and in a private, short-lived server file. */
+export const GuiArchiveImportInput = Schema.Struct({
+  base64: GuiBase64,
+  replace: Schema.Boolean,
+  expectKey: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u))),
+});
+export const GuiArchiveImportApply = Schema.Struct({
+  ...GuiArchiveImportInput.fields,
+  sha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+});
+export const GuiArchiveImportResult = Schema.Struct({
+  sha256: Schema.String,
+  manifestSha256: Schema.String,
+  signer: Schema.String,
+  folderFiles: Schema.Number,
+  replaced: Schema.Array(Schema.String),
+  kept: Schema.optionalKey(Schema.Array(Schema.String)),
+  harnessFiles: Schema.optionalKey(Schema.Struct({
+    verified: Schema.Number, harnesses: Schema.Array(Schema.String), note: Schema.String,
+  })),
+  plan: Schema.Json,
+  backup: Schema.optionalKey(Schema.String),
+  outcome: Schema.optionalKey(Schema.Json),
+});
+export interface GuiArchiveImportResult extends Schema.Schema.Type<typeof GuiArchiveImportResult> {}

@@ -114,15 +114,29 @@ function StepPane({ direction, reduced, children }: { direction: 1 | -1; reduced
 }
 
 /**
- * Top bar for a machine that isn't set up yet: brand, machine, glossary. `backdrop` fills
- * the frame behind <main>, outside the scrolling content, so its size follows the viewport
- * only: a step that grows, an opened disclosure or a scroll never resizes or moves it.
+ * A quiet setup-header action: a button, or a link when it opens another page. Below `sm` only
+ * the icon shows; the label stays for screen readers.
  */
-export function OnboardingShell({ hostname, backdrop, children }: { hostname: string; backdrop: ReactNode; children: ReactNode }) {
+export function HeaderAction({ icon: Icon, label, ...target }: { icon: ComponentType<{ className?: string; "aria-hidden"?: boolean }>; label: string } & ({ onClick: () => void } | { href: string })) {
+  const className = "h-11 gap-1.5 px-2.5 text-muted-foreground max-sm:w-11 max-sm:px-0 sm:h-10";
+  const content = <><Icon aria-hidden className="size-4" /><span className="max-sm:sr-only">{label}</span></>;
+  return "href" in target
+    ? <Button asChild variant="ghost" size="sm" className={className}><a href={target.href}>{content}</a></Button>
+    : <Button variant="ghost" size="sm" className={className} onClick={target.onClick}>{content}</Button>;
+}
+
+/**
+ * Top bar for a machine that isn't set up yet: brand, machine, optional actions, glossary.
+ * `actions` holds secondary ways to start (import an archive, local use) so they stay out of
+ * the role choice itself. `backdrop` fills the frame behind <main>, outside the scrolling
+ * content, so its size follows the viewport only: a step that grows, an opened disclosure or a
+ * scroll never resizes or moves it.
+ */
+export function OnboardingShell({ hostname, backdrop, actions, children }: { hostname: string; backdrop: ReactNode; actions?: ReactNode; children: ReactNode }) {
   return (
     <div className="flex h-svh flex-col bg-canvas text-foreground">
       <Sheet>
-        <header className="flex h-12 shrink-0 items-center justify-between px-4">
+        <header className="flex h-12 shrink-0 items-center justify-between gap-2 px-4">
           {/* In the demo, max-md:mr-24 reserves the slot for the compact Demo button that App.tsx fixes into this header. */}
           <div className={cn("flex min-w-0 items-center gap-2.5", DEMO && "max-md:mr-24")}>
             <Logo />
@@ -130,11 +144,14 @@ export function OnboardingShell({ hostname, backdrop, children }: { hostname: st
             <span aria-hidden className="mx-1 h-4 w-px bg-border" />
             <span className="truncate text-[13px] text-muted-foreground">{hostname}</span>
           </div>
-          <SheetTrigger asChild>
-            <Button variant="ghost" size="icon-sm" aria-label="Open glossary" className="size-11 shrink-0 text-muted-foreground sm:size-10">
-              <Question />
-            </Button>
-          </SheetTrigger>
+          <div className="flex shrink-0 items-center gap-1">
+            {actions}
+            <SheetTrigger asChild>
+              <Button variant="ghost" size="icon-sm" aria-label="Open glossary" className="size-11 shrink-0 text-muted-foreground sm:size-10">
+                <Question />
+              </Button>
+            </SheetTrigger>
+          </div>
         </header>
         <div className="relative isolate mx-2 mb-2 min-h-0 flex-1 overflow-hidden rounded-xl border border-border bg-background">
           <div aria-hidden data-setup-backdrop className="absolute inset-0 -z-10">

@@ -127,7 +127,7 @@ const MAXIMUM_PATH_BYTES = 1024;
  * stays below 4 KiB. Import refuses a larger file or stream before parsing,
  * so a crafted archive cannot expand without limit.
  */
-const MAXIMUM_ARCHIVE_BYTES = MAXIMUM_CONTENT_BYTES + MAXIMUM_FILES * 4096;
+export const MAXIMUM_ARCHIVE_BYTES = MAXIMUM_CONTENT_BYTES + MAXIMUM_FILES * 4096;
 /** The largest harness file export reads, as for takeover snapshots. */
 const MAXIMUM_HARNESS_FILE_BYTES = 8 * 1024 * 1024;
 

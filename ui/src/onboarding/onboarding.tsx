@@ -219,7 +219,7 @@ const DEFAULT_PORT = 17342;
 export type ImportOffer = SetupImportOffer;
 
 
-export function Onboarding({ onDone, data, live, onCancel }: { onDone: (setup: Setup) => void; data: OnboardingData; live?: EnrollmentController; onCancel?: () => void }) {
+export function Onboarding({ onDone, data, live, onCancel, archiveImport }: { onDone: (setup: Setup) => void; data: OnboardingData; live?: EnrollmentController; onCancel?: () => void; archiveImport?: ReactNode }) {
   const stageFlow = useStateMachine<OnboardingStage, StageEvent>(live?.session.role === "follower" ? { kind: "follower" } : { kind: "choosing", returnedFrom: null }, transitionStage);
   const stage: Stage = stageFlow.state.kind === "inspecting-source" || stageFlow.state.kind === "choosing" ? "choose" : stageFlow.state.kind;
   const back = (from: Role) => {
@@ -239,7 +239,8 @@ export function Onboarding({ onDone, data, live, onCancel }: { onDone: (setup: S
   };
 
   return (
-    <OnboardingShell hostname={data.hostname} backdrop={<SetupBackdrop busy={!!live?.state.loading} job={live ? live.applied ? { progress: 100, steps: 1, done: true } : null : job} />}>
+    // Secondary ways to start sit in the header only while the role is still being chosen.
+    <OnboardingShell hostname={data.hostname} actions={stage === "choose" && !live?.state.loading ? archiveImport : undefined} backdrop={<SetupBackdrop busy={!!live?.state.loading} job={live ? live.applied ? { progress: 100, steps: 1, done: true } : null : job} />}>
       {/* In the demo, md:pb-40 clears the fixed demo panel (220px wide and about 122px tall, 12px
           from the left and from the bottom, App.tsx) at the end of the scroll, where the cards can
           reach under it. From xl the cards start right of it, so normal padding returns and a

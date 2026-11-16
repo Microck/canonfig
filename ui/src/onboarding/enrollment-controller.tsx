@@ -4,7 +4,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Schema } from "effect";
 import { Button } from "@/components/ui/button";
 import { cn } from "cn";
-import { Check, Circle, HourglassMedium, Question, Warning, X } from "@/components/icons";
+import { Check, Circle, FileArrowUp, HourglassMedium, Question, Warning, X } from "@/components/icons";
 import { SectionLabel, settingsGroup } from "@/workspace/kit";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { isCoarsePointer, SNAP } from "@/lib/utils";
@@ -17,10 +17,11 @@ import { GuiInvitationInspection, GuiSetupJournal, GuiSetupStatus } from "../../
 import { GuiHarnessReport } from "../../../src/gui/contract/synchronization";
 import { TARGET_IDS } from "../../../src/projection/model";
 import { Onboarding, type OnboardingData } from "./onboarding";
-import { Facts } from "./kit";
+import { Facts, HeaderAction } from "./kit";
 import type { ResourceState } from "@/workspace/workspace-types";
 import { TransitionError, useStateMachine } from "@/lib/state-machine";
 import { hasJoined, setupEvidence, transitionFollower, transitionSource, type FollowerEnrollmentState, type FollowerEvent, type PreferenceDraft, type SourceEvent, type SourceSetupState } from "./enrollment-state";
+import { ArchiveImportButton } from "@/workspace/archive-transfer";
 
 export interface EnrollmentController {
   state: ResourceState;
@@ -221,7 +222,7 @@ export function useEnrollmentController(backend: WorkspaceBackend, session: GuiS
 /** The same wizard renders both providers. Only this controller knows the browser API. */
 export function EnrollmentOnboarding({ backend, session, onCancel }: { backend: WorkspaceBackend; session: GuiSession; onCancel?: () => void }) {
   const controller = useEnrollmentController(backend, session);
-  return <Onboarding data={controller.data} live={controller} onCancel={onCancel} onDone={(setup) => { window.location.href = `/${setup.role}/overview`; }} />;
+  return <Onboarding data={controller.data} live={controller} onCancel={onCancel} archiveImport={session.role === "unconfigured" ? <ArchiveImportButton backend={backend} trigger={(open) => <HeaderAction icon={FileArrowUp} label="Import archive" onClick={open} />} /> : undefined} onDone={(setup) => { window.location.href = `/${setup.role}/overview`; }} />;
 }
 
 function setupRecordEvidence(record: GuiSetupStatus["items"][number]): string | undefined {

@@ -9,6 +9,33 @@ description: Write ~/.canonfig/ to one archive, check exactly what it holds, and
 them to move a Source Machine's setup to a new computer, to keep a copy before
 a large edit, or to give an auditor the exact files that left a machine.
 
+## Use the browser
+
+Run `canonfig ui`. On Source **Profile** or follower **Local settings**, choose
+**Export** and optionally **Include managed harness files**. Import verifies those
+files but never writes them back to the harnesses.
+
+To import, choose **Import archive** on Source **Profile** or in the header of the setup
+role-choice screen on an unconfigured machine. An enrolled Follower cannot import its Source's
+mirror. Select the `.tar.gz` and enter an expected signing key fingerprint obtained
+independently from your trusted Source. Without that field, import checks integrity
+but accepts unsigned archives and does not establish the signer's identity.
+
+If the folder already holds entries, choose **Allow replacement of existing folder
+entries** only after reading its warning. Matching files or whole directories are
+snapshotted under `~/.canonfig/.backups/` before replacement. Entries absent from
+the archive remain.
+
+Choose **Verify and preview**, inspect the plan, then confirm **Import verified
+archive**. Verification writes no folder entries. The completed import reports its
+fingerprints and any recovery snapshot. It does not publish a revision, create a
+Source identity, enroll this machine or apply harness files.
+
+If observation fails, use **Resume observation**, not another import. For an
+interrupted run, inspect `canonfig status` and use `canonfig recover`. To undo a
+replacement, use `canonfig restore <snapshot>` with the reported snapshot.
+
+
 ## Export the folder
 
 ```bash

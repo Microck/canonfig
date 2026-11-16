@@ -1,13 +1,14 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Schema } from "effect";
 import { afterEach, expect, it } from "vitest";
-import { GuiArchiveDownload, GuiBackups, GuiLocalItems, GuiOperation, GuiOperationTicket, GuiScheduleStatus } from "../../src/gui/contract.ts";
+import { GuiArchiveDownload, GuiArchiveImportResult, GuiBackups, GuiLocalItems, GuiOperation, GuiOperationTicket, GuiScheduleStatus } from "../../src/gui/contract.ts";
 
 const project = resolve(import.meta.dirname, "../..");
 const children = new Set<ChildProcess>();
@@ -87,7 +88,7 @@ async function launch(machine: Fixture, args: string[], ready: RegExp) {
   child.once("error", reject);
   child.once("exit", (code) => reject(new Error(`Child exited ${code}: ${stderr}`)));
   const timer = setTimeout(() => reject(new Error(`Startup timeout: ${stderr}`)), 60_000);
-  try { return { child, ready: await promise }; } finally { clearTimeout(timer); }
+  try { return { child, ready: await promise, stderrTail: () => stderr.slice(-4096) }; } finally { clearTimeout(timer); }
 }
 
 async function gui(machine: Fixture) {
@@ -97,11 +98,32 @@ async function gui(machine: Fixture) {
   const cookie = exchange.headers.get("set-cookie")?.split(";")[0];
   if (!cookie) throw new Error("GUI did not establish a session");
   const call = async (path: string, method = "GET", body?: Schema.Json) => {
-    const options: RequestInit = { method, headers: { Cookie: cookie, Origin: origin, "Content-Type": "application/json", "x-canonfig-request": "browser" } };
-    if (method !== "GET") options.body = Schema.is(Schema.String)(body) ? body : JSON.stringify(body ?? {});
-    const response = await fetch(origin + path, options);
-    const payload: unknown = await response.json();
-    return { status: response.status, payload };
+    const headers = { Cookie: cookie, Origin: origin, "Content-Type": "application/json", "x-canonfig-request": "browser" };
+    let requestBody: string | undefined;
+    if (method !== "GET") requestBody = Schema.is(Schema.String)(body) ? body : JSON.stringify(body ?? {});
+    try {
+      return await new Promise<{ status: number | undefined; payload: unknown }>((resolve, reject) => {
+        // Keep uploads and operation polls independent of idle pooled sockets.
+        const request = httpRequest(origin + path, { method, headers, agent: false }, (response) => {
+          let responseText = "";
+          response.setEncoding("utf8");
+          response.on("data", (chunk: string) => { responseText += chunk; });
+          response.once("error", reject);
+          response.once("end", () => {
+            try {
+              const payload: unknown = JSON.parse(responseText);
+              resolve({ status: response.statusCode, payload });
+            } catch (cause) { reject(cause); }
+          });
+        });
+        request.once("error", reject);
+        // DELETE bodies need explicit framing with node:http.
+        if (requestBody !== undefined) request.setHeader("Content-Length", Buffer.byteLength(requestBody));
+        request.end(requestBody);
+      });
+    } catch (cause) {
+      throw new Error(`GUI ${method} ${path} failed (exitCode=${launched.child.exitCode}, signal=${launched.child.signalCode}).\n${launched.stderrTail()}`, { cause });
+    }
   };
   const operation = async (path: string, body: Schema.Json = {}) => {
     const started = await call(path, "POST", body);
@@ -174,6 +196,76 @@ it("serves real role-gated secrets and a verified Source archive without leaking
   success(machine.invoke(["import", path, "--dry-run", "--replace"]));
 }, 180_000);
 
+it("round trips a signed archive through GUI preview/import with signer checks, replacement snapshots and private upload cleanup", async () => {
+  const source = fixture("archive-source");
+  success(source.invoke(["source", "init"]));
+  write(join(source.folder, "canonfig.jsonc"), JSON.stringify({ version: 1, profile: { id: "archive-roundtrip", name: "Archive round trip" }, harnesses: [] }));
+  write(join(source.folder, "AGENTS.md"), "Round trip instructions\n");
+  write(join(source.folder, "skills", "sample", "SKILL.md"), "# Sample\n");
+  const asset = randomBytes(1024 * 1024 + 64);
+  writeFileSync(join(source.folder, "skills", "sample", "asset.bin"), asset);
+  const sourceApi = await gui(source);
+  const exported = Schema.decodeUnknownSync(GuiArchiveDownload)((await sourceApi.call("/api/exports", "POST", { includeHarnesses: true })).payload);
+  const target = fixture("archive-target");
+  const privateTmp = join(target.home, "tmp");
+  mkdirSync(privateTmp);
+  target.env.TMPDIR = privateTmp;
+  const api = await gui(target);
+  const input = { base64: exported.base64, replace: false, expectKey: exported.signer };
+  const mismatch = await api.operation("/api/imports/preview", { ...input, expectKey: "0".repeat(64) });
+  expect(mismatch.state).toBe("failed");
+  if (mismatch.state === "failed") expect(mismatch.failure.message).toContain("--expect-key");
+  expect(existsSync(join(target.folder, "canonfig.jsonc"))).toBe(false);
+  expect(readdirSync(privateTmp).filter((entry) => entry.startsWith("canonfig-gui-archive-"))).toEqual([]);
+  expect((await api.call("/api/imports/preview", "POST", { ...input, expectKey: "invalid" })).status).toBe(400);
+  const privateMarker = "private-archive-input-do-not-echo";
+  for (const path of ["/api/imports/preview", "/api/imports"]) {
+    const rejected = await api.call(path, "POST", { base64: privateMarker, replace: false });
+    expect(rejected.status).toBe(400);
+    expect(JSON.stringify(rejected.payload)).not.toContain(privateMarker);
+  }
+  const preview = await api.operation("/api/imports/preview", input);
+  expect(preview.state).toBe("succeeded");
+  if (preview.state !== "succeeded") throw new Error("Archive preview failed");
+  const plan = Schema.decodeUnknownSync(GuiArchiveImportResult)(preview.result);
+  expect(plan).toMatchObject({ sha256: exported.sha256, signer: exported.signer, folderFiles: 4, replaced: [] });
+  expect(existsSync(join(target.folder, "AGENTS.md"))).toBe(false);
+  expect((await api.operation("/api/imports", { ...input, sha256: "0".repeat(64) })).state).toBe("failed");
+  const imported = await api.operation("/api/imports", { ...input, sha256: plan.sha256 });
+  expect(imported.state).toBe("succeeded");
+  expect(readFileSync(join(target.folder, "AGENTS.md"), "utf8")).toBe("Round trip instructions\n");
+  expect(readFileSync(join(target.folder, "skills", "sample", "SKILL.md"), "utf8")).toBe("# Sample\n");
+  expect(readFileSync(join(target.folder, "skills", "sample", "asset.bin"))).toEqual(asset);
+  expect((await api.call("/api/session")).payload).toMatchObject({ role: "unconfigured" });
+  expect(readdirSync(privateTmp).filter((entry) => entry.startsWith("canonfig-gui-archive-"))).toEqual([]);
+  const conflict = await api.operation("/api/imports/preview", input);
+  expect(conflict.state).toBe("failed");
+  if (conflict.state === "failed") expect(conflict.failure.category).toBe("conflict-or-drift");
+  write(join(target.folder, "AGENTS.md"), "Keep this in a snapshot\n");
+  write(join(target.folder, "rules", "untouched.md"), "Not in archive\n");
+  const replace = { ...input, replace: true };
+  expect((await api.operation("/api/imports/preview", replace)).state).toBe("succeeded");
+  const replaced = await api.operation("/api/imports", { ...replace, sha256: plan.sha256 });
+  expect(replaced.state).toBe("succeeded");
+  if (replaced.state !== "succeeded") throw new Error("Replacement failed");
+  const receipt = Schema.decodeUnknownSync(GuiArchiveImportResult)(replaced.result);
+  expect(receipt.replaced).toContain("AGENTS.md");
+  expect(receipt.kept).toContain("rules");
+  expect(receipt.backup).toBeTruthy();
+  expect(readFileSync(join(target.folder, "rules", "untouched.md"), "utf8")).toBe("Not in archive\n");
+  if (!receipt.backup) throw new Error("Replacement did not report its snapshot");
+  success(target.invoke(["restore", receipt.backup]));
+  expect(readFileSync(join(target.folder, "AGENTS.md"), "utf8")).toBe("Keep this in a snapshot\n");
+  expect(readdirSync(privateTmp).filter((entry) => entry.startsWith("canonfig-gui-archive-"))).toEqual([]);
+  const unsignedPath = join(target.home, "unsigned.tar.gz");
+  success(target.invoke(["export", "--output", unsignedPath]));
+  const unsigned = { base64: readFileSync(unsignedPath).toString("base64") };
+  const unsignedRefused = await sourceApi.operation("/api/imports/preview", { base64: unsigned.base64, replace: true, expectKey: exported.signer });
+  expect(unsignedRefused.state).toBe("failed");
+  if (unsignedRefused.state === "failed") expect(unsignedRefused.failure.message).toContain("unsigned");
+  expect((await sourceApi.operation("/api/imports/preview", { base64: unsigned.base64, replace: true })).state).toBe("succeeded");
+}, 300_000);
+
 it("plans and applies an enrolled follower and performs digest-checked local operations", async () => {
   const source = fixture("source");
   success(source.invoke(["source", "init"]));
@@ -189,6 +281,9 @@ it("plans and applies an enrolled follower and performs digest-checked local ope
   success(source.invoke(["source", "invite", "--endpoint", `https://127.0.0.1:${port}`, "--output", invitation]));
   success(follower.invoke(["follower", "enroll", "--stdin", "--name", "GUI follower"], readFileSync(invitation, "utf8")));
   const api = await gui(follower);
+  for (const path of ["/api/imports/preview", "/api/imports"]) {
+    expect((await api.call(path, "POST", { base64: "YWJj", replace: true, ...(path === "/api/imports" ? { sha256: createHash("sha256").update("abc").digest("hex") } : {}) })).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  }
   for (const path of [
     "/api/sync/plan", "/api/sync/apply", "/api/sync/reviews", "/api/recovery",
     "/api/recovery/abandon", "/api/secrets/sync", "/api/tunnel/start", "/api/tunnel/stop", "/api/enrollment", "/api/schedule",

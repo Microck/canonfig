@@ -176,8 +176,8 @@ export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, 
     startTunnel: (timeoutMilliseconds) => start("/api/tunnel/start", "tunnel-start", "Start tunnel", { timeoutMilliseconds }),
     stopTunnel: (forget) => mutation("/api/tunnel/stop", "POST", { forget }),
     archive,
-    exportArchive: () => { void run(async (signal) => {
-      const download = await backend.request("/api/exports", GuiArchiveDownload, signal, { method: "POST", body: { includeHarnesses: false } });
+    exportArchive: (includeHarnesses = false) => { void run(async (signal) => {
+      const download = await backend.request("/api/exports", GuiArchiveDownload, signal, { method: "POST", body: { includeHarnesses } });
       const bytes = Uint8Array.from(atob(download.base64), (character) => character.charCodeAt(0));
       const url = URL.createObjectURL(new Blob([bytes], { type: download.mediaType }));
       const link = document.createElement("a");

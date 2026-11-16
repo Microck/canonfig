@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { realpath, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { Effect, Schema } from "effect";
 import { FollowerCommands } from "../../cli/follower-commands.ts";
@@ -8,6 +9,7 @@ import { CliCommandFailure, type CliPayload } from "../../cli/source-commands.ts
 import { RunId } from "../../domain/brand.ts";
 import { MachineState } from "../../machine/machine-state.service.ts";
 import { sha256BytesHex } from "../../profile/profile-codec.ts";
+import { MAXIMUM_ARCHIVE_BYTES } from "../../projection/archive.ts";
 import { maximumAuthoringBytes, readAuthoringItem, readAuthoringItems, writeAuthoringItems, editAuthoringConfig, type AuthoringItem } from "../../projection/authoring.ts";
 import { decodeFolderConfig, decodeLocalConfig, parseOverlay } from "../../projection/folder.ts";
 import { listSnapshots } from "../../projection/takeover.ts";
@@ -18,6 +20,7 @@ import {
   GuiScheduleRequest, GuiSynchronizationResult, GuiHarnessRequest, GuiOverlayRequest, GuiRestoreRequest,
   GuiLocalWrite, GuiLocalConfigRequest, GuiSecretSet, GuiSecretName, GuiExportRequest,
   GuiTunnelStartInput, GuiTunnelStopInput,
+  GuiArchiveImportInput, GuiArchiveImportApply,
   type GuiLocalItem,
 } from "../contract/synchronization.ts";
 import { GuiOperations } from "../operations.ts";
@@ -38,12 +41,12 @@ const RunResult = Schema.Struct({
   outcome: Schema.optionalKey(Schema.Struct({ run: RunId })),
 });
 
-/** Schema/JSON parser diagnostics may quote the input. Never echo a secret request. */
-const privateRequest = (route: GuiRoute): GuiRoute => ({
+/** Parser diagnostics may quote request bodies. Never echo private input. */
+const privateRequest = (route: GuiRoute, message = "Invalid secret request. Supply a name and a text value in JSON."): GuiRoute => ({
   ...route,
   handle: (request, url) => route.handle(request, url).pipe(Effect.mapError((error) =>
     error.message.startsWith("Invalid request:") || error.message.startsWith("Invalid JSON request:")
-      ? invalid("Invalid secret request. Supply a name and a text value in JSON.")
+      ? invalid(message)
       : error)),
 });
 
@@ -53,8 +56,8 @@ export const synchronizationRoutes = Effect.gen(function*() {
   const machine = yield* MachineState;
   const repository = yield* StateRepository;
   const operations = yield* GuiOperations;
-  const role = (allowed: ReadonlyArray<"source" | "follower">) => queries.session().pipe(
-    Effect.flatMap((session) => session.role !== "unconfigured" && allowed.includes(session.role)
+  const role = (allowed: ReadonlyArray<"source" | "follower" | "unconfigured">) => queries.session().pipe(
+    Effect.flatMap((session) => allowed.includes(session.role)
       ? Effect.succeed(session)
       : Effect.fail(invalid(`This operation requires a ${allowed.join(" or ")} machine.`))),
   );
@@ -90,8 +93,8 @@ export const synchronizationRoutes = Effect.gen(function*() {
 
   // Capture identity from this command's result or typed failure details, never a mutable "latest run".
   // Planning has no run journal. Before an apply returns its identity the journal is explicitly unknown.
-  const start = (operation: Effect.Effect<CliPayload, CliCommandFailure>) => Effect.gen(function*() {
-    yield* role(["follower"]);
+  const start = (operation: Effect.Effect<CliPayload, CliCommandFailure>, allowed: ReadonlyArray<"source" | "follower" | "unconfigured"> = ["follower"]) => Effect.gen(function*() {
+    yield* role(allowed);
     let details: Schema.Json = null;
     let run: typeof RunId.Type | undefined;
     const capture = (value: CliPayload | undefined) => {
@@ -115,6 +118,24 @@ export const synchronizationRoutes = Effect.gen(function*() {
     Effect.provideService(StateRepository, repository),
     Effect.mapError(commandFailure),
   );
+  const importArchive = (input: typeof GuiArchiveImportInput.Type, dryRun: boolean, expectedSha256?: string) => Effect.gen(function*() {
+    const bytes = Buffer.from(input.base64, "base64");
+    if (bytes.length > MAXIMUM_ARCHIVE_BYTES) return yield* invalid(`Archive exceeds ${MAXIMUM_ARCHIVE_BYTES} bytes.`);
+    if (expectedSha256 !== undefined && sha256BytesHex(bytes) !== expectedSha256) return yield* invalid("Archive changed; verify it again.");
+    return yield* Effect.acquireUseRelease(
+      Effect.tryPromise({ try: () => mkdtemp(join(tmpdir(), "canonfig-gui-archive-")), catch: () => invalid("Could not prepare the archive upload.") }),
+      (directory) => Effect.gen(function*() {
+        const archive = join(directory, "upload.tar.gz");
+        yield* Effect.tryPromise({
+          try: () => writeFile(archive, bytes, { mode: 0o600, flag: "wx" }),
+          catch: () => invalid("Could not save the archive upload."),
+        });
+        return yield* commands.importArchive({ archive, dryRun, replace: input.replace, expectKey: input.expectKey }).pipe(Effect.map(printable));
+      }),
+      (directory) => Effect.promise(() => rm(directory, { recursive: true, force: true })),
+    );
+  });
+  const archiveBody = { maximumBodyBytes: 4 * Math.ceil(MAXIMUM_ARCHIVE_BYTES / 3) + 1024 * 1024 };
   return [
     mutationRoute("POST", "/api/sync/plan", EmptyBody, () => start(commands.synchronize({ mode: "plan", noInput: false })), 202),
     mutationRoute("POST", "/api/sync/apply", EmptyBody, () => start(commands.synchronize({ mode: "apply", noInput: false })), 202),
@@ -189,6 +210,12 @@ export const synchronizationRoutes = Effect.gen(function*() {
     ), 202),
     mutationRoute("POST", "/api/tunnel/stop", GuiTunnelStopInput, (input) => follower(commands.stopTunnel(input))),
     mutationRoute("DELETE", "/api/enrollment", EmptyBody, () => follower(commands.unenroll())),
+    privateRequest(mutationRoute("POST", "/api/imports/preview", GuiArchiveImportInput, (input) => start(
+      importArchive(input, true), ["source", "unconfigured"],
+    ), 202, archiveBody), "Invalid archive upload or signing fingerprint."),
+    privateRequest(mutationRoute("POST", "/api/imports", GuiArchiveImportApply, (input) => start(
+      importArchive(input, false, input.sha256), ["source", "unconfigured"],
+    ), 202, archiveBody), "Invalid verified archive upload."),
     mutationRoute("POST", "/api/exports", GuiExportRequest, ({ includeHarnesses }) => Effect.gen(function*() {
       yield* role(["source", "follower"]);
       const home = yield* machine.normalizePath({ path: "~" }).pipe(Effect.mapError(commandFailure));
