@@ -42,6 +42,27 @@ describe("native binary artifacts", () => {
     expect(binaryFormatProblem(elf, "linux", "x64")).toContain("architecture");
   });
 
+  it.runIf(process.platform === "linux" && ["x64", "arm64"].includes(process.arch)).each(["script", "wrong-architecture"])(
+    "does not recognize matching %s bytes as the installed native pin",
+    async (kind) => {
+      const home = mkdtempSync(join(tmpdir(), "canonfig-binary-observation-"));
+      const directory = join(home, ".local", "bin");
+      mkdirSync(directory, { recursive: true });
+      const bytes = kind === "script" ? Buffer.from("#!/bin/sh\nexit 0\n") : readFileSync("/bin/true");
+      if (kind === "wrong-architecture") bytes.writeUInt16LE(process.arch === "arm64" ? 62 : 183, 18);
+      const recipe = recipeFor(bytes);
+      writeFileSync(join(directory, recipe.package), bytes, { mode: 0o755 });
+      try {
+        const observed = await Effect.runPromise(observeFollowerResource(
+          { resource: { kind: "tool", target: recipe.package, policy: "ensure" } },
+          { kind: "tool", toolId: recipe.package, recipes: [recipe], loginRequired: false },
+          { method: "executable-present", executable: recipe.package },
+        ).pipe(Effect.provide(linuxMachineStateLayer({ environment: [{ name: "HOME", value: home }] }))));
+        expect(observed).toMatchObject({ state: "present", executable: true, installedVersion: undefined });
+      } finally { rmSync(home, { recursive: true, force: true }); }
+    },
+  );
+
   it("rejects HTTPS downgrade redirects", async () => {
     const request: NpmArtifactRequest = async () => ({ statusCode: 302, headers: { location: "http://example.com/tool" }, body: (async function* () {})() });
     const error = await Effect.runPromise(Effect.flip(downloadBinaryArtifact(recipeFor(new Uint8Array()), request)));

@@ -13,7 +13,7 @@ import { toolInstallMethods } from "./installer-bindings.ts";
 import { installedToolVersion } from "./installed-tool-version.ts";
 import { relativePathAncestors, selectToolRecipe } from "./resource-plans.ts";
 import type { DesiredResource } from "./synchronization.types.ts";
-import { binaryDestination, binaryRecipeProblem } from "./binary-artifact.ts";
+import { binaryDestination, binaryFormatProblem, binaryRecipeProblem } from "./binary-artifact.ts";
 import { recipeSourceDetails } from "../domain/recipe-versions.ts";
 import { verifyNpmArtifactBytes } from "./npm-artifact.ts";
 
@@ -392,7 +392,9 @@ export const observeFollowerResource = (
             const permissions = yield* machine.permissions(path);
             const integrity = recipeSourceDetails(binary.source).integrity!;
             return { state: "present", digest: sha256BytesHex(bytes), executable: permissions.executableByOwner,
-              installedVersion: verifyNpmArtifactBytes(bytes, integrity) && (platform === "windows" || permissions.executableByOwner) ? binary.version : undefined } as const;
+              installedVersion: verifyNpmArtifactBytes(bytes, integrity)
+                && binaryFormatProblem(bytes, platform, binary.architecture!) === undefined
+                && (platform === "windows" || permissions.executableByOwner) ? binary.version : undefined } as const;
           }).pipe(Effect.catchTag("MachineFilesystemError", (error) =>
             isNotFoundFilesystemError(error) ? Effect.succeed({ state: "absent" } as const) : Effect.fail(error)));
         }

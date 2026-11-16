@@ -281,7 +281,8 @@ sha256/sha512 SRI digest. Downloads allow at most five HTTPS redirects, 128 MiB,
 and a 30-second total deadline. Installation verifies integrity and native format
 before an anchored, no-replace write into an existing real `~/.local/bin` directory.
 It never creates that directory by relocating home. Different existing bytes
-require explicit operator removal; matching installed bytes identify the pin.
+require explicit operator removal. Installed bytes identify the pin only when
+their integrity, native format, architecture, and executable permissions match.
 Archives, scripts, universal Mach-O files, and build steps are not supported.
 
 Reviewed package recipes retain optional `source` and `integrity` metadata from
