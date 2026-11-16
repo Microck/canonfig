@@ -496,18 +496,20 @@ export const recoverSynchronizationPlan = (
         readonly resource: ResourceId;
         readonly previousApplied?: AppliedResourceRecord | undefined;
       } | undefined;
-      // Drift is never held, and an action that already succeeded is reverified
-      // through the success path below, which keeps its rollback for the run.
-      const waiting = state.action.detail.kind === "drift-conflict" || last.state === "succeeded"
-        ? undefined
-        : blockedByPrerequisite(state.action, blocked);
-      if (waiting !== undefined) {
-        result = waiting;
-      } else if (
+      // Every path that would execute the action checks its prerequisites at that
+      // point, after restoring any partial write, so a held action leaves nothing
+      // of its own behind. Drift is never held: it must reach its branch and stop the run.
+      const executeUnlessHeld = Effect.gen(function*() {
+        const waiting = state.action.detail.kind === "drift-conflict" ? undefined : blockedByPrerequisite(state.action, blocked);
+        if (waiting === undefined) return yield* executeSynchronizationAction(input, state, attempt);
+        yield* appendJournal(input.id, state.action, "blocked", attempt);
+        return waiting;
+      });
+      if (
         last.state === "blocked"
         // Only these block on their own. Any other action journaled `blocked` was
-        // held for a prerequisite, and that prerequisite is not blocked now, so it
-        // runs through the normal path below instead of failing recovery.
+        // held for a prerequisite: it takes the normal path below, which holds it
+        // again only while that prerequisite is still blocked.
         && (state.action.detail.kind === "human-action" || state.action.detail.kind === "agent-task"
           || state.action.detail.kind === "drift-conflict")
       ) {
@@ -553,7 +555,7 @@ export const recoverSynchronizationPlan = (
               integrityError(recovery, `cannot restore ${state.action.id}: ${String(error)}`)
             ),
           );
-          result = yield* executeSynchronizationAction(input, state, attempt);
+          result = yield* executeUnlessHeld;
         }
       } else if (last.state === "succeeded") {
         const verification = yield* verifyResource(state.context).pipe(
@@ -599,7 +601,7 @@ export const recoverSynchronizationPlan = (
               integrityError(recovery, `cannot restore ${state.action.id}: ${String(error)}`)
             ),
           );
-          result = yield* executeSynchronizationAction(input, state, attempt);
+          result = yield* executeUnlessHeld;
         } else {
           result = {
             kind: "failed",
@@ -625,7 +627,7 @@ export const recoverSynchronizationPlan = (
             ),
           );
         }
-        result = yield* executeSynchronizationAction(input, state, attempt);
+        result = yield* executeUnlessHeld;
       }
       if (result.kind === "failed" && result.rollbackState._tag === "Blocked") {
         runRollback = blockRunRollback(runRollback, { action: state.action.id, resource: state.action.resource, state: result.rollbackState });

@@ -1121,6 +1121,36 @@ describe("synchronization crash recovery", () => {
     expect(runRows(value).filter((row) => row.action_id === held.id).at(-1)?.state).toBe("succeeded");
   });
 
+  it("on recovery, restores a dependent interrupted mid-write and holds it while its prerequisite is blocked", async () => {
+    const value = fixture(temporaryDirectory());
+    const { base, write, human } = humanThenDependent(value);
+    const tail = { ...write, before: [human.id] };
+    const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)({
+      revision: base.revision, follower: base.follower, requiredBlobs: base.requiredBlobs,
+      actions: [human, tail], agentTasks: base.agentTasks,
+    }));
+    const plan = { ...base, actions: [human, tail], encoded, digest: sha256Hex(encoded) };
+    await seed(value, plan);
+    mkdirSync(dirname(value.target), { recursive: true });
+    // The interrupted write had already put the new content in place.
+    writeFileSync(value.target, value.artifact.content);
+    chmodSync(value.target, 0o600);
+    const reference = writeRollbackPayload(value, tail.id, {
+      path: value.target, state: "regular", content: Buffer.from("previous"), mode: 0o600,
+    });
+    await journal(value, human.id, "blocked");
+    await journal(value, tail.id, "running", reference);
+    const outcome = await recover(value);
+    expect(outcome.outcome, JSON.stringify(outcome)).toBe("HumanActionRequired");
+    if (outcome.outcome !== "HumanActionRequired") return;
+    expect(outcome.actions.map((action) => action.reason)).toEqual([
+      "No usable installation recipe for this platform",
+      `${write.resource} waits for ${write.resource}, which needs human action`,
+    ]);
+    expect(readFileSync(value.target, "utf8")).toBe("previous");
+    expect(runRows(value).filter((row) => row.action_id === tail.id).at(-1)?.state).toBe("blocked");
+  });
+
   it("preserves executable execution-model metadata across persisted plan hydration", async () => {
     const value = fixture(temporaryDirectory(), { kind: "tool" });
     const base = persistedPlan(value);
