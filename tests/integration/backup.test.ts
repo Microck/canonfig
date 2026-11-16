@@ -94,6 +94,19 @@ describe("portable backup recovery", () => {
     expect(await machine.fail({ action: "run", name: "daily" })).toMatchObject({ code: "BACKUP_INVALID", message: "Captured paths collide on a case-insensitive filesystem" });
   }, 60_000);
 
+  it("plans putting back a Canonical Folder with more files than an export holds", async () => {
+    const machine = fixture();
+    const references = join(machine.folder, "skills", "bulk", "references");
+    mkdirSync(references, { recursive: true });
+    writeFileSync(join(machine.folder, "skills", "bulk", "SKILL.md"), "---\nname: bulk\ndescription: Bulk\n---\n");
+    for (let index = 0; index <= 20_000; index += 1) writeFileSync(join(references, `${index}.md`), "x\n");
+    await machine.configure();
+    await machine.run({ action: "run", name: "daily" });
+    // A dry run with replace plans over the folder the backup came from, writing nothing.
+    expect(await machine.run({ action: "restore", name: "daily", target: { kind: "apply", replace: true, dryRun: true } }))
+      .toMatchObject({ snapshot: expect.any(String), outcome: expect.anything() });
+  }, 180_000);
+
   it.each(["fast", "balanced"] as const)("restores %s bytes without copying runtime state and refuses occupied destinations", async compression => {
     const machine = fixture();
     await machine.configure({ compression });

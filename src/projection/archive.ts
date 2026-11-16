@@ -130,7 +130,8 @@ const MAXIMUM_PATH_BYTES = 1024;
  * stays below 4 KiB. Import refuses a larger file or stream before parsing,
  * so a crafted archive cannot expand without limit.
  */
-const MAXIMUM_ARCHIVE_BYTES = MAXIMUM_CONTENT_BYTES + MAXIMUM_FILES * 4096;
+const archiveBytesFor = (maximumFiles: number) => MAXIMUM_CONTENT_BYTES + maximumFiles * 4096;
+const MAXIMUM_ARCHIVE_BYTES = archiveBytesFor(MAXIMUM_FILES);
 /** The largest harness file export reads, as for takeover snapshots. */
 const MAXIMUM_HARNESS_FILE_BYTES = 8 * 1024 * 1024;
 
@@ -390,15 +391,15 @@ export const verifyArchiveStream = async (input: {
  * entry exactly once with its size, SHA-256 and mode, and every entry sits
  * inside the allowlist. Any difference refuses the whole archive.
  */
-const verifyArchive = async (path: string, bytes: Uint8Array): Promise<VerifiedArchive> => {
+const verifyArchive = async (path: string, bytes: Uint8Array, maximumFiles: number): Promise<VerifiedArchive> => {
   const fail = (message: string) => new ArchiveIntegrityError({ path, message });
   const folderFiles: Array<ArchivedFolderFile> = [];
   const harnessFiles: Array<ManifestFile> = [];
   const verified = await verifyArchiveStream({
     path,
-    bytes: [gunzipSync(bytes, { maxOutputLength: MAXIMUM_ARCHIVE_BYTES })],
+    bytes: [gunzipSync(bytes, { maxOutputLength: archiveBytesFor(maximumFiles) })],
     maximumBytes: MAXIMUM_CONTENT_BYTES,
-    maximumFiles: MAXIMUM_FILES,
+    maximumFiles,
     consume: async (file, content) => {
       const segments = file.path.split("/");
       if (credentialFileName(segments.at(-1)!)) throw fail("credential files require encrypted backup recovery, not configuration import");
@@ -1042,18 +1043,25 @@ export const planImport = (input: {
   /** The fingerprint whose signature the archive must carry. */
   readonly expectKey?: string | undefined;
   readonly appliedResources: ReadonlyArray<AppliedResourceRecord>;
+  /**
+   * A file count above an export's, for a backup's Canonical Folder that its own policy already verified. The byte
+   * bound stays an export's: the planner holds the whole archive in memory.
+   */
+  readonly maximumFiles?: number | undefined;
 }) =>
   Effect.gen(function*() {
+    const maximumFiles = input.maximumFiles ?? MAXIMUM_FILES;
+    const maximumArchiveBytes = archiveBytesFor(maximumFiles);
     // One no-follow, non-blocking open of a regular file, its size checked on
     // that handle before reading and enforced while reading, so neither a
     // swapped path, a FIFO nor a file that grows can bypass the bound.
     const machine = yield* MachineState;
     const bytes = yield* machine.readFile({
       path: yield* machine.normalizePath({ path: input.archive }),
-      maximumBytes: MAXIMUM_ARCHIVE_BYTES,
+      maximumBytes: maximumArchiveBytes,
     }).pipe(
       Effect.catchTag("FileSizeLimitError", () =>
-        Effect.fail(new ArchiveIntegrityError({ path: input.archive, message: `is larger than any export (${MAXIMUM_ARCHIVE_BYTES} bytes)` }))),
+        Effect.fail(new ArchiveIntegrityError({ path: input.archive, message: `is larger than any export (${maximumArchiveBytes} bytes)` }))),
       Effect.catchTag("MachineFilesystemError", (error) =>
         Effect.fail(new ArchiveRequestError({
           path: input.archive,
@@ -1062,7 +1070,7 @@ export const planImport = (input: {
     );
     // File access succeeded; decoding failures describe untrusted archive bytes, not the request.
     const verified = yield* Effect.tryPromise({
-      try: () => verifyArchive(input.archive, bytes),
+      try: () => verifyArchive(input.archive, bytes, maximumFiles),
       catch: (error) => error instanceof ArchiveIntegrityError ? error : new ArchiveIntegrityError({
         path: input.archive, message: `archive data is invalid: ${error instanceof Error ? error.message : String(error)}`,
       }),

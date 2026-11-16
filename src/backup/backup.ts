@@ -424,8 +424,10 @@ export const backupCommand = Effect.fn("Backup.command")(function*(context: Back
     }
     if (request.target.kind === "apply") {
       const archive = yield* importArchive(verified, opened.scratch);
+      // The snapshot was already authenticated and verified under this policy's limits, which can allow far more files
+      // than an export; the planner keeps an export's byte bound because it reads the archive into memory.
       return { snapshot: verified.snapshot.id, signer: verified.signer,
-        outcome: yield* importLocal(context.statePath, archive, request.target.dryRun ? "plan" : "apply", request.target.replace, undefined) };
+        outcome: yield* importLocal(context.statePath, archive, request.target.dryRun ? "plan" : "apply", request.target.replace, undefined, opened.policy.maximumFiles) };
     }
     const output = resolve(request.target.path);
     const home = (yield* machine.userDirectories()).home.absolute;

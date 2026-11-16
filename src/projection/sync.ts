@@ -609,6 +609,8 @@ export const importLocal = Effect.fn("LocalProjection.import")(function*(
   mode: "plan" | "apply",
   replace: boolean,
   expectKey: string | undefined,
+  /** A backup's own file-count limit for its already-verified Canonical Folder; exports keep theirs. */
+  maximumFiles?: number,
 ) {
   const repository = yield* StateRepository;
   const synchronization = yield* Synchronization;
@@ -626,6 +628,7 @@ export const importLocal = Effect.fn("LocalProjection.import")(function*(
     replace,
     expectKey,
     appliedResources: yield* repository.loadAppliedResources(localProjectionFollower),
+    maximumFiles,
   });
   const harnesses = [...new Set(planned.archive.harnessFiles.map((file) => file.harness!))].sort();
   const signer = planned.archive.signer ?? "unsigned";
