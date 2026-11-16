@@ -180,6 +180,8 @@ under `~/.local/bin` (`%USERPROFILE%\.local\bin` on Windows, with `.exe` appende
 when needed). Create that directory first. Its parents must be real directories,
 not symlinks. Archives, scripts, universal macOS binaries, and build steps are
 not supported by this method.
+On Windows, a package name containing a dot must end in `.exe`: use
+`tool.v1.exe`, not `tool.v1`, so command and presence verification find the file.
 
 An existing executable is accepted only when its bytes match. Canonfig does not
 replace different bytes automatically, including an older binary version. Move

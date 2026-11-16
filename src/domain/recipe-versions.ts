@@ -157,6 +157,7 @@ const versionPatternFor = (
 
 export interface RecipeValidationInput {
   readonly method: string;
+  readonly platform?: string | undefined;
   readonly package: string;
   readonly version?: string | undefined;
   readonly source?: RecipeSource | undefined;
@@ -188,6 +189,9 @@ export const recipeValidationIssue = (
   }
   if (method === "binary") {
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(packageName) || packageName.endsWith(".") || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(packageName)) return recipeIssue(["package"], "binary package must be a single non-reserved executable name");
+    if (input.platform === "windows" && packageName.includes(".") && !packageName.toLowerCase().endsWith(".exe")) {
+      return recipeIssue(["package"], "Windows binary names containing a dot must end in .exe; declare the full executable name so verification can find it");
+    }
     if (version === undefined) return recipeIssue(["version"], "binary recipes require an exact version");
     if (input.architecture !== undefined && !["x64", "arm64"].includes(input.architecture)) return recipeIssue(["architecture"], "binary architecture must be x64 or arm64");
     if (input.entrypoint !== undefined && input.entrypoint !== packageName) return recipeIssue(["entrypoint"], "binary entrypoint must equal the executable package name, not a path");

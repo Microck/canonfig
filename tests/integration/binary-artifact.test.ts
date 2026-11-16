@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { ToolRecipeRef } from "../../src/domain/resource.ts";
+import { ActionDetailSchema } from "../../src/domain/synchronization.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import { binaryFormatProblem, binaryRecipeProblem, downloadBinaryArtifact, installBinaryArtifact } from "../../src/synchronization/binary-artifact.ts";
@@ -30,6 +31,22 @@ describe("native binary artifacts", () => {
     expect(() => Schema.decodeUnknownSync(ToolRecipeRef)({ ...recipe, source: { source: "https://user:pass@example.com/tool", integrity: integrity(new Uint8Array()) } })).toThrow();
     expect(binaryRecipeProblem({ ...recipe, architecture: undefined })).toContain("architecture");
     expect(binaryRecipeProblem({ ...recipe, source: undefined })).toContain("integrity");
+  });
+
+  it.each(["tool.v1", "tool.cmd"])("rejects Windows binary name %s before planning or execution", (packageName) => {
+    const recipe = { ...recipeFor(new Uint8Array()), platform: "windows", package: packageName };
+    expect(() => Schema.decodeUnknownSync(ToolRecipeRef)(recipe)).toThrow(/must end in .exe/u);
+    expect(() => Schema.decodeUnknownSync(ActionDetailSchema)({ ...recipe, kind: "install-tool", toolId: "tool" })).toThrow(/must end in .exe/u);
+  });
+
+  it("allows explicit Windows executable names and preserves dotted names on other platforms", () => {
+    const recipe = recipeFor(new Uint8Array());
+    for (const packageName of ["tool", "tool.v1.exe", "tool.v1.EXE"]) {
+      expect(Schema.is(ToolRecipeRef)({ ...recipe, platform: "windows", package: packageName })).toBe(true);
+    }
+    for (const platform of ["linux", "macos"]) {
+      expect(Schema.is(ToolRecipeRef)({ ...recipe, platform, package: "tool.v1" })).toBe(true);
+    }
   });
 
   it("rejects archives and wrong native architectures even with matching integrity", async () => {
