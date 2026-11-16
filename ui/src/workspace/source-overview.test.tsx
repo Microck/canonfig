@@ -163,10 +163,28 @@ it("renders a persisted receipt and open recovery without an operation ticket", 
   }
 });
 
-it("does not invent a receipt or local recovery on a Source without status evidence", () => {
-  const html = renderToStaticMarkup(<PersistentStatusEvidence status={Schema.decodeUnknownSync(GuiStatus)(status)} />);
-  assert.ok(html.includes("Applied revision"));
-  assert.ok(html.includes("Open recovery run"));
-  assert.ok(html.includes("Not reported"));
-  assert.ok(!html.includes("verified"));
+it("hides follower-only evidence on Sources and empty sections on Followers", () => {
+  for (const role of ["source", "follower"] as const) {
+    const empty = Schema.decodeUnknownSync(GuiStatus)({ ...status, machineRole: { role }, enrollmentLifecycle: "Active" });
+    assert.equal(renderToStaticMarkup(<PersistentStatusEvidence status={empty} />), "");
+  }
+});
+
+it("shows a Follower receipt without empty revision or recovery rows", () => {
+  const stage = { status: "not-reached", detail: "No completed synchronization run" };
+  const receipt = {
+    published: stage, applied: stage, independentlyVerified: stage,
+    clientLoaded: stage, scheduled: stage, mcpQualifications: [], secondRunNoOp: false,
+  };
+  const follower = Schema.decodeUnknownSync(GuiStatus)({
+    ...status, machineRole: { role: "follower" }, enrollmentLifecycle: "Active",
+    completionReceipt: receipt,
+  });
+  const html = renderToStaticMarkup(<PersistentStatusEvidence status={follower} />);
+  assert.ok(html.includes("Completion receipt"));
+  assert.ok(!html.includes("Applied revision"));
+  assert.ok(!html.includes('aria-label="Recovery"'));
+  assert.ok(!html.includes("Not reported"));
+  const source = Schema.decodeUnknownSync(GuiStatus)({ ...follower, machineRole: { role: "source" } });
+  assert.equal(renderToStaticMarkup(<PersistentStatusEvidence status={source} />), "");
 });

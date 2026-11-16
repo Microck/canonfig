@@ -534,9 +534,9 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
         </Prop>
         {enrollment && <>
           <Prop label="Enrolled at">{enrollment.enrolledAt}</Prop>
-          <Prop label="Revoked">{enrollment.revoked ? "Yes" : "No"}</Prop>
-          <Prop label="Enrollment pending">{enrollment.pending ? "Yes" : "No"}</Prop>
-          <Prop label="Credential present">{enrollment.credentialPresent ? "Yes" : "No"}</Prop>
+          {enrollment.revoked && <Prop label="Revoked">Yes</Prop>}
+          {enrollment.pending && <Prop label="Enrollment pending">Yes</Prop>}
+          {!enrollment.credentialPresent && <Prop label="Credential">Missing</Prop>}
           <Prop label="Credential lifecycle">{enrollment.credentialLifecycle._tag}</Prop>
           {ws.status?.machineRole.sourceFingerprint && <Prop label="Source fingerprint"><Mono className="break-all">{ws.status.machineRole.sourceFingerprint}</Mono></Prop>}
         </>}

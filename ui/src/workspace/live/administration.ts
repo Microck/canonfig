@@ -234,7 +234,6 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
       // Failed probes are shown in the list itself; only a request that could not run the checks is an error.
       loading: doctor.loading, busy: doctor.busy, error: doctor.error,
       reload: () => runDoctor(), status: doctor.data?.status ?? null, run: runDoctor,
-      timeoutMilliseconds: doctor.data?.timeoutMilliseconds,
     },
     version: {
       ...version,

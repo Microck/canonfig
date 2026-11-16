@@ -52,25 +52,25 @@ const receiptStages = [
 export function PersistentStatusEvidence({ status }: { status: GuiStatus }) {
   const receipt = status.completionReceipt;
   const recovery = status.activeRecovery;
+  const hasRecovery = recovery !== undefined || status.enrollmentRecovery !== undefined;
+  if (status.machineRole.role !== "follower" || (!receipt && !hasRecovery)) return null;
   return <div className="mt-4 space-y-5">
-    <section aria-label="Completion receipt">
+    {receipt && <section aria-label="Completion receipt">
       <SectionLabel>Completion receipt</SectionLabel>
       <div className={settingsGroup}>
-        <SettingRow title="Applied revision"><Mono className="break-all">{receipt?.revision ?? "Not reported"}</Mono></SettingRow>
-        {receipt?.run && <SettingRow title="Run"><Mono className="break-all">{receipt.run}</Mono></SettingRow>}
-        {receipt && <>
-          {receiptStages.map(([key, label]) => <SettingRow key={key} title={label} description={<CliText>{receipt[key].detail}</CliText>}>
-            <span className="inline-flex items-center gap-2"><StatusMark kind={receipt[key].status === "verified" ? "ok" : receipt[key].status === "not-selected" ? "off" : "warn"} />{receipt[key].status.replaceAll("-", " ")}</span>
-          </SettingRow>)}
-          <SettingRow title="Second run no-op">{receipt.secondRunNoOp ? "Yes" : "No"}</SettingRow>
-          {receipt.build && <>
-            <SettingRow title="Applied with version"><Mono>{receipt.build.packageVersion}</Mono></SettingRow>
-            <SettingRow title="Build identity"><Mono className="break-all">{receipt.build.identity}</Mono></SettingRow>
-            <SettingRow title="State format">{receipt.build.stateFormat}</SettingRow>
-          </>}
+        {receipt.revision && <SettingRow title="Applied revision"><Mono className="break-all">{receipt.revision}</Mono></SettingRow>}
+        {receipt.run && <SettingRow title="Run"><Mono className="break-all">{receipt.run}</Mono></SettingRow>}
+        {receiptStages.map(([key, label]) => <SettingRow key={key} title={label} description={<CliText>{receipt[key].detail}</CliText>}>
+          <span className="inline-flex items-center gap-2"><StatusMark kind={receipt[key].status === "verified" ? "ok" : receipt[key].status === "not-selected" ? "off" : "warn"} />{receipt[key].status.replaceAll("-", " ")}</span>
+        </SettingRow>)}
+        <SettingRow title="Second run no-op">{receipt.secondRunNoOp ? "Yes" : "No"}</SettingRow>
+        {receipt.build && <>
+          <SettingRow title="Applied with version"><Mono>{receipt.build.packageVersion}</Mono></SettingRow>
+          <SettingRow title="Build identity"><Mono className="break-all">{receipt.build.identity}</Mono></SettingRow>
+          <SettingRow title="State format">{receipt.build.stateFormat}</SettingRow>
         </>}
       </div>
-      {receipt?.mcpQualifications.map((value, index) => {
+      {receipt.mcpQualifications.map((value, index) => {
         const qualification = record(value);
         const stages = Array.isArray(qualification.stages) ? qualification.stages.map(record) : [];
         const prerequisites = Array.isArray(qualification.prerequisites) ? qualification.prerequisites.map(record) : [];
@@ -80,20 +80,20 @@ export function PersistentStatusEvidence({ status }: { status: GuiStatus }) {
           {prerequisites.map((prerequisite, prerequisiteIndex) => <SettingRow key={prerequisiteIndex} title={text(prerequisite.kind)} description={<CliText>{text(prerequisite.instructions) ?? ""}</CliText>}>{text(prerequisite.status)}</SettingRow>)}
         </details>;
       })}
-    </section>
-    <section aria-label="Recovery">
+    </section>}
+    {hasRecovery && <section aria-label="Recovery">
       <SectionLabel>Recovery</SectionLabel>
       <div className={settingsGroup}>
         {status.enrollmentLifecycle && <SettingRow title="Enrollment lifecycle">{status.enrollmentLifecycle}</SettingRow>}
         {status.enrollmentRecovery && <SettingRow title="Enrollment recovery"><CliText>{status.enrollmentRecovery}</CliText></SettingRow>}
-        {recovery ? <>
+        {recovery && <>
           <SettingRow title="Open run"><Mono className="break-all">{recovery.run}</Mono></SettingRow>
           <SettingRow title="Recovery revision"><Mono className="break-all">{recovery.revision}</Mono></SettingRow>
           <SettingRow title="Started at">{recovery.startedAt}</SettingRow>
-          <SettingRow title="Run owner">{recovery.owner ? `${recovery.owner.operation}, PID ${recovery.owner.pid}, since ${recovery.owner.since}` : "Not reported"}</SettingRow>
+          {recovery.owner && <SettingRow title="Run owner">{recovery.owner.operation}, PID {recovery.owner.pid}, since {recovery.owner.since}</SettingRow>}
           <SettingRow title="Finished actions">{recovery.finishedActions} of {recovery.totalActions}</SettingRow>
           <SettingRow title="Next step"><CliText>{recovery.next}</CliText></SettingRow>
-        </> : <SettingRow title="Open recovery run">Not reported</SettingRow>}
+        </>}
       </div>
       {recovery && <details className="mt-3">
         <summary className="cursor-pointer">Actions ({recovery.actions.length}), drift ({recovery.drift.length})</summary>
@@ -108,7 +108,7 @@ export function PersistentStatusEvidence({ status }: { status: GuiStatus }) {
           </div>;
         })}
       </details>}
-    </section>
+    </section>}
   </div>;
 }
 
