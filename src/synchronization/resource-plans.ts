@@ -1042,7 +1042,7 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     return [unresolvedAgentTask(context, `Verify or install tool ${context.desired.toolId}`)];
   }
   const recipe = selectToolRecipe(context.desired, context.platform);
-  if (recipe === undefined && context.desired.recipes.some((candidate) => candidate.method === "binary")) {
+  if (context.observed.state !== "present" && recipe === undefined && context.desired.recipes.some((candidate) => candidate.method === "binary")) {
     return [{ kind: "human-action", detail: { kind: "human-action", reason: `No binary recipe matches ${context.platform}/${process.arch}`, instructions: "Declare a binary recipe for this platform and architecture with an exact version, HTTPS source, and integrity." } }];
   }
   if (recipe?.method === "binary") {

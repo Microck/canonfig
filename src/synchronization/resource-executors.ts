@@ -2663,6 +2663,10 @@ const verifyCommand = (
     const bareName = !isAbsolute(name) && !win32.isAbsolute(name)
       && !name.includes("/") && !name.includes("\\");
     const binaryPath = yield* binaryVerifierPath(context, name);
+    if (binaryPath !== undefined) {
+      const presence = yield* verifyExecutable(context, binaryPath.absolute);
+      if (!presence.passed) return { passed: false, method, reason: `Verification executable is missing or not executable: ${binaryPath.absolute}` };
+    }
     const installMethods = binaryPath === undefined && bareName ? yield* verifierInstallMethods(context) : [];
     const executable = binaryPath !== undefined ? binaryPath : isAbsolute(name) || win32.isAbsolute(name)
       ? yield* machine.normalizePath({ path: name })

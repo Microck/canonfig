@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect, Layer, Schema } from "effect";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect } from "vitest";
+import { it } from "@effect/vitest";
 
 import { ActionId, ResourceId, RunId } from "../src/domain/brand.ts";
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
@@ -103,79 +104,79 @@ const fixture = (options: {
     installed,
     queries: () => queries,
     mutations: () => mutations,
-    execute: () => Effect.runPromise(Effect.gen(function*() {
+    execute: () => Effect.gen(function*() {
       const prepared = yield* prepareResourceAction(context);
       yield* prepared.execute;
-    }).pipe(Effect.provide(machine))),
+    }).pipe(Effect.provide(machine)),
   };
 };
 
 describe("Homebrew exact-version installation", () => {
-  it.each(["brew", "homebrew"] as const)("installs an ordinary stable formula through %s without inventing a name", async (method) => {
+  it.effect.each(["brew", "homebrew"] as const)("installs an ordinary stable formula through %s without inventing a name", (method) => Effect.gen(function*() {
     const brew = fixture({ method });
-    await brew.execute();
+    yield* brew.execute();
     expect(brew.installed.get("jq")).toBe("1.8.1");
-  });
+  }));
 
-  it("preserves an explicitly authored tapped versioned formula and its revision", async () => {
+  it.effect("preserves an explicitly authored tapped versioned formula and its revision", () => Effect.gen(function*() {
     const brew = fixture({
       formula: "owner/tap/tool@2", version: "2.4.1_3", metadata: formulaInfo("2.4.1", 3),
     });
-    await brew.execute();
+    yield* brew.execute();
     expect(brew.installed.get("owner/tap/tool@2")).toBe("2.4.1_3");
-  });
+  }));
 
-  it("rejects an installer that succeeds without installing the pinned version", async () => {
+  it.effect("rejects an installer that succeeds without installing the pinned version", () => Effect.gen(function*() {
     const brew = fixture({ installedVersion: "1.7.0" });
-    await expect(brew.execute()).rejects.toMatchObject({
+    expect(yield* Effect.flip(brew.execute())).toMatchObject({
       _tag: "ActionExecutionError", message: expect.stringContaining("not the pinned 1.8.1"),
     });
     expect(brew.installed.get("jq")).toBe("1.7.0");
-  });
+  }));
 
-  it("does not accept success without installed-version evidence", async () => {
+  it.effect("does not accept success without installed-version evidence", () => Effect.gen(function*() {
     const brew = fixture({ installedVersion: null });
-    await expect(brew.execute()).rejects.toMatchObject({
+    expect(yield* Effect.flip(brew.execute())).toMatchObject({
       _tag: "ActionExecutionError", message: expect.stringContaining("was not verified"),
     });
     expect(brew.installed.has("jq")).toBe(false);
-  });
+  }));
 
-  it.each([
+  it.effect.each([
     ["older pin", "1.7.0", formulaInfo("1.8.1")],
     ["newer pin", "1.9.0", formulaInfo("1.8.1")],
     ["different revision", "1.8.1", formulaInfo("1.8.1", 1)],
-  ])("refuses an unavailable %s before mutation", async (_label, version, metadata) => {
+  ])("refuses an unavailable %s before mutation", ([_label, version, metadata]) => Effect.gen(function*() {
     const brew = fixture({ version, metadata });
-    await expect(brew.execute()).rejects.toMatchObject({
+    expect(yield* Effect.flip(brew.execute())).toMatchObject({
       _tag: "ActionExecutionError", message: expect.stringContaining("not the pinned"),
     });
     expect(brew.mutations()).toBe(0);
     expect([...brew.installed]).toEqual([]);
-  });
+  }));
 
-  it.each([
+  it.effect.each([
     "not JSON", "{}", '{"formulae":[]}',
     '{"formulae":[{"versions":{"stable":null},"revision":0}]}',
     '{"formulae":[{"versions":{"stable":"1.8.1"}}]}',
     formulaInfo(""), formulaInfo("1.8.1", -1), formulaInfo("1.8.1", 0.5),
     JSON.stringify({ formulae: [{ versions: { stable: "1.8.1" }, revision: 0 }, { versions: { stable: "1.8.1" }, revision: 0 }] }),
-  ])("rejects unusable formula metadata before mutation: %s", async (metadata) => {
+  ])("rejects unusable formula metadata before mutation: %s", (metadata) => Effect.gen(function*() {
     const brew = fixture({ metadata });
-    await expect(brew.execute()).rejects.toMatchObject({ _tag: "ActionExecutionError" });
+    expect(yield* Effect.flip(brew.execute())).toMatchObject({ _tag: "ActionExecutionError" });
     expect(brew.mutations()).toBe(0);
-  });
+  }));
 
-  it("does not trust metadata from a failed query", async () => {
+  it.effect("does not trust metadata from a failed query", () => Effect.gen(function*() {
     const brew = fixture({ infoExitCode: 1 });
-    await expect(brew.execute()).rejects.toMatchObject({ _tag: "ActionExecutionError" });
+    expect(yield* Effect.flip(brew.execute())).toMatchObject({ _tag: "ActionExecutionError" });
     expect(brew.mutations()).toBe(0);
-  });
+  }));
 
-  it.each(["--HEAD", "jq --HEAD", "https://example.com/formula.rb"])("rejects unsafe formula %s before querying", async (formula) => {
+  it.effect.each(["--HEAD", "jq --HEAD", "https://example.com/formula.rb"])("rejects unsafe formula %s before querying", (formula) => Effect.gen(function*() {
     const brew = fixture({ formula });
-    await expect(brew.execute()).rejects.toMatchObject({ _tag: "InvalidExecutionPlanError" });
+    expect(yield* Effect.flip(brew.execute())).toMatchObject({ _tag: "InvalidExecutionPlanError" });
     expect(brew.queries()).toBe(0);
     expect(brew.mutations()).toBe(0);
-  });
+  }));
 });

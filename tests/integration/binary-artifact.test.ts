@@ -123,7 +123,7 @@ describe("native binary artifacts", () => {
         const commandVerification = yield* verifyResource(context);
         const presenceContext: ResourceExecutionContext = { ...context, verification: { method: "executable-present", executable: recipe.package } };
         const presenceVerification = yield* verifyResource(presenceContext);
-        return { installed, repeated, discovered, result, observed, commandVerification, presenceVerification, presenceContext };
+        return { installed, repeated, discovered, result, observed, commandVerification, presenceVerification, presenceContext, context };
       }).pipe(Effect.provide(layer)));
       expect(checked.result.exitCode).toBe(0);
       expect(checked.discovered.path).toEqual(checked.installed.path);
@@ -135,6 +135,8 @@ describe("native binary artifacts", () => {
       rmSync(checked.installed.path.absolute);
       const missingBinary = await Effect.runPromise(verifyResource(checked.presenceContext).pipe(Effect.provide(layer)));
       expect(missingBinary.passed).toBe(false);
+      const missingCommand = await Effect.runPromise(verifyResource(checked.context).pipe(Effect.provide(layer)));
+      expect(missingCommand).toMatchObject({ passed: false, reason: expect.stringContaining(checked.installed.path.absolute) });
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 

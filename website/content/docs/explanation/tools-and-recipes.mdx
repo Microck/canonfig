@@ -191,6 +191,9 @@ executable permissions, not from the download URL.
 Command and presence verification using the selected binary's name resolve its
 exact installed path, not a same-named executable from another installer or PATH.
 Explicitly different verification commands keep their declared meaning.
+A missing or non-executable selected binary fails command verification with a
+diagnostic. A tool already present on the machine does not need installation
+merely because its profile's binary recipes target another platform.
 
 ## Packages that run build scripts
 
