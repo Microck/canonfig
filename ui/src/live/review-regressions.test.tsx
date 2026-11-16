@@ -467,7 +467,7 @@ it("discovery failure stops Finding tools and offers a scan-specific retry", asy
     if (path !== "/api/profile/scan") return false;
     scans++;
     outgoing.statusCode = scans === 1 ? 500 : 200;
-    outgoing.end(JSON.stringify(scans === 1 ? { category: "internal", exitCode: 1, message: "Discovery failed" } : { tools: [], reviewDigest: "reviewed" }));
+    outgoing.end(JSON.stringify(scans === 1 ? { category: "internal", exitCode: 1, message: "Discovery failed" } : { tools: [], declared: [], reviewDigest: "reviewed" }));
     return true;
   });
   try {
@@ -483,7 +483,7 @@ it("requires consent to add all accepted tools and retains a failed acceptance f
   let attempts = 0;
   const app = await fixture("/source/profile", {
     ...sourceResponses(),
-    "/api/profile/scan": { reviewDigest: "reviewed", tools: [{ id: "ruff", executable: "ruff", reviewStatus: "accepted", evidence: [{ invocation: ["uv", "tool", "install", "ruff==0.6.9"], sourcePath: "/tmp/AGENTS.md" }] }] },
+    "/api/profile/scan": { reviewDigest: "reviewed", declared: [], tools: [{ id: "ruff", executable: "ruff", reviewStatus: "accepted", evidence: [{ invocation: ["uv", "tool", "install", "ruff==0.6.9"], sourcePath: "/tmp/AGENTS.md" }] }] },
   }, (path, _method, _body, outgoing) => {
     if (path !== "/api/profile/scan/accept") return false;
     outgoing.statusCode = ++attempts === 1 ? 400 : 200;
@@ -507,6 +507,38 @@ it("requires consent to add all accepted tools and retains a failed acceptance f
       { reviewDigest: "reviewed", confirmAll: true }, { reviewDigest: "reviewed", confirmAll: true },
     ]);
     assert.equal(app.mutations.some(({ path }) => path === "/api/publications"), false);
+  } finally { await app.close(); }
+});
+
+it("counts and labels additions from each reviewed scan instead of cached Profile entries", async () => {
+  let scans = 0;
+  const app = await fixture("/source/profile", {
+    ...sourceResponses(),
+    "/api/profile/items": { ...profile, config: { ...profile.config, tools: { ruff: { executable: "ruff", recipes: [] } } } },
+    "/api/profile/scan/accept": { written: ["black", "ruff"] },
+  }, (path, _method, _body, outgoing) => {
+    if (path !== "/api/profile/scan") return false;
+    outgoing.end(JSON.stringify({
+      reviewDigest: `reviewed-${++scans}`,
+      declared: scans === 1 ? ["ruff"] : [],
+      tools: ["black", "ruff"].map((id) => ({ id, executable: id, reviewStatus: "accepted", evidence: [{ invocation: [id], sourcePath: "/tmp/AGENTS.md" }] })),
+    }));
+    return true;
+  });
+  try {
+    await until(() => !app.container.querySelector('[aria-busy="true"]'), "Profile did not load");
+    assert.ok(document.body.textContent?.includes("tools.ruff"), "Cached Profile must contain ruff");
+    await click("Discover tools");
+    await until(() => document.body.textContent?.includes("Add all 1 accepted tool") === true, "Initial declaration was not respected");
+    assert.ok(document.querySelector('[role="dialog"]')?.textContent?.includes("In the folder"));
+    await click("Scan again");
+    await until(() => document.body.textContent?.includes("Add all 2 accepted tools") === true, "Rescan did not include the removed declaration");
+    assert.equal(document.querySelector('[role="dialog"]')?.textContent?.includes("In the folder"), false);
+    assert.equal(app.requests.filter((request) => request === "GET /api/profile/items").length, 1, "Rescan should not depend on a refreshed Profile cache");
+    await act(async () => { (document.querySelector('[role="dialog"] [role="checkbox"]') as HTMLButtonElement).click(); });
+    await click("Add all accepted tools");
+    await until(() => !document.querySelector('[role="dialog"]'), "Acceptance did not finish");
+    assert.deepEqual(app.mutations.find(({ path }) => path === "/api/profile/scan/accept")?.body, { reviewDigest: "reviewed-2", confirmAll: true });
   } finally { await app.close(); }
 });
 

@@ -162,7 +162,7 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
             const tool = object(value), evidence = object(Array.isArray(tool.evidence) ? tool.evidence[0] : undefined);
             return { id: String(tool.id), executable: String(tool.executable), command: strings(evidence.invocation).join(" "), file: String(evidence.sourcePath ?? ""), where: String(tool.reviewStatus ?? "") };
           });
-          discoverEvent({ kind: "Results", id, tools, reviewDigest: scan.reviewDigest });
+          discoverEvent({ kind: "Results", id, tools, reviewDigest: scan.reviewDigest, declared: scan.declared });
         } catch (cause) { discoverEvent({ kind: "Failed", id, error: requestError(cause) }); throw cause; }
       }, false);
       if (!accepted && discoveryRef.current.kind === "Scanning") discoverEvent({ kind: "Failed", id, error: new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: "Another profile action is running. Retry discovery when it finishes." }) });

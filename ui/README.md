@@ -90,6 +90,7 @@ Live routes use the shared `src/workspace/nav.ts` and `routes.ts`. Unlike the de
 Self-update status and checks are live. Enable, disable and apply remain terminal operations after stopping the GUI; the GUI does not bypass its command lease. Invitation cancellation, selective scan writes, Source service restart and protected adoption-review reads/deletion are hidden because the CLI has no matching operation. Unenrollment leaves applied files, schedule and tunnel configuration intact.
 
 Source Profile > Discover tools first scans without writing. Review the findings, then confirm **Add all accepted tools** to write every new accepted tool to `canonfig.jsonc`, matching `source scan --write`. Selective acceptance is not supported. Existing declarations and comments stay intact; tools marked Needs review are left out. If the findings or configuration changed, scan and review again. The changes stay unpublished until you publish a revision.
+Each scan supplies its own declared-tool list, so the confirmation count and "In the folder" labels stay tied to that review even without reloading Profile.
 
 The follower's stored Source identity does not include a machine name. Its map card uses "Source" as the title and shows the enrollment endpoint below it. Long revision identifiers, fingerprints and paths wrap inside setting rows and detail panels instead of widening the page. Status pages show named evidence, not raw JSON responses; exact configuration editors still show the authored file contents.
 

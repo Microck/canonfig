@@ -32,7 +32,7 @@ export const GuiProfileSaved = Schema.Struct({ saved: Schema.Literal(true) });
 export const GuiPublicationRequest = Schema.Struct({ reviewer: Schema.NonEmptyString });
 export const GuiRevisionSelection = Schema.Struct({ revision: Schema.NonEmptyString });
 export const GuiScanAcceptance = Schema.Struct({ reviewDigest: Schema.NonEmptyString, confirmAll: Schema.Literal(true) });
-export const GuiScanReview = Schema.Struct({ reviewDigest: Schema.NonEmptyString, tools: Schema.Array(Schema.Json) });
+export const GuiScanReview = Schema.Struct({ reviewDigest: Schema.NonEmptyString, declared: Schema.Array(Schema.String), tools: Schema.Array(Schema.Json) });
 export const GuiRevisions = Schema.Struct({ revisions: Schema.Array(Schema.Struct({ id: Schema.String, profileId: Schema.String, sequence: Schema.Number, digest: Schema.String, publishedAt: Schema.String })) });
 export interface GuiRevisions extends Schema.Schema.Type<typeof GuiRevisions> {}
 export const GuiProfileValidation = Schema.Struct({ valid: Schema.Boolean, errors: Schema.Array(Schema.String), profile: Schema.Json });

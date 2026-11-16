@@ -231,7 +231,7 @@ export type PublicationState =
 export type DiscoveryState =
   | { kind: "Idle" }
   | { kind: "Scanning"; id: number }
-  | { kind: "Results"; id: number; tools: ScannedTool[]; reviewDigest: string }
+  | { kind: "Results"; id: number; tools: ScannedTool[]; reviewDigest: string; declared: readonly string[] }
   | { kind: "Failed"; id: number; error: GuiRequestError };
 
 export interface ProfileSlice {

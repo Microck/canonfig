@@ -1508,7 +1508,9 @@ function DiscoverDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
   }, [open, ws.capabilities.simulatedTelemetry]);
 
   const done = ws.profileLive ? ws.profileLive.discovery.kind === "Results" : progress >= 100;
-  const inFolder = (id: string) => ws.resources.some((r) => r.id === `tools/${id}`);
+  const inFolder = (id: string) => ws.profileLive
+    ? ws.profileLive.discovery.kind === "Results" && ws.profileLive.discovery.declared.includes(id)
+    : ws.resources.some((r) => r.id === `tools/${id}`);
   // Picked tools the folder already has stay as they are, so the button counts and adds only the new ones.
   const pickedTools = ws.scannedTools.filter((f) => picked.includes(f.id));
   const fresh = pickedTools.filter((f) => !inFolder(f.id));
