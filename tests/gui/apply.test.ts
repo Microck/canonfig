@@ -10,7 +10,7 @@ import { GroupName } from "../../src/domain/brand.ts";
 import { EnrollmentLive } from "../../src/enrollment/enrollment.layer.ts";
 import { Enrollment } from "../../src/enrollment/enrollment.service.ts";
 import { startSourceServer } from "../../src/enrollment/source-server.ts";
-import { GuiOperation, GuiOperationTicket } from "../../src/gui/contract.ts";
+import { GuiOperation, GuiOperationTicket, GuiSyncApplyRequest } from "../../src/gui/contract.ts";
 import { runGui } from "../../src/gui/server.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
@@ -65,7 +65,7 @@ it("refreshes newly shared secrets before a GUI apply succeeds and preserves ref
     await follower.runPromise(Effect.flatMap(FollowerCommands, (commands) => commands.enroll({ invitation, followerName: "GUI follower", replace: false })));
     expect(await follower.runPromise(listSecrets())).toEqual([]);
     await source.runPromise(storeSecret("after-enrollment", "synthetic-private-value"));
-    await follower.runPromise(Effect.flatMap(FollowerCommands, (commands) => commands.synchronize({ mode: "plan", noInput: false })));
+    const plan = await follower.runPromise(Effect.flatMap(FollowerCommands, (commands) => commands.synchronize({ mode: "plan", noInput: false })));
     expect(await follower.runPromise(listSecrets())).toEqual([]);
     const ready = Promise.withResolvers<string>();
     gui = follower.runPromise(runGui({ port: 0, open: false, host: "127.0.0.1", origin: undefined }, {
@@ -96,8 +96,8 @@ it("refreshes newly shared secrets before a GUI apply succeeds and preserves ref
     ]);
     const invalidSecret = await secretRequest("PUT", { name: "bad", value: { private: "gui-private-value" } });
     expect(invalidSecret).toMatchObject({ status: 400, payload: { category: "usage-or-configuration", exitCode: 2 } });
-    async function apply() {
-      const response = await fetch(`${origin}/api/sync/apply`, { method: "POST", headers, body: "{}" });
+    async function apply(approval: typeof GuiSyncApplyRequest.Type) {
+      const response = await fetch(`${origin}/api/sync/apply`, { method: "POST", headers, body: JSON.stringify(approval) });
       expect(response.status).toBe(202);
       const ticket = Schema.decodeUnknownSync(GuiOperationTicket)(await response.json());
       let operation: typeof GuiOperation.Type;
@@ -109,7 +109,7 @@ it("refreshes newly shared secrets before a GUI apply succeeds and preserves ref
       } while (operation.state === "running");
       return operation;
     }
-    const applied = await apply();
+    const applied = await apply(Schema.decodeUnknownSync(GuiSyncApplyRequest)(plan));
     expect(applied.state, JSON.stringify(applied)).toBe("succeeded");
     expect((await secretRequest("GET")).payload).toEqual({ secrets: [
       { name: "after-enrollment", origin: "source" }, { name: "agent-key", origin: "local" },
@@ -146,7 +146,8 @@ it("refreshes newly shared secrets before a GUI apply succeeds and preserves ref
     // A locally owned name cannot be silently replaced by a later shared secret.
     await follower.runPromise(storeSecret("collision", "local-value"));
     await source.runPromise(storeSecret("collision", "source-value"));
-    const failed = await apply();
+    const freshPlan = await follower.runPromise(Effect.flatMap(FollowerCommands, (commands) => commands.synchronize({ mode: "plan", noInput: false })));
+    const failed = await apply(Schema.decodeUnknownSync(GuiSyncApplyRequest)(freshPlan));
     expect(failed.state).toBe("failed");
     expect(failed.failure).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
     expect(failed.failure?.message).toContain("File synchronization completed, but shared-secret synchronization failed:");

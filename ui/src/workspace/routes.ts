@@ -2,7 +2,7 @@ import { useMemo, useSyncExternalStore, type MouseEvent } from "react";
 import type { Role } from "@/shared/metadata";
 import type { FollowerView, SourceView, View } from "./store";
 
-export type WorkspaceRole = Exclude<Role, "unconfigured">;
+export type WorkspaceRole = Role;
 /** Profile tabs: the folder's items, its harness list, Follower Groups, and the profile's name, schedule and local policy. */
 export type ProfileTab = "items" | "harnesses" | "groups" | "defaults";
 const PROFILE_TABS: Exclude<ProfileTab, "items">[] = ["harnesses", "groups", "defaults"];
@@ -16,6 +16,7 @@ const SOURCE_PATHS: Record<SourceView, string> = {
   profile: "profile",
   machines: "machines",
   revisions: "revisions",
+  sync: "sync",
   backups: "backups",
   secrets: "secrets",
   service: "settings/service",
@@ -42,6 +43,10 @@ const FOLLOWER_PATHS: Record<FollowerView, string> = {
   version: "settings/version",
 };
 
+const PATHS: Record<WorkspaceRole, Partial<Record<View, string>>> = {
+  source: SOURCE_PATHS, follower: FOLLOWER_PATHS, unconfigured: { sync: "sync", backups: "backups" },
+};
+
 export interface WorkspaceRoute {
   kind: "workspace";
   role: WorkspaceRole;
@@ -60,10 +65,10 @@ export function workspaceHref(role: WorkspaceRole, view: View, options: {
   profileTab?: ProfileTab;
   machinesMode?: MachinesMode;
 } = {}): string {
-  const paths: Partial<Record<View, string>> = role === "source" ? SOURCE_PATHS : FOLLOWER_PATHS;
+  const paths = PATHS[role];
   const segment = paths[view];
   if (!segment) throw new Error(`No ${role} route for ${view}`);
-  let path = `${APP_BASE}/${role}/${segment}`;
+  let path = `${APP_BASE}/${role === "unconfigured" ? "local" : role}/${segment}`;
   if (view === "profile" && options.profileTab && options.profileTab !== "items") path += `/${options.profileTab}`;
   if (view === "machines" && options.machinesMode === "list") path += "/list";
   if (options.focus != null) path += `?${new URLSearchParams({ focus: options.focus })}`;
@@ -79,10 +84,11 @@ export function parseRoute(href: string): AppRoute {
   if (!url.pathname.startsWith(`${APP_BASE}/`)) return { kind: "not-found" };
   const pathname = url.pathname.slice(APP_BASE.length);
   if (pathname === "/setup") return { kind: "setup" };
-  const [, role, ...parts] = pathname.split("/");
-  if (role !== "source" && role !== "follower") return { kind: "not-found" };
+  const [, prefix, ...parts] = pathname.split("/");
+  if (prefix !== "source" && prefix !== "follower" && prefix !== "local") return { kind: "not-found" };
+  const role = prefix === "local" ? "unconfigured" : prefix;
   const segment = parts.join("/");
-  const paths: Partial<Record<View, string>> = role === "source" ? SOURCE_PATHS : FOLLOWER_PATHS;
+  const paths = PATHS[role];
   let view = (Object.keys(paths) as View[]).find((key) => paths[key] === segment);
   let profileTab: ProfileTab = "items";
   let machinesMode: MachinesMode = "map";

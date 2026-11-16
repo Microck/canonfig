@@ -7,6 +7,7 @@ import { FollowerCommands } from "../../cli/follower-commands.ts";
 import { redactText } from "../../cli/redaction.ts";
 import { CliCommandFailure, type CliPayload } from "../../cli/source-commands.ts";
 import { RunId } from "../../domain/brand.ts";
+import { localProjectionFollower } from "../../domain/synchronization.ts";
 import { MachineState } from "../../machine/machine-state.service.ts";
 import { sha256BytesHex } from "../../profile/profile-codec.ts";
 import { MAXIMUM_ARCHIVE_BYTES } from "../../projection/archive.ts";
@@ -18,7 +19,7 @@ import { listSecrets, storeSecret, removeSecret, type SecretTransferError } from
 import { StateRepository } from "../../state/state-repository.service.ts";
 import {
   GuiScheduleRequest, GuiSynchronizationResult, GuiHarnessRequest, GuiOverlayRequest, GuiRestoreRequest,
-  GuiLocalWrite, GuiLocalConfigRequest, GuiSecretSet, GuiSecretName, GuiExportRequest,
+  GuiLocalWrite, GuiLocalConfigRequest, GuiSecretSet, GuiSecretName, GuiExportRequest, GuiSyncApplyRequest,
   GuiTunnelStartInput, GuiTunnelStopInput,
   GuiArchiveImportInput, GuiArchiveImportApply,
   type GuiLocalItem,
@@ -93,7 +94,8 @@ export const synchronizationRoutes = Effect.gen(function*() {
 
   // Capture identity from this command's result or typed failure details, never a mutable "latest run".
   // Planning has no run journal. Before an apply returns its identity the journal is explicitly unknown.
-  const start = (operation: Effect.Effect<CliPayload, CliCommandFailure>, allowed: ReadonlyArray<"source" | "follower" | "unconfigured"> = ["follower"]) => Effect.gen(function*() {
+  // Sync, recovery and restore run for every role (#351); callers that need fewer roles, such as imports, pass `allowed`.
+  const start = (operation: Effect.Effect<CliPayload, CliCommandFailure>, allowed: ReadonlyArray<"source" | "follower" | "unconfigured"> = ["source", "follower", "unconfigured"]) => Effect.gen(function*() {
     yield* role(allowed);
     let details: Schema.Json = null;
     let run: typeof RunId.Type | undefined;
@@ -138,10 +140,14 @@ export const synchronizationRoutes = Effect.gen(function*() {
   const archiveBody = { maximumBodyBytes: 4 * Math.ceil(MAXIMUM_ARCHIVE_BYTES / 3) + 1024 * 1024 };
   return [
     mutationRoute("POST", "/api/sync/plan", EmptyBody, () => start(commands.synchronize({ mode: "plan", noInput: false })), 202),
-    mutationRoute("POST", "/api/sync/apply", EmptyBody, () => start(commands.synchronize({ mode: "apply", noInput: false })), 202),
+    mutationRoute("POST", "/api/sync/apply", GuiSyncApplyRequest, ({ planDigest }) => start(commands.synchronize({ mode: "apply", noInput: false, expectedPlanDigest: planDigest })), 202),
     mutationRoute("POST", "/api/sync/reviews", EmptyBody, () => start(commands.synchronize({ mode: "plan", noInput: false, reviewLocal: true })), 202),
     mutationRoute("POST", "/api/recovery", EmptyBody, () => start(commands.recover({ noInput: false })), 202),
     mutationRoute("POST", "/api/recovery/abandon", EmptyBody, () => start(commands.abandon()), 202),
+    queryRoute("/api/local/synchronization", () => role(["source", "unconfigured"]).pipe(
+      Effect.andThen(repository.loadOpenRunIdentity(localProjectionFollower)),
+      Effect.mapError(commandFailure), Effect.map((run) => ({ activeRecovery: run === undefined ? null : { run: run.run } })),
+    )),
     queryRoute("/api/schedule", () => follower(commands.scheduleStatus()).pipe(
       Effect.map((status) => ({ ...Schema.decodeUnknownSync(GuiSynchronizationResult)(status), machineTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone })),
     )),
@@ -191,7 +197,7 @@ export const synchronizationRoutes = Effect.gen(function*() {
       Effect.provideService(MachineState, machine), Effect.mapError(commandFailure),
       Effect.andThen(localItems),
     )),
-    queryRoute("/api/backups", () => role(["follower"]).pipe(
+    queryRoute("/api/backups", () => role(["source", "follower", "unconfigured"]).pipe(
       Effect.flatMap((session) => listSnapshots(join(session.folderPath, ".backups"))),
       Effect.mapError(commandFailure), Effect.map((snapshots) => ({ snapshots })),
     )),

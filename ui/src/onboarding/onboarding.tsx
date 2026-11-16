@@ -3,7 +3,7 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { AnimatePresence, cubicBezier, LayoutGroup, motion, useIsPresent, usePresenceData, useReducedMotion, type Variants } from "motion/react";
-import { ArrowLeft, ArrowRight, Check, Circle, FileArrowUp, RadioButton } from "@/components/icons";
+import { ArrowLeft, ArrowRight, Check, Circle, FileArrowUp, Folder, RadioButton } from "@/components/icons";
 import { cn, riseIn, SNAP, SNAP_EASING } from "@/lib/utils";
 import { DitherShader, fillStyle } from "@/lib/dither";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { DEMO, type Harness, type HarnessId } from "@/shared/metadata";
 import { DitherProgress, Hint, Mono, Term } from "@/shared/shared";
-import { DisclosureTrigger, Facts, Field, FieldError, OnboardingShell, PROGRESS_MARK, RadioRow, STEP_ITEMS, STEP_MS, StepTransition, Stepper, simulate, useFocusOnMount } from "./kit";
+import { DisclosureTrigger, Facts, Field, FieldError, HeaderAction, OnboardingShell, PROGRESS_MARK, RadioRow, STEP_ITEMS, STEP_MS, StepTransition, Stepper, simulate, useFocusOnMount } from "./kit";
 import { ErrorNotice } from "@/live/session";
 import { SetupEvidence, type EnrollmentController } from "./enrollment-controller";
 import { TransitionError, useStateMachine } from "@/lib/state-machine";
@@ -240,7 +240,7 @@ export function Onboarding({ onDone, data, live, onCancel, archiveImport }: { on
 
   return (
     // Secondary ways to start sit in the header only while the role is still being chosen.
-    <OnboardingShell hostname={data.hostname} actions={stage === "choose" && !live?.state.loading ? archiveImport : undefined} backdrop={<SetupBackdrop busy={!!live?.state.loading} job={live ? live.applied ? { progress: 100, steps: 1, done: true } : null : job} />}>
+    <OnboardingShell hostname={data.hostname} actions={stage === "choose" && !live?.state.loading ? <>{archiveImport}{live?.session.role === "unconfigured" && <HeaderAction icon={Folder} label="Use locally" href="/local/sync" />}</> : undefined} backdrop={<SetupBackdrop busy={!!live?.state.loading} job={live ? live.applied ? { progress: 100, steps: 1, done: true } : null : job} />}>
       {/* In the demo, md:pb-40 clears the fixed demo panel (220px wide and about 122px tall, 12px
           from the left and from the bottom, App.tsx) at the end of the scroll, where the cards can
           reach under it. From xl the cards start right of it, so normal padding returns and a

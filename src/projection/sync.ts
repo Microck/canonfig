@@ -20,6 +20,8 @@ import {
   removeRunTemporaryEntries,
 } from "../synchronization/executor.ts";
 import { withRunLock } from "../synchronization/run-lock.ts";
+import { synchronizationReviewDigest } from "../synchronization/planner.ts";
+import { SynchronizationPlanChangedError } from "../synchronization/synchronization.errors.ts";
 import { assertUpgradeGate } from "../synchronization/upgrade-gate.ts";
 import { Synchronization } from "../synchronization/synchronization.service.ts";
 import type {
@@ -69,6 +71,7 @@ export interface LocalSyncOptions {
   readonly noBackup: boolean;
   /** With `--plan`: write private adoption reviews for append-local first adoptions. */
   readonly reviewLocal?: boolean | undefined;
+  readonly expectedPlanDigest?: string | undefined;
   /** Environment variables harness roots are resolved from. */
   readonly environment: (name: string) => string | undefined;
 }
@@ -507,9 +510,14 @@ export const synchronizeLocal = Effect.fn("LocalProjection.synchronize")(functio
   const notInstalled = loaded.model.harnesses.filter((harness) => !installed.has(harness));
   const planned = yield* planFolder(loaded, context, takeovers, applied, notInstalled);
   const backup = !options.noBackup && loaded.local.backups;
+  const planDigest = synchronizationReviewDigest(planned.plan, backup);
+  if (mode === "apply" && options.expectedPlanDigest !== undefined && options.expectedPlanDigest !== planDigest) {
+    return yield* new SynchronizationPlanChangedError({});
+  }
   const base = {
     mode,
     origin: { folder: loaded.model.folder, digest: loaded.digest },
+    planDigest,
     harnesses: planned.harnesses.map((entry) => ({ harness: entry.harness, root: entry.layout.root })),
     notInstalled: notInstalled.length === 0 ? undefined : notInstalled,
     takeovers: takeoverSummary(planned.takeovers, backup),

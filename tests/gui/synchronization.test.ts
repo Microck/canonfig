@@ -6,9 +6,16 @@ import { request as httpRequest } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { Schema } from "effect";
+import { Deferred, Effect, Fiber, Layer, Schema } from "effect";
 import { afterEach, expect, it } from "vitest";
-import { GuiArchiveDownload, GuiArchiveImportResult, GuiBackups, GuiLocalItems, GuiOperation, GuiOperationTicket, GuiScheduleStatus } from "../../src/gui/contract.ts";
+import { GuiArchiveDownload, GuiArchiveImportResult, GuiBackups, GuiLocalItems, GuiOperation, GuiOperationTicket, GuiScheduleStatus, GuiSyncApplyRequest } from "../../src/gui/contract.ts";
+import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
+import { macosMachineStateLayer } from "../../src/machine/macos.layer.ts";
+import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
+import { MachineState } from "../../src/machine/machine-state.service.ts";
+import { synchronizeLocal } from "../../src/projection/sync.ts";
+import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
+import { SynchronizationLive } from "../../src/synchronization/synchronization.layer.ts";
 
 const project = resolve(import.meta.dirname, "../..");
 const children = new Set<ChildProcess>();
@@ -64,6 +71,36 @@ exit 0
   machine.env.CANONFIG_LOGINCTL = loginctl;
   machine.env.TZ = "Pacific/Honolulu";
   return { timer, calls };
+}
+/** Hold real projection preparation at its filesystem boundary, then interrupt only this fixture's fiber. */
+async function interruptLocalPreparation(machine: Fixture) {
+  const nativeLayer = process.platform === "win32" ? windowsMachineStateLayer : process.platform === "darwin" ? macosMachineStateLayer : linuxMachineStateLayer;
+  const original = nativeLayer({
+    environment: Object.entries(machine.env).flatMap(([name, value]) => value === undefined ? [] : [{ name, value }]),
+    credentialPolicy: { kind: "local-file", path: join(machine.home, "credentials") },
+  });
+  const captured = Effect.runSync(Deferred.make<void>());
+  const paused = Layer.effect(MachineState, Effect.gen(function*() {
+    const service = yield* MachineState;
+    return MachineState.of({
+      ...service,
+      ensureDirectory: (input) => input.path.absolute.replaceAll("\\", "/").includes("/canonfig/projection/")
+        ? Deferred.succeed(captured, undefined).pipe(Effect.andThen(Effect.never))
+        : service.ensureDirectory(input),
+    });
+  })).pipe(Layer.provide(original));
+  const layer = SynchronizationLive.pipe(
+    Layer.provideMerge(stateRepositoryLayer(join(machine.folder, "state.sqlite"))),
+    Layer.provideMerge(paused),
+  );
+  const fiber = Effect.runFork(synchronizeLocal(join(machine.folder, "state.sqlite"), "apply", {
+    noBackup: false, environment: (name) => machine.env[name],
+  }).pipe(Effect.provide(layer)));
+  try {
+    await Effect.runPromise(Deferred.await(captured).pipe(Effect.timeout("10 seconds")));
+  } finally {
+    await Effect.runPromise(Fiber.interrupt(fiber));
+  }
 }
 async function unusedPort() {
   const server = createServer();
@@ -173,15 +210,13 @@ it("serves real role-gated secrets and a verified Source archive without leaking
   expect((await api.call("/api/secrets", "DELETE", { name: "test" })).payload).toEqual({ name: "test", removed: false });
   expect((await api.call("/api/secrets", "DELETE", { name: "../invalid" })).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   for (const [path, method, body] of [
-    ["/api/sync/plan", "POST", {}], ["/api/sync/apply", "POST", {}], ["/api/sync/reviews", "POST", {}],
-    ["/api/recovery", "POST", {}], ["/api/recovery/abandon", "POST", {}], ["/api/secrets/sync", "POST", {}],
+    ["/api/secrets/sync", "POST", {}],
     ["/api/schedule", "GET", undefined], ["/api/schedule", "PUT", { profileDefault: true }],
     ["/api/schedule", "DELETE", {}],
     ["/api/local/items", "GET", undefined], ["/api/local/items", "PUT", { changes: [] }],
     ["/api/local/preferences", "PUT", { expectedDigest: null, edits: [] }],
     ["/api/harnesses", "PUT", { harness: "codex", action: "include" }], ["/api/local/overlays", "GET", undefined],
     ["/api/local/overlays", "PUT", { item: "rules/test" }], ["/api/local/overlays", "DELETE", { item: "rules/test" }],
-    ["/api/backups", "GET", undefined], ["/api/backups/restore", "POST", { snapshot: "missing" }],
     ["/api/tunnel", "GET", undefined], ["/api/tunnel/start", "POST", {}], ["/api/tunnel/stop", "POST", { forget: false }], ["/api/enrollment", "DELETE", {}],
   ] as const) expect((await api.call(path, method, body)).payload, path).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   const unconfigured = await gui(fixture("unconfigured"));
@@ -291,8 +326,9 @@ it("plans and applies an enrolled follower and performs digest-checked local ope
     const refused = await api.call(path, path === "/api/enrollment" || path === "/api/schedule" ? "DELETE" : "POST", { unexpected: true });
     expect(refused.payload, path).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   }
-  expect((await api.operation("/api/sync/plan")).state).toBe("succeeded");
-  const applied = await api.operation("/api/sync/apply");
+  const plan = await api.operation("/api/sync/plan");
+  expect(plan.state).toBe("succeeded");
+  const applied = await api.operation("/api/sync/apply", Schema.decodeUnknownSync(GuiSyncApplyRequest)(plan.result));
   expect(applied.state, JSON.stringify(applied)).toBe("succeeded");
   expect(applied.journal).toMatchObject({ evidence: { outcome: "Converged" } });
   expect(readFileSync(join(follower.home, ".codex/AGENTS.md"), "utf8")).toContain("Source instructions");
@@ -396,7 +432,8 @@ it("plans and applies an enrolled follower and performs digest-checked local ope
     expect((await api.call("/api/schedule", "DELETE", {})).payload).toEqual({ change: "unchanged" });
     // The CLI sees the same disabled decision, and applying cannot recreate the removed job.
     expect(JSON.parse(success(follower.invoke(["schedule", "status"])).stdout).data.state).toBe("not-selected");
-    expect((await api.operation("/api/sync/apply")).state).toBe("succeeded");
+    const replan = await api.operation("/api/sync/plan");
+    expect((await api.operation("/api/sync/apply", Schema.decodeUnknownSync(GuiSyncApplyRequest)(replan.result))).state).toBe("succeeded");
     expect(existsSync(scheduler.timer)).toBe(false);
   }
   expect((await api.call("/api/tunnel")).status).toBe(200);
@@ -417,5 +454,109 @@ it("plans and applies an enrolled follower and performs digest-checked local ope
   expect((await api.call("/api/exports", "POST", { includeHarnesses: false })).status).toBe(200);
   const unenrolled = await api.call("/api/enrollment", "DELETE", {});
   expect(unenrolled.payload).toMatchObject({ unenrolled: true, credentialRemoved: true });
-  expect((await api.call("/api/sync/plan", "POST", {})).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  expect((await api.operation("/api/sync/plan")).state).toBe("succeeded");
 }, 300_000);
+
+for (const role of ["source", "unconfigured"] as const) {
+  it(`plans, reviews, applies and restores a ${role} folder without enrollment`, async () => {
+    const machine = fixture(role);
+    if (role === "source") success(machine.invoke(["source", "init"]));
+    write(join(machine.bin, "codex"), "", 0o755);
+    const config = { version: 1, profile: { id: "gui-local", name: "Local GUI" }, harnesses: ["codex"], surfaces: { codex: ["instructions"] }, local: { appendLocal: ["instructions"] } };
+    write(join(machine.folder, "canonfig.jsonc"), JSON.stringify(config));
+    write(join(machine.folder, "AGENTS.md"), "Canonical instructions\n");
+    const target = join(machine.home, ".codex/AGENTS.md");
+    const privateText = "Private local instructions that must stay on disk\n";
+    write(target, privateText);
+    const api = await gui(machine);
+    expect((await api.call("/api/local/synchronization")).status).toBe(200);
+    for (const path of ["/api/sync/plan", "/api/sync/apply", "/api/sync/reviews", "/api/recovery", "/api/recovery/abandon"]) {
+      expect((await api.call(path, "POST", { unexpected: true })).status).toBe(400);
+    }
+    const plan = await api.operation("/api/sync/plan");
+    expect(plan.state).toBe("succeeded");
+    expect(readFileSync(target, "utf8")).toBe(privateText);
+    const review = await api.operation("/api/sync/reviews");
+    expect(review.state, JSON.stringify(review)).toBe("succeeded");
+    expect(JSON.stringify(review)).not.toContain(privateText.trim());
+    expect(review.result).toMatchObject({ adoptionReviews: [expect.objectContaining({ target })] });
+    const applied = await api.operation("/api/sync/apply", Schema.decodeUnknownSync(GuiSyncApplyRequest)(plan.result));
+    expect(applied.state, JSON.stringify(applied)).toBe("succeeded");
+    expect(applied.journal).toMatchObject({ evidence: { outcome: "Converged" } });
+    expect(readFileSync(target, "utf8")).toContain("Canonical instructions");
+    expect(readFileSync(target, "utf8")).toContain(privateText);
+    const backups = Schema.decodeUnknownSync(GuiBackups)((await api.call("/api/backups")).payload);
+    expect(backups.snapshots).toHaveLength(1);
+    expect((await api.call("/api/backups/restore", "POST", {})).status).toBe(400);
+    expect((await api.operation("/api/backups/restore", { snapshot: "../outside" })).state).toBe("failed");
+    // A real filesystem failure leaves restore finalization open, without signalling a live process.
+    const preferences = join(machine.folder, "local/local.jsonc");
+    mkdirSync(preferences, { recursive: true });
+    expect((await api.operation("/api/backups/restore", { snapshot: backups.snapshots[0] })).state).toBe("failed");
+    expect((await api.call("/api/local/synchronization")).payload).toMatchObject({ activeRecovery: { run: expect.any(String) } });
+    const refusedAbandon = await api.operation("/api/recovery/abandon");
+    expect(refusedAbandon.state).toBe("failed");
+    expect(refusedAbandon.failure?.message).toContain("recover");
+    rmSync(preferences, { recursive: true });
+    const recovered = await api.operation("/api/recovery");
+    expect(recovered.state, JSON.stringify(recovered)).toBe("succeeded");
+    expect(readFileSync(target, "utf8")).toBe(privateText);
+    expect(JSON.parse(readFileSync(preferences, "utf8"))).toMatchObject({ excludeHarnesses: ["codex"] });
+    rmSync(preferences);
+    await interruptLocalPreparation(machine);
+    const abandoned = await api.operation("/api/recovery/abandon");
+    expect(abandoned.state, JSON.stringify(abandoned)).toBe("succeeded");
+    expect(abandoned.result).toMatchObject({ abandoned: true });
+    expect((await api.call("/api/local/synchronization")).payload).toEqual({ activeRecovery: null });
+    if (role === "source") {
+      const exported = Schema.decodeUnknownSync(GuiArchiveDownload)((await api.call("/api/exports", "POST", { includeHarnesses: false })).payload);
+      const archive = join(machine.home, "folder.tar.gz");
+      writeFileSync(archive, Buffer.from(exported.base64, "base64"));
+      write(join(machine.folder, "AGENTS.md"), "Folder content before replacement\n");
+      success(machine.invoke(["import", archive, "--replace"]));
+      expect(readFileSync(join(machine.folder, "AGENTS.md"), "utf8")).toBe("Canonical instructions\n");
+      const replacementBackups = Schema.decodeUnknownSync(GuiBackups)((await api.call("/api/backups")).payload);
+      const snapshot = replacementBackups.snapshots.at(-1);
+      expect(snapshot).toBeDefined();
+      const restored = await api.operation("/api/backups/restore", { snapshot });
+      expect(restored.state, JSON.stringify(restored)).toBe("succeeded");
+      expect(readFileSync(join(machine.folder, "AGENTS.md"), "utf8")).toBe("Folder content before replacement\n");
+    }
+  }, 180_000);
+}
+
+it("rejects changed Source plans before takeover and applies only a fresh review", async () => {
+  const machine = fixture("reviewed-source");
+  success(machine.invoke(["source", "init"]));
+  write(join(machine.bin, "codex"), "", 0o755);
+  write(join(machine.folder, "canonfig.jsonc"), JSON.stringify({
+    version: 1, harnesses: ["codex"], surfaces: { codex: ["instructions"] }, local: { appendLocal: ["instructions"] },
+  }));
+  const instructions = join(machine.folder, "AGENTS.md");
+  const target = join(machine.home, ".codex/AGENTS.md");
+  write(instructions, "Reviewed instructions\n");
+  const api = await gui(machine);
+  const approval = GuiSyncApplyRequest;
+  const original = await api.operation("/api/sync/plan");
+  expect(original.result).toMatchObject({ planDigest: expect.any(String) });
+  const reviewed = Schema.decodeUnknownSync(approval)(original.result);
+  write(instructions, "Changed canonical instructions\n");
+  const changedFolder = await api.operation("/api/sync/apply", reviewed);
+  expect(changedFolder.state).toBe("failed");
+  expect(changedFolder.failure).toMatchObject({ category: "conflict-or-drift", exitCode: 4 });
+  expect((await api.call("/api/backups")).payload).toEqual({ snapshots: [] });
+  expect((await api.call("/api/local/synchronization")).payload).toEqual({ activeRecovery: null });
+  const second = Schema.decodeUnknownSync(approval)((await api.operation("/api/sync/plan")).result);
+  write(target, "New local instructions\n");
+  const changedTarget = await api.operation("/api/sync/apply", second);
+  expect(changedTarget.state).toBe("failed");
+  expect(changedTarget.failure).toMatchObject({ category: "conflict-or-drift", exitCode: 4 });
+  expect(readFileSync(target, "utf8")).toBe("New local instructions\n");
+  expect((await api.call("/api/backups")).payload).toEqual({ snapshots: [] });
+  const fresh = Schema.decodeUnknownSync(approval)((await api.operation("/api/sync/plan")).result);
+  expect(Schema.decodeUnknownSync(approval)((await api.operation("/api/sync/plan")).result)).toEqual(fresh);
+  const applied = await api.operation("/api/sync/apply", fresh);
+  expect(applied.state, JSON.stringify(applied)).toBe("succeeded");
+  expect(readFileSync(target, "utf8")).toContain("Changed canonical instructions");
+  expect(readFileSync(target, "utf8")).toContain("New local instructions");
+}, 180_000);

@@ -9,6 +9,34 @@ and key it is about to manage into a **Takeover Snapshot**.
 those harnesses on this machine. Restore works the same on a Source Machine and
 on a Follower Machine, and only changes the machine you run it on.
 
+## Use the browser
+
+Run `canonfig ui` on the machine to restore, then open **Backups**. Source and
+Follower workspaces list the actual snapshot IDs. Select **Restore** on the
+snapshot you intend to restore and read the confirmation before proceeding.
+The browser never silently chooses the latest snapshot.
+
+On a machine without Source identity or enrollment, the setup header offers
+**Use locally** while you choose a role. Its **Local sync** and **Backups** pages
+use the existing Canonical Folder, without creating an identity or enrolling.
+Local sync plans first and enables **Apply changes** only after a successful
+plan. Publishing a Source revision does not apply this machine's files.
+
+Backups also lists snapshots from `import --replace`. Restoring those
+Canonical Folder entries first snapshots their current content. An enrolled
+Follower still cannot restore folder entries over its Source-owned mirror.
+
+If a run is interrupted, **Local sync** or **Sync** offers confirmed
+**Recover** and **Abandon** actions. Abandon leaves completed writes in place;
+it does not roll them back.
+
+**Write preview** creates private adoption-review JSON files and displays
+their paths. Open the reported path in a local editor on the machine running
+Canonfig. Inspect `sourceAddition`, `retainedLocal` and `proposedText`, then
+delete the review when finished. These files can contain secrets from
+existing instructions, so their exact text stays out of the browser. Do not
+share or upload them.
+
 ## What a snapshot holds
 
 Each run that takes over at least one harness writes one snapshot under

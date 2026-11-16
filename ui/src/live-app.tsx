@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { SkulletProvider } from "skullet/react";
 import type { SkulletTheme } from "skullet";
 import { Button } from "@/components/ui/button";
@@ -7,16 +7,19 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { httpBackend, type WorkspaceBackend, type GuiSession } from "./gui-client";
 import { ErrorNotice, overviewPath } from "./live/session";
 import { EnrollmentOnboarding } from "./onboarding/enrollment-controller";
+import { OnboardingShell } from "./onboarding/kit";
 import { LiveWorkspaceProvider } from "./workspace/live-provider";
-import { Frame, NotFound, pageTitle } from "./workspace/workspace";
+import { Frame, NotFound, pageTitle, SyncView } from "./workspace/workspace";
 import { isRouteForRole } from "./workspace/nav";
 import { navigate, useAppRoute } from "./workspace/routes";
 import { ScreenContext } from "./workspace/screen-context";
 import { requestError } from "./workspace/live/resource";
 import type { GuiRequestError } from "./gui-client";
-import { CommandBox } from "./workspace/kit";
+import { CommandBox, Toolbar, ToolbarTab } from "./workspace/kit";
 import { Mono } from "./shared/shared";
 import type { InstalledUpdate } from "./workspace/live/self-update";
+import { BackupsView } from "./workspace/harnesses";
+import { useWorkspace } from "./workspace/store";
 
 const SKELETON_THEME: SkulletTheme = {
   dark: { base: "var(--muted)", highlight: "color-mix(in oklab, var(--foreground) 7%, transparent)" },
@@ -39,7 +42,7 @@ export default function LiveApp({ backend = httpBackend }: { backend?: Workspace
     setState({ kind: "loading" });
     void backend.session(controller.signal).then((session) => {
       if (controller.signal.aborted) return;
-      if (session.role === "unconfigured" || window.location.pathname === "/") navigate(overviewPath(session.role), { replace: true });
+      if (window.location.pathname === "/") navigate(overviewPath(session.role), { replace: true });
       setState({ kind: "ready", session });
     }, (cause: unknown) => {
       if (!controller.signal.aborted) setState({ kind: "error", error: requestError(cause) });
@@ -60,10 +63,16 @@ export default function LiveApp({ backend = httpBackend }: { backend?: Workspace
     content = <main className="grid min-h-svh place-content-center bg-canvas text-muted-foreground" role="status">Reading this machine…</main>;
   } else if (state.kind === "error") {
     content = <main className="mx-auto max-w-[880px] space-y-4 p-6"><ErrorNotice error={state.error} title="Workspace could not load" /><Button onClick={() => setRevision((value) => value + 1)}>Reload</Button></main>;
-  } else if (state.session.role === "unconfigured") {
-    content = <ScreenContext value={{ pageLoading: false, navigate }}><EnrollmentOnboarding backend={backend} session={state.session} /></ScreenContext>;
+  } else if (state.session.role === "unconfigured" && route.kind === "setup") {
+    content = <ScreenContext value={{ pageLoading: false, navigate }}>
+      <EnrollmentOnboarding backend={backend} session={state.session} />
+    </ScreenContext>;
   } else if (route.kind !== "workspace" || !isRouteForRole(route, state.session.role)) {
     content = <NotFound href={overviewPath(state.session.role)} />;
+  } else if (state.session.role === "unconfigured") {
+    content = <LiveWorkspaceProvider key="local" backend={backend} session={state.session} route={route} onInstalled={(result) => setState({ kind: "installed", ...result })}>
+      <LocalWorkspace />
+    </LiveWorkspaceProvider>;
   } else {
     content = <LiveWorkspaceProvider key={state.session.role} backend={backend} session={state.session} route={route} onInstalled={(result) => setState({ kind: "installed", ...result })}><Frame /></LiveWorkspaceProvider>;
   }
@@ -73,4 +82,20 @@ export default function LiveApp({ backend = httpBackend }: { backend?: Workspace
       <Toaster theme="dark" position="bottom-right" offset={{ right: 8, bottom: "calc(8px + var(--toast-lift, 0px))" }} mobileOffset={{ bottom: "calc(8px + var(--toast-lift, 0px))" }} />
     </TooltipProvider>
   </SkulletProvider>;
+}
+
+function LocalWorkspace() {
+  const ws = useWorkspace();
+  return <OnboardingShell hostname={ws.machineName} backdrop={null}>
+    <div className="flex h-full flex-col bg-panel">
+      <nav aria-label="Local workspace">
+        <Toolbar right={<Button size="sm" variant="ghost" disabled={ws.followerLive?.action.loading} onClick={() => navigate("/setup")}>Back to setup</Button>}>
+          <ToolbarTab active={ws.view === "sync"} href="/local/sync">Local sync</ToolbarTab>
+          <ToolbarTab active={ws.view === "backups"} href="/local/backups">Backups</ToolbarTab>
+        </Toolbar>
+      </nav>
+      {ws.pageError && <div className="p-4"><ErrorNotice error={ws.pageError} /></div>}
+      <Suspense fallback={null}>{ws.view === "backups" ? <BackupsView /> : <SyncView />}</Suspense>
+    </div>
+  </OnboardingShell>;
 }

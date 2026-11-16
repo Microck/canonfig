@@ -2,9 +2,10 @@ import type { Schema } from "effect";
 import type { GuiStatus } from "../../../src/gui/contract/session";
 import { CliText, Mono, StateBand, StatusMark, type StatusKind } from "../shared/shared";
 import { Button } from "../components/ui/button";
+import { CaretRight } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { useWorkspace } from "./store";
-import { ListHead, ListRow, SectionLabel, SettingRow, settingsGroup } from "./kit";
+import { ListRow, SectionLabel, SettingRow, settingsGroup } from "./kit";
 import { record, strings, text } from "./live/follower";
 import { HARNESS_NAMES } from "../shared/metadata";
 
@@ -25,6 +26,59 @@ function resourceLabel(resource: string | undefined): string {
   const [scope, name, kind] = resource.split(":");
   if (scope === "harness") return `${Object.entries(HARNESS_NAMES).find(([id]) => id === name)?.[1] ?? name}: ${resourceLabels[kind] ?? kind}`;
   return `${resourceLabels[scope] ?? scope}${name ? `: ${name}` : ""}`;
+}
+
+/**
+ * Planned changes, grouped by the harness they touch. Each change is one line: action, item and
+ * target under `~`, because full paths and adoption notices made a grid row overflow (#351).
+ * A change's reason, notice or instructions open on click; changes that ask for attention (human
+ * action, adoption review) carry the act mark so they stay findable while closed. `home` is the
+ * Canonical Folder's parent, since that folder is always `~/.canonfig` (ADR 0003).
+ */
+function PlanChanges({ changes, home }: { changes: Record<string, Schema.Json>[]; home: string | undefined }) {
+  const groups = new Map<string, Record<string, Schema.Json>[]>();
+  for (const action of changes) {
+    const [scope, name] = (text(action.resource) ?? "").split(":");
+    // `harness:agents:*` is the `.agents` folder several harnesses read, not a harness of its own.
+    const group = scope !== "harness" ? "Canonfig" : name === "agents" ? "Shared" : Object.entries(HARNESS_NAMES).find(([id]) => id === name)?.[1] ?? name;
+    const members = groups.get(group);
+    if (members) members.push(action); else groups.set(group, [action]);
+  }
+  return <div className="space-y-4 border-t border-border px-[18px] py-4">
+    {[...groups].map(([group, actions]) => <section key={group}>
+        <SectionLabel>{group}</SectionLabel>
+        <ul className={settingsGroup}>
+          {actions.map((action, index) => {
+            const detail = record(action.detail);
+            const kind = text(action.kind) ?? "";
+            const [scope, , item] = (text(action.resource) ?? "").split(":");
+            const target = text(detail.target) ?? text(detail.package) ?? text(detail.method);
+            const notes = [
+              text(detail.reason) ?? text(detail.adoptionNotice) ?? text(detail.retentionNotice) ?? text(detail.summary),
+              text(detail.instructions),
+              kind === "drift-conflict" ? "Your edit stays in place. Resolve it outside Sync before checking again." : undefined,
+            ].filter((note) => note !== undefined);
+            const mark: StatusKind = kind === "drift-conflict" ? "warn" : kind === "human-action" || text(detail.adoptionNotice) ? "act" : "off";
+            const line = <span className="flex min-h-10 items-center gap-3 px-4 py-1.5 text-sm">
+              <span className="flex w-[110px] shrink-0 items-center gap-2 text-muted-foreground"><StatusMark kind={mark} />{actionLabels[kind] ?? "Planned action"}</span>
+              {/* The item keeps its width (up to half the row); the path takes what is left and truncates first. */}
+              <span className="max-w-[50%] shrink-0 truncate">{scope === "harness" ? resourceLabels[item] ?? item : resourceLabel(text(action.resource))}</span>
+              <span className="min-w-0 flex-1 truncate text-right" title={target}>{target && <Mono className="text-faint">{home && target.startsWith(`${home}/`) ? `~${target.slice(home.length)}` : target}</Mono>}</span>
+              {notes.length > 0 && <CaretRight aria-hidden className="size-3.5 shrink-0 text-faint group-open:rotate-90 motion-safe:transition-transform" />}
+            </span>;
+            // min-w-0: a grid item otherwise grows to its untruncated path and pushes the caret out of the panel.
+            return <li key={text(action.id) ?? index} className="min-w-0">
+              {notes.length === 0 ? line : <details className="group">
+                <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden">{line}</summary>
+                <div className="max-w-[calc(72ch+138px)] space-y-1 pr-4 pb-3 pl-4 text-sm text-muted-foreground sm:pl-[138px]">
+                  {notes.map((note, noteIndex) => <p key={noteIndex} className="whitespace-pre-wrap"><CliText>{note}</CliText></p>)}
+                </div>
+              </details>}
+            </li>;
+          })}
+        </ul>
+      </section>)}
+  </div>;
 }
 
 /** Only named CLI evidence is rendered. Unknown fields never become a JSON dump. */
@@ -129,7 +183,12 @@ export function FollowerOperationEvidence() {
   const human = Array.isArray(outcome.actions) ? outcome.actions.map(record) : [];
   const conflicts = Array.isArray(outcome.conflicts) ? outcome.conflicts.map(record) : [];
   const reviews = Array.isArray(report.adoptionReviews) ? report.adoptionReviews.map(record) : [];
-  const cols = "100px minmax(160px,240px) minmax(200px,1fr)";
+  const messages = (entries: Schema.Json | undefined) => (Array.isArray(entries) ? entries : []).flatMap((entry) => {
+    const detail = record(entry);
+    return text(entry) ?? text(detail.message) ?? text(detail.detail) ?? text(detail.instructions) ?? [];
+  });
+  const notes = [...messages(report.diagnostics), ...messages(report.warnings)];
+  const steps = messages(report.clientSteps);
   const outcomeName = text(outcome.outcome);
   const status: StatusKind = operation.state === "failed" ? "bad" : operation.state === "running" ? "off" : outcomeName && outcomeName !== "Converged" ? "warn" : "ok";
   return <section aria-live="polite">
@@ -142,6 +201,8 @@ export function FollowerOperationEvidence() {
     </div>
     <div className="px-[18px] has-[>:not(:empty)]:py-4">
       <div className={settingsGroup}>
+        {text(record(report.origin).folder) && <SettingRow title="Canonical Folder"><Mono>{text(record(report.origin).folder)}</Mono></SettingRow>}
+        {strings(report.notInstalled).length > 0 && <SettingRow title="Not installed">{strings(report.notInstalled).join(", ")}</SettingRow>}
         {typeof report.downloadedBlobs === "number" && <SettingRow title="Files downloaded">{report.downloadedBlobs}</SettingRow>}
         {typeof report.reusedBlobs === "number" && <SettingRow title="Files reused">{report.reusedBlobs}</SettingRow>}
         {text(report.restored) && <SettingRow title="Restored snapshot"><Mono>{text(report.restored)}</Mono></SettingRow>}
@@ -150,13 +211,20 @@ export function FollowerOperationEvidence() {
         {report.abandoned === true && <SettingRow title="Recovery">Run abandoned. Applied changes remain; nothing was rolled back.</SettingRow>}
       </div>
       {human.map((action, index) => <div key={index} className="border-b border-border py-3"><h3 className="font-medium">{text(action.reason)}</h3><p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground"><CliText>{text(action.instructions) ?? ""}</CliText></p></div>)}
-      {conflicts.map((conflict, index) => <div key={index} className="border-b border-border py-3"><h3 className="font-medium">Held: {resourceLabel(text(conflict.resource))}</h3><Mono>{text(conflict.target)}</Mono><p className="mt-1 text-sm text-muted-foreground">Move your edit into the Local folder, ask the Source to publish it, or restore the published content. Canonfig does not force an overwrite.</p></div>)}
-      {[...(Array.isArray(report.diagnostics) ? report.diagnostics : []), ...(Array.isArray(report.warnings) ? report.warnings : []), ...(Array.isArray(report.clientSteps) ? report.clientSteps : [])].map((entry, index) => {
-        const detail = record(entry);
-        const message = text(entry) ?? text(detail.message) ?? text(detail.detail) ?? text(detail.instructions);
-        return message ? <p key={index} className="border-b border-border py-3 text-sm text-muted-foreground"><CliText>{message}</CliText></p> : null;
-      })}
-      {report.adoptionReviews !== undefined && <><SectionLabel className="mt-5">Private adoption review</SectionLabel>{reviews.length === 0 ? <p className="text-sm text-muted-foreground">No first-adoption files need a private review.</p> : reviews.map((review, index) => <SettingRow key={index} title={text(review.target) ?? "Review file"}><Mono className="break-all">{text(review.path) ?? text(review.file)}</Mono></SettingRow>)}<p className="mt-2 text-sm text-muted-foreground">Private review text stays on disk. The browser cannot read or delete it.</p></>}
+      {conflicts.map((conflict, index) => <div key={index} className="border-b border-border py-3"><h3 className="font-medium">Held: {resourceLabel(text(conflict.resource))}</h3><Mono>{text(conflict.target)}</Mono>{ws.session?.role === "follower" && <p className="mt-1 text-sm text-muted-foreground">Move your edit into the Local folder, ask the Source to publish it, or restore the published content.</p>}</div>)}
+      {/* Planner notes (unsupported features, sandbox caveats) fold behind a count; client steps are things to do, so they stay open. */}
+      {notes.length > 0 && <details className="border-b border-border py-3 text-sm">
+        <summary className="flex cursor-pointer items-center gap-2"><StatusMark kind="warn" />{notes.length} {notes.length === 1 ? "note" : "notes"}</summary>
+        {notes.map((message, index) => <p key={index} className="mt-2 text-muted-foreground"><CliText>{message}</CliText></p>)}
+      </details>}
+      {steps.map((message, index) => <p key={index} className="border-b border-border py-3 text-sm text-muted-foreground"><CliText>{message}</CliText></p>)}
+      {report.adoptionReviews !== undefined && <>
+        <SectionLabel className="mt-5">Private adoption review</SectionLabel>
+        {reviews.length === 0 ? <p className="text-sm text-muted-foreground">No files need a preview.</p> : <>
+          {reviews.map((review, index) => <SettingRow key={index} title={text(review.target) ?? "Review file"}><Mono className="break-all">{text(review.path) ?? text(review.file)}</Mono></SettingRow>)}
+          <p className="mt-2 text-sm text-muted-foreground">Open the JSON files on the machine running Canonfig and delete them after review.</p>
+        </>}
+      </>}
       {/* Revision and run ids identify this result for the CLI and logs; they are not something to read on every visit. */}
       {(text(report.revision) || text(outcome.run ?? report.run ?? journal.run)) && <details className="mt-4 text-sm">
         <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
@@ -166,16 +234,7 @@ export function FollowerOperationEvidence() {
         </div>
       </details>}
     </div>
-    {changes.length > 0 && <><ListHead cols={cols} minWidth={600}><span>Change</span><span>Item</span><span>Where and why</span></ListHead>{changes.map((action, index) => {
-      const detail = record(action.detail);
-      const kind = text(action.kind) ?? "";
-      const reason = text(detail.reason) ?? text(detail.adoptionNotice) ?? text(detail.retentionNotice) ?? text(detail.summary);
-      return <ListRow key={text(action.id) ?? index} cols={cols} minWidth={600}>
-        <span className="flex items-center gap-2 text-sm"><StatusMark kind={kind === "drift-conflict" ? "warn" : kind === "human-action" ? "act" : "off"} />{actionLabels[kind] ?? "Planned action"}</span>
-        <span className="break-words text-sm">{resourceLabel(text(action.resource))}</span>
-        <div className="min-w-0 text-sm"><Mono className="break-all">{text(detail.target) ?? text(detail.package) ?? text(detail.method)}</Mono>{reason && <p className="mt-1 text-muted-foreground">{reason}</p>}{text(detail.instructions) && <p className="mt-1 whitespace-pre-wrap">{text(detail.instructions)}</p>}{kind === "drift-conflict" && <p className="mt-1 text-muted-foreground">Your edit stays in place. Resolve it outside Sync before checking again.</p>}</div>
-      </ListRow>;
-    })}</>}
+    {changes.length > 0 && <PlanChanges changes={changes} home={text(record(report.origin).folder)?.replace(/\/\.canonfig\/?$/u, "")} />}
     {/* Unchanged items and verified items can run to hundreds; one line counts them, and the list opens on request. */}
     {unchanged.length > 0 && <details className="border-t border-border">
       <summary className="flex cursor-pointer items-center gap-2 px-[18px] py-3 text-sm"><StatusMark kind="ok" />{unchanged.length} {unchanged.length === 1 ? "item already matches" : "items already match"}</summary>

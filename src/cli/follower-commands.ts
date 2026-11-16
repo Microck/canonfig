@@ -29,6 +29,8 @@ export interface SynchronizeInput {
   readonly noBackup?: boolean | undefined;
   /** With `--plan`: write private append-local adoption reviews, never output. */
   readonly reviewLocal?: boolean | undefined;
+  /** GUI Apply must match the plan the person reviewed. CLI apply plans immediately. */
+  readonly expectedPlanDigest?: string | undefined;
 }
 
 /** CLI-specific work runs inside the same invocation boundary as synchronization. */

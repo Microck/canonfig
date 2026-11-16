@@ -128,6 +128,11 @@ export class InvalidExecutionPlanError extends TaggedError<InvalidExecutionPlanE
   { message: Schema.String },
 ) {}
 
+export class SynchronizationPlanChangedError extends TaggedError<SynchronizationPlanChangedError>()(
+  "SynchronizationPlanChangedError",
+  {},
+) {}
+
 export class MissingExecutionResourceError extends TaggedError<MissingExecutionResourceError>()(
   "MissingExecutionResourceError",
   { resource: Schema.String },

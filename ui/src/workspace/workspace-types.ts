@@ -20,6 +20,7 @@ export type SourceView =
   | "profile"
   | "machines"
   | "revisions"
+  | "sync"
   | "backups"
   | "secrets"
   | "service"

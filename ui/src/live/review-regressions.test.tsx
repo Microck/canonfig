@@ -450,7 +450,7 @@ it("retains an uncertain follower ticket, blocks another command and resumes its
     if (polls === 2) {
       outgoing.statusCode = 503;
       outgoing.end(JSON.stringify({ category: "internal", exitCode: 1, message: "Observation disconnected" }));
-    } else outgoing.end(JSON.stringify(polls === 1 ? { id: "plan", state: "running", journal: {} } : { id: "plan", state: "succeeded", journal: {}, result: { plan: {} } }));
+    } else outgoing.end(JSON.stringify(polls === 1 ? { id: "plan", state: "running", journal: {} } : { id: "plan", state: "succeeded", journal: {}, result: { plan: {}, planDigest: "a".repeat(64) } }));
     return true;
   });
   try {
@@ -472,7 +472,7 @@ it("offers ticket recovery even when the first operation observation fails", asy
     if (++polls === 1) {
       outgoing.statusCode = 503;
       outgoing.end(JSON.stringify({ category: "internal", exitCode: 1, message: "First observation disconnected" }));
-    } else outgoing.end(JSON.stringify({ id: "first-poll", state: "succeeded", journal: null, result: {} }));
+    } else outgoing.end(JSON.stringify({ id: "first-poll", state: "succeeded", journal: null, result: { planDigest: "a".repeat(64) } }));
     return true;
   });
   try {
@@ -486,7 +486,7 @@ it("offers ticket recovery even when the first operation observation fails", asy
 it("only a successful plan enables Apply and successful Apply reaches done", async () => {
   const responses = {
     ...sourceResponses(), "/api/sync/plan": { id: "plan" }, "/api/backups/restore": { id: "restore" }, "/api/sync/apply": { id: "apply" },
-    ...Object.fromEntries(["plan", "restore", "apply"].map((id) => [`/api/operations/${id}`, { id, state: "succeeded", journal: {}, result: {} }])),
+    ...Object.fromEntries(["plan", "restore", "apply"].map((id) => [`/api/operations/${id}`, { id, state: "succeeded", journal: {}, result: id === "plan" ? { planDigest: "a".repeat(64) } : {} }])),
   };
   const app = await fixture("/follower/overview", responses);
   try {
@@ -499,6 +499,7 @@ it("only a successful plan enables Apply and successful Apply reaches done", asy
     await until(() => app.container.querySelector('[data-testid="can-apply"]')?.textContent === "true", "Plan did not enable Apply");
     await click("Apply follower");
     await until(() => app.container.querySelector('[data-testid="phase"]')?.textContent === "done", "Successful apply did not reach done");
+    assert.deepEqual(app.mutations.find(({ path }) => path === "/api/sync/apply")?.body, { planDigest: "a".repeat(64) });
   } finally { await app.close(); }
 });
 

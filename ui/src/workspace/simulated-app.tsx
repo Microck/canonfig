@@ -23,6 +23,7 @@ export function WorkspaceApp({ route }: { route: AppRoute }) {
     setSession({ role: setup.role, setup });
     navigate(workspaceHref(setup.role, setup.role === "source" && setup.scan ? "profile" : "overview"));
   }} /></Suspense>;
+  if (route.role === "unconfigured") return <NotFound />;
   return (
     <SimulatedWorkspaceProvider key={route.role} route={route} navigate={navigate} setup={session.setup}>
       <Frame />

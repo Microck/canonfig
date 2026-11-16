@@ -1180,6 +1180,7 @@ const followerCommandsLayer = (
         const projection = {
           noBackup: input.noBackup === true,
           reviewLocal: input.reviewLocal === true,
+          expectedPlanDigest: input.expectedPlanDigest,
           environment: (name: string) => process.env[name],
         };
         const follower: Effect.Effect<CliPayload, CliCommandFailure> = mapFailure(synchronizeFollower(
