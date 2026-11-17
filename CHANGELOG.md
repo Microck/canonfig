@@ -2,25 +2,60 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
-## Unreleased
+## v7.6.0 - 2026-11-17
 
-MCP environment variables and headers accept `{ "fromSecret": "name" }`.
-Canonfig projects an installed stdio launcher for these servers and resolves
-shared credentials at launch time, without putting values in harness configs,
-publications, exports or plans. `canonfig mcp run <name>` also bridges remote
-servers through pinned mcp-remote. Launchers preserve symbolic environment
-references and Linux credential-store session variables, locate installed npm
-across Node layouts, and replace environment keys case-insensitively on Windows.
-Windows batch commands fail with instructions to configure a native executable
-instead of running server arguments through a shell.
+### Browser interface
+
+- Manage a Source's own harness exclusions, item overlays and settings key claims
+  from Local settings, the same screen Followers use. Nothing is published or
+  applied until you run those steps.
+- Choose **Skip reading existing tool configuration** on the first Source setup
+  step, before Canonfig reads anything.
+- Setup's technical details stay after a reload, with stage completion times,
+  approval history and copyable digests.
+- Replace a Follower's enrollment from Settings, with an explicit reset
+  confirmation for the new identity.
+
+### Shared MCP credentials
+
+- MCP environment variables and headers accept `{ "fromSecret": "name" }`, naming
+  a shared secret from `canonfig secrets`. Canonfig projects an installed stdio
+  launcher for these servers and resolves the secret only when the server starts,
+  so no value lands in harness configs, publications, exports or plans.
+- `canonfig mcp run <name>` starts a server that way, passes stdio through
+  untouched and exits with the server's code. Remote servers are bridged through
+  a pinned `mcp-remote`, with headers passed in environment variables.
+- Launchers keep the server's `fromEnv` names and the Linux credential-store
+  session variables when a harness filters MCP environments, find npm across
+  Node layouts including Homebrew, and replace environment names
+  case-insensitively on Windows. Windows `.cmd` and `.bat` servers fail with
+  instructions to configure the native executable, instead of running server
+  arguments through a shell.
 
 ### Fixes
 
 - Run the Windows scheduled sync without a console window. It used to show an
   empty window for the whole run, titled after the current command, such as
-  `npm ls suno-api-cli`. The task keeps the sync's exit code, and the first
-  sync after updating re-registers it. This needs Windows Script Host, which is
-  on by default.
+  `npm ls suno-api-cli`. The task keeps the sync's exit code. This needs Windows
+  Script Host, which is on by default.
+
+### Security
+
+The five moderate findings from 7.5.0 remain in the TUF/minimatch chain under
+`sigstore`. A new high-severity advisory in `picomatch` (GHSA-fc5q-39xc-vjpf,
+ReDoS) reaches `fdir`, `tinyglobby` and `fumadocs-core`, `fumadocs-mdx` and
+`fumadocs-ui`. These are used only by the documentation website and development
+tools, not by the published package, and no fixed `picomatch` is released yet.
+This release uses an approved exception to the clean-audit gate for both. The
+website's `next` moves to 16.4.6, which fixes its moderate advisory.
+
+### Upgrading
+
+Use Node.js 24.15+ or 26+. Source and Followers must all use the 7.6 release line
+before resuming synchronization; 7.5.x and 7.6.x do not synchronize with each other.
+A 7.6.0 Source can roll followers on 7.5.x forward with a Fleet Update. Publish
+`fromSecret` references only after every follower runs 7.6.0. On Windows, the
+first sync after updating re-registers the scheduled task with the new launcher.
 
 ## v7.5.0 - 2026-11-17
 
