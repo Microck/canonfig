@@ -1,5 +1,127 @@
+What is canonfig?
+
+Canonfig is a config synchronizer. The sync can be local (between harnesses) or to multiple machines. The main objective of Canonfig is to make users only have to maintain one config for all of their harnesses and machines; as easy and seamless as possible. Although made to be used with AI agents, users should be able to setup everything themselves through native Canonfig commands, or through the Canonfig UI. Everything should be intuitive. It will be used by technical users, but also by non-technical ones.
+
 ## When CLI changes need GUI support
 
 - When adding a CLI command or a flag that changes what users can do, check the GUI for each applicable role (Source and Follower). If users need it for routine setup, operation, review, or recovery, add or extend a workflow in the live GUI in the same change. Preserve role and safety checks, and let users complete the task and verify the outcome. An existing GUI workflow counts if it already meets that need.
 - Keep scripting, machine-readable output, process launch and supervision, and low-level overrides in the CLI by default. For a CLI-only decision, document why and give users the command to run or the equivalent GUI workflow. If needed GUI work is deferred, record why and link a follow-up issue.
 - Record the coverage decision in the CLI/GUI capability matrix. [Issue #323](https://github.com/Microck/canonfig/issues/323)
+
+## Domain glossary
+
+Canonfig keeps declared AI agent configuration aligned across a set of machines. One machine owns the desired configuration, while follower machines consume it without becoming additional authorities.
+
+### Language
+
+**Source Machine**:
+The machine that owns canonical configuration state for a Canonfig installation. A machine is a Source Machine or a Follower Machine, never both.
+_Avoid_: Central authority machine, main machine
+
+**Follower Machine**:
+A machine that receives canonical configuration state from the Source Machine while retaining explicitly local configuration. It cannot also be a Source Machine.
+_Avoid_: Client machine, replica
+
+**Machine Profile**:
+A versioned declaration of the configuration state that Follower Machines should have. The Canonical Folder is its authoring format; the signed Profile Revision is its wire format.
+_Avoid_: Bundle, snapshot, manifest
+
+**Canonical Folder**:
+The `~/.canonfig/` folder on every machine. On the Source Machine it holds the authored Machine Profile; on a Follower Machine it holds the mirror of the authorized revision plus machine-local state.
+_Avoid_: Profile file, config repo
+
+**Target Harness**:
+An AI agent harness, such as Codex or Claude Code, into whose global configuration Canonfig projects the Canonical Folder.
+_Avoid_: Client, integration
+
+**Projection**:
+Writing the Canonical Folder's items into a Target Harness's own global files and keys.
+_Avoid_: Export, install
+
+**Takeover Snapshot**:
+The backup, kept under `~/.canonfig/.backups/`, of content Canonfig is about to overwrite: a Target Harness's owned surfaces before Canonfig's first write to that harness, or the Canonical Folder entries that `canonfig import --replace` (or a restore of such a backup) replaces.
+_Avoid_: Journal, run backup
+
+**Observed State**:
+The configuration state that Canonfig finds on a machine at a point in time.
+_Avoid_: Current profile, actual profile
+
+**Local folder**:
+The `~/.canonfig/local/` folder: items owned by one machine that Projection combines with canonical items, within the Source Machine's allowlist, and that are never sent back to the Source Machine.
+_Avoid_: Local override, follower state
+
+**Local Overlay**:
+A machine's recorded decision, in `~/.canonfig/local/local.jsonc`, that its local item replaces the published item of the same name on that machine.
+_Avoid_: Override, local patch
+
+**Key Claim**:
+A machine's recorded decision, in the `overlays` list of `~/.canonfig/local/local.jsonc`, that one key of a Target Harness's settings file is its own: Canonfig never writes, removes or reports drift on that key there, and keeps every other key it owns in the file.
+_Avoid_: Pinned setting, key override
+
+**Append-local**:
+The Apply Policy under which Canonfig shares a surface with the machine: it owns a marked Source section of a text file, or only its own entries of a directory, and keeps everything else the machine put there.
+_Avoid_: Merge mode, keep-local
+
+**Human Action Required**:
+A synchronization outcome that identifies a step only a person can complete before the desired configuration can be reached.
+_Avoid_: Sync failure, unsupported operation
+
+**Configuration Agent**:
+An AI agent that resolves configuration work for which Canonfig has no unambiguous deterministic action.
+_Avoid_: Installer, setup bot
+
+**Synchronization Schedule**:
+The declared cadence at which a Follower Machine checks for and applies an approved Machine Profile revision.
+_Avoid_: Immediate sync, background polling
+
+**Follower Group**:
+A named set of Follower Machines that share configuration in addition to the base Machine Profile.
+_Avoid_: Per-machine profile, follower branch
+
+**Profile Resource**:
+A named item of desired configuration within a Machine Profile, compiled from one Canonical Folder item and classified by the behavior needed to reach and verify it. Authored `resources` in `canonfig.jsonc` are the only file, directory and config resources a person writes; every other one is a projection step an adapter produces.
+_Avoid_: Generic resource, profile entry
+
+**Installation Recipe**:
+A platform-specific, deterministic description of how a declared tool is installed, configured, and verified.
+_Avoid_: Install script, setup command
+
+**Profile Change Proposal**:
+A candidate Machine Profile change produced by discovery or a Configuration Agent before publication policy is applied.
+_Avoid_: Automatic profile edit, follower update
+
+**Follower Drift**:
+A difference between a follower-owned copy of a canonical resource and the exact revision Canonfig last applied to it.
+_Avoid_: Local folder, follower update
+
+**Convergence**:
+The state in which every required Profile Resource on a Follower Machine matches the Machine Profile and passes verification.
+_Avoid_: Successful sync, up to date
+
+**Profile Revision**:
+An immutable, validated publication of a Machine Profile that Follower Machines can authenticate and apply.
+_Avoid_: Latest profile, bundle version
+
+**Follower Identity**:
+The independently revocable identity granted to one Follower Machine during enrollment.
+_Avoid_: Shared token, machine fingerprint
+
+**Synchronization Run**:
+One planned and recorded attempt to move a Follower Machine from Observed State toward a Profile Revision.
+_Avoid_: Background job, sync command
+
+**Apply Policy**:
+The declared rule that determines how Canonfig treats differences between a Profile Resource, Observed State, and follower-owned changes.
+_Avoid_: Sync mode, overwrite flag
+
+**Applied Resource Record**:
+A Follower Machine's record of the exact Profile Resource revision and content Canonfig last applied.
+_Avoid_: Baseline, cached resource
+
+**Agent Task**:
+A bounded request that gives a Configuration Agent the desired outcome, observed evidence, allowed actions, and required proof of completion.
+_Avoid_: Prompt, autonomous job
+
+**Fleet Update**:
+A Source Machine's staged release change that automatically brings its enrolled Follower Machines to the same Canonfig version, advancing only after each follower proves Convergence.
+_Avoid_: Profile update, configuration sync, remote install
