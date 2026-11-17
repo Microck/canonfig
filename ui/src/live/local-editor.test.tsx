@@ -47,7 +47,7 @@ async function fixture(category: LocalCategory = "skills", existing = false) {
       { path: "skills/example/asset.bin", base64: "/wCA", executable: true, digest: "binary-digest" },
     ] }] : [])], config: {}, canonicalConfig: {} },
     schedule: null, tunnel: null, enrollment: null, secrets: [], archive: null,
-    saveItems: save, savePreferences: save, check: unexpected, createReview: unexpected, saveSchedule: unexpected,
+    saveItems: save, savePreferences: save, check: unexpected, createReview: unexpected, saveSchedule: unexpected, removeSchedule: unexpected,
     refreshSecrets: unexpected, toggleTunnel: unexpected, exportArchive: unexpected,
   };
   let closed = 0;

@@ -15,7 +15,7 @@ import { synchronizeSharedSecrets } from "../../secrets/secret-client.ts";
 import { listSecrets, storeSecret, removeSecret, type SecretTransferError } from "../../secrets/secret-store.ts";
 import { StateRepository } from "../../state/state-repository.service.ts";
 import {
-  GuiScheduleRequest, GuiHarnessRequest, GuiOverlayRequest, GuiRestoreRequest,
+  GuiScheduleRequest, GuiSynchronizationResult, GuiHarnessRequest, GuiOverlayRequest, GuiRestoreRequest,
   GuiLocalWrite, GuiLocalConfigRequest, GuiSecretSet, GuiSecretName, GuiExportRequest,
   type GuiLocalItem,
 } from "../contract/synchronization.ts";
@@ -120,8 +120,11 @@ export const synchronizationRoutes = Effect.gen(function*() {
     mutationRoute("POST", "/api/sync/reviews", EmptyBody, () => start(commands.synchronize({ mode: "plan", noInput: false, reviewLocal: true })), 202),
     mutationRoute("POST", "/api/recovery", EmptyBody, () => start(commands.recover({ noInput: false })), 202),
     mutationRoute("POST", "/api/recovery/abandon", EmptyBody, () => start(commands.abandon()), 202),
-    queryRoute("/api/schedule", () => follower(commands.scheduleStatus())),
+    queryRoute("/api/schedule", () => follower(commands.scheduleStatus()).pipe(
+      Effect.map((status) => ({ ...Schema.decodeUnknownSync(GuiSynchronizationResult)(status), machineTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone })),
+    )),
     mutationRoute("PUT", "/api/schedule", GuiScheduleRequest, (input) => follower(commands.setSchedule(input))),
+    mutationRoute("DELETE", "/api/schedule", EmptyBody, () => follower(commands.removeSchedule())),
     queryRoute("/api/harnesses", () => both(commands.harnesses({}))),
     mutationRoute("PUT", "/api/harnesses", GuiHarnessRequest, (change) => follower(commands.harnesses({ change }))),
     queryRoute("/api/local/overlays", () => localTarget.pipe(
