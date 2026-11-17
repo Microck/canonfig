@@ -70,6 +70,7 @@
   "devDependencies": {
     "@e2e-dev/web": "0.15.2",
     "@effect/vitest": "4.0.0-rc.112",
+    "@interfere/landmines": "0.0.0",
     "@oxlint/plugins": "1.78.0",
     "@shadcn/lint": "0.2.5",
     "@types/node": "24.10.1",

@@ -43,6 +43,16 @@ export default defineConfig({
   },
   overrides: [
     {
+      files: ["tests/**", "**/*.test.{ts,tsx}", "vitest.config.ts"],
+      jsPlugins: [{ name: "landmines-testing", specifier: "@interfere/landmines/testing" }],
+      rules: {
+        // Existing skill-update tests still use Vitest doubles. Keep those findings visible.
+        "landmines-testing/no-test-doubles": "warn",
+        "landmines-testing/no-unsignaled-poll": "error",
+        "landmines-testing/strict-msw": "error",
+      },
+    },
+    {
       files: ["website/**/*.{jsx,tsx}"],
       rules: {
         "shadcn/no-inline-styles": ["error", {

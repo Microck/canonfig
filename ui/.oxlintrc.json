@@ -22,6 +22,17 @@
   },
   "overrides": [
     {
+      "files": ["**/*.test.{ts,tsx}"],
+      "jsPlugins": [{ "name": "landmines-testing", "specifier": "@interfere/landmines/testing" }],
+      "rules": {
+        "landmines-testing/no-test-doubles": "error",
+        "landmines-testing/no-fixed-sleep": "error",
+        "landmines-testing/no-unsignaled-poll": "error",
+        "landmines-testing/no-flake-masking": "error",
+        "landmines-testing/strict-msw": "error"
+      }
+    },
+    {
       "files": ["src/components/ui/**"],
       "rules": { "shadcn/require-static-classes": "off" }
     }

@@ -14,6 +14,14 @@ Canonfig is a config synchronizer. The sync can be local (between harnesses) or 
 - For website changes, read [website/DESIGN.md](website/DESIGN.md) and run `npm run website:lint` from the repository root after `npm ci`.
 - Fix design lint errors using the applicable project's tokens, component variants, or stylesheet classes.
 
+## Test lint
+
+Run `npm run lint` for CLI and website test changes and `npm run ui:lint` for GUI
+test changes. Await the operation or a signal from the handler when checking
+requests or spies. Landmines reports test doubles as warnings in root lint and
+errors in GUI lint. GUI lint also rejects fixed sleeps, retries, and per-test
+timeout overrides.
+
 ## Domain glossary
 
 Canonfig keeps declared AI agent configuration aligned across a set of machines. One machine owns the desired configuration, while follower machines consume it without becoming additional authorities.
