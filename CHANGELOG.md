@@ -2,12 +2,27 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
-## Unreleased
+## v7.7.0 - 2026-11-17
 
-- Preserve native MCP maps per harness with `preserveMcp: ["codex"]` or
-  `canonfig local mcp preserve --harness codex`, while other harnesses keep
-  receiving Source MCP. Sources and Followers can choose the same policy in
-  Local settings. MCP status lists preserved harnesses.
+### Machine-local MCP
+
+- Keep native MCP maps for chosen harnesses only, with `"preserveMcp": ["codex"]`
+  in `local/local.jsonc` or `canonfig local mcp preserve --harness codex`, while
+  the other harnesses keep receiving Source MCP. `true` and `false` work as
+  before. Sources and Followers can choose the same policy in Local settings,
+  and `canonfig local mcp status` lists the preserved harnesses.
+
+### Security
+
+The audit findings and the approved exception are unchanged from 7.6.0: five
+moderate findings under `sigstore`, and the website-only `picomatch` advisory
+GHSA-fc5q-39xc-vjpf, which still has no fixed release.
+
+### Upgrading
+
+Use Node.js 24.15+ or 26+. Source and Followers must all use the 7.7 release line
+before resuming synchronization; 7.6.x and 7.7.x do not synchronize with each other.
+A 7.7.0 Source can roll followers on 7.6.x forward with a Fleet Update.
 
 ## v7.6.0 - 2026-11-17
 
