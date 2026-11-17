@@ -41,7 +41,7 @@ Use plain words and complete sentences. Describe what Canonfig does rather
 than promising safety or saying it handles everything. Keep the copy short;
 the diagrams carry the explanation. Use straight quotes and no em dashes.
 Keep actual file names and GUI labels unchanged. The product terms in
-`GLOSSARY.md` belong where the reader needs that distinction.
+the glossary in `AGENTS.md` belong where the reader needs that distinction.
 
 The landing page is `/`, the demo is `/demo/` and the docs are `/docs/`.
 Demo links are plain anchors because the demo is a separate Vite app.

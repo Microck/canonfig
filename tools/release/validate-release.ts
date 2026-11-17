@@ -379,7 +379,7 @@ try {
   validateBinary(resolve(installRoot, "node_modules/.bin/canonfig"));
 
   const repositoryRoots = [
-    "GLOSSARY.md",
+    "AGENTS.md",
     "README.md",
     "package.json",
     "package-lock.json",

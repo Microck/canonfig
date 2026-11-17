@@ -8,7 +8,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { STATE_META, type FollowerState } from "./metadata";
 
 /**
- * Glossary terms from the Language section of GLOSSARY.md. `plain` is the everyday word the UI shows;
+ * Glossary terms from the Language section of AGENTS.md. `plain` is the everyday word the UI shows;
  * the Canonfig term stays one hover away. `meaning` is written for someone who
  * has never read the docs.
  */
