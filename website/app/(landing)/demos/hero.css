@@ -216,15 +216,15 @@
   }
 
   .hm-followers > li {
-    animation: hm-settle 300ms var(--mo-ease-out) both;
+    animation: hm-settle 300ms var(--mo-ease-out) var(--animation-delay, 0ms) both;
   }
 
   .hm-pulse {
-    animation: hm-pulse 4.8s var(--mo-ease-in-out) infinite backwards;
+    animation: hm-pulse 4.8s var(--mo-ease-in-out) var(--animation-delay, 0ms) infinite backwards;
   }
 
   .hm-ring {
-    animation: hm-ring 4.8s linear infinite backwards;
+    animation: hm-ring 4.8s linear var(--animation-delay, 0ms) infinite backwards;
   }
 
   /* Seen this session (layout.tsx): the map is simply there. The sync loop

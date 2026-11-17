@@ -60,7 +60,7 @@ export function PublishScene() {
 
         <ul className="pub-machines">
           {FOLLOWERS.map((machine, index) => (
-            <li key={machine.name}>
+            <li key={machine.name} style={{ '--animation-delay': `${index * 250}ms` }}>
               <svg className="pub-tile" viewBox="0 0 26 26">
                 <IconTile id={`pub-${machine.name}`} accent={machine.accent} icon={machine.icon} />
               </svg>
@@ -68,17 +68,17 @@ export function PublishScene() {
                 <b>{machine.name}</b>
                 <span>{machine.platform}</span>
               </span>
-              <svg className="pub-progress" viewBox="0 0 60 6" preserveAspectRatio="none" style={{ animationDelay: `${index * 250}ms` }}>
+              <svg className="pub-progress" viewBox="0 0 60 6" preserveAspectRatio="none">
                 <defs>
                   <FillPattern id={`pub-bar-${machine.name}`} fill="ramp-x" color="var(--sa-ok)" cell={1} width={60} from={1} to={0.25} />
                 </defs>
                 <rect width="60" height="6" fill={`url(#pub-bar-${machine.name})`} />
               </svg>
               <span className="pub-states">
-                <span className="pub-old" style={{ animationDelay: `${index * 250}ms` }}>
+                <span className="pub-old">
                   rev 7
                 </span>
-                <span className="pub-new" style={{ animationDelay: `${index * 250}ms` }}>
+                <span className="pub-new">
                   <svg width="11" height="11" viewBox="0 0 14 14">
                     <circle cx="7" cy="7" r="6" fill="currentColor" />
                     <path d="M4.4 7.2 6.2 9 9.6 5.3" fill="none" stroke="var(--sa-1)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />

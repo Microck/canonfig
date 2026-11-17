@@ -2,7 +2,6 @@
 
 import { HARNESSES, HarnessLogo } from './harnesses';
 import { useOffscreen } from './offscreen';
-import { revealDelay } from '../reveal';
 import './harness-strip.css';
 
 /**
@@ -15,10 +14,10 @@ export function HarnessStrip() {
   const [stripRef, offscreen] = useOffscreen<HTMLDivElement>();
   return (
     <section className="sa-grid band" aria-labelledby="band-title" data-reveal>
-      <p className="band-title rv" id="band-title" style={revealDelay(0)}>
+      <p className="band-title rv" id="band-title">
         Works with {HARNESSES.length} harnesses
       </p>
-      <div ref={stripRef} className="strip rv" style={revealDelay(80)} data-offscreen={offscreen || undefined}>
+      <div ref={stripRef} className="strip rv" style={{ '--rv': '80ms' }} data-offscreen={offscreen || undefined}>
         <Track />
         <Track copy />
       </div>

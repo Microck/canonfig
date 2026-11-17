@@ -362,7 +362,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
           {agent.error && <ErrorNotice title={agent.saveState.kind === "PolicyLastFailed" ? agent.savedMessage : undefined} error={agent.error} />}
           {agent.harnessError && <ErrorNotice title={agent.saveState.kind === "HarnessFailed" ? agent.savedMessage : agent.saveState.kind === "HarnessFirstFailed" ? "Harness not saved" : "Harness unavailable"} error={agent.harnessError} />}
           {agent.savedMessage && !agent.error && !agent.harnessError && <p role="status" className="mb-4 text-sm">{agent.savedMessage}</p>}
-          <RadioGroup value={mode ?? ""} onValueChange={(value) => { if (value === "deterministic-only" || value === "agent-propose" || value === "agent-apply") setMode(value); }} disabled={agent.busy} aria-label="Agent policy" className={settingsGroup} data-tour="agent-mode">
+          <RadioGroup value={mode ?? ""} onValueChange={(value) => { if (value === "deterministic-only" || value === "agent-propose" || value === "agent-apply") setMode(value); }} disabled={agent.busy} aria-label="Agent policy" variant="settings" data-tour="agent-mode">
             {MODES.map((m) => (
               <Label
                 key={m.value}

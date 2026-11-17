@@ -12,6 +12,10 @@ Never write a raw colour (`#7aae7a`, `oklch(...)`, `rgb(...)`), an arbitrary col
 
 The only colour literals allowed are the ones the primitives in `src/components/ui/` already contain (`bg-black/50` scrims). Do not copy them into screens.
 
+Run `npm run ui:lint` from the repository root after UI changes. The shadcn
+rules in `.oxlintrc.json` check theme colors, class names, and the fill on shared
+buttons. Set a button's fill through its variant.
+
 ## Rules that apply to every screen
 
 1. One `variant="primary"` (gold) button per view. Two gold buttons means the screen has no hierarchy. See [buttons](docs/design/buttons.md).

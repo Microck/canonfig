@@ -3,6 +3,8 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
 import { Slot } from "radix-ui"
 
+const ghostFeedback = "not-disabled:hover:bg-muted not-disabled:hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:not-disabled:hover:bg-muted/50"
+
 /*
  * Button rule (u32). One variant language for the whole UI:
  * - primary: gold fill. The single commit/create action of a view (Publish, Add,
@@ -12,6 +14,7 @@ import { Slot } from "radix-ui"
  *   status colours (ok / warn) only.
  * - outline: neutral bordered, for toolbar and row actions.
  * - ghost: no chrome until hover, for low-weight and icon actions.
+ * - overlay: low-weight action with a translucent fill over texture.
  * - link: inline text action, foreground with underline (not green).
  * - destructive: red text on a faint red tint, for every irreversible action
  *   (Stop syncing, Remove service, Abandon) and their confirm buttons.
@@ -38,8 +41,8 @@ const buttonVariants = cva(
           "border-border bg-background not-disabled:hover:bg-muted not-disabled:hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:border-input dark:bg-input/30 dark:not-disabled:hover:bg-input/50",
         secondary:
           "bg-secondary text-secondary-foreground not-disabled:hover:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_8%)] aria-expanded:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_8%)]",
-        ghost:
-          "not-disabled:hover:bg-muted not-disabled:hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:not-disabled:hover:bg-muted/50",
+        ghost: ghostFeedback,
+        overlay: ["bg-popover/70", ghostFeedback],
         destructive:
           "bg-destructive/10 text-destructive not-disabled:hover:bg-destructive/20 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:bg-destructive/15 dark:not-disabled:hover:bg-destructive/25 dark:focus-visible:ring-destructive/40",
         link: "text-foreground underline decoration-faint underline-offset-4 not-disabled:hover:decoration-foreground",

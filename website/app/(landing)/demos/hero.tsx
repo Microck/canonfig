@@ -42,7 +42,7 @@ export default function HeroDiagram() {
       <span className="hm-trunk" aria-hidden="true" />
       <ul className="hm-followers" aria-label="Follower Machines">
         {FOLLOWERS.map((machine, index) => (
-          <li key={machine.name} style={{ animationDelay: `${1000 + index * 110}ms` }}>
+          <li key={machine.name} style={{ '--animation-delay': `${1000 + index * 110}ms` }}>
             <Node machine={machine} role="Up to date" pulseDelay={pulseDelay(index)} />
           </li>
         ))}
@@ -80,7 +80,7 @@ function Edges() {
             return (
               <g key={machine.name}>
                 <path className="hm-edge" d={d} />
-                <path className="hm-pulse" d={d} pathLength={100} style={{ animationDelay: pulseDelay(index) }} />
+                <path className="hm-pulse" d={d} pathLength={100} style={{ '--animation-delay': pulseDelay(index) }} />
               </g>
             );
           })
@@ -93,7 +93,7 @@ function Node({ machine, role, folder = false, pulseDelay }: { machine: Machine;
   return (
     <div className="hm-node" data-source={folder || undefined}>
       {/* Lights as this follower's sync pulse lands. */}
-      {pulseDelay ? <span className="hm-ring" aria-hidden="true" style={{ animationDelay: pulseDelay }} /> : null}
+      {pulseDelay ? <span className="hm-ring" aria-hidden="true" style={{ '--animation-delay': pulseDelay }} /> : null}
       <div className="hm-head">
         <svg className="hm-tile" viewBox="0 0 26 26" aria-hidden="true">
           <IconTile id={`hero-${machine.name}`} accent={machine.accent} icon={machine.icon} />

@@ -7,9 +7,9 @@ import logo from "@/public/logo.png";
 export const baseOptions: BaseLayoutProps = {
   nav: {
     title: (
-      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+      <div className="docs-brand">
         <img src={logo.src} alt="" width={24} height={24} />
-        <span style={{ fontWeight: 600 }}>Canonfig</span>
+        <span>Canonfig</span>
       </div>
     ),
     url: "/docs",

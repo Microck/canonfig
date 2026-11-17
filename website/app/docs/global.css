@@ -10,6 +10,16 @@
   --transition-duration: 0ms !important;
 }
 
+.docs-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.docs-brand > span {
+  font-weight: 600;
+}
+
 body {
   text-rendering: optimizelegibility;
   background-color: var(--color-fd-background);

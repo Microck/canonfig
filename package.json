@@ -71,10 +71,11 @@
     "@e2e-dev/web": "0.15.2",
     "@effect/vitest": "4.0.0-rc.112",
     "@oxlint/plugins": "1.78.0",
+    "@shadcn/lint": "0.2.5",
     "@types/node": "24.10.1",
     "e2e": "0.21.2",
     "esbuild": "0.25.12",
-    "oxlint": "1.78.0",
+    "oxlint": "1.89.0",
     "tsx": "4.20.6",
     "typescript": "5.9.3",
     "vitest": "4.1.12"
