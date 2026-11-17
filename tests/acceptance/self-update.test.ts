@@ -76,6 +76,14 @@ describe("self-update policy and package activation",()=>{
   const view=f.calls.find(args=>args[1]==="view")!;expect(view).toContain("--global");expect(view).toContain("--@microck:registry=https://registry.npmjs.org/");
   expect(install).toContain("--ignore-scripts");expect(install).toContain("--install-strategy=nested");expect(install).toContain("@microck/canonfig@4.2.1");
  });
+ it.skipIf(process.platform==="win32")("activates a package root the next update accepts, even when npm stages it group-writable",async()=>{
+  const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
+  // A 0002 umask makes npm's staged package directory group-writable.
+  const runner:Runner=async(input,signal)=>{const output=await f.runner(input,signal);if(input.args[1]==="install"){const stage=input.args[input.args.indexOf("--prefix")+1]!;chmodSync(f.packageAt(stage),0o775);}return output;};
+  expect((await update(f.root,true,"manual",runner,undefined,f.home)).status).toBe("updated");
+  expect(lstatSync(f.root).mode&0o022).toBe(0);
+  expect(installation(f.root,f.home).version).toBe("4.2.1");
+ });
  it("defers for active readers and blocks new readers under the updater gate",async()=>{
   const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
   const release=commandLease(f.root)!;

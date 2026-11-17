@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { execFile, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -84,6 +84,34 @@ const environment = (root: string) => {
     { name: "SystemRoot", value: process.env.SystemRoot ?? "C:\\Windows" },
   ];
 };
+
+describe.skipIf(process.platform !== "win32")("Windows executable lookup", () => {
+  it("finds a tool an installer added to the saved PATH after this process started", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-saved-path-"));
+    const installed = join(root, "installed");
+    try {
+      mkdirSync(installed);
+      writeFileSync(join(installed, "late-tool.exe"), "");
+      const lookup = (searchPath?: ReadonlyArray<string>) => Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const query = searchPath === undefined
+          ? { name: "late-tool" }
+          : { name: "late-tool", searchPath: yield* Effect.forEach(searchPath, (path) => machine.normalizePath({ path })) };
+        return yield* machine.findExecutable(query).pipe(
+          Effect.match({ onFailure: (error) => error._tag, onSuccess: (found) => found.path.absolute }),
+        );
+      }).pipe(Effect.provide(windowsMachineStateLayer({
+        environment: environment(root),
+        readPersistedPath: () => Effect.succeed(`C:\\Windows;${installed}`),
+      }))));
+      expect((await lookup()).toLowerCase()).toBe(win32.join(installed, "late-tool.exe").toLowerCase());
+      // An explicit search path is exact: the saved PATH is not consulted.
+      expect(await lookup([dirname(process.execPath)])).toBe("ExecutableNotFoundError");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe.skipIf(process.platform !== "win32")("Windows credential staging ownership", () => {
   it("does not write credential bytes when beforeStore fails", async () => {

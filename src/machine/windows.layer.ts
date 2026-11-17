@@ -79,6 +79,11 @@ export interface WindowsMachineStateOptions {
   readonly schedulerTimeoutMilliseconds?: number | undefined;
   /** Test seam invoked after the managed root is identified but before custody. */
   readonly beforeSafeRootMutation?: (() => Promise<void>) | undefined;
+  /**
+   * Reads the saved Machine and User PATH. Defaults to asking Windows; tests
+   * supply it so they never read or change the real registry.
+   */
+  readonly readPersistedPath?: (() => Effect.Effect<string>) | undefined;
 }
 
 const decode = Schema.decodeUnknownSync;
@@ -1262,6 +1267,16 @@ export const windowsMachineStateLayer = (
         additions: ReadonlyArray<ProcessEnvironmentEntry>,
         standardInput?: Uint8Array | undefined,
       ) => runPowerShell(script, windowsCredentialTimeoutMilliseconds, additions, standardInput);
+      // Windows expands %VARIABLES% in the saved values. A read that fails adds
+      // no folders: the lookup then reports exactly the folders it searched.
+      const readPersistedPath = options.readPersistedPath ?? (() =>
+        runPowerShell(
+          "[Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')",
+          10_000,
+        ).pipe(
+          Effect.map((result) => result.exitCode === 0 ? new TextDecoder().decode(result.standardOutput).trim() : ""),
+          Effect.catch(() => Effect.succeed("")),
+        ));
       const permissionSections = "[Security.AccessControl.AccessControlSections]'Access,Owner,Group'";
       // The executor restores one path per MachineState call, so each restore
       // is its own powershell.exe. Compiling the helper in every one of them
@@ -1777,8 +1792,8 @@ export const windowsMachineStateLayer = (
                 .filter((entry) => entry.length > 0)
                 .map(windowsPath)),
           ];
-          return Effect.gen(function*() {
-            for (const directory of directories) {
+          const search = (candidates: ReadonlyArray<MachinePath>) => Effect.gen(function*() {
+            for (const directory of candidates) {
               yield* requireWindowsPath(directory);
               for (const name of names) {
                 const candidate = win32.join(directory.absolute, name);
@@ -1790,9 +1805,26 @@ export const windowsMachineStateLayer = (
                 }
               }
             }
+            return undefined;
+          });
+          return Effect.gen(function*() {
+            const found = yield* search(directories);
+            if (found !== undefined) return found;
+            // An installer (winget, MSI) adds its folder to the saved Machine or
+            // User PATH, which this process does not see: it keeps the PATH it
+            // started with. Without this, a tool installed earlier in the same
+            // run failed its verification. Read the saved PATH only on a miss,
+            // and only when the caller asked for the default PATH search.
+            const searched = new Set(directories.map((directory) => directory.absolute.toLowerCase()));
+            const persisted = query.searchPath !== undefined ? [] : (yield* readPersistedPath())
+              .split(";")
+              .filter((entry) => entry.length > 0 && win32.isAbsolute(entry) && !searched.has(entry.toLowerCase()))
+              .map(windowsPath);
+            const late = yield* search(persisted);
+            if (late !== undefined) return late;
             return yield* new ExecutableNotFoundError({
               executable: query.name,
-              searched: [...new Set(directories.map((directory) => directory.absolute))],
+              searched: [...new Set([...directories, ...persisted].map((directory) => directory.absolute))],
             });
           });
         },
