@@ -231,6 +231,24 @@ it("reads fresh enrolled Follower settings, saves them, and preserves malformed 
   const initialHarness = await api("/api/agent/harness");
   expect(initialHarness).toEqual({ status: 200, body: { configured: false } });
   expect(Schema.decodeUnknownSync(GuiAgentHarnessRead)(initialHarness.body)).toEqual(initialHarness.body);
+  const prepared = { kind: "codex", executable: "codex", maximumInputBytes: 4096,
+    allowedPaths: [follower.home], allowedExecutables: ["printf"], executableAuthorizations: [{ executable: "printf", behavior: "leaf" }],
+    secretBindings: [{ name: "GITHUB_TOKEN", secret: "github-token" }],
+    allowedOrigins: ["https://api.github.com"], allowedCapabilities: ["elevation", "login", "restart", "reboot"] };
+  expect(await api("/api/agent/harness", "PUT", prepared)).toEqual({ status: 200, body: prepared });
+  expect(await api("/api/agent/policy")).toEqual({ status: 200, body: "deterministic-only" });
+  for (const origin of ["http://example.com", "https://example.com/", "https://example.com/path", "https://user:password@example.com"]) {
+    expect((await api("/api/agent/harness", "PUT", { ...prepared, allowedOrigins: [origin] })).status).not.toBe(200);
+  }
+  for (const executable of ["env", "/usr/bin/git", "xargs", "tsx", "sudo"]) {
+    expect((await api("/api/agent/harness", "PUT", { ...prepared, allowedExecutables: [executable], executableAuthorizations: [{ executable, behavior: "leaf" }] })).body)
+      .toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  }
+  for (const binding of [{ name: "NOT AN ENV", secret: "token" }, { name: "TOKEN", secret: "not/a/name" }]) {
+    expect((await api("/api/agent/harness", "PUT", { ...prepared, secretBindings: [binding] })).status).not.toBe(200);
+  }
+  expect((await api("/api/agent/harness", "PUT", { ...prepared, allowedCapabilities: ["anything"] })).status).not.toBe(200);
+  expect((await api("/api/agent/harness")).body).toEqual({ configured: true, value: prepared });
   expect(await api("/api/agent/policy", "PUT", "agent-propose")).toEqual({ status: 200, body: "agent-propose" });
   expect(await api("/api/agent/policy")).toEqual({ status: 200, body: "agent-propose" });
   const harness = { kind: "custom", executable: process.execPath, arguments: ["--version"], maximumInputBytes: 4096,

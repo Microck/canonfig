@@ -22,6 +22,7 @@ const { RevisionsView, SecretsView } = await import("../workspace/source");
 const { FollowerOperationEvidence } = await import("../workspace/follower-evidence");
 const { SetupJournal } = await import("../onboarding/enrollment-controller");
 const { TooltipProvider } = await import("../components/ui/tooltip");
+const { AgentPolicyView } = await import("../workspace/settings");
 after(async () => { await GlobalRegistrator.unregister(); });
 
 function Probe() {
@@ -43,6 +44,12 @@ function Probe() {
     <p data-testid="can-apply">{String(ws.followerLive?.canApply)}</p>
     <p data-testid="validation">{String(ws.profileLive?.validation?.valid)}</p>
     <button onClick={() => { if (ws.admin.agent.data) void ws.admin.agent.save({ ...ws.admin.agent.data, mode: "agent-propose" }); }}>Save agent</button>
+    <button onClick={() => {
+      const saved = ws.admin.agent.data;
+      if (saved?.harness) void ws.admin.agent.save({ mode: "agent-apply", harness: {
+        ...saved.harness, executables: ["env"], executableAuthorizations: [{ executable: "env", behavior: "leaf" }], capabilities: [],
+      } });
+    }}>Save apply agent</button>
     <p data-testid="policy-save">{JSON.stringify(ws.admin.agent.saveState)}</p>
     <p data-testid="policy">{ws.admin.agent.data?.mode}</p>
   </div>;
@@ -58,6 +65,7 @@ function Fixture({ backend, session }: { backend: WorkspaceBackend; session: Gui
     {route.view === "local" && <LocalView />}
     {route.view === "secrets" && <SecretsView />}
     {route.view === "revisions" && <RevisionsView />}
+    {route.view === "agent" && <AgentPolicyView />}
     {route.role === "follower" && <FollowerOperationEvidence />}
   </LiveWorkspaceProvider></TooltipProvider>;
 }
@@ -517,7 +525,7 @@ it("a secret submission freezes its draft and cannot close as if it cancelled th
 it("a failed harness save retains the committed policy as an explicit partial success", async () => {
   const responses: Record<string, unknown> = {
     "/api/status": { machineRole: { role: "follower" }, lifecycle: {}, tunnel: null },
-    "/api/agent/policy": "deterministic-only",
+    "/api/agent/policy": "agent-apply",
     "/api/agent/harness": { configured: false },
   };
   const app = await fixture("/follower/settings/agent", responses, (path, method, _body, outgoing) => {
@@ -531,6 +539,123 @@ it("a failed harness save retains the committed policy as an explicit partial su
     await click("Save agent");
     await until(() => app.mutations.some(({ path }) => path === "/api/agent/harness"), "Harness save did not start");
     await until(() => app.container.querySelector('[data-testid="policy-save"]')?.textContent?.includes("HarnessFailed") === true, "Partial commit was not represented");
+    assert.equal(app.container.textContent?.split("Policy saved. Harness has not been saved.").length, 2);
     assert.equal(app.container.querySelector('[data-testid="policy"]')?.textContent, "agent-propose");
   } finally { await app.close(); }
 });
+
+it("reviews and saves complete harness bounds while deterministic-only stays selected", async () => {
+  const harness = {
+    kind: "codex", executable: "codex", maximumInputBytes: 4096,
+    allowedPaths: ["/tmp/agent-work"], allowedExecutables: ["printf"],
+    executableAuthorizations: [{ executable: "printf", behavior: "leaf" }],
+    allowedOrigins: ["https://api.example.com"], allowedCapabilities: ["restart"],
+    secretBindings: [{ name: "API_TOKEN", secret: "api-token" }],
+    environment: [{ name: "PLAIN_NAME", value: "not-rendered-environment-value" }],
+  };
+  const app = await fixture("/follower/settings/agent", {
+    "/api/status": { machineRole: { role: "follower" }, lifecycle: {}, tunnel: null },
+    "/api/agent/policy": "deterministic-only",
+    "/api/agent/harness": { configured: true, value: harness },
+  }, (path, method, body, outgoing) => {
+    if (method !== "PUT") return false;
+    outgoing.end(JSON.stringify(path === "/api/agent/policy" ? "deterministic-only" : body));
+    return true;
+  });
+  try {
+    await until(() => !!app.container.querySelector("#ap-origins"), "Harness form did not load");
+    assert.equal(app.container.querySelector<HTMLTextAreaElement>("#ap-origins")?.value, "https://api.example.com");
+    assert.equal(app.container.querySelector<HTMLTextAreaElement>("#ap-executables")?.value, "printf");
+    assert.equal(app.container.querySelector<HTMLTextAreaElement>("#ap-bindings")?.value, "API_TOKEN=api-token");
+    assert.ok(app.container.textContent?.includes("PLAIN_NAME"));
+    assert.ok(!app.container.textContent?.includes("not-rendered-environment-value"));
+    const bindingInput = app.container.querySelector<HTMLTextAreaElement>("#ap-bindings");
+    assert.ok(bindingInput);
+    const advanced = bindingInput.closest("details");
+    assert.ok(advanced);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(bindingInput, "invalid binding");
+      bindingInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+      advanced.open = false;
+    });
+    await click("Review settings");
+    assert.equal(advanced.open, true);
+    assert.equal(document.activeElement, bindingInput);
+    assert.equal(bindingInput.getAttribute("aria-invalid"), "true");
+    assert.equal(app.mutations.length, 0);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(bindingInput, "API_TOKEN=api-token");
+      bindingInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+    });
+    const model = app.container.querySelector<HTMLInputElement>("#ap-model");
+    assert.ok(model);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(model, "test-model");
+      model.dispatchEvent(new window.Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      for (const id of ["ap-origins", "ap-executables", "ap-bindings"]) {
+        const input = app.container.querySelector<HTMLTextAreaElement>(`#${id}`);
+        assert.ok(input);
+        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(input, ` ${input.value} \n`);
+        input.dispatchEvent(new window.Event("input", { bubbles: true }));
+      }
+    });
+    await click("Review settings");
+    assert.equal(app.mutations.length, 0);
+    assert.ok(document.querySelector('[role="dialog"]')?.textContent?.includes("May restart services or applications"));
+    assert.ok(document.querySelector('[role="dialog"]')?.textContent?.includes("Deterministic only"));
+    assert.ok(!document.querySelector('[role="dialog"]')?.textContent?.includes("deterministic-only"));
+    await click("Save settings");
+    await until(() => app.mutations.length === 2, "Harness settings did not save");
+    assert.equal(app.mutations[0]?.body, "deterministic-only");
+    assert.deepEqual(app.mutations[1]?.body, { ...harness, model: "test-model" });
+    await until(() => app.container.textContent?.includes("Policy and harness saved.") === true, "Save did not settle");
+    assert.equal(app.container.querySelector<HTMLTextAreaElement>("#ap-origins")?.value, "https://api.example.com");
+    assert.equal(app.container.querySelector<HTMLTextAreaElement>("#ap-executables")?.value, "printf");
+    assert.equal(app.container.querySelector<HTMLTextAreaElement>("#ap-bindings")?.value, "API_TOKEN=api-token");
+    const buttons = [...app.container.querySelectorAll("button")];
+    assert.equal(buttons.find((button) => button.textContent === "Reload settings")?.disabled, false);
+    assert.equal(buttons.find((button) => button.textContent === "Review settings")?.disabled, true);
+    assert.equal(buttons.some((button) => button.textContent === "Discard"), false);
+  } finally { await app.close(); }
+});
+
+for (const initialPolicy of ["deterministic-only", "agent-propose"]) {
+  for (const failure of ["harness", "policy", null]) {
+    it(`saves bounds before enabling agent-apply from ${initialPolicy} when ${failure ?? "nothing"} fails`, async () => {
+      const harness = { kind: "codex", executable: "codex", maximumInputBytes: 4096,
+        allowedPaths: [], allowedExecutables: ["printf"], allowedOrigins: [], allowedCapabilities: ["reboot"] };
+      const app = await fixture("/follower/settings/agent", {
+        "/api/status": { machineRole: { role: "follower" }, lifecycle: {}, tunnel: null },
+        "/api/agent/policy": initialPolicy,
+        "/api/agent/harness": { configured: true, value: harness },
+      }, (path, method, body, outgoing) => {
+        if (method !== "PUT") return false;
+        if (path === `/api/agent/${failure}`) {
+          outgoing.statusCode = 500;
+          outgoing.end(JSON.stringify({ category: "internal", exitCode: 1, message: "Save refused" }));
+        } else outgoing.end(JSON.stringify(path === "/api/agent/policy" ? "agent-apply" : body));
+        return true;
+      });
+      try {
+        await until(() => !!app.container.querySelector("#ap-origins"), "Harness did not load");
+        assert.ok(!app.container.textContent?.includes("Environment names"));
+        assert.ok(!app.container.textContent?.includes("Allowed capabilities:"));
+        await click("Save apply agent");
+        const terminal = failure === "harness" ? "HarnessFirstFailed" : failure === "policy" ? "PolicyLastFailed" : "Saved";
+        await until(() => {
+          const state = app.container.querySelector('[data-testid="policy-save"]')?.textContent;
+          return !!state && JSON.parse(state).kind === terminal;
+        }, "Save did not settle");
+        assert.deepEqual(app.mutations.map(({ path }) => path), failure === "harness"
+          ? ["/api/agent/harness"] : ["/api/agent/harness", "/api/agent/policy"]);
+        assert.equal(app.container.querySelector('[data-testid="policy"]')?.textContent, failure ? initialPolicy : "agent-apply");
+        assert.deepEqual(app.mutations[0]?.body, { ...harness, allowedExecutables: ["env"],
+          executableAuthorizations: [{ executable: "env", behavior: "leaf" }], secretBindings: [], allowedCapabilities: [] });
+        assert.ok(!app.container.textContent?.includes("Policy saved. Harness has not been saved."));
+        if (failure === "policy") assert.equal(app.container.textContent?.split("Harness saved. Policy has not been saved.").length, 2);
+      } finally { await app.close(); }
+    });
+  }
+}

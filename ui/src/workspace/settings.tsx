@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { agentHarnessOriginProblem, parseAgentSecretBinding } from "../../../src/domain/agent-harness-bounds";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -43,6 +45,7 @@ function ConfirmDialog({
   body,
   confirm,
   onConfirm,
+  confirmVariant = "destructive",
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
@@ -50,6 +53,7 @@ function ConfirmDialog({
   body: React.ReactNode;
   confirm: string;
   onConfirm: () => void;
+  confirmVariant?: "destructive" | "primary";
 }) {
   // Cancel returns to the button that asked; confirming often removes it, so focus then goes to the page heading.
   const returnFocus = useDialogReturnFocus(focusPageHeading);
@@ -58,14 +62,14 @@ function ConfirmDialog({
       <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md" {...returnFocus}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
-          <DialogDescription className="text-base text-pretty">{body}</DialogDescription>
+          <DialogDescription asChild className="text-base text-pretty"><div>{body}</div></DialogDescription>
         </DialogHeader>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
           <Button
-            variant="destructive"
+            variant={confirmVariant}
             onClick={() => {
               onConfirm();
               onOpenChange(false);
@@ -178,6 +182,15 @@ const MODES = [
 
 const MAX_EVIDENCE_BYTES = 1024 * 1024;
 const MODEL_EXAMPLE: Record<string, string> = { codex: "gpt-5-codex", claude: "opus" };
+const CAPABILITIES = [
+  { value: "elevation", label: "Elevation", consequence: "May request elevated privileges to change protected system state." },
+  { value: "login", label: "Login", consequence: "May establish an authenticated session." },
+  { value: "restart", label: "Restart", consequence: "May restart services or applications, interrupting their work." },
+  { value: "reboot", label: "Reboot", consequence: "May reboot this machine, interrupting all running work." },
+] as const;
+
+const boundLines = (text: string) => text.split("\n").map((line) => line.trim()).filter(Boolean);
+
 /** Mirrors the CLI: one token, never starting with "-", so it can't become a second flag. */
 const MODEL_SHAPE = /^[^\s-]\S*$/u;
 
@@ -221,6 +234,18 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
   const [newPath, setNewPath] = useState("");
   // A digits-only string while editing; Save stores it as a number.
   const [maximumInputBytes, setMaximumInputBytes] = useState(String(initialHarness?.maximumInputBytes ?? 0));
+  const [originsText, setOriginsText] = useState((initialHarness?.origins ?? []).join("\n"));
+  const [executablesText, setExecutablesText] = useState((initialHarness?.executables ?? []).join("\n"));
+  const [bindingsText, setBindingsText] = useState((initialHarness?.secretBindings ?? []).map(({ name, secret }) => `${name}=${secret}`).join("\n"));
+  const [capabilities, setCapabilities] = useState(initialHarness?.capabilities ?? []);
+  const [review, setReview] = useState<SavedPolicy | null>(null);
+  const origins = boundLines(originsText);
+  const executables = [...new Set(boundLines(executablesText))];
+  let bindings: NonNullable<typeof initialHarness>["secretBindings"] = [];
+  let bindingError: string | null = null;
+  try { bindings = boundLines(bindingsText).map(parseAgentSecretBinding); }
+  catch { bindingError = "Use ENV_NAME=secret-name, one binding per line."; }
+  const originError = origins.map(agentHarnessOriginProblem).find((problem) => problem !== undefined);
   const custom = harness === "custom";
   const args = splitArguments(argsText);
   const dirty =
@@ -232,14 +257,18 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
     maximumInputBytes !== String(initialHarness?.maximumInputBytes ?? 0) ||
     paths.length !== (initialHarness?.paths.length ?? 0) ||
     paths.some((path, i) => path !== initialHarness?.paths[i]);
+  const boundsDirty = originsText !== (initialHarness?.origins ?? []).join("\n")
+    || executablesText !== (initialHarness?.executables ?? []).join("\n")
+    || bindingsText !== (initialHarness?.secretBindings ?? []).map(({ name, secret }) => `${name}=${secret}`).join("\n")
+    || JSON.stringify(capabilities) !== JSON.stringify(initialHarness?.capabilities ?? []);
   // Errors show only after a Save attempt, then follow the fields as they change.
   const [tried, setTried] = useState(false);
-  const off = mode === "deterministic-only" || harness === null;
+  const off = harness === null;
   const bytes = Number(maximumInputBytes);
   const maxInvalid = !Number.isInteger(bytes) || bytes < 1 || bytes > MAX_EVIDENCE_BYTES;
   const typedPath = newPath.trim();
   const pathPending = typedPath !== "";
-  const hasChanges = dirty || pathPending;
+  const hasChanges = dirty || boundsDirty || pathPending;
   const maxError = tried && !off && maxInvalid ? `Enter a whole number from 1 to ${MAX_EVIDENCE_BYTES.toLocaleString("en-US")} bytes.` : null;
   const modelTyped = model.trim();
   const modelInvalid = !custom && modelTyped !== "" && !MODEL_SHAPE.test(modelTyped);
@@ -262,8 +291,25 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
     setMaximumInputBytes(String(initialHarness?.maximumInputBytes ?? 0));
     setNewPath("");
     setTried(false);
+    setOriginsText((initialHarness?.origins ?? []).join("\n"));
+    setExecutablesText((initialHarness?.executables ?? []).join("\n"));
+    setBindingsText((initialHarness?.secretBindings ?? []).map(({ name, secret }) => `${name}=${secret}`).join("\n"));
+    setCapabilities(initialHarness?.capabilities ?? []);
   };
-  const save = async () => {
+  const save = async (confirmed?: SavedPolicy) => {
+    if (confirmed) {
+      setReview(null);
+      if (await agent.save(confirmed)) {
+        setTried(false);
+        if (confirmed.harness) {
+          setOriginsText(confirmed.harness.origins.join("\n"));
+          setExecutablesText(confirmed.harness.executables.join("\n"));
+          setBindingsText(confirmed.harness.secretBindings.map(({ name, secret }) => `${name}=${secret}`).join("\n"));
+          setMaximumInputBytes(String(confirmed.harness.maximumInputBytes));
+        }
+      }
+      return;
+    }
     if (mode === null) return;
     if (off) {
       if (await agent.save({ ...initial, mode })) {
@@ -276,20 +322,23 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
     const checks: Array<[boolean, string]> = [
       [modelInvalid, "ap-model"], [executableInvalid, "ap-exec"], [argsInvalid, "ap-args"],
       [maxInvalid, "ap-max"], [pathPending, "ap-path"],
+      [!!originError, "ap-origins"], [!!bindingError, "ap-bindings"],
     ];
     const firstInvalid = checks.find(([bad]) => bad);
     if (firstInvalid) {
-      document.getElementById(firstInvalid[1])?.focus();
+      const field = document.getElementById(firstInvalid[1]);
+      const section = field?.closest("details");
+      if (section) section.open = true;
+      field?.focus();
       return;
     }
     const next: SavedPolicy = { mode, harness: harness === null ? null : {
-      executable: executable.trim(), paths, maximumInputBytes: bytes, origins: initialHarness?.origins ?? [],
+      executable: executable.trim(), paths, maximumInputBytes: bytes, origins, executables, secretBindings: bindings, capabilities,
+      executableAuthorizations: executables.map((entry) => initialHarness?.executableAuthorizations.find(({ executable: savedExecutable }) => savedExecutable === entry) ?? { executable: entry, behavior: "leaf" }),
+      environmentNames: initialHarness?.environmentNames ?? [], argumentsDisclosed: initialHarness?.argumentsDisclosed ?? true,
       ...(harness === "custom" ? { kind: "custom", args: args ?? [] } : { kind: harness, model: modelTyped }),
     } };
-    if (await agent.save(next)) {
-      setMaximumInputBytes(String(bytes));
-      setTried(false);
-    }
+    setReview(next);
   };
   const addPath = () => {
     if (!pathPending) return;
@@ -304,15 +353,15 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
           <>
             <Button size="sm" variant="outline" disabled={agent.busy || hasChanges} onClick={agent.reload}>Reload settings</Button>
             {hasChanges && <Button size="sm" variant="ghost" disabled={agent.busy} onClick={discard}>Discard</Button>}
-            <Button size="sm" variant="primary" disabled={(!hasChanges && (off || agent.harnessConfigured)) || mode === null || agent.busy} onClick={() => void save()}>{agent.busy ? "Saving…" : "Save policy"}</Button>
+            <Button size="sm" variant="primary" disabled={(!hasChanges && (off || agent.harnessConfigured)) || mode === null || agent.busy} onClick={() => void save()}>{agent.busy ? "Saving…" : "Review settings"}</Button>
           </>
         }
       />
       <Body reloading={agent.loading || agent.harnessLoading}>
         <Column>
-          {agent.error && <ErrorNotice error={agent.error} />}
-          {agent.harnessError && <ErrorNotice title="Harness unavailable" error={agent.harnessError} />}
-          {agent.savedMessage && <p role="status" className="mb-4 text-sm">{agent.savedMessage}</p>}
+          {agent.error && <ErrorNotice title={agent.saveState.kind === "PolicyLastFailed" ? agent.savedMessage : undefined} error={agent.error} />}
+          {agent.harnessError && <ErrorNotice title={agent.saveState.kind === "HarnessFailed" ? agent.savedMessage : agent.saveState.kind === "HarnessFirstFailed" ? "Harness not saved" : "Harness unavailable"} error={agent.harnessError} />}
+          {agent.savedMessage && !agent.error && !agent.harnessError && <p role="status" className="mb-4 text-sm">{agent.savedMessage}</p>}
           <RadioGroup value={mode ?? ""} onValueChange={(value) => { if (value === "deterministic-only" || value === "agent-propose" || value === "agent-apply") setMode(value); }} disabled={agent.busy} aria-label="Agent policy" className={settingsGroup} data-tour="agent-mode">
             {MODES.map((m) => (
               <Label
@@ -330,8 +379,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
           </RadioGroup>
 
           {!agent.harnessConfigured && !agent.harnessError && <p className="mt-4 text-sm text-muted-foreground">Harness not saved yet.</p>}
-          {/* inert keeps the disabled bounds out of the tab order, not just greyed out. */}
-          {harness !== null && <div className={cn("mt-8 grid gap-4", off && "opacity-40")} inert={off || agent.busy}>
+          {harness !== null && <div className="mt-8 grid gap-4" inert={agent.busy}>
             <SectionLabel>Harness bounds</SectionLabel>
             <div className={cn(settingsGroup, "max-sm:[&>div]:flex-col max-sm:[&>div]:items-start max-sm:[&>div]:gap-2")}>
               <SettingRow title="Agent harness" htmlFor="ap-harness">
@@ -369,6 +417,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
                     htmlFor="ap-args"
                     description={
                       <>
+                        {initialHarness?.kind === "custom" && !initialHarness.argumentsDisclosed && " Stored arguments are hidden. Leave [] to keep them, or enter replacement arguments."}
                         Enter a JSON array of arguments, passed without a shell. Include your agent's own plan or read-only flag.
                         <Hint label="How a custom agent talks to Canonfig">
                           Canonfig writes the task as JSON to the command's standard input and reads a proposal as JSON from its standard output.{"\n"}Anything else is refused, and every proposed action is still checked against the bounds on this page.
@@ -466,18 +515,42 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
                 </form>
               </div>
             </Field>
-            <Field label="Allowed network origins" description="Requests anywhere else are blocked.">
-              <div className="flex flex-wrap gap-1">
-                {(initialHarness?.origins ?? []).map((o) => (
-                  <span key={o} className="rounded border border-border px-2 py-0.5 font-mono text-xs text-muted-foreground">
-                    {o}
-                  </span>
-                ))}
-              </div>
+            <Field label="Allowed network origins" htmlFor="ap-origins" hint="One exact HTTPS origin per line, e.g. https://api.example.com." error={tried ? originError : undefined}>
+              <Textarea id="ap-origins" value={originsText} onChange={(event) => setOriginsText(event.target.value)} autoComplete="off" spellCheck={false} aria-invalid={tried && !!originError} className="font-mono text-sm" rows={3} />
             </Field>
+            <details className="mt-2">
+              <summary className="h-7 cursor-pointer text-base leading-7 font-medium text-muted-foreground">Advanced authorization bounds</summary>
+              <div className="mt-4 grid gap-4">
+                <Field label="Allowed executables" htmlFor="ap-executables" hint="One leaf executable per line.">
+                  <Textarea id="ap-executables" value={executablesText} onChange={(event) => setExecutablesText(event.target.value)} autoComplete="off" spellCheck={false} className="font-mono text-sm" rows={3} />
+                </Field>
+                {initialHarness?.executableAuthorizations.some(({ behavior }) => behavior === "script-interpreter") && <p className="text-sm text-muted-foreground">Saved execution models: {initialHarness.executableAuthorizations.map(({ executable, behavior }) => `${executable} (${behavior})`).join(", ")}.</p>}
+                <Field label="Secret bindings" htmlFor="ap-bindings" hint="One ENV_NAME=secret-name per line." error={tried ? bindingError : undefined}>
+                  <Textarea id="ap-bindings" value={bindingsText} onChange={(event) => setBindingsText(event.target.value)} autoComplete="off" spellCheck={false} aria-invalid={tried && !!bindingError} className="font-mono text-sm" rows={3} />
+                </Field>
+                {!!initialHarness?.environmentNames?.length && <div className={settingsGroup}>
+                  <SettingRow title="Environment names">
+                    <span className="text-sm">{initialHarness.environmentNames.join(", ")}</span>
+                  </SettingRow>
+                </div>}
+                <SectionLabel className="mt-2">Capabilities</SectionLabel>
+                <div className={settingsGroup}>
+                  {CAPABILITIES.map(({ value, label, consequence }) => <Label key={value} className="flex cursor-pointer items-start gap-3 px-4 py-3 font-normal">
+                    <Checkbox checked={capabilities.includes(value)} onCheckedChange={(checked) => setCapabilities(checked === true ? [...capabilities, value] : capabilities.filter((entry) => entry !== value))} />
+                    <span><span className="font-medium">{label}</span><span className="mt-1 block text-sm text-muted-foreground">{consequence}</span></span>
+                  </Label>)}
+                </div>
+              </div>
+            </details>
           </div>}
         </Column>
       </Body>
+      <ConfirmDialog open={review !== null} onOpenChange={(open) => { if (!open) setReview(null); }} title="Save agent settings?" confirm="Save settings" confirmVariant="primary" onConfirm={() => { if (review) void save(review); }}
+        body={<div className="grid gap-3">
+          <p>{MODES.find(({ value }) => value === review?.mode)?.label}</p>
+          {CAPABILITIES.filter(({ value }) => review?.harness?.capabilities.includes(value)).map(({ value, label, consequence }) => <p key={value}><strong>{label}:</strong> {consequence}</p>)}
+          {!review?.harness?.capabilities.length && <p>Capabilities: none.</p>}
+        </div>} />
       {leaveDialog}
     </>
   );
