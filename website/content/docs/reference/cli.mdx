@@ -82,7 +82,10 @@ On an enrolled Follower, Settings > Enrollment offers **Replace enrollment with 
 new invitation**. Review the invitation and compare its fingerprints before
 confirming. A new identity revokes the old identity and removes its credential,
 resets agent policy to deterministic-only, removes the agent harness and its
-secret bindings, and resets stored schedule and local-execution choices.
+secret bindings, and resets stored schedule and local-execution choices. If the
+old Source cannot be reached to revoke it, for example because the SSH tunnel now
+leads to the new Source, a warning names the `canonfig source revoke` command to
+run there.
 Same-identity credential rotation keeps those settings. Applied files, native
 jobs, tunnel configuration and local files remain. Joining never applies the
 new profile automatically.

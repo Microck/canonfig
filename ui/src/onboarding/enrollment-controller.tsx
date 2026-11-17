@@ -2,6 +2,8 @@ import { useCallback, useContext, useEffect, useRef, useState, type ReactNode } 
 import { flushSync } from "react-dom";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Schema } from "effect";
+import { toast } from "sonner";
+import { record, text } from "@/workspace/live/follower";
 import { Button } from "@/components/ui/button";
 import { cn } from "cn";
 import { Check, Circle, Copy, FileArrowUp, HourglassMedium, Question, Warning, X } from "@/components/icons";
@@ -188,7 +190,11 @@ export function useEnrollmentController(backend: WorkspaceBackend, session: GuiS
       if (joining.kind !== "joining") throw new TransitionError("Enrollment", joining.kind, "join");
       return run(async (signal) => {
         if (input.tunnel) await actions.operation("/api/enrollment/tunnel", { envelope: joining.envelope, sshHost: input.sshHost, sshUser: input.sshUser, sshPort: input.sshPort, sshHostKeyPath: input.hostKey, localPort: input.localPort, localHost: input.localHost, timeoutMilliseconds: input.timeoutMilliseconds, trustConfirmed: true }, signal);
-        await actions.operation("/api/enrollment", { envelope: joining.envelope, followerName: input.name, replace: input.replace }, signal);
+        const enrolled = await actions.operation("/api/enrollment", { envelope: joining.envelope, followerName: input.name, replace: input.replace }, signal);
+        // A replaced identity the old Source could not revoke (for example behind an SSH tunnel that now reaches the
+        // new Source) stays active there until someone revokes it; say so until dismissed.
+        const previousIdentity = record(record(enrolled.state === "succeeded" ? enrolled.result : null).previousIdentity);
+        if (previousIdentity.revoked === false) toast.warning("The old identity is still active on its Source", { description: text(previousIdentity.detail), duration: Infinity });
         follower.send({ kind: "joined" });
         follower.send({ kind: "report", report: await backend.request("/api/harnesses", GuiHarnessReport, signal) });
       }, (error) => follower.send({ kind: "failed", error }));

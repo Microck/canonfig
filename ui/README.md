@@ -77,7 +77,10 @@ The flow has a Cancel action. A new identity resets follower-owned policy,
 agent harness and secret bindings, schedule choices and local-execution settings.
 Same-identity rotation preserves those settings. Enrollment does not remove
 applied files, native jobs, tunnel configuration or local files, and never applies
-the new profile automatically.
+the new profile automatically. When the old Source cannot be reached to revoke a
+replaced identity, for example because the SSH tunnel's endpoint now reaches the new
+Source, the replacement still finishes and a warning that stays until dismissed names
+the `canonfig source revoke` command to run there.
 
 The table lists development routes. Public demo URLs add `/demo`, so `/source/overview` becomes `/demo/source/overview`. The public entry `/demo/` opens that overview. Links support direct loads, refresh and browser Back/Forward. Unknown or role-invalid paths show a not-found page.
 
