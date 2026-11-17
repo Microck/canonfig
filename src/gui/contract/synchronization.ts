@@ -69,7 +69,7 @@ export const GuiLocalConfigRequest = Schema.Struct({
   })),
 });
 
-/** Both roles may list metadata. Only Source may set/remove; values are request-body-only. */
+/** Both roles list metadata and set/remove machine-local entries. Source-owned values cannot be replaced locally. Values are request-body-only. */
 export const GuiSecretSummary = Schema.Struct({ name: Schema.String, origin: Schema.Literals(["local", "source"]) });
 export interface GuiSecretSummary extends Schema.Schema.Type<typeof GuiSecretSummary> {}
 export const GuiSecrets = Schema.Struct({ secrets: Schema.Array(GuiSecretSummary) });

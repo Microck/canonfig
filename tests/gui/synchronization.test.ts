@@ -309,8 +309,8 @@ it("plans and applies an enrolled follower and performs digest-checked local ope
   expect((await api.call("/api/tunnel/stop", "POST", {})).status).toBe(200);
   expect((await api.call("/api/secrets")).status).toBe(200);
   expect((await api.call("/api/secrets/sync", "POST", {})).status).toBe(200);
-  expect((await api.call("/api/secrets", "PUT", { name: "no", value: "private" })).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
-  expect((await api.call("/api/secrets", "DELETE", { name: "no" })).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  expect((await api.call("/api/secrets", "PUT", { name: "no", value: "private" })).payload).toMatchObject({ category: "human-action-required", exitCode: 3 });
+  expect((await api.call("/api/secrets", "DELETE", { name: "no" })).payload).toEqual({ name: "no", removed: false });
   const backups = Schema.decodeUnknownSync(GuiBackups)((await api.call("/api/backups")).payload);
   expect(backups.snapshots.length).toBeGreaterThan(0);
   const failedRestore = await api.operation("/api/backups/restore", { snapshot: "missing" });

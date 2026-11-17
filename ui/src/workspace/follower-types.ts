@@ -37,6 +37,8 @@ export interface FollowerLive {
   saveItems: (input: typeof GuiLocalWrite.Type) => Promise<boolean>;
   savePreferences: (input: typeof GuiLocalConfigRequest.Type) => Promise<boolean>;
   refreshSecrets: () => void;
+  setSecret: (name: string, value: string) => Promise<boolean>;
+  removeSecret: (name: string) => Promise<boolean>;
   toggleTunnel: () => void;
   exportArchive: () => void;
   archive: { sha256: string; manifestSha256: string; signer: string } | null;

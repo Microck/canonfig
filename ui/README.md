@@ -98,6 +98,14 @@ The follower's stored Source identity does not include a machine name. Its map c
 
 Follower Schedule supports an IANA time zone for daily, weekly and custom calendars, with selectable zone suggestions. A blank zone uses the GUI host's time zone, not the browser's. The saved zone fills the Time zone field; Machine time zone shows its default. Named zones work on Linux only, matching the CLI; Source-default schedules use the published calendar without a zone override. Confirmed Remove schedule at the end of the form deletes the native job and keeps automation off across future applies. It does not stop a sync already running or change applied files.
 
+Secrets lists names and origins for both roles, never stored values. Source secrets
+are shared with eligible machines; the Updated column is omitted when no update times are recorded.
+On a Follower, Set local secret and Replace value write only to this machine's
+credential store for local agent bindings. A Source-owned value cannot be replaced
+here. Remove local copy requires confirmation, does not revoke the upstream value
+and warns that a shared copy can return on the next update. Update secrets keeps
+local entries and refuses same-name ownership conflicts. Both roles require the
+CLI's secure noninteractive credential store.
 ## Demo guidance and presentation
 
 Guidance lives in `src/workspace/guide.tsx`, with the spotlight component in `src/tour/`. It has three parts, remembered per role in localStorage: a tour offer on the first visit that opens the tour picker (a four-stop quick tour, then one chapter per area), a Get started list on Overview, and one tip on the first visit to a complex page. Take the tour, in the sidebar or the command palette, opens a picker with that short tour and one chapter of three to five stops per area (`src/workspace/tour-steps.tsx`). Selecting a chapter previews its steps and the pages it visits, numbered in order on a copy of the sidebar, so each chapter's `pages` list must match where its steps go. Finished chapters get a tick, can run again, and end with a button to the next chapter. Append `?tour=1` to start the short tour; reopen a page tip from its "?" button.

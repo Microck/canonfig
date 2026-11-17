@@ -1,7 +1,7 @@
 // Shared Follower screens read machine data and operations from the workspace provider.
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { toast } from "sonner";
-import { ArrowRight, CaretRight, Check, DotsThree, HourglassMedium, Key, Plus, WarningCircle, X } from "@/components/icons";
+import { ArrowRight, CaretRight, Check, DotsThree, HourglassMedium, Plus, WarningCircle, X } from "@/components/icons";
 import { cn, removeKeepingFocus } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -32,7 +32,7 @@ import {
 } from "@/shared/metadata";
 import { useSharedReader, useSharedState, useWorkspace, type PlanAction, type PlanItem, type Workspace } from "./store";
 import { GetStarted } from "./guide";
-import { WorkspaceEvidence } from "./source";
+import { SecretsView, WorkspaceEvidence } from "./source";
 import { HarnessTable } from "./harnesses";
 import {
   AnimatedRow,
@@ -1931,18 +1931,13 @@ export function FollowerSecretsView() {
   const ws = useWorkspace();
   const [refresh, setRefresh] = useSharedState(SECRETS_KEY, ws.secretsRefresh);
   const { blocked, unreachable } = useSyncBlocks();
-  const cols = "minmax(180px,240px) minmax(140px,1fr)";
-  const secretRows = ws.followerLive ? ws.followerLive.secrets : ws.secrets;
-  const colsMin = 180 + 140 + 12 + 20;
   return (
-    <>
-      <PageHeader
-        crumbs={["Secrets"]}
-        actions={
+    <SecretsView
+      actions={
           <Button
             data-tour="secrets-update"
             size="sm"
-            variant="primary"
+            variant="outline"
             disabled={ws.followerLive ? ws.followerLive.action.loading || blocked !== null : !ws.capabilities.followerWrite || refresh.busy || blocked !== null}
             onClick={() => {
               if (ws.followerLive) { ws.followerLive.refreshSecrets(); return; }
@@ -1961,28 +1956,12 @@ export function FollowerSecretsView() {
           >
             {(ws.followerLive ? ws.secretsRefresh.busy : refresh.busy) ? "Updating…" : "Update secrets"}
           </Button>
-        }
-      />
-      <Body reloading={refresh.busy}>
-        {(ws.capabilities.simulatedTelemetry || (ws.followerLive && ws.secretsRefresh.updated)) && <p data-tour="secrets-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
-          {ws.capabilities.simulatedTelemetry ? <>This machine <Term term="Follower Group"><span className="lowercase">{PLAIN.secretsGroup}</span></Term> (group <Mono className="text-foreground">{SECRETS_GROUP}</Mono>), so it gets shared secrets from {ws.sourceMachine.hostname} into the macOS Keychain. Last updated {refresh.updated}.{blocked && ` ${blocked}`}</> : null}
-          {ws.followerLive && ws.secretsRefresh.updated && <span role="status"> {ws.secretsRefresh.updated}</span>}
-        </p>}
-        {secretRows.length === 0 ? <EmptyState title="No shared secrets" body="Update secrets fetches any the Source shares with this machine." /> : <ListHead cols={cols} minWidth={colsMin} data-tour="secrets-list">
-          <span>Name</span>
-          <span>{ws.followerLive ? "Origin" : "Updated at Source"}</span>
-        </ListHead>}
-        {secretRows.map((s) => (
-          <ListRow key={s.name} cols={cols} minWidth={colsMin} data-tour="secrets-list">
-            <span className="flex min-w-0 items-center gap-2">
-              <Key className="size-3.5 shrink-0 text-faint" />
-              <span className="truncate font-mono text-sm">{s.name}</span>
-            </span>
-            <span className="text-sm text-muted-foreground tabular-nums">{"origin" in s ? s.origin === "source" ? "Shared by the Source" : "This machine" : s.updated}</span>
-          </ListRow>
-        ))}
-      </Body>
-    </>
+      }
+      notice={(ws.capabilities.simulatedTelemetry || (ws.followerLive && ws.secretsRefresh.updated)) && <p className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
+        {ws.capabilities.simulatedTelemetry ? <>This machine <Term term="Follower Group"><span className="lowercase">{PLAIN.secretsGroup}</span></Term> (group <Mono className="text-foreground">{SECRETS_GROUP}</Mono>), so it gets shared secrets from {ws.sourceMachine.hostname} into the macOS Keychain. Last updated {refresh.updated}.{blocked && ` ${blocked}`}</> : null}
+        {ws.followerLive && ws.secretsRefresh.updated && <span role="status"> {ws.secretsRefresh.updated}</span>}
+      </p>}
+    />
   );
 }
 

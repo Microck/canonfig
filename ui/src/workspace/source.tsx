@@ -12,7 +12,7 @@ import { AnimatedNumber, CliText, DitherProgress, Hint, Mono, StateCell, StateLa
 import { DEMO, SECRETS_GROUP, STATE_META, type Revision } from "@/shared/metadata";
 import { ErrorNotice } from "../live/session";
 import { GuiRequestError } from "../gui-client";
-import { useSharedState, useWorkspace, type PendingChange, type Workspace } from "./store";
+import { useSharedState, useWorkspace, type PendingChange, type Secret, type Workspace } from "./store";
 import { GetStarted } from "./guide";
 import { whyBehind } from "./machines";
 import { useChecks, warningName } from "./settings";
@@ -787,8 +787,15 @@ function secretTransition(state: SecretFlow, event: SecretEvent): SecretFlow {
   throw new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: `Cannot ${event.kind.toLowerCase()} the secret form while it is ${state.kind}.` });
 }
 
-export function SecretsView() {
+export function SecretsView({ actions, notice }: { actions?: React.ReactNode; notice?: React.ReactNode }) {
   const ws = useWorkspace();
+  const local = ws.role === "follower";
+  const secrets: readonly Secret[] = local && ws.followerLive ? ws.followerLive.secrets : ws.secrets;
+  const live = local ? ws.followerLive : ws.profileLive;
+  const busy = local ? ws.followerLive?.action.loading : ws.profileLive?.busy;
+  const canWrite = local ? ws.capabilities.followerWrite : ws.capabilities.profileWrite;
+  const error = ws.followerLive?.action.error;
+  const actionNotice = local ? error && <ErrorNotice error={error} /> : <ProfileActionNotice />;
   const [flow, setFlow] = useState<SecretFlow>({ kind: "Closed" });
   const generation = useRef(0);
   const send = (event: SecretEvent) => setFlow((state) => secretTransition(state, event));
@@ -797,16 +804,19 @@ export function SecretsView() {
   const { name, value, replaces: editing, tried } = "draft" in flow ? flow.draft : { name: "", value: "", replaces: null, tried: false };
   const setOpen = (next: boolean) => { if (!next && !submitting) send({ kind: "Close" }); };
   const [removing, setRemoving] = useState<string | null>(null);
+  const removingShared = secrets.find((secret) => secret.name === removing)?.origin === "source";
   const receivers = ws.followers.filter((f) => f.groups.includes(SECRETS_GROUP));
   const others = ws.followers.length - receivers.length;
-  const cols = "minmax(180px,240px) 120px minmax(160px,360px) minmax(40px,1fr)";
-  const colsMin = 180 + 120 + 160 + 40 + 3 * 12 + 20;
+  const showUpdated = !local && secrets.some((secret) => secret.updated !== undefined);
+  const cols = local ? "minmax(180px,240px) minmax(180px,1fr) 40px" : `minmax(180px,240px) 140px ${showUpdated ? "120px " : ""}minmax(160px,360px) minmax(40px,1fr)`;
+  const colsMin = local ? 180 + 180 + 40 + 2 * 12 + 20 : 180 + 140 + 160 + 40 + 3 * 12 + 20 + (showUpdated ? 120 + 12 : 0);
   const share = () => ws.setChangeGroups({ addGroup: SECRETS_GROUP });
 
   const openSet = (name?: string) => { if (!submitting) send({ kind: "Open", id: ++generation.current, name }); };
 
   const trimmed = name.trim();
-  const nameError = !tried || editing ? null : !trimmed ? "Enter a name." : ws.secrets.some((s) => s.name === trimmed) ? `${trimmed} already exists. Use Replace value on its row.` : null;
+  const duplicate = secrets.find((s) => s.name === trimmed);
+  const nameError = !tried || editing ? null : !trimmed ? "Enter a name." : duplicate ? duplicate.origin === "source" ? "This name belongs to the Source. Choose another name." : "This name is already stored. Use Replace value." : null;
   const valueError = tried && !value ? "Enter the secret value." : null;
   // Only an open form holds a draft: Cancel, Escape and Save secret all close it, and reopening starts blank.
   // Replacing a value has no name field, so only the value counts there.
@@ -818,27 +828,26 @@ export function SecretsView() {
         crumbs={["Secrets"]}
         actions={
           <>
-            <Button variant="outline" size="sm" disabled={!ws.capabilities.enrollmentWrite || others === 0} onClick={share} data-tour="secrets-share">
+            {actions}
+            {!local && <Button variant="outline" size="sm" disabled={!ws.capabilities.enrollmentWrite || others === 0} onClick={share} data-tour="secrets-share">
               Share with more machines
-            </Button>
-            <Button size="sm" variant="primary" disabled={!ws.capabilities.profileWrite} onClick={() => openSet()} data-tour="secrets-set">
-              Set secret
+            </Button>}
+            <Button size="sm" variant="primary" disabled={!canWrite || busy} onClick={() => openSet()} data-tour="secrets-set">
+              {local ? "Set local secret" : "Set secret"}
             </Button>
           </>
         }
       />
-      <ProfileActionNotice />
+      {actionNotice}
       <Body>
-        {ws.secrets.length > 0 && <p data-tour="secrets-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
-          Sent to: {receivers.length ? receivers.map((f) => f.name).join(", ") : "no machines yet"}
-        </p>}
-        {ws.secrets.length === 0 ? (
+        {notice}
+        {secrets.length === 0 ? (
           <EmptyState
-            title="No shared secrets"
-            body="Machines that can receive secrets get each one you set."
+            title={local ? "No secrets stored" : "No shared secrets"}
+            body={local ? "Update secrets to fetch values shared by the Source." : "Set a secret to share it with receiving machines."}
             action={
-              <Button variant="outline" size="sm" disabled={!ws.capabilities.profileWrite} onClick={() => openSet()}>
-                Set secret
+              <Button variant="outline" size="sm" disabled={!canWrite || busy} onClick={() => openSet()}>
+                {local ? "Set local secret" : "Set secret"}
               </Button>
             }
           />
@@ -846,20 +855,22 @@ export function SecretsView() {
           <>
             <ListHead cols={cols} minWidth={colsMin} data-tour="secrets-list">
               <span>Name</span>
-              <span>Updated</span>
-              <span>Eligible machines</span>
+              <span>Origin</span>
+              {showUpdated && <span>Updated</span>}
+              {!local && <span>Eligible machines</span>}
               <span />
             </ListHead>
             <RowPresence>
-              {ws.secrets.map((s) => (
+              {secrets.map((s) => (
                 <AnimatedRow key={s.name}>
                   <ListRow cols={cols} minWidth={colsMin} data-tour="secrets-list">
                     <span className="flex min-w-0 items-center gap-2">
                       <Key className="size-3.5 shrink-0 text-faint" />
                       <span className="truncate font-mono text-sm">{s.name}</span>
                     </span>
-                    <span className="text-sm text-muted-foreground tabular-nums">{s.updated}</span>
-                    <span className="truncate text-sm text-muted-foreground">{receivers.map((f) => f.name).join(", ") || "No machines yet"}</span>
+                    <span data-tour={local ? "secrets-about" : undefined} className="text-sm text-muted-foreground">{s.origin === "source" ? "Shared by the Source" : "This machine"}</span>
+                    {showUpdated && <span className="text-sm text-muted-foreground tabular-nums">{s.updated ?? "Not recorded"}</span>}
+                    {!local && <span data-tour="secrets-about" className="truncate text-sm text-muted-foreground">{receivers.map((f) => f.name).join(", ") || "No machines yet"}</span>}
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="icon-xs" className="justify-self-end" aria-label={`Actions for ${s.name}`}>
@@ -867,13 +878,13 @@ export function SecretsView() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
-                        <DropdownMenuItem disabled={!ws.capabilities.profileWrite} onSelect={() => openSet(s.name)}>Replace value…</DropdownMenuItem>
-                        <DropdownMenuItem disabled={!ws.capabilities.enrollmentWrite || others === 0} onSelect={share}>
+                        <DropdownMenuItem disabled={!canWrite || busy || s.origin === "source"} onSelect={() => openSet(s.name)}>Replace value…</DropdownMenuItem>
+                        {!local && <DropdownMenuItem disabled={!ws.capabilities.enrollmentWrite || others === 0} onSelect={share}>
                           Share with more machines…
-                        </DropdownMenuItem>
+                        </DropdownMenuItem>}
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem variant="destructive" disabled={!ws.capabilities.profileWrite} onSelect={() => setRemoving(s.name)}>
-                          Remove…
+                        <DropdownMenuItem variant="destructive" disabled={!canWrite || busy} onSelect={() => setRemoving(s.name)}>
+                          {local ? "Remove from this machine…" : "Remove…"}
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
@@ -894,7 +905,7 @@ export function SecretsView() {
             onSubmit={async (e) => {
               e.preventDefault();
               send({ kind: "Change", update: { tried: true } });
-              const badName = !editing && (!trimmed || ws.secrets.some((s) => s.name === trimmed));
+              const badName = !editing && (!trimmed || duplicate !== undefined);
               if (badName || !value) {
                 document.getElementById(badName ? "sec-name" : "sec-value")?.focus();
                 return;
@@ -902,22 +913,22 @@ export function SecretsView() {
               if (!("id" in flow) || submitting) return;
               const id = flow.id;
               send({ kind: "Submit" });
-              if (ws.profileLive) {
-                if (!await ws.profileLive.setSecret(editing ?? trimmed, value)) { send({ kind: "Failed", id }); return; }
+              if (live) {
+                if (!await live.setSecret(editing ?? trimmed, value)) { send({ kind: "Failed", id }); return; }
               } else {
-              ws.setSecrets((p) => (editing ? p.map((s) => (s.name === editing ? { ...s, updated: "Today" } : s)) : [...p, { name: trimmed, updated: "Today", sharedWith: receivers.length }]));
+              ws.setSecrets((p) => (editing ? p.map((s) => (s.name === editing ? { ...s, updated: "Today" } : s)) : [...p, { name: trimmed, origin: "local", updated: "Today", sharedWith: local ? 0 : receivers.length }]));
               }
               send({ kind: "Succeeded", id });
-              toast.success(editing ? `Replaced ${editing}` : `Saved ${trimmed}`, { description: DEMO ? "Saved in this demo workspace." : undefined });
+              toast.success(editing ? `Replaced ${editing}` : `Saved ${trimmed}`);
             }}
           >
             <DialogHeader>
-              <DialogTitle>{editing ? `Replace ${editing}` : "Set a shared secret"}</DialogTitle>
+              <DialogTitle>{editing ? `Replace ${editing}` : local ? "Set a local secret" : "Set a shared secret"}</DialogTitle>
               <DialogDescription className="text-base text-pretty">
-                Machines that can receive secrets get it on their next update{receivers.length ? `: ${receivers.map((f) => f.name).join(", ")}` : ""}.
+                {local ? "Available to local agent bindings." : "Receiving machines get this value on their next update."}
               </DialogDescription>
             </DialogHeader>
-            <ProfileActionNotice />
+            {actionNotice}
             <fieldset disabled={submitting} className="grid gap-3">
               {!editing && (
                 <Field label="Name" htmlFor="sec-name" error={nameError}>
@@ -937,7 +948,6 @@ export function SecretsView() {
               <Field
                 label="Value"
                 htmlFor="sec-value"
-                description={`Canonfig keeps it in the credential store, never in the folder.${DEMO ? " This demo discards it." : ""}`}
                 error={valueError}
               >
                 <Input
@@ -946,7 +956,7 @@ export function SecretsView() {
                   value={value}
                   onChange={(e) => send({ kind: "Change", update: { value: e.target.value } })}
                   aria-invalid={!!valueError}
-                  aria-describedby="sec-value-note"
+                  aria-describedby={valueError ? "sec-value-note" : undefined}
                   autoComplete="off"
                   data-1p-ignore
                 />
@@ -956,39 +966,38 @@ export function SecretsView() {
               <Button type="button" variant="ghost" disabled={submitting} onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" variant="primary" disabled={submitting || ws.profileLive?.busy}>
-                Save secret
+              <Button type="submit" variant="primary" disabled={submitting || busy}>
+                {submitting ? "Saving…" : "Save secret"}
               </Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
-      <Dialog open={!!removing} onOpenChange={(o) => !o && setRemoving(null)}>
+      <Dialog open={!!removing} onOpenChange={(o) => !o && !busy && setRemoving(null)}>
         <DialogContent className="grid-cols-[minmax(0,1fr)] sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Remove {removing}?</DialogTitle>
             <DialogDescription className="text-base text-pretty">
-              Canonfig deletes it from this machine's credential store, and machines delete their copy on their next update. Tools that read it stop working until you set it again.
-              {DEMO && " This demo only removes the name from the list."}
+              {local ? removingShared ? "A shared copy can return on the next update." : "Agents using this secret will fail until you set it again." : "Receiving machines delete their copies on their next update, which can break tools using this secret."}
             </DialogDescription>
           </DialogHeader>
-          <ProfileActionNotice />
+          {actionNotice}
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setRemoving(null)}>
+            <Button variant="ghost" disabled={busy} onClick={() => setRemoving(null)}>
               Cancel
             </Button>
             <Button
               variant="destructive"
-              disabled={ws.profileLive?.busy}
+              disabled={busy}
               onClick={async () => {
-                if (ws.profileLive) { if (!removing || !await ws.profileLive.removeSecret(removing)) return; }
+                if (live) { if (!removing || !await live.removeSecret(removing)) return; }
                 else ws.setSecrets((p) => p.filter((s) => s.name !== removing));
-                toast(`Removed ${removing}`, { description: DEMO ? "Removed from this demo workspace." : undefined });
+                toast(`Removed ${removing}`);
                 setRemoving(null);
               }}
             >
-              Remove secret
+              {busy ? "Removing…" : local ? "Remove local copy" : "Remove secret"}
             </Button>
           </DialogFooter>
         </DialogContent>

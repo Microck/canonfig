@@ -103,7 +103,7 @@ export type ProfileEdit = Exclude<PendingChange, { area: "item" }>;
 export type FollowerPhase = "plan" | "running" | "done";
 
 export type Milestone = "health-check" | "schedule";
-export interface Secret { name: string; updated?: string; sharedWith?: number }
+export interface Secret { name: string; origin: "local" | "source"; updated?: string; sharedWith?: number }
 
 export interface ScannedTool { id: string; executable: string; command: string; file: string; where: string }
 export interface WorkspaceProfile {

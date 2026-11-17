@@ -222,8 +222,8 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
     setResources: (update) => { if (!items.data) return; const next = typeof update === "function" ? update(resources) : update; const changed = next.find((entry) => resources.find((before) => before.id === entry.id) !== entry); const removed = resources.find((entry) => !next.some((after) => after.id === entry.id)); if (changed) void saveItem(items.data, resources.find((entry) => entry.id === changed.id), changed, undefined, changed.change === "removed"); else if (removed) void saveItem(items.data, removed, removed, undefined, true); },
     readResources: () => resources, readQueue: () => ({ pending: [], nextSequence: undefined }),
     revisions: published.map((entry) => ({ id: entry.id, sequence: entry.sequence, digest: entry.digest, publishedAt: entry.publishedAt, reviewer: "", changes: "" })),
-    latest: published[0]?.sequence, publicationReviewer: "", secrets: (secrets.data?.secrets ?? []).map(({ name }) => ({ name })),
-    setSecrets: (update) => { const current = (secrets.data?.secrets ?? []).map(({ name }) => ({ name })); const next = typeof update === "function" ? update(current) : update; const removed = current.find((entry) => !next.some((after) => after.name === entry.name)); if (removed) void profileLive.removeSecret(removed.name); },
+    latest: published[0]?.sequence, publicationReviewer: "", secrets: [...(secrets.data?.secrets ?? [])],
+    setSecrets: (update) => { const current = [...(secrets.data?.secrets ?? [])]; const next = typeof update === "function" ? update(current) : update; const removed = current.find((entry) => !next.some((after) => after.name === entry.name)); if (removed) void profileLive.removeSecret(removed.name); },
     pending, markProfileEdit: (edit) => setPending((previous) => [...previous.filter((entry) => entry.id !== edit.id), edit]), removeProfileEdit: (edit) => setPending((previous) => previous.filter((entry) => entry.id !== edit.id)), nextSequence: undefined, publishing,
     publish: (reviewer, onDone) => { void run(async (signal) => {
       publishEvent({ kind: "Publish", snapshot: observation });

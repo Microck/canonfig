@@ -190,7 +190,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
   const [proposed, setProposed] = useState<string[]>(newSource?.scan ? ONBOARDING_PROPOSED.map((r) => r.id) : []);
   const [followers, setFollowers] = useState<Follower[]>(newSource ? [] : seedFollowers);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
-  const [secrets, setSecrets] = useState<Secret[]>(newSource ? [] : seedSecrets);
+  const [secrets, setSecrets] = useState<Secret[]>(() => newSource ? [] : seedSecrets.map((secret) => ({ ...secret, origin: role === "source" ? "local" : "source" })));
   const publishing = publication.state.kind === "publishing";
   const syncing = Object.entries(publication.state.deliveries).flatMap(([id, delivery]) => delivery.kind === "delivering" ? [id] : []);
   const markProfileEdit = useCallback((edit: ProfileEdit) => { sendPublication({ kind: "edit", edit }); }, [sendPublication]);
