@@ -159,11 +159,13 @@ one run behaves as one transaction for file, directory, and key changes:
 - **Tool installs are not rolled back.** Canonfig cannot reverse a package
   manager, a login, or an agent's commands. The next run's verification finds
   an installed tool and leaves it in place.
-- **Human Action Required and Follower Drift stop the run without rolling
-  back.** Items that applied and verified stay applied. The blocked item is
-  left as it is, and every later action is skipped. `canonfig sync --plan`
-  lists the blocked item in advance. Fix the cause, then run
-  `canonfig sync --apply` again to apply the rest.
+- **Human Action Required does not stop the run or roll it back.** The blocked
+  item is left as it is, items that depend on it wait, and every other item is
+  applied and verified. The run ends Human Action Required and lists every
+  item that needs you. Follower Drift does stop the run, without rolling back:
+  items that applied before it stay applied and later ones are skipped.
+  `canonfig sync --plan` lists both kinds in advance. Fix the cause, then run
+  `canonfig sync --apply` again.
 
 A run that stops part-way (a crash, a killed process, a reboot, or a full disk)
 stays open. `canonfig recover` finishes it or rolls it back. When a file was

@@ -1,9 +1,11 @@
 import { installedBindingProblem, type InstalledSchedulerCommand } from "../machine/installed-scheduler-command.ts";
 import { userInfo } from "node:os";
 import { dirname } from "node:path";
-import { Effect, Layer } from "effect";
+import { Clock, Effect, Layer, Schedule } from "effect";
 
 import { MachineState } from "../machine/machine-state.service.ts";
+import { StateRepository } from "../state/state-repository.service.ts";
+import type { ScheduledInvocation } from "../state/state-repository.types.ts";
 import type {
   MachinePlatform,
   RenderedSchedulerJob,
@@ -22,10 +24,13 @@ import {
   InvalidScheduleError,
   ScheduleHumanActionRequiredError,
   type ScheduleManagerError,
+  ScheduleRunTimeoutError,
   ScheduleVerificationError,
 } from "./schedule-manager.errors.ts";
 import { ScheduleManager } from "./schedule-manager.service.ts";
 import {
+  defaultScheduleRunTimeoutMilliseconds,
+  type RunScheduleInput,
   defaultSyncSchedule,
   normalizeSyncSchedule,
   type ScheduleChange,
@@ -381,6 +386,69 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
         },
       );
 
+      const run = Effect.fn("ScheduleManager.run")(function*(input: RunScheduleInput = {}) {
+        const timeoutMilliseconds = input.timeoutMilliseconds ?? defaultScheduleRunTimeoutMilliseconds;
+        if (!Number.isSafeInteger(timeoutMilliseconds) || timeoutMilliseconds <= 0) {
+          return yield* new InvalidScheduleError({
+            field: "timeoutMilliseconds", message: "schedule run timeout must be a positive safe integer",
+          });
+        }
+        const status = yield* inspect(input);
+        if (status.state !== "current") {
+          return yield* new ScheduleHumanActionRequiredError({
+            action: "start the installed Canonfig synchronization job",
+            recovery: `The job is ${status.state}. ${status.detail} Run \`canonfig schedule set\` with the chosen calendar to restore it before retrying.`,
+          });
+        }
+        const repository = yield* StateRepository;
+        const startedAt = yield* Clock.currentTimeMillis;
+        // Records that exist before the start request are never this run, even one
+        // stamped in the same millisecond.
+        const earlier = new Set((yield* repository.listScheduledInvocations()).map((entry) => entry.id));
+        const wait = Effect.gen(function*() {
+          yield* machine.startSchedulerJob(status.definition);
+          // Keep following the first new invocation, even when another finishes first.
+          // A Fleet Update hands the run to a replacement process: follow that one next.
+          let invocationId: string | undefined;
+          let handedOffAt: number | undefined;
+          return yield* repository.listScheduledInvocations().pipe(
+            Effect.map((invocations) => {
+              // A handoff and its replacement can both be in this list, so keep
+              // looking in it after each handoff rather than waiting for the next poll.
+              for (;;) {
+                const invocation = invocationId === undefined
+                  ? invocations.find((entry) =>
+                    !earlier.has(entry.id)
+                    && Date.parse(entry.startedAt) >= (handedOffAt ?? startedAt)
+                    && (handedOffAt !== undefined || status.generation === undefined || entry.generation === status.generation)
+                  )
+                  : invocations.find((entry) => entry.id === invocationId);
+                if (invocation === undefined) return undefined;
+                if (invocation._tag === "Completed" && invocation.restarted === true) {
+                  earlier.add(invocation.id);
+                  handedOffAt = Date.parse(invocation.startedAt);
+                  invocationId = undefined;
+                  continue;
+                }
+                invocationId = invocation.id;
+                return invocation._tag === "Running" ? undefined : invocation;
+              }
+            }),
+            Effect.repeat({
+              schedule: Schedule.spaced(1_000),
+              until: (invocation): invocation is Exclude<ScheduledInvocation, { readonly _tag: "Running" }> =>
+                invocation !== undefined,
+            }),
+          );
+        });
+        return yield* wait.pipe(Effect.timeoutOrElse({
+          duration: timeoutMilliseconds,
+          orElse: () => Effect.fail(new ScheduleRunTimeoutError({
+            message: `Timed out after ${timeoutMilliseconds} ms waiting for the native synchronization job. The job may still be running; check \`canonfig schedule status\` and \`canonfig status\`.`,
+          })),
+        }));
+      });
+
       const snapshot = Effect.fn("ScheduleManager.snapshot")(
         function*(input: SetScheduleInput = {}): Effect.fn.Return<
           ScheduleSnapshot,
@@ -510,6 +578,7 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
       );
 
       return ScheduleManager.of({
+        run,
         install: upsert,
         inspect,
         snapshot,

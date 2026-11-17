@@ -526,6 +526,16 @@ export const macosMachineStateLayer = (
             }
           });
         },
+        start: (definition) => Effect.gen(function*() {
+          const label = definition.serviceName.slice(0, -".plist".length);
+          const result = yield* runLaunchctl(["kickstart", `${launchDomain}/${label}`]);
+          if (result.exitCode !== 0) {
+            return yield* new HumanActionRequiredError({
+              action: "start the Canonfig launchd agent",
+              recovery: "Sign in to the macOS graphical user session, check `canonfig schedule status`, and retry.",
+            });
+          }
+        }),
         remove: (definition) => {
           const path = join(launchAgents, definition.serviceName);
           return Effect.gen(function*() {
@@ -838,6 +848,7 @@ export const macosMachineStateLayer = (
         inspectSchedulerJob: scheduler.inspect,
         snapshotSchedulerJob: scheduler.snapshot,
         installSchedulerJob: scheduler.install,
+        startSchedulerJob: scheduler.start,
         removeSchedulerJob: scheduler.remove,
         restoreSchedulerJob: scheduler.restore,
       });

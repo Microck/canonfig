@@ -841,6 +841,29 @@ const planConfigIfUnmodified = (
   return planMerge(context);
 };
 
+/**
+ * Whether an observed directory is its last applied tree minus whole owned
+ * top-level entries (each one item, such as one skill in a harness skills
+ * directory): every entry present (other than implicit parent directories) is
+ * owned and unchanged, and every owned top-level entry is either intact or gone
+ * entirely. A file missing from inside an entry still present is a local edit.
+ */
+const onlyWholeOwnedEntriesMissing = (
+  observed: Extract<ResourcePlanningContext["observed"], { readonly state: "directory" }>,
+  ownedFiles: ReadonlyArray<{ readonly path: string; readonly digest: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined; readonly objectKind?: string | undefined; readonly symlinkTo?: string | undefined }>,
+): boolean => {
+  const owned = new Map(ownedFiles.map((entry) => [entry.path, fileSignature(entry)]));
+  const ancestors = relativePathAncestors([...owned.keys()]);
+  const present = presentObservedFiles(observed.files).filter((file) =>
+    owned.has(file.path) || file.objectKind !== "directory" || !ancestors.has(file.path)
+  );
+  if (present.length >= owned.size || present.some((file) => owned.get(file.path) !== fileSignature(file))) return false;
+  // An entry still there counts as present even when only its directory is left.
+  const presentEntries = new Set(presentObservedFiles(observed.files).map((file) => topLevelEntry(file.path)));
+  const presentPaths = new Set(present.map((file) => file.path));
+  return [...owned.keys()].every((path) => presentPaths.has(path) || !presentEntries.has(topLevelEntry(path)));
+};
+
 const planReplaceIfUnmodified = (
   context: ResourcePlanningContext,
 ): ReadonlyArray<ResourceActionDraft> => {
@@ -877,6 +900,19 @@ const planReplaceIfUnmodified = (
   if (tree !== undefined
     && context.observed.state === "directory"
     && observedMatchesDesired(tree, context.observed)) return [noOp()];
+  // The absence rule above holds for whole items in an owned directory too.
+  // Each top-level entry of a directory resource is one item (one skill in a
+  // harness skills directory). When some of those items are gone entirely and
+  // everything still there matches the last applied record, with the root's
+  // mode unchanged, there is nothing local to protect: the items were deleted
+  // by hand, or a rollback failed partway and the run was then abandoned.
+  // Reporting Follower Drift stopped every later run, so put them back. A skill
+  // resource missing one of its own files is still drift (an edit to the skill).
+  if (context.desired.kind === "directory"
+    && context.observed.state === "directory"
+    && context.applied?.ownership === "DirectoryEntries"
+    && context.observed.mode === context.applied.mode
+    && onlyWholeOwnedEntriesMissing(context.observed, context.applied.ownedFiles)) return planReplace(context);
   const currentDigest = tree !== undefined && context.observed.state === "directory"
     ? observedDirectoryDigest(context.observed, context.applied?.ownership === "DirectoryEntries"
       ? context.applied.ownedFiles : desiredDirectoryEntries(tree))

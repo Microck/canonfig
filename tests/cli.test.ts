@@ -94,6 +94,7 @@ const recordingLayers = (
     getAgentHarness: () => invoke("agent.harness.get"),
     setSchedule: (input) => invoke("schedule.set", input),
     scheduleStatus: () => invoke("schedule.status"),
+    runSchedule: (input) => invoke("schedule.run", input),
     removeSchedule: () => invoke("schedule.remove"),
     doctor: () => invoke("doctor"),
     startTunnel: (input) => invoke("tunnel.start", input),
@@ -223,6 +224,8 @@ describe("typed CLI command boundary", () => {
     [["schedule", "set", "weekly:Mon@12:30"], "schedule.set"],
     [["schedule", "set", "--default"], "schedule.set"],
     [["schedule", "status"], "schedule.status"],
+    [["schedule", "run"], "schedule.run"],
+    [["schedule", "run", "--timeout-ms", "600000"], "schedule.run"],
     [["schedule", "remove"], "schedule.remove"],
   ] as const)("routes %j through %s", async (arguments_, expectedRoute) => {
     const result = await execute([...arguments_, "--json"]);
@@ -880,8 +883,36 @@ describe("CLI rendering and exit semantics", () => {
     expect(evaluateCli(["--help"])._tag).toBe("Help");
     expect(evaluateCli(["--version"])).toEqual({
       _tag: "Version",
-      text: "7.3.0",
+      text: "7.4.0",
       exitCode: 0,
+    });
+  });
+});
+
+describe("schedule run command", () => {
+  it("uses the bounded default and passes an explicit timeout in the stable envelope", async () => {
+    for (const [args, timeoutMilliseconds] of [
+      [[], 7200000],
+      [["--timeout-ms", "600000"], 600000],
+    ] as const) {
+      const result = await execute(["schedule", "run", ...args, "--json"]);
+      expect(result.invocations).toEqual([{ route: "schedule.run", input: { timeoutMilliseconds } }]);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        schema: "canonfig.cli/v1", command: "schedule.run", exitCode: 0,
+      });
+    }
+  });
+
+  it.each(["0", "-1", "1.5", "NaN", "9007199254740992"])("refuses invalid timeout %s", (timeout) => {
+    expect(evaluateCli(["schedule", "run", "--timeout-ms", timeout])).toMatchObject({
+      _tag: "InvalidInput", exitCode: 2,
+    });
+  });
+
+  it("rejects positional arguments and documents the remote-shell command", () => {
+    expect(evaluateCli(["schedule", "run", "extra"])).toMatchObject({ _tag: "InvalidInput" });
+    expect(evaluateCli(["schedule", "--help"])).toMatchObject({
+      _tag: "Help", text: expect.stringContaining("schedule run [--timeout-ms <ms>]"),
     });
   });
 });

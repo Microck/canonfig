@@ -18,7 +18,7 @@ import { Effect, Layer, Option, Redacted, Schema } from "effect";
 
 import { ProfileId, SourceSignature } from "../domain/brand.ts";
 import { guiQueriesLayer } from "../gui/queries.ts";
-import { localProjectionFollower } from "../domain/synchronization.ts";
+import { localProjectionFollower, SynchronizationOutcomeSchema } from "../domain/synchronization.ts";
 import { AgentResolutionWithSecretsLive } from "../agent/agent-resolution.layer.ts";
 import { AgentResolution } from "../agent/agent-resolution.service.ts";
 import { EnrollmentLive } from "../enrollment/enrollment.layer.ts";
@@ -233,6 +233,10 @@ const readScheduleFires = (repository: StateRepository["Service"]) =>
 const FailedRunDetails = Schema.Struct({
   outcome: Schema.Struct({ reason: Schema.String }),
 });
+
+const ScheduledRunResult = Schema.Struct({ outcome: SynchronizationOutcomeSchema });
+const scheduledOutcome = (value: CliPayload | undefined) =>
+  Option.getOrUndefined(Schema.decodeUnknownOption(ScheduledRunResult)(value))?.outcome;
 
 /**
  * Why an unattended run failed, as the fire record keeps it. A scheduled run
@@ -1237,11 +1241,16 @@ const followerCommandsLayer = (
             const result = yield* (execute === undefined ? synchronize : execute(synchronize)).pipe(Effect.catch((error) => {
               const failed = scheduled ? mapFailure(repository.transitionScheduledInvocation({
                 ...identity, _tag: "Failed", at: new Date().toISOString(), reason: fireFailureReason(error),
+                outcome: scheduledOutcome(error.details),
+                failureCategory: error.category,
               })) : Effect.void;
               return failed.pipe(Effect.andThen(Effect.fail(error)));
             }));
+            // A null result means a Fleet Update activated and this run continues in a
+            // replacement process; mark the handoff so `schedule run` follows that process.
             if (scheduled) yield* mapFailure(repository.transitionScheduledInvocation({
               ...identity, _tag: "Completed", at: new Date().toISOString(),
+              ...(result === null ? { restarted: true as const } : { outcome: scheduledOutcome(result) }),
             }));
             return result;
           })));
@@ -1581,6 +1590,37 @@ const followerCommandsLayer = (
             )));
           }),
         ),
+      runSchedule: (options) => Effect.gen(function*() {
+        const configuration = yield* mapFailure(repository.getFollowerSynchronizationConfiguration());
+        const input = finalizedScheduleInput(configuration);
+        if (input === undefined) {
+          return yield* new CliCommandFailure({
+            category: "human-action-required",
+            message: `${unscheduledDetail(configuration)}. Run \`canonfig schedule set\` with the chosen calendar before retrying.`,
+          });
+        }
+        const invocation = yield* mapFailure(schedules.run({ ...input, ...options }).pipe(
+          Effect.provideService(StateRepository, repository),
+        ));
+        const result = { ...invocation, run: invocation.outcome?.run };
+        if (invocation._tag === "Failed" && invocation.failureCategory !== undefined) {
+          return yield* new CliCommandFailure({
+            category: invocation.failureCategory, message: invocation.reason, details: payload(result),
+          });
+        }
+        if (invocation.outcome !== undefined && invocation.outcome.outcome !== "Converged") {
+          return yield* outcomePayload(result);
+        }
+        if (invocation._tag === "Failed" || invocation.outcome === undefined) {
+          return yield* new CliCommandFailure({
+            category: "verification-or-apply-failure",
+            message: invocation._tag === "Failed" ? invocation.reason
+              : "the native invocation completed without a synchronization result; check `canonfig status`",
+            details: payload(result),
+          });
+        }
+        return payload(result);
+      }),
       removeSchedule: () =>
         persistScheduleOverride(repository, { kind: "disabled" }).pipe(
           Effect.andThen(mapFailure(schedules.remove())),

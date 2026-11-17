@@ -19,6 +19,7 @@ import { ExecutableAuthorizationSchema } from "../domain/synchronization.ts";
 import { parseOverlay, keptLocalSkillName } from "../projection/folder.ts";
 import { TARGET_IDS, type TargetId } from "../projection/model.ts";
 import {
+  defaultScheduleRunTimeoutMilliseconds,
   scheduleWeekdays,
   type SyncSchedule,
 } from "../schedule/schedule-manager.types.ts";
@@ -190,6 +191,7 @@ export type CliCommand =
   }
   | { readonly _tag: "ScheduleSetDefault" }
   | { readonly _tag: "ScheduleStatus" }
+  | { readonly _tag: "ScheduleRun"; readonly timeoutMilliseconds: number }
   | { readonly _tag: "ScheduleRemove" };
 
 export type CliOutcome =
@@ -389,6 +391,14 @@ const evaluateScheduleCommand = (
       // Separate options from positionals before judging the argument count, so
       // a stray argument is reported as the stray argument rather than making
       // the action itself look unknown.
+      if (action === "run") {
+        const options = parseOptions(rest, new Set(["--timeout-ms"]), new Set());
+        if (options.positionals.length > 0) return invalid("canonfig schedule run accepts no positional arguments");
+        return command({
+          _tag: "ScheduleRun",
+          timeoutMilliseconds: parsePositiveInteger(one(options, "--timeout-ms") ?? String(defaultScheduleRunTimeoutMilliseconds), "schedule run timeout", Number.MAX_SAFE_INTEGER),
+        }, format);
+      }
       if (action === "status" || action === "remove") {
         const options = parseOptions(rest, new Set(), new Set());
         if (options.positionals.length > 0) {
@@ -1089,6 +1099,7 @@ export const commandName = (value: CliCommand): string => {
     case "ScheduleSet":
     case "ScheduleSetDefault": return "schedule.set";
     case "ScheduleStatus": return "schedule.status";
+    case "ScheduleRun": return "schedule.run";
     case "ScheduleRemove": return "schedule.remove";
   }
 };
@@ -1195,6 +1206,7 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
       );
     case "ScheduleSetDefault": return yield* follower.setSchedule({ profileDefault: true });
     case "ScheduleStatus": return yield* follower.scheduleStatus();
+    case "ScheduleRun": return yield* follower.runSchedule({ timeoutMilliseconds: value.timeoutMilliseconds });
     case "ScheduleRemove": return yield* follower.removeSchedule();
   }
 });
@@ -1233,6 +1245,18 @@ export const runCli = Effect.fn("runCli")(function*(
   const root = fileURLToPath(new URL("../../", import.meta.url));
   const execution: Effect.Effect<CliPayload, CliCommandFailure, SourceCommands | FollowerCommands | SetupCommands | GuiQueries | MachineState | StateRepository> = Effect.gen(function*() {
     if (outcome.command._tag === "Ui") return yield* runGui(outcome.command, io, lease);
+    if (outcome.command._tag === "ScheduleRun" && lease !== undefined) {
+      // The job this command waits for may activate a Fleet Update, and activation
+      // waits for every command lease. Holding ours while waiting would block the
+      // update it waits for, so the lease is suspended for the wait and taken back after.
+      const command = outcome.command;
+      const context = yield* Effect.context<SourceCommands | FollowerCommands | SetupCommands | GuiQueries | MachineState | StateRepository>();
+      const exit = yield* Effect.tryPromise({
+        try: () => lease.selfUpdate(() => Effect.runPromiseExitWith(context)(executeCommand(command)), () => true),
+        catch: (cause) => new CliCommandFailure({ category: "human-action-required", message: String(cause) }),
+      });
+      return yield* exit;
+    }
     if (outcome.command._tag !== "Synchronize" || outcome.command.mode !== "apply" || lease === undefined) {
       return yield* executeCommand(outcome.command);
     }

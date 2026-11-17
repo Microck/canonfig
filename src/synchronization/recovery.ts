@@ -31,9 +31,12 @@ import type {
 } from "../state/state-repository.types.ts";
 import {
   appliedResourceFor,
+  blockedByPrerequisite,
+  recordsVerifiedResources,
   restoreAction,
   reduceActionResult,
   actionProgressOutcome,
+  startActionProgress,
   blockRunRollback,
   withRollbackOutcome,
   type RunRollback,
@@ -263,6 +266,18 @@ const latestRollbackReference = (
   return undefined;
 };
 
+/**
+ * Whether the interrupted run ever began this action. A `blocked` entry alone
+ * does not mean it started: a prerequisite hold journals `blocked` without
+ * running anything.
+ */
+const actionStarted = (
+  events: ReadonlyArray<ActionJournalRecord>,
+  action: ActionJournalRecord["action"],
+): boolean =>
+  events.some((event) => event.action === action
+    && (event.state === "running" || event.state === "failed" || event.state === "interrupted" || event.state === "succeeded"));
+
 const restoreResourceRollbackReference = (
   context: ResourceExecutionContext,
   reference: string,
@@ -430,7 +445,7 @@ export const recoverSynchronizationPlan = (
     const restoredPreimagesByAction = new Map<ActionId, RollbackProjection>();
     for (const state of states) {
       const last = latest.get(state.action.id)!;
-      if (last.state === "pending" || last.state === "blocked") continue;
+      if (last.state === "pending" || (last.state === "blocked" && !actionStarted(recovery.actions, state.action.id))) continue;
       if (last.state === "rolled-back") {
         restoredPreimagesByAction.set(state.action.id, new Map(earlierRemovalPreimages));
       }
@@ -444,7 +459,7 @@ export const recoverSynchronizationPlan = (
     const removalsWithSuccessorWrites = new Set<ActionId>();
     for (const state of [...states].reverse()) {
       const last = latest.get(state.action.id)!;
-      if (last.state === "pending" || last.state === "blocked") continue;
+      if (last.state === "pending" || (last.state === "blocked" && !actionStarted(recovery.actions, state.action.id))) continue;
       const reference = latestRollbackReference(recovery.actions, state.action.id);
       if (reference === undefined) continue;
       const inspection = yield* inspectRollbackTargets(state.context, reference, laterPreimages, restoredPreimagesByAction.get(state.action.id)).pipe(
@@ -472,7 +487,9 @@ export const recoverSynchronizationPlan = (
     const verified = new Set<ResourceId>();
     const removedResources = new Set<ResourceId>();
     let runRollback: RunRollback = { _tag: "Complete" };
-    let progress: ActionProgress = { _tag: "Running", verified };
+    let progress: ActionProgress = startActionProgress(verified);
+    // Actions that needed a person in this replay, and their resources.
+    const blocked = new Map<ActionId, ResourceId>();
     const completedRollbacks: Array<{
       readonly action: PlannedAction;
       readonly attempt: number;
@@ -491,7 +508,28 @@ export const recoverSynchronizationPlan = (
         readonly resource: ResourceId;
         readonly previousApplied?: AppliedResourceRecord | undefined;
       } | undefined;
-      if (last.state === "blocked" && state.action.detail.kind !== "install-tool") {
+      // Only an action the interrupted run never began can be held for a
+      // prerequisite. One it began had already passed its prerequisites, so it is
+      // replayed as before (restored, reverified or re-executed); holding it would
+      // leave a partial write or its ownership record out of step with the disk.
+      // Drift is never held: it must reach its branch and stop the run.
+      const started = actionStarted(recovery.actions, state.action.id);
+      const waiting = started || state.action.detail.kind === "drift-conflict"
+        ? undefined
+        : blockedByPrerequisite(state.action, blocked);
+      if (waiting !== undefined) {
+        yield* appendJournal(input.id, state.action, "blocked", attempt);
+        result = waiting;
+      } else if (
+        last.state === "blocked"
+        // Human actions and drift block on their own, and so does an agent task
+        // the run started. An agent task that never started may have been held
+        // or refused by policy: running it normally below re-checks the policy,
+        // so a refusal blocks again and a cleared hold runs as a fresh run would.
+        // Any other action journaled `blocked` was held for a prerequisite.
+        && (state.action.detail.kind === "human-action" || state.action.detail.kind === "drift-conflict"
+          || (state.action.detail.kind === "agent-task" && started))
+      ) {
         result = preservedOutcome(input, state.action);
       } else if (
         last.state === "succeeded"
@@ -499,8 +537,9 @@ export const recoverSynchronizationPlan = (
       ) {
         result = { kind: "verified" };
       } else if (
+        // An installer that may have run is only verified, never re-run.
         state.action.detail.kind === "install-tool"
-        && last.state !== "pending"
+        && started
       ) {
         result = yield* uncertainInstaller(
           input,
@@ -645,8 +684,9 @@ export const recoverSynchronizationPlan = (
       if (result.kind === "verified" && result.resource !== undefined
         && recoveryInput.revision.removedResources?.includes(result.resource) === true) removedResources.add(result.resource);
       progress = yield* reduceActionResult(progress, result);
+      if (result.kind === "human") blocked.set(state.action.id, state.action.resource);
       if (result.kind === "failed") failedReason = result.reason;
-      if (result.kind !== "verified") {
+      if (result.kind === "drift" || result.kind === "failed") {
         if (result.kind === "failed") {
           for (const completed of completedRollbacks.reverse()) {
             const rollback = yield* restoreAction(completed.rollback, appendJournal(
@@ -669,10 +709,11 @@ export const recoverSynchronizationPlan = (
       ? { outcome: "Failed", run: input.id, reason: failedReason }
       : actionProgressOutcome(input.id, progress);
     const appliedResources: Array<AppliedResourceRecord> = [];
-    if (outcome.outcome === "Converged") {
+    if (recordsVerifiedResources(outcome)) {
       const appliedAt = yield* now;
+      const blockedResources = new Set(blocked.values());
       for (const state of states) {
-        if (!verified.has(state.action.resource) || removedResources.has(state.action.resource)) continue;
+        if (!verified.has(state.action.resource) || removedResources.has(state.action.resource) || blockedResources.has(state.action.resource)) continue;
         const record = appliedResourceFor(input, state, appliedAt);
         if (record !== undefined) appliedResources.push(record);
       }
@@ -681,7 +722,7 @@ export const recoverSynchronizationPlan = (
       outcome: withRollbackOutcome(outcome, runRollback),
       rollback: runRollback,
       appliedResources,
-      removedResources: outcome.outcome === "Converged"
+      removedResources: recordsVerifiedResources(outcome)
         ? [...removedResources].sort()
         : [],
     };

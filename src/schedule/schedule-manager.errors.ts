@@ -2,6 +2,7 @@ import { Schema } from "effect";
 import { TaggedError } from "../domain/tagged-error.ts";
 
 import type { MachineStateError } from "../machine/machine-state.errors.ts";
+import type { StateRepositoryError } from "../state/state-repository.errors.ts";
 
 export class InvalidScheduleError extends TaggedError<InvalidScheduleError>()(
   "InvalidScheduleError",
@@ -30,8 +31,15 @@ export class ScheduleVerificationError
     },
   ) {}
 
+export class ScheduleRunTimeoutError extends TaggedError<ScheduleRunTimeoutError>()(
+  "ScheduleRunTimeoutError",
+  { message: Schema.String },
+) {}
+
 export type ScheduleManagerError =
   | InvalidScheduleError
   | ScheduleHumanActionRequiredError
   | ScheduleVerificationError
+  | ScheduleRunTimeoutError
+  | StateRepositoryError
   | MachineStateError;

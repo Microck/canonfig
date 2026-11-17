@@ -157,6 +157,9 @@ export interface FollowerCommandsService {
     input: ScheduleInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly scheduleStatus: () => Effect.Effect<CliPayload, CliCommandFailure>;
+  readonly runSchedule: (
+    input: { readonly timeoutMilliseconds: number },
+  ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly removeSchedule: () => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly doctor: (
     input: DoctorCommandInput,

@@ -1010,6 +1010,210 @@ describe("synchronization crash recovery", () => {
     expect(await readFile(value.target, "utf8")).toBe("canonical content");
   });
 
+  it.each([
+    ["runs an action that does not depend on it", false],
+    ["blocks an action that waits for it", true],
+  ] as const)("after an action that needs a person, the run %s", async (_name, dependent) => {
+    const value = fixture(temporaryDirectory());
+    const base = persistedPlan(value);
+    const write = base.actions[0]!;
+    const human = {
+      ...write,
+      id: decode(ActionId)("action:tool:0:human-action"),
+      kind: "human-action" as const,
+      detail: { kind: "human-action" as const, reason: "No usable installation recipe for this platform", instructions: "Install it manually" },
+      before: [],
+    };
+    const tail = { ...write, before: dependent ? [human.id] : [] };
+    const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)({
+      revision: base.revision, follower: base.follower, requiredBlobs: base.requiredBlobs,
+      actions: [human, tail], agentTasks: base.agentTasks,
+    }));
+    const plan = { ...base, actions: [human, tail], encoded, digest: sha256Hex(encoded) };
+    await seed(value, plan);
+    const execution = await Effect.runPromise(executeSynchronizationPlan({
+      id: decode(RunId)("run-recovery"), plan, revision: value.revision, artifacts: [value.artifact],
+    }).pipe(Effect.provide(applicationLayer(value))));
+    expect(execution.outcome.outcome, JSON.stringify(execution.outcome)).toBe("HumanActionRequired");
+    if (execution.outcome.outcome !== "HumanActionRequired") return;
+    expect(execution.outcome.actions.map((action) => action.reason)).toEqual(dependent
+      ? ["No usable installation recipe for this platform", `${write.resource} waits for ${write.resource}, which needs human action`]
+      : ["No usable installation recipe for this platform"]);
+    expect(existsSync(value.target)).toBe(!dependent);
+    expect(runRows(value).filter((row) => row.action_id === tail.id).map((row) => row.state).at(-1)).toBe(dependent ? "blocked" : "succeeded");
+  });
+
+  const humanThenDependent = (value: Fixture) => {
+    const base = persistedPlan(value);
+    const write = base.actions[0]!;
+    const human = {
+      ...write,
+      id: decode(ActionId)("action:tool:0:human-action"),
+      kind: "human-action" as const,
+      detail: { kind: "human-action" as const, reason: "No usable installation recipe for this platform", instructions: "Install it manually" },
+      before: [],
+    };
+    return { base, write, human };
+  };
+
+  it("still stops with Follower Drift when a drift conflict waits for an action that needs a person", async () => {
+    const value = fixture(temporaryDirectory());
+    const { base, write, human } = humanThenDependent(value);
+    const drift = {
+      ...write,
+      id: decode(ActionId)("action:settings:0:drift-conflict"),
+      kind: "drift-conflict" as const,
+      detail: { kind: "drift-conflict" as const, target: value.target, desiredDigest: "a".repeat(64), observedDigest: "b".repeat(64) },
+      before: [human.id],
+    };
+    const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)({
+      revision: base.revision, follower: base.follower, requiredBlobs: base.requiredBlobs,
+      actions: [human, drift], agentTasks: base.agentTasks,
+    }));
+    const plan = { ...base, actions: [human, drift], encoded, digest: sha256Hex(encoded) };
+    await seed(value, plan);
+    const execution = await Effect.runPromise(executeSynchronizationPlan({
+      id: decode(RunId)("run-recovery"), plan, revision: value.revision, artifacts: [value.artifact],
+    }).pipe(Effect.provide(applicationLayer(value))));
+    expect(execution.outcome.outcome, JSON.stringify(execution.outcome)).toBe("FollowerDrift");
+  });
+
+  it("on recovery, reverifies a dependent that already succeeded instead of holding it", async () => {
+    const value = fixture(temporaryDirectory());
+    const { base, write, human } = humanThenDependent(value);
+    const tail = { ...write, before: [human.id] };
+    const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)({
+      revision: base.revision, follower: base.follower, requiredBlobs: base.requiredBlobs,
+      actions: [human, tail], agentTasks: base.agentTasks,
+    }));
+    const plan = { ...base, actions: [human, tail], encoded, digest: sha256Hex(encoded) };
+    await seed(value, plan);
+    mkdirSync(dirname(value.target), { recursive: true });
+    writeFileSync(value.target, value.artifact.content);
+    chmodSync(value.target, 0o600);
+    await journal(value, human.id, "blocked");
+    await journal(value, tail.id, "running");
+    await journal(value, tail.id, "succeeded");
+    const outcome = await recover(value);
+    expect(outcome.outcome, JSON.stringify(outcome)).toBe("HumanActionRequired");
+    if (outcome.outcome !== "HumanActionRequired") return;
+    expect(outcome.actions.map((action) => action.reason)).toEqual(["No usable installation recipe for this platform"]);
+    expect(readFileSync(value.target, "utf8")).toBe("canonical content");
+  });
+
+  it("on recovery, runs a write that was held only for a prerequisite once that prerequisite succeeds", async () => {
+    const value = fixture(temporaryDirectory());
+    const base = persistedPlan(value);
+    const first = base.actions[0]!;
+    const held = { ...first, id: decode(ActionId)("action:settings:held:write-file"), before: [first.id] };
+    const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)({
+      revision: base.revision, follower: base.follower, requiredBlobs: base.requiredBlobs,
+      actions: [first, held], agentTasks: base.agentTasks,
+    }));
+    const plan = { ...base, actions: [first, held], encoded, digest: sha256Hex(encoded) };
+    await seed(value, plan);
+    // The prerequisite failed before the interruption, so its dependent was held.
+    await journal(value, first.id, "failed");
+    await journal(value, held.id, "blocked");
+    const outcome = await recover(value);
+    expect(outcome.outcome, JSON.stringify(outcome)).toBe("Converged");
+    expect(readFileSync(value.target, "utf8")).toBe("canonical content");
+    expect(runRows(value).filter((row) => row.action_id === held.id).at(-1)?.state).toBe("succeeded");
+  });
+
+  it("on recovery, replays a dependent the run had started instead of holding it", async () => {
+    const value = fixture(temporaryDirectory());
+    const { base, write, human } = humanThenDependent(value);
+    const tail = { ...write, before: [human.id] };
+    const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)({
+      revision: base.revision, follower: base.follower, requiredBlobs: base.requiredBlobs,
+      actions: [human, tail], agentTasks: base.agentTasks,
+    }));
+    const plan = { ...base, actions: [human, tail], encoded, digest: sha256Hex(encoded) };
+    await seed(value, plan);
+    mkdirSync(dirname(value.target), { recursive: true });
+    // The interrupted write had already put the new content in place.
+    writeFileSync(value.target, value.artifact.content);
+    chmodSync(value.target, 0o600);
+    const reference = writeRollbackPayload(value, tail.id, {
+      path: value.target, state: "regular", content: Buffer.from("previous"), mode: 0o600,
+    });
+    await journal(value, human.id, "blocked");
+    await journal(value, tail.id, "running", reference);
+    const outcome = await recover(value);
+    expect(outcome.outcome, JSON.stringify(outcome)).toBe("HumanActionRequired");
+    if (outcome.outcome !== "HumanActionRequired") return;
+    expect(outcome.actions.map((action) => action.reason)).toEqual(["No usable installation recipe for this platform"]);
+    expect(readFileSync(value.target, "utf8")).toBe("canonical content");
+    expect(runRows(value).filter((row) => row.action_id === tail.id).at(-1)?.state).toBe("succeeded");
+  });
+
+  it("on recovery, holds an installer that never started instead of reporting it uncertain", async () => {
+    const value = fixture(temporaryDirectory(), { kind: "tool" });
+    const base = persistedPlan(value);
+    const install = base.actions.find((action) => action.kind === "install-tool");
+    expect(install, JSON.stringify(base.actions.map((action) => action.kind))).toBeDefined();
+    if (install === undefined) return;
+    const human = {
+      ...install,
+      id: decode(ActionId)("action:tool:prerequisite:human-action"),
+      kind: "human-action" as const,
+      detail: { kind: "human-action" as const, reason: "No usable installation recipe for this platform", instructions: "Install it manually" },
+      before: [],
+    };
+    const held = { ...install, before: [human.id] };
+    const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)({
+      revision: base.revision, follower: base.follower, requiredBlobs: base.requiredBlobs,
+      actions: [human, held], agentTasks: base.agentTasks,
+    }));
+    const plan = { ...base, actions: [human, held], encoded, digest: sha256Hex(encoded) };
+    await seed(value, plan);
+    await journal(value, human.id, "blocked");
+    await journal(value, held.id, "blocked");
+    const outcome = await recover(value);
+    expect(outcome.outcome, JSON.stringify(outcome)).toBe("HumanActionRequired");
+    if (outcome.outcome !== "HumanActionRequired") return;
+    expect(outcome.actions.map((action) => action.reason)).toEqual([
+      "No usable installation recipe for this platform",
+      `${install.resource} waits for ${install.resource}, which needs human action`,
+    ]);
+  });
+
+  it("on recovery, runs an agent task held for a prerequisite once it clears, re-checking its policy", async () => {
+    const value = fixture(temporaryDirectory());
+    const base = persistedPlan(value);
+    const write = base.actions[0]!;
+    const agentAction = {
+      id: decode(ActionId)("action:settings:1:agent-task"),
+      resource: write.resource,
+      kind: "agent-task" as const,
+      detail: { kind: "agent-task" as const, taskId: decode(AgentTaskId)("agent:settings:1"), summary: "Resolve settings" },
+      before: [write.id],
+    };
+    const agentTask = {
+      id: decode(AgentTaskId)("agent:settings:1"), resource: write.resource, summary: "Resolve settings",
+      desiredOutcome: "Settings resolved", observedEvidence: ["Observed state: absent"], allowedPaths: ["~/settings.json"],
+      allowedExecutables: ["custom-tool"], executableAuthorizations: [{ executable: "custom-tool", behavior: "leaf" as const }],
+      allowedOrigins: [], forbidden: ["elevation", "login", "restart", "reboot"] as const, timeLimitSeconds: 300,
+      outputLimitBytes: 65_536, verification: { command: ["custom-tool", "--version"] },
+    };
+    const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)({
+      revision: base.revision, follower: base.follower, requiredBlobs: base.requiredBlobs,
+      actions: [write, agentAction], agentTasks: [agentTask],
+    }));
+    const plan = { ...base, actions: [write, agentAction], agentTasks: [agentTask], encoded, digest: sha256Hex(encoded) };
+    await seed(value, plan);
+    // The prerequisite failed before the interruption, so the agent task was held without starting.
+    await journal(value, write.id, "failed");
+    await journal(value, agentAction.id, "blocked");
+    const outcome = await recover(value);
+    expect(outcome.outcome, JSON.stringify(outcome)).toBe("HumanActionRequired");
+    if (outcome.outcome !== "HumanActionRequired") return;
+    // The task ran through its policy gate (no agent-apply harness here), not a replayed outcome.
+    expect(outcome.actions.map((action) => action.reason)).toEqual(["Bounded agent task requires an apply-authorized harness: Resolve settings"]);
+    expect(readFileSync(value.target, "utf8")).toBe("canonical content");
+  });
+
   it("preserves executable execution-model metadata across persisted plan hydration", async () => {
     const value = fixture(temporaryDirectory(), { kind: "tool" });
     const base = persistedPlan(value);

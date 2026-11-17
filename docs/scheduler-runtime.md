@@ -11,6 +11,25 @@ The scheduled invocation starts before CLI Fleet Update checks and includes
 their outcome. An unavailable Source or refused update still leaves a failed
 invocation for `status` and `doctor`; it is not reported as a job that never ran.
 
+`canonfig schedule run [--timeout-ms <ms>]` starts that same installed native job
+and waits for its next invocation to finish. Use it from SSH when Windows
+Credential Manager is unavailable to an OpenSSH key network logon, or when the
+macOS login Keychain is unavailable to the remote shell. The job keeps its
+installed identity and logon rather than inheriting the SSH session.
+
+The command refuses absent, disabled, stopped, or drifted jobs and names
+`canonfig schedule set` as the repair. It polls the state database once per
+second, follows the first invocation starting at or after the request, and
+returns its synchronization outcome and run id. The default wait is two hours.
+A timeout does not stop the job: check `canonfig schedule status` and
+`canonfig status` before retrying. An already-running invocation is not reused;
+if the native scheduler coalesces the start request, the wait can time out.
+
+Windows still requires the user to be logged on for its Interactive task.
+macOS still requires the user's GUI session and an unlocked login Keychain.
+Linux uses the existing systemd user service and needs a working user manager;
+triggering it does not unlock a credential store.
+
 When the running Node is a Homebrew Cellar path such as
 `<prefix>/Cellar/node@24/24.16.0/bin/node`, the job names the stable
 `<prefix>/opt/<formula>/bin/node` link instead, provided that link resolves to

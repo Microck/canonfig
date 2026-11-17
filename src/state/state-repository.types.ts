@@ -22,6 +22,7 @@ import type { McpQualificationReceipt } from "../domain/mcp-qualification.ts";
 import type { FollowerSynchronizationConfiguration } from
   "../synchronization/follower-sync-config.ts";
 import type { CompiledResourceBlob } from "../profile/compiler.ts";
+import { SynchronizationOutcomeSchema } from "../domain/synchronization.ts";
 
 const ScheduledInvocationFields = {
   id: Schema.NonEmptyString,
@@ -31,9 +32,20 @@ const ScheduledInvocationFields = {
 
 export const ScheduledInvocation = Schema.Union([
   Schema.TaggedStruct("Running", ScheduledInvocationFields),
-  Schema.TaggedStruct("Completed", { ...ScheduledInvocationFields, at: Schema.NonEmptyString }),
+  Schema.TaggedStruct("Completed", {
+    ...ScheduledInvocationFields, at: Schema.NonEmptyString,
+    outcome: Schema.optional(SynchronizationOutcomeSchema),
+    // This process activated a Fleet Update and handed the run to a
+    // replacement process, which records its own invocation.
+    restarted: Schema.optional(Schema.Literal(true)),
+  }),
   Schema.TaggedStruct("Failed", {
     ...ScheduledInvocationFields, at: Schema.NonEmptyString, reason: Schema.NonEmptyString,
+    outcome: Schema.optional(SynchronizationOutcomeSchema),
+    failureCategory: Schema.optional(Schema.Literals([
+      "usage-or-configuration", "human-action-required", "conflict-or-drift",
+      "authentication-or-revocation", "transport", "verification-or-apply-failure", "internal",
+    ])),
   }),
 ]);
 export type ScheduledInvocation = typeof ScheduledInvocation.Type;

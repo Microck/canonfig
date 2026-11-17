@@ -58,6 +58,10 @@ it("binds admissions to the enrolled identity, advances only on fresh target-ver
     expect(() => verifyFleetDirective({ ...signed, directive: { ...signed.directive, version: "99.0.0" } }, canary.follower.id, fingerprint)).toThrow("signature");
     expect(() => verifyFleetDirective(signed, second.follower.id, fingerprint)).toThrow("identity");
     expect(() => verifyFleetDirective(signed, canary.follower.id, fingerprint, Date.parse(signed.directive.expiresAt))).toThrow("expired");
+    // A follower whose clock runs behind the Source still accepts the directive the Source just admitted.
+    const admittedAtSource = Date.parse(signed.directive.expiresAt) - 60 * 60 * 1000;
+    expect(verifyFleetDirective(signed, canary.follower.id, fingerprint, admittedAtSource - 100_000).attempt).toBe(signed.directive.attempt);
+    expect(() => verifyFleetDirective(signed, canary.follower.id, fingerprint, admittedAtSource - 6 * 60 * 1000)).toThrow("invalid lifetime");
     expect(() => Schema.decodeUnknownSync(SignedFleetDirective)({ directive: signed.directive, publicKey: signed.publicKey })).toThrow();
     const healthy: FleetReport = { rollout: started.id, attempt: signed.directive.attempt, version: started.version, status: "healthy", detail: "Converged", health: {
       run: "run-canary", revision: revision.id, version: started.version, outcome: "Converged", recordedAt: new Date().toISOString(),

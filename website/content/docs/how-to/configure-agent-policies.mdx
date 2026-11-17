@@ -31,8 +31,8 @@ It is separate from the harnesses Canonfig projects `~/.canonfig/` into.
 
 | Policy | During `sync --apply` |
 | --- | --- |
-| `deterministic-only` (default) | No agent runs. Each Agent Task stops the run with Human Action Required. |
-| `agent-propose` | The agent runs and returns a proposal. Canonfig checks and records it, runs none of its actions, and stops at that task with Human Action Required. |
+| `deterministic-only` (default) | No agent runs. Each Agent Task becomes Human Action Required, and the rest of the run continues. |
+| `agent-propose` | The agent runs and returns a proposal. Canonfig checks and records it, runs none of its actions, and reports that task as Human Action Required. The rest of the run continues. |
 | `agent-apply` | The agent runs and returns a proposal. Canonfig runs only the actions inside the limits, then checks the result itself. |
 
 With `agent-propose` or `agent-apply`, `sync --plan` also runs the agent and
@@ -167,7 +167,7 @@ against the limits, and with `agent-apply` runs each action directly, without
 a shell. Each Agent Task has a 300-second time limit and a 64 KiB output
 limit. Canonfig removes the values of bound secrets from what it records.
 
-The task becomes Human Action Required (exit 3), and the run stops there, when:
+The task becomes Human Action Required (exit 3), and actions that depend on it wait, when:
 
 - the proposal asks for something outside the limits;
 - the agent declines, times out, or prints more than the output limit;

@@ -547,13 +547,21 @@ export type ActionResult =
   | { readonly kind: "failed"; readonly reason: string; readonly rollbackState: RollbackState;
       readonly rollbackReference?: string | undefined; readonly occupiedTarget?: string | undefined };
 
+/**
+ * A run keeps going past an action that needs a person and collects every such
+ * action, so one tool without a recipe for this platform no longer leaves every
+ * later resource unapplied. Actions that list a blocked action among their
+ * prerequisites are blocked too (see blockedByPrerequisite). Follower Drift and
+ * failure still stop the run.
+ */
 export type ActionProgress =
-  | { readonly _tag: "Running"; readonly verified: Set<ResourceId> }
-  | { readonly _tag: "Human"; readonly actions: ReadonlyArray<HumanAction> }
+  | { readonly _tag: "Running"; readonly verified: Set<ResourceId>; readonly human: Array<HumanAction> }
   | { readonly _tag: "Drift"; readonly conflicts: ReadonlyArray<DriftConflict> }
   | { readonly _tag: "Failed"; readonly reason: string; readonly occupiedTarget?: string | undefined };
 
-/** Both normal execution and replay stop through the same outcome transition. */
+export const startActionProgress = (verified: Set<ResourceId>): ActionProgress => ({ _tag: "Running", verified, human: [] });
+
+/** Both normal execution and replay advance through the same outcome transition. */
 export const reduceActionResult = (progress: ActionProgress, result: ActionResult) =>
   Effect.gen(function*() {
     if (progress._tag !== "Running") return yield* new InvalidExecutionPlanError({ message: `cannot execute an action after ${progress._tag}` });
@@ -561,7 +569,9 @@ export const reduceActionResult = (progress: ActionProgress, result: ActionResul
       case "verified":
         if (result.resource !== undefined) progress.verified.add(result.resource);
         return progress;
-      case "human": return { _tag: "Human" as const, actions: [result.human] };
+      case "human":
+        progress.human.push(result.human);
+        return progress;
       case "drift": return { _tag: "Drift" as const, conflicts: [result.drift] };
       case "failed": return { _tag: "Failed" as const, reason: result.reason, occupiedTarget: result.occupiedTarget };
     }
@@ -569,12 +579,43 @@ export const reduceActionResult = (progress: ActionProgress, result: ActionResul
 
 export const actionProgressOutcome = (run: RunId, progress: ActionProgress): SynchronizationOutcome => {
   switch (progress._tag) {
-    case "Running": return { outcome: "Converged", run, verified: [...progress.verified].sort() };
-    case "Human": return { outcome: "HumanActionRequired", run, actions: progress.actions };
+    case "Running": return progress.human.length > 0
+      ? { outcome: "HumanActionRequired", run, actions: progress.human }
+      : { outcome: "Converged", run, verified: [...progress.verified].sort() };
     case "Drift": return { outcome: "FollowerDrift", run, conflicts: progress.conflicts };
     case "Failed": return { outcome: "Failed", run, reason: progress.reason, occupiedTarget: progress.occupiedTarget };
   }
 };
+
+/**
+ * An action that must run after one blocked earlier in this run (it lists that
+ * action in `before`) cannot run either. It is reported as needing the same
+ * person, naming what it waits for.
+ */
+export const blockedByPrerequisite = (
+  action: { readonly resource: ResourceId; readonly before: ReadonlyArray<ActionId> },
+  blocked: ReadonlyMap<ActionId, ResourceId>,
+): ActionResult | undefined => {
+  const waitsFor = [...new Set(action.before.flatMap((id) => blocked.has(id) ? [blocked.get(id)!] : []))].sort();
+  if (waitsFor.length === 0) return undefined;
+  return {
+    kind: "human",
+    human: {
+      reason: `${action.resource} waits for ${waitsFor.join(", ")}, which needs human action`,
+      instructions: `Resolve ${waitsFor.join(", ")}, then run synchronization again.`,
+      resource: action.resource,
+    },
+  };
+};
+
+/**
+ * Which outcomes keep their verified writes and so record them. A run that
+ * needs a person rolls nothing back, so recording what it verified keeps the
+ * Applied Resource Records true to the disk; otherwise the next run would see
+ * Canonfig's own unrecorded writes on an append-local surface as Follower Drift.
+ */
+export const recordsVerifiedResources = (outcome: SynchronizationOutcome): boolean =>
+  outcome.outcome === "Converged" || outcome.outcome === "HumanActionRequired";
 
 export const driftResult = (
   input: SynchronizationRunInput,
@@ -1191,12 +1232,24 @@ export const executeSynchronizationPlan = (
     }> = [];
     let failedReason: string | undefined;
     let occupiedTarget: string | undefined;
-    let progress: ActionProgress = { _tag: "Running", verified };
+    let progress: ActionProgress = startActionProgress(verified);
+    // Actions that needed a person in this run, and their resources.
+    const blocked = new Map<ActionId, ResourceId>();
 
     const runActions = Effect.gen(function*() {
       for (let index = 0; index < states.length; index += 1) {
         const state = states[index]!;
-        const result = yield* executeSynchronizationAction(input, state);
+        // Drift is never held: it must reach its own branch and stop the run.
+        const waiting = state.action.detail.kind === "drift-conflict" ? undefined : blockedByPrerequisite(state.action, blocked);
+        const result: ActionResult = waiting === undefined
+          ? yield* executeSynchronizationAction(input, state)
+          : yield* journal(input.id, state.action.id, "blocked", undefined, undefined, 1).pipe(
+            Effect.as(waiting),
+            Effect.catch((error) => Effect.succeed({
+              kind: "failed", rollbackState: { _tag: "NotRequired" }, reason: redact(error, input.knownSecrets ?? []),
+            } satisfies ActionResult)),
+          );
+        if (result.kind === "human") blocked.set(state.action.id, state.action.resource);
         if (result.kind === "failed" && result.rollbackState._tag === "Blocked") {
           runRollback = blockRunRollback(runRollback, { action: state.action.id, resource: state.action.resource, state: result.rollbackState });
         }
@@ -1215,7 +1268,7 @@ export const executeSynchronizationPlan = (
           failedReason = result.reason;
           occupiedTarget = result.occupiedTarget;
         }
-        if (result.kind !== "verified") {
+        if (result.kind === "drift" || result.kind === "failed") {
           if (result.kind === "failed") {
             for (const completed of completedRollbacks.reverse()) {
               const previousApplied = completed.resource === undefined
@@ -1263,10 +1316,11 @@ export const executeSynchronizationPlan = (
       ? { outcome: "Failed", run: input.id, reason: failedReason, occupiedTarget }
       : actionProgressOutcome(input.id, progress);
 
-    if (outcome.outcome === "Converged") {
+    if (recordsVerifiedResources(outcome)) {
       const appliedAt = yield* now();
+      const blockedResources = new Set(blocked.values());
       for (const state of states) {
-        if (!verified.has(state.action.resource) || removedResources.has(state.action.resource)) continue;
+        if (!verified.has(state.action.resource) || removedResources.has(state.action.resource) || blockedResources.has(state.action.resource)) continue;
         const record = appliedResourceFor(input, state, appliedAt);
         if (record !== undefined) applied.push(record);
       }
@@ -1275,7 +1329,7 @@ export const executeSynchronizationPlan = (
       outcome: withRollbackOutcome(outcome, runRollback),
       rollback: runRollback,
       appliedResources: applied,
-      removedResources: outcome.outcome === "Converged"
+      removedResources: recordsVerifiedResources(outcome)
         ? [...removedResources].sort()
         : [],
     };
