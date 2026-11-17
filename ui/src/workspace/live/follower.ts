@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { Schema } from "effect";
-import { GuiArchiveDownload, GuiBackups, GuiHarnessReport, GuiLocalItems, GuiScheduleStatus, GuiSecrets, GuiSecretSummary, GuiSecretRemoval, GuiSecretSync, GuiSynchronizationResult } from "../../../../src/gui/contract/synchronization";
+import { GuiArchiveDownload, GuiBackups, GuiHarnessReport, GuiLocalItems, GuiLocalSynchronization, GuiScheduleStatus, GuiSecrets, GuiSecretSummary, GuiSecretRemoval, GuiSecretSync, GuiSynchronizationResult } from "../../../../src/gui/contract/synchronization";
 import { GuiEnrollment, GuiInvitationInspection } from "../../../../src/gui/contract/enrollment";
 import { GuiOperationTicket, type GuiOperation } from "../../../../src/gui/contract/operations";
 import { GuiRequestError, type GuiSession, type GuiStatus, type WorkspaceBackend } from "../../gui-client";
@@ -71,11 +71,12 @@ export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, 
   const harnesses = useLiveResource(backend, "/api/harnesses", GuiHarnessReport, session.role !== "unconfigured");
   const local = useLiveResource(backend, "/api/local/items", GuiLocalItems, follower);
   const schedule = useLiveResource(backend, "/api/schedule", GuiScheduleStatus, follower);
-  const backups = useLiveResource(backend, "/api/backups", GuiBackups, follower);
+  const backups = useLiveResource(backend, "/api/backups", GuiBackups, true);
   const overlays = useLiveResource(backend, "/api/local/overlays", GuiSynchronizationResult, follower);
   const tunnel = useLiveResource(backend, "/api/tunnel", GuiSynchronizationResult, follower);
   const enrollment = useLiveResource(backend, "/api/enrollment", GuiEnrollment, follower);
   const secrets = useLiveResource(backend, "/api/secrets", GuiSecrets, follower);
+  const localSynchronization = useLiveResource(backend, "/api/local/synchronization", GuiLocalSynchronization, !follower);
   const actions = useLiveActions(backend, reload);
   // Inspection is read-only. Invalidating page resources here would unmount and erase the connection draft.
   const inspectionActions = useLiveActions(backend, () => {});
@@ -98,7 +99,8 @@ export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, 
   const excluded = [...(harnesses.data?.excluded ?? [])];
   const overlayItems = strings(config.overlays);
   const items = localItems(local.data);
-  const interrupted = status?.activeRecovery !== undefined && status.activeRecovery !== null;
+  const recovery = follower ? status?.activeRecovery : localSynchronization.data?.activeRecovery;
+  const interrupted = recovery !== undefined && recovery !== null;
   const run = async (action: (signal: AbortSignal) => Promise<unknown>) => {
     let succeeded = false;
     await actions.run(async (signal) => {
@@ -146,10 +148,11 @@ export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, 
   const savePreferences: FollowerLive["savePreferences"] = (input) => run((signal) => backend.request("/api/local/preferences", GuiLocalItems, signal, {
     method: "PUT", body: input,
   }));
-  const check = () => start("/api/sync/plan", "plan", "Check for updates");
+  const check = () => start("/api/sync/plan", "plan", follower ? "Check for updates" : "Plan local changes");
+  const planDigest = command.kind === "Completed" && command.command === "plan" ? text(record(command.operation.result).planDigest) : undefined;
   const live: FollowerLive = {
     action: { loading: actions.state.loading || inspectionActions.state.loading || uncertain, error: command.kind === "ObservationLost" ? command.error : actions.state.error ?? inspectionActions.state.error }, operation, operationName, command,
-    canApply: command.kind === "Completed" && command.command === "plan", resumeObservation, local: local.data,
+    canApply: planDigest !== undefined, resumeObservation, local: local.data,
     allowed: LOCAL_CATEGORIES.filter((category) => strings(record(local.data?.canonicalConfig.local).allow).includes(category)),
     schedule: schedule.data, tunnel: tunnel.data, enrollment: enrollment.data, secrets: secrets.data?.secrets ?? [],
     check, createReview: () => start("/api/sync/reviews", "review", "Private adoption review"),
@@ -192,7 +195,7 @@ export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, 
   const actionError = { loading: false, error: actions.state.error ?? inspectionActions.state.error };
   return {
     followerLive: live,
-    followerState: resourceState([tunnel, enrollment, secrets, actionError]),
+    followerState: resourceState([tunnel, enrollment, secrets, localSynchronization, actionError]),
     followerStates: {
       harnesses: resourceState([harnesses, actionError]), local: resourceState([harnesses, local, overlays, actionError]),
       schedule: resourceState([schedule, actionError]), backups: resourceState([backups, actionError]),
@@ -205,7 +208,7 @@ export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, 
     tunnelUp: tunnel.data?.lifecycle === "running", secretsRefresh: { busy: actions.state.loading, updated: secretMessage },
     serviceInstalled: false, tunnelConfigured: tunnel.data !== null && tunnel.data.lifecycle !== "not-configured",
     plan: [], targetRevision: undefined, phase: uncertain ? "running" : command.kind === "Completed" && command.command === "apply" ? "done" : "plan", progress: undefined,
-    applyPlan: () => start("/api/sync/apply", "apply", "Apply changes"), driftOpen: false, interrupted,
+    applyPlan: () => start("/api/sync/apply", "apply", "Apply changes", { planDigest }), driftOpen: false, interrupted,
     recover: () => start("/api/recovery", "recover", "Recover update"), abandon: () => start("/api/recovery/abandon", "abandon", "Abandon update"),
     runs: [], humanAction: actions.state.error?.failure.category === "human-action-required", setHumanAction: check, appliedRevision: undefined,
     excluded, setExcluded: (update) => { const next = typeof update === "function" ? update(excluded) : update; void run(async (signal) => {

@@ -19,7 +19,7 @@ import type {
   ObservedResourceState,
   PlannedAction,
 } from "../domain/synchronization.ts";
-import { canonicalJson, sha256Hex } from "../profile/profile-codec.ts";
+import { asJson, canonicalJson, sha256Hex } from "../profile/profile-codec.ts";
 import {
   DuplicatePlannerInputError,
   MissingBlobMetadataError,
@@ -53,6 +53,7 @@ import type {
   PlannedAgentTask,
   PlannedSynchronization,
   SynchronizationPlannerInput,
+  SynchronizationAgentConfiguration,
 } from "./synchronization.types.ts";
 
 const compareText = (left: string, right: string): number => {
@@ -652,3 +653,14 @@ export const planSynchronization = (
       transferResult.transfer,
     ));
   });
+
+/** Bind executable actions and write policy, not transport counters or agent proposal timing. */
+export const synchronizationReviewDigest = (
+  plan: PlannedSynchronization,
+  backup: boolean,
+  agent?: Pick<SynchronizationAgentConfiguration, "policy" | "harness">,
+) => sha256Hex(canonicalJson(asJson({
+  plan: plan.digest,
+  backup,
+  agent: plan.agentTasks.length === 0 || agent === undefined ? null : { policy: agent.policy, harness: agent.harness ?? null },
+})));

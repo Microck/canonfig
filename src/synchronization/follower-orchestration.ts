@@ -85,6 +85,8 @@ import {
   preflightPathLengths,
 } from "./executor.ts";
 import { withRunLock } from "./run-lock.ts";
+import { synchronizationReviewDigest } from "./planner.ts";
+import { SynchronizationPlanChangedError } from "./synchronization.errors.ts";
 import { assertUpgradeGate } from "./upgrade-gate.ts";
 import { installerRefusals } from "./installer-bindings.ts";
 import { clientReviewSteps, plannedFileChanges } from "./client-review.ts";
@@ -960,6 +962,12 @@ export const synchronizeFollower = Effect.fn(
   // `sync --plan` must not accept a target this machine cannot write; the
   // apply repeats the check before it records the run.
   yield* preflightPathLengths(followerPlan.plan.actions, followerPlan.revision.desired);
+  const backup = !projection.noBackup && followerPlan.backups;
+  const agent = agentConfigurationFor(configuration, scheduled, signal);
+  const planDigest = synchronizationReviewDigest(followerPlan.plan, backup, agent);
+  if (mode === "apply" && projection.expectedPlanDigest !== undefined && projection.expectedPlanDigest !== planDigest) {
+    return yield* new SynchronizationPlanChangedError({});
+  }
   const noAgentResolutions: ReadonlyArray<AgentResolutionOutcome> = [];
   // `agent-propose` records a proposal and stops, which is what the operator
   // documentation and the glossary describe. Apply used to skip resolution
@@ -994,9 +1002,9 @@ export const synchronizeFollower = Effect.fn(
         ),
     })
     : undefined;
-  const backup = !projection.noBackup && followerPlan.backups;
   const base = {
     mode,
+    planDigest,
     revision: selected.id,
     downloadedBlobs: fetched.downloadedBlobs,
     reusedBlobs: fetched.reusedBlobs,
@@ -1039,7 +1047,7 @@ export const synchronizeFollower = Effect.fn(
     planned: { ...followerPlan, plan: planned.plan },
     backup,
     home: followerPlan.home,
-    agent: agentConfigurationFor(configuration, scheduled, signal),
+    agent,
     agentResolution: journaledAgentResolution,
     limits: {
       // The transport timeout used to be passed here, which killed any

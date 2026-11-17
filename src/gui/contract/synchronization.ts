@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { ContentDigest } from "../../domain/brand.ts";
 import { TARGET_IDS } from "../../projection/model.ts";
 import { SyncScheduleSchema } from "../../schedule/schedule-manager.types.ts";
 import { GuiBase64 } from "./profile.ts";
@@ -16,6 +17,10 @@ export const GuiScheduleStatus = Schema.StructWithRest(
   [Schema.Record(Schema.String, Schema.Json)],
 );
 export type GuiScheduleStatus = typeof GuiScheduleStatus.Type;
+export const GuiSyncApplyRequest = Schema.Struct({ planDigest: ContentDigest });
+export const GuiLocalSynchronization = Schema.Struct({
+  activeRecovery: Schema.NullOr(Schema.Struct({ run: Schema.String })),
+});
 export const GuiScheduleRequest = Schema.Union([
   Schema.Struct({ profileDefault: Schema.Literal(true) }),
   Schema.Struct({ schedule: SyncScheduleSchema }),

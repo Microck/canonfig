@@ -35,6 +35,7 @@ const SOURCE_NAV: NavItem[] = [
   { view: "profile", label: "Profile", icon: FileCode },
   { view: "machines", label: "Machines", icon: Devices },
   { view: "revisions", label: "Revisions", icon: ClockCounterClockwise },
+  { view: "sync", label: "Local sync", icon: ArrowsClockwise },
   { view: "backups", label: "Backups", icon: ArrowCounterClockwise },
   { view: "secrets", label: "Secrets", icon: Key },
 ];
@@ -68,6 +69,7 @@ const FOLLOWER_SETTINGS: NavItem[] = [
 export const NAV: Record<WorkspaceRole, { main: NavItem[]; settings: NavItem[] }> = {
   source: { main: SOURCE_NAV, settings: SOURCE_SETTINGS },
   follower: { main: FOLLOWER_NAV, settings: FOLLOWER_SETTINGS },
+  unconfigured: { main: FOLLOWER_NAV.filter((item) => item.view === "sync" || item.view === "backups"), settings: [] },
 };
 
 /** The sidebar entry for a role's page, if it has one (the not-found view has none). */
@@ -76,12 +78,12 @@ export function navItem(role: WorkspaceRole, view: View): NavItem | undefined {
   return navigation.main.find((item) => item.view === view) ?? navigation.settings.find((item) => item.view === view);
 }
 
-/** The session role chooses routes; demo-only backups never enter Source live navigation. */
+/** Live navigation contains only operations supported by this machine's role. */
 export function navigationForRole(role: WorkspaceRole, live = !DEMO) {
   const navigation = NAV[role];
   if (!live) return navigation;
   return {
-    main: navigation.main.filter((item) => role !== "source" || item.view !== "backups"),
+    main: navigation.main,
     settings: role === "follower"
       ? [...navigation.settings, ...SOURCE_SETTINGS.filter((item) => item.view === "installers" || item.view === "setup")]
       : navigation.settings,
@@ -89,7 +91,7 @@ export function navigationForRole(role: WorkspaceRole, live = !DEMO) {
 }
 
 export function isRouteForRole(route: AppRoute, role: Role): boolean {
-  if (role === "unconfigured") return route.kind === "setup";
+  if (role === "unconfigured") return route.kind === "setup" || (route.kind === "workspace" && route.role === role && (route.view === "sync" || route.view === "backups"));
   if (route.kind !== "workspace" || route.role !== role) return false;
   const navigation = navigationForRole(role, true);
   return [...navigation.main, ...navigation.settings].some((item) => item.view === route.view);

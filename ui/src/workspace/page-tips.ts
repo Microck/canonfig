@@ -8,7 +8,8 @@
 import type { TourStep } from "@/tour/tour";
 import type { View } from "./store";
 
-export const PAGE_TIPS: Record<"source" | "follower", Partial<Record<View, TourStep>>> = {
+export const PAGE_TIPS: Record<"source" | "follower" | "unconfigured", Partial<Record<View, TourStep>>> = {
+  unconfigured: {},
   source: {
     profile: {
       target: ["page-help"],
@@ -19,11 +20,6 @@ export const PAGE_TIPS: Record<"source" | "follower", Partial<Record<View, TourS
       target: ["page-help"],
       title: "Your machines at a glance",
       body: "The line colour shows each machine's state; hover a line to see why. Double-click a machine to open it, or use the brush to name it and pick an icon.",
-    },
-    backups: {
-      target: ["page-help"],
-      title: "What a restore does",
-      body: "Restoring puts back what a harness had before Canonfig first wrote to it, then excludes that harness on this machine so the next sync leaves it alone.",
     },
   },
   follower: {

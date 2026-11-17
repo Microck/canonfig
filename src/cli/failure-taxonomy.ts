@@ -468,6 +468,7 @@ export const failureTaxonomy = {
   ),
   AuthoringInvalid: describe("usage-or-configuration", (error) => `${text(error.path)}: ${error.message}`),
   AuthoringConflict: describe("conflict-or-drift", (error) => error.message),
+  SynchronizationPlanChangedError: describe("conflict-or-drift", () => "The plan changed. Review a new plan."),
   // A setup import item changed between approval and apply.
   ImportChangedError: describe(
     "conflict-or-drift",

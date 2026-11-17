@@ -38,6 +38,7 @@ function startedNow() {
 }
 
 export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): AdministrationSlice {
+  if (ws.role === "unconfigured") throw new Error("The demo requires a Source or Follower workspace.");
   const [installed, setInstalled] = useSharedState("service-installed", true);
   const [boundInstallers, setBoundInstallers] = useSharedState("installers", INSTALLERS);
   const [serviceAction, setServiceAction] = useSharedState<"install" | "remove" | "restart" | null>("service-busy", null);

@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import { isRouteForRole, navigationForRole, navItem } from "../workspace/nav";
 import { parseRoute, workspaceHref } from "../workspace/routes";
 
-const source = ["overview", "profile", "machines", "revisions", "secrets", "service", "installers", "setup", "doctor", "version"];
+const source = ["overview", "profile", "machines", "revisions", "sync", "backups", "secrets", "service", "installers", "setup", "doctor", "version"];
 const follower = ["overview", "machines", "sync", "schedule", "local", "backups", "secrets", "tunnel", "agent", "doctor", "machine", "version", "installers", "setup"];
 
 describe("shared live workspace navigation", () => {
@@ -28,13 +28,19 @@ describe("shared live workspace navigation", () => {
       assert.equal(isRouteForRole(parseRoute(`/source/profile/${tab}`), "source"), true);
       assert.equal(isRouteForRole(parseRoute(`/source/profile/${tab}`), "follower"), false);
     }
-    assert.equal(isRouteForRole(parseRoute("/source/backups"), "source"), false);
+    assert.equal(isRouteForRole(parseRoute("/source/backups"), "source"), true);
     assert.equal(isRouteForRole(parseRoute("/source/missing"), "source"), false);
     assert.equal(isRouteForRole(parseRoute("/follower/machines/list"), "follower"), true);
   });
-  it("requires setup for an unconfigured session", () => {
+  it("permits only setup and deliberate local-only pages for an unconfigured session", () => {
     assert.equal(isRouteForRole(parseRoute("/setup"), "unconfigured"), true);
     assert.equal(isRouteForRole(parseRoute("/source/overview"), "unconfigured"), false);
+    for (const view of ["sync", "backups"]) {
+      assert.equal(isRouteForRole(parseRoute(`/local/${view}`), "unconfigured"), true);
+      assert.equal(isRouteForRole(parseRoute(`/local/${view}`), "source"), false);
+      assert.equal(isRouteForRole(parseRoute(`/local/${view}`), "follower"), false);
+    }
+    assert.equal(isRouteForRole(parseRoute("/local/profile"), "unconfigured"), false);
     assert.equal(isRouteForRole(parseRoute("/setup"), "source"), false);
   });
   it("retains Source backups in demo navigation", () => {

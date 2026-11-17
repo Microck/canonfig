@@ -9,6 +9,7 @@ const pages: [WorkspaceRole, View, string][] = [
   ["source", "profile", "profile"],
   ["source", "machines", "machines"],
   ["source", "revisions", "revisions"],
+  ["source", "sync", "sync"],
   ["source", "backups", "backups"],
   ["source", "secrets", "secrets"],
   ["source", "service", "settings/service"],
@@ -85,7 +86,7 @@ describe("canonical workspace routes", () => {
 
   it("rejects unknown pages and pages belonging to the other role", () => {
     for (const href of [
-      "/source/sync", "/source/settings/tunnel", "/source/settings/enrollment", "/source/settings/agent", "/source/profile/items",
+      "/source/settings/tunnel", "/source/settings/enrollment", "/source/settings/agent", "/source/profile/items",
       "/source/machines/map", "/source/doctor", "/source/profile/", "/source", "/source/no-such-page", "/source/local-settings",
       "/follower/profile", "/follower/profile/groups", "/follower/profile/harnesses", "/follower/revisions", "/follower/settings/service",
       "/follower/local", "/follower/machine",
@@ -99,8 +100,17 @@ describe("canonical workspace routes", () => {
       assert.deepEqual(parseRoute(href), { kind: "not-found" }, href);
     }
     assert.throws(() => workspaceHref("follower", "profile"), /No follower route/);
-    assert.throws(() => workspaceHref("source", "sync"), /No source route/);
     assert.throws(() => workspaceHref("source", "agent"), /No source route/);
+  });
+
+  it("keeps local-only navigation separate from enrollment and authoring", () => {
+    for (const view of ["sync", "backups"] as const) {
+      assert.equal(workspaceHref("unconfigured", view), `/local/${view}`);
+      assert.deepEqual(parseRoute(`/local/${view}`), {
+        kind: "workspace", role: "unconfigured", view, profileTab: "items", machinesMode: "map", focus: null,
+      });
+    }
+    assert.throws(() => workspaceHref("unconfigured", "profile"), /No unconfigured route/);
   });
 
   it("gives the demo switcher canonical role entry points", () => {

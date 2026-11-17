@@ -77,7 +77,7 @@ The table lists development routes. Public demo URLs add `/demo`, so `/source/ov
 | Revisions | `/source/revisions` | |
 | Backups | `/source/backups` | `/follower/backups` |
 | Secrets | `/source/secrets` | `/follower/secrets` |
-| Sync | | `/follower/sync` |
+| Sync | `/source/sync` | `/follower/sync` |
 | Schedule | | `/follower/schedule` |
 | Local settings (`~/.canonfig/local/`, overlays, append-local content, harness exclusions, backups) | | `/follower/local-settings` |
 | Service | `/source/settings/service` | |
@@ -91,7 +91,13 @@ The table lists development routes. Public demo URLs add `/demo`, so `/source/ov
 
 First-run setup is `/setup`. Retired role and variant query parameters are not routing aliases.
 
-Live routes use the shared `src/workspace/nav.ts` and `routes.ts`. Unlike the demo table, Source backups are not offered, while installers and machine setup are available for both configured roles. Map customization is browser-local and does not rename an enrollment identity. Machine inventory reports enrollment records, not remote health, schedules or synchronization progress.
+Live Source and Follower workspaces both offer Sync and Backups. Source Sync projects this machine's Canonical Folder without enrollment; publication never applies local files. An unconfigured machine can choose **Use locally** in the setup header while picking a role, opening `/local/sync` and `/local/backups` without creating a Source or joining one. The existing folder must satisfy the CLI's validation. Both paths require a successful plan before Apply, retain operation observation/recovery, and use the same confirmed Recover, Abandon and explicit-snapshot Restore controls as Followers. Import-replacement snapshots appear alongside harness snapshots; restoring folder entries first backs up their current content.
+
+Local-only pages retain the onboarding frame, with the shared view tabs and a Back to setup action.
+
+Private adoption review creation is available for all three machine states. Write preview runs `sync --plan --review-local` and reports private JSON paths. On the machine running Canonfig, open the reported path in a local editor and inspect `sourceAddition`, `retainedLocal` and `proposedText`; delete the review when finished. Exact text may contain secrets from existing files, so it never enters browser responses or storage. No arbitrary server-file reader or review deletion endpoint is exposed. Enrollment, schedules and tunnel controls remain Follower-only.
+
+Live routes use the shared `src/workspace/nav.ts` and `routes.ts`. Installers and machine setup are available for both configured roles. Map customization is browser-local and does not rename an enrollment identity. Machine inventory reports enrollment records, not remote health, schedules or synchronization progress.
 
 Self-update status and checks are live. Enable, disable and apply remain terminal operations after stopping the GUI; the GUI does not bypass its command lease. Invitation cancellation, selective scan writes, Source service restart and protected adoption-review reads/deletion are hidden because the CLI has no matching operation. Unenrollment leaves applied files, schedule and tunnel configuration intact.
 

@@ -488,6 +488,7 @@ export function SyncView() {
 function SyncForm() {
   const ws = useWorkspace();
   const live = ws.followerLive;
+  const localProjection = live !== undefined && ws.session?.role !== "follower";
   const sent = ws.resources.filter((r) => r.groups.length === 0 || r.groups.some((group) => ws.selfFollower?.groups.includes(group))).length;
   const notSent = ws.resources.length - sent;
   const rev = ws.targetRevision;
@@ -519,7 +520,7 @@ function SyncForm() {
     <>
       <PageHeader
         // Title is the page name like every other top-level page; the revision detail is the band heading below.
-        crumbs={["Sync"]}
+        crumbs={[localProjection ? "Local sync" : "Sync"]}
         actions={
           <>
             <Button
@@ -538,7 +539,7 @@ function SyncForm() {
                 }, 900);
               }}
             >
-              {checking && <HourglassMedium />} {checking ? "Checking…" : "Check for updates"}
+              {checking && <HourglassMedium />} {checking ? "Checking…" : localProjection ? "Plan local changes" : "Check for updates"}
             </Button>
             {ws.phase !== "done" && (
               <Button
@@ -566,18 +567,19 @@ function SyncForm() {
         }
       >
         {live ? <>
+          {localProjection && <p className="border-b border-border px-[18px] py-3 text-sm text-muted-foreground">Applies this machine's Canonical Folder to its installed, selected harnesses.</p>}
           <InterruptedNotice />
-          {!live.operation && <EmptyState title="Check for a revision" body="Nothing changes until you apply." />}
+          {!live.operation && <EmptyState title="No plan yet" body={localProjection ? "Plan local changes to see the affected files." : "Check for updates to see the affected files."} />}
           <FollowerOperationEvidence />
           <div className="space-y-3 border-t border-border px-[18px] py-5">
             {/* The buttons say what to do; why sits behind the (?) so the page stays short. */}
-            <SectionLabel>Your own changes <Hint label="your own changes">Items you add on this machine, and edits Canonfig is holding back, are in Local settings.</Hint></SectionLabel>
-            <Button variant="outline" size="sm" onClick={() => ws.go("local")}>Open Local settings</Button>
+            {!localProjection && <><SectionLabel>Your own changes <Hint label="your own changes">Items you add on this machine, and edits Canonfig is holding back, are in Local settings.</Hint></SectionLabel>
+            <Button variant="outline" size="sm" onClick={() => ws.go("local")}>Open Local settings</Button></>}
             {/* The CLI's `sync --plan --review-local`: one private file per existing instructions file Canonfig will start managing. */}
             <SectionLabel className="pt-4">
               Preview instructions files{" "}
               <Hint label="instructions file previews">
-                Before the first sync into an instructions file you already have, write a private preview of what Canonfig will add and what stays yours. It is saved in <Mono>~/.canonfig/.reviews</Mono>; the browser can't open it.
+                Writes private JSON files on the machine running Canonfig that may contain secrets from existing instructions.
               </Hint>
             </SectionLabel>
             <Button variant="outline" size="sm" disabled={running || blocks.blocked !== null} onClick={live.createReview}>Write preview</Button>

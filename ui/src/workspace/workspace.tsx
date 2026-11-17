@@ -23,7 +23,7 @@ const FollowerSecretsView = lazy(() => follower().then((m) => ({ default: m.Foll
 const MachineView = lazy(() => follower().then((m) => ({ default: m.MachineView })));
 const LocalView = lazy(() => follower().then((m) => ({ default: m.LocalView })));
 const ScheduleView = lazy(() => follower().then((m) => ({ default: m.ScheduleView })));
-const SyncView = lazy(() => follower().then((m) => ({ default: m.SyncView })));
+export const SyncView = lazy(() => follower().then((m) => ({ default: m.SyncView })));
 const TunnelView = lazy(() => follower().then((m) => ({ default: m.TunnelView })));
 const UnenrollDialog = lazy(() => follower().then((m) => ({ default: m.UnenrollDialog })));
 import { useWorkspace, type View } from "./store";
@@ -37,6 +37,7 @@ const SOURCE_SCREENS: Partial<Record<View, React.ComponentType>> = {
   profile: ProfileView,
   machines: MachinesView,
   revisions: RevisionsView,
+  sync: SyncView,
   backups: BackupsView,
   secrets: SecretsView,
   service: ServiceView,

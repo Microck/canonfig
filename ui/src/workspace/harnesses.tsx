@@ -213,16 +213,16 @@ export function BackupsView() {
       <PageHeader crumbs={["Backups"]} actions={ws.followerLive && <Button size="sm" variant="outline" onClick={ws.reload}>Reload</Button>} />
       <Body>
         <p data-tour="backups-about" className="border-b border-border px-[18px] py-3 text-sm text-pretty text-muted-foreground">
-          Canonfig keeps the first snapshot and the {RECENT_KEPT} most recent.
+          Canonfig keeps the first harness snapshot, the first folder snapshot and the {RECENT_KEPT} most recent snapshots.
         </p>
-        {ws.backups === false && (
+        {(!ws.session || ws.session.role === "follower") && ws.backups === false && (
           <p className="flex items-center gap-2 border-b border-border px-[18px] py-3 text-sm text-pretty text-warn">
             <StatusMark kind="warn" />
             Backups are off on this machine: local/local.jsonc sets "backups": false, so Canonfig takes over a new harness without a snapshot.
           </p>
         )}
         {shown.length === 0 ? (
-          <EmptyState title="No backups yet" body="Canonfig takes the first one the first time it writes to a harness on this machine." />
+          <EmptyState title="No backups yet" body="Apply a sync plan with backups enabled to create one." />
         ) : (
           <>
             <ListHead cols={cols} minWidth={colsMin} data-tour="backups-list">
@@ -274,8 +274,8 @@ export function BackupsView() {
         body={
           restoring && (
             <>
-              Canonfig restores snapshot <Mono className="text-foreground">{restoring.id}</Mono> and excludes its restored harnesses from future synchronization. It refuses files that changed since Canonfig last wrote them.
-              {DEMO && " This demo changes no files."}
+              Restoring a harness snapshot excludes its harnesses and resources from sync; restoring an import-replacement snapshot backs up and replaces the affected Canonical Folder entries.
+              {DEMO && " Simulated in this demo."}
             </>
           )
         }
