@@ -17,7 +17,7 @@ const base64 = (value: string) => Buffer.from(value).toString("base64");
 function fixture() {
   const home = mkdtempSync(join(tmpdir(), "canonfig-profile-")); homes.push(home);
   const folder = join(home, ".canonfig");
-  const env = { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"), XDG_STATE_HOME: join(home, ".state"), CANONFIG_LOCAL_CREDENTIAL_ROOT: join(home, "credentials"), CANONFIG_LOG: "off" };
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"), XDG_STATE_HOME: join(home, ".state"), CANONFIG_LOCAL_CREDENTIAL_ROOT: join(home, "credentials"), CANONFIG_LOG: "off" };
   const invoke = (args: string[]) => spawnSync(process.execPath, ["--import", "tsx", entry, "--json", ...args], { env, encoding: "utf8", timeout: 30_000 });
   return { home, folder, env, invoke };
 }
@@ -100,6 +100,39 @@ describe("profile GUI endpoints", () => {
     expect(readFileSync(join(machine.folder, "AGENTS.md"), "utf8")).toBe(content);
   }, 60_000);
 
+  it("accepts only the reviewed scan with explicit all-tools consent and leaves it unpublished", async () => {
+    const machine = fixture();
+    // Keep executable resolution independent of installed tools on the test host.
+    machine.env.PATH = machine.home;
+    expect(machine.invoke(["source", "init"]).status).toBe(0);
+    const configPath = join(machine.folder, "canonfig.jsonc");
+    const original = '// Keep this comment\n{"version":1,"harnesses":[]}';
+    writeFileSync(configPath, original);
+    writeFileSync(join(machine.folder, "AGENTS.md"), "```sh\nuv tool install ruff==0.6.9\n```\n");
+    const gui = await server(machine.env);
+    const scan = async () => Schema.decodeUnknownSync(Schema.Struct({ reviewDigest: Schema.String, written: Schema.Array(Schema.String) }))((await gui.request("/api/profile/scan", "POST", {})).value);
+    const reviewed = await scan();
+    expect(reviewed.written).toEqual([]);
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+    for (const body of [{}, { reviewDigest: reviewed.reviewDigest, confirmAll: false }, { reviewDigest: reviewed.reviewDigest, confirmAll: true, tools: ["ruff"] }]) {
+      expect((await gui.request("/api/profile/scan/accept", "POST", body)).value).toMatchObject({ exitCode: 2 });
+    }
+    writeFileSync(join(machine.folder, "AGENTS.md"), "```sh\nuv tool install ruff==0.6.9\nuv tool install black==24.8.0\n```\n");
+    const stale = await gui.request("/api/profile/scan/accept", "POST", { reviewDigest: reviewed.reviewDigest, confirmAll: true });
+    expect(stale.value).toMatchObject({ exitCode: 2, message: expect.stringContaining("Scan again") });
+    expect(readFileSync(configPath, "utf8")).toBe(original);
+    const current = await scan();
+    const accepted = await gui.request("/api/profile/scan/accept", "POST", { reviewDigest: current.reviewDigest, confirmAll: true });
+    expect(accepted.status, JSON.stringify(accepted.value)).toBe(200);
+    expect(accepted.value).toMatchObject({ written: ["black", "ruff"] });
+    expect(readFileSync(configPath, "utf8")).toContain("// Keep this comment");
+    expect((await gui.snapshot()).config.tools).toHaveProperty("ruff");
+    expect((await gui.request("/api/revisions")).value).toEqual({ revisions: [] });
+    const afterWrite = readFileSync(configPath, "utf8");
+    const repeated = await scan();
+    expect((await gui.request("/api/profile/scan/accept", "POST", { reviewDigest: repeated.reviewDigest, confirmAll: true })).value).toMatchObject({ written: [], declared: ["black", "ruff"] });
+    expect(readFileSync(configPath, "utf8")).toBe(afterWrite);
+  }, 60_000);
   it("authors files and JSONC with digest conflicts, validates, scans and publishes real revisions", async () => {
     const machine = fixture();
     const initialized = machine.invoke(["source", "init"]); expect(initialized.status, initialized.stderr).toBe(0);
@@ -264,6 +297,7 @@ if (args.includes("fetch")) {
   it("refuses every profile operation without the Source role", async () => {
     const machine = fixture(); const gui = await server(machine.env);
     for (const path of ["/api/profile/items", "/api/revisions", "/api/skills"]) expect((await gui.request(path)).value).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+    expect((await gui.request("/api/profile/scan/accept", "POST", { reviewDigest: "reviewed", confirmAll: true })).value).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
     for (const [path, method, body] of [
       ["/api/profile/items", "PUT", { changes: [] }], ["/api/profile/config", "PUT", { expectedDigest: null, edits: [], changes: [] }], ["/api/profile/scan", "POST", {}], ["/api/profile/validate", "POST", {}], ["/api/publications", "POST", { reviewer: "reviewer" }], ["/api/revisions/inspect", "POST", { revision: "missing" }], ["/api/skills/track", "POST", { name: "review", source: "/missing", ref: "main", subdir: "." }], ["/api/skills/check", "POST", { name: "review" }], ["/api/skills/update", "POST", { name: "review" }],
     ] as const) expect((await gui.request(path, method, body)).value).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Schema } from "effect";
 import { HARNESS_NAMES, LOCAL_CATEGORIES, APPEND_LOCAL_CATEGORIES, SURFACE_CATEGORIES, type HarnessId, type SurfaceCategory } from "@/shared/metadata";
-import { GuiProfileSnapshot, GuiProfileSaved, GuiProfileValidation, GuiRevisions, GuiSkills, GuiTrackedSkill, GuiSkillChecks, profileEndpoints, type GuiProfileConfigWrite, type GuiSkillCheck } from "../../../../src/gui/contract/profile";
+import { GuiProfileSnapshot, GuiProfileSaved, GuiProfileValidation, GuiRevisions, GuiScanReview, GuiSkills, GuiTrackedSkill, GuiSkillChecks, profileEndpoints, type GuiProfileConfigWrite, type GuiSkillCheck } from "../../../../src/gui/contract/profile";
 import { GuiArchiveDownload, GuiSecrets, GuiSecretSummary, GuiSecretRemoval } from "../../../../src/gui/contract/synchronization";
 import { GuiRequestError, type GuiSession, type WorkspaceBackend } from "../../gui-client";
 import type { DiscoveryState, PublicationState, ProfileSlice, ProfileEdit } from "../workspace-types";
@@ -32,7 +32,7 @@ function publicationTransition(state: PublicationState, event: PublicationEvent)
   if (event.kind === "Failed") return { kind: "Failed", stage: event.stage, error: event.error };
   throw new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: `Cannot ${event.kind.toLowerCase()} this folder review while it is ${state.kind}. Validate the current folder before publishing.` });
 }
-type DiscoveryEvent = { kind: "Scan"; id: number } | { kind: "Results"; id: number; tools: Extract<DiscoveryState, { kind: "Results" }>["tools"] } | { kind: "Failed"; id: number; error: GuiRequestError };
+type DiscoveryEvent = { kind: "Scan"; id: number } | Extract<DiscoveryState, { kind: "Results" }> | { kind: "Failed"; id: number; error: GuiRequestError };
 function discoveryTransition(state: DiscoveryState, event: DiscoveryEvent): DiscoveryState {
   if (event.kind === "Scan" && state.kind !== "Scanning") return { kind: "Scanning", id: event.id };
   if (state.kind === "Scanning" && event.id === state.id) {
@@ -157,16 +157,23 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
       discoverEvent({ kind: "Scan", id });
       const accepted = await run(async (signal) => {
         try {
-          const scan = object(await backend.request(profileEndpoints.scan, Schema.Json, signal, { method: "POST", body: {} }));
-          const tools = (Array.isArray(scan.tools) ? scan.tools : []).map((value) => {
+          const scan = await backend.request(profileEndpoints.scan, GuiScanReview, signal, { method: "POST", body: {} });
+          const tools = scan.tools.map((value) => {
             const tool = object(value), evidence = object(Array.isArray(tool.evidence) ? tool.evidence[0] : undefined);
             return { id: String(tool.id), executable: String(tool.executable), command: strings(evidence.invocation).join(" "), file: String(evidence.sourcePath ?? ""), where: String(tool.reviewStatus ?? "") };
           });
-          discoverEvent({ kind: "Results", id, tools });
+          discoverEvent({ kind: "Results", id, tools, reviewDigest: scan.reviewDigest, declared: scan.declared });
         } catch (cause) { discoverEvent({ kind: "Failed", id, error: requestError(cause) }); throw cause; }
       }, false);
       if (!accepted && discoveryRef.current.kind === "Scanning") discoverEvent({ kind: "Failed", id, error: new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: "Another profile action is running. Retry discovery when it finishes." }) });
       return accepted;
+    },
+    acceptScan: () => {
+      const reviewed = discoveryRef.current;
+      if (reviewed.kind !== "Results") return Promise.resolve(false);
+      return run((signal) => backend.request(profileEndpoints.acceptScan, Schema.Json, signal, {
+        method: "POST", body: { reviewDigest: reviewed.reviewDigest, confirmAll: true },
+      }));
     },
     inspectRevision,
     trackSkill: (name, source, ref, subdir) => run(async (signal) => {

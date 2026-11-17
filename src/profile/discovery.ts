@@ -1273,10 +1273,13 @@ export interface FolderScanInput {
   readonly folder: string;
   /** Insert accepted tools that `canonfig.jsonc` does not declare yet. */
   readonly write: boolean;
+  /** Refuse a write if the reviewed findings or authored configuration changed. */
+  readonly reviewDigest?: string | undefined;
   readonly path?: string | undefined;
 }
 
 export interface FolderScanResult extends DiscoveryScanResult {
+  readonly reviewDigest: string;
   /** Accepted tools `--write` inserted into `canonfig.jsonc`. */
   readonly written: ReadonlyArray<string>;
   /** Accepted tools `canonfig.jsonc` already declares; their entries stay as authored. */
@@ -1330,15 +1333,19 @@ export const scanFolder = (
       try: () => readFolderConfig(input.folder),
       catch: (cause) => folderFailure(configPath, "read", cause),
     });
+    const text = config === undefined ? "" : yield* readDiscoveryFile(configPath);
+    const reviewDigest = createHash("sha256").update(JSON.stringify(result)).update(text).digest("hex");
+    if (input.write && input.reviewDigest !== undefined && input.reviewDigest !== reviewDigest) {
+      return yield* new InvalidDiscoveryInputError({ reason: "Tool discovery or canonfig.jsonc changed after review. Scan again before adding tools." });
+    }
     const declaredIds = new Set(Object.keys(config?.tools ?? {}));
     const accepted = result.tools.filter((tool) => tool.reviewStatus === "accepted");
     const declared = accepted.filter((tool) => declaredIds.has(tool.id)).map((tool) => tool.id);
     const fresh = accepted.filter((tool) => !declaredIds.has(tool.id));
-    if (!input.write || fresh.length === 0) return { ...result, written: [], declared };
+    if (!input.write || fresh.length === 0) return { ...result, reviewDigest, written: [], declared };
     if (config === undefined) {
       return yield* new InvalidDiscoveryInputError({ reason: `${configPath} does not exist; --write adds tools to it` });
     }
-    const text = yield* readDiscoveryFile(configPath);
     const updated = yield* Effect.try({
       try: () => {
         const edited = fresh.reduce(
@@ -1361,5 +1368,5 @@ export const scanFolder = (
       },
       catch: (cause) => folderFailure(configPath, "write", cause),
     });
-    return { ...result, written: fresh.map((tool) => tool.id), declared };
+    return { ...result, reviewDigest, written: fresh.map((tool) => tool.id), declared };
   });
