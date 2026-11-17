@@ -32,13 +32,14 @@ jobs:
           - platform: windows
             os: windows-latest
             native_test: tests/machine-state-windows.test.ts
-          # GitHub's Arm64 Windows hosted runner (public repositories).
-          # The acceptance scenario derives its platform from the host, so
-          # the arm64 leg reports itself as plain windows.
-          - platform: windows-arm64
-            os: windows-11-arm
-            acceptance_platform: windows
-            native_test: tests/machine-state-windows.test.ts
+          # Windows ARM64 (`windows-11-arm`) is removed for now: it ran about
+          # 10 minutes longer than the other legs on every PR and main push.
+          # To restore it, add back this entry; `acceptance_platform` below
+          # exists for it, because the scenario reads its platform from the host:
+          #   - platform: windows-arm64
+          #     os: windows-11-arm
+          #     acceptance_platform: windows
+          #     native_test: tests/machine-state-windows.test.ts
     steps:
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
