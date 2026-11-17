@@ -522,10 +522,13 @@ export const recoverSynchronizationPlan = (
         result = waiting;
       } else if (
         last.state === "blocked"
-        // Only these block on their own. Any other action journaled `blocked` was
-        // held for a prerequisite that is no longer blocked, so it runs normally below.
-        && (state.action.detail.kind === "human-action" || state.action.detail.kind === "agent-task"
-          || state.action.detail.kind === "drift-conflict")
+        // Human actions and drift block on their own, and so does an agent task
+        // the run started. An agent task that never started may have been held
+        // or refused by policy: running it normally below re-checks the policy,
+        // so a refusal blocks again and a cleared hold runs as a fresh run would.
+        // Any other action journaled `blocked` was held for a prerequisite.
+        && (state.action.detail.kind === "human-action" || state.action.detail.kind === "drift-conflict"
+          || (state.action.detail.kind === "agent-task" && started))
       ) {
         result = preservedOutcome(input, state.action);
       } else if (

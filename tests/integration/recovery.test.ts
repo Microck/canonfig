@@ -1179,6 +1179,41 @@ describe("synchronization crash recovery", () => {
     ]);
   });
 
+  it("on recovery, runs an agent task held for a prerequisite once it clears, re-checking its policy", async () => {
+    const value = fixture(temporaryDirectory());
+    const base = persistedPlan(value);
+    const write = base.actions[0]!;
+    const agentAction = {
+      id: decode(ActionId)("action:settings:1:agent-task"),
+      resource: write.resource,
+      kind: "agent-task" as const,
+      detail: { kind: "agent-task" as const, taskId: decode(AgentTaskId)("agent:settings:1"), summary: "Resolve settings" },
+      before: [write.id],
+    };
+    const agentTask = {
+      id: decode(AgentTaskId)("agent:settings:1"), resource: write.resource, summary: "Resolve settings",
+      desiredOutcome: "Settings resolved", observedEvidence: ["Observed state: absent"], allowedPaths: ["~/settings.json"],
+      allowedExecutables: ["custom-tool"], executableAuthorizations: [{ executable: "custom-tool", behavior: "leaf" as const }],
+      allowedOrigins: [], forbidden: ["elevation", "login", "restart", "reboot"] as const, timeLimitSeconds: 300,
+      outputLimitBytes: 65_536, verification: { command: ["custom-tool", "--version"] },
+    };
+    const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)({
+      revision: base.revision, follower: base.follower, requiredBlobs: base.requiredBlobs,
+      actions: [write, agentAction], agentTasks: [agentTask],
+    }));
+    const plan = { ...base, actions: [write, agentAction], agentTasks: [agentTask], encoded, digest: sha256Hex(encoded) };
+    await seed(value, plan);
+    // The prerequisite failed before the interruption, so the agent task was held without starting.
+    await journal(value, write.id, "failed");
+    await journal(value, agentAction.id, "blocked");
+    const outcome = await recover(value);
+    expect(outcome.outcome, JSON.stringify(outcome)).toBe("HumanActionRequired");
+    if (outcome.outcome !== "HumanActionRequired") return;
+    // The task ran through its policy gate (no agent-apply harness here), not a replayed outcome.
+    expect(outcome.actions.map((action) => action.reason)).toEqual(["Bounded agent task requires an apply-authorized harness: Resolve settings"]);
+    expect(readFileSync(value.target, "utf8")).toBe("canonical content");
+  });
+
   it("preserves executable execution-model metadata across persisted plan hydration", async () => {
     const value = fixture(temporaryDirectory(), { kind: "tool" });
     const base = persistedPlan(value);
