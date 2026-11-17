@@ -1121,7 +1121,7 @@ describe("synchronization crash recovery", () => {
     expect(runRows(value).filter((row) => row.action_id === held.id).at(-1)?.state).toBe("succeeded");
   });
 
-  it("on recovery, restores a dependent interrupted mid-write and holds it while its prerequisite is blocked", async () => {
+  it("on recovery, replays a dependent the run had started instead of holding it", async () => {
     const value = fixture(temporaryDirectory());
     const { base, write, human } = humanThenDependent(value);
     const tail = { ...write, before: [human.id] };
@@ -1143,12 +1143,40 @@ describe("synchronization crash recovery", () => {
     const outcome = await recover(value);
     expect(outcome.outcome, JSON.stringify(outcome)).toBe("HumanActionRequired");
     if (outcome.outcome !== "HumanActionRequired") return;
+    expect(outcome.actions.map((action) => action.reason)).toEqual(["No usable installation recipe for this platform"]);
+    expect(readFileSync(value.target, "utf8")).toBe("canonical content");
+    expect(runRows(value).filter((row) => row.action_id === tail.id).at(-1)?.state).toBe("succeeded");
+  });
+
+  it("on recovery, holds an installer that never started instead of reporting it uncertain", async () => {
+    const value = fixture(temporaryDirectory(), { kind: "tool" });
+    const base = persistedPlan(value);
+    const install = base.actions.find((action) => action.kind === "install-tool");
+    expect(install, JSON.stringify(base.actions.map((action) => action.kind))).toBeDefined();
+    if (install === undefined) return;
+    const human = {
+      ...install,
+      id: decode(ActionId)("action:tool:prerequisite:human-action"),
+      kind: "human-action" as const,
+      detail: { kind: "human-action" as const, reason: "No usable installation recipe for this platform", instructions: "Install it manually" },
+      before: [],
+    };
+    const held = { ...install, before: [human.id] };
+    const encoded = canonicalJson(Schema.decodeUnknownSync(Schema.MutableJson)({
+      revision: base.revision, follower: base.follower, requiredBlobs: base.requiredBlobs,
+      actions: [human, held], agentTasks: base.agentTasks,
+    }));
+    const plan = { ...base, actions: [human, held], encoded, digest: sha256Hex(encoded) };
+    await seed(value, plan);
+    await journal(value, human.id, "blocked");
+    await journal(value, held.id, "blocked");
+    const outcome = await recover(value);
+    expect(outcome.outcome, JSON.stringify(outcome)).toBe("HumanActionRequired");
+    if (outcome.outcome !== "HumanActionRequired") return;
     expect(outcome.actions.map((action) => action.reason)).toEqual([
       "No usable installation recipe for this platform",
-      `${write.resource} waits for ${write.resource}, which needs human action`,
+      `${install.resource} waits for ${install.resource}, which needs human action`,
     ]);
-    expect(readFileSync(value.target, "utf8")).toBe("previous");
-    expect(runRows(value).filter((row) => row.action_id === tail.id).at(-1)?.state).toBe("blocked");
   });
 
   it("preserves executable execution-model metadata across persisted plan hydration", async () => {
