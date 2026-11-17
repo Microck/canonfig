@@ -52,6 +52,19 @@ daylight-saving day produces a warning that names the native behavior. The
 user-facing rules for time zones, daylight saving, and missed runs are in
 `website/content/docs/how-to/manage-schedules.mdx`.
 
+The Windows task runs `%SystemRoot%\System32\wscript.exe` with a small JScript
+launcher, which runs the runtime and CLI hidden and exits with their exit code.
+In the user's session `node.exe` would otherwise get a visible console window for
+the whole run, renamed by every `cmd` child such as `npm ls`. `conhost
+--headless` hides the window too but always exits 0, so Task Scheduler's last
+result would report every failed sync as a success. The install writes the
+launcher to `%LOCALAPPDATA%\canonfig\native\CanonfigScheduleLaunch-<digest>.js`;
+a missing launcher is drift. `schedule status` reports the runtime and CLI the
+launcher runs as the binding, not `wscript.exe`. This needs Windows Script Host,
+which is on by default; a policy that turns it off makes every run fail with a
+nonzero last result. A task registered by an earlier release no longer matches,
+so the post-apply reconciler re-registers it when it is enabled.
+
 The Windows task uses an InteractiveToken logon, so Task Scheduler starts it
 only while the user is logged on and never catches up a run it skipped while the
 user was logged off or the machine was off. `schedule status` and `doctor`

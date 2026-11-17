@@ -263,7 +263,9 @@ export const scheduleManagerContract = (
           "<string>sync</string><string>--apply</string><string>--no-input</string><string>--scheduled</string>",
         );
       } else {
-        expect(definition.service).toContain("-Argument 'sync --apply --no-input --scheduled'");
+        // wscript runs the launcher script, which runs node.exe hidden with the same argv.
+        expect(definition.service).toContain(String.raw`-Execute '%SystemRoot%\System32\wscript.exe' -Argument '//B //Nologo //E:jscript `);
+        expect(definition.service).toContain(" sync --apply --no-input --scheduled'");
       }
     });
 
@@ -302,8 +304,10 @@ export const scheduleManagerContract = (
           "<string>/Applications/canonfig&lt;&amp;&quot;&apos;;touch</string>",
         );
       } else {
+        // The executable follows the launcher: one PowerShell literal (quotes
+        // doubled) holding one CRT-quoted word.
         expect(definition.service).toContain(
-          "-Execute 'C:\\Program Files\\canonfig''; Remove-Item C:\\; ''.exe'",
+          ".js \"C:\\Program Files\\canonfig''; Remove-Item C:\\; ''.exe\" sync",
         );
       }
     });

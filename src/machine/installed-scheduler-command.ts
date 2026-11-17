@@ -65,7 +65,11 @@ export const installedLaunchdCommand = (plist: string): InstalledSchedulerComman
   return command === undefined || path === undefined ? command : { ...command, searchPath: path.split(":") };
 };
 
-/** Windows CRT quoting, inverse of windowsCommandLineArgument. */
+/**
+ * Windows CRT quoting, inverse of windowsCommandLineArgument. A task that runs
+ * `wscript.exe //B ... <launcher> <command>` (how Canonfig hides the scheduled
+ * console) reports the launched command, the binding that must stay usable.
+ */
 export const installedWindowsCommand = (executable: string | undefined, arguments_: string | undefined): InstalledSchedulerCommand | undefined => {
   if (executable === undefined || arguments_ === undefined) return undefined;
   const words: string[] = [];
@@ -88,6 +92,10 @@ export const installedWindowsCommand = (executable: string | undefined, argument
     }
     if (quoted) return undefined;
     words.push(word);
+  }
+  if (win32.basename(executable).toLowerCase() === "wscript.exe") {
+    const launcher = words.findIndex((word) => !word.startsWith("//"));
+    return launcher === -1 ? undefined : commandFrom(words.slice(launcher + 1));
   }
   return commandFrom([executable, ...words]);
 };

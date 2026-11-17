@@ -409,8 +409,41 @@ const taskCalendar = (
 // before the credential script runs; use the same Normal class as foreground sync.
 const windowsTaskPriority = 4;
 
+/**
+ * Runs the scheduled sync without a console window and exits with its exit
+ * code. The task runs in the user's session (credential access needs the
+ * interactive logon), where node.exe, a console program, would get a visible
+ * console for the whole run, renamed by every cmd child such as `npm ls`.
+ * wscript.exe has no console; Run(line, 0, true) starts the command hidden and
+ * returns its exit code, which conhost --headless would replace with 0. The
+ * quoting is windowsCommandLineArgument's, in JScript (ES3).
+ */
+export const windowsScheduleLauncher = [
+  "// Canonfig scheduled sync launcher: runs its arguments with no window and exits with their code.",
+  "function repeat(text, count) { var out = \"\"; while (count-- > 0) out += text; return out; }",
+  "function quote(value) {",
+  "  if (value.length > 0 && !/[\\s\"]/.test(value)) return value;",
+  "  var out = \"\\\"\", slashes = 0;",
+  "  for (var i = 0; i < value.length; i++) {",
+  "    var c = value.charAt(i);",
+  "    if (c === \"\\\\\") { slashes++; continue; }",
+  "    out += c === \"\\\"\" ? repeat(\"\\\\\", slashes * 2 + 1) + c : repeat(\"\\\\\", slashes) + c;",
+  "    slashes = 0;",
+  "  }",
+  "  return out + repeat(\"\\\\\", slashes * 2) + \"\\\"\";",
+  "}",
+  "var words = [];",
+  "for (var i = 0; i < WScript.Arguments.length; i++) words.push(quote(WScript.Arguments(i)));",
+  "WScript.Quit(new ActiveXObject(\"WScript.Shell\").Run(words.join(\" \"), 0, true));",
+  "",
+].join("\r\n");
+
+/** Task Scheduler expands %SystemRoot%; the task XML keeps it literally. */
+const windowsScriptHost = String.raw`%SystemRoot%\System32\wscript.exe`;
+
 const renderTaskSchedulerJob = (
   job: SchedulerJob,
+  launcher: string,
 ): Effect.Effect<RenderedSchedulerJob, MachineStateError> =>
   Effect.gen(function*() {
     if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/u.test(job.name)) {
@@ -441,8 +474,8 @@ const renderTaskSchedulerJob = (
       mechanism: "task-scheduler",
       serviceName: taskName,
       service: [
-        `$Action = New-ScheduledTaskAction -Execute ${powershellLiteral(executable.absolute)} `
-          + `-Argument ${powershellLiteral(commandLine)}`,
+        `$Action = New-ScheduledTaskAction -Execute ${powershellLiteral(windowsScriptHost)} `
+          + `-Argument ${powershellLiteral(`//B //Nologo //E:jscript ${windowsCommandLineArgument(launcher)} ${windowsCommandLineArgument(executable.absolute)} ${commandLine}`)}`,
         `$Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive`,
         `$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 1)`,
         `$Settings.Priority = ${windowsTaskPriority}`,
@@ -1304,6 +1337,30 @@ export const windowsMachineStateLayer = (
         "native",
         `CanonfigPermissionRestore-${nativePermissionRestoreDigest}.dll`,
       );
+      // Content-addressed like the restore helper: a changed launcher is a new
+      // path, so the rendered task differs and the post-apply reconciler
+      // re-registers it. Written through a random sibling and renamed, so a
+      // concurrent install never leaves a half-written script.
+      const scheduleLauncher = win32.join(
+        localAppData,
+        "canonfig",
+        "native",
+        `CanonfigScheduleLaunch-${createHash("sha256").update(windowsScheduleLauncher).digest("hex").slice(0, 16)}.js`,
+      );
+      const writeScheduleLauncher = Effect.tryPromise({
+        try: async () => {
+          await mkdir(win32.dirname(scheduleLauncher), { recursive: true });
+          const staging = `${scheduleLauncher}.${randomBytes(6).toString("hex")}.tmp`;
+          await writeFile(staging, windowsScheduleLauncher);
+          try {
+            await rename(staging, scheduleLauncher);
+          } catch (error) {
+            await rm(staging, { force: true });
+            throw error;
+          }
+        },
+        catch: (cause) => filesystemFailure("write the scheduled sync launcher", scheduleLauncher, cause),
+      });
       const restoreNativePermissions = Effect.fn("MachineState.restoreNativePermissions")(
         function*(path: string, snapshot: FilePermissionSnapshot, directory: boolean) {
           if (snapshot.platform !== "windows") {
@@ -1502,8 +1559,11 @@ export const windowsMachineStateLayer = (
                 && weekdaysMatch;
               const registration = windowsTaskRegistration(xml);
               const identity = registeredSchedulerIdentity(xml, registration.registeredAt);
-              return taskRuntimeState(expected.serviceName).pipe(
-                Effect.map((runtime): SchedulerInspection => ({
+              // A deleted launcher makes the task fail at every run: drift, so
+              // the reconciler writes it again.
+              const launcherPresent = Effect.promise(() => access(scheduleLauncher).then(() => true, () => false));
+              return Effect.all([taskRuntimeState(expected.serviceName), launcherPresent]).pipe(
+                Effect.map(([runtime, launcherExists]): SchedulerInspection => ({
                   installed: true,
                   generation: identity?.generation,
                   installedAt: identity?.installedAt,
@@ -1513,7 +1573,8 @@ export const windowsMachineStateLayer = (
                     && xmlElement(xml, "Arguments") === desired.arguments
                     && xmlElement(settings, "Priority") === String(windowsTaskPriority)
                     && windowsTaskBatteryPolicyMatches(settings)
-                    && calendarMatches,
+                    && calendarMatches
+                    && launcherExists,
                   calendarMatches,
                   bindingInspected: true,
                   installedCommand: installedWindowsCommand(command, xmlElement(xml, "Arguments")),
@@ -1574,12 +1635,12 @@ export const windowsMachineStateLayer = (
               field: "definition",
               message: "rendered Task Scheduler definition is invalid",
             }))
-            : createScheduledTask(
+            : writeScheduleLauncher.pipe(Effect.andThen(createScheduledTask(
               definition.serviceName,
               // The registration time lets `schedule status` tell a run
               // skipped while logged off from one before the task existed.
               windowsTaskXml(desired, currentUser, new Date().toISOString().replace(/\.\d{3}Z$/u, "Z")),
-            );
+            )));
         },
         start: (definition) => Effect.gen(function*() {
           const query = yield* queryScheduledTask(definition.serviceName);
@@ -1997,7 +2058,7 @@ export const windowsMachineStateLayer = (
             }
           });
         },
-        renderSchedulerJob: renderTaskSchedulerJob,
+        renderSchedulerJob: (job) => renderTaskSchedulerJob(job, scheduleLauncher),
         inspectSchedulerJob: scheduler.inspect,
         snapshotSchedulerJob: scheduler.snapshot,
         installSchedulerJob: scheduler.install,
