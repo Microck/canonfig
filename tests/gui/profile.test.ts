@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { createServer, type Socket } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { Schema } from "effect";
-import { GuiProfileFile, GuiProfileSnapshot, GuiRevisions, GuiSkills } from "../../src/gui/contract/profile.ts";
+import { GuiProfileFile, GuiProfileSnapshot, GuiRevisions, GuiSkills, GuiSkillChecks, type GuiSkillCheck } from "../../src/gui/contract/profile.ts";
 import { GuiLocalChange } from "../../src/gui/contract/synchronization.ts";
 import { GuiOperation, GuiOperationTicket } from "../../src/gui/contract/operations.ts";
 
@@ -51,7 +51,10 @@ async function server(env: NodeJS.ProcessEnv) {
     } while (polled.state === "running");
     return polled;
   }
-  return { request, snapshot, operation, child };
+  const preview = async (names: readonly string[]) => Schema.decodeUnknownSync(GuiSkillChecks)((await operation("/api/skills/check", { names })).result);
+  const updateInput = (checks: readonly GuiSkillCheck[]) => ({ expected: checks.map(({ name, path, previousCommit, nextCommit, previousDigest, nextDigest }) => ({ name, path, previousCommit, nextCommit, previousDigest, nextDigest })) });
+  const update = (checks: readonly GuiSkillCheck[]) => operation("/api/skills/update", updateInput(checks));
+  return { request, snapshot, operation, preview, update, updateInput, child };
 }
 afterEach(async () => {
   for (const child of children.splice(0)) if (child.exitCode === null && child.signalCode === null) { const exited = once(child, "exit"); child.kill("SIGTERM"); await exited; }
@@ -201,13 +204,110 @@ describe("profile GUI endpoints", () => {
     expect((await gui.operation("/api/skills/track", { name: "review", source: upstream, ref: "main", subdir: "." })).state).toBe("succeeded");
     expect(Schema.decodeUnknownSync(GuiSkills)((await gui.request("/api/skills")).value).skills).toHaveLength(1);
     writeFileSync(join(upstream, "SKILL.md"), `${original}Check tests.\n`); git(["add", "."]); git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "update"]);
-    expect((await gui.operation("/api/skills/check", { name: "review" })).result).toMatchObject([{ status: "update-available", changed: ["SKILL.md"] }]);
-    expect((await gui.operation("/api/skills/update", { name: "review" })).state).toBe("succeeded");
+    const reviewed = await gui.preview(["review"]);
+    expect(reviewed).toMatchObject([{ status: "update-available", changed: ["SKILL.md"] }]);
+    expect((await gui.update(reviewed)).state).toBe("succeeded");
     expect(readFileSync(join(machine.folder, "skills", "review", "SKILL.md"), "utf8")).toContain("Check tests");
     writeFileSync(join(machine.folder, "skills", "review", "SKILL.md"), `${original}Local edits.\n`);
-    expect((await gui.operation("/api/skills/update", { name: "review" })).failure).toMatchObject({ category: "conflict-or-drift", exitCode: 4 });
-    expect((await gui.operation("/api/skills/check", { name: "review" })).failure).toMatchObject({ category: "conflict-or-drift", exitCode: 4, message: "Local edits detected in review. Reconcile the local files before updating." });
-    expect((await gui.operation("/api/skills/check", { name: "missing" })).failure).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+    expect((await gui.update(await gui.preview(["review"]))).failure).toMatchObject({ category: "conflict-or-drift", exitCode: 4 });
+    expect((await gui.operation("/api/skills/check", { names: ["review"] })).result).toMatchObject([{ name: "review", status: "local-edits" }]);
+    expect((await gui.operation("/api/skills/check", { names: ["missing"] })).failure).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  }, 120_000);
+
+  it("previews all or selected skills and refuses the whole batch when one skill has local edits", async () => {
+    const machine = fixture();
+    expect(machine.invoke(["source", "init"]).status).toBe(0);
+    writeFileSync(join(machine.folder, "canonfig.jsonc"), '{"version":1,"harnesses":[]}');
+    const upstream = join(machine.home, "upstream"); mkdirSync(upstream);
+    const git = (args: string[]) => {
+      const result = spawnSync("git", args, { cwd: upstream, encoding: "utf8" });
+      expect(result.status, result.stderr).toBe(0);
+    };
+    git(["init", "-b", "main"]);
+    const names = ["review", "testing", "pinned"];
+    for (const name of names) {
+      const text = `---\nname: ${name}\ndescription: ${name} skill\n---\nOriginal.\n`;
+      mkdirSync(join(upstream, name));
+      writeFileSync(join(upstream, name, "SKILL.md"), text);
+      mkdirSync(join(machine.folder, "skills", name), { recursive: true });
+      writeFileSync(join(machine.folder, "skills", name, "SKILL.md"), text);
+    }
+    git(["add", "."]); git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "initial"]);
+    const gui = await server(machine.env);
+    for (const name of names) expect((await gui.operation("/api/skills/track", { name, source: upstream, ref: "main", subdir: name })).state).toBe("succeeded");
+    const baseline = readFileSync(join(machine.folder, "skills-sources.json"), "utf8");
+    for (const name of ["review", "testing"]) writeFileSync(join(upstream, name, "reference.txt"), "New reference\n");
+    git(["add", "."]); git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "upstream updates"]);
+    const all = await gui.operation("/api/skills/check", { names: [] });
+    expect(all.result).toMatchObject([
+      { name: "review", status: "update-available", added: ["reference.txt"] },
+      { name: "testing", status: "update-available", added: ["reference.txt"] },
+      { name: "pinned", status: "unchanged" },
+    ]);
+    expect(readFileSync(join(machine.folder, "skills-sources.json"), "utf8")).toBe(baseline);
+    expect(existsSync(join(machine.folder, "skills/review/reference.txt"))).toBe(false);
+    writeFileSync(join(machine.folder, "skills/testing/local.txt"), "Keep my local file\n");
+    const reviewed = await gui.preview(["review", "testing"]);
+    expect(reviewed).toMatchObject([
+      { name: "review", status: "update-available" }, { name: "testing", status: "local-edits" },
+    ]);
+    const refused = await gui.update(reviewed);
+    expect(refused.failure).toMatchObject({ category: "conflict-or-drift", exitCode: 4 });
+    expect(readFileSync(join(machine.folder, "skills-sources.json"), "utf8")).toBe(baseline);
+    expect(existsSync(join(machine.folder, "skills/review/reference.txt"))).toBe(false);
+    expect(readFileSync(join(machine.folder, "skills/testing/local.txt"), "utf8")).toBe("Keep my local file\n");
+    rmSync(join(machine.folder, "skills/testing/local.txt"));
+    expect((await gui.update(reviewed)).state).toBe("succeeded");
+    for (const name of ["review", "testing"]) expect(readFileSync(join(machine.folder, "skills", name, "reference.txt"), "utf8")).toBe("New reference\n");
+    expect((await gui.operation("/api/skills/check", { names: [] })).result).toMatchObject(names.map((name) => ({ name, status: "unchanged" })));
+    expect(Schema.decodeUnknownSync(GuiRevisions)((await gui.request("/api/revisions")).value).revisions).toHaveLength(0);
+    for (const body of [{}, { name: "review" }, { names: [] }, { expected: [] }, { names: [""] }, { names: ["review"], force: true }]) {
+      expect((await gui.request("/api/skills/update", "POST", body)).value).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+    }
+  }, 120_000);
+
+  it("rejects a stale reviewed commit before replacing any skill and never adds later registrations to apply", async () => {
+    const machine = fixture();
+    expect(machine.invoke(["source", "init"]).status).toBe(0);
+    writeFileSync(join(machine.folder, "canonfig.jsonc"), '{"version":1,"harnesses":[]}');
+    const upstream = join(machine.home, "upstream"); mkdirSync(upstream);
+    const git = (args: string[]) => {
+      const command = spawnSync("git", args, { cwd: upstream, encoding: "utf8" });
+      expect(command.status, command.stderr).toBe(0);
+    };
+    const commit = () => { git(["add", "."]); git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture update"]); };
+    git(["init", "-b", "main"]);
+    for (const name of ["review", "testing", "later"]) {
+      const text = `---\nname: ${name}\ndescription: ${name} skill\n---\nOriginal.\n`;
+      mkdirSync(join(upstream, name)); writeFileSync(join(upstream, name, "SKILL.md"), text);
+      mkdirSync(join(machine.folder, "skills", name), { recursive: true });
+      writeFileSync(join(machine.folder, "skills", name, "SKILL.md"), text);
+    }
+    commit();
+    const gui = await server(machine.env);
+    for (const name of ["review", "testing"]) expect((await gui.operation("/api/skills/track", { name, source: upstream, ref: "main", subdir: name })).state).toBe("succeeded");
+    for (const name of ["review", "testing"]) writeFileSync(join(upstream, name, "reference.txt"), "Reviewed reference\n");
+    commit();
+    const reviewed = await gui.preview([]);
+    expect(reviewed.map(({ name }) => name)).toEqual(["review", "testing"]);
+    expect((await gui.operation("/api/skills/track", { name: "later", source: upstream, ref: "main", subdir: "later" })).state).toBe("succeeded");
+    const config = readFileSync(join(machine.folder, "skills-sources.json"), "utf8");
+    writeFileSync(join(upstream, "testing", "reference.txt"), "Unreviewed reference\n");
+    writeFileSync(join(upstream, "later", "reference.txt"), "Not selected\n"); commit();
+    expect((await gui.update(reviewed)).failure).toMatchObject({
+      category: "conflict-or-drift", exitCode: 4,
+      message: "The preview is out of date. Check for updates again.",
+    });
+    for (const name of ["review", "testing", "later"]) expect(existsSync(join(machine.folder, "skills", name, "reference.txt"))).toBe(false);
+    expect(readFileSync(join(machine.folder, "skills-sources.json"), "utf8")).toBe(config);
+    expect(existsSync(join(machine.folder, "skills-sources.json.pending"))).toBe(false);
+    const fresh = await gui.preview(["review", "testing"]);
+    const changedBaseline = fresh.map((check, index) => index === 0 ? { ...check, previousDigest: "0".repeat(64) } : check);
+    expect((await gui.update(changedBaseline)).failure).toMatchObject({ category: "conflict-or-drift", exitCode: 4 });
+    expect((await gui.update(fresh)).state).toBe("succeeded");
+    expect(readFileSync(join(machine.folder, "skills/review/reference.txt"), "utf8")).toBe("Reviewed reference\n");
+    expect(readFileSync(join(machine.folder, "skills/testing/reference.txt"), "utf8")).toBe("Unreviewed reference\n");
+    expect(existsSync(join(machine.folder, "skills/later/reference.txt"))).toBe(false);
   }, 120_000);
 
   it.runIf(process.platform !== "win32").each(["track", "update"] as const)(
@@ -234,6 +334,7 @@ describe("profile GUI endpoints", () => {
         writeFileSync(join(upstream, "SKILL.md"), `${original}Updated.\n`);
         git(["add", "."]); git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "update"]);
       }
+      const reviewed = action === "update" ? await gui.preview(["review"]) : [];
       const connected = Promise.withResolvers<{ socket: Socket; directory: string }>();
       const gate = createServer((socket) => {
         socket.once("data", (bytes) => connected.resolve({ socket, directory: bytes.toString() }));
@@ -262,7 +363,7 @@ if (args.includes("fetch")) {
       // prevents the HTTP response. TestClock cannot control that subprocess.
       const safetyRelease = setTimeout(() => { void connected.promise.then(({ socket }) => socket.end()); }, 10_000);
       try {
-        const started = await gui.request(`/api/skills/${action}`, "POST", action === "track" ? tracking : { name: "review" });
+        const started = await gui.request(`/api/skills/${action}`, "POST", action === "track" ? tracking : gui.updateInput(reviewed));
         expect(started.status).toBe(202);
         const ticket = Schema.decodeUnknownSync(GuiOperationTicket)(started.value);
         held = await connected.promise;
@@ -299,7 +400,7 @@ if (args.includes("fetch")) {
     for (const path of ["/api/profile/items", "/api/revisions", "/api/skills"]) expect((await gui.request(path)).value).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
     expect((await gui.request("/api/profile/scan/accept", "POST", { reviewDigest: "reviewed", confirmAll: true })).value).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
     for (const [path, method, body] of [
-      ["/api/profile/items", "PUT", { changes: [] }], ["/api/profile/config", "PUT", { expectedDigest: null, edits: [], changes: [] }], ["/api/profile/scan", "POST", {}], ["/api/profile/validate", "POST", {}], ["/api/publications", "POST", { reviewer: "reviewer" }], ["/api/revisions/inspect", "POST", { revision: "missing" }], ["/api/skills/track", "POST", { name: "review", source: "/missing", ref: "main", subdir: "." }], ["/api/skills/check", "POST", { name: "review" }], ["/api/skills/update", "POST", { name: "review" }],
+      ["/api/profile/items", "PUT", { changes: [] }], ["/api/profile/config", "PUT", { expectedDigest: null, edits: [], changes: [] }], ["/api/profile/scan", "POST", {}], ["/api/profile/validate", "POST", {}], ["/api/publications", "POST", { reviewer: "reviewer" }], ["/api/revisions/inspect", "POST", { revision: "missing" }], ["/api/skills/track", "POST", { name: "review", source: "/missing", ref: "main", subdir: "." }], ["/api/skills/check", "POST", { names: [] }], ["/api/skills/update", "POST", { expected: [{ name: "review", path: "skills/review", previousCommit: "a", nextCommit: "b", previousDigest: "c", nextDigest: "d" }] }],
     ] as const) expect((await gui.request(path, method, body)).value).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   }, 60_000);
 });

@@ -17,8 +17,8 @@ import { TARGET_IDS } from "../../projection/model.ts";
 import { emptyModel } from "../../projection/detect.ts";
 import { rootContext, supportedCategories } from "../../projection/plan.ts";
 import { CanonfigError } from "../../skills/errors.ts";
-import { listSkills, trackSkill, checkSkills, updateSkills } from "../../skills/manager.ts";
-import { GuiProfileConfigWrite, GuiProfileWrite, GuiPublicationRequest, GuiRevisionSelection, GuiScanAcceptance, GuiSkillSelection, GuiSkillTrack, profileEndpoints } from "../contract/profile.ts";
+import { listSkills, trackSkill, checkSkills, updateSkills, skillUpdateOperations } from "../../skills/manager.ts";
+import { GuiProfileConfigWrite, GuiProfileWrite, GuiPublicationRequest, GuiRevisionSelection, GuiScanAcceptance, GuiSkillSelection, GuiSkillTrack, GuiSkillUpdate, profileEndpoints } from "../contract/profile.ts";
 import { GuiOperations } from "../operations.ts";
 import { GuiQueries } from "../queries.ts";
 import { EmptyBody, commandFailure, maximumAuthoringBodyBytes, mutationRoute, queryRoute, type GuiRoute } from "../routing.ts";
@@ -93,12 +93,8 @@ export const profileRoutes = Effect.gen(function*() {
     mutationRoute("POST", profileEndpoints.revision, GuiRevisionSelection, (input) => target.pipe(Effect.andThen(Schema.decodeUnknownEffect(ProfileRevisionId)(input.revision).pipe(Effect.mapError((error) => new CliCommandFailure({ category: "usage-or-configuration", message: error.message })))), Effect.flatMap(source.inspectProfile), Effect.map(asJson))),
     queryRoute(profileEndpoints.skills, () => skillCall(listSkills)),
     mutationRoute("POST", profileEndpoints.track, GuiSkillTrack, (input) => skillOperation((location) => trackSkill(location, { ...input, path: `skills/${input.name}` })), 202),
-    mutationRoute("POST", profileEndpoints.check, GuiSkillSelection, (input) => skillOperation(async (location) => {
-      const checks = await checkSkills(location, [input.name]);
-      if (checks.some((check) => check.status === "local-edits")) throw new CanonfigError("SKILL_LOCAL_EDITED", `Local edits detected in ${input.name}. Reconcile the local files before updating.`);
-      return checks;
-    }), 202),
-    mutationRoute("POST", profileEndpoints.update, GuiSkillSelection, (input) => skillOperation((location) => updateSkills(location, [input.name])), 202),
+    mutationRoute("POST", profileEndpoints.check, GuiSkillSelection, (input) => skillOperation((location) => checkSkills(location, input.names)), 202),
+    mutationRoute("POST", profileEndpoints.update, GuiSkillUpdate, (input) => skillOperation((location) => updateSkills(location, input.expected.map(({ name }) => name), skillUpdateOperations, undefined, input.expected)), 202),
   ];
   return routes;
 });

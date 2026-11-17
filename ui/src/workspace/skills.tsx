@@ -5,11 +5,13 @@
 // The workspace supplies upstream records and owns whether these operations are available.
 import { useId, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
+import { WarningCircle } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { DEMO, skillManifest, type Resource, type SkillSource, type UpstreamSkill } from "@/shared/metadata";
-import { Mono, StatusMark, type StatusKind } from "@/shared/shared";
+import { CliText, Mono, StatusMark, type StatusKind } from "@/shared/shared";
 import { useSharedReader, useSharedState, useWorkspace } from "./store";
 import { Field, Prop, SectionLabel, useDialogReturnFocus } from "./kit";
 import { ProfileActionNotice } from "./profile-authoring-controls";
@@ -52,7 +54,7 @@ function useSkillBusy() {
  */
 export function useSkillLocked(id: string) {
   const busy = useSkillBusy()[0];
-  return busy === `update:${id}` || busy === `check:${id}`;
+  return busy === `update:${id}` || busy === `check:${id}` || busy === "update:batch" || busy === "check:batch";
 }
 
 /**
@@ -200,7 +202,7 @@ export function SkillUpstream({ resource, editing }: { resource: Resource; editi
 
   const check = (tracked: SkillSource) => {
     if (!ws.capabilities.profileWrite) return ws.notImplemented("skills.check");
-    if (ws.profileLive) { ws.profileLive.checkSkill(id.slice(7)); return; }
+    if (ws.profileLive) { ws.profileLive.checkSkills([id.slice(7)]); return; }
     setBusy(`check:${id}`);
     ws.later(() => {
       setBusy(null);
@@ -222,7 +224,7 @@ export function SkillUpstream({ resource, editing }: { resource: Resource; editi
 
   const update = (tracked: SkillSource) => {
     if (!ws.capabilities.profileWrite) return ws.notImplemented("skills.update");
-    if (ws.profileLive) { ws.profileLive.updateSkill(id.slice(7)); return; }
+    if (ws.profileLive) { ws.profileLive.updateSkills([ws.profileLive.skillChecks[id]]); return; }
     // `skills update --apply` checks again before it replaces anything, so an edit saved after the last check still blocks it.
     const fetched = fetchSkill(ws.upstreamSkills, tracked.source, tracked.ref, tracked.subdir);
     if (!fetched.ok) {
@@ -345,6 +347,82 @@ export function SkillUpstream({ resource, editing }: { resource: Resource; editi
       <TrackSkillDialog resource={resource} open={tracking} onOpenChange={setTracking} onTracked={() => checkButton.current?.focus()} />
     </section>
   );
+}
+
+/** Batch updates use one selected-set transaction, never a loop of single-skill writes. */
+export function SkillUpdatesDialog({ open, onOpenChange, onReturnFocus }: { open: boolean; onOpenChange: (open: boolean) => void; onReturnFocus: () => void }) {
+  const ws = useWorkspace();
+  const focus = useDialogReturnFocus(onReturnFocus);
+  const live = ws.profileLive;
+  if (!live || ws.skillSources.length === 0) return null;
+  return (
+    <Dialog open={open} onOpenChange={(next) => { if (!live.busy || live.skillObservationLost) onOpenChange(next); }}>
+      {open && <DialogContent className="sm:max-w-2xl" {...focus}>
+        <SkillBatchReview onClose={() => onOpenChange(false)} />
+      </DialogContent>}
+    </Dialog>
+  );
+}
+
+const CHECK_LABEL: Record<SkillCheck["status"], string> = { unchanged: "Up to date", "update-available": "Update available", "local-edits": "Local edits" };
+
+function SkillBatchReview({ onClose }: { onClose: () => void }) {
+  const ws = useWorkspace();
+  const live = ws.profileLive!;
+  const [selected, setSelected] = useState(() => new Set(ws.skillSources.map((source) => source.id.slice(7))));
+  const names = ws.skillSources.map((source) => source.id.slice(7)).filter((name) => selected.has(name));
+  const all = names.length === ws.skillSources.length;
+  const selection = all ? [] : names;
+  const result = live.skillResult;
+  const reviewed = result && JSON.stringify(result.names) === JSON.stringify(names)
+    && result.checks.length === names.length && result.checks.every((check) => selected.has(check.name)) ? result : null;
+  const conflicts = reviewed?.checks.some((check) => check.status === "local-edits");
+  const updates = reviewed?.checks.filter((check) => check.status === "update-available").length ?? 0;
+  const apply = reviewed?.kind === "check" && updates > 0;
+  let action = "Check";
+  if (live.skillObservationLost) action = "Resume status check";
+  else if (live.busy) action = live.skillBusy?.startsWith("update:") ? "Applying…" : "Checking…";
+  else if (apply) action = `Apply ${updates} ${updates === 1 ? "update" : "updates"}`;
+  return <>
+    <DialogHeader>
+      <DialogTitle>Skill updates</DialogTitle>
+      <DialogDescription>Updates stay on this Source until you publish.</DialogDescription>
+    </DialogHeader>
+    <div className="grid min-h-0 gap-3 overflow-y-auto">
+      <fieldset disabled={live.busy} className="grid gap-1">
+        <legend className="mb-1 text-sm font-medium">Tracked skills</legend>
+        {ws.skillSources.map((source) => {
+          const name = source.id.slice(7);
+          return <label key={source.id} className="flex min-h-9 items-center gap-2 text-sm">
+            <Checkbox checked={selected.has(name)} onCheckedChange={(checked) => setSelected((previous) => { const next = new Set(previous); if (checked === true) next.add(name); else next.delete(name); return next; })} />
+            <Mono className="break-all">{name}</Mono><span className="text-faint">follows {source.ref}</span>
+          </label>;
+        })}
+      </fieldset>
+      {live.error && <p role="alert" className="flex items-start gap-2 text-sm text-bad"><WarningCircle className="mt-0.5 size-4 shrink-0" /><span className="whitespace-pre-wrap [overflow-wrap:anywhere]"><CliText>{live.error.message}</CliText></span></p>}
+      {reviewed && <section aria-label={reviewed.kind === "update" ? "Update result" : "Update preview"} className="grid gap-3" aria-live="polite">
+        {reviewed.checks.map((check) => <div key={check.name} className="grid gap-1.5 border-t border-border pt-2">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <Mono className="font-medium">{check.name}</Mono>
+            <StatusMark kind={reviewed.kind === "update" ? "ok" : STATE[check.status].kind} />
+            <span>{reviewed.kind === "update" && check.status === "update-available" ? "Updated" : CHECK_LABEL[check.status]}</span>
+          </div>
+          <p className="break-all font-mono text-xs text-faint">{short(check.previousCommit)} → {short(check.nextCommit)}</p>
+          {check.status !== "unchanged" && <FileChanges check={check} />}
+        </div>)}
+        {conflicts && <p className="text-sm text-muted-foreground">Deselect skills with local edits or reconcile them, then check again.</p>}
+        {reviewed.kind === "check" && updates > 0 && !conflicts && <p className="text-sm text-muted-foreground">Apply replaces the changed skill folders on this Source.</p>}
+      </section>}
+    </div>
+    <DialogFooter>
+      <Button type="button" variant="ghost" disabled={live.busy && !live.skillObservationLost} onClick={onClose}>{reviewed?.kind === "update" ? "Close" : "Cancel"}</Button>
+      <Button type="button" variant={apply && !live.skillObservationLost ? "primary" : "secondary"} disabled={!live.skillObservationLost && (live.busy || names.length === 0 || Boolean(apply && conflicts))} aria-live="polite" onClick={() => {
+        if (live.skillObservationLost) live.resumeSkillObservation();
+        else if (apply && reviewed) live.updateSkills(reviewed.checks);
+        else live.checkSkills(selection);
+      }}>{action}</Button>
+    </DialogFooter>
+  </>;
 }
 
 /** The ref rule of validateSource in src/skills/upstream.ts: a branch, tag or commit name, never a Git expression. */

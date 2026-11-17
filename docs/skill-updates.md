@@ -33,6 +33,30 @@ added, modified and deleted filenames. `--dry-run` makes the preview explicit.
 are errors, not silent no-ops. `--json` emits the standard CLI envelope, with
 filenames and commit IDs, never skill contents or remote error output.
 
+### Browser review on the Source
+
+Open **Profile > Skill updates** to check every tracked skill, or select a set
+without opening each skill's detail panel. **Check all tracked** and
+**Check selected** use the same read-only preview as `skills update --dry-run`.
+The review shows each skill's installed and upstream commits, local-edit
+conflicts, and new, changed and removed filenames.
+
+**Apply updates** submits the whole reviewed selection in one CLI update
+transaction. Any local edit blocks that entire selection. Deselect a conflicting
+skill and check the new selection, or reconcile the files before trying again.
+Apply fetches and checks the tracked refs again, but only replaces the explicit
+reviewed set if its installed commits, baseline digests, upstream commits and
+upstream content digests still match the preview. Drift blocks the whole set
+before any replacement and asks you to check again. Skills tracked after the
+preview are not added to apply. It never overwrites local edits, runs skill files,
+or publishes a profile. Review the updated folder and publish separately.
+
+If operation polling fails, **Resume status check** observes the original
+ticket instead of submitting another update. Keep the GUI server running.
+Interrupted filesystem transactions still require the manual recovery below.
+The browser fixes the root to the Source's Canonical Folder and the configuration
+to `skills-sources.json`; arbitrary `--root` and `--config` remain CLI-only.
+
 ## Configuration and scope
 
 The default source configuration is `skills-sources.json`, relative to `--root`

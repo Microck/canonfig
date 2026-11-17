@@ -991,6 +991,17 @@ A local edit to a skill blocks its update; nothing is overwritten by force.
 Private and SSH repositories are not supported. Updates copy files and never
 run them. With a Source Machine, update skills there, then publish.
 
+In the browser on the Source, open **Profile > Skills > Skill updates**. All tracked
+skills start selected. **Check** previews commits, file changes and local-edit conflicts,
+then apply the selected set together. Any local edit blocks the whole set.
+Apply refuses changed commits or baselines and asks you to check again before
+replacing anything. It updates only the reviewed names, not skills tracked after
+the preview, and does not publish a revision.
+If a poll fails, **Resume status check** keeps observing that operation.
+Arbitrary roots, source configuration paths and continuous `skills auto` workers
+remain CLI-only; their filesystem scope and process lifetime do not belong to a
+browser tab.
+
 ## Installer bindings
 
 ```bash

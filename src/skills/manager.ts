@@ -9,7 +9,8 @@ import { fetchSkill, fingerprint, inventory, normalizeSource, readLocalSkill, sa
 export interface TrackedSkill extends SkillSource { name: string; path: string; commit: string; digest: string }
 export interface SkillConfig { version: 1; skills: TrackedSkill[] }
 export interface SkillLocation { root: string; config: string }
-export interface SkillCheck { name: string; path: string; previousCommit: string; nextCommit: string; status: "unchanged" | "update-available" | "local-edits"; added: string[]; changed: string[]; removed: string[] }
+export interface SkillUpdateExpectation { name: string; path: string; previousCommit: string; nextCommit: string; previousDigest: string; nextDigest: string }
+export interface SkillCheck extends SkillUpdateExpectation { status: "unchanged" | "update-available" | "local-edits"; added: string[]; changed: string[]; removed: string[] }
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new CanonfigError("SKILL_CONFIG_INVALID", "Expected a configuration object");
@@ -121,6 +122,7 @@ async function prepare(location: SkillLocation, config: SkillConfig, names: read
     const before = inventory(local); const after = inventory(fetched.files);
     result.push({ skill, files: fetched.files, digest, check: {
       name: skill.name, path: skill.path, previousCommit: skill.commit, nextCommit: fetched.commit,
+      previousDigest: skill.digest, nextDigest: digest,
       status: fingerprint(local) !== skill.digest ? "local-edits" : digest === skill.digest ? "unchanged" : "update-available",
       added: Object.keys(after).filter((key) => !Object.hasOwn(before, key)),
       removed: Object.keys(before).filter((key) => !Object.hasOwn(after, key)),
@@ -222,11 +224,20 @@ const transactionTransitions = {
   RollingBack: ["Finished"],
   Finished: [],
 } satisfies Readonly<Record<SkillTransaction["_tag"], ReadonlyArray<SkillTransaction["_tag"]>>>;
-export async function updateSkills(location: SkillLocation, names: readonly string[], operations: SkillUpdateOperations = skillUpdateOperations, validateSelection?: (config: SkillConfig) => void): Promise<SkillCheck[]> {
+export async function updateSkills(location: SkillLocation, names: readonly string[], operations: SkillUpdateOperations = skillUpdateOperations, validateSelection?: (config: SkillConfig) => void, expected?: readonly SkillUpdateExpectation[]): Promise<SkillCheck[]> {
   return withLock(location, async () => {
     const original = await readConfig(location);
     validateSelection?.(original);
     const prepared = await prepare(location, original, names);
+    if (expected !== undefined) {
+      const reviewed = new Map(expected.map((check) => [check.name, check]));
+      if (prepared.length !== expected.length || prepared.some(({ check }) => {
+        const approved = reviewed.get(check.name);
+        return !approved || check.path !== approved.path || check.previousCommit !== approved.previousCommit
+          || check.nextCommit !== approved.nextCommit || check.previousDigest !== approved.previousDigest
+          || check.nextDigest !== approved.nextDigest;
+      })) throw new CanonfigError("SKILL_CONFIG_EDITED", "The preview is out of date. Check for updates again.");
+    }
     if (prepared.some((item) => item.check.status === "local-edits")) throw new CanonfigError("SKILL_LOCAL_EDITED", "Local edits detected. No skill was updated; check the preview and reconcile changes before applying");
     const changed = prepared.filter((item) => item.check.status === "update-available");
     if (!changed.length) return prepared.map((item) => item.check);

@@ -318,7 +318,7 @@ export function ListRow({
  * the same mark down the page; touch screens, which can't hover, always show it.
  */
 /** `minWidth` should match the list's rows so the band spans the sideways-scrolled list. */
-export function GroupRow({ icon: Icon, label, count, hint, minWidth }: { icon?: IconComponent; label: string; count?: number; hint?: ReactNode; minWidth?: number }) {
+export function GroupRow({ icon: Icon, label, count, hint, minWidth, action }: { icon?: IconComponent; label: string; count?: number; hint?: ReactNode; minWidth?: number; action?: ReactNode }) {
   return (
     <div className={cn("group/band flex h-[36px] items-center gap-2 rounded-lg bg-raised/50 text-base", LIST_INSET)} style={{ minWidth }}>
       {Icon && <Icon className="size-[14px] text-muted-foreground" />}
@@ -329,6 +329,7 @@ export function GroupRow({ icon: Icon, label, count, hint, minWidth }: { icon?: 
           {hint}
         </Hint>
       )}
+      {action && <div className="ml-auto flex items-center gap-1">{action}</div>}
     </div>
   );
 }
