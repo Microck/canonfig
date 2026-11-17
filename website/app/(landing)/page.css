@@ -130,7 +130,7 @@
 
 @media (prefers-reduced-motion: no-preference) {
   .intro {
-    animation: intro-rise 350ms var(--mo-ease-out) both;
+    animation: intro-rise 350ms var(--mo-ease-out) var(--animation-delay, 0ms) both;
   }
 
   .intro-fade {
@@ -161,8 +161,8 @@
 
 /* Every section below the hero rises into view once, the first time it is
    scrolled to (RevealOnScroll in demos/offscreen.tsx sets data-revealed).
-   Its pieces (`.rv`) fade up 8px, 400ms, each after its own `--rv` delay
-   (reveal.ts): heading first, then cards 60ms apart, chips 40ms apart.
+   Its pieces (`.rv`) fade up 8px, 400ms, each after its own `--rv` delay.
+   The heading goes first, then cards 60ms apart, chips 40ms apart.
    Hidden only when the script that reveals them can run (data-js, set in
    layout.tsx) and motion is allowed; otherwise everything is simply there.
    Transitions, so a reveal that starts mid-scroll never restarts. */

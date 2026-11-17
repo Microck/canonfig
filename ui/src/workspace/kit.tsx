@@ -894,7 +894,7 @@ export function StatusRow({ status, label, value, title, onClick }: { status?: S
  * A filled settings card with a hairline between its rows, like Linear's preferences. A class, not a
  * component, so a RadioGroup or an <ol> can be the card itself and keep its own role and children.
  */
-export const settingsGroup = "grid gap-0 divide-y divide-border/70 overflow-hidden rounded-xl bg-raised/40";
+export const settingsGroup = "settings-group";
 
 /** One scalar setting inside `settingsGroup`: title, an optional helper line, and the control or value on the right. */
 export function SettingRow({

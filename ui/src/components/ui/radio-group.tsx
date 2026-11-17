@@ -4,12 +4,13 @@ import { RadioGroup as RadioGroupPrimitive } from "radix-ui"
 
 function RadioGroup({
   className,
+  variant = "default",
   ...props
-}: React.ComponentProps<typeof RadioGroupPrimitive.Root>) {
+}: React.ComponentProps<typeof RadioGroupPrimitive.Root> & { variant?: "default" | "settings" }) {
   return (
     <RadioGroupPrimitive.Root
       data-slot="radio-group"
-      className={cn("grid w-full gap-2", className)}
+      className={cn("w-full", variant === "settings" ? "settings-group" : "grid gap-2", className)}
       {...props}
     />
   )

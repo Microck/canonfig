@@ -1,8 +1,29 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "plugins": ["react", "typescript", "oxc"],
+  "jsPlugins": ["@shadcn/lint"],
+  "settings": {
+    "shadcn": {
+      "note": "See ui/DESIGN.md. Theme tokens live in src/index.css and button variants in src/components/ui/button.tsx."
+    }
+  },
   "rules": {
     "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
+    "react/only-export-components": ["warn", { "allowConstantExport": true }],
+    "shadcn/no-restyle": ["error", {
+      "deny": [],
+      "contracts": [{ "pattern": "^Button$", "deny": ["bg-color", "bg-image"] }]
+    }],
+    "shadcn/no-raw-colors": ["error", { "allow": ["accent-picker"] }],
+    "shadcn/no-unknown-classes": ["error", {
+      "allow": ["toaster", "cf-map", "cf-map-tile-run", "cf-broken-link", "nodrag", "nopan", "react-flow__edge-interaction"]
+    }],
+    "shadcn/require-static-classes": "error"
+  },
+  "overrides": [
+    {
+      "files": ["src/components/ui/**"],
+      "rules": { "shadcn/require-static-classes": "off" }
+    }
+  ]
 }

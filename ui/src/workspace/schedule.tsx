@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Field, settingsGroup } from "./kit";
+import { Field } from "./kit";
 
 export const WEEK = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 export type Day = (typeof WEEK)[number];
@@ -147,7 +147,7 @@ export function ScheduleFields({
           aria-label="When"
           // Spotlit by both the Profile defaults and the Follower Schedule tour chapters.
           data-tour="schedule-when"
-          className={settingsGroup}
+          variant="settings"
         >
           {options.map((o) => (
             <Label key={o.value} htmlFor={`${idPrefix}-${o.value}`} className="flex min-h-9 cursor-pointer items-center gap-2 px-4 py-2 text-base font-normal hover:bg-raised/40">

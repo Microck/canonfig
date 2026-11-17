@@ -36,5 +36,5 @@ export type HarnessLogoId = (typeof HARNESSES)[number]['logo'];
  */
 export function HarnessLogo({ logo, className }: { logo: HarnessLogoId; className: string }) {
   const url = `url(/harnesses/${logo}.svg)`;
-  return <span className={`harness-logo ${className}`} aria-hidden="true" style={{ maskImage: url, WebkitMaskImage: url }} />;
+  return <span className={`harness-logo ${className}`} aria-hidden="true" style={{ '--harness-mask': url }} />;
 }

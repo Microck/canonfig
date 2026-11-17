@@ -48,6 +48,10 @@
 
 @custom-variant dark (&:is(.dark *));
 
+@utility settings-group {
+  @apply grid gap-0 divide-y divide-border/70 overflow-hidden rounded-xl bg-raised/40;
+}
+
 @theme inline {
   --font-sans: "Manrope", -apple-system, system-ui, sans-serif;
   --font-mono: "Ioskeley Mono", ui-monospace, monospace;

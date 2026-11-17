@@ -10,6 +10,10 @@ site; comments that mention "the reference" mean that site. Satelle's demos
 were about driving a remote desktop. None of that metaphor carries over: no
 draggable windows, no control glow, no mouse pointer, no orbiting devices.
 
+Run `npm run website:lint` from the repository root. Keep fixed styles in the
+landing or docs stylesheet. JSX can pass computed styling values as CSS custom
+properties.
+
 ## Pictures first
 
 Each section is a diagram a reader understands at a glance. Words are labels,
@@ -138,7 +142,7 @@ for things travelling on screen. Only `transform`/`scale`/`translate`,
   script in `layout.tsx` marks the session as seen before the hero paints, so
   later loads show everything in place.
 - **Sections rise in once, on first scroll** (`RevealOnScroll` in
-  `demos/offscreen.tsx`, `reveal.ts`, page.css): the logo strip, Safe by
+  `demos/offscreen.tsx`, `page.css`): the logo strip, Safe by
   default, the publish scene, does/doesn't and the closing band. Each piece
   fades up 8px over 400ms, heading first, cards 60ms apart, chips 40ms apart.
   Content is hidden only while JavaScript can reveal it (`data-js`, set in

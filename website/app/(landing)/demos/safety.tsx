@@ -1,8 +1,7 @@
-import type { CSSProperties, ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { FillPattern } from '../dither';
 import { IconTile, type MachineIcon } from './machine';
 import { Offscreen } from './offscreen';
-import { revealDelay } from '../reveal';
 import './safety.css';
 
 /**
@@ -47,7 +46,7 @@ export default function SafetyCards() {
 /** One card; `index` staggers its rise when the section scrolls into view (page.css). */
 function Card({ index, title, caption, href, children }: { index: number; title: string; caption: string; href: string; children: ReactNode }) {
   return (
-    <li className="rv" style={revealDelay(80 + index * 60)}>
+    <li className="rv" style={{ '--rv': `${80 + index * 60}ms` }}>
       <a className="sf-card" href={href}>
         <span className="sf-art">{children}</span>
         <span className="sf-title">{title}</span>
@@ -112,16 +111,6 @@ function BackupsPicture() {
   );
 }
 
-/**
- * The delay a hover demo waits before this piece moves, as `--sweep`.
- * safety.css reads it only in the hovered state, so the demo staggers in and
- * every piece resets at once when the pointer leaves.
- */
-function sweep(ms: number): CSSProperties {
-  // SAFETY: a custom property; React passes unknown style keys through as-is.
-  return { '--sweep': `${ms}ms` } as CSSProperties;
-}
-
 // ---------------------------------------------------------------- the map --
 
 type Status = { tone: 'ok' | 'warn' | 'muted'; label: string };
@@ -160,7 +149,7 @@ function MachineNode({
   return (
     <g transform={`translate(${x} ${y})`}>
       <rect className="sf-node" width={width} height={height} rx="6" />
-      {ring ? <rect className={`sf-ring sf-ring-${ring.tone}`} x="-1" y="-1" width={width + 2} height={height + 2} rx="7" style={sweep(ring.delay)} /> : null}
+      {ring ? <rect className={`sf-ring sf-ring-${ring.tone}`} x="-1" y="-1" width={width + 2} height={height + 2} rx="7" style={{ '--sweep': `${ring.delay}ms` }} /> : null}
       <g transform="translate(10 10)">
         <IconTile id={`${id}-tile`} accent={accent} icon={icon} />
       </g>
@@ -222,7 +211,7 @@ function Edge({ from, to, tone, pulseDelay = 0 }: { from: [number, number]; to: 
     <g className={`sf-edge sf-edge-${tone}`}>
       <path d={curve} />
       <path d={`M${x2 - 3.5} ${y2 - 5} L${x2} ${y2 - 1} L${x2 + 3.5} ${y2 - 5}`} />
-      <path className="sf-pulse" d={curve} pathLength={100} style={sweep(pulseDelay)} />
+      <path className="sf-pulse" d={curve} pathLength={100} style={{ '--sweep': `${pulseDelay}ms` }} />
     </g>
   );
 }
@@ -362,7 +351,7 @@ function MatrixPicture() {
                   rx="3"
                   fill={CELL_FILL[cell]}
                   // A sweep across the grid on hover: down the rows, along the machines.
-                  style={sweep(rowIndex * 45 + index * 70)}
+                  style={{ '--sweep': `${rowIndex * 45 + index * 70}ms` }}
                 />
               ))}
             </g>

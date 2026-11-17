@@ -8,7 +8,6 @@ import { PublishScene } from './demos/publish';
 import SafetyCards from './demos/safety';
 import { DitherBand } from './dither-band';
 import { Mark } from './mark';
-import { revealDelay } from './reveal';
 import './page.css';
 
 // The release scripts bump website/package.json with every release.
@@ -90,7 +89,7 @@ function Hero() {
             // which would swallow a trailing space of its own.
             const spans = words.map((text) => (
               <Fragment key={text}>
-                <span className="intro intro-word" style={{ animationDelay: `${word++ * WORD_STAGGER_MS}ms` }}>
+                <span className="intro intro-word" style={{ '--animation-delay': `${word++ * WORD_STAGGER_MS}ms` }}>
                   {text}
                 </span>{' '}
               </Fragment>
@@ -98,10 +97,10 @@ function Hero() {
             return em ? <em key="em">{spans}</em> : spans;
           })}
         </h1>
-        <p className="hero-lead intro" style={{ animationDelay: `${LEAD_DELAY_MS}ms` }}>
+        <p className="hero-lead intro" style={{ '--animation-delay': `${LEAD_DELAY_MS}ms` }}>
           Edit ~/.canonfig/. Canonfig writes each agent's config files.
         </p>
-        <div className="hero-actions intro" style={{ animationDelay: `${LEAD_DELAY_MS + 100}ms` }}>
+        <div className="hero-actions intro" style={{ '--animation-delay': `${LEAD_DELAY_MS + 100}ms` }}>
           <a className="sa-btn sa-btn-primary" href={FIRST_SYNC}>
             Install Canonfig
             <Arrow />
@@ -114,7 +113,7 @@ function Hero() {
 
       {/* The map stands on the GUI's dithered horizon, full width and faded
           out on every side, so the texture has no edge of its own. */}
-      <div className="hero-map intro intro-fade" style={{ animationDelay: `${LEAD_DELAY_MS + 200}ms` }}>
+      <div className="hero-map intro intro-fade" style={{ '--animation-delay': `${LEAD_DELAY_MS + 200}ms` }}>
         <DitherBand />
         <div className="hero-stage">
           <HeroDiagram />
@@ -138,7 +137,7 @@ function Machines() {
   return (
     <Section id="machines">
       <SectionHead title="Publish changes to your other machines." />
-      <div className="rv" style={revealDelay(80)}>
+      <div className="rv" style={{ '--rv': '80ms' }}>
         <a className="shot" href={DEMO}>
           <PublishScene />
           <span className="shot-caption">
@@ -166,24 +165,24 @@ function Surface() {
     <Section id="surface">
       <div className="checks">
         <div>
-          <h2 className="sa-label rv" data-tone="ok" style={revealDelay(0)}>
+          <h2 className="sa-label rv" data-tone="ok">
             Canonfig
           </h2>
           <ul className="check-list" data-tone="ok">
             {does.map((item, index) => (
-              <li key={item} className="rv" style={revealDelay(40 + index * 40)}>
+              <li key={item} className="rv" style={{ '--rv': `${40 + index * 40}ms` }}>
                 {item}
               </li>
             ))}
           </ul>
         </div>
         <div>
-          <h2 className="sa-label rv" style={revealDelay(60)}>
+          <h2 className="sa-label rv" style={{ '--rv': '60ms' }}>
             It doesn't
           </h2>
           <ul className="check-list" data-tone="off">
             {doesNot.map((item, index) => (
-              <li key={item} className="rv" style={revealDelay(100 + index * 40)}>
+              <li key={item} className="rv" style={{ '--rv': `${100 + index * 40}ms` }}>
                 {item}
               </li>
             ))}
@@ -202,13 +201,13 @@ function Closing() {
   return (
     <section className="sa-grid closing" aria-labelledby="closing-title" data-reveal>
       <div>
-        <h2 className="sa-display rv" id="closing-title" style={revealDelay(0)}>
+        <h2 className="sa-display rv" id="closing-title">
           Install Canonfig.
         </h2>
-        <div className="rv" style={revealDelay(60)}>
+        <div className="rv" style={{ '--rv': '60ms' }}>
           <CopyCommand command={INSTALL} />
         </div>
-        <div className="closing-actions rv" style={revealDelay(120)}>
+        <div className="closing-actions rv" style={{ '--rv': '120ms' }}>
           <a className="sa-btn sa-btn-primary" href={FIRST_SYNC}>
             Sync your first two machines
             <Arrow />
@@ -232,7 +231,7 @@ function Section({ id, children }: { id: string; children: React.ReactNode }) {
 /** A section heading rises before its content. */
 function SectionHead({ title }: { title: string }) {
   return (
-    <div className="sa-head rv" style={revealDelay(0)}>
+    <div className="sa-head rv">
       <h2>{title}</h2>
     </div>
   );

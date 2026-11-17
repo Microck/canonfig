@@ -8,6 +8,12 @@ Canonfig is a config synchronizer. The sync can be local (between harnesses) or 
 - Keep scripting, machine-readable output, process launch and supervision, and low-level overrides in the CLI by default. For a CLI-only decision, document why and give users the command to run or the equivalent GUI workflow. If needed GUI work is deferred, record why and link a follow-up issue.
 - Record the coverage decision in the CLI/GUI capability matrix. [Issue #323](https://github.com/Microck/canonfig/issues/323)
 
+## Design lint
+
+- For GUI and demo changes, read [ui/DESIGN.md](ui/DESIGN.md) and run `npm run ui:lint` from the repository root. Install the UI dependencies with `npm ci --prefix ui`.
+- For website changes, read [website/DESIGN.md](website/DESIGN.md) and run `npm run website:lint` from the repository root after `npm ci`.
+- Fix design lint errors using the applicable project's tokens, component variants, or stylesheet classes.
+
 ## Domain glossary
 
 Canonfig keeps declared AI agent configuration aligned across a set of machines. One machine owns the desired configuration, while follower machines consume it without becoming additional authorities.

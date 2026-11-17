@@ -14,7 +14,6 @@ export function Mark({ size = 20 }: { size?: number }) {
       alt=""
       width={size}
       height={size}
-      style={{ imageRendering: 'pixelated' }}
     />
   );
 }

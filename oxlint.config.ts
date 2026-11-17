@@ -14,9 +14,12 @@ export default defineConfig({
     ".roo/**",
     ".windsurf/**",
     "tools/oxlint/anti-slop/**",
+    "website/.next/**",
+    "website/.source/**",
   ],
   jsPlugins: [
     { name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" },
+    "@shadcn/lint",
   ],
   rules: {
     // Enforce the current repository ceiling without forcing unrelated rewrites.
@@ -38,4 +41,14 @@ export default defineConfig({
     "anti-slop/no-widen-then-assert": "error",
     "anti-slop/require-safety-comment-for-type-assertion": "error",
   },
+  overrides: [
+    {
+      files: ["website/**/*.{jsx,tsx}"],
+      rules: {
+        "shadcn/no-inline-styles": ["error", {
+          message: "Move fixed styling to the website stylesheet. Pass computed values as CSS custom properties.",
+        }],
+      },
+    },
+  ],
 });

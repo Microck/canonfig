@@ -133,6 +133,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Lint GUI and demo
+        run: npm run ui:lint
+
       - name: Build browser assets for integration tests
         run: npm run build:cli
 

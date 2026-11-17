@@ -293,15 +293,15 @@
   }
 
   .pub-progress {
-    animation: pub-progress 10s var(--mo-ease-in-out) infinite backwards;
+    animation: pub-progress 10s var(--mo-ease-in-out) var(--animation-delay, 0ms) infinite backwards;
   }
 
   .pub-old {
-    animation: pub-old 10s var(--mo-ease-out) infinite backwards;
+    animation: pub-old 10s var(--mo-ease-out) var(--animation-delay, 0ms) infinite backwards;
   }
 
   .pub-new {
-    animation: pub-new 10s var(--mo-ease-out) infinite backwards;
+    animation: pub-new 10s var(--mo-ease-out) var(--animation-delay, 0ms) infinite backwards;
   }
 
   .pub[data-offscreen] :is(.pub-band, .pub-title, .pub-button, .pub-cursor, .pub-change, .pub-progress, .pub-old, .pub-new) {
