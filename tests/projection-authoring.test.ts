@@ -60,7 +60,7 @@ describe("shared folder authoring", () => {
     const { target, layer } = fixture('{"version":1,"harnesses":[],"local":{"appendLocal":["skills"]}}');
     const local: AuthoringTarget = { ...target, scope: "local" };
     await Effect.runPromise(Effect.gen(function*() {
-      expect(yield* localPreservation(local)).toEqual({ excludeSkills: [], preserveMcp: false });
+      expect(yield* localPreservation(local)).toEqual({ excludeSkills: [], preserveMcp: false, preservedMcpHarnesses: [] });
       expect((yield* localPreservation(local, { skill: "deploy", action: "add" })).excludeSkills).toEqual(["deploy"]);
       expect((yield* localPreservation(local, { skill: "deploy", action: "add" })).excludeSkills).toEqual(["deploy"]);
       expect((yield* localPreservation(local, { preserveMcp: true })).preserveMcp).toBe(true);

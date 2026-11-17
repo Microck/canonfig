@@ -2,6 +2,13 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
+## Unreleased
+
+- Preserve native MCP maps per harness with `preserveMcp: ["codex"]` or
+  `canonfig local mcp preserve --harness codex`, while other harnesses keep
+  receiving Source MCP. Sources and Followers can choose the same policy in
+  Local settings. MCP status lists preserved harnesses.
+
 ## v7.6.0 - 2026-11-17
 
 ### Browser interface

@@ -17,6 +17,7 @@ import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
 import { AgentSecretBindingSchema, agentHarnessOriginProblem, parseAgentSecretBinding } from "../domain/agent-harness-bounds.ts";
 import { ExecutableAuthorizationSchema } from "../domain/synchronization.ts";
 import { parseOverlay, keptLocalSkillName } from "../projection/folder.ts";
+import type { LocalPreservationChange } from "../projection/authoring.ts";
 import { TARGET_IDS, type TargetId } from "../projection/model.ts";
 import {
   defaultScheduleRunTimeoutMilliseconds,
@@ -129,7 +130,7 @@ export type CliCommand =
     readonly _tag: "Overlays";
     readonly change?: { readonly action: "set" | "remove"; readonly item: string } | undefined;
   }
-  | { readonly _tag: "LocalPreservation"; readonly change?: { readonly skill: string; readonly action: "add" | "remove" } | { readonly preserveMcp: boolean } }
+  | { readonly _tag: "LocalPreservation"; readonly change?: LocalPreservationChange }
   | { readonly _tag: "Recover"; readonly noInput: boolean }
   | { readonly _tag: "Abandon" }
   | { readonly _tag: "Status"; readonly follower?: typeof FollowerId.Type | undefined }
@@ -805,18 +806,30 @@ const evaluateAgentHarnessCommand = (
 };
 
 const evaluateLocalCommand = (arguments_: ReadonlyArray<string>, format: CliOutputFormat): CliOutcome => {
-  const options = parseOptions(arguments_.slice(1), new Set(), new Set());
+  const options = parseOptions(arguments_.slice(1), new Set(["--harness"]), new Set());
   const [policy, action, name, ...extra] = options.positionals;
-  if (policy === "skills" && action === "list" && name === undefined) return command({ _tag: "LocalPreservation" }, format);
-  if (policy === "skills" && (action === "add" || action === "remove") && name !== undefined && extra.length === 0) {
-    if (!keptLocalSkillName.test(name)) return invalid("Invalid skill name: use lowercase letters, digits and hyphens, starting with a letter or digit.");
-    return command({ _tag: "LocalPreservation", change: { skill: name, action } }, format);
+  const selected = options.values.get("--harness");
+  const harnesses: TargetId[] = [];
+  for (const value of selected ?? []) {
+    const id = TARGET_IDS.find((candidate) => candidate === value);
+    if (id === undefined) return invalid(`Unknown harness: ${value}; expected one of ${TARGET_IDS.join(", ")}`);
+    harnesses.push(id);
+  }
+  if (policy === "skills" && selected === undefined) {
+    if (action === "list" && name === undefined) return command({ _tag: "LocalPreservation" }, format);
+    if ((action === "add" || action === "remove") && name !== undefined && extra.length === 0) {
+      if (!keptLocalSkillName.test(name)) return invalid("Invalid skill name: use lowercase letters, digits and hyphens, starting with a letter or digit.");
+      return command({ _tag: "LocalPreservation", change: { skill: name, action } }, format);
+    }
   }
   if (policy === "mcp" && name === undefined) {
-    if (action === "status") return command({ _tag: "LocalPreservation" }, format);
-    if (action === "preserve" || action === "project") return command({ _tag: "LocalPreservation", change: { preserveMcp: action === "preserve" } }, format);
+    if (action === "status" && selected === undefined) return command({ _tag: "LocalPreservation" }, format);
+    if (action === "preserve" || action === "project") return command({
+      _tag: "LocalPreservation",
+      change: selected === undefined ? { preserveMcp: action === "preserve" } : { preserveMcp: action === "preserve", harnesses },
+    }, format);
   }
-  return invalid("Usage: canonfig local skills list|add <name>|remove <name> | canonfig local mcp status|preserve|project");
+  return invalid("Usage: canonfig local skills list|add <name>|remove <name> | canonfig local mcp status|preserve|project [--harness <id>]...");
 };
 
 const evaluateCommand = (

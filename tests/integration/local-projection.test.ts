@@ -186,6 +186,37 @@ const claudeJson = {
 };
 
 describe("local projection", () => {
+  it("preserves only selected native MCP maps and releases ownership before checking app updates", async () => {
+    const value = fixture(["codex", "claude-code", "pi", "oh-my-pi", "factory-droid", "antigravity"]);
+    const codex = join(value.home, ".codex", "config.toml");
+    const claude = join(value.home, ".claude.json");
+    const local = join(value.folder, "local", "local.jsonc");
+    const native = '[mcp_servers.node_repl]\ncommand = "codex-app-v1"\nstartup_timeout_sec = 120\n';
+    write(codex, native);
+    write(local, '{"preserveMcp":["codex"]}');
+    await sync(value, "apply");
+    expect(readFileSync(codex, "utf8")).toBe(native);
+    expect(JSON.parse(readFileSync(claude, "utf8")).mcpServers.docs.url).toBe("https://example.invalid/mcp");
+    expect(takeoverRows(value).some((row) => row.harness === "codex" && row.surface === "config")).toBe(false);
+
+    // Return Codex to projection, then let its app replace the owned map.
+    write(local, '{"preserveMcp":false}');
+    await sync(value, "apply");
+    expect(parseToml(readFileSync(codex, "utf8")).mcp_servers).toHaveProperty("docs");
+    const updated = native.replace("v1", "v2");
+    write(codex, updated);
+    write(local, '{"preserveMcp":["codex"]}');
+    await sync(value, "apply");
+    expect(readFileSync(codex, "utf8")).toBe(updated);
+    expect(appliedRecord(value, "harness:codex:config")?.ownedKeys).toEqual([]);
+
+    // Retirement must release a preserved map even if no surface is projected for it.
+    editFolderConfig(value, { mcp: {}, harnesses: ["claude-code"] });
+    await sync(value, "apply");
+    expect(readFileSync(codex, "utf8")).toBe(updated);
+    expect(JSON.parse(readFileSync(claude, "utf8")).mcpServers).toBeUndefined();
+  });
+
   it("recovers a takeover captured before the engine starts without adopting untouched bytes", async () => {
     const value = fixture(["codex"], { surfaces: { codex: ["instructions"] } });
     const target = join(value.home, ".codex", "AGENTS.md");

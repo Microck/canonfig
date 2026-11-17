@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ConfigValue } from "../../src/domain/resource.ts";
 import { adapterFor } from "../../src/projection/adapters/index.ts";
 import type { TargetId } from "../../src/projection/model.ts";
+import { TARGET_IDS } from "../../src/projection/model.ts";
 
 /**
  * What a follower keeps of its own, end to end through the CLI: append-local
@@ -171,6 +172,66 @@ const enroll = (source: Machine, endpoint: string, follower: Machine, name: stri
 const skill = (name: string, body: string) => `---\nname: ${name}\ndescription: ${name} skill\n---\n${body}\n`;
 
 describe("what a follower keeps of its own", () => {
+  it("adds and removes harness MCP preservation through the CLI and reports stable status data", () => {
+    const local = machine("preservation-cli");
+    const config = join(local.folder, "local", "local.jsonc");
+    expect(succeed(local.run(["local", "mcp", "status"]), "initial status").data).toEqual({
+      excludeSkills: [], preserveMcp: false, preservedMcpHarnesses: [],
+    });
+    succeed(local.run(["local", "mcp", "preserve", "--harness", "codex", "--harness", "pi", "--harness", "codex"]), "preserve selected");
+    expect(jsonc(config).preserveMcp).toEqual(["codex", "pi"]);
+    expect(succeed(local.run(["local", "mcp", "status"]), "selected status").data).toMatchObject({
+      preserveMcp: false, preservedMcpHarnesses: ["codex", "pi"],
+    });
+    succeed(local.run(["local", "mcp", "project", "--harness", "pi"]), "project one");
+    expect(jsonc(config).preserveMcp).toEqual(["codex"]);
+    succeed(local.run(["local", "mcp", "preserve", ...TARGET_IDS.flatMap((id) => ["--harness", id])]), "preserve all by id");
+    expect(jsonc(config).preserveMcp).toBe(true);
+    succeed(local.run(["local", "mcp", "project", "--harness", "codex"]), "project one from all");
+    expect(jsonc(config).preserveMcp).toEqual(TARGET_IDS.filter((id) => id !== "codex"));
+    succeed(local.run(["local", "mcp", "project", ...TARGET_IDS.flatMap((id) => ["--harness", id])]), "project all by id");
+    expect(jsonc(config).preserveMcp).toBe(false);
+    succeed(local.run(["local", "mcp", "preserve"]), "global preserve");
+    expect(succeed(local.run(["local", "mcp", "status"]), "global status").data).toMatchObject({
+      preserveMcp: true, preservedMcpHarnesses: [...TARGET_IDS].sort(),
+    });
+    const before = read(config);
+    const invalid = local.run(["local", "mcp", "preserve", "--harness", "chatgpt"]);
+    expect(invalid.status).toBe(2);
+    expect(invalid.output).toContain("Unknown harness: chatgpt; expected one of codex");
+    expect(read(config)).toBe(before);
+    succeed(local.run(["local", "mcp", "project"]), "global project");
+    expect(jsonc(config).preserveMcp).toBe(false);
+  }, 180_000);
+
+  it("keeps follower Codex native across app updates while Claude receives Source MCP", async () => {
+    const { source, endpoint } = await startSource({
+      harnesses: ["codex", "claude-code"],
+      mcp: { docs: { transport: "streamable-http", url: "https://docs.example.invalid/mcp" } },
+    }, { "AGENTS.md": "Team rules.\n" });
+    const follower = machine("selective-mcp", ["codex", "claude-code"]);
+    const codex = join(follower.home, ".codex", "config.toml");
+    const claude = join(follower.home, ".claude.json");
+    const native = '[mcp_servers.node_repl]\ncommand = "codex-app-v1"\n';
+    write(codex, native);
+    succeed(follower.run(["local", "mcp", "preserve", "--harness", "codex"]), "preserve Codex");
+    enroll(source, endpoint, follower, "selective-mcp");
+    succeed(follower.run(["sync", "--apply"]), "selective follower apply");
+    expect(read(codex)).toBe(native);
+    expect(jsonc(claude).mcpServers.docs.url).toBe("https://docs.example.invalid/mcp");
+    const updated = native.replace("v1", "v2");
+    write(codex, updated);
+    succeed(follower.run(["sync", "--apply"]), "sync after app update");
+    expect(read(codex)).toBe(updated);
+    succeed(follower.run(["local", "mcp", "project", "--harness", "codex"]), "project Codex");
+    succeed(follower.run(["sync", "--apply"]), "return Codex to projection");
+    expect(parseToml(read(codex)).mcp_servers).toHaveProperty("docs");
+    write(codex, updated);
+    succeed(follower.run(["local", "mcp", "preserve", "--harness", "codex"]), "release Codex ownership");
+    succeed(follower.run(["sync", "--apply"]), "release drifted map");
+    expect(read(codex)).toBe(updated);
+  }, 600_000);
+
   it("keeps the follower's instructions and skills beside the Source's in Codex, across updates and restore", async () => {
     const { source, endpoint } = await startSource({
       harnesses: ["codex"],

@@ -17,6 +17,7 @@ import { nativeTools } from "../src/projection/adapters/tools.ts";
 import type { RootContext } from "../src/projection/harness.ts";
 import { projectResources } from "../src/projection/plan.ts";
 import { ampPluginSource } from "../src/projection/templates/runtime.ts";
+import { TARGET_IDS } from "../src/projection/model.ts";
 
 const roots: Array<string> = [];
 afterEach(() => {
@@ -36,6 +37,32 @@ const folder = (files: Record<string, string>): string => {
 const minimal = "{ \"version\": 1, \"harnesses\": [\"claude-code\"] }";
 
 describe("Canonical Folder loader", () => {
+  it.each([
+    [undefined, []],
+    [false, []],
+    [true, TARGET_IDS],
+    [["codex"], ["codex"]],
+    [["pi", "codex", "codex"], ["codex", "pi"]],
+  ])("normalizes MCP preservation %j into harness membership", async (preserveMcp, expected) => {
+    const root = folder({ "canonfig.jsonc": minimal, "local/local.jsonc": JSON.stringify({ preserveMcp }) });
+    const loaded = await loadCanonicalFolder(root);
+    expect([...loaded.local.preserveMcp]).toEqual(expected);
+  });
+
+  it.each([[], ["not-a-harness"], ["codex", false], "codex", null].map((value) => ({ value })))("rejects invalid MCP preservation $value", async ({ value }) => {
+    const root = folder({ "canonfig.jsonc": minimal, "local/local.jsonc": JSON.stringify({ preserveMcp: value }) });
+    await expect(loadCanonicalFolder(root)).rejects.toThrow(/preserveMcp/u);
+  });
+
+  it("includes normalized MCP membership in the plan input digest", async () => {
+    const root = folder({ "canonfig.jsonc": minimal, "local/local.jsonc": '{"preserveMcp":["pi","codex","codex"]}' });
+    const first = await loadCanonicalFolder(root);
+    writeFileSync(join(root, "local/local.jsonc"), '{"preserveMcp":["codex","pi"]}');
+    expect((await loadCanonicalFolder(root)).digest).toBe(first.digest);
+    writeFileSync(join(root, "local/local.jsonc"), '{"preserveMcp":["codex"]}');
+    expect((await loadCanonicalFolder(root)).digest).not.toBe(first.digest);
+  });
+
   it("loads the authoring allowlist into the Canonical Model", async () => {
     const root = folder({
       "canonfig.jsonc": `{
