@@ -1,6 +1,11 @@
-import { inspect, type InspectOptions } from "node:util";
+import type { inspect, InspectOptions } from "node:util";
 
 import { type Cause, Schema } from "effect";
+
+// Node defines `util.inspect.custom` as this registered symbol. Using the registry instead of a
+// runtime `node:util` import keeps the module loadable in the browser GUI, which reaches it
+// through the shared contract schemas.
+const nodeInspect = Symbol.for("nodejs.util.inspect.custom");
 
 /**
  * The one declaration pattern for tagged errors in this repository.
@@ -54,7 +59,7 @@ export const TaggedError = <Self = never>() =>
         },
         configurable: true,
       },
-      [inspect.custom]: {
+      [nodeInspect]: {
         value(
           this: Error,
           depth: number,
