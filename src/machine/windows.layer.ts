@@ -1814,11 +1814,11 @@ export const windowsMachineStateLayer = (
             // User PATH, which this process does not see: it keeps the PATH it
             // started with. Without this, a tool installed earlier in the same
             // run failed its verification. Read the saved PATH only on a miss,
-            // only for the default PATH search, and only for a tool lookup that
-            // names its install methods: reading it starts PowerShell, which
-            // general lookups such as doctor's probes must not wait for.
+            // only for the default PATH search, and only when the caller asks
+            // (tool verification): reading it starts PowerShell, which harness
+            // detection and doctor's time-bounded probes must not wait for.
             const searched = new Set(directories.map((directory) => directory.absolute.toLowerCase()));
-            const consultSaved = query.searchPath === undefined && (query.installMethods?.length ?? 0) > 0;
+            const consultSaved = query.searchPath === undefined && query.includeSavedPath === true;
             const persisted = !consultSaved ? [] : (yield* readPersistedPath())
               .split(";")
               .filter((entry) => entry.length > 0 && win32.isAbsolute(entry) && !searched.has(entry.toLowerCase()))

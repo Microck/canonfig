@@ -2724,6 +2724,7 @@ const verifyCommand = (
       : yield* machine.findExecutable({
         name,
         installMethods,
+        includeSavedPath: true,
       }).pipe(
         Effect.map((found) => found.path),
         Effect.catchTag("ExecutableNotFoundError", (error) => Effect.succeed(error)),
@@ -2921,6 +2922,7 @@ const verifyExecutable = (
     return yield* machine.findExecutable({
       name: executable,
       installMethods: yield* verifierInstallMethods(context),
+      includeSavedPath: true,
     }).pipe(
       Effect.as<ResourceVerification>({ passed: true, method }),
       Effect.catch((error) =>

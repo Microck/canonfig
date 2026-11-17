@@ -93,13 +93,15 @@ describe.skipIf(process.platform !== "win32")("Windows executable lookup", () =>
       mkdirSync(installed);
       writeFileSync(join(installed, "late-tool.exe"), "");
       let savedPathReads = 0;
-      const lookup = (kind: "tool" | "general" | "explicit") => Effect.runPromise(Effect.gen(function*() {
+      const lookup = (kind: "verification" | "detection" | "general" | "explicit") => Effect.runPromise(Effect.gen(function*() {
         const machine = yield* MachineState;
-        const query = kind === "tool"
+        const query = kind === "verification"
+          ? { name: "late-tool", installMethods: [{ method: "winget" }], includeSavedPath: true }
+          : kind === "detection"
           ? { name: "late-tool", installMethods: [{ method: "winget" }] }
           : kind === "general"
           ? { name: "late-tool" }
-          : { name: "late-tool", installMethods: [{ method: "winget" }], searchPath: [yield* machine.normalizePath({ path: dirname(process.execPath) })] };
+          : { name: "late-tool", installMethods: [{ method: "winget" }], includeSavedPath: true, searchPath: [yield* machine.normalizePath({ path: dirname(process.execPath) })] };
         return yield* machine.findExecutable(query).pipe(
           Effect.match({ onFailure: (error) => error._tag, onSuccess: (found) => found.path.absolute }),
         );
@@ -107,9 +109,12 @@ describe.skipIf(process.platform !== "win32")("Windows executable lookup", () =>
         environment: environment(root),
         readPersistedPath: () => Effect.sync(() => { savedPathReads += 1; return `C:\\Windows;${installed}`; }),
       }))));
-      expect((await lookup("tool")).toLowerCase()).toBe(win32.join(installed, "late-tool.exe").toLowerCase());
+      expect((await lookup("verification")).toLowerCase()).toBe(win32.join(installed, "late-tool.exe").toLowerCase());
       expect(savedPathReads).toBe(1);
-      // A general lookup (doctor's probes) and an explicit search path never read the saved PATH.
+      // Harness detection names install methods too, but runs inside doctor's
+      // time-bounded probe; it, a general lookup, and an explicit search path
+      // never read the saved PATH.
+      expect(await lookup("detection")).toBe("ExecutableNotFoundError");
       expect(await lookup("general")).toBe("ExecutableNotFoundError");
       expect(await lookup("explicit")).toBe("ExecutableNotFoundError");
       expect(savedPathReads).toBe(1);
