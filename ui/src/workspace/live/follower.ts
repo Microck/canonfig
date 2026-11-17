@@ -69,10 +69,10 @@ function commandTransition(state: FollowerCommandState, event: CommandEvent): Fo
 export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, status: GuiStatus | undefined, reload: () => void): FollowerSlice {
   const follower = session.role === "follower";
   const harnesses = useLiveResource(backend, "/api/harnesses", GuiHarnessReport, session.role !== "unconfigured");
-  const local = useLiveResource(backend, "/api/local/items", GuiLocalItems, follower);
+  const local = useLiveResource(backend, "/api/local/items", GuiLocalItems, session.role !== "unconfigured");
   const schedule = useLiveResource(backend, "/api/schedule", GuiScheduleStatus, follower);
   const backups = useLiveResource(backend, "/api/backups", GuiBackups, true);
-  const overlays = useLiveResource(backend, "/api/local/overlays", GuiSynchronizationResult, follower);
+  const overlays = useLiveResource(backend, "/api/local/overlays", GuiSynchronizationResult, session.role !== "unconfigured");
   const tunnel = useLiveResource(backend, "/api/tunnel", GuiSynchronizationResult, follower);
   const enrollment = useLiveResource(backend, "/api/enrollment", GuiEnrollment, follower);
   const secrets = useLiveResource(backend, "/api/secrets", GuiSecrets, follower);

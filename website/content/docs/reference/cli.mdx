@@ -61,6 +61,18 @@ same commands as the CLI for setup, profile authoring and publishing,
 enrollment, sync, local settings and administration, including self-updates.
 The public interactive demo uses made-up machines instead.
 
+On Sources and Followers, Local settings manages this machine's harness
+exclusions, local items, overlays and settings key claims. Ownership choices
+stay in `~/.canonfig/local/local.jsonc` and never change the published
+profile. You can clear an exclusion even when a harness is not listed.
+Including it does not add it to the profile or apply files.
+
+A key claim releases Canonfig's ownership of the key without changing
+its value. Edit the value in the harness's own settings file. Removing
+the claim requires confirmation because the next sync can write the
+published value again. Removing an item overlay keeps its local item;
+the next sync can stop on a remaining collision.
+
 | Option | Effect |
 | --- | --- |
 | `--port <n>` | Choose the server's port. Without it, the operating system selects a free port. |

@@ -30,12 +30,14 @@ it("edits kept-local policies with the displayed digest and explains preservatio
   };
   try {
     await render();
-    assert.match(container.textContent ?? "", /Preserved, not disabled/);
-    assert.match(container.textContent ?? "", /connectivity are not verified/);
+    // Preserved is neither disabled nor verified, and the row says so while it is on.
+    assert.match(container.textContent ?? "", /Kept as is\. Canonfig doesn't check that the servers start\./);
     await click("Remove kept-local skill deploy");
     assert.deepEqual(writes.shift(), { expectedDigest: "displayed-digest", edits: [{ path: ["excludeSkills"], value: [] }] });
     await click("Keep native MCP on this machine");
     assert.deepEqual(writes.shift(), { expectedDigest: "displayed-digest", edits: [{ path: ["preserveMcp"], value: false }] });
+    // The field opens in place from the Add button that carries the same label.
+    await click("Skill name to keep local");
     const input = container.querySelector<HTMLInputElement>('input[aria-label="Skill name to keep local"]');
     assert.ok(input);
     const setInput = async (value: string) => {
@@ -53,8 +55,9 @@ it("edits kept-local policies with the displayed digest and explains preservatio
     assert.ok(live.local);
     live.local = { ...live.local, canonicalConfig: { local: { appendLocal: [] } } };
     await render();
-    assert.equal(input.disabled, true);
-    assert.match(container.textContent ?? "", /Source must include skills/);
+    assert.equal(container.querySelector('[aria-label="Skill name to keep local"]'), null);
+    assert.equal(container.querySelector<HTMLButtonElement>('[aria-label="Remove kept-local skill deploy"]')?.disabled, true);
+    assert.match(container.textContent ?? "", /Source must share skills folders/);
     live.savePreferences = async () => false;
     await click("Keep native MCP on this machine");
     assert.match(container.textContent ?? "", /Preferences were not saved/);

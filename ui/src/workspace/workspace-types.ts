@@ -21,6 +21,7 @@ export type SourceView =
   | "machines"
   | "revisions"
   | "sync"
+  | "local"
   | "backups"
   | "secrets"
   | "service"

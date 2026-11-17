@@ -2,7 +2,7 @@ import { ArchiveExportButton } from "./archive-transfer";
 // Shared Follower screens read machine data and operations from the workspace provider.
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { toast } from "sonner";
-import { ArrowRight, CaretRight, Check, DotsThree, HourglassMedium, Plus, WarningCircle, X } from "@/components/icons";
+import { ArrowRight, CaretRight, Check, DotsThree, HourglassMedium, Plus, X } from "@/components/icons";
 import { cn, removeKeepingFocus } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -25,6 +25,7 @@ import {
   SOURCE_TEXT_END,
   SOURCE_TEXT_START,
   SETTINGS_FILES,
+  type Harness,
   type HarnessId,
   type KeptSurface,
   type LocalCategory,
@@ -39,6 +40,9 @@ import {
   AnimatedRow,
   Body,
   CATEGORY_ICON,
+  Chip,
+  ChipAdd,
+  ChipRow,
   CommandBox,
   DetailPanel,
   Field,
@@ -1139,9 +1143,8 @@ function LocalForm() {
   };
   const [removingOverlay, setRemovingOverlay] = useState<string | null>(null);
   const [disableBackups, setDisableBackups] = useState(false);
-  const [overlayDraft, setOverlayDraft] = useState("");
   const [preservation, setPreservation] = useSharedState<PreservationPreferences>("local-preservation", { excludeSkills: [], preserveMcp: false });
-  // local.jsonc keeps item overlays and key claims in one list; this section shows the items, KeyClaims the claims.
+  // local.jsonc keeps item overlays and key claims in one list; "Kept on this machine" shows the items, LocalHarnesses the claims.
   const itemOverlays = ws.overlays.filter((o) => claimOf(o) === null);
   const collisions = unsettledCollisions(ws.local, ws.overlays, ws);
   // An item's state as `sync --plan` sees it: ignored outside local.allow, stopping on an unsettled name collision,
@@ -1190,6 +1193,9 @@ function LocalForm() {
         </p>
         {/* A kind the Source does not allow, with nothing in it, is a row with nothing to do; list only usable or occupied kinds. */}
         {shownCategories.length === 0 && <EmptyState title="No local items allowed" body="The Source chooses which kinds a machine may add, in its Profile defaults." />}
+        {/* One wrapper for the list, so its sticky column header scrolls away with it instead of floating over the
+            ownership sections below. */}
+        <div>
         {shownCategories.length > 0 && <ListHead cols={cols} minWidth={colsMin} data-tour="local-list">
           <span>Name</span>
           <span>In ~/.canonfig/local</span>
@@ -1228,34 +1234,22 @@ function LocalForm() {
             </div>
           );
         })}
+        </div>
 
+        {/* Machine-owned exceptions, as chips: replaced items and kept skills span harnesses, so they share one group;
+            key claims belong to one harness each, so they sit in that harness's row below. Each chip's tooltip carries
+            the explanation the old per-row paragraphs gave. */}
         <div className="px-4 pt-8 sm:px-[18px]">
-          <SectionLabel>
-            <Term label term="Local Overlay">Replacing published items</Term>
-          </SectionLabel>
-          <p className="pb-2 text-sm text-pretty text-muted-foreground">
-            A local item named like a published one stops updates until you rename or remove it, or let it replace the published one here.
-          </p>
-          <div data-tour="local-overlays" className={cn("mt-1 max-w-[880px]", settingsGroup)}>
-            {ws.followerLive && <form className="flex flex-wrap gap-2 px-4 py-3" onSubmit={(event) => { event.preventDefault(); if (overlayDraft.trim()) ws.setOverlays((current) => [...current, overlayDraft.trim()]); }}>
-              <Input aria-label="Local item overlay" placeholder="rules/my-rule" className="min-w-40 flex-1" value={overlayDraft} onChange={(event) => setOverlayDraft(event.target.value)} />
-              <Button type="submit" variant="outline" size="sm" disabled={ws.followerLive.action.loading || !overlayDraft.trim()}>Set overlay</Button>
-            </form>}
-            {itemOverlays.length === 0 && collisions.length === 0 && <p className="px-[16px] py-3 text-sm text-faint">{ws.followerLive ? "No item overlays recorded." : "No local item shares a published item's name."}</p>}
-            {collisions.map((l) => (
-              <SettingRow
-                key={`collision:${l.id}`}
-                title={
-                  <span className="flex items-center gap-2" title={collisionOf(l, ws) ?? undefined}>
-                    <StatusMark kind="act" />
-                    <span className="font-mono text-sm">{l.id}</span>
-                  </span>
-                }
-                description={`${l.category === "settings" ? `Sets keys ${ws.sourceMachine.hostname} also sets` : `Same name as ${ws.sourceMachine.hostname}'s`}, so the next update stops and needs you.`}
-              >
+          <SectionLabel>Kept on this machine</SectionLabel>
+          <div data-tour="local-overlays" className={settingsGroup}>
+            <ChipRow label={<Term label term="Local Overlay">Replaced items</Term>}>
+              {collisions.map((l) => (
                 <Button
+                  key={`collision:${l.id}`}
                   variant="outline"
                   size="xs"
+                  className="border-act/60"
+                  title={`${l.category === "settings" ? `Sets keys ${ws.sourceMachine.hostname} also sets` : `Same name as ${ws.sourceMachine.hostname}'s`}, so the next update stops and needs you. ${collisionOf(l, ws) ?? ""}`}
                   onClick={() => {
                     ws.setOverlays((prev) => [...prev, l.id]);
                     if (ws.followerLive) return;
@@ -1264,46 +1258,50 @@ function LocalForm() {
                     });
                   }}
                 >
-                  Let mine replace it
+                  <StatusMark kind="act" /><span className="font-mono">{l.id}</span><span className="text-muted-foreground">Use mine</span>
                 </Button>
-              </SettingRow>
-            ))}
-            {itemOverlays.map((o) => {
-              const mine = ws.local.some((l) => l.id === o && allowed.includes(l.category));
-              const theirs = ws.followerLive ? undefined : ws.resources.some((r) => r.change !== "added" && r.id === o);
-              // The plan's OVERLAY_UNUSED warning (src/projection/plan.ts), without the command it suggests.
-              const unused = `overlay ${o} finds no admitted local/ item of that name, so ${theirs ? "the published item is projected" : "it changes nothing"}`;
-              return (
-                <SettingRow
-                  key={`overlay:${o}`}
-                  title={
-                    <span className="flex items-center gap-2" title={mine ? undefined : unused}>
-                      <StatusMark kind={mine ? (theirs ? "ok" : "off") : "warn"} />
-                      <span className="font-mono text-sm">{o}</span>
-                    </span>
-                  }
-                  description={
-                    ws.followerLive ? "The local item replaces the published item on this machine. Sync checks that both items exist." :
-                    mine
-                      ? theirs
-                        ? o.startsWith("settings/")
-                          ? `Your keys replace the ${ws.sourceMachine.hostname} keys they overlap in ${o} on this machine; the others stay.`
-                          : `Your ${o} replaces ${ws.sourceMachine.hostname}'s on this machine.`
-                        : `${ws.sourceMachine.hostname} doesn't publish ${o}, so yours is simply added.`
-                      : `No local ${o} here, so ${theirs ? `${ws.sourceMachine.hostname}'s is used` : "this changes nothing"}. Add the local item, or remove this.`
-                  }
-                >
-                  <Button variant="outline" size="xs" onClick={() => setRemovingOverlay(o)}>
-                    Remove…
-                  </Button>
-                </SettingRow>
-              );
-            })}
+              ))}
+              {itemOverlays.map((o) => {
+                const mine = ws.local.some((l) => l.id === o && allowed.includes(l.category));
+                const theirs = ws.followerLive ? undefined : ws.resources.some((r) => r.change !== "added" && r.id === o);
+                return (
+                  <Chip
+                    key={`overlay:${o}`}
+                    name={o}
+                    kind={mine ? (theirs ? "ok" : "off") : "warn"}
+                    removeLabel={`Remove overlay ${o}`}
+                    busy={ws.followerLive?.action.loading}
+                    onRemove={() => setRemovingOverlay(o)}
+                    note={
+                      ws.followerLive ? "The local item replaces the published item on this machine. Sync checks that both items exist." :
+                      mine
+                        ? theirs
+                          ? o.startsWith("settings/")
+                            ? `Your keys replace the ${ws.sourceMachine.hostname} keys they overlap in ${o} on this machine; the others stay.`
+                            : `Your ${o} replaces ${ws.sourceMachine.hostname}'s on this machine.`
+                          : `${ws.sourceMachine.hostname} doesn't publish ${o}, so yours is simply added.`
+                        // The plan's OVERLAY_UNUSED warning (src/projection/plan.ts), without the command it suggests.
+                        : `No local ${o} here, so ${theirs ? `${ws.sourceMachine.hostname}'s is used` : "this changes nothing"}. Add the local item, or remove this.`
+                    }
+                  />
+                );
+              })}
+              {ws.followerLive
+                ? <ChipAdd label="Local item overlay" placeholder="rules/my-rule" busy={ws.followerLive.action.loading}
+                  validate={(item) => (itemOverlays.includes(item) ? "Already replaced." : null)}
+                  onAdd={(item) => { ws.setOverlays((current) => [...current, item]); return null; }} />
+                : itemOverlays.length === 0 && collisions.length === 0 && <span className="text-sm text-faint">None</span>}
+            </ChipRow>
+            <LocalPreservationControls live={ws.followerLive} sharedSkills={ws.profile.appendLocal.includes("skills")} preferences={preservation} saveDemo={setPreservation} />
           </div>
         </div>
 
-        <LocalPreservationControls live={ws.followerLive} sharedSkills={ws.profile.appendLocal.includes("skills")} preferences={preservation} saveDemo={setPreservation} />
-        <KeyClaims />
+        <div className="px-[18px] pt-8">
+          <SectionLabel>Harnesses on this machine</SectionLabel>
+        </div>
+        <div data-tour="local-harnesses">
+          <LocalHarnesses onToggle={toggleHarness} />
+        </div>
         {ws.followerLive?.archive && <div className="px-[18px] pt-8"><SectionLabel>Verified export</SectionLabel><div className={settingsGroup}>
           <SettingRow title="Archive checksum"><Mono className="break-all">{ws.followerLive.archive.sha256}</Mono></SettingRow>
           <SettingRow title="Manifest checksum"><Mono className="break-all">{ws.followerLive.archive.manifestSha256}</Mono></SettingRow>
@@ -1346,15 +1344,6 @@ function LocalForm() {
         </div>
         </>}
 
-        <div className="px-[18px] pt-8">
-          <SectionLabel>Harnesses on this machine</SectionLabel>
-          <p className="pb-2 text-sm text-pretty text-muted-foreground">
-            Canonfig writes the folder into each harness {ws.sourceMachine.hostname} lists that is installed here. Untick one to exclude it on this machine only; {ws.sourceMachine.hostname}'s list stays as it is.
-          </p>
-        </div>
-        <div data-tour="local-harnesses">
-          <HarnessTable edit="managed" onToggle={toggleHarness} />
-        </div>
         <div className="px-4 pt-8 pb-20 sm:px-[18px]">
           <SectionLabel>Backups</SectionLabel>
           <div data-tour="local-backups" className={cn("mt-1", settingsGroup)}>
@@ -1384,6 +1373,7 @@ function LocalForm() {
         onOpenChange={(o) => !o && setRemovingOverlay(null)}
         title={`Stop replacing ${removingOverlay}?`}
         body={
+          ws.followerLive ? "The next sync may use the published item again or stop if a local item still conflicts." :
           ws.local.some((l) => l.id === removingOverlay && collisionOf(l, ws) !== null)
             ? `Canonfig removes the overlay from ~/.canonfig/local/local.jsonc. Your ${removingOverlay} stays, so the next update stops with the name collision until you rename or remove it.`
             : `Canonfig removes the overlay from ~/.canonfig/local/local.jsonc. No local item of that name clashes with what ${ws.sourceMachine.hostname} publishes, so nothing else changes.`
@@ -1400,131 +1390,64 @@ function LocalForm() {
   );
 }
 
-/** Harnesses whose settings file Canonfig writes; a key claim can name only these. */
-const CLAIM_HARNESSES = (Object.keys(HARNESS_NAMES) as HarnessId[]).filter((h) => SETTINGS_FILES[h] !== undefined);
-
 /**
- * Key claims (ADR 0003 section 11): `settings/<harness>#<key>` entries in local.jsonc `overlays`. A claimed key is
- * this machine's own in that harness's settings file: Canonfig never writes, removes or checks it there, and the other
- * keys it writes in the file keep following SOURCE. Removing a claim lets the next update write SOURCE's value again.
+ * The local harness checklist with each harness's key claims (ADR 0003 section 11): `settings/<harness>#<key>`
+ * entries in local.jsonc `overlays`. A claimed key is this machine's own in that harness's settings file: Canonfig
+ * never writes, removes or checks it there, and the other keys it writes in the file keep following SOURCE. Removing a
+ * claim lets the next update write SOURCE's value again. Only a harness whose settings file Canonfig writes, and that it
+ * manages here (listed, installed, not excluded), offers Add.
  */
-function KeyClaims() {
+function LocalHarnesses({ onToggle }: { onToggle: (id: HarnessId, on: boolean) => void }) {
   const ws = useWorkspace();
-  const [harness, setHarness] = useState<HarnessId | "">("");
-  const [key, setKey] = useState("");
-  const [tried, setTried] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
   const claims = ws.overlays.flatMap((item) => {
     const claim = claimOf(item);
     return claim ? [{ item, ...claim }] : [];
   });
-  const trimmed = key.trim();
-  const error = claimError(harness, trimmed, ws.overlays, ws.local, ws.resources);
-  const add = () => {
-    setTried(true);
-    if (error || !harness) {
-      document.getElementById(harness ? "claim-key" : "claim-harness")?.focus();
-      return;
-    }
-    ws.setOverlays((prev) => [...prev, `settings/${harness}#${trimmed}`]);
-    if (ws.followerLive) return;
-    toast.success(`${trimmed} is yours in ${HARNESS_NAMES[harness]}'s settings`, {
-      description: `Saved as a key claim in ~/.canonfig/local/local.jsonc.\nThe next update stops writing it; set it in ${HARNESS_NAMES[harness]}'s own settings file.${DEMO ? "\nSaved in this demo workspace." : ""}`,
-    });
-    setKey("");
-    setTried(false);
-  };
+  const busy = ws.followerLive?.action.loading;
   const removed = removing === null ? null : claimOf(removing);
   const removedValue = removed && ws.resources.find((r) => r.id === `settings/${removed.harness}`)?.keys?.[removed.key];
+  const keys = (h: Harness) => <>
+    {claims.filter((c) => c.harness === h.id).map((c) => {
+      const name = HARNESS_NAMES[c.harness];
+      const written = writtenKeys(c.harness, ws.resources);
+      const whole = written.find((k) => c.key.startsWith(`${k}.`));
+      const covered = written.filter((k) => covers(c.key, k));
+      // The refusal buildProjection gives, and the plan's CLAIM_UNUSED warning (src/projection/plan.ts).
+      const [kind, note]: [StatusKind, string] = ws.followerLive
+        ? ["ok", "This key belongs to this machine. The next sync checks the claim against published settings."] : whole
+        ? ["act", `Canonfig writes ${whole} as one value, so the next update stops. Claim ${whole} instead.`]
+        : covered.length === 0
+          ? ["warn", `Canonfig writes no ${c.key} in ${name}'s settings file, so this changes nothing.`]
+          : ["ok", `${ws.sourceMachine.hostname} sets ${covered.join(", ")}. Here you set it in ${name}'s settings file, and Canonfig leaves it alone.`];
+      return <Chip key={c.item} name={c.item} label={c.key} kind={kind} note={note} removeLabel={`Remove claim ${c.item}`} busy={busy} onRemove={() => setRemoving(c.item)} />;
+    })}
+    {SETTINGS_FILES[h.id] !== undefined && h.listed && h.installed && !h.excluded && (
+      <ChipAdd
+        label={`Claim a ${h.name} settings key`}
+        placeholder="model"
+        busy={busy}
+        validate={(key) => claimError(h.id, key, ws.overlays, ws.local, ws.resources)}
+        onAdd={(key) => {
+          ws.setOverlays((prev) => [...prev, `settings/${h.id}#${key}`]);
+          if (!ws.followerLive) toast.success(`${key} is yours in ${h.name}'s settings`, {
+            description: `Saved as a key claim in ~/.canonfig/local/local.jsonc.\nThe next update stops writing it; set it in ${h.name}'s own settings file.${DEMO ? "\nSaved in this demo workspace." : ""}`,
+          });
+          return null;
+        }}
+      />
+    )}
+  </>;
 
   return (
-    <div className="px-4 pt-8 sm:px-[18px]">
-      <SectionLabel>
-        <Term label term="Key Claim">Settings keys you set yourself</Term>
-      </SectionLabel>
-      <p className="pb-2 text-sm text-pretty text-muted-foreground">
-        Claim one key of a harness's settings file to set it in that file yourself. Canonfig stops writing, removing or checking that key on this machine, and the
-        other keys it writes there keep following {ws.sourceMachine.hostname}. Claims live in local.jsonc and never go to {ws.sourceMachine.hostname}.
-      </p>
-      <div data-tour="local-claims" className={cn("mt-1 max-w-[880px]", settingsGroup)}>
-        {claims.length === 0 && <p className="px-[16px] py-3 text-sm text-faint">No key is claimed, so Canonfig writes every key it owns.</p>}
-        {claims.map((c) => {
-          const name = HARNESS_NAMES[c.harness];
-          const written = writtenKeys(c.harness, ws.resources);
-          const whole = written.find((k) => c.key.startsWith(`${k}.`));
-          const covered = written.filter((k) => covers(c.key, k));
-          // The refusal buildProjection gives, and the plan's CLAIM_UNUSED warning (src/projection/plan.ts).
-          const [kind, description, title]: [StatusKind, string, string | undefined] = ws.followerLive
-            ? ["ok", `This key belongs to this machine. The next sync checks the claim against published settings.`, undefined] : whole
-            ? ["act", `Canonfig writes ${whole} as one value, so the next update stops. Claim ${whole} instead.`, `overlay ${c.item} claims part of ${whole}, which Canonfig writes as one value; claim ${whole} instead`]
-            : covered.length === 0
-              ? ["warn", `Canonfig writes no ${c.key} in ${name}'s settings file, so this changes nothing.`, `overlay ${c.item} covers no key Canonfig writes in ${c.harness}'s settings file, so it changes nothing`]
-              : ["ok", `${ws.sourceMachine.hostname} sets ${covered.join(", ")}. Here you set it in ${name}'s settings file, and Canonfig leaves it alone.`, undefined];
-          return (
-            <SettingRow
-              key={`claim:${c.item}`}
-              title={
-                <span className="flex items-center gap-2" title={title}>
-                  <StatusMark kind={kind} />
-                  <span className="font-mono text-sm">{c.item}</span>
-                </span>
-              }
-              description={description}
-            >
-              <Button variant="outline" size="xs" onClick={() => setRemoving(c.item)}>
-                Remove…
-              </Button>
-            </SettingRow>
-          );
-        })}
-        <form
-          className="flex flex-wrap items-center gap-2 px-[16px] py-3"
-          onSubmit={(e) => {
-            e.preventDefault();
-            add();
-          }}
-        >
-          <Select value={harness} onValueChange={(h: HarnessId) => setHarness(h)}>
-            <SelectTrigger id="claim-harness" aria-label="Harness" className="w-[200px]" aria-invalid={tried && !harness}>
-              <SelectValue placeholder="Choose a harness">{harness && HARNESS_NAMES[harness]}</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {CLAIM_HARNESSES.map((h) => (
-                <SelectItem key={h} value={h}>
-                  {HARNESS_NAMES[h]}
-                  <span className="font-mono text-xs text-faint">{h}</span>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Input
-            id="claim-key"
-            aria-label="Settings key"
-            className="min-w-[160px] flex-1 font-mono"
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            placeholder="model"
-            spellCheck={false}
-            aria-invalid={tried && !!error}
-            aria-describedby={tried && error ? "claim-key-note" : undefined}
-          />
-          <Button type="submit" variant="outline" size="sm">
-            <Plus /> Claim key
-          </Button>
-          {tried && error && (
-            <p id="claim-key-note" role="alert" className="flex w-full items-center gap-1.5 text-sm text-pretty text-bad">
-              <WarningCircle className="size-3.5 shrink-0" />
-              {error}
-            </p>
-          )}
-        </form>
-      </div>
+    <>
+      <HarnessTable edit="managed" onToggle={onToggle} keys={{ title: <Term label term="Key Claim">Keys you set</Term>, render: keys }} />
       <ConfirmDialog
         open={removing !== null}
         onOpenChange={(o) => !o && setRemoving(null)}
-        title={`Give ${removed?.key} back to ${ws.sourceMachine.hostname}?`}
+        title={`Let Canonfig manage ${removed?.key} again?`}
         body={
-          ws.followerLive ? "Canonfig removes the claim. The next sync may write the published value to this key again." :
+          ws.followerLive ? "The next sync may write the published value to this key again." :
           removed && writtenKeys(removed.harness, ws.resources).some((k) => covers(removed.key, k))
             ? `Canonfig removes the claim from ~/.canonfig/local/local.jsonc. The next update writes ${ws.sourceMachine.hostname}'s ${removed.key}${removedValue ? ` (${removedValue})` : ""} over yours in ${HARNESS_NAMES[removed.harness]}'s settings file, and an edit after that counts as a local change.`
             : `Canonfig removes the claim from ~/.canonfig/local/local.jsonc. It writes no ${removed?.key} there, so nothing else changes.`
@@ -1537,7 +1460,7 @@ function KeyClaims() {
           toast(`Removed the claim on ${removed?.key}`, { description: `Saved to ~/.canonfig/local/local.jsonc.${DEMO ? "\nSaved in this demo workspace." : ""}` });
         }}
       />
-    </div>
+    </>
   );
 }
 

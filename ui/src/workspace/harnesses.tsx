@@ -1,5 +1,5 @@
 // The harness list and takeover backups page share the active workspace's reports and restore action.
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { CaretDown } from "@/components/icons";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
@@ -14,21 +14,12 @@ import { FollowerOperationEvidence } from "./follower-evidence";
 
 /** What Canonfig does with a harness on this machine, from the three facts `canonfig harnesses` reports. */
 function harnessStatus(h: Harness): { kind: StatusKind; label: string; hint: string } {
+  if (h.excluded) return { kind: "off", label: "Excluded here", hint: h.listed ? "Listed, but this machine's local/local.jsonc excludes it, so Canonfig leaves it alone." : "Not listed in the profile." };
   if (!h.listed && h.installed) return { kind: "off", label: "Installed, not listed", hint: "Canonfig ignores it until canonfig.jsonc lists it." };
   if (!h.listed) return { kind: "off", label: "Not installed", hint: "Not on this machine and not in the list." };
-  if (h.excluded) return { kind: "off", label: "Excluded here", hint: "Listed, but this machine's local/local.jsonc excludes it, so Canonfig leaves it alone." };
   if (!h.installed) return { kind: "warn", label: "Listed, not installed", hint: "Reported as not installed.\nCanonfig backs it up and starts syncing into it once it's installed." };
   return { kind: "ok", label: "Managed here", hint: "Listed, installed and not excluded, so Canonfig writes the folder into it." };
 }
-
-const COLS = "minmax(180px,240px) minmax(170px,1fr) minmax(140px,220px) minmax(150px,220px)";
-const COLS_MIN = 180 + 170 + 140 + 150 + 3 * 12 + 20;
-const EDIT_COLS = `24px ${COLS}`;
-const EDIT_COLS_MIN = COLS_MIN + 24 + 12;
-// The Source's list also shows what each listed harness gets (canonfig.jsonc `surfaces`). Its 120px minimum keeps
-// the menu button inside a 390px viewport; wider, focusing it would scroll the page sideways and clip the intro.
-const LISTED_COLS = "24px minmax(180px,240px) minmax(120px,200px) minmax(170px,1fr) minmax(140px,220px) minmax(150px,220px)";
-const LISTED_COLS_MIN = EDIT_COLS_MIN + 120 + 12;
 
 /** "Everything", "Nothing", or the chosen categories by name. */
 function surfacesLabel(selected: SurfaceCategory[] | undefined): string {
@@ -130,46 +121,56 @@ function SurfacesMenu({ harness }: { harness: Harness }) {
 
 /**
  * Every harness Canonfig supports, as this machine sees it. `edit` puts a checkbox in front of each row:
- * "listed" edits canonfig.jsonc `harnesses` (the Source's Profile), "managed" edits this machine's
- * exclusions in local/local.jsonc (Local settings), where unlisted harnesses have nothing to exclude.
+ * "listed" edits canonfig.jsonc `harnesses` (the Source's Profile), "managed" edits only this machine's
+ * exclusions in local/local.jsonc (Local settings), independently of whether a harness is listed.
  */
-export function HarnessTable({ edit, onToggle }: { edit?: "listed" | "managed"; onToggle?: (id: HarnessId, on: boolean) => void }) {
+export function HarnessTable({ edit, onToggle, keys }: {
+  edit?: "listed" | "managed";
+  onToggle?: (id: HarnessId, on: boolean) => void;
+  /** An extra last column (Local settings' key claims), rendered per harness. */
+  keys?: { title: ReactNode; render: (harness: Harness) => ReactNode };
+}) {
   const ws = useWorkspace();
-  const cols = edit === "listed" ? LISTED_COLS : edit ? EDIT_COLS : COLS;
-  const minWidth = edit === "listed" ? LISTED_COLS_MIN : edit ? EDIT_COLS_MIN : COLS_MIN;
+  const showRoot = ws.harnesses.some((h) => h.root);
+  const showBackup = ws.harnesses.some((h) => h.snapshot);
+  // The Source's 120px Gets minimum keeps its menu inside a 390px viewport.
+  const cols = `${edit ? "24px " : ""}minmax(180px,240px) ${edit === "listed" ? "minmax(120px,200px) " : ""}minmax(170px,1fr)`
+    + (showRoot ? " minmax(140px,220px)" : "")
+    + (showBackup ? " minmax(150px,220px)" : "")
+    + (keys ? " minmax(200px,2fr)" : "");
+  const minWidth = 180 + 170 + 12 + 20
+    + (edit ? 24 + 12 : 0) + (edit === "listed" ? 120 + 12 : 0)
+    + (showRoot ? 140 + 12 : 0) + (showBackup ? 150 + 12 : 0) + (keys ? 200 + 12 : 0);
   return (
     <>
       <ListHead cols={cols} minWidth={minWidth} data-tour="harness-list">
         {/* A grid cell of its own: an sr-only span is absolutely positioned and would shift the headings left. */}
         {edit && (
           <span>
-            <span className="sr-only">{edit === "listed" ? "In the list" : "Managed here"}</span>
+            <span className="sr-only">{edit === "listed" ? "In the list" : "Included locally"}</span>
           </span>
         )}
         <span>Harness</span>
         {edit === "listed" && <span>Gets</span>}
         <span>On this machine</span>
-        <span>Root</span>
-        <span>Backup</span>
+        {showRoot && <span>Root</span>}
+        {showBackup && <span>Backup</span>}
+        {keys && <span>{keys.title}</span>}
       </ListHead>
       {ws.harnesses.map((h) => {
         const status = harnessStatus(h);
         const checked = edit === "listed" ? h.listed : !h.excluded;
         const id = `harness-${edit}-${h.id}`;
         return (
-          <ListRow key={h.id} cols={cols} minWidth={minWidth} data-tour="harness-list">
-            {edit &&
-              (edit === "managed" && !h.listed ? (
-                <span />
-              ) : (
-                <Checkbox
-                  id={id}
-                  checked={checked}
-                  disabled={edit === "listed" ? !ws.capabilities.profileWrite || ws.profileLive?.busy : !ws.capabilities.followerWrite}
-                  aria-label={edit === "listed" ? `List ${h.name}` : `Manage ${h.name} on this machine`}
-                  onCheckedChange={(c) => onToggle?.(h.id, !!c)}
-                />
-              ))}
+          // Chips in the keys column can wrap, so those rows grow instead of keeping the fixed list height.
+          <ListRow key={h.id} cols={cols} minWidth={minWidth} data-tour="harness-list" className={keys && "h-auto min-h-[44px] py-1.5"}>
+            {edit && <Checkbox
+              id={id}
+              checked={checked}
+              disabled={edit === "listed" ? !ws.capabilities.profileWrite || ws.profileLive?.busy : !ws.capabilities.followerWrite || ws.followerLive?.action.loading}
+              aria-label={edit === "listed" ? `List ${h.name}` : `Include ${h.name} on this machine`}
+              onCheckedChange={(c) => onToggle?.(h.id, !!c)}
+            />}
             <span className="grid min-w-0">
               <span className="truncate font-medium">{h.name}</span>
               <Mono className="truncate text-faint">{h.id}</Mono>
@@ -181,9 +182,9 @@ export function HarnessTable({ edit, onToggle }: { edit?: "listed" | "managed"; 
               <span className="truncate">{status.label}</span>
             </span>
             {/* Later syncs refuse any folder other than the recorded root. */}
-            {h.root ? <Mono className="truncate">{h.root}</Mono>
-              : <span className="truncate text-sm text-faint" title="Canonfig records this harness's folder the first time a sync writes into it.">Not synced here yet</span>}
-            <Mono className="truncate">{h.snapshot ?? "None"}</Mono>
+            {showRoot && <Mono className="truncate">{h.root}</Mono>}
+            {showBackup && <Mono className="truncate">{h.snapshot}</Mono>}
+            {keys && <span className="flex min-w-0 flex-wrap items-center gap-1.5">{keys.render(h)}</span>}
           </ListRow>
         );
       })}

@@ -213,10 +213,7 @@ it("serves real role-gated secrets and a verified Source archive without leaking
     ["/api/secrets/sync", "POST", {}],
     ["/api/schedule", "GET", undefined], ["/api/schedule", "PUT", { profileDefault: true }],
     ["/api/schedule", "DELETE", {}],
-    ["/api/local/items", "GET", undefined], ["/api/local/items", "PUT", { changes: [] }],
-    ["/api/local/preferences", "PUT", { expectedDigest: null, edits: [] }],
-    ["/api/harnesses", "PUT", { harness: "codex", action: "include" }], ["/api/local/overlays", "GET", undefined],
-    ["/api/local/overlays", "PUT", { item: "rules/test" }], ["/api/local/overlays", "DELETE", { item: "rules/test" }],
+
     ["/api/tunnel", "GET", undefined], ["/api/tunnel/start", "POST", {}], ["/api/tunnel/stop", "POST", { forget: false }], ["/api/enrollment", "DELETE", {}],
   ] as const) expect((await api.call(path, method, body)).payload, path).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   const unconfigured = await gui(fixture("unconfigured"));
@@ -300,6 +297,54 @@ it("round trips a signed archive through GUI preview/import with signer checks, 
   if (unsignedRefused.state === "failed") expect(unsignedRefused.failure.message).toContain("unsigned");
   expect((await sourceApi.operation("/api/imports/preview", { base64: unsigned.base64, replace: true })).state).toBe("succeeded");
 }, 300_000);
+
+it("keeps Source harness exclusions, item overlays and key claims machine-local without applying files", async () => {
+  const machine = fixture("source-local");
+  success(machine.invoke(["source", "init"]));
+  const canonical = JSON.stringify({
+    version: 1, profile: { id: "source-local", name: "Source local" }, harnesses: ["codex"],
+    local: { allow: ["rules", "settings"] }, settings: { codex: { model: "published-model" } },
+  });
+  write(join(machine.folder, "canonfig.jsonc"), canonical);
+  write(join(machine.folder, "rules/test.md"), "Canonical rule\n");
+  write(join(machine.folder, "local/rules/test.md"), "Machine-local rule\n");
+  write(join(machine.home, ".codex/config.toml"), 'model = "native-model"\n');
+  const api = await gui(machine);
+  for (const harness of ["codex", "claude-code"]) {
+    const excluded = await api.call("/api/harnesses", "PUT", { harness, action: "exclude" });
+    expect(excluded.status, JSON.stringify(excluded.payload)).toBe(200);
+    expect(excluded.payload).toMatchObject({ excluded: expect.arrayContaining([harness]) });
+    const included = await api.call("/api/harnesses", "PUT", { harness, action: "include" });
+    expect(included.status).toBe(200);
+    if (harness === "claude-code") expect(included.payload).toMatchObject({ warnings: [expect.stringContaining("not listed")] });
+    expect(JSON.parse(readFileSync(join(machine.folder, "local/local.jsonc"), "utf8")).excludeHarnesses).not.toContain(harness);
+  }
+  expect((await api.call("/api/local/overlays", "PUT", { item: "rules/test" })).status).toBe(200);
+  expect((await api.call("/api/local/overlays")).payload).toMatchObject({ overlays: [{ item: "rules/test", local: true, published: true }] });
+  for (const item of ["settings/codex", "settings/codex#model"]) {
+    expect((await api.call("/api/local/overlays", "PUT", { item })).status).toBe(200);
+    expect((await api.call("/api/local/items")).payload).toMatchObject({ config: { overlays: ["rules/test", item] } });
+    expect((await api.call("/api/local/overlays")).status).toBe(200);
+    // A claim changes ownership metadata, not the native value.
+    expect(readFileSync(join(machine.home, ".codex/config.toml"), "utf8")).toBe('model = "native-model"\n');
+    expect((await api.call("/api/local/overlays", "DELETE", { item })).status).toBe(200);
+    expect((await api.call("/api/local/items")).payload).toMatchObject({ config: { overlays: ["rules/test"] } });
+  }
+  for (const method of ["PUT", "DELETE"]) expect((await api.call("/api/local/overlays", method, { item: "instructions" })).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  expect((await api.call("/api/local/overlays", "PUT", { item: "settings/hermes#model" })).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  const local = Schema.decodeUnknownSync(GuiLocalItems)((await api.call("/api/local/items")).payload);
+  const preferences = await api.call("/api/local/preferences", "PUT", {
+    expectedDigest: local.items.find((item) => item.path === "local.jsonc")!.digest,
+    edits: [{ path: ["settings", "codex", "theme"], value: "local-theme" }],
+  });
+  expect(preferences.status).toBe(200);
+  expect(preferences.payload).toMatchObject({ config: { settings: { codex: { theme: "local-theme" } } } });
+  expect((await api.call("/api/local/overlays", "DELETE", { item: "rules/test" })).status).toBe(200);
+  expect((await api.call("/api/local/overlays")).payload).toMatchObject({ category: "human-action-required", exitCode: 3 });
+  expect(readFileSync(join(machine.folder, "canonfig.jsonc"), "utf8")).toBe(canonical);
+  expect(readFileSync(join(machine.folder, "local/rules/test.md"), "utf8")).toBe("Machine-local rule\n");
+  expect(readFileSync(join(machine.home, ".codex/config.toml"), "utf8")).toBe('model = "native-model"\n');
+}, 180_000);
 
 it("plans and applies an enrolled follower and performs digest-checked local operations", async () => {
   const source = fixture("source");
