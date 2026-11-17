@@ -31,6 +31,7 @@ export function useLiveMachines(backend: WorkspaceBackend, session: GuiSession, 
   return {
     enrollmentBackend: backend,
     ...(enrollment.data ? { enrollment: enrollment.data } : {}),
+    enrollmentFollowers: inventory.data?.followers,
     machinesState: resourceState([inventory, enrollment]),
     machineStates: { inventory, enrollment, setup },
     sourceMachine: { hostname: source ? session.machineName : "Source", folder: source ? session.folderPath : "", endpoint, look: sourceLook.data?.look ?? undefined },

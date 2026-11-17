@@ -784,11 +784,12 @@ export function DoctorView() {
   const ws = useWorkspace();
   const doctor = ws.admin.doctor;
   const running = doctor.busy;
+  const [timeout, setTimeout] = useState("5000");
   const progress = doctor.progress;
   // A skipped check does not apply to this machine (a Source has no tunnel or schedule), so it is not shown.
   const relevant = (doctor.data ?? []).filter((check) => check.result !== "off");
   const issues = relevant.filter((check) => check.result === "warn" || check.result === "bad").length;
-  const run = doctor.run;
+  const run = () => doctor.run(Number(timeout));
   // Opened from ⌘K "Run doctor" or the guide: start immediately, even if this page is already open.
   const { focus, go } = ws;
   useEffect(() => {
@@ -807,7 +808,7 @@ export function DoctorView() {
       <PageHeader
         crumbs={["Settings", "Health check"]}
         actions={
-          <Button size="sm" variant="primary" disabled={running} onClick={run}>
+          <Button size="sm" variant="primary" disabled={running} type="submit" form="doctor-check">
             {running ? "Checking…" : "Run checks"}
           </Button>
         }
@@ -846,6 +847,15 @@ export function DoctorView() {
               );
             })}
           </div>
+          <form id="doctor-check" className="mt-5" onSubmit={(event) => { event.preventDefault(); run(); }}>
+            <details>
+              <summary className="cursor-pointer text-sm text-muted-foreground">Advanced checks</summary>
+              <div className="mt-3 grid max-w-sm gap-2">
+                <Label htmlFor="doctor-timeout">Timeout per probe (ms)</Label>
+                <Input id="doctor-timeout" type="number" required min={1} max={300000} step={1} value={timeout} disabled={running} onChange={(event) => setTimeout(event.target.value)} />
+              </div>
+            </details>
+          </form>
         </Column>
       </Body>
     </>

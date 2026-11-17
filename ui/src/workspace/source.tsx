@@ -40,7 +40,7 @@ import {
   copy,
   useLeaveGuard,
 } from "./kit";
-import { TunnelEvidence } from "./follower-evidence";
+import { PersistentStatusEvidence, TunnelEvidence } from "./follower-evidence";
 
 /** How one unpublished change reads in review lists, and where it is edited: items in their editor, the rest on their Profile tab. */
 function pendingRow(ws: Workspace, p: PendingChange): { icon: IconComponent; name: string; what: React.ReactNode; open: () => void } {
@@ -450,13 +450,14 @@ export function WorkspaceEvidence() {
           <Prop label="Canonical Folder"><Mono>{session.folderPath}</Mono></Prop>
           {machineRole.follower !== undefined && <Prop label="Follower identity"><Mono>{machineRole.follower}</Mono></Prop>}
         </div>
-        {(machineRole.sourceFingerprint !== undefined || machineRole.tlsFingerprint !== undefined) && <details className="mt-3 text-sm">
+        <details className="mt-3 text-sm">
           <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
           <div className="mt-1 border-t border-border">
             {machineRole.sourceFingerprint !== undefined && <Prop label="Source fingerprint"><Mono>{machineRole.sourceFingerprint}</Mono></Prop>}
             {machineRole.tlsFingerprint !== undefined && <Prop label="TLS fingerprint"><Mono>{machineRole.tlsFingerprint}</Mono></Prop>}
           </div>
-        </details>}
+          <PersistentStatusEvidence status={status} />
+        </details>
       </section>
       {/* Enrollment lifecycle and the tunnel belong to a Follower; a Source has neither. */}
       {session.role === "follower" && <>

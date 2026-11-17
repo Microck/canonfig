@@ -146,6 +146,25 @@ it("adds, lists, checks and removes real installer bindings and preserves doctor
   expect((await api("/api/self-update/check", "POST")).body).toMatchObject({ category: "human-action-required", exitCode: 3 });
 }, 90_000);
 
+it("uses the CLI doctor timeout default and validates advanced timeouts before probing", async () => {
+  const machine = fixture();
+  const api = await start(machine.env);
+  const defaults = await api("/api/doctor", "POST");
+  expect(defaults.status).toBe(200);
+  expect(defaults.body).toMatchObject({ timeoutMilliseconds: 5_000, noInput: true });
+  for (const timeoutMilliseconds of [1, 300_000]) {
+    const checked = await api("/api/doctor", "POST", { timeoutMilliseconds });
+    expect(checked.status).toBe(200);
+    expect(checked.body).toMatchObject({ timeoutMilliseconds, noInput: true });
+  }
+  for (const timeoutMilliseconds of [0, -1, 300_001, 1.5, "5000"]) {
+    expect((await api("/api/doctor", "POST", { timeoutMilliseconds })).body)
+      .toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  }
+  expect((await api("/api/doctor", "POST", { noInput: false })).body)
+    .toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+}, 60_000);
+
 it.runIf(process.platform === "linux")("reads real Source service evidence and preserves native installation failures", async () => {
   const machine = fixture();
   const initialized = machine.invoke(["source", "init"]);
