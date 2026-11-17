@@ -305,8 +305,8 @@ export interface ProfileSlice {
   /** canonfig.jsonc `surfaces`: categories a listed harness is limited to; a harness not named gets every category. */
   surfaces: Partial<Record<HarnessId, SurfaceCategory[]>>;
   setSurfaces: SetState<Partial<Record<HarnessId, SurfaceCategory[]>>>;
-  /** Simulates `canonfig export`: downloads ~/.canonfig/ and local/ as one .tar.gz with a checksum manifest, signed on the Source. */
-  exportArchive: () => void;
+  /** Downloads the verified Canonical Folder archive, optionally including managed harness files. */
+  exportArchive: (includeHarnesses?: boolean) => void;
 }
 
 export interface MachinesSlice {

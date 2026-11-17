@@ -1,3 +1,4 @@
+import { ArchiveExportButton } from "./archive-transfer";
 // Shared Follower screens read machine data and operations from the workspace provider.
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { toast } from "sonner";
@@ -1171,9 +1172,7 @@ function LocalForm() {
           <>
             {ws.followerLive && <Button size="sm" variant="outline" disabled={ws.followerLive.action.loading} onClick={() => { if ((!adding && !current) || window.confirm("Reload local settings and discard unsaved edits?")) ws.reload(); }}>Reload</Button>}
             {/* `canonfig export` takes this machine's mirror together with its local folder. */}
-            <Button size="sm" variant="outline" disabled={ws.followerLive?.action.loading} onClick={ws.followerLive?.exportArchive ?? ws.exportArchive} title="Download ~/.canonfig/ and its local folder as a .tar.gz with a checksum manifest">
-              Export
-            </Button>
+            <ArchiveExportButton disabled={ws.followerLive?.action.loading} onExport={ws.followerLive?.exportArchive ?? ws.exportArchive} />
             {/* One gold action per view: while the editor is open its Save is the commit, so this steps down, like Profile's Add item. */}
             <Button size="sm" variant={adding || current ? "outline" : "primary"} disabled={allowed.length === 0} onClick={startAdding} data-tour="local-add">
               <Plus /> Add a local item

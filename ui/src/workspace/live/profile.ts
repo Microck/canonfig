@@ -236,8 +236,8 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
     surfaces, setSurfaces: (update) => { if (items.data) void saveConfig(items.data, [{ path: ["surfaces"], value: typeof update === "function" ? update(surfaces) : update }]); },
     skillSources: (skills.data?.skills ?? []).map((skill) => ({ id: `skills/${skill.name}`, source: skill.source, ref: skill.ref, subdir: skill.subdir, commit: skill.commit, baseline: {} })), upstreamSkills: [], demoSkillsRepo: "", scannedTools,
     toolFromScan: (tool) => ({ id: `tools/${tool.id}`, category: "tools", path: "canonfig.jsonc", groups: [], summary: tool.command, detail: { Executable: tool.executable } }),
-    exportArchive: () => { void run(async (signal) => {
-      const downloaded = await backend.request("/api/exports", GuiArchiveDownload, signal, { method: "POST", body: { includeHarnesses: false } });
+    exportArchive: (includeHarnesses = false) => { void run(async (signal) => {
+      const downloaded = await backend.request("/api/exports", GuiArchiveDownload, signal, { method: "POST", body: { includeHarnesses } });
       const bytes = Uint8Array.from(atob(downloaded.base64), (character) => character.charCodeAt(0));
       const url = URL.createObjectURL(new Blob([bytes], { type: downloaded.mediaType }));
       const link = document.createElement("a"); link.href = url; link.download = downloaded.filename; link.click();

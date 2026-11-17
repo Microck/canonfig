@@ -59,6 +59,10 @@ Keep the wordmark and tagline inside the central 1200x600: X and Slack crop the 
 
 Production opens the actual machine's `/source/overview` or `/follower/overview`. An unconfigured machine opens `/setup`, where Source setup plans and reviews real import offers or Follower enrollment accepts an invitation. The sidebar uses the shared role-specific navigation groups. Unsupported and wrong-role paths show an unavailable page rather than switching data sources.
 
+Source Profile and follower Local settings offer **Export**, with **Include managed harness files**. Only unchanged managed files or owned keys are included. Import verifies those harness entries but does not restore them.
+
+**Import archive** is available on Source Profile and in the setup header while an unconfigured machine is choosing its role, never on an enrolled Follower. Select a `.tar.gz`, optionally enter the expected signing fingerprint obtained independently from a trusted Source, then **Verify and preview**. A displayed signer alone does not establish trust. Without an expected fingerprint, unsigned archives are accepted. Existing folder entries require explicit replacement consent; matching whole entries are snapshotted under `~/.canonfig/.backups/` before replacement, while absent entries stay untouched. Review the plan and confirm **Import verified archive**. The result reports fingerprints, replaced entries and the recovery snapshot. Import does not publish, initialize a Source, enroll or apply harness files. Lost operation observation offers Resume observation instead of repeating the write; an interrupted run uses `canonfig recover`, and `canonfig restore <snapshot>` restores replacement snapshots.
+
 The table lists development routes. Public demo URLs add `/demo`, so `/source/overview` becomes `/demo/source/overview`. The public entry `/demo/` opens that overview. Links support direct loads, refresh and browser Back/Forward. Unknown or role-invalid paths show a not-found page.
 
 | Screen | Source | Follower |

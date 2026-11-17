@@ -43,6 +43,6 @@ export interface FollowerLive {
   configureTunnel: (input: typeof GuiEnrollmentTunnelInput.Type) => void;
   startTunnel: (timeoutMilliseconds?: number) => void;
   stopTunnel: (forget: boolean) => Promise<boolean>;
-  exportArchive: () => void;
+  exportArchive: (includeHarnesses?: boolean) => void;
   archive: { sha256: string; manifestSha256: string; signer: string } | null;
 }
