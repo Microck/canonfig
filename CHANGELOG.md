@@ -14,6 +14,14 @@ across Node layouts, and replace environment keys case-insensitively on Windows.
 Windows batch commands fail with instructions to configure a native executable
 instead of running server arguments through a shell.
 
+### Fixes
+
+- Run the Windows scheduled sync without a console window. It used to show an
+  empty window for the whole run, titled after the current command, such as
+  `npm ls suno-api-cli`. The task keeps the sync's exit code, and the first
+  sync after updating re-registers it. This needs Windows Script Host, which is
+  on by default.
+
 ## v7.5.0 - 2026-11-17
 
 ### Browser interface

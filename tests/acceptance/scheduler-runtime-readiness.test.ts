@@ -56,6 +56,10 @@ describe("installed scheduler command decoding", () => {
       executable: String.raw`C:\Program Files\node.exe`, arguments: [String.raw`C:\App Files\main.js`, "sync", ""],
     });
     expect(installedWindowsCommand("node.exe", '"unterminated')).toBeUndefined();
+    // The scheduled task's hidden-window launcher is not the binding: report what it runs.
+    expect(installedWindowsCommand(String.raw`%SystemRoot%\System32\wscript.exe`, String.raw`//B //Nologo //E:jscript "C:\Users\a b\AppData\Local\canonfig\native\CanonfigScheduleLaunch-0123456789abcdef.js" "C:\Program Files\node.exe" "C:\App Files\main.js" sync`)).toEqual({
+      executable: String.raw`C:\Program Files\node.exe`, arguments: [String.raw`C:\App Files\main.js`, "sync"],
+    });
   });
   it.skipIf(process.platform === "win32").each(["", "-S "])("detects a deleted PATH interpreter behind an env %s wrapper without executing it", async (split) => {
     const root = await mkdtemp(join(tmpdir(), "canonfig-wrapper-readiness-"));
