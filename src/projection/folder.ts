@@ -18,6 +18,7 @@ import {
   HOOK_EVENTS,
   SURFACE_CATEGORIES,
   TARGET_IDS,
+  preservedMcpHarnesses,
   type AgentDocument,
   type CanonicalModel,
   type CommandDocument,
@@ -260,8 +261,8 @@ const LocalJsonc = Schema.Struct({
   excludeResources: Schema.optional(Schema.Array(identifier)),
   /** Skill names this machine leaves local in every projected skill directory. */
   excludeSkills: Schema.optional(Schema.Array(Schema.String.check(Schema.isPattern(keptLocalSkillName)))),
-  /** Leave this machine's native MCP configuration outside projection. */
-  preserveMcp: Schema.optional(Schema.Boolean),
+  /** Leave selected harnesses' native MCP configuration outside projection. */
+  preserveMcp: Schema.optional(Schema.Union([Schema.Boolean, Schema.NonEmptyArray(Schema.Literals(TARGET_IDS))])),
   /** Local Overlays and key claims; `parseOverlay` reads each entry. */
   overlays: Schema.optional(Schema.Array(Schema.String)),
   backups: Schema.optional(Schema.Boolean),
@@ -302,7 +303,7 @@ export interface LocalPolicy {
   /** Skill names this machine never projects, checks, or removes. */
   readonly excludeSkills: ReadonlyArray<string>;
   /** Native MCP settings remain machine-owned, including unrepresentable options. */
-  readonly preserveMcp: boolean;
+  readonly preserveMcp: ReadonlySet<TargetId>;
   /** Settings keys this machine owns; projection neither writes nor checks them. */
   readonly claims: ReadonlyArray<KeyClaim>;
   /** False turns takeover snapshots off on this machine. */
@@ -842,7 +843,7 @@ const modelDigest = (model: CanonicalModel, local: LocalPolicy): ContentDigest =
       ? { ...resource, files: resource.files.map(fileIdentity) }
       : resource
   );
-  const value = JSON.parse(JSON.stringify({ ...model, skills, resources, local }));
+  const value = JSON.parse(JSON.stringify({ ...model, skills, resources, local: { ...local, preserveMcp: [...local.preserveMcp] } }));
   return sha256Hex(canonicalJson(value));
 };
 
@@ -1184,7 +1185,7 @@ const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => 
     excludeHarnesses: localConfig.excludeHarnesses ?? [],
     excludeResources: [...excludedResources].sort(),
     excludeSkills: [...new Set(localConfig.excludeSkills ?? [])].sort(),
-    preserveMcp: localConfig.preserveMcp ?? false,
+    preserveMcp: preservedMcpHarnesses(localConfig.preserveMcp),
     claims,
     backups: localConfig.backups ?? true,
   };

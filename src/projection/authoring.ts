@@ -9,6 +9,7 @@ import { MachineState } from "../machine/machine-state.service.ts";
 import { withRunLock } from "../synchronization/run-lock.ts";
 import { AUTHORING_ENTRIES, LOCAL_CATEGORIES, keptLocalSkillName, decodeFolderConfig, decodeLocalConfig, listFolderFiles, loadCanonicalFiles, type FolderFile } from "./folder.ts";
 import { projectResources, rootContext } from "./plan.ts";
+import { preservedMcpConfig, preservedMcpHarnesses, TARGET_IDS, type TargetId } from "./model.ts";
 
 export class AuthoringConflict extends TaggedError<AuthoringConflict>()("AuthoringConflict", {
   path: Schema.String, message: Schema.String,
@@ -274,10 +275,14 @@ export const editAuthoringConfig = Effect.fn("Authoring.editConfig")(function*(t
   return yield* writeAuthoringItems(target, [...changes, { path, expectedDigest, files: [{ path, content, executable: false }] }]);
 });
 
+export type LocalPreservationChange =
+  | { readonly skill: string; readonly action: "add" | "remove" }
+  | { readonly preserveMcp: boolean; readonly harnesses?: ReadonlyArray<TargetId> };
+
 /** Read and edit machine-local preservation through the same digest-checked path as the GUI. */
 export const localPreservation = Effect.fn("Authoring.localPreservation")(function*(
   target: AuthoringTarget,
-  change?: { readonly skill: string; readonly action: "add" | "remove" } | { readonly preserveMcp: boolean },
+  change?: LocalPreservationChange,
 ) {
   const item = yield* readAuthoringItem(target, "local.jsonc");
   const config = item.files[0] === undefined ? {} : yield* Effect.try({
@@ -285,7 +290,7 @@ export const localPreservation = Effect.fn("Authoring.localPreservation")(functi
     catch: (cause) => invalid("local.jsonc", String(cause)),
   });
   let excludeSkills = [...new Set(config.excludeSkills ?? [])].sort();
-  let preserveMcp = config.preserveMcp ?? false;
+  const preserved = new Set(preservedMcpHarnesses(config.preserveMcp));
   if (change !== undefined) {
     if ("skill" in change) {
       if (!keptLocalSkillName.test(change.skill)) return yield* Effect.fail(invalid("local.jsonc", "Invalid skill name: use lowercase letters, digits and hyphens, starting with a letter or digit."));
@@ -296,10 +301,15 @@ export const localPreservation = Effect.fn("Authoring.localPreservation")(functi
       }));
       if (!shared) return yield* Effect.fail(invalid("local.jsonc", 'Keeping skills local requires local.appendLocal to include "skills" on the Source first.'));
       excludeSkills = change.action === "add" ? [...new Set([...excludeSkills, change.skill])].sort() : excludeSkills.filter((name) => name !== change.skill);
-    } else preserveMcp = change.preserveMcp;
+    } else {
+      for (const id of change.harnesses ?? TARGET_IDS) {
+        if (change.preserveMcp) preserved.add(id);
+        else preserved.delete(id);
+      }
+    }
     yield* editAuthoringConfig(target, item.digest, "skill" in change
       ? [{ path: ["excludeSkills"], value: excludeSkills }]
-      : [{ path: ["preserveMcp"], value: preserveMcp }]);
+      : [{ path: ["preserveMcp"], value: preservedMcpConfig(preserved) }]);
   }
-  return { excludeSkills, preserveMcp };
+  return { excludeSkills, preserveMcp: preserved.size === TARGET_IDS.length, preservedMcpHarnesses: [...preserved].sort() };
 });

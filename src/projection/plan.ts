@@ -809,7 +809,9 @@ export const buildProjection = (
     const isHeldSurface = (record: AppliedResourceRecord) => isHeldHarness(record) || excludedResources.has(record.resource) || isHeldSkill(record);
     // preserveMcp keeps model.mcp (agent files still name its servers) and drops only the native
     // MCP maps: their keys are never written, and keys Canonfig owned before are given back.
-    const preservedMcpKeys = (keys: ReadonlyArray<string>) => new Set(loaded.local.preserveMcp ? keys.filter((key) => nativeMcpKeys.has(key)) : []);
+    const preservedHarnesses: ReadonlySet<string> = loaded.local.preserveMcp;
+    const preservedMcpKeys = (harness: string, keys: ReadonlyArray<string>) =>
+      new Set(preservedHarnesses.has(harness) ? keys.filter((key) => nativeMcpKeys.has(key)) : []);
     const holdsOutputs = appliedResources.some(isHeldHarness);
     const applied = new Map(appliedResources.map((record) => [record.resource, record]));
     const folder = loaded.model.folder;
@@ -831,7 +833,7 @@ export const buildProjection = (
     // `mcp_servers`) would need part of that value, so it is refused.
     const claimed = (harness: string, keys: ReadonlyArray<string>) =>
       Effect.gen(function*() {
-        const covered = preservedMcpKeys(keys);
+        const covered = preservedMcpKeys(harness, keys);
         for (const claim of claims) {
           if (claim.harness !== harness) continue;
           for (const key of keys) {
@@ -858,12 +860,12 @@ export const buildProjection = (
       let releases: ReadonlyArray<string> = [];
       // Key claims apply to a harness's settings file; preserved MCP keys to every config surface,
       // including the separate MCP files and Hermes's or Qwen's MCP-and-hooks surface.
-      if (entry.surface.kind === "config" && entry.content.kind === "config" && (entry.surface.settings !== undefined || loaded.local.preserveMcp)) {
+      if (entry.surface.kind === "config" && entry.content.kind === "config" && (entry.surface.settings !== undefined || preservedHarnesses.has(entry.harness))) {
         const keys = entry.content.keys;
         const previous = applied.get(id);
         const ownedKeys = previous?.ownership === "ConfigKeys" ? previous.ownedKeys : [];
         const keyPaths = [...keys.map((key) => key.path), ...ownedKeys];
-        const covered = entry.surface.settings !== undefined ? yield* claimed(entry.harness, keyPaths) : preservedMcpKeys(keyPaths);
+        const covered = entry.surface.settings !== undefined ? yield* claimed(entry.harness, keyPaths) : preservedMcpKeys(entry.harness, keyPaths);
         releases = ownedKeys.filter((key) => covered.has(key));
         entry = { ...entry, content: { ...entry.content, keys: keys.filter((key) => !covered.has(key.path)) } };
         // Claims covering every key leave nothing to write or give back.
@@ -922,7 +924,7 @@ export const buildProjection = (
       const harness = TARGET_IDS.find((candidate) => candidate === parsed?.harness);
       if (harness === undefined || builtIds.has(record.resource) || isHeldSurface(record) || record.ownership !== "ConfigKeys") continue;
       const settings = parsed?.surface === settingsSurfaceOf(adapterFor(harness).layout(context, loaded.model))?.id;
-      const covered = settings ? yield* claimed(harness, record.ownedKeys) : preservedMcpKeys(record.ownedKeys);
+      const covered = settings ? yield* claimed(harness, record.ownedKeys) : preservedMcpKeys(harness, record.ownedKeys);
       if (covered.size === 0) continue;
       built.push(configResource(record.resource, record.target, "replace-if-unmodified", record.configFormat, [], [...covered]));
     }

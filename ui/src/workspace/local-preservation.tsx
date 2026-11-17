@@ -1,12 +1,15 @@
 import { useState } from "react";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
+import { HARNESS_NAMES } from "@/shared/metadata";
+import { preservedMcpConfig, preservedMcpHarnesses, TARGET_IDS, type TargetId } from "../../../src/projection/model";
 import { Chip, ChipAdd, ChipRow } from "./kit";
 import { record, strings } from "./live/follower";
 import type { FollowerLive } from "./follower-types";
 
 export interface PreservationPreferences {
   excludeSkills: string[];
-  preserveMcp: boolean;
+  preserveMcp: boolean | TargetId[];
 }
 
 /**
@@ -23,10 +26,12 @@ export function LocalPreservationControls({ live, sharedSkills, preferences, sav
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const snapshot = live?.local;
+  const selectedMcp = strings(snapshot?.config.preserveMcp);
   const current = live ? {
     excludeSkills: strings(snapshot?.config.excludeSkills),
-    preserveMcp: snapshot?.config.preserveMcp === true,
+    preserveMcp: snapshot?.config.preserveMcp === true ? true : TARGET_IDS.filter((id) => selectedMcp.includes(id)),
   } : preferences;
+  const preserved = preservedMcpHarnesses(current.preserveMcp);
   const allowed = live ? strings(record(snapshot?.canonicalConfig.local).appendLocal).includes("skills") : sharedSkills;
   const busy = saving || live?.action.loading || (live !== undefined && !snapshot);
   /** Saves one preference; false when the server refused it (the error alert below then says why). */
@@ -56,9 +61,23 @@ export function LocalPreservationControls({ live, sharedSkills, preferences, sav
         : <span className="text-sm text-faint">The Source must share skills folders (local.appendLocal) first.</span>}
     </ChipRow>
     <ChipRow label="Native MCP">
-      <Switch aria-label="Keep native MCP on this machine" checked={current.preserveMcp} disabled={busy} onCheckedChange={(preserveMcp) => { void save("preserveMcp", { ...current, preserveMcp }); }} />
+      <Switch aria-label="Keep native MCP on this machine" checked={preserved.size === TARGET_IDS.length} disabled={busy} onCheckedChange={(preserveMcp) => { void save("preserveMcp", { ...current, preserveMcp }); }} />
       {/* Preserved is not disabled or verified: say so while it is on. */}
-      <span className="text-sm text-muted-foreground">{current.preserveMcp ? "Kept as is. Canonfig doesn't check that the servers start." : "Follows the Source"}</span>
+      <span className="text-sm text-muted-foreground">{preserved.size > 0 ? "Kept as is. Canonfig doesn't check that the servers start." : "Follows the Source"}</span>
+      <details className="w-full text-sm">
+        <summary className="cursor-pointer py-2">Choose harnesses ({preserved.size} kept)</summary>
+        <div className="grid gap-x-4 sm:grid-cols-2">
+          {TARGET_IDS.map((id) => <label key={id} className="flex min-h-10 items-center gap-3 pointer-coarse:min-h-11">
+            <Checkbox aria-label={`Keep native MCP for ${HARNESS_NAMES[id]}`} checked={preserved.has(id)} disabled={busy} onCheckedChange={(checked) => {
+              const next = new Set(preserved);
+              if (checked === true) next.add(id);
+              else next.delete(id);
+              void save("preserveMcp", { ...current, preserveMcp: preservedMcpConfig(next) });
+            }} />
+            {HARNESS_NAMES[id]}
+          </label>)}
+        </div>
+      </details>
     </ChipRow>
     {error && <p role="alert" className="px-[16px] py-2 text-sm text-bad">{error}</p>}
   </>;

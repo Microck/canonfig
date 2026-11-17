@@ -163,14 +163,26 @@ sync with a configuration error instead of allowing a whole-directory takeover.
 
 ## Keep native MCP options
 
-To keep a machine's MCP configuration outside synchronization, run
-`canonfig local mcp preserve` or turn on **Native MCP** under **Kept on this machine**
-in the machine-local settings page. This saves `"preserveMcp": true` in
-`~/.canonfig/local/local.jsonc`. Use `canonfig local mcp status` to inspect it
-and `canonfig local mcp project` to turn preservation off.
-Canonfig leaves those native server maps unchanged, including options such
-as OAuth settings or startup timeouts that the canonical format cannot express.
-New Source servers do not replace them on later syncs. Other harness settings
+To keep only Codex's native MCP map while other harnesses receive Source MCP, run:
+
+```bash
+canonfig local mcp preserve --harness codex
+canonfig local mcp status
+```
+
+This saves `"preserveMcp": ["codex"]` in `~/.canonfig/local/local.jsonc`.
+Codex app updates can then change their own `node_repl` server without MCP drift.
+Repeat `--harness <id>` to preserve more harnesses. Use
+`canonfig local mcp project --harness codex` to return Codex to projection.
+Without `--harness`, `preserve` keeps every native map and `project` restores
+projection everywhere. In the machine-local settings page, use **Choose harnesses**
+under **Native MCP** in **Kept on this machine**, or the switch for every harness.
+These choices work on both Sources and Followers.
+
+Canonfig leaves preserved server maps unchanged, including OAuth settings or
+startup timeouts the canonical format cannot express. The next successful sync
+releases any MCP keys it previously owned without changing their content.
+New Source servers do not replace preserved maps on later syncs. Other settings
 and the selected instruction, skill, and command surfaces still synchronize.
 
 This preserves MCP rather than disabling it. It does not verify server startup,

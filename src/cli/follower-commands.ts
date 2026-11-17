@@ -4,6 +4,7 @@ import type { AgentPolicy } from "../domain/identity.ts";
 import type { FollowerId } from "../domain/brand.ts";
 import type { EnrollmentInvitationGrant } from "../enrollment/enrollment.types.ts";
 import type { TargetId } from "../projection/model.ts";
+import type { LocalPreservationChange } from "../projection/authoring.ts";
 import type { SyncSchedule } from "../schedule/schedule-manager.types.ts";
 import type {
   CliCommandFailure,
@@ -142,7 +143,7 @@ export interface FollowerCommandsService {
     input: OverlaysInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly localPreservation: (
-    change?: { readonly skill: string; readonly action: "add" | "remove" } | { readonly preserveMcp: boolean },
+    change?: LocalPreservationChange,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly status: (
     follower?: FollowerId,

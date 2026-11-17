@@ -36,6 +36,18 @@ it("edits kept-local policies with the displayed digest and explains preservatio
     assert.deepEqual(writes.shift(), { expectedDigest: "displayed-digest", edits: [{ path: ["excludeSkills"], value: [] }] });
     await click("Keep native MCP on this machine");
     assert.deepEqual(writes.shift(), { expectedDigest: "displayed-digest", edits: [{ path: ["preserveMcp"], value: false }] });
+    assert.ok(live.local);
+    live.local = { ...live.local, config: { ...live.local.config, preserveMcp: ["codex"] } };
+    await render();
+    assert.equal(container.querySelector('[aria-label="Keep native MCP for OpenAI Codex"]')?.getAttribute("aria-checked"), "true");
+    assert.equal(container.querySelector('[aria-label="Keep native MCP for Claude Code"]')?.getAttribute("aria-checked"), "false");
+    assert.match(container.textContent ?? "", /Choose harnesses \(1 kept\)/);
+    await click("Keep native MCP for Claude Code");
+    assert.deepEqual(writes.shift(), { expectedDigest: "displayed-digest", edits: [{ path: ["preserveMcp"], value: ["codex", "claude-code"] }] });
+    await click("Keep native MCP for OpenAI Codex");
+    assert.deepEqual(writes.shift(), { expectedDigest: "displayed-digest", edits: [{ path: ["preserveMcp"], value: false }] });
+    await click("Keep native MCP on this machine");
+    assert.deepEqual(writes.shift(), { expectedDigest: "displayed-digest", edits: [{ path: ["preserveMcp"], value: true }] });
     // The field opens in place from the Add button that carries the same label.
     await click("Skill name to keep local");
     const input = container.querySelector<HTMLInputElement>('input[aria-label="Skill name to keep local"]');

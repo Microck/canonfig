@@ -13,6 +13,14 @@ export const TARGET_IDS = [
 
 export type TargetId = (typeof TARGET_IDS)[number];
 
+/** Expand the authored shorthand once; projection uses only harness membership. */
+export const preservedMcpHarnesses = (value: boolean | ReadonlyArray<TargetId> | undefined): ReadonlySet<TargetId> =>
+  new Set(value === true ? TARGET_IDS : value === false || value === undefined ? [] : TARGET_IDS.filter((id) => value.includes(id)));
+
+/** Stable local.jsonc shorthand, including all harnesses rather than only installed ones. */
+export const preservedMcpConfig = (harnesses: ReadonlySet<TargetId>): boolean | TargetId[] =>
+  harnesses.size === TARGET_IDS.length ? true : harnesses.size === 0 ? false : TARGET_IDS.filter((id) => harnesses.has(id));
+
 export const HOOK_EVENTS = [
   "session_start", "session_end", "prompt_submit", "before_agent", "after_agent",
   "before_tool", "after_tool", "before_compact", "after_compact", "stop",
