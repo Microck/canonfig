@@ -33,7 +33,20 @@ export const GuiPublicationRequest = Schema.Struct({ reviewer: Schema.NonEmptySt
 export const GuiRevisionSelection = Schema.Struct({ revision: Schema.NonEmptyString });
 export const GuiScanAcceptance = Schema.Struct({ reviewDigest: Schema.NonEmptyString, confirmAll: Schema.Literal(true) });
 export const GuiScanReview = Schema.Struct({ reviewDigest: Schema.NonEmptyString, declared: Schema.Array(Schema.String), tools: Schema.Array(Schema.Json) });
-export const GuiRevisions = Schema.Struct({ revisions: Schema.Array(Schema.Struct({ id: Schema.String, profileId: Schema.String, sequence: Schema.Number, digest: Schema.String, publishedAt: Schema.String })) });
+/** A missing exact ID is an empty read, not a failed operation. */
+export const GuiRevisionInspection = Schema.NullOr(Schema.Record(Schema.String, Schema.Json));
+export const GuiRevisionApproval = Schema.Struct({
+  revision: Schema.String, proposalDigest: Schema.String, revisionDigest: Schema.String,
+  reviewer: Schema.String, reviewedAt: Schema.String, recordedAt: Schema.String,
+});
+export const GuiRevisionChanges = Schema.Struct({
+  previousRevision: Schema.NullOr(Schema.String),
+  added: Schema.Array(Schema.String), changed: Schema.Array(Schema.String), removed: Schema.Array(Schema.String),
+});
+export const GuiRevisions = Schema.Struct({ revisions: Schema.Array(Schema.Struct({
+  id: Schema.String, profileId: Schema.String, sequence: Schema.Number, digest: Schema.String, publishedAt: Schema.String,
+  approval: Schema.NullOr(GuiRevisionApproval), resourceChanges: GuiRevisionChanges,
+})) });
 export interface GuiRevisions extends Schema.Schema.Type<typeof GuiRevisions> {}
 export const GuiProfileValidation = Schema.Struct({ valid: Schema.Boolean, errors: Schema.Array(Schema.String), profile: Schema.Json });
 export interface GuiProfileValidation extends Schema.Schema.Type<typeof GuiProfileValidation> {}

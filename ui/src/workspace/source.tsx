@@ -642,15 +642,33 @@ function PublishForm() {
 export function RevisionsView() {
   const ws = useWorkspace();
   const selected = ws.focus;
-  const current = ws.revisions.find((r) => r.id === selected);
-  const cols = "72px minmax(200px,360px) 140px 110px minmax(120px,1fr)";
-  // Column minimums + 4 gaps + row inset padding; narrower screens scroll the list sideways instead of clipping it.
-  const colsMin = 72 + 200 + 140 + 110 + 120 + 4 * 12 + 20;
+  const [lookup, setLookup] = useState("");
+  const [history, setHistory] = useState("");
+  const histories = [...new Set(ws.revisions.flatMap((revision) => revision.profileId ? [revision.profileId] : []))];
+  const visible = history ? ws.revisions.filter((revision) => revision.profileId === history) : ws.revisions;
+  const cols = "minmax(148px,1fr) minmax(180px,1.3fr) minmax(90px,.8fr) minmax(80px,.8fr) 104px";
+  const colsMin = 148 + 180 + 90 + 80 + 104 + 4 * 12 + 20;
   return (
     <>
       <PageHeader crumbs={["Revisions"]} actions={ws.profileLive ? <Button size="sm" onClick={() => ws.setPublishOpen(true)}>Publish revision</Button> : <PublishButton />} />
       <ProfileActionNotice />
-      <Body detail={current && <RevisionDetail key={current.id} revision={current} onClose={() => ws.go("revisions")} />}>
+      <Body detail={selected && (ws.profileLive || ws.revisions.some((revision) => revision.id === selected)) && <RevisionDetail key={selected} id={selected} onClose={() => ws.go("revisions")} />}>
+        {ws.profileLive && <div className="flex flex-wrap items-end gap-3 border-b border-border px-[18px] py-3">
+          <label className="grid gap-1 text-sm" htmlFor="revision-history">
+            Profile history
+            <select id="revision-history" className="h-8 max-w-72 rounded-md border border-input bg-background px-2 text-foreground" value={history} onChange={(event) => setHistory(event.target.value)}>
+              <option value="">All profiles</option>
+              {histories.map((id) => <option key={id} value={id}>{id}</option>)}
+            </select>
+          </label>
+          <form className="flex min-w-0 flex-1 items-end gap-2" onSubmit={(event) => { event.preventDefault(); if (lookup.trim()) ws.go("revisions", lookup.trim()); }}>
+            <label htmlFor="revision-lookup" className="grid min-w-0 flex-1 gap-1 text-sm">
+              Exact revision ID
+              <Input id="revision-lookup" value={lookup} onChange={(event) => setLookup(event.target.value)} placeholder="profile:revision" className="h-8 font-mono" />
+            </label>
+            <Button type="submit" size="sm" variant="outline" disabled={!lookup.trim()}>Look up revision</Button>
+          </form>
+        </div>}
         {ws.revisions.length === 0 && ws.pending.length === 0 ? (
           <EmptyState title="No revisions yet" body="Publish the profile to create revision 1." />
         ) : (
@@ -659,7 +677,7 @@ export function RevisionsView() {
               <span>
                 <Term term="Profile Revision">Revision</Term>
               </span>
-              <span>Changes</span>
+              <span>{ws.profileLive ? "Resource changes" : "Changes"}</span>
               <span>Fingerprint</span>
               <span>Reviewed by</span>
               <span>Published</span>
@@ -678,14 +696,14 @@ export function RevisionsView() {
                   </ListRow>
                 </AnimatedRow>
               )}
-              {ws.revisions.map((r) => (
+              {visible.map((r) => (
                 <AnimatedRow key={r.id}>
-                  <ListRow cols={cols} minWidth={colsMin} selected={selected === r.id} onClick={() => ws.go("revisions", r.id)} data-tour="revisions-list">
-                    <span className="font-medium tabular-nums">{r.sequence}</span>
-                    <span className="truncate">{r.changes}</span>
-                    <Mono className="truncate">{r.digest}</Mono>
-                    <span className="truncate text-sm text-muted-foreground">{r.reviewer}</span>
-                    <span className="text-sm text-muted-foreground tabular-nums">{r.publishedAt}</span>
+                  <ListRow cols={cols} minWidth={colsMin} selected={selected === r.id} onClick={() => ws.go("revisions", r.id)} className="h-auto min-h-[44px] py-2" data-tour="revisions-list">
+                    <div className="min-w-0"><span className="font-medium tabular-nums">{r.sequence}</span>{r.profileId && <div className="text-xs text-muted-foreground [overflow-wrap:anywhere]"><Mono>{r.profileId}</Mono></div>}</div>
+                    <span className="text-sm">{r.changes}</span>
+                    <span className="truncate" title={r.digest}><Mono>{r.digest}</Mono></span>
+                    <span className="text-sm text-muted-foreground [overflow-wrap:anywhere]">{r.reviewer}</span>
+                    <time dateTime={r.publishedAt} title={r.publishedAt} className="text-sm text-muted-foreground tabular-nums"><span className="block whitespace-nowrap">{r.publishedAt.split("T")[0]}</span><span className="block whitespace-nowrap">{r.publishedAt.split("T")[1]}</span></time>
                   </ListRow>
                 </AnimatedRow>
               ))}
@@ -699,49 +717,52 @@ export function RevisionsView() {
   );
 }
 
-function RevisionDetail({ revision: r, onClose }: { revision: Revision; onClose: () => void }) {
+function RevisionDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const ws = useWorkspace();
-  const on = ws.followers.filter((f) => f.revision === r.sequence);
-  const inspectRevision = useEffectEvent((id: string) => ws.profileLive?.inspectRevision(id));
-  useEffect(() => inspectRevision(r.id), [r.id]);
-  const detail = ws.profileLive?.revisionDetail?.id === r.id ? ws.profileLive.revisionDetail : null;
+  const listed = ws.revisions.find((revision) => revision.id === id);
+  const inspectRevision = useEffectEvent((revisionId: string) => ws.profileLive?.inspectRevision(revisionId));
+  useEffect(() => inspectRevision(id), [id]);
+  const detail = ws.profileLive?.revisionDetail?.id === id ? ws.profileLive.revisionDetail : null;
   const inspected = object(detail?.data ?? undefined);
-  const publishedResources = Array.isArray(inspected.resources) ? inspected.resources.map(object) : [];
+  const { id: _id, profileId: _profileId, sequence: _sequence, digest: _digest, publishedAt: _publishedAt, approval, ...rawRecord } = inspected;
+  const { reviewer, ...approvalRecord } = object(approval);
+  if (approval !== undefined) rawRecord.approval = approval === null ? null : approvalRecord;
+  if (listed?.resourceChanges) rawRecord.resourceChanges = listed.resourceChanges;
+  const r = listed ?? {
+    id, sequence: typeof inspected.sequence === "number" ? inspected.sequence : undefined,
+    digest: typeof inspected.digest === "string" ? inspected.digest : "",
+    profileId: typeof inspected.profileId === "string" ? inspected.profileId : "",
+    publishedAt: typeof inspected.publishedAt === "string" ? inspected.publishedAt : "",
+    reviewer: typeof reviewer === "string" ? reviewer : "", changes: "",
+  };
+  const on = ws.followers.filter((f) => f.revision === r.sequence);
   return (
     <DetailPanel
-      title={`Revision ${r.sequence}`}
-      subtitle={r.sequence === ws.latest ? <span className="text-xs text-ok">Latest</span> : undefined}
+      title={r.sequence === undefined ? "Revision lookup" : `Revision ${r.sequence}`}
       onClose={onClose}
-      footer={
-        <Button variant="ghost" size="sm" onClick={() => copy(r.digest, "Fingerprint copied")}>
-          Copy fingerprint
-        </Button>
-      }
+      footer={<>
+        <Button variant="ghost" size="sm" onClick={() => copy(id, "Revision ID copied")}>Copy revision ID</Button>
+        {r.digest && <Button variant="ghost" size="sm" onClick={() => copy(r.digest, "Fingerprint copied")}>Copy fingerprint</Button>}
+      </>}
     >
       <div className="px-4 py-3">
+        <Prop label="Revision ID"><Mono>{id}</Mono></Prop>
+        {r.profileId && <Prop label="Profile"><Mono>{r.profileId}</Mono></Prop>}
         {r.publishedAt && <Prop label="Published">{r.publishedAt}</Prop>}
         {r.reviewer && <Prop label="Reviewed by">{r.reviewer}</Prop>}
-        <Prop
-          label={
-            <span className="inline-flex items-center gap-1">
-              Fingerprint{" "}
-              <Hint label="Fingerprint">
-                The digest of everything in this revision. Each machine checks it, so it knows the files weren't changed on the way.
-                {DEMO && "\nIn this demo it is a stand-in value, and no machine checks it."}
-              </Hint>
-            </span>
-          }
-        >
+        {r.digest && <Prop label="Fingerprint">
           <Mono className="text-foreground">{r.digest}</Mono>
-        </Prop>
-        {r.changes && <Prop label="Changes">{r.changes}</Prop>}
+        </Prop>}
+        {r.changes && <Prop label={ws.profileLive ? "Resource changes" : "Changes"}>{r.changes}</Prop>}
       </div>
       {ws.profileLive && <div className="border-t border-border px-4 py-3" aria-busy={!detail || detail.loading}>
-        <SectionLabel>Published resources</SectionLabel>
         {(!detail || detail.loading) && <p role="status">Loading revision…</p>}
-        {detail?.error && <ErrorNotice error={detail.error} />}
-        {publishedResources.map((resource, index) => <Prop key={index} label={String(resource.id ?? resource.kind ?? "Resource")}><Mono>{String(resource.digest ?? "")}</Mono></Prop>)}
-        {typeof inspected.signature === "string" && <Prop label="Signature"><Mono>{inspected.signature}</Mono></Prop>}
+        {detail && !detail.loading && !detail.error && detail.data === null && <p role="status" className="text-sm text-muted-foreground">No revision with this ID.</p>}
+        {detail?.error && <><ErrorNotice error={detail.error} /><Button variant="outline" size="sm" onClick={() => ws.profileLive?.inspectRevision(id)}>Retry lookup</Button></>}
+        {detail?.data && <details className="text-sm">
+          <summary className="cursor-pointer text-muted-foreground">Raw record</summary>
+          <pre className="mt-3 whitespace-pre-wrap break-all font-mono text-xs">{JSON.stringify(rawRecord, null, 2)}</pre>
+        </details>}
       </div>}
       {ws.capabilities.simulatedTelemetry && <><div className="border-t border-border px-4 pt-3">
         <SectionLabel>Machines on this revision</SectionLabel>

@@ -2,6 +2,12 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
+## Unreleased
+
+- Browse all stored Source profile histories in Revisions, with recorded reviewers
+  and resource-change counts. Look up an exact revision ID and inspect its complete
+  stored record, approval metadata and canonical bytes.
+
 ## v7.3.0 - 2026-11-16
 
 ### Machine-local controls

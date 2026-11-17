@@ -174,9 +174,13 @@ for (const path of ["/source/secrets", "/source/profile/groups"]) {
   });
 }
 
+const revisionMetadata = {
+  approval: { revision: "fixture", proposalDigest: "proposal", revisionDigest: "digest", reviewer: "Alice", reviewedAt: "2026-11-06T00:00:00Z", recordedAt: "2026-11-06T00:00:00Z" },
+  resourceChanges: { previousRevision: null, added: ["instructions"], changed: [], removed: [] },
+};
 it("revision details use the displayed revision ID when profile histories share a sequence", async () => {
-  const older = { id: "aaa-old-1", profileId: "aaa-old", sequence: 1, digest: "old-fingerprint", publishedAt: "2026-11-01T00:00:00Z" };
-  const current = { id: "zzz-current-1", profileId: "zzz-current", sequence: 1, digest: "current-fingerprint", publishedAt: "2026-11-06T00:00:00Z" };
+  const older = { ...revisionMetadata, id: "aaa-old-1", profileId: "aaa-old", sequence: 1, digest: "old-fingerprint", publishedAt: "2026-11-01T00:00:00Z" };
+  const current = { ...revisionMetadata, id: "zzz-current-1", profileId: "zzz-current", sequence: 1, digest: "current-fingerprint", publishedAt: "2026-11-06T00:00:00Z" };
   const resources = {
     [older.id]: [{ id: "rules/old-profile", digest: "old-resource-digest" }],
     [current.id]: [{ id: "rules/current-profile", digest: "current-resource-digest" }],
@@ -189,7 +193,9 @@ it("revision details use the displayed revision ID when profile histories share 
   });
   try {
     await until(() => app.container.textContent?.includes(current.digest) === true, "Current revision not listed");
-    assert.ok(!app.container.textContent?.includes(older.digest), "Older profile must not be listed");
+    assert.ok(app.container.textContent?.includes(older.digest), "Every stored profile history must be listed");
+    assert.ok(app.container.textContent?.includes("Alice"), "Stored reviewer must be listed");
+    assert.ok(app.container.textContent?.includes("1 added, 0 changed, 0 removed"));
     const row = [...app.container.querySelectorAll<HTMLElement>('[data-tour="revisions-list"]')].find((element) => element.textContent?.includes(current.digest));
     assert.ok(row);
     await act(async () => { row.click(); });
@@ -201,13 +207,60 @@ it("revision details use the displayed revision ID when profile histories share 
     assert.ok(!app.container.textContent?.includes("rules/old-profile"));
     const detail: unknown = JSON.parse(app.container.querySelector('[data-testid="revision"]')?.textContent ?? "null");
     assert.deepEqual(detail, { id: current.id, data: { resources: resources[current.id] }, loading: false, error: null });
+    const history = app.container.querySelector<HTMLSelectElement>("#revision-history")!;
+    await act(async () => { history.value = older.profileId; history.dispatchEvent(new Event("change", { bubbles: true })); });
+    const oldRow = [...app.container.querySelectorAll<HTMLElement>('[data-tour="revisions-list"]')].find((element) => element.textContent?.includes(older.digest));
+    assert.ok(oldRow, "Older profile history is accessible");
+    await act(async () => { oldRow.click(); });
+    await until(() => app.container.textContent?.includes("old-resource-digest") === true, "Same-sequence older revision not inspected");
+    assert.equal(new URLSearchParams(window.location.search).get("focus"), older.id);
+    const input = app.container.querySelector<HTMLInputElement>("#revision-lookup")!;
+    await fill("#revision-lookup", current.id);
+    await act(async () => { input.closest("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    await until(() => app.container.textContent?.includes("current-resource-digest") === true, "Exact ID lookup must work outside the filtered history");
+    assert.equal(new URLSearchParams(window.location.search).get("focus"), current.id);
+  } finally { await app.close(); }
+});
+
+it("shows each revision field once, collapses the remaining record and distinguishes absent IDs from failed reads", async () => {
+  const id = "unlisted:revision";
+  const record = { id, profileId: "unlisted", sequence: 7, digest: "unlisted-digest", resources: [{ id: "instructions", target: "AGENTS.md", spec: { kind: "file", blob: "blob-id", executable: false } }], groups: [{ name: "work", resources: ["instructions"] }], scheduleDefault: { expression: "daily@09:00" }, canonicalBytes: "exact canonical text", approval: { reviewer: "Bob" } };
+  const app = await fixture(`/source/revisions?focus=${encodeURIComponent(id)}`, sourceResponses(), (path, _method, body, outgoing) => {
+    if (path !== "/api/revisions/inspect") return false;
+    assert.ok(body && typeof body === "object" && "revision" in body);
+    if (body.revision === id) outgoing.end(JSON.stringify(record));
+    else if (body.revision === "missing") outgoing.end("null");
+    else { outgoing.statusCode = 500; outgoing.end(JSON.stringify({ category: "internal", exitCode: 1, message: "Revision store unavailable" })); }
+    return true;
+  });
+  try {
+    await until(() => app.container.textContent?.includes("unlisted-digest") === true, "Direct unlisted ID never loaded");
+    for (const text of ["Bob", "blob-id", "work", "daily@09:00", "exact canonical text"]) assert.ok(app.container.textContent?.includes(text), `Missing structured field ${text}`);
+    const raw = [...app.container.querySelectorAll("details")].find((element) => element.querySelector("summary")?.textContent === "Raw record")!;
+    assert.ok(raw, "Remaining record disclosure is missing");
+    assert.equal(raw.open, false, "Remaining record must start collapsed");
+    const remaining = JSON.parse(raw.querySelector("pre")!.textContent!);
+    for (const field of ["id", "profileId", "sequence", "digest", "publishedAt"]) assert.ok(!(field in remaining), `Formatted ${field} must not repeat in the raw record`);
+    assert.ok(!("reviewer" in remaining.approval), "Formatted reviewer must not repeat in the raw record");
+    await act(async () => { raw.querySelector("summary")!.click(); });
+    assert.equal(raw.open, true);
+    assert.equal(remaining.canonicalBytes, record.canonicalBytes);
+    await act(async () => { navigate("/source/revisions?focus=missing"); });
+    await until(() => app.container.textContent?.includes("No revision with this ID.") === true, "Missing revision state not shown");
+    assert.equal(new URLSearchParams(window.location.search).get("focus"), "missing");
+    assert.ok(!app.container.textContent?.includes("Retry lookup"), "An absent ID is not a failed request");
+    assert.ok(!app.container.textContent?.includes("Operation failed"));
+    assert.ok(!app.container.textContent?.includes("unlisted-digest"), "Absent lookup must not retain another revision");
+    await act(async () => { navigate("/source/revisions?focus=unavailable"); });
+    await until(() => app.container.textContent?.includes("Revision store unavailable") === true, "Actual read failure was hidden");
+    assert.ok(app.container.textContent?.includes("Retry lookup"), "Actual request failures remain retryable");
   } finally { await app.close(); }
 });
 
 it("revision inspection cancels superseded reads and does not share the mutation lock", async () => {
   const pending = new Map<string, ServerResponse>();
   let validation: ServerResponse | undefined;
-  const responses = { ...sourceResponses(), "/api/revisions": { revisions: [1, 2, 3].map((sequence) => ({ id: `revision-${sequence}`, profileId: "review", sequence, digest: `digest-${sequence}`, publishedAt: "2026-11-06T00:00:00Z" })) } };
+  const responses = { ...sourceResponses(), "/api/revisions": { revisions: [1, 2, 3].map((sequence) => ({ ...revisionMetadata, id: `revision-${sequence}`, profileId: "review", sequence, digest: `digest-${sequence}`, publishedAt: "2026-11-06T00:00:00Z" })) } };
   const app = await fixture("/source/revisions", responses, (path, _method, body, outgoing) => {
     if (path === "/api/revisions/inspect") {
       assert.ok(body && typeof body === "object" && "revision" in body && typeof body.revision === "string");
