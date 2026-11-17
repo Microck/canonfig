@@ -1269,12 +1269,19 @@ export const windowsMachineStateLayer = (
       ) => runPowerShell(script, windowsCredentialTimeoutMilliseconds, additions, standardInput);
       // Windows expands %VARIABLES% in the saved values. A read that fails adds
       // no folders: the lookup then reports exactly the folders it searched.
+      // PowerShell writes stdout in the console code page, which can garble a
+      // non-ASCII folder name; setting [Console]::OutputEncoding can throw
+      // without a console. Base64 of the UTF-8 bytes is ASCII in any code page.
       const readPersistedPath = options.readPersistedPath ?? (() =>
         runPowerShell(
-          "[Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')",
+          "[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')))",
           10_000,
         ).pipe(
-          Effect.map((result) => result.exitCode === 0 ? new TextDecoder().decode(result.standardOutput).trim() : ""),
+          Effect.map((result) =>
+            result.exitCode === 0
+              ? Buffer.from(new TextDecoder().decode(result.standardOutput).trim(), "base64").toString("utf8")
+              : ""
+          ),
           Effect.catch(() => Effect.succeed("")),
         ));
       const permissionSections = "[Security.AccessControl.AccessControlSections]'Access,Owner,Group'";

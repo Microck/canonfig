@@ -46,6 +46,12 @@ using it. Its locks do not coordinate external package writers, and a running
 Source or watcher defers activation. Standalone self-update does not restart
 services. Keep a deferred update distinct from a completed update.
 
+On Linux or macOS under a 0002 umask, a 7.4.x self-update to 7.5.0 leaves the
+installed package directory group-writable, so the next self-update refuses to
+run. After installing 7.5.0, run once:
+`chmod g-w,o-w <prefix>/lib/node_modules/@microck/canonfig`. 7.5.0 and later
+updaters keep the directory private on their own.
+
 For releases supporting Source-driven Fleet Updates, read `canonfig source update`
 help before upgrading followers individually. That separate workflow rolls out
 the Source's exact release through a canary and native follower apply commands;
