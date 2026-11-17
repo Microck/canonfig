@@ -27,7 +27,7 @@ function Probe({ backend, evidenceView }: { backend: WorkspaceBackend; evidenceV
   current = useEnrollmentController(backend, session);
   return evidenceView ? <SetupApproval controller={current} confirm /> : <div>{current.joined ? "Joined" : "Not joined"}</div>;
 }
-async function fixture(handler: (path: string, method: string, out: ServerResponse, body: string) => void, wizard = false, evidenceView?: "journal") {
+async function fixture(handler: (path: string, method: string, out: ServerResponse, body: string) => void, wizard = false, evidenceView?: "journal", machineSession = session) {
   const server = createServer((req, out) => {
     out.setHeader("Content-Type", "application/json");
     out.setHeader("Access-Control-Allow-Origin", "http://localhost");
@@ -49,7 +49,7 @@ async function fixture(handler: (path: string, method: string, out: ServerRespon
   };
   const container = document.createElement("div"); document.body.append(container);
   const root = createRoot(container);
-  await act(async () => root.render(wizard ? <MotionConfig skipAnimations><TooltipProvider><EnrollmentOnboarding backend={backend} session={session} /></TooltipProvider></MotionConfig> : <Probe backend={backend} evidenceView={evidenceView} />));
+  await act(async () => root.render(wizard ? <MotionConfig skipAnimations><TooltipProvider><EnrollmentOnboarding backend={backend} session={machineSession} embedded={machineSession.role === "follower"} /></TooltipProvider></MotionConfig> : <Probe backend={backend} evidenceView={evidenceView} />));
   return { container, async close() { await act(async () => root.unmount()); container.remove(); server.closeAllConnections(); const stopped = once(server, "close"); server.close(); await stopped; } };
 }
 async function until(check: () => boolean) {
@@ -68,21 +68,22 @@ async function reveal(container: Element, query: string) {
 }
 function failure(out: ServerResponse) { out.statusCode = 500; respond(out, { category: "internal", exitCode: 1, message: "Observation unavailable" }); }
 
-it("Source discovery cannot replace a newer Follower choice", async () => {
+it("Source discovery locks the first Source step until it settles", async () => {
   let pending: ServerResponse | undefined;
   const app = await fixture((_path, _method, out) => { pending = out; }, true);
   try {
     const source = [...app.container.querySelectorAll("button")].find((b) => b.textContent?.includes("Make this the Source"));
-    const follower = [...app.container.querySelectorAll("button")].find((b) => b.textContent?.includes("Copy the setup from another machine"));
-    assert.ok(source && follower);
-    await act(async () => source.click()); await until(() => !!pending);
-    // Inspection either locks the choice or admits the newer role and invalidates the old request.
-    if (!follower.disabled && !follower.closest("[inert]")) await act(async () => follower.click());
-    const choseFollower = app.container.textContent?.includes("Add the invitation file");
+    assert.ok(source);
+    await act(async () => source.click());
+    assert.equal(pending, undefined, "Choosing Source must not read tool configuration");
+    const next = [...app.container.querySelectorAll("button")].find((b) => b.textContent === "Continue");
+    assert.ok(next);
+    await act(async () => next.click()); await until(() => !!pending);
+    const back = [...app.container.querySelectorAll("button")].find((b) => b.textContent?.includes("Back to machine choice"));
+    assert.ok(back?.disabled);
+    assert.ok(app.container.querySelector("fieldset")?.disabled);
     await act(async () => respond(pending!, journal));
-    await until(() => !app.container.querySelector('[role="status"]'));
-    if (choseFollower) assert.ok(app.container.textContent?.includes("Add the invitation file"), "Older Source discovery replaced Follower");
-    else assert.ok(follower.disabled || follower.closest("[inert]"), "Source inspection must own the choice until it settles");
+    await until(() => !!app.container.querySelector('[aria-label="Installed AI coding tools"]'));
   } finally { await app.close(); }
 });
 
@@ -96,8 +97,90 @@ it("Source discovery shows actionable earlier-journal guidance", async () => {
     const source = [...app.container.querySelectorAll("button")].find((button) => button.textContent?.includes("Make this the Source"));
     assert.ok(source);
     await act(async () => source.click());
+    const next = [...app.container.querySelectorAll("button")].find((button) => button.textContent === "Continue");
+    assert.ok(next);
+    await act(async () => next.click());
     await until(() => !!app.container.textContent?.includes(message));
     assert.ok(app.container.textContent?.includes("Do not remove state.sqlite."));
+  } finally { await app.close(); }
+});
+
+it("the early privacy choice keeps every Source plan from reading import candidates", async () => {
+  const inputs: unknown[] = [];
+  const app = await fixture((path, _method, out, body) => {
+    assert.equal(path, "/api/setup/plan");
+    const input = Schema.decodeUnknownSync(GuiSetupPlanInput)(JSON.parse(body));
+    inputs.push(input.imports);
+    respond(out, { ...journal, imports: { request: "none", offered: [], skipped: [], present: [], collisions: [] } });
+  }, true);
+  const press = async (text: string) => {
+    const button = [...app.container.querySelectorAll("button")].find((node) => node.textContent?.includes(text));
+    assert.ok(button, text);
+    await act(async () => button.click());
+  };
+  try {
+    assert.deepEqual(inputs, [], "No plan runs on the role-choice screen");
+    assert.equal(app.container.querySelector('[role="checkbox"]'), null);
+    await press("Make this the Source");
+    await until(() => !!app.container.textContent?.includes("Profile name"));
+    assert.deepEqual(inputs, [], "The first Source step must not read tool configuration");
+    const skip = app.container.querySelector<HTMLButtonElement>('[role="checkbox"]');
+    assert.ok(skip);
+    assert.equal(skip.getAttribute("aria-checked"), "false", "Reading tool configuration remains the default");
+    await act(async () => skip.click());
+    await press("Continue");
+    await until(() => !!app.container.querySelector('[aria-label="Installed AI coding tools"]'));
+    await press("Continue");
+    await until(() => !!app.container.textContent?.includes("Import skipped."));
+    assert.equal(app.container.querySelector('[aria-label="Review imports"]'), null);
+    await press("Continue");
+    await until(() => !!app.container.textContent?.includes("Approve setup"));
+    assert.deepEqual(inputs, [{ kind: "none" }, { kind: "none" }, { kind: "none" }]);
+  } finally { await app.close(); }
+});
+
+it("replacement onboarding explains policy and binding resets and requires consent", async () => {
+  const submitted: unknown[] = [];
+  const app = await fixture((path, _method, out, body) => {
+    if (path === "/api/enrollment/inspect") respond(out, inspection);
+    else if (path === "/api/enrollment") { submitted.push(JSON.parse(body)); respond(out, { id: "join" }); }
+    else if (path === "/api/operations/join") respond(out, { id: "join", state: "succeeded", journal: null, result: {} });
+    else if (path === "/api/harnesses") respond(out, { installed: [], listed: [], excluded: [] });
+    else assert.fail(path);
+  }, true, undefined, GuiSession.make({ ...session, role: "follower" }));
+  const press = async (text: string) => {
+    const button = [...app.container.querySelectorAll("button")].find((node) => node.textContent?.trim().startsWith(text));
+    assert.ok(button, text);
+    await act(async () => button.click());
+  };
+  try {
+    assert.equal(app.container.querySelector('[data-setup-backdrop]'), null);
+    assert.equal(app.container.querySelector('[aria-label="Open glossary"]'), null);
+    assert.ok([...app.container.querySelectorAll("button")].some((button) => button.textContent === "Cancel"));
+    await press("Paste contents");
+    const input = app.container.querySelector("textarea");
+    assert.ok(input);
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    await act(async () => { setter.call(input, "private invitation"); input.dispatchEvent(new Event("input", { bubbles: true })); });
+    await press("Read invitation");
+    await until(() => !!app.container.textContent?.includes("Groups allow extra configuration"));
+    await press("Continue");
+    const trust = app.container.querySelector<HTMLButtonElement>('[role="checkbox"]');
+    const tunnel = app.container.querySelector<HTMLButtonElement>('[role="switch"]');
+    assert.ok(trust && tunnel);
+    await act(async () => { trust.click(); tunnel.click(); });
+    await press("Continue");
+    assert.ok(app.container.textContent?.includes("Agent policy resets to deterministic-only"));
+    assert.ok(app.container.textContent?.includes("its secret bindings are removed"));
+    assert.ok(app.container.textContent?.includes("local-execution settings and invocation settings reset"));
+    await press("Join the Source");
+    assert.deepEqual(submitted, []);
+    const consent = app.container.querySelector<HTMLButtonElement>('[aria-label="Replacement consequences"] [role="checkbox"]');
+    assert.ok(consent);
+    await act(async () => consent.click());
+    await press("Join the Source");
+    await until(() => submitted.length === 1);
+    assert.deepEqual(submitted, [{ envelope: "private invitation", followerName: "Isolated test", replace: true }]);
   } finally { await app.close(); }
 });
 
@@ -146,7 +229,9 @@ for (const literal of [false, true]) for (const replace of [false, true]) it(`ha
     const source = [...app.container.querySelectorAll("button")].find((node) => node.textContent?.includes("Make this the Source"));
     assert.ok(source); await act(async () => source.click());
     await until(() => !!app.container.querySelector("form"));
-    await press("Continue"); await press("Continue");
+    await press("Continue");
+    await until(() => !!app.container.querySelector('[aria-label="Installed AI coding tools"]'));
+    await press("Continue");
     await review();
     // A literal credential needs no separate consent: the row names the variable and checking it agrees.
     if (literal) assert.ok(app.container.textContent?.includes("Needs $TOKEN"));
@@ -205,7 +290,9 @@ for (const retainedCollision of [false, true]) it(`a replacement collision choic
     const source = [...app.container.querySelectorAll("button")].find((node) => node.textContent?.includes("Make this the Source"));
     assert.ok(source); await act(async () => source.click());
     await until(() => !!app.container.querySelector("form"));
-    await press("Continue"); await press("Continue");
+    await press("Continue");
+    await until(() => !!app.container.querySelector('[aria-label="Installed AI coding tools"]'));
+    await press("Continue");
     await choose("Claude Code");
     // Without Claude Code the target may stop being a collision; either way the person picks Codex's copy.
     await press("Back"); await toggleClaude(); await press("Continue");
@@ -406,6 +493,7 @@ it("Continue on Approve records the named approval and only then moves to Create
     await act(async () => source.click());
     await until(() => !!app.container.textContent?.includes("Profile name"));
     await press("Continue");
+    await until(() => !!app.container.querySelector('[aria-label="Installed AI coding tools"]'));
     await press("Continue");
     await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
     await press("Continue");

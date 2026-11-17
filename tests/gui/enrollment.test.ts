@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
@@ -103,6 +103,25 @@ describe("real enrollment and setup endpoints", () => {
     expect(cli.stderr).toContain("was written by an earlier Canonfig");
     expect(cli.stderr).toContain("move it aside and start setup again");
     expect(readFileSync(path, "utf8")).toBe(legacy);
+  }, 60_000);
+
+  it.runIf(process.platform === "linux")("does not read existing tool configuration when planning with no-import", async () => {
+    const machine = fixture();
+    mkdirSync(join(machine.home, ".codex"), { recursive: true });
+    const instructions = join(machine.home, ".codex", "AGENTS.md");
+    writeFileSync(instructions, "Private instructions must not be read without import consent.\n");
+    utimesSync(instructions, new Date(0), new Date());
+    const server = await gui(machine.env);
+    const input = { role: "source", scope: "full", mode: "simple", files: [], harnesses: ["codex"] };
+    const skipped = await server.request("/api/setup/plan", { ...input, imports: { kind: "none" } });
+    expect(skipped.status).toBe(200);
+    expect(skipped.body.imports).toEqual({ request: "none", offered: [], present: [], skipped: [], collisions: [] });
+    expect(statSync(instructions).atimeMs).toBe(0);
+    // Confirm the access-time witness detects the normal read path on this filesystem.
+    const offered = await server.request("/api/setup/plan", { ...input, imports: { kind: "offer" } });
+    expect(offered.status).toBe(200);
+    expect(offered.body.imports.offered).toContainEqual(expect.objectContaining({ id: "codex/instructions/AGENTS.md" }));
+    expect(statSync(instructions).atimeMs).toBeGreaterThan(0);
   }, 60_000);
 
   it("carries structured skips and collisions with home-relative source paths", async () => {
@@ -360,5 +379,43 @@ net.createServer((client) => {
       expect((await api.request("/api/tunnel")).body.lifecycle).toBe("not-configured");
       expect((await api.request("/api/enrollment")).body).toEqual(before);
     } finally { await endFake(); }
+  }, 120_000);
+  // The SSH tunnel case: replacing a Source moves the tunnel's loopback endpoint to the new Source, so the old one
+  // is unreachable when the replacement retires its identity. Stopping the old Source's server is the same condition.
+  it("finishes replacing a Source that is no longer reachable and names the revoke command to run there", async () => {
+    const source = async (id: string) => {
+      const machine = fixture();
+      expect(machine.invoke(["source", "init"]).status).toBe(0);
+      writeFileSync(join(machine.home, ".canonfig", "canonfig.jsonc"), JSON.stringify({ version: 1, profile: { id, name: id }, harnesses: [], groups: {} }));
+      expect(machine.invoke(["source", "publish", "--reviewer", "test"]).status).toBe(0);
+      const listener = createServer();
+      listener.listen(0, "127.0.0.1"); await once(listener, "listening");
+      const address = listener.address();
+      if (!address || typeof address === "string") throw new Error("No TCP port");
+      listener.close(); await once(listener, "close");
+      const serving = await start(machine.env, ["source", "serve", "--port", String(address.port)]);
+      const api = await gui(machine.env);
+      const invitation = await api.request("/api/invitations", { endpoint: serving.url, groups: [], expiresInMilliseconds: 3_600_000 });
+      expect(invitation.status).toBe(200);
+      return { api, serving, envelope: invitation.body.envelope };
+    };
+    const previous = await source("previous");
+    const candidate = await source("candidate");
+    const target = fixture();
+    const api = await gui(target.env);
+    const initial = await api.request("/api/enrollment", { envelope: previous.envelope, followerName: "old", replace: false });
+    expect((await finish(api, initial.body)).state).toBe("succeeded");
+    const old = (await api.request("/api/enrollment")).body.follower.id;
+    const stopped = once(previous.serving.child, "exit");
+    previous.serving.child.kill("SIGTERM");
+    await stopped;
+    const replacement = await api.request("/api/enrollment", { envelope: candidate.envelope, followerName: "new", replace: true });
+    const completed = await finish(api, replacement.body);
+    expect(completed.state, JSON.stringify(completed)).toBe("succeeded");
+    expect(completed.result).toMatchObject({ previousIdentity: { follower: old, credentialRemoved: true, revoked: false } });
+    expect(JSON.stringify(completed.result)).toContain(`canonfig source revoke ${old}`);
+    expect((await api.request("/api/enrollment")).body).toMatchObject({ follower: { name: "new" }, pending: false });
+    // Nothing claimed the old identity was revoked: its Source still lists it as active.
+    expect((await previous.api.request("/api/machines")).body.followers).toEqual([expect.objectContaining({ name: "old", revoked: false })]);
   }, 120_000);
 });

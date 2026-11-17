@@ -63,6 +63,25 @@ Source Profile and follower Local settings offer **Export**, with **Include mana
 
 **Import archive** is available on Source Profile and in the setup header while an unconfigured machine is choosing its role, never on an enrolled Follower. Select a `.tar.gz`, optionally enter the expected signing fingerprint obtained independently from a trusted Source, then **Verify and preview**. A displayed signer alone does not establish trust. Without an expected fingerprint, unsigned archives are accepted. Existing folder entries require explicit replacement consent; matching whole entries are snapshotted under `~/.canonfig/.backups/` before replacement, while absent entries stay untouched. Review the plan and confirm **Import verified archive**. The result reports fingerprints, replaced entries and the recovery snapshot. Import does not publish, initialize a Source, enroll or apply harness files. Lost operation observation offers Resume observation instead of repeating the write; an interrupted run uses `canonfig recover`, and `canonfig restore <snapshot>` restores replacement snapshots.
 
+On the first Source step, select **Skip reading existing tool configuration**
+before continuing to plan without reading import candidates, even when changing the selected tools.
+This choice starts unchecked, matching the CLI's default of reading tool configuration.
+Settings > Setup > Technical details retains recorded role, scope, mode, discovery paths,
+approval history and diagnostic evidence after reload. Empty metadata rows are hidden.
+Stage rows show completion times and short, copyable digests.
+
+An enrolled Follower can choose **Replace enrollment with a new invitation** in
+Settings > Enrollment. The invitation, fingerprint checks and explicit replacement
+consent use the same onboarding flow inside the Settings pane, without a second app frame.
+The flow has a Cancel action. A new identity resets follower-owned policy,
+agent harness and secret bindings, schedule choices and local-execution settings.
+Same-identity rotation preserves those settings. Enrollment does not remove
+applied files, native jobs, tunnel configuration or local files, and never applies
+the new profile automatically. When the old Source cannot be reached to revoke a
+replaced identity, for example because the SSH tunnel's endpoint now reaches the new
+Source, the replacement still finishes and a warning that stays until dismissed names
+the `canonfig source revoke` command to run there.
+
 The table lists development routes. Public demo URLs add `/demo`, so `/source/overview` becomes `/demo/source/overview`. The public entry `/demo/` opens that overview. Links support direct loads, refresh and browser Back/Forward. Unknown or role-invalid paths show a not-found page.
 
 | Screen | Source | Follower |

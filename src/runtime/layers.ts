@@ -676,13 +676,28 @@ const followerCommandsLayer = (
         yield* recoverStagedCredentials;
         return { _tag: "Restored" as const, configuration: restored, source: previous.sourceIdentity };
       }
+      // Set when this run tried to revoke the replaced identity on its old Source.
+      let revocation: { readonly revoked: boolean; readonly detail: string } | undefined;
       if (configuration.lifecycle._tag === "RetiringPrevious") {
         const previous = configuration.lifecycle.previous;
         if (configuration.lifecycle.cleanup._tag === "RevokeRemote") {
-          yield* mapFailure(revokeFollowerEnrollment({
+          // The old Source may be unreachable now: an SSH tunnel to the new Source
+          // takes over the same loopback endpoint. As with unenrollment, that does
+          // not keep the replacement unfinished; the reply names the command to run
+          // on the old Source (docs/reference/cli: `--replace`).
+          revocation = yield* revokeFollowerEnrollment({
             endpoint: previous.source.endpoint, tlsFingerprint: previous.source.tlsFingerprint,
             credentialReference: previous.credentialReference,
-          }).pipe(Effect.provideService(MachineState, machine)));
+          }).pipe(
+            Effect.provideService(MachineState, machine),
+            Effect.match({
+              onSuccess: () => ({ revoked: true, detail: "revoked on its Source" }),
+              onFailure: (error) => ({
+                revoked: false,
+                detail: `${error.message}; revoke it on its Source with \`canonfig source revoke ${previous.follower.id}\``,
+              }),
+            }),
+          );
           configuration = yield* save(configuration, {
             _tag: "RetiringPrevious", previous, cleanup: { _tag: "RemoveLocal" },
           });
@@ -690,7 +705,7 @@ const followerCommandsLayer = (
         yield* mapFailure(machine.removeCredential(previous.credentialReference));
         configuration = yield* save(configuration, { _tag: "Active" });
       }
-      return { _tag: "Finished" as const, configuration, source: state.sourceIdentity };
+      return { _tag: "Finished" as const, configuration, source: state.sourceIdentity, revocation };
     });
     const outcomePayload = <Value extends {
       readonly outcome?: {
@@ -1071,9 +1086,11 @@ const followerCommandsLayer = (
               category: "human-action-required",
               message: "the Source discarded the replacement; the previous enrollment was authenticated and restored. Retry the same enrollment command with its invitation",
             });
+            // A resumed retirement (the earlier run revoked, or failed to, before it was interrupted) has
+            // no outcome from this run, so it reports neither success nor failure of the remote revoke.
             const previousIdentity = previous === undefined ? undefined : rotated
               ? { follower: previous.follower.id, credentialRemoved: true }
-              : { follower: previous.follower.id, credentialRemoved: true, revoked: true, detail: "revoked on its Source" };
+              : { follower: previous.follower.id, credentialRemoved: true, ...(finished.revocation ?? { detail: "retired by an earlier attempt" }) };
             // The harness surfaces this machine projected from its own
             // folder now belong to the follower's runs, which update them
             // under the same three-way rule.

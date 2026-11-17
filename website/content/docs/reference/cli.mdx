@@ -73,6 +73,23 @@ the claim requires confirmation because the next sync can write the
 published value again. Removing an item overlay keeps its local item;
 the next sync can stop on a remaining collision.
 
+On the first Source step in onboarding, **Skip reading existing tool configuration**
+uses the CLI's `setup plan --no-import` behavior before any import candidates are read.
+Settings > Setup > Technical details shows the persisted role, scope, mode,
+discovery paths, approvals and diagnostic evidence, including after reload.
+
+On an enrolled Follower, Settings > Enrollment offers **Replace enrollment with a
+new invitation**. Review the invitation and compare its fingerprints before
+confirming. A new identity revokes the old identity and removes its credential,
+resets agent policy to deterministic-only, removes the agent harness and its
+secret bindings, and resets stored schedule and local-execution choices. If the
+old Source cannot be reached to revoke it, for example because the SSH tunnel now
+leads to the new Source, a warning names the `canonfig source revoke` command to
+run there.
+Same-identity credential rotation keeps those settings. Applied files, native
+jobs, tunnel configuration and local files remain. Joining never applies the
+new profile automatically.
+
 | Option | Effect |
 | --- | --- |
 | `--port <n>` | Choose the server's port. Without it, the operating system selects a free port. |

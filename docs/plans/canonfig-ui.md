@@ -128,6 +128,25 @@ accepts `{ approver, planDigest }` and returns that same journal. `POST /api/set
 accepts `{ planDigest }` and returns `GuiOperationTicket` with HTTP 202. Area E uses
 these same endpoints and schemas, not a second setup controller.
 
+The first Source onboarding step offers **Skip reading existing tool configuration**
+before continuing to the first plan. That choice uses `imports: { kind: "none" }` for every plan in that
+visit, including harness changes. It is not the same as reading import offers
+and leaving every item unchecked.
+
+Settings > Setup technical details use persisted status, including role, scope,
+mode, intent, discovery paths and digests, current-plan approval history with
+approver/date/digest, stage rows with completion times and copyable short digests,
+item outcomes and provenance. They remain available after a fresh page load.
+
+An enrolled Follower can open replacement onboarding from Settings > Enrollment.
+Consent explains that a new identity revokes the previous identity and removes
+its credential, resets agent policy to deterministic-only, removes the agent
+harness and secret bindings, and resets stored schedule and local-execution
+choices. Applied files, native jobs, tunnel configuration and local files are
+not removed by enrollment. Same-identity credential rotation keeps those
+follower-owned settings.
+
+
 Approve/apply reject stale digests with `conflict-or-drift` and exit code 4. The
 domain controller compares the requested digest while holding a cross-process
 setup-journal lock through the mutation. Plan, approve and apply all use that lock,
