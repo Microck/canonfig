@@ -39,7 +39,11 @@ export interface SecretReference {
   readonly default?: string | undefined;
 }
 
-export type SecretValue = string | SecretReference;
+export interface StoredSecretReference {
+  readonly fromSecret: string;
+}
+
+export type SecretValue = string | SecretReference | StoredSecretReference;
 
 interface McpBase {
   readonly timeoutMs?: number | undefined;

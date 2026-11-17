@@ -4,6 +4,7 @@ import { stringify as stringifyToml } from "smol-toml";
 import type { ConfigValue } from "../../domain/resource.ts";
 import type { Diagnostic, HarnessAdapter, SurfaceContent } from "../harness.ts";
 import type { AgentDocument, McpServer, SecretValue } from "../model.ts";
+import { usesSharedSecret } from "../mcp-launcher.ts";
 import {
   claudeStyleHooks,
   CODEX_EVENTS,
@@ -31,7 +32,8 @@ function splitSecrets(values: Readonly<Record<string, SecretValue>>): SplitSecre
   const references: Array<[string, string]> = [];
   for (const [key, value] of Object.entries(values)) {
     if (Predicate.isString(value)) literal.push([key, value]);
-    else references.push([key, value.fromEnv]);
+    else if ("fromEnv" in value) references.push([key, value.fromEnv]);
+    else throw new Error("Shared secrets must use the Canonfig MCP launcher");
   }
   return { literal, references };
 }
@@ -65,6 +67,7 @@ function codexMcpServer(server: McpServer): ConfigTable {
 function codexMcpDiagnostics(servers: ReadonlyArray<readonly [string, McpServer]>): Array<Diagnostic> {
   const diagnostics = mcpGapDiagnostics("codex", servers, ["timeoutMs"]);
   for (const [name, server] of servers) {
+    if (usesSharedSecret(server)) continue;
     if (server.transport === "sse") {
       diagnostics.push({
         level: "warning", code: "MCP_TRANSPORT_UNSUPPORTED", harness: "codex",
@@ -73,7 +76,7 @@ function codexMcpDiagnostics(servers: ReadonlyArray<readonly [string, McpServer]
     }
     if (server.transport !== "stdio") continue;
     for (const [key, value] of Object.entries(server.env)) {
-      if (Predicate.isString(value) || value.fromEnv === key) continue;
+      if (Predicate.isString(value) || "fromSecret" in value || value.fromEnv === key) continue;
       diagnostics.push({
         level: "warning", code: "MCP_ENV_RENAME_UNSUPPORTED", harness: "codex",
         message: `Codex forwards environment variables only under their own name, so ${value.fromEnv} cannot become ${key} for MCP server ${name}; the binding was omitted.`,

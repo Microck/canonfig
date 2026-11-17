@@ -2,6 +2,18 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
+## Unreleased
+
+MCP environment variables and headers accept `{ "fromSecret": "name" }`.
+Canonfig projects an installed stdio launcher for these servers and resolves
+shared credentials at launch time, without putting values in harness configs,
+publications, exports or plans. `canonfig mcp run <name>` also bridges remote
+servers through pinned mcp-remote. Launchers preserve symbolic environment
+references and Linux credential-store session variables, locate installed npm
+across Node layouts, and replace environment keys case-insensitively on Windows.
+Windows batch commands fail with instructions to configure a native executable
+instead of running server arguments through a shell.
+
 ## v7.5.0 - 2026-11-17
 
 ### Browser interface

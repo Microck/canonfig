@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { gunzipSync } from "node:zlib";
 
 import { Effect, Layer } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
@@ -112,6 +113,29 @@ describe("export refuses what must not leave the machine", () => {
 });
 
 describe("export publishes without replacing", () => {
+  it("exports fromSecret references but excludes the machine's credential material", async () => {
+    const target = home();
+    const config = { version: 1, harnesses: [], local: { allow: ["mcp"] }, mcp: {
+      github: { transport: "streamable-http", url: "https://example.invalid/mcp", headers: { Authorization: { fromSecret: "github.token" } } },
+    } };
+    write(join(target.folder, "canonfig.jsonc"), JSON.stringify(config));
+    write(join(target.folder, "local", "local.jsonc"), JSON.stringify({ mcp: {
+      local: { transport: "stdio", command: "server", env: { TOKEN: { fromSecret: "local.token" } } },
+    } }));
+    write(join(target.folder, "secrets.json"), SECRET);
+    write(join(target.folder, "credentials", "github"), SECRET);
+    await Effect.runPromise(exportFolder({
+      folder: target.folder, output: target.output, cwd: target.home,
+      includeHarnesses: false, force: false, now: new Date("2026-11-05T00:00:00.000Z"), sourceSigner,
+    }).pipe(Effect.provide(Layer.merge(stateRepositoryLayer(join(target.folder, "state.sqlite")), target.machine))));
+    const archive = gunzipSync(readFileSync(target.output)).toString("utf8");
+    expect(archive).toContain('"fromSecret":"github.token"');
+    expect(archive).toContain('"fromSecret":"local.token"');
+    expect(archive).not.toContain(SECRET);
+    expect(archive).not.toContain("folder/secrets.json");
+    expect(archive).not.toContain("folder/credentials/");
+  });
+
   it("refuses an output that appears after the checks, keeping its content", async () => {
     const target = home();
     // The real writer, after another process created the output.

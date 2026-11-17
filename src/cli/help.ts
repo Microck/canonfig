@@ -36,6 +36,17 @@ export const uiUsage = "ui [--port <n>] [--tailnet | --host <address>] [--origin
 
 export const helpGroups: ReadonlyArray<HelpGroup> = [
   {
+    title: "MCP launcher",
+    areas: ["mcp"],
+    usage: ["mcp run <name>"],
+    notes: [
+      "Launch an applied MCP server with shared secrets resolved only in memory.",
+      "Reads ~/.canonfig/ and its allowed local overlays. Stdout is reserved for MCP frames.",
+      "Exit 20: missing secret; 21: credential store unavailable; 22: child could not start.",
+      "Use secrets sync or secrets set to supply a missing secret, then restart the server.",
+    ],
+  },
+  {
     title: "Browser interface",
     areas: ["ui"],
     usage: [uiUsage],

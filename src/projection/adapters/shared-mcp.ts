@@ -3,6 +3,7 @@ import { Predicate } from "effect";
 import type { ConfigValue } from "../../domain/resource.ts";
 import type { Diagnostic } from "../harness.ts";
 import type { McpServer, SecretValue, TargetId } from "../model.ts";
+import { projectedMcpServer } from "../mcp-launcher.ts";
 import type { ConfigTable } from "./shared.ts";
 
 /** How a harness spells an environment reference inside MCP strings. */
@@ -11,6 +12,7 @@ export type EnvironmentSyntax = "shell" | "cursor" | "opencode";
 /** A literal, or the harness's reference to an environment variable; never its value. */
 export function secretValue(value: SecretValue, syntax: EnvironmentSyntax): string {
   if (Predicate.isString(value)) return value;
+  if ("fromSecret" in value) throw new Error("Shared secrets must use the Canonfig MCP launcher");
   switch (syntax) {
     case "cursor":
       return `\${env:${value.fromEnv}}`;
@@ -50,7 +52,7 @@ export function mcpGapDiagnostics(
   gaps: ReadonlyArray<McpGap>,
 ): Array<Diagnostic> {
   return servers.flatMap(([name, server]): Array<Diagnostic> => {
-    const omitted = gaps.filter((gap) => hasGap(server, gap));
+    const omitted = gaps.filter((gap) => hasGap(projectedMcpServer(name, server), gap));
     if (omitted.length === 0) return [];
     return [{
       level: "warning",
@@ -115,7 +117,7 @@ export function mcpTable(
 ): ConfigTable {
   const entries: Array<[string, ConfigValue]> = [];
   for (const [name, server] of servers) {
-    const entry = translate(server, name);
+    const entry = translate(projectedMcpServer(name, server), name);
     if (entry !== undefined) entries.push([name, entry]);
   }
   return Object.fromEntries(entries);

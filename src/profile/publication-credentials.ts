@@ -10,10 +10,12 @@ import {
   isSecretField,
 } from "../secrets/credential-policy.ts";
 import { jsonPathText } from "./profile-codec.ts";
+import { SecretNameSchema } from "../secrets/secret-store.ts";
 
 const isString = Schema.is(Schema.String);
 const isScalar = Schema.is(Schema.Union([Schema.Number, Schema.Boolean]));
 const isArray = (value: ConfigValue): value is ReadonlyArray<ConfigValue> => Array.isArray(value);
+const isSecretName = Schema.is(SecretNameSchema);
 
 const literalCredentialPath = (
   value: ConfigValue,
@@ -55,6 +57,11 @@ const literalCredentialPath = (
     isString(record.fromEnv)
     && Object.keys(record).length === 1
     && /^[A-Za-z_][A-Za-z0-9_]*$/u.test(record.fromEnv)
+  ) return undefined;
+  if (
+    isString(record.fromSecret)
+    && Object.keys(record).length === 1
+    && isSecretName(record.fromSecret)
   ) return undefined;
   const namedCredential = isString(record.name) && isSecretField(record.name);
   for (const [name, entry] of Object.entries(record)) {

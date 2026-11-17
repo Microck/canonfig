@@ -12,6 +12,7 @@ export default defineProject({
       "tests/doctor.test.ts",
       "tests/foundation.test.ts",
       "tests/packed-cli.test.ts",
+      "tests/mcp-secrets.test.ts",
       "tests/packed-init-diagnostic.test.ts",
       "tests/profile-contract.test.ts",
       "tests/profile-compiler.test.ts",

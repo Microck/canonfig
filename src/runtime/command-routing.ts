@@ -43,3 +43,7 @@ export const skillsArguments = (arguments_: ReadonlyArray<string>): ReadonlyArra
   const head = arguments_.indexOf("skills");
   return arguments_.filter((_, index) => index !== head);
 };
+
+/** MCP stdout is a protocol stream, so no JSON output option is accepted. */
+export const validMcpRunArguments = (args: ReadonlyArray<string>): boolean =>
+  args.length === 2 && args[0] === "run" && /^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(args[1]!);
