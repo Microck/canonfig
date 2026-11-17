@@ -159,17 +159,34 @@ lacks.
 
 ### Secret values
 
-An `env` or `headers` value is either a literal string or an environment
-reference:
+An `env` or `headers` value is a literal string, an environment reference, or a
+shared-secret reference:
 
 ```jsonc
 { "fromEnv": "DOCS_MCP_TOKEN" }
 { "fromEnv": "DOCS_REGION", "default": "eu" }
+{ "fromSecret": "docs-token" }
 ```
 
-A reference names a variable that the harness reads on each machine when it
-starts the server; Canonfig never copies the value. A literal that looks like a
-credential stops publication; see [Publication failures](#publication-failures).
+`fromSecret` uses the same name as `canonfig secrets set`: 1 to 128 characters,
+starting with a letter or digit, followed by letters, digits, `.`, `_`, `:`,
+or `-`. It cannot have a default or be combined with `fromEnv`. Both
+`canonfig.jsonc` and allowed `local/local.jsonc` MCP entries accept it.
+
+If any value uses `fromSecret`, every harness receives a stdio command for
+`canonfig mcp run <name>`, bound to the absolute installed Node executable and
+CLI entrypoint. The launcher reads this machine's applied folder, honors its
+local allowlist and explicit overlays, and resolves credentials only at launch.
+It bridges remote servers through pinned `mcp-remote@0.16.6`.
+References, never resolved values, go into publications and exports. Harness
+configs and plans contain the launcher command, not credential values.
+
+For those servers, `fromEnv` reads the launcher's environment and honors its
+optional `default`. Without `fromSecret`, projection stays unchanged:
+the harness reads environment references when it starts the server.
+A literal that looks like a credential stops publication; see
+[Publication failures](#publication-failures).
+See [Share MCP credentials](/docs/how-to/share-mcp-credentials) for setup.
 
 ### Hooks
 

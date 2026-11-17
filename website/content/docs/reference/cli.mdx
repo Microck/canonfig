@@ -943,6 +943,36 @@ next invocation's synchronization outcome and run id in human output or the
 Timeout exits 7 and does not stop the job, which may still be running. Check
 `canonfig schedule status` and `canonfig status` before retrying.
 
+## MCP launcher
+
+```bash
+canonfig mcp run github
+```
+
+Runs the enabled MCP server named `github` from this machine's applied
+`~/.canonfig/canonfig.jsonc`, including allowed local additions and explicit
+overlays from `local/local.jsonc`. It does not fetch a Source revision or sync
+secrets. Harness configs use this command automatically for `fromSecret`.
+
+For stdio servers it inherits stdin, stdout and stderr, forwards termination
+signals and returns the child's exit code. Canonfig writes no status text to
+stdout, which is reserved for MCP frames. Remote servers use
+`mcp-remote@0.16.6` through the npm shipped beside the running Node executable,
+with header values passed in environment variables, not arguments.
+The first remote launch needs npm registry access unless that version is cached.
+
+Launcher failures print an actionable message on stderr:
+
+| Exit | Meaning | Recovery |
+| --- | --- | --- |
+| `2` | Invalid invocation, unreadable folder, unknown or disabled server, or missing environment variable. | Check the applied folder and launch environment. |
+| `20` | A named secret is missing. | Run `canonfig secrets sync` on an authorized follower, or `canonfig secrets set <name>`. |
+| `21` | The secret manifest or credential store cannot be read. | Unlock the native store in the harness's login session and retry. |
+| `22` | The child could not start or the launcher failed. | Check the server command, working directory and npm beside Node. |
+
+Child exit codes pass through unchanged, so they can overlap these launcher
+codes. See [Share MCP credentials](/docs/how-to/share-mcp-credentials).
+
 ## Shared secrets
 
 ```bash

@@ -50,7 +50,7 @@ function kimiMcpServer(server: McpServer): ConfigTable {
     fields.push(["transport", server.transport === "sse" ? "sse" : "http"], ["url", server.url]);
     const headers: Array<[string, string]> = [];
     for (const [name, value] of Object.entries(server.headers)) {
-      if (name.toLowerCase() === "authorization" && !Predicate.isString(value) && value.default === undefined) {
+      if (name.toLowerCase() === "authorization" && !Predicate.isString(value) && "fromEnv" in value && value.default === undefined) {
         fields.push(["bearerTokenEnvVar", value.fromEnv]);
       } else {
         headers.push([name, secretValue(value, "shell")]);

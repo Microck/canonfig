@@ -10,6 +10,7 @@ import { AuthoredVerificationInputSchema } from "../domain/profile.ts";
 import { AgentInstallBounds, ConfigValue, LoginRequirement, ToolRecipeRef } from "../domain/resource.ts";
 import { TaggedError } from "../domain/tagged-error.ts";
 import { canonicalJson, sha256BytesHex, sha256Hex } from "../profile/profile-codec.ts";
+import { SecretNameSchema } from "../secrets/secret-store.ts";
 import { parseMarkdownDocument } from "./frontmatter.ts";
 import {
   APPEND_LOCAL_CATEGORIES,
@@ -67,6 +68,7 @@ const environmentName = Schema.String.check(
 const SecretValueInput = Schema.Union([
   Schema.String,
   Schema.Struct({ fromEnv: environmentName, default: Schema.optional(Schema.String) }),
+  Schema.Struct({ fromSecret: SecretNameSchema }),
 ]);
 const SecretMap = Schema.Record(Schema.String, SecretValueInput);
 const ToolList = Schema.Array(Schema.NonEmptyString);

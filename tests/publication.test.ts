@@ -157,6 +157,24 @@ const persisted = (database: string) => {
 const resourceOf = (revision: ProfileRevision, id: string) => revision.resources.find((resource) => resource.id === id);
 
 describe("publishing the Canonical Folder", () => {
+  it("publishes shared-secret references without reading machine secret values", async () => {
+    const fixture = workspace({
+      mcp: { ...baseConfig.mcp, github: { transport: "streamable-http", url: "https://example.invalid/mcp", headers: { Authorization: { fromSecret: "github.token" } } } },
+    });
+    const privateValue = "private-credential-not-for-publication";
+    write(join(fixture.folder, "secrets.json"), privateValue);
+    write(join(fixture.folder, "credentials", "github"), privateValue);
+    const revision = await publishAt(fixture, makeSigner().signer);
+    expect(resourceOf(revision, "mcp:github")?.spec).toMatchObject({
+      kind: "config", keys: [{ path: "mcp.github", value: {
+        transport: "streamable-http", url: "https://example.invalid/mcp",
+        headers: { Authorization: { fromSecret: "github.token" } },
+      } }],
+    });
+    expect(JSON.stringify(revision)).not.toContain(privateValue);
+    expect(revision.resources.some((resource) => resource.target.includes("credentials"))).toBe(false);
+  });
+
   it("signs one resource per item, with groups, schedule and the folder-wide items", async () => {
     const fixture = workspace();
     const signing = makeSigner();
