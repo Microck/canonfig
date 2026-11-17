@@ -177,12 +177,22 @@ If any value uses `fromSecret`, every harness receives a stdio command for
 `canonfig mcp run <name>`, bound to the absolute installed Node executable and
 CLI entrypoint. The launcher reads this machine's applied folder, honors its
 local allowlist and explicit overlays, and resolves credentials only at launch.
-It bridges remote servers through pinned `mcp-remote@0.16.6`.
+It bridges remote servers through pinned `mcp-remote@0.16.6`, using an installed
+`npx` JavaScript entrypoint with the same Node executable. If npm is unavailable,
+install it for that Node installation before restarting the server.
+On Windows, stdio commands must be native executables, not `.cmd` or `.bat`
+wrappers. For a JavaScript server, configure `node.exe` as the command and its
+JavaScript entrypoint as the first argument. The launcher does not use a shell.
 References, never resolved values, go into publications and exports. Harness
 configs and plans contain the launcher command, not credential values.
 
-For those servers, `fromEnv` reads the launcher's environment and honors its
-optional `default`. Without `fromSecret`, projection stays unchanged:
+For those servers, projection forwards every `fromEnv` source name symbolically,
+including header references. On Linux it also forwards `DBUS_SESSION_BUS_ADDRESS`
+and `XDG_RUNTIME_DIR` so the launcher can reach the login credential store.
+No environment values are read during projection. `fromEnv` reads the launcher's
+environment and honors its optional `default`. Configured environment keys replace
+inherited keys case-insensitively on Windows only.
+Without `fromSecret`, projection stays unchanged:
 the harness reads environment references when it starts the server.
 A literal that looks like a credential stops publication; see
 [Publication failures](#publication-failures).

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
+import { realpathSync, statSync } from "node:fs";
 import { constants } from "node:os";
-import { delimiter, dirname, join, win32 } from "node:path";
+import { delimiter, dirname, join, posix, win32 } from "node:path";
 
 import { Effect, Predicate, Redacted } from "effect";
 
@@ -53,28 +54,64 @@ const resolveValue = (value: SecretValue, environment: NodeJS.ProcessEnv) =>
     return Redacted.value(loaded);
   });
 
-/** npm ships beside Node, including node.exe distributions on Windows. */
-export const npxCliPath = (node: string, platform: NodeJS.Platform = process.platform): string =>
-  platform === "win32"
-    ? win32.join(win32.dirname(node), "node_modules", "npm", "bin", "npx-cli.js")
-    : join(dirname(node), "..", "lib", "node_modules", "npm", "bin", "npx-cli.js");
+const missingNpxError = () => new McpRunError(
+  "Cannot find npm's npx-cli.js. Install npm for the running Node executable or put the installed npx on PATH, then restart this MCP server.",
+  MCP_RUN_EXIT.launch,
+);
+
+/** Resolve npm's JS entrypoint, not a shell wrapper, across Node installations. */
+export const npxCliPath = (
+  node: string, platform: NodeJS.Platform = process.platform, searchPath: string = process.env.PATH ?? "",
+): string => {
+  const paths = platform === "win32" ? win32 : posix;
+  const bin = paths.dirname(node);
+  const npmEntry = ["node_modules", "npm", "bin", "npx-cli.js"];
+  const candidates = [
+    platform === "win32" ? paths.join(bin, ...npmEntry) : paths.join(bin, "..", "lib", ...npmEntry),
+    paths.join(bin, "npx"),
+    paths.join(bin, "..", "libexec", "lib", ...npmEntry),
+    ...searchPath.split(paths.delimiter).filter(Boolean).flatMap((directory) =>
+      platform === "win32" ? [paths.join(directory, ...npmEntry)] : [paths.join(directory, "npx")]),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const resolved = realpathSync(candidate);
+      if (paths.basename(resolved) === "npx-cli.js" && statSync(resolved).isFile()) return resolved;
+    } catch {
+      // Try the next installation location when this one is absent or unreadable.
+    }
+  }
+  throw missingNpxError();
+};
 
 /** The returned invocation is private process input, never a plan or log payload. */
 export const resolveMcpInvocation = (
   server: McpServer,
   environment: NodeJS.ProcessEnv = process.env,
   node: string = process.execPath,
+  platform: NodeJS.Platform = process.platform,
 ) => Effect.gen(function*() {
   const env = { ...environment };
   if (server.transport === "stdio") {
-    for (const [name, value] of Object.entries(server.env)) env[name] = yield* resolveValue(value, environment);
+    for (const [name, value] of Object.entries(server.env)) {
+      const resolved = yield* resolveValue(value, environment);
+      if (platform === "win32") {
+        const folded = name.toUpperCase();
+        for (const key of Object.keys(env)) if (key.toUpperCase() === folded) delete env[key];
+      }
+      env[name] = resolved;
+    }
     return { command: server.command, args: server.args, cwd: server.cwd, env } satisfies McpInvocation;
   }
   // npm invokes package bins through their shebang. Pin that lookup to the
   // same Node even when a GUI-launched harness has no interactive shell PATH.
   const pathKey = Object.keys(env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
   env[pathKey] = `${dirname(node)}${delimiter}${env[pathKey] ?? ""}`;
-  const args = [npxCliPath(node), "-y", "--silent", `mcp-remote@${MCP_REMOTE_VERSION}`, server.url,
+  const npx = yield* Effect.try({
+    try: () => npxCliPath(node, platform, env[pathKey]),
+    catch: missingNpxError,
+  });
+  const args = [npx, "-y", "--silent", `mcp-remote@${MCP_REMOTE_VERSION}`, server.url,
     "--silent", "--transport", server.transport === "sse" ? "sse-only" : "http-only"];
   let index = 0;
   for (const [name, value] of Object.entries(server.headers)) {
@@ -106,7 +143,18 @@ export const prepareMcpRun = (name: string, environment: NodeJS.ProcessEnv = pro
   });
 
 /** Inherited descriptors carry MCP frames directly, without capture or logging. */
-export const launchMcp = (invocation: McpInvocation): Promise<number> => new Promise((resolve, reject) => {
+export const launchMcp = (
+  invocation: McpInvocation, platform: NodeJS.Platform = process.platform,
+): Promise<number> => new Promise((resolve, reject) => {
+  // CRT argument quoting does not protect cmd.exe expansion (%VAR%, !VAR!)
+  // or batch-file reparsing. Keep arbitrary server arguments out of a shell.
+  if (platform === "win32" && /\.(?:cmd|bat)$/iu.test(invocation.command)) {
+    reject(new McpRunError(
+      "Windows MCP batch commands (.cmd/.bat) are not supported without a shell. Configure the native executable instead; for JavaScript servers, use node.exe with the server's JavaScript entrypoint as the first argument.",
+      MCP_RUN_EXIT.launch,
+    ));
+    return;
+  }
   const child = spawn(invocation.command, [...invocation.args], {
     env: invocation.env, cwd: invocation.cwd, stdio: "inherit", windowsHide: true,
   });
@@ -121,7 +169,7 @@ export const launchMcp = (invocation: McpInvocation): Promise<number> => new Pro
   };
   child.once("error", () => {
     cleanup();
-    reject(new McpRunError("MCP child could not start. Check the server command, working directory and the npm installation beside the running Node executable.", MCP_RUN_EXIT.launch));
+    reject(new McpRunError("MCP child could not start. Check the server command and working directory.", MCP_RUN_EXIT.launch));
   });
   child.once("exit", (code, signal) => {
     cleanup();
