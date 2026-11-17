@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, win32 } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { Effect, Redacted } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
@@ -25,7 +26,8 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 const entry = resolve("src/runtime/main.ts");
-const loader = resolve("node_modules/tsx/dist/loader.mjs");
+// --import takes a URL; a bare C:\ path fails on Windows before the CLI starts.
+const loader = pathToFileURL(resolve("node_modules/tsx/dist/loader.mjs")).href;
 const remote: McpServer = {
   transport: "streamable-http", url: "https://example.invalid/mcp",
   headers: { Authorization: { fromSecret: "github.token" }, "X-Region": { fromEnv: "REGION", default: "eu" } },
