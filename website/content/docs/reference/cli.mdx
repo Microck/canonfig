@@ -771,6 +771,16 @@ keeps the process identity and pinned host key for inspection; finish it with
 `tunnel stop` before starting again. Concurrent start and stop operations refuse
 to overlap.
 
+In the browser, Follower **Settings > SSH tunnel** can configure or change a
+tunnel independently of enrollment. Paste and inspect an invitation, verify the
+Source/TLS fingerprints and SSH public host key, then configure and start.
+Advanced controls select IPv4 or IPv6 loopback, ports, the public-key file on
+the GUI host, and a 1000 to 300000 ms start timeout (default 30000). Saved starts
+offer the same timeout. **Stop and forget tunnel** requires confirmation.
+These actions do not change enrollment or its Source endpoint. Match the local
+loopback address and port to that endpoint when carrying its sync traffic.
+Custom SSH executables and extra arguments remain CLI-only.
+
 ## Profiles
 
 ```bash

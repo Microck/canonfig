@@ -1,13 +1,13 @@
 import type { Schema } from "effect";
 import type { GuiLocalItems, GuiLocalWrite, GuiLocalConfigRequest, GuiSecretSummary, GuiScheduleStatus } from "../../../src/gui/contract/synchronization";
-import type { GuiEnrollment } from "../../../src/gui/contract/enrollment";
+import type { GuiEnrollment, GuiEnrollmentTunnelInput, GuiInvitationInspection } from "../../../src/gui/contract/enrollment";
 import type { GuiOperation } from "../../../src/gui/contract/operations";
 import type { Schedule } from "./schedule";
 import type { ResourceState } from "./workspace-types";
 import type { LocalCategory } from "../shared/metadata";
 import type { GuiRequestError } from "../gui-client";
 
-export type FollowerCommand = "plan" | "apply" | "review" | "restore" | "recover" | "abandon";
+export type FollowerCommand = "plan" | "apply" | "review" | "restore" | "recover" | "abandon" | "tunnel-configure" | "tunnel-start";
 export type FollowerCommandState =
   | { kind: "Idle" }
   | { kind: "Submitting"; command: FollowerCommand; name: string }
@@ -39,7 +39,10 @@ export interface FollowerLive {
   refreshSecrets: () => void;
   setSecret: (name: string, value: string) => Promise<boolean>;
   removeSecret: (name: string) => Promise<boolean>;
-  toggleTunnel: () => void;
+  inspectTunnelInvitation: (envelope: string) => Promise<GuiInvitationInspection | null>;
+  configureTunnel: (input: typeof GuiEnrollmentTunnelInput.Type) => void;
+  startTunnel: (timeoutMilliseconds?: number) => void;
+  stopTunnel: (forget: boolean) => Promise<boolean>;
   exportArchive: () => void;
   archive: { sha256: string; manifestSha256: string; signer: string } | null;
 }

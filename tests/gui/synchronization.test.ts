@@ -160,7 +160,7 @@ it("serves real role-gated secrets and a verified Source archive without leaking
     ["/api/harnesses", "PUT", { harness: "codex", action: "include" }], ["/api/local/overlays", "GET", undefined],
     ["/api/local/overlays", "PUT", { item: "rules/test" }], ["/api/local/overlays", "DELETE", { item: "rules/test" }],
     ["/api/backups", "GET", undefined], ["/api/backups/restore", "POST", { snapshot: "missing" }],
-    ["/api/tunnel", "GET", undefined], ["/api/tunnel/start", "POST", {}], ["/api/tunnel/stop", "POST", {}], ["/api/enrollment", "DELETE", {}],
+    ["/api/tunnel", "GET", undefined], ["/api/tunnel/start", "POST", {}], ["/api/tunnel/stop", "POST", { forget: false }], ["/api/enrollment", "DELETE", {}],
   ] as const) expect((await api.call(path, method, body)).payload, path).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   const unconfigured = await gui(fixture("unconfigured"));
   expect((await unconfigured.call("/api/schedule", "DELETE", {})).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
@@ -305,8 +305,8 @@ it("plans and applies an enrolled follower and performs digest-checked local ope
     expect(existsSync(scheduler.timer)).toBe(false);
   }
   expect((await api.call("/api/tunnel")).status).toBe(200);
-  expect((await api.call("/api/tunnel/start", "POST", {})).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
-  expect((await api.call("/api/tunnel/stop", "POST", {})).status).toBe(200);
+  expect(await api.operation("/api/tunnel/start")).toMatchObject({ state: "failed", failure: { category: "usage-or-configuration", exitCode: 2 } });
+  expect((await api.call("/api/tunnel/stop", "POST", { forget: false })).status).toBe(200);
   expect((await api.call("/api/secrets")).status).toBe(200);
   expect((await api.call("/api/secrets/sync", "POST", {})).status).toBe(200);
   expect((await api.call("/api/secrets", "PUT", { name: "no", value: "private" })).payload).toMatchObject({ category: "human-action-required", exitCode: 3 });

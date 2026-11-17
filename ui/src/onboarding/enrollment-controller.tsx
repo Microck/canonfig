@@ -49,7 +49,7 @@ export interface EnrollmentController {
   reloadStatus: () => void;
   inspectInvitation: (contents: string, next: (inspection: GuiInvitationInspection) => void, label?: string) => Promise<void>;
   clearInvitation: () => void;
-  join: (input: { name: string; replace: boolean; tunnel: boolean; sshHost: string; sshUser: string; sshPort: number; hostKey: string; localPort: number }) => Promise<void>;
+  join: (input: { name: string; replace: boolean; tunnel: boolean; sshHost: string; sshUser: string; sshPort: number; hostKey: string; localPort: number; localHost: "127.0.0.1" | "::1"; timeoutMilliseconds: number }) => Promise<void>;
   loadHarnesses: () => Promise<void>;
   savePreferences: (excluded: HarnessId[], schedule: boolean) => Promise<void>;
 }
@@ -186,7 +186,7 @@ export function useEnrollmentController(backend: WorkspaceBackend, session: GuiS
       const joining = follower.send({ kind: "join" });
       if (joining.kind !== "joining") throw new TransitionError("Enrollment", joining.kind, "join");
       return run(async (signal) => {
-        if (input.tunnel) await actions.operation("/api/enrollment/tunnel", { envelope: joining.envelope, sshHost: input.sshHost, sshUser: input.sshUser, sshPort: input.sshPort, sshHostKeyPath: input.hostKey, localPort: input.localPort, trustConfirmed: true }, signal);
+        if (input.tunnel) await actions.operation("/api/enrollment/tunnel", { envelope: joining.envelope, sshHost: input.sshHost, sshUser: input.sshUser, sshPort: input.sshPort, sshHostKeyPath: input.hostKey, localPort: input.localPort, localHost: input.localHost, timeoutMilliseconds: input.timeoutMilliseconds, trustConfirmed: true }, signal);
         await actions.operation("/api/enrollment", { envelope: joining.envelope, followerName: input.name, replace: input.replace }, signal);
         follower.send({ kind: "joined" });
         follower.send({ kind: "report", report: await backend.request("/api/harnesses", GuiHarnessReport, signal) });

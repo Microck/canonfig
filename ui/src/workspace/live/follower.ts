@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { Schema } from "effect";
 import { GuiArchiveDownload, GuiBackups, GuiHarnessReport, GuiLocalItems, GuiScheduleStatus, GuiSecrets, GuiSecretSummary, GuiSecretRemoval, GuiSecretSync, GuiSynchronizationResult } from "../../../../src/gui/contract/synchronization";
-import { GuiEnrollment } from "../../../../src/gui/contract/enrollment";
+import { GuiEnrollment, GuiInvitationInspection } from "../../../../src/gui/contract/enrollment";
 import { GuiOperationTicket, type GuiOperation } from "../../../../src/gui/contract/operations";
 import { GuiRequestError, type GuiSession, type GuiStatus, type WorkspaceBackend } from "../../gui-client";
 import { LOCAL_CATEGORIES, type LocalItem } from "../../shared/metadata";
@@ -77,6 +77,8 @@ export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, 
   const enrollment = useLiveResource(backend, "/api/enrollment", GuiEnrollment, follower);
   const secrets = useLiveResource(backend, "/api/secrets", GuiSecrets, follower);
   const actions = useLiveActions(backend, reload);
+  // Inspection is read-only. Invalidating page resources here would unmount and erase the connection draft.
+  const inspectionActions = useLiveActions(backend, () => {});
   const [command, setCommand] = useState<FollowerCommandState>({ kind: "Idle" });
   const commandRef = useRef(command);
   const transition = (event: CommandEvent) => {
@@ -146,7 +148,7 @@ export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, 
   }));
   const check = () => start("/api/sync/plan", "plan", "Check for updates");
   const live: FollowerLive = {
-    action: { loading: actions.state.loading || uncertain, error: command.kind === "ObservationLost" ? command.error : actions.state.error }, operation, operationName, command,
+    action: { loading: actions.state.loading || inspectionActions.state.loading || uncertain, error: command.kind === "ObservationLost" ? command.error : actions.state.error ?? inspectionActions.state.error }, operation, operationName, command,
     canApply: command.kind === "Completed" && command.command === "plan", resumeObservation, local: local.data,
     allowed: LOCAL_CATEGORIES.filter((category) => strings(record(local.data?.canonicalConfig.local).allow).includes(category)),
     schedule: schedule.data, tunnel: tunnel.data, enrollment: enrollment.data, secrets: secrets.data?.secrets ?? [],
@@ -165,7 +167,14 @@ export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, 
       const report = await backend.request("/api/secrets/sync", GuiSecretSync, signal, { method: "POST", body: {} });
       setSecretMessage(report.status === "synchronized" ? `Updated ${report.secrets.length} secrets.` : report.status === "not-shared" ? "This enrollment does not receive shared secrets." : "This machine is not enrolled.");
     }); },
-    toggleTunnel: () => { void mutation(`/api/tunnel/${tunnel.data?.lifecycle === "running" ? "stop" : "start"}`, "POST", {}); },
+    inspectTunnelInvitation: async (envelope) => {
+      let inspected: GuiInvitationInspection | null = null;
+      await inspectionActions.run(async (signal) => { inspected = await backend.request("/api/enrollment/inspect", GuiInvitationInspection, signal, { method: "POST", body: { envelope } }); });
+      return inspected;
+    },
+    configureTunnel: (input) => start("/api/enrollment/tunnel", "tunnel-configure", "Configure tunnel", input),
+    startTunnel: (timeoutMilliseconds) => start("/api/tunnel/start", "tunnel-start", "Start tunnel", { timeoutMilliseconds }),
+    stopTunnel: (forget) => mutation("/api/tunnel/stop", "POST", { forget }),
     archive,
     exportArchive: () => { void run(async (signal) => {
       const download = await backend.request("/api/exports", GuiArchiveDownload, signal, { method: "POST", body: { includeHarnesses: false } });
@@ -180,14 +189,14 @@ export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, 
   const savedSchedule = record(schedule.data?.schedule);
   const kind = savedSchedule.kind;
   // Mutation progress must not remount the detail panel and discard a failed save's draft.
-  const actionError = { loading: false, error: actions.state.error };
+  const actionError = { loading: false, error: actions.state.error ?? inspectionActions.state.error };
   return {
     followerLive: live,
     followerState: resourceState([tunnel, enrollment, secrets, actionError]),
     followerStates: {
       harnesses: resourceState([harnesses, actionError]), local: resourceState([harnesses, local, overlays, actionError]),
       schedule: resourceState([schedule, actionError]), backups: resourceState([backups, actionError]),
-      overlays: resourceState([overlays, actionError]), tunnel: resourceState([tunnel, actionError]),
+      overlays: resourceState([overlays, actionError]), tunnel: resourceState([tunnel, enrollment, actionError]),
     },
     followerSchedule: kind === "daily" || kind === "weekly" || kind === "custom" ? {
       cadence: kind === "weekly" ? "days" : kind, time: text(savedSchedule.localTime) ?? "", days: WEEK.filter((day) => strings(savedSchedule.weekdays).includes(day)),

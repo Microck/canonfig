@@ -22,6 +22,7 @@ import { SetupEvidence, type EnrollmentController } from "./enrollment-controlle
 import { TransitionError, useStateMachine } from "@/lib/state-machine";
 import type { SetupImportOffer, SetupImportReview } from "../../../src/setup/setup.types";
 import { ImportReview } from "./import-review";
+import { TunnelAdvancedFields, tunnelPortsError, tunnelTimeoutError } from "@/shared/tunnel-fields";
 
 // Rings drifting inward toward the centre: many machines converging on one.
 // At speed 1 a ring takes about 20 seconds to move one ring inward.
@@ -1046,9 +1047,11 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
   const [replace, setReplace] = useState(false);
   const [sshPort, setSshPort] = useState("22");
   const [localPort, setLocalPort] = useState("");
+  const [localHost, setLocalHost] = useState<"127.0.0.1" | "::1">("127.0.0.1");
+  const [timeoutMilliseconds, setTimeoutMilliseconds] = useState("30000");
   const sshTrust = useStateMachine<TrustState, TrustEvent>({ kind: "unverified" }, transitionTrust);
   const sourceTrust = useStateMachine<TrustState, TrustEvent>({ kind: "unverified" }, transitionTrust);
-  const sshIdentity = JSON.stringify([sshHost, sshUser, hostKey, sshPort, localPort]);
+  const sshIdentity = JSON.stringify([sshHost, sshUser, hostKey, sshPort, localPort, localHost]);
   const sourceIdentity = live ? JSON.stringify([live.envelope, live.inspection?.sourceFingerprint, live.inspection?.tlsFingerprint]) : data.endpoint;
   const trusted = sshTrust.state.kind === "verified" && sshTrust.state.identity === sshIdentity;
   const sourceTrusted = sourceTrust.state.kind === "verified" && sourceTrust.state.identity === sourceIdentity;
@@ -1085,7 +1088,8 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
     trusted: step === 1 && tunnel && !trusted ? "Compare the SSH host key with the Source's copy, then select the confirmation." : null,
     sourceTrusted: live && step === 1 && !sourceTrusted ? "Compare both fingerprints with the Source through a separate trusted connection, then select the confirmation." : null,
     replace: live?.session.role === "follower" && step === 2 && !replace ? "Confirm replacement of this machine's enrollment." : null,
-    ports: live && step === 1 && tunnel && (![sshPort, localPort].every((port) => /^\d+$/.test(port) && Number(port) >= 1 && Number(port) <= 65535)) ? "Use whole port numbers from 1 to 65535." : null,
+    ports: live && step === 1 && tunnel ? tunnelPortsError({ sshPort, localPort }) : null,
+    timeout: live && step === 1 && tunnel ? tunnelTimeoutError(timeoutMilliseconds) : null,
     name: step === 2 && !machineName ? "Enter a name for this machine." : null,
   };
   const blocked = Object.values(errors).some(Boolean);
@@ -1117,10 +1121,10 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
       onBlocked={() => {
         setTried(true);
         // The host key file lives under Advanced; its error must be visible.
-        if (errors.hostKey || errors.ports) setAdvanced(true);
+        if (errors.hostKey || errors.ports || errors.timeout) setAdvanced(true);
       }}
       busy={live ? live.state.loading : progress !== null && !done}
-      onFinish={() => live ? void live.join({ name: machineName, replace, tunnel, sshHost, sshUser, sshPort: Number(sshPort), hostKey, localPort: Number(localPort) }) : onRun(3000, steps.length)}
+      onFinish={() => live ? void live.join({ name: machineName, replace, tunnel, sshHost, sshUser, sshPort: Number(sshPort), hostKey, localPort: Number(localPort), localHost, timeoutMilliseconds: Number(timeoutMilliseconds) }) : onRun(3000, steps.length)}
       done={
         done ? (
           <Finished
@@ -1310,31 +1314,12 @@ function FollowerWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<
               <Collapsible open={advanced} onOpenChange={setAdvanced}>
                 <DisclosureTrigger>Advanced</DisclosureTrigger>
                 <CollapsibleContent className="mt-3">
-                  <Field
-                    label="Source SSH host public key file"
-                    htmlFor="ob-hostkey"
-                    hint="Copy /etc/ssh/ssh_host_ed25519_key.pub from the Source to this machine through a trusted connection. Enter the path to that copy. Never copy the private key."
-                    error={shown("hostKey")}
-                  >
-                    <Input
-                      id="ob-hostkey"
-                      value={hostKey}
-                      onChange={(e) => {
-                        setHostKey(e.target.value);
-                        setTrusted(false);
-                      }}
-                      spellCheck={false}
-                      autoComplete="off"
-                      aria-invalid={!!shown("hostKey")}
-                      aria-describedby={shown("hostKey") ? "ob-hostkey-error" : undefined}
-                      className="font-mono text-[12px]"
-                    />
-                  </Field>
-                  {live && <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                    <Field label="SSH port" htmlFor="ob-ssh-port"><Input id="ob-ssh-port" value={sshPort} onChange={(event) => setSshPort(event.target.value)} /></Field>
-                    <Field label="Local tunnel port" htmlFor="ob-local-port"><Input id="ob-local-port" value={localPort} onChange={(event) => setLocalPort(event.target.value)} /></Field>
-                    {shown("ports") && <FieldError>{shown("ports")}</FieldError>}
-                  </div>}
+                  <TunnelAdvancedFields value={{ hostKey, sshPort, localPort, localHost, timeoutMilliseconds }} showErrors={tried} onChange={(draft) => {
+                    setHostKey(draft.hostKey); setSshPort(draft.sshPort); setLocalPort(draft.localPort);
+                    setLocalHost(draft.localHost); setTimeoutMilliseconds(draft.timeoutMilliseconds);
+                    setTrusted(false);
+                  }} />
+                  {shown("hostKey") && <FieldError>{shown("hostKey")}</FieldError>}
                 </CollapsibleContent>
               </Collapsible>
             </>

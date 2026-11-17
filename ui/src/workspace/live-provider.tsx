@@ -30,7 +30,7 @@ export function livePageResources(session: GuiSession, route: WorkspaceRoute): r
     schedule: ["/api/schedule"],
     local: ["/api/local/items", "/api/harnesses", "/api/local/overlays"],
     backups: ["/api/backups", "/api/local/items"],
-    tunnel: ["/api/tunnel"],
+    tunnel: ["/api/tunnel", "/api/enrollment"],
     machine: ["/api/enrollment", "/api/tunnel", "/api/local/items"],
     agent: ["/api/agent/policy", "/api/agent/harness"],
     installers: ["/api/installers"],

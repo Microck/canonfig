@@ -17,6 +17,7 @@ import { StateRepository } from "../../state/state-repository.service.ts";
 import {
   GuiScheduleRequest, GuiSynchronizationResult, GuiHarnessRequest, GuiOverlayRequest, GuiRestoreRequest,
   GuiLocalWrite, GuiLocalConfigRequest, GuiSecretSet, GuiSecretName, GuiExportRequest,
+  GuiTunnelStartInput, GuiTunnelStopInput,
   type GuiLocalItem,
 } from "../contract/synchronization.ts";
 import { GuiOperations } from "../operations.ts";
@@ -183,8 +184,10 @@ export const synchronizationRoutes = Effect.gen(function*() {
       both(secrets(removeSecret(name)).pipe(Effect.map((removed) => ({ name, removed })))))),
     mutationRoute("POST", "/api/secrets/sync", EmptyBody, () => follower(secrets(synchronizeSharedSecrets()))),
     queryRoute("/api/tunnel", () => follower(commands.tunnelStatus())),
-    mutationRoute("POST", "/api/tunnel/start", EmptyBody, () => follower(commands.restartTunnel({}))),
-    mutationRoute("POST", "/api/tunnel/stop", EmptyBody, () => follower(commands.stopTunnel({ forget: false }))),
+    mutationRoute("POST", "/api/tunnel/start", GuiTunnelStartInput, (input) => role(["follower"]).pipe(
+      Effect.andThen(operations.start(commands.restartTunnel(input).pipe(Effect.map(printable)), () => Effect.succeed(null))),
+    ), 202),
+    mutationRoute("POST", "/api/tunnel/stop", GuiTunnelStopInput, (input) => follower(commands.stopTunnel(input))),
     mutationRoute("DELETE", "/api/enrollment", EmptyBody, () => follower(commands.unenroll())),
     mutationRoute("POST", "/api/exports", GuiExportRequest, ({ includeHarnesses }) => Effect.gen(function*() {
       yield* role(["source", "follower"]);

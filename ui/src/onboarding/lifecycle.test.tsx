@@ -227,7 +227,7 @@ it("join success followed by report failure retains explicit joined recovery sta
   });
   try {
     await act(async () => { await current.inspectInvitation("envelope", () => {}); });
-    await act(async () => { await current.join({ name: "laptop", replace: false, tunnel: false, sshHost: "", sshUser: "", sshPort: 22, hostKey: "", localPort: 17342 }); });
+    await act(async () => { await current.join({ name: "laptop", replace: false, tunnel: false, sshHost: "", sshUser: "", sshPort: 22, hostKey: "", localPort: 17342, localHost: "127.0.0.1", timeoutMilliseconds: 30000 }); });
     assert.equal(current.joined, true);
     assert.equal(current.followerState.kind, "joined-unavailable");
     assert.equal(current.envelope, "");
@@ -327,7 +327,7 @@ it("preference retry preserves its draft and rechecks partial server progress", 
   });
   try {
     await act(async () => { await current.inspectInvitation("envelope", () => {}); });
-    await act(async () => { await current.join({ name: "laptop", replace: false, tunnel: false, sshHost: "", sshUser: "", sshPort: 22, hostKey: "", localPort: 17342 }); });
+    await act(async () => { await current.join({ name: "laptop", replace: false, tunnel: false, sshHost: "", sshUser: "", sshPort: 22, hostKey: "", localPort: 17342, localHost: "127.0.0.1", timeoutMilliseconds: 30000 }); });
     await act(async () => { await current.savePreferences(["amp", "antigravity"], false); });
     assert.equal(current.followerState.kind, "preferences-failed");
     assert.deepEqual(current.preferenceDraft?.excluded, ["amp", "antigravity"]);
