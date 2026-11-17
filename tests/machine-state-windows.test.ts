@@ -92,21 +92,27 @@ describe.skipIf(process.platform !== "win32")("Windows executable lookup", () =>
     try {
       mkdirSync(installed);
       writeFileSync(join(installed, "late-tool.exe"), "");
-      const lookup = (searchPath?: ReadonlyArray<string>) => Effect.runPromise(Effect.gen(function*() {
+      let savedPathReads = 0;
+      const lookup = (kind: "tool" | "general" | "explicit") => Effect.runPromise(Effect.gen(function*() {
         const machine = yield* MachineState;
-        const query = searchPath === undefined
+        const query = kind === "tool"
+          ? { name: "late-tool", installMethods: [{ method: "winget" }] }
+          : kind === "general"
           ? { name: "late-tool" }
-          : { name: "late-tool", searchPath: yield* Effect.forEach(searchPath, (path) => machine.normalizePath({ path })) };
+          : { name: "late-tool", installMethods: [{ method: "winget" }], searchPath: [yield* machine.normalizePath({ path: dirname(process.execPath) })] };
         return yield* machine.findExecutable(query).pipe(
           Effect.match({ onFailure: (error) => error._tag, onSuccess: (found) => found.path.absolute }),
         );
       }).pipe(Effect.provide(windowsMachineStateLayer({
         environment: environment(root),
-        readPersistedPath: () => Effect.succeed(`C:\\Windows;${installed}`),
+        readPersistedPath: () => Effect.sync(() => { savedPathReads += 1; return `C:\\Windows;${installed}`; }),
       }))));
-      expect((await lookup()).toLowerCase()).toBe(win32.join(installed, "late-tool.exe").toLowerCase());
-      // An explicit search path is exact: the saved PATH is not consulted.
-      expect(await lookup([dirname(process.execPath)])).toBe("ExecutableNotFoundError");
+      expect((await lookup("tool")).toLowerCase()).toBe(win32.join(installed, "late-tool.exe").toLowerCase());
+      expect(savedPathReads).toBe(1);
+      // A general lookup (doctor's probes) and an explicit search path never read the saved PATH.
+      expect(await lookup("general")).toBe("ExecutableNotFoundError");
+      expect(await lookup("explicit")).toBe("ExecutableNotFoundError");
+      expect(savedPathReads).toBe(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
