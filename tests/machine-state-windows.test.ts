@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { execFile, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -84,6 +84,45 @@ const environment = (root: string) => {
     { name: "SystemRoot", value: process.env.SystemRoot ?? "C:\\Windows" },
   ];
 };
+
+describe.skipIf(process.platform !== "win32")("Windows executable lookup", () => {
+  it("finds a tool an installer added to the saved PATH after this process started", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-saved-path-"));
+    const installed = join(root, "installed");
+    try {
+      mkdirSync(installed);
+      writeFileSync(join(installed, "late-tool.exe"), "");
+      let savedPathReads = 0;
+      const lookup = (kind: "verification" | "detection" | "general" | "explicit") => Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const query = kind === "verification"
+          ? { name: "late-tool", installMethods: [{ method: "winget" }], includeSavedPath: true }
+          : kind === "detection"
+          ? { name: "late-tool", installMethods: [{ method: "winget" }] }
+          : kind === "general"
+          ? { name: "late-tool" }
+          : { name: "late-tool", installMethods: [{ method: "winget" }], includeSavedPath: true, searchPath: [yield* machine.normalizePath({ path: dirname(process.execPath) })] };
+        return yield* machine.findExecutable(query).pipe(
+          Effect.match({ onFailure: (error) => error._tag, onSuccess: (found) => found.path.absolute }),
+        );
+      }).pipe(Effect.provide(windowsMachineStateLayer({
+        environment: environment(root),
+        readPersistedPath: () => Effect.sync(() => { savedPathReads += 1; return `C:\\Windows;${installed}`; }),
+      }))));
+      expect((await lookup("verification")).toLowerCase()).toBe(win32.join(installed, "late-tool.exe").toLowerCase());
+      expect(savedPathReads).toBe(1);
+      // Harness detection names install methods too, but runs inside doctor's
+      // time-bounded probe; it, a general lookup, and an explicit search path
+      // never read the saved PATH.
+      expect(await lookup("detection")).toBe("ExecutableNotFoundError");
+      expect(await lookup("general")).toBe("ExecutableNotFoundError");
+      expect(await lookup("explicit")).toBe("ExecutableNotFoundError");
+      expect(savedPathReads).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe.skipIf(process.platform !== "win32")("Windows credential staging ownership", () => {
   it("does not write credential bytes when beforeStore fails", async () => {

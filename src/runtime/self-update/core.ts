@@ -3,7 +3,7 @@ import { TaggedError } from "../../domain/tagged-error.ts";
 import { readSettings } from "./settings.ts";
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync, renameSync, openSync, closeSync, fsyncSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync, renameSync, openSync, closeSync, fsyncSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -277,6 +277,11 @@ export async function update(root:string,apply:boolean,mode:"manual"|"auto"|Flee
     progress({phase:"verifying", candidate});
     const metadata=Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({name:Schema.Literal("@microck/canonfig"),version:Schema.String,dependencies:Schema.Record(Schema.String,Schema.String)})))(readFileSync(join(staged,"package.json"),"utf8"));
     if(metadata.name!=="@microck/canonfig"||metadata.version!==candidate||lstatSync(staged).isSymbolicLink())throw new Error("Staged package identity mismatch");
+    // npm creates the staged package directory with this process's umask. Under
+    // a common 0002 umask it is group-writable, and installation() refuses a
+    // group- or other-writable package root, so the next update would fail on
+    // the tree this one activated. Clear those bits before activation.
+    if(process.platform!=="win32")chmodSync(staged,lstatSync(staged).mode&0o7755);
     const entry=join(staged,"dist","runtime","main.js");
     const require=createRequire(entry);
     for(const dependency of Object.keys(metadata.dependencies)) {

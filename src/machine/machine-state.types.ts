@@ -198,6 +198,12 @@ export interface ExecutableQuery {
    * tool Canonfig installed resolves under a scheduler-bounded PATH too.
    */
   readonly installMethods?: ReadonlyArray<InstallDestinationHint> | undefined;
+  /**
+   * Windows only: on a miss, also search the saved Machine and User PATH, which
+   * an installer may have changed after this process started. Reading it costs
+   * a PowerShell start, so only tool verification asks for it.
+   */
+  readonly includeSavedPath?: boolean | undefined;
 }
 
 export interface DiscoveredExecutable {
