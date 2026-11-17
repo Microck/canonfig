@@ -62,8 +62,10 @@ launcher to `%LOCALAPPDATA%\canonfig\native\CanonfigScheduleLaunch-<digest>.js`;
 a missing launcher is drift. `schedule status` reports the runtime and CLI the
 launcher runs as the binding, not `wscript.exe`. This needs Windows Script Host,
 which is on by default; a policy that turns it off makes every run fail with a
-nonzero last result. A task registered by an earlier release no longer matches,
-so the post-apply reconciler re-registers it when it is enabled.
+nonzero last result. A task registered by an earlier release no longer matches
+(`schedule status` reports it `drifted`). The post-apply reconciler re-registers
+it after a sync that converges; a follower whose runs end in Human Action
+Required keeps the old task until `canonfig schedule set` is run once.
 
 The Windows task uses an InteractiveToken logon, so Task Scheduler starts it
 only while the user is logged on and never catches up a run it skipped while the

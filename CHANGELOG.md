@@ -55,7 +55,9 @@ Use Node.js 24.15+ or 26+. Source and Followers must all use the 7.6 release lin
 before resuming synchronization; 7.5.x and 7.6.x do not synchronize with each other.
 A 7.6.0 Source can roll followers on 7.5.x forward with a Fleet Update. Publish
 `fromSecret` references only after every follower runs 7.6.0. On Windows, the
-first sync after updating re-registers the scheduled task with the new launcher.
+first sync that converges after updating re-registers the scheduled task with
+the new launcher. If the follower's runs end in Human Action Required, run
+`canonfig schedule set <calendar>` once instead.
 
 ## v7.5.0 - 2026-11-17
 
