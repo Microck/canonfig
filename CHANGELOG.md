@@ -2,6 +2,41 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
+## v7.5.0 - 2026-11-17
+
+### Browser interface
+
+- Plan and apply a Source's own files, or an unenrolled folder's, from Local sync,
+  and recover or restore from Backups, without enrolling. Publishing stays a
+  separate step.
+
+### Fixes
+
+- Find a tool on Windows right after its installer added it to the saved PATH.
+  A tool such as ImageMagick, installed by winget earlier in the same run,
+  failed its verification because the run kept the PATH it started with.
+- Keep a self-updated package directory free of group and other write access.
+  Under a 0002 umask the update left it group-writable, and the next update then
+  refused to run.
+
+### Security
+
+The same five moderate audit findings as 7.4.0 remain in the upstream
+TUF/minimatch dependency chain under `sigstore`. This release uses an explicitly
+approved exception to the clean-audit gate; these denial-of-service advisories
+are not fixed.
+
+### Upgrading
+
+Use Node.js 24.15+ or 26+. Source and Followers must all use the 7.5 release line
+before resuming synchronization; 7.4.x and 7.5.x do not synchronize with each other.
+A 7.5.0 Source can roll followers on 7.4.x forward with a Fleet Update.
+
+On Linux or macOS under a 0002 umask, the 7.4.x updater that installs 7.5.0 still
+leaves the package directory group-writable. Once 7.5.0 is installed, run
+`chmod g-w,o-w <prefix>/lib/node_modules/@microck/canonfig` once; later
+updates keep it closed.
+
 ## v7.4.0 - 2026-11-17
 
 ### Browser interface
