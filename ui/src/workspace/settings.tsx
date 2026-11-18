@@ -759,6 +759,7 @@ export function SetupView() {
 const CHECK_LABEL: Record<string, string> = {
   runtime: "Node.js runtime", state: "Local database", credentials: "Credential storage", source: "Connection to the Source",
   scheduler: "Update schedule", "package-managers": "Package managers", "agent-adapter": "AI agent", harnesses: "AI coding tools",
+  mcp: "MCP servers",
 };
 
 /**
@@ -836,6 +837,11 @@ export function DoctorView() {
                   {/* A passing check needs no sentence; a problem says what is wrong and what to do. */}
                   {/* Commands get their own copy box below, so the sentence points at it instead of repeating it. */}
                   {problem && <p className="mt-1 ml-6.5 text-sm text-pretty text-muted-foreground"><CliText>{d.commands?.length ? d.detail.replace(/`[^`]+`/gu, d.commands.length === 1 ? "the command below" : "the commands below") : d.detail}</CliText></p>}
+                  {problem && d.items && d.items.length > 0 && (
+                    <ul className="mt-1 ml-6.5 grid gap-0.5">
+                      {d.items.map((item) => <li key={item}><Mono className="text-xs break-all">{item}</Mono></li>)}
+                    </ul>
+                  )}
                   {problem && d.fix && (
                     <div className="mt-2 ml-6.5 grid gap-1.5">
                       <p className="text-sm text-pretty text-muted-foreground"><CliText>{d.fix.why}</CliText></p>

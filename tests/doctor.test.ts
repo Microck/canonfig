@@ -128,6 +128,22 @@ describe("doctor probes", () => {
     });
   });
 
+  it.skipIf(process.platform === "win32")("fails the mcp probe when an installed harness declares a server that cannot start", () => {
+    const home = mkdtempSync(resolve(tmpdir(), "canonfig-doctor-mcp-"));
+    mkdirSync(join(home, "bin"));
+    writeFileSync(join(home, "bin", "codex"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    mkdirSync(join(home, ".codex"));
+    writeFileSync(join(home, ".codex", "config.toml"), "[mcp_servers.stale]\ncommand = \"/nonexistent/canonfig-mcp-run.mjs\"\n");
+    const result = executeDoctor(home, ["--json", "--no-input", "--timeout-ms", "5000"], { PATH: join(home, "bin"), CODEX_HOME: join(home, ".codex") });
+    const envelope = JSON.parse(result.stdout || result.stderr);
+    expect(envelope.data.probes).toContainEqual(expect.objectContaining({
+      name: "mcp",
+      status: "fail",
+      category: "verification-or-apply-failure",
+      details: expect.objectContaining({ stale: expect.stringContaining("command not found: /nonexistent/canonfig-mcp-run.mjs") }),
+    }));
+  });
+
   it("isolates a local credential-store failure and reports remaining probes", () => {
     const home = mkdtempSync(resolve(tmpdir(), "canonfig-doctor-failure-"));
     const secret = "must-not-leak-doctor-secret";

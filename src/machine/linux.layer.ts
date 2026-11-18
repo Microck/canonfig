@@ -138,7 +138,8 @@ class CredentialCommandSignal extends Error {
   }
 }
 
-const terminateProcessTree = (child: ChildProcess): void => {
+/** Stops a child and its descendants: its process group on POSIX, `taskkill /T` on Windows. */
+export const terminateProcessTree = (child: ChildProcess): void => {
   if (child.pid === undefined) {
     child.kill("SIGKILL");
     return;

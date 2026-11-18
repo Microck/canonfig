@@ -298,6 +298,7 @@ export const doctor = [
   { check: "Package managers", result: "ok", detail: "npm, uv and apt found" },
   { check: "Configuration Agent", result: "ok", detail: "codex 0.62 found" },
   { check: "Harnesses", result: "ok", detail: "Every listed harness is installed" },
+  { check: "MCP servers", result: "ok", detail: "12 MCP servers started and listed their tools" },
 ] as const;
 
 export const agentPolicy = {

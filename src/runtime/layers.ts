@@ -1729,6 +1729,7 @@ const followerCommandsLayer = (
               ...input,
               statePath,
               environment: (name) => process.env[name],
+              mcpLaunch: { environment: process.env, cwd: process.cwd() },
               agentPolicy: configuration?.agentPolicy,
               schedule,
               fires,

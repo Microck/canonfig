@@ -7,7 +7,7 @@ import {
 } from "../../../../src/gui/contract/administration";
 import type { GuiSession } from "../../../../src/gui/contract/session";
 import { GuiRequestError, type WorkspaceBackend } from "../../gui-client";
-import type { AdministrationSlice, HarnessDraft, PolicySave, SavedPolicy } from "../administration-types";
+import { failingItems, type AdministrationSlice, type HarnessDraft, type PolicySave, type SavedPolicy } from "../administration-types";
 import { useLiveSelfUpdate, type InstalledUpdate } from "./self-update";
 
 function requestError(cause: unknown): GuiRequestError {
@@ -256,7 +256,7 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
     doctor: {
       data: doctor.data?.probes.map((probe) => ({
         check: probe.name, result: probe.status === "pass" ? "ok" : probe.status === "warning" ? "warn" : probe.status === "fail" ? "bad" : "off",
-        detail: probe.message, evidence: { ...probe }, commands: [...probe.message.matchAll(/`([^`]+)`/g)].map((match) => match[1]!),
+        detail: probe.message, items: failingItems(probe.details), evidence: { ...probe }, commands: [...probe.message.matchAll(/`([^`]+)`/g)].map((match) => match[1]!),
       })) ?? null,
       // Failed probes are shown in the list itself; only a request that could not run the checks is an error.
       loading: doctor.loading, busy: doctor.busy, error: doctor.error,
