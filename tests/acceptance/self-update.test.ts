@@ -2,6 +2,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
+import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { disable, enable, installation, selectAutomaticRelease, selectManualRelease, parseVersion, update, assertNoUnfinishedRun, run, type Runner, type UpdateProgress } from "../../src/runtime/self-update/core.ts";
 import { commandLease, managedCommandLease, updateDirectory, acquireGate } from "../../src/runtime/self-update/coordination.ts";
@@ -90,6 +91,17 @@ describe("self-update policy and package activation",()=>{
   expect((await update(f.root, true, "manual", f.runner,undefined,f.home)).status).toBe("deferred");release();
   const gate=acquireGate(updateDirectory(f.root));expect(()=>commandLease(f.root)).toThrow("busy");gate();
   expect((await update(f.root, true, "manual", f.runner,undefined,f.home)).status).toBe("updated");
+ });
+ it("waits for a command that briefly holds the gate instead of failing",async()=>{
+  const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
+  const gate=join(updateDirectory(f.root),"gate");mkdirSync(gate,{mode:0o700});
+  // Another process releases the gate while this one waits synchronously.
+  const child=spawn(process.execPath,["-e",`setTimeout(()=>require("node:fs").rmSync(${JSON.stringify(gate)},{recursive:true}),200);process.stdout.write("armed")`],{stdio:["ignore","pipe","ignore"]});
+  // Wait until the child has armed its release timer, not only until it exists.
+  await new Promise(resolve=>child.stdout.once("data",resolve));
+  const release=commandLease(f.root)!;
+  expect(existsSync(gate)).toBe(false);release();
+  await new Promise(resolve=>child.once("exit",resolve));
  });
  it.each([
   ["live PID regardless of age", JSON.stringify({pid:process.pid,started:"1970-01-01T00:00:00.000Z"})],

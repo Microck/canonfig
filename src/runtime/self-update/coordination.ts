@@ -19,11 +19,35 @@ export function assertPrivateDirectory(directory: string): void {
   if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Invalid self-update directory");
   if(process.getuid && (info.uid!==process.getuid() || (info.mode&0o022)!==0))throw new Error("Self-update directory must be user-owned and not writable by other users");
 }
-export function acquireGate(directory: string): () => void {
+/**
+ * How long a starting command waits for the gate. Commands hold it only for the
+ * few filesystem calls that register a reader, so contention between commands
+ * clears in milliseconds; harnesses start every `canonfig mcp run` server at
+ * once, and failing on the first collision made those servers fail at random.
+ * An updater holds the gate for a whole install, which outlasts this wait.
+ */
+const commandGateWaitMilliseconds = 1000;
+const sleepCell = new Int32Array(new SharedArrayBuffer(4));
+const sleepSync = (milliseconds: number): void => {
+  // The lease is taken synchronously before any command runs, so it cannot await.
+  Atomics.wait(sleepCell, 0, 0, milliseconds);
+};
+/** Take the gate, retrying for up to `waitMilliseconds` while another process holds it. */
+export function acquireGate(directory: string, waitMilliseconds = 0): () => void {
   assertPrivateDirectory(directory);
   const gate = join(directory, "gate");
-  try { mkdirSync(gate, { mode: 0o700 }); }
-  catch { throw new Error(`Self-update coordination is busy or interrupted: ${gate}. Never clear it while a worker is active.`); }
+  const deadline = Date.now() + waitMilliseconds;
+  for (;;) {
+    try { mkdirSync(gate, { mode: 0o700 }); break; }
+    catch (error) {
+      const held = error instanceof Error && "code" in error && error.code === "EEXIST";
+      if (!held || Date.now() >= deadline) {
+        throw new Error(`Self-update coordination is busy or interrupted: ${gate}. Never clear it while a worker is active.`);
+      }
+      // Jitter keeps commands that collided once from retrying in lockstep.
+      sleepSync(5 + Math.random() * 10);
+    }
+  }
   return () => rmSync(gate, { recursive: true });
 }
 /** Coordinate installed commands independently of standalone self-update consent. */
@@ -38,7 +62,7 @@ export function commandLease(root: string, home = homedir()): (() => void) | und
     mkdirSync(directory, { recursive: true, mode: 0o700 });
   }
   regular(join(directory, "settings.json"));
-  const release = acquireGate(directory);
+  const release = acquireGate(directory, commandGateWaitMilliseconds);
   try {
     if (entry(join(directory, "pending.json"))) throw new Error("Interrupted self-update: restore the retained package before running Canonfig commands.");
     const readers = join(directory, "readers");
