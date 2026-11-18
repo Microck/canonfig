@@ -46,7 +46,8 @@ export function ImportReview({ data, listed, choices, onChoices }: {
   const model = useMemo(() => {
     const present = new Set(data.present);
     const held = new Set(data.collisions.filter((collision) => collision.kind === "folder").map((collision) => collision.target));
-    const differing = new Map(data.collisions.filter((collision) => collision.kind === "candidates").map((collision) => [collision.target, collision.candidates]));
+    const differing = new Map(data.collisions.filter((collision) => collision.kind !== "folder")
+      .flatMap((collision) => collision.candidates.map(({ id }) => [id, collision] as const)));
     const offered = data.offers.filter((offer) => offer.harnesses.some((harness) => listed.includes(harness)) && !present.has(offer.id));
     const byId = new Map(offered.map((offer) => [offer.id, offer]));
     const manualCopies = new Set<string>();
@@ -64,7 +65,8 @@ export function ImportReview({ data, listed, choices, onChoices }: {
           names.add(offer.name);
         }
         for (const offer of offers) {
-          if (duplicateNames.has(offer.name) && differing.has(offer.target)) manualCopies.add(offer.id);
+          const collision = differing.get(offer.id);
+          if (collision?.kind === "projected-skill" || (collision && duplicateNames.has(offer.name))) manualCopies.add(offer.id);
         }
         return [{ category, offers, duplicateNames }];
       });
@@ -78,7 +80,7 @@ export function ImportReview({ data, listed, choices, onChoices }: {
     if (model.held.has(offer.target)) return "held";
     const pick = choices.get(offer.target);
     if (pick === undefined) return "off";
-    if (pick === offer.id || (model.byId.has(pick) && !model.differing.has(offer.target))) return "on";
+    if (pick === offer.id || (model.byId.has(pick) && !model.differing.has(offer.id))) return "on";
     // A different version, or a choice retained from a tool that is unlisted right now.
     return "other";
   };
@@ -165,7 +167,7 @@ export function ImportReview({ data, listed, choices, onChoices }: {
                   const chosen = choices.get(offer.target);
                   const readers = node.source === "agents" ? node.readers.filter((reader) => offer.harnesses.includes(reader)) : undefined;
                   return <OfferRow key={offer.id} offer={offer} state={state(offer)} chosen={chosen} chosenOffer={model.byId.get(chosen ?? "")} showPath={duplicateNames.has(offer.name)}
-                    copies={model.differing.get(offer.target)}
+                    collision={model.differing.get(offer.id)}
                     readers={readers && readers.length < node.readers.length ? readers : undefined}
                     onToggle={(value) => toggle(offer, value)} />;
                 })}</ul></CollapsibleContent>
@@ -197,13 +199,15 @@ function Branch({ depth, open, name, check, label, count }: {
 }
 
 /** One source's copy of a target. Only ambiguous names need a visible path. */
-function OfferRow({ offer, state, chosen, chosenOffer, copies, showPath, readers, onToggle }: {
+function OfferRow({ offer, state, chosen, chosenOffer, collision, showPath, readers, onToggle }: {
   offer: ImportOffer; state: RowState; chosen: string | undefined; chosenOffer: ImportOffer | undefined;
-  copies: OnboardingData["collisions"][number]["candidates"] | undefined; showPath: boolean; readers: readonly HarnessId[] | undefined; onToggle: (on: boolean) => void;
+  collision: OnboardingData["collisions"][number] | undefined; showPath: boolean; readers: readonly HarnessId[] | undefined; onToggle: (on: boolean) => void;
 }) {
   const describedBy = useId();
   const versionDescription = useId();
-  const showVersions = copies !== undefined && state !== "held";
+  const showVersions = collision !== undefined && state !== "held";
+  const projected = collision?.kind === "projected-skill";
+  const warning = projected ? "These items project to the same skill." : "Different local versions found.";
   // Only the source/ prefix is meaningful; the rest of an offer id is opaque.
   const chosenTool = chosen && sourceName(chosen.slice(0, chosen.indexOf("/")) as Source);
   let status: string | null = null;
@@ -235,17 +239,20 @@ function OfferRow({ offer, state, chosen, chosenOffer, copies, showPath, readers
       </span>
     </label>
     {showVersions && <Popover>
-      <span id={versionDescription} className="sr-only">Different local versions found.</span>
+      <span id={versionDescription} className="sr-only">{warning}</span>
       <PopoverTrigger asChild>
-        <button type="button" aria-label={`Review different versions of ${offer.name} from ${sourceName(offer.source)}${showPath ? ` at ${offer.path}` : ""}`}
+        <button type="button" aria-label={`Review ${projected ? "skill name conflict for" : "different versions of"} ${offer.name} from ${sourceName(offer.source)}${showPath ? ` at ${offer.path}` : ""}`}
           className="inline-flex size-10 shrink-0 items-center justify-center rounded-sm text-warn hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring pointer-coarse:size-11">
           <WarningCircle className="size-3.5" aria-hidden="true" />
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-80 max-w-[calc(100vw-2rem)]" aria-labelledby={`${versionDescription}-title`} aria-describedby={`${versionDescription}-body`}>
-        <p id={`${versionDescription}-title`} className="font-medium">Different versions found</p>
-        <p id={`${versionDescription}-body`}>Local copies have different contents or settings. Only the version you select is imported.</p>
-        <ul className="space-y-2">{copies?.map((copy) => <li key={copy.id}>
+        <p id={`${versionDescription}-title`} className="font-medium">{projected ? "Skill name conflict" : "Different versions found"}</p>
+        <p id={`${versionDescription}-body`}>
+          {projected ? <>These items project to <Mono>{collision.target}</Mono>. Select one to import.</>
+            : "Local copies have different contents or settings. Only the version you select is imported."}
+        </p>
+        <ul className="space-y-2">{collision.candidates.map((copy) => <li key={copy.id}>
           <span>{sourceName(copy.source)}{copy.id === chosen ? " (selected)" : ""}</span>
           <Mono className="block break-all text-xs text-muted-foreground">{copy.path}</Mono>
         </li>)}</ul>

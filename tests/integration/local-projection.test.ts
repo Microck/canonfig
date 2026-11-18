@@ -413,6 +413,50 @@ describe("local projection", () => {
     expect(existsSync(join(skills, "deploy", "SKILL.md"))).toBe(true);
   });
 
+  it("requires a choice between a command and a skill with the same projected name during Source setup", async () => {
+    const value = fixture(["claude-code", "codex"]);
+    const command = "claude-code/commands/release";
+    const skill = "codex/skills/command-release";
+    const nativeSkill = "---\nname: command-release\ndescription: Release guide\n---\nRead the release guide.\n";
+    write(join(value.home, ".claude", "commands", "release.md"), "Prepare the release.\n");
+    write(join(value.home, ".codex", "skills", "command-release", "SKILL.md"), nativeSkill);
+    const environment = environmentOf(value);
+    const input = { folder: value.folder, environment, harnesses: ["claude-code", "codex"] };
+
+    await Effect.runPromise(Effect.gen(function*() {
+      const review = yield* planSourceFolder({ ...input, imports: { kind: "offer" } });
+      expect(review.imports.collisions).toEqual([{
+        kind: "projected-skill",
+        target: "skills/command-release",
+        candidates: [
+          { id: command, source: "claude-code", path: "~/.claude/commands/release.md" },
+          { id: skill, source: "codex", path: "~/.codex/skills/command-release" },
+        ],
+      }]);
+      const all = yield* planSourceFolder({ ...input, imports: { kind: "all" } });
+      const both = yield* planSourceFolder({ ...input, imports: { kind: "some", requested: [command, skill] } });
+      for (const plan of [all, both]) {
+        expect(plan.imports.collisions).toEqual(review.imports.collisions);
+        expect(plan.items.map((item) => item.kind)).toEqual(["folder-scaffold"]);
+      }
+      const commandOnly = yield* planSourceFolder({ ...input, imports: { kind: "some", requested: [command] } });
+      expect(commandOnly.imports.collisions).toEqual([]);
+      expect(commandOnly.items.find((item) => item.kind === "harness-import")?.detail.items)
+        .toEqual([expect.objectContaining({ id: command })]);
+
+      const skillOnly = yield* planSourceFolder({ ...input, imports: { kind: "some", requested: [skill] } });
+      expect(skillOnly.imports.collisions).toEqual([]);
+      for (const item of skillOnly.items) {
+        if (item.kind === "folder-scaffold") yield* executeFolderScaffold(item);
+        if (item.kind === "harness-import") yield* executeHarnessImport(item, environment);
+      }
+    }).pipe(Effect.provide(layer(value))));
+
+    expect(readFileSync(join(value.folder, "skills", "command-release", "SKILL.md"), "utf8")).toBe(nativeSkill);
+    expect(existsSync(join(value.folder, "commands", "release.md"))).toBe(false);
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+  });
+
   it("skips a published command skill when Source setup runs before syncing its new Local Overlay", async () => {
     const value = fixture(["codex"], {
       surfaces: { codex: ["instructions", "commands"] },

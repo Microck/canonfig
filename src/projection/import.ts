@@ -2,7 +2,7 @@ import { lstat, readdir, readFile } from "node:fs/promises";
 import { join as joinNative, sep as nativeSeparator } from "node:path";
 
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
-import { Predicate, Schema } from "effect";
+import { Array as EffectArray, Predicate, Schema } from "effect";
 
 import { ConfigValue } from "../domain/resource.ts";
 import type { AppliedResourceRecord } from "../domain/synchronization.ts";
@@ -108,6 +108,8 @@ export interface ImportCollision {
   readonly candidates: ReadonlyArray<string>;
   /** True when the folder already holds different content at `target`. */
   readonly folder: boolean;
+  /** True when different destinations project to the same skill target. */
+  readonly projectedSkill?: true;
 }
 
 export interface ImportChoice {
@@ -1038,7 +1040,8 @@ const unknownRequests = (scan: ImportScan, selection: ImportSelection): Array<st
  * Resolve the operator's selection against the scan and the folder: items
  * already in the folder are `present`, different content at an occupied
  * target or several different selected candidates for one target is a
- * collision unless exactly one of them was named, and the rest is chosen.
+ * collision unless exactly one of them was named. Different destinations
+ * that project to the same skill require selecting just one destination.
  */
 export const selectImports = (
   scan: ImportScan,
@@ -1046,16 +1049,23 @@ export const selectImports = (
   selection: ImportSelection,
 ): ImportChoice => {
   const named = new Set(selection.kind === "some" ? selection.items : []);
-  const groups = new Map<string, Array<ImportCandidate>>();
-  for (const candidate of scan.candidates) {
-    if (!isSelected(candidate, selection, named)) continue;
-    groups.set(candidate.target, [...groups.get(candidate.target) ?? [], candidate]);
-  }
+  const selected = scan.candidates.filter((candidate) => isSelected(candidate, selection, named));
+  const groups = EffectArray.groupBy(selected, (candidate) => candidate.target);
   const chosen: Array<ImportCandidate> = [];
   const present: Array<string> = [];
   const collisions: Array<ImportCollision> = [];
-  for (const target of [...groups.keys()].sort(compare)) {
-    const group = groups.get(target)!.sort((left, right) => compare(left.id, right.id));
+  const skillGroups = EffectArray.groupBy(scan.candidates.filter(({ category }) => category === "commands" || category === "skills"),
+    (candidate) => candidate.category === "commands" ? targetOf("skills", commandSkillName(candidate.name)) : candidate.target);
+  for (const [target, group] of Object.entries(skillGroups)) {
+    const destinations = new Set(group.map((candidate) => candidate.target)
+      .filter((destination) => Object.hasOwn(groups, destination) && !existing.has(destination)));
+    if (destinations.size < 2) continue;
+    for (const destination of destinations) delete groups[destination];
+    const candidates = group.filter((candidate) => destinations.has(candidate.target)).map((candidate) => candidate.id);
+    collisions.push({ target, candidates: candidates.sort(compare), folder: false, projectedSkill: true });
+  }
+  for (const target of Object.keys(groups).sort(compare)) {
+    const group = groups[target]!.sort((left, right) => compare(left.id, right.id));
     const held = existing.get(target);
     if (held !== undefined) {
       present.push(...group.filter((candidate) => candidate.digest === held).map((candidate) => candidate.id));
@@ -1074,5 +1084,5 @@ export const selectImports = (
       collisions.push({ target, candidates: all.sort(compare), folder: false });
     }
   }
-  return { chosen, present, collisions, unknown: unknownRequests(scan, selection) };
+  return { chosen, present, collisions: collisions.sort((left, right) => compare(left.target, right.target)), unknown: unknownRequests(scan, selection) };
 };

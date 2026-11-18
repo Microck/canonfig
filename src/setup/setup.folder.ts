@@ -182,7 +182,7 @@ const reviewImports = (input: SourceFolderInput, selected: ReadonlyArray<TargetI
           ...skip, path: displayPath(skip.path), reason: skip.reason.replaceAll(context.home, "~"),
         })),
         collisions: choice.collisions.map((collision) => ({
-          kind: collision.folder ? "folder" : "candidates",
+          kind: collision.projectedSkill ? "projected-skill" : collision.folder ? "folder" : "candidates",
           target: collision.target,
           candidates: collision.candidates.map((id) => {
             const candidate = candidates.get(id)!;

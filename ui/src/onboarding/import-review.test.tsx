@@ -11,6 +11,9 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const { createRoot } = await import("react-dom/client");
 // Register the DOM before loading Radix and React DOM, which select their browser behavior at module load.
 const { ImportReview } = await import("./import-review");
+const { Onboarding } = await import("./onboarding");
+const { MotionConfig } = await import("motion/react");
+const { TooltipProvider } = await import("../components/ui/tooltip");
 after(async () => { await GlobalRegistrator.unregister(); });
 
 const offers: ImportOffer[] = Array.from({ length: 320 }, (_, index) => ({
@@ -330,4 +333,50 @@ it("reviewing version warnings does not replace the selected import", async () =
     assert.deepEqual([...app.choices], [...initial]);
     assert.equal(box.getAttribute("aria-checked"), "false");
   } finally { await app.close(); }
+});
+
+it("Source setup requires clearing a skill name conflict before continuing", async () => {
+  const command: ImportOffer = {
+    id: "claude-code/commands/release", name: "release", target: "commands/release.md",
+    source: "claude-code", harnesses: ["claude-code"], category: "commands", path: "~/.claude/commands/release.md", secrets: [], notes: [],
+  };
+  const nativeSkill: ImportOffer = {
+    ...offers[0]!, id: "codex/skills/command-release", name: "command-release",
+    target: "skills/command-release", path: "~/.codex/skills/command-release",
+  };
+  const candidates = [command, nativeSkill];
+  const review: OnboardingData = {
+    ...data, offers: candidates, skipped: [],
+    harnesses: [
+      { id: "claude-code", name: "Claude Code", installed: true, listed: true, excluded: false },
+      { id: "codex", name: "OpenAI Codex", installed: true, listed: true, excluded: false },
+    ],
+    collisions: [{ kind: "projected-skill", target: nativeSkill.target, candidates }],
+  };
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<MotionConfig skipAnimations><TooltipProvider>
+      <Onboarding data={review} onDone={() => assert.fail("Setup should still be under review")} embedded />
+    </TooltipProvider></MotionConfig>));
+    const source = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Make this the Source"));
+    assert.ok(source);
+    await act(async () => source.click());
+    await click(container, "Continue");
+    await click(container, "Continue");
+    await search(container, "release");
+    await click(container, "Select everything from OpenAI Codex");
+    assert.equal(checked(container, "command-release from OpenAI Codex"), "false");
+    await click(container, "command-release from OpenAI Codex");
+    await click(container, "release from Claude Code");
+    await click(container, "Continue");
+    assert.match(container.querySelector('[role="alert"]')?.textContent ?? "", /skills\/command-release/u);
+    await click(container, "release from Claude Code");
+    await click(container, "Continue");
+    assert.equal(container.querySelector('[aria-label="Review imports"]'), null);
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+  }
 });

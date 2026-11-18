@@ -793,7 +793,8 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
     && !data.collisions.some((collision) => collision.kind === "folder" && collision.candidates.some((candidate) => candidate.id === offer.id)))
     .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
   [data.offers, data.present, data.collisions, listed]);
-  const collisionTargets = useMemo(() => new Set(data.collisions.filter((collision) => collision.kind === "candidates").map((collision) => collision.target)), [data.collisions]);
+  const collisionIds = useMemo(() => new Set(data.collisions.filter((collision) => collision.kind !== "folder")
+    .flatMap((collision) => collision.candidates.map(({ id }) => id))), [data.collisions]);
   const imported = useMemo(() => {
     if (skipReading) return [];
     const offeredIds = new Set(offered.map((offer) => offer.id));
@@ -803,12 +804,16 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
     for (const offer of offered) if (!primary.has(offer.target)) primary.set(offer.target, offer);
     for (const offer of offered) {
       const choice = choices.get(offer.target);
-      if ((collisionTargets.has(offer.target) ? choice === offer.id : choice !== undefined && offeredIds.has(choice)) && !chosen.has(offer.target)) {
-        chosen.set(offer.target, collisionTargets.has(offer.target) ? offer.id : primary.get(offer.target)!.id);
+      const hasCollision = collisionIds.has(offer.id);
+      if ((hasCollision ? choice === offer.id : choice !== undefined && offeredIds.has(choice)) && !chosen.has(offer.target)) {
+        chosen.set(offer.target, hasCollision ? offer.id : primary.get(offer.target)!.id);
       }
     }
     return [...chosen.values()];
-  }, [offered, choices, collisionTargets, skipReading]);
+  }, [offered, choices, collisionIds, skipReading]);
+  const importedIds = new Set(imported);
+  const skillConflict = data.collisions.find((collision) => collision.kind === "projected-skill"
+    && collision.candidates.filter(({ id }) => importedIds.has(id)).length > 1);
 
   // Validated as typed, never rewritten: stripping characters would turn "1.5" into a different port.
   const portNumber = Number(port);
@@ -844,7 +849,8 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
       onBack={onBack}
       finalLabel={live?.sourceState.kind === "needs-human-action" ? "Resume approved setup" : `Make ${data.hostname} the Source`}
       busyLabel="Creating…"
-      blocked={live ? !live.approved && step === SOURCE_STEP.create : (step === SOURCE_STEP.profile && !name.trim()) || (step === SOURCE_STEP.service && !portValid)}
+      blocked={(step === SOURCE_STEP.import && skillConflict !== undefined)
+        || (live ? !live.approved && step === SOURCE_STEP.create : (step === SOURCE_STEP.profile && !name.trim()) || (step === SOURCE_STEP.service && !portValid))}
       awaitingApproval={!!live && step === SOURCE_STEP.service && !live.approved && !live.approver.trim()}
       onBlocked={() => {
         setTried(true);
@@ -939,6 +945,7 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
       {step === SOURCE_STEP.import && (
         <div className="space-y-5">
           {skipReading ? <p className="text-muted-foreground">Import skipped.</p> : <ImportReview data={data} listed={listed} choices={choices} onChoices={setChoices} />}
+          {skillConflict && <FieldError><span role="alert">More than one selected item projects to <Mono>{skillConflict.target}</Mono>. Clear one of the selections to continue.</span></FieldError>}
           {!live && <label className={CHECK_ROW}>
             <Checkbox checked={scan} onCheckedChange={(c) => setScan(c === true)} className="mt-px" />
             <span>Suggest tools this setup needs so I can review them later</span>
