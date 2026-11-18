@@ -30,6 +30,7 @@ import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts"
 import { StateRepository } from "../../src/state/state-repository.service.ts";
 import type { ConfigValue } from "../../src/domain/resource.ts";
 import { localProjectionFollower } from "../../src/domain/synchronization.ts";
+import { executeFolderScaffold, executeHarnessImport, planSourceFolder } from "../../src/setup/setup.folder.ts";
 import { withRunLock } from "../../src/synchronization/run-lock.ts";
 import { SynchronizationLive } from "../../src/synchronization/synchronization.layer.ts";
 
@@ -351,6 +352,249 @@ describe("local projection", () => {
     expect(appliedRecord(value, "harness:agents:skills")).toBeUndefined();
   });
 
+  it("projects command-only selections through shared and private skills and retires them normally", async () => {
+    const value = fixture(["codex", "amp", "devin", "kimi", "copilot-cli", "antigravity", "hermes"], {
+      surfaces: { codex: ["commands"], amp: ["commands"], devin: ["commands"], kimi: ["commands"], "copilot-cli": ["commands", "skills"], hermes: ["commands", "skills"] },
+    });
+    write(join(value.folder, "commands", "ship.md"), '---\ndescription: "Release: check it"\nargumentHint: "<branch>"\n---\nShip the change.\n');
+    const sameNameSkill = "---\nname: ship\ndescription: Authored shipping skill\n---\nRead the shipping guide.\n";
+    write(join(value.folder, "skills", "ship", "SKILL.md"), sameNameSkill);
+    const shared = join(value.home, ".agents", "skills");
+    const previousSkill = join(shared, "previous", "SKILL.md");
+    write(previousSkill, "previous local skill\n");
+    const skillRoots = [shared, join(value.home, ".copilot", "skills"), join(value.home, ".gemini", "config", "skills"), join(value.home, ".hermes", "skills")];
+    expect((await sync(value, "plan")).diagnostics ?? []).not.toContainEqual(expect.objectContaining({ code: "FEATURE_UNSUPPORTED" }));
+    expect(readFileSync(previousSkill, "utf8")).toBe("previous local skill\n");
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    for (const root of skillRoots) {
+      expect(readFileSync(join(root, "command-ship", "SKILL.md"), "utf8")).toBe(
+        "---\nname: command-ship\ndescription: \"Release: check it\"\n---\nShip the change.\n\nArgument hint: <branch>\n",
+      );
+    }
+    expect(readdirSync(shared)).toEqual(["command-ship"]);
+    expect(existsSync(previousSkill)).toBe(false);
+    expect(existsSync(join(value.home, ".config", "amp", "plugins", "canonfig.ts"))).toBe(false);
+    expect(existsSync(join(value.home, ".copilot", "skills", "deploy", "SKILL.md"))).toBe(true);
+    expect(readFileSync(join(value.home, ".copilot", "skills", "ship", "SKILL.md"), "utf8")).toBe(sameNameSkill);
+    expect(takeoverRows(value).filter((row) => row.harness === "agents").map((row) => row.surface)).toEqual(["skills"]);
+    expect(takeoverRows(value)).toContainEqual(expect.objectContaining({ harness: "hermes", surface: "skill.command-ship" }));
+
+    editFolderConfig(value, { surfaces: { codex: [], amp: [], devin: ["skills"], kimi: ["skills"], "copilot-cli": ["skills"], antigravity: ["skills"], hermes: ["skills"] } });
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    for (const root of skillRoots) {
+      expect(existsSync(join(root, "command-ship"))).toBe(false);
+      expect(existsSync(join(root, "deploy", "SKILL.md"))).toBe(true);
+    }
+  });
+
+  it("refuses a generated name that collides across shared skill consumers", async () => {
+    const value = fixture(["codex", "kilo"], { surfaces: { codex: ["commands"], kilo: ["skills"] } });
+    write(join(value.folder, "skills", "command-ship", "SKILL.md"), "---\nname: command-ship\ndescription: Authored skill\n---\nKeep this.\n");
+    await expect(sync(value, "apply")).rejects.toThrow(/commands\/ship\.md and skills\/command-ship both project to skill 'command-ship'/u);
+    expect(existsSync(join(value.home, ".agents", "skills"))).toBe(false);
+  });
+
+  it.each([
+    { harness: "codex", root: ".agents" },
+    { harness: "hermes", root: ".hermes" },
+  ] as const)("ignores command skill collisions on skills excluded from $harness projection", async ({ harness, root }) => {
+    const value = fixture([harness], {
+      surfaces: { [harness]: ["skills", "commands"] },
+      local: { allow: ["skills"], appendLocal: ["skills"] },
+    });
+    write(join(value.folder, "local", "local.jsonc"), JSON.stringify({ excludeSkills: ["command-ship"] }));
+    write(join(value.folder, "local", "skills", "command-ship", "SKILL.md"), "---\nname: command-ship\ndescription: Local skill\n---\nUse the local guide.\n");
+    const skills = join(value.home, root, "skills");
+    const machineSkill = join(skills, "command-ship", "SKILL.md");
+    write(machineSkill, "Existing machine-owned skill.\n");
+
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(machineSkill, "utf8")).toBe("Existing machine-owned skill.\n");
+    expect(existsSync(join(skills, "deploy", "SKILL.md"))).toBe(true);
+  });
+
+  it.each([
+    { commandIn: "folder", skillIn: "harness", folderItem: "commands/release.md" },
+    { commandIn: "harness", skillIn: "folder", folderItem: "skills/command-release" },
+    { commandIn: "harness", skillIn: "harness", folderItem: undefined },
+    { commandIn: "local", skillIn: "harness", folderItem: "local/commands/release.md" },
+    { commandIn: "harness", skillIn: "local", folderItem: "local/skills/command-release" },
+  ] as const)("reports a $commandIn command and $skillIn skill sharing a projected name during Source setup", async ({
+    commandIn, skillIn, folderItem,
+  }) => {
+    const value = fixture(["claude-code", "codex"], { local: { allow: ["commands", "skills"] } });
+    const roots = { folder: value.folder, local: join(value.folder, "local") };
+    const commandPath = join(commandIn === "harness" ? join(value.home, ".claude") : roots[commandIn], "commands", "release.md");
+    const skillPath = join(skillIn === "harness" ? join(value.home, ".codex") : roots[skillIn], "skills", "command-release", "SKILL.md");
+    write(commandPath, "---\ndescription: Prepare the release\n---\nCheck the changelog.\n");
+    write(skillPath, "---\nname: command-release\ndescription: Release guide\n---\nRead the release guide.\n");
+    const candidates = [
+      ...(commandIn === "harness" ? [{ id: "claude-code/commands/release", source: "claude-code", path: "~/.claude/commands/release.md" }] : []),
+      ...(skillIn === "harness" ? [{ id: "codex/skills/command-release", source: "codex", path: "~/.codex/skills/command-release" }] : []),
+    ];
+    const input = { folder: value.folder, environment: environmentOf(value), harnesses: ["claude-code", "codex"] };
+
+    await Effect.runPromise(Effect.gen(function*() {
+      for (const imports of [
+        { kind: "offer" },
+        { kind: "all" },
+        { kind: "some", requested: candidates.map(({ id }) => id) },
+      ] as const) {
+        const plan = yield* planSourceFolder({ ...input, imports });
+        expect(plan.imports.collisions).toEqual([{
+          kind: "projected-skill",
+          target: "skills/command-release",
+          candidates,
+          folderItems: folderItem === undefined ? undefined : [folderItem],
+        }]);
+        expect(plan.items.map(({ kind }) => kind)).toEqual(["folder-scaffold"]);
+      }
+    }).pipe(Effect.provide(layer(value))));
+  });
+
+  it("imports one of two competing items and refuses a stale plan for the other", async () => {
+    const value = fixture(["claude-code", "codex"]);
+    const command = "claude-code/commands/release";
+    const skill = "codex/skills/command-release";
+    const nativeSkill = "---\nname: command-release\ndescription: Release guide\n---\nRead the release guide.\n";
+    write(join(value.home, ".claude", "commands", "release.md"), "Prepare the release.\n");
+    write(join(value.home, ".codex", "skills", "command-release", "SKILL.md"), nativeSkill);
+    const environment = environmentOf(value);
+    const input = { folder: value.folder, environment, harnesses: ["claude-code", "codex"] };
+
+    await Effect.runPromise(Effect.gen(function*() {
+      const commandOnly = yield* planSourceFolder({ ...input, imports: { kind: "some", requested: [command] } });
+      expect(commandOnly.imports.collisions).toEqual([]);
+      const commandImport = commandOnly.items.find((item) => item.kind === "harness-import");
+      expect(commandImport?.detail.items).toEqual([expect.objectContaining({ id: command })]);
+
+      const skillOnly = yield* planSourceFolder({ ...input, imports: { kind: "some", requested: [skill] } });
+      expect(skillOnly.imports.collisions).toEqual([]);
+      for (const item of skillOnly.items) {
+        if (item.kind === "folder-scaffold") yield* executeFolderScaffold(item);
+        if (item.kind === "harness-import") yield* executeHarnessImport(item, environment);
+      }
+      const stale = yield* Effect.flip(executeHarnessImport(commandImport!, environment));
+      expect(stale.message).toContain(`${command} and skills/command-release project to skills/command-release`);
+    }).pipe(Effect.provide(layer(value))));
+
+    expect(readFileSync(join(value.folder, "skills", "command-release", "SKILL.md"), "utf8")).toBe(nativeSkill);
+    expect(existsSync(join(value.folder, "commands", "release.md"))).toBe(false);
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+  });
+
+  it("reports a Local Overlay conflict and skips its previously projected skill", async () => {
+    const value = fixture(["codex"], {
+      surfaces: { codex: ["instructions", "commands"] },
+      local: { allow: ["commands"] },
+    });
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(takeoverRows(value)).toContainEqual(expect.objectContaining({ harness: "codex" }));
+    const sharedSkills = join(value.home, ".agents", "skills");
+    const generated = join(sharedSkills, "command-ship", "SKILL.md");
+    const publishedSkill = readFileSync(generated, "utf8");
+    expect(publishedSkill).toContain("Ship the change.");
+    const nativeSkill = "---\nname: command-review\ndescription: Review changes\n---\nRead the diff.\n";
+    write(join(value.home, ".kimi-code", "skills", "command-review", "SKILL.md"), nativeSkill);
+    write(join(value.home, ".kimi-code", "skills", "command-ship", "SKILL.md"),
+      "---\nname: command-ship\ndescription: Native shipping skill\n---\nRead the native shipping guide.\n");
+    const environment = environmentOf(value);
+    write(join(value.folder, "local", "commands", "ship.md"), "---\ndescription: Local procedure\n---\nFollow the machine-local procedure.\n");
+    await Effect.runPromise(overlaysLocal(value.statePath, environment, { action: "set", item: "commands/ship" }).pipe(
+      Effect.provide(layer(value)),
+    ));
+    expect(readFileSync(generated, "utf8")).toBe(publishedSkill);
+
+    await Effect.runPromise(Effect.gen(function*() {
+      const input = { folder: value.folder, environment, harnesses: ["codex", "kimi"] };
+      const review = yield* planSourceFolder({ ...input, imports: { kind: "all" } });
+      expect(review.imports.offered.map((candidate) => candidate.target)).toEqual(["skills/command-review", "skills/command-ship"]);
+      expect(review.imports.collisions).toEqual([{
+        kind: "projected-skill", target: "skills/command-ship", folderItems: ["local/commands/ship.md"],
+        candidates: [{ id: "kimi/skills/command-ship", source: "kimi", path: "~/.kimi-code/skills/command-ship" }],
+      }]);
+      expect(review.imports.skipped).toContainEqual({
+        source: "agents", path: "~/.agents/skills/command-ship", reason: "Canonfig already projected this skill.",
+      });
+      const plan = yield* planSourceFolder({
+        ...input, imports: { kind: "some", requested: ["kimi/skills/command-review"] },
+      });
+      expect(plan.imports.collisions).toEqual([]);
+      for (const item of plan.items) {
+        if (item.kind === "folder-scaffold") yield* executeFolderScaffold(item);
+        if (item.kind === "harness-import") yield* executeHarnessImport(item, environment);
+      }
+    }).pipe(Effect.provide(layer(value))));
+
+    expect(readFileSync(join(value.folder, "skills", "command-review", "SKILL.md"), "utf8")).toBe(nativeSkill);
+    expect(existsSync(join(value.folder, "skills", "command-ship"))).toBe(false);
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(generated, "utf8")).toContain("Follow the machine-local procedure.");
+  });
+
+  it.each([
+    { kind: "an admitted local command", id: "inspect", overlays: [], change: "none" },
+    { kind: "a Local Overlay of a published command", id: "ship", overlays: ["commands/ship"], change: "none" },
+    { kind: "a local command edited since sync", id: "inspect", overlays: [], change: "edit" },
+    { kind: "a local command deleted since sync", id: "inspect", overlays: [], change: "delete" },
+  ])("skips skills projected from $kind during Source setup", async ({ id, overlays, change }) => {
+    const value = fixture(["codex"], {
+      surfaces: { codex: ["instructions", "commands", "skills"] },
+      local: { allow: ["commands", "skills"] },
+    });
+    const command = join(value.folder, "local", "commands", `${id}.md`);
+    const localSkill = "private-guide";
+    write(join(value.folder, "local", "skills", localSkill, "SKILL.md"),
+      "---\nname: private-guide\ndescription: Machine-local guide\n---\nRead the private guide.\n");
+    write(command, "---\ndescription: Local procedure\n---\nFollow the machine-local procedure.\n");
+    write(join(value.folder, "local", "local.jsonc"), JSON.stringify({ overlays }));
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    const skill = `command-${id}`;
+    const generated = join(value.home, ".agents", "skills", skill, "SKILL.md");
+    expect(readFileSync(generated, "utf8")).toContain("Follow the machine-local procedure.");
+    if (change === "edit") write(command, "---\ndescription: Revised procedure\n---\nFollow the revised procedure.\n");
+    if (change === "delete") rmSync(command);
+
+    const environment = environmentOf(value);
+    await Effect.runPromise(Effect.gen(function*() {
+      const plan = yield* planSourceFolder({
+        folder: value.folder, environment, harnesses: ["codex", "kimi"], imports: { kind: "all" },
+      });
+      expect(plan.imports.offered).toEqual([]);
+      for (const projected of [skill, localSkill]) {
+        expect(plan.imports.skipped).toContainEqual({
+          source: "agents", path: `~/.agents/skills/${projected}`, reason: "Canonfig already projected this skill.",
+        });
+      }
+      for (const item of plan.items) {
+        if (item.kind === "folder-scaffold") yield* executeFolderScaffold(item);
+        if (item.kind === "harness-import") yield* executeHarnessImport(item, environment);
+      }
+    }).pipe(Effect.provide(layer(value))));
+
+    expect(existsSync(join(value.folder, "skills", skill))).toBe(false);
+    expect(existsSync(join(value.folder, "skills", localSkill))).toBe(false);
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    if (change === "edit") expect(readFileSync(generated, "utf8")).toContain("Follow the revised procedure.");
+    if (change === "delete") expect(existsSync(generated)).toBe(false);
+  });
+
+  it("projects Cursor and Grok commands only to their native directories", async () => {
+    const value = fixture(["cursor", "grok-build"], { surfaces: { cursor: ["commands"], "grok-build": ["commands"] } });
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(join(value.home, ".cursor", "commands", "ship.md"), "utf8")).toBe("Ship the change.\n");
+    expect(readFileSync(join(value.home, ".grok", "commands", "ship.md"), "utf8")).toBe("---\ndescription: Ship it\n---\nShip the change.\n");
+    expect(existsSync(join(value.home, ".agents", "skills"))).toBe(false);
+  });
+
+  it("refuses commands whose IDs normalize to the same private skill name", async () => {
+    const value = fixture(["hermes"], { surfaces: { hermes: ["commands"] } });
+    for (const id of ["review-pr", "review_PR"]) {
+      write(join(value.folder, "commands", `${id}.md`), "---\ndescription: Review the PR\n---\nCheck the changes.\n");
+    }
+    await expect(sync(value, "plan")).rejects.toThrow(/both project to skill 'command-review-pr' in hermes/u);
+  });
+
   it("refuses a surface selection for a harness that is not listed", async () => {
     const value = fixture(["codex"], { surfaces: { "claude-code": ["mcp"] } });
     await expect(sync(value, "plan")).rejects.toThrow(/surfaces names claude-code/u);
@@ -358,7 +602,7 @@ describe("local projection", () => {
 
   it("refuses a category the harness cannot take", async () => {
     const value = fixture(["codex", "hermes"], { surfaces: { hermes: ["mcp", "rules"] } });
-    await expect(sync(value, "plan")).rejects.toThrow("surfaces.hermes: Hermes Agent does not support rules; it supports skills, hooks, mcp");
+    await expect(sync(value, "plan")).rejects.toThrow("surfaces.hermes: Hermes Agent does not support rules; it supports skills, commands, hooks, mcp");
   });
 
   it("protects drift when a revision replaces every owned config key", async () => {

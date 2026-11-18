@@ -16,7 +16,6 @@ import {
   mcpTable,
   nativeHooks,
   under,
-  unsupportedFeatures,
   VERIFIED_AT,
 } from "./shared.ts";
 
@@ -100,6 +99,7 @@ export const codexAdapter: HarnessAdapter = {
     name: "OpenAI Codex",
     executables: ["codex"],
     docs: [
+      "https://learn.chatgpt.com/docs/custom-prompts",
       "https://developers.openai.com/codex/guides/agents-md",
       "https://developers.openai.com/codex/config-reference",
       "https://developers.openai.com/codex/skills",
@@ -110,9 +110,10 @@ export const codexAdapter: HarnessAdapter = {
     verifiedAt: VERIFIED_AT,
     capabilities: {
       instructions: "native", rules: "translated", skills: "portable", mcp: "native",
-      hooks: "native", agents: "native", commands: "unsupported",
+      hooks: "native", agents: "native", commands: "translated",
     },
     notes: [
+      "Commands become Agent Skills in the harness's skill directory.",
       "Rules are linked from ~/.codex/AGENTS.md; ~/.codex/rules/ holds the execution policy Codex writes.",
       "Skills go to the shared ~/.agents/skills/.",
     ],
@@ -142,9 +143,7 @@ export const codexAdapter: HarnessAdapter = {
   },
   project(model, _layout, runtime) {
     const contents: Array<SurfaceContent> = [];
-    const diagnostics = unsupportedFeatures("codex", model, [
-      ["commands", "Codex has no global slash-command directory."],
-    ]);
+    const diagnostics: Array<Diagnostic> = [];
 
     const instructions = instructionsText(model, true);
     if (instructions) contents.push({ kind: "file", surface: "instructions", content: instructions });

@@ -1,7 +1,7 @@
 import { Predicate } from "effect";
 
 import type { ConfigValue } from "../../domain/resource.ts";
-import type { HarnessAdapter, SurfaceContent } from "../harness.ts";
+import type { Diagnostic, HarnessAdapter, SurfaceContent } from "../harness.ts";
 import { markdownWithFrontmatter } from "../frontmatter.ts";
 import type { AgentDocument, HookEvent, McpServer } from "../model.ts";
 import {
@@ -15,7 +15,6 @@ import {
   secretTable,
   secretValue,
   under,
-  unsupportedFeatures,
   VERIFIED_AT,
 } from "./shared.ts";
 import { nativeTools } from "./tools.ts";
@@ -78,6 +77,7 @@ export const kimiAdapter: HarnessAdapter = {
     name: "Kimi Code CLI",
     executables: ["kimi"],
     docs: [
+      "https://www.kimi.com/code/docs/en/kimi-code-cli/reference/slash-commands.html",
       "https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/configuration/data-locations.md",
       "https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/configuration/config-files.md",
       "https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/hooks.md",
@@ -87,9 +87,9 @@ export const kimiAdapter: HarnessAdapter = {
     verifiedAt: VERIFIED_AT,
     capabilities: {
       instructions: "native", rules: "translated", skills: "portable", mcp: "native",
-      hooks: "native", agents: "native", commands: "unsupported",
+      hooks: "native", agents: "native", commands: "translated",
     },
-    notes: ["Rules are linked from AGENTS.md; skills go to the shared ~/.agents/skills/."],
+    notes: ["Commands become Agent Skills in the harness's skill directory.", "Rules are linked from AGENTS.md; skills go to the shared ~/.agents/skills/."],
   },
   layout(context) {
     const root = context.environment("KIMI_CODE_HOME") ?? context.join(context.home, ".kimi-code");
@@ -117,7 +117,7 @@ export const kimiAdapter: HarnessAdapter = {
   },
   project(model, _layout, runtime) {
     const contents: Array<SurfaceContent> = [];
-    const diagnostics = unsupportedFeatures("kimi", model, [["commands", "Kimi has no global command directory."]]);
+    const diagnostics: Array<Diagnostic> = [];
 
     const instructions = instructionsText(model, true);
     if (instructions) contents.push({ kind: "file", surface: "instructions", content: instructions });

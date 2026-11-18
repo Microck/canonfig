@@ -2,20 +2,24 @@ import { lstat, readdir, readFile } from "node:fs/promises";
 import { join as joinNative, sep as nativeSeparator } from "node:path";
 
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
-import { Predicate, Schema } from "effect";
+import { Array as EffectArray, Predicate, Schema } from "effect";
 
 import { ConfigValue } from "../domain/resource.ts";
+import type { AppliedResourceRecord } from "../domain/synchronization.ts";
 import { TaggedError } from "../domain/tagged-error.ts";
 import { asJson, digestOf, sha256BytesHex, sha256Hex } from "../profile/profile-codec.ts";
 import { containsLiteralCredential, isEnvironmentReference, isSecretField } from "../secrets/credential-policy.ts";
 import { getConfigPath, parseConfigDocument } from "../synchronization/config-codec.ts";
 import { type ConfigJson, type ConfigObject, isConfigObject } from "../synchronization/config-value.ts";
 import { adapterFor } from "./adapters/index.ts";
+import { groupProjectedSkillNames, type SkillNameSource } from "./adapters/shared-documents.ts";
 import { emptyModel } from "./detect.ts";
+import type { FolderSkillNames } from "./folder.ts";
 import { type MarkdownDocument, markdownWithFrontmatter, parseMarkdownDocument } from "./frontmatter.ts";
 import { maxImportContentBytes, SkillReader, type ImportReadLimit } from "./import-skills.ts";
 import type { HarnessLayout, OwnedSurface, RootContext, SkillReadSource } from "./harness.ts";
 import { TARGET_IDS, type TargetId } from "./model.ts";
+import { parseSurfaceResourceId, resourcesOwner } from "./plan.ts";
 
 /**
  * Source setup's one-time import: reads what the selected harnesses already
@@ -104,6 +108,10 @@ export interface ImportCollision {
   readonly candidates: ReadonlyArray<string>;
   /** True when the folder already holds different content at `target`. */
   readonly folder: boolean;
+  /** True when different destinations project to the same skill target. */
+  readonly projectedSkill?: true;
+  /** Folder-relative items occupying the projected name. */
+  readonly folderItems?: ReadonlyArray<string>;
 }
 
 export interface ImportChoice {
@@ -818,17 +826,41 @@ const scanSkills = async (
   }, (path, reason) => collector.skip(source, path, reason));
 };
 
+/** Shared and private skills roots own named entries. Hermes records each skill separately. */
+const projectedSkillPaths = (
+  context: RootContext,
+  records: ReadonlyArray<AppliedResourceRecord>,
+): ReadonlySet<string> => {
+  const paths = new Set<string>();
+  for (const record of records) {
+    if (record.ownership !== "DirectoryEntries") continue;
+    const surface = parseSurfaceResourceId(record.resource);
+    if (surface === undefined || surface.harness === resourcesOwner) continue;
+    if (surface.surface === "skills") {
+      for (const file of record.ownedFiles) {
+        paths.add(context.join(record.target, file.path.split("/", 1)[0]!));
+      }
+    } else if (surface.surface.startsWith("skill.")) {
+      paths.add(record.target);
+    }
+  }
+  return paths;
+};
+
 /** Read-only scan of the selected harnesses for items to import into `folder`. */
 export const scanImports = async (input: {
   readonly context: RootContext;
   readonly harnesses: ReadonlyArray<TargetId>;
   readonly folder: string;
+  readonly appliedResources?: ReadonlyArray<AppliedResourceRecord>;
 }): Promise<ImportScan> => {
   const { context, folder } = input;
   const scope = harnessScope(context, folder);
   const layouts = [...new Set(input.harnesses)].map((harness) => scope.layouts.find(([id]) => id === harness)!);
   const collector = new ScanCollector();
-  const reader = await SkillReader.create(context, scope.neverTouch, scope.folder, scope.configPaths);
+  const reader = await SkillReader.create(
+    context, scope.neverTouch, scope.folder, scope.configPaths, projectedSkillPaths(context, input.appliedResources ?? []),
+  );
   const shared = new Map<string, Array<readonly [TargetId, SkillReadSource]>>();
   for (const [harness, layout] of layouts) {
     for (const surface of layout.surfaces) await scanSurface(scope, collector, harness, surface);
@@ -998,28 +1030,65 @@ const unknownRequests = (scan: ImportScan, selection: ImportSelection): Array<st
   ])].sort(compare);
 };
 
+type ImportSkillNameSource = SkillNameSource & (
+  | { readonly path: string }
+  | { readonly candidate: ImportCandidate }
+);
+
+/** Multiple copies of one destination are one item in the projected namespace. */
+export const projectedImportCollisions = (folder: FolderSkillNames, candidates: ReadonlyArray<ImportCandidate>): ImportCollision[] => {
+  const items: ImportSkillNameSource[] = [...folder.items];
+  for (const candidate of candidates) {
+    const { category, name } = candidate;
+    if (category === "commands" || category === "skills") items.push({ category, name, candidate });
+  }
+  const collisions: ImportCollision[] = [];
+  for (const [name, group] of groupProjectedSkillNames(items, folder.excluded)) {
+    if (group.length < 2) continue;
+    const copies = group.flatMap((item) => "candidate" in item ? [item.candidate] : []);
+    const [first] = copies;
+    if (first === undefined) continue;
+    const folderItems = group.flatMap((item) => "path" in item ? [item.path] : []);
+    if (folderItems.length === 0 && copies.every((copy) => copy.target === first.target)) continue;
+    collisions.push({
+      target: targetOf("skills", name),
+      candidates: copies.map((copy) => copy.id).sort(compare),
+      folder: false,
+      projectedSkill: true,
+      folderItems: folderItems.length > 0 ? folderItems.sort(compare) : undefined,
+    });
+  }
+  return collisions;
+};
+
 /**
  * Resolve the operator's selection against the scan and the folder: items
  * already in the folder are `present`, different content at an occupied
  * target or several different selected candidates for one target is a
- * collision unless exactly one of them was named, and the rest is chosen.
+ * collision unless exactly one of them was named. Different destinations
+ * that project to the same skill require selecting just one destination.
  */
 export const selectImports = (
   scan: ImportScan,
   existing: ReadonlyMap<string, string>,
   selection: ImportSelection,
+  folderSkills: FolderSkillNames,
 ): ImportChoice => {
   const named = new Set(selection.kind === "some" ? selection.items : []);
-  const groups = new Map<string, Array<ImportCandidate>>();
-  for (const candidate of scan.candidates) {
-    if (!isSelected(candidate, selection, named)) continue;
-    groups.set(candidate.target, [...groups.get(candidate.target) ?? [], candidate]);
-  }
+  const selected = scan.candidates.filter((candidate) => isSelected(candidate, selection, named));
+  const groups = EffectArray.groupBy(selected, (candidate) => candidate.target);
   const chosen: Array<ImportCandidate> = [];
   const present: Array<string> = [];
-  const collisions: Array<ImportCollision> = [];
-  for (const target of [...groups.keys()].sort(compare)) {
-    const group = groups.get(target)!.sort((left, right) => compare(left.id, right.id));
+  // An occupied canonical destination cannot add a projected name. Keep every
+  // offered copy of each selected, free destination so the review can show the choices.
+  const selectable = scan.candidates.filter(({ target }) => Object.hasOwn(groups, target) && !existing.has(target));
+  const collisions = projectedImportCollisions(folderSkills, selectable);
+  const blocked = new Set(collisions.flatMap((collision) => collision.candidates));
+  for (const candidate of selectable) {
+    if (blocked.has(candidate.id)) delete groups[candidate.target];
+  }
+  for (const target of Object.keys(groups).sort(compare)) {
+    const group = groups[target]!.sort((left, right) => compare(left.id, right.id));
     const held = existing.get(target);
     if (held !== undefined) {
       present.push(...group.filter((candidate) => candidate.digest === held).map((candidate) => candidate.id));
@@ -1038,5 +1107,5 @@ export const selectImports = (
       collisions.push({ target, candidates: all.sort(compare), folder: false });
     }
   }
-  return { chosen, present, collisions, unknown: unknownRequests(scan, selection) };
+  return { chosen, present, collisions: collisions.sort((left, right) => compare(left.target, right.target)), unknown: unknownRequests(scan, selection) };
 };

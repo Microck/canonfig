@@ -558,6 +558,13 @@ const summarizeSetup = (data: PayloadRecord, outline: Outline): boolean => {
     ...recordsOf(review?.skipped).map((skip) => `import skipped: ${textOf(skip.path)}: ${textOf(skip.reason)}`),
     ...recordsOf(review?.collisions).map((collision) => {
       const ids = recordsOf(collision.candidates).map((candidate) => textOf(candidate.id)).join(", ");
+      if (collision.kind === "projected-skill") {
+        const folderItems = isList(collision.folderItems) ? collision.folderItems.map(textOf) : [];
+        if (folderItems.length > 0) {
+          return `import collision: ${ids} and ${folderItems.join(", ")} project to ${textOf(collision.target)}; rename the Canonical Folder item or skip this import`;
+        }
+        return `import collision: ${ids} project to ${textOf(collision.target)}; choose one with --import <id>`;
+      }
       return collision.kind === "folder"
         ? `import collision: ${textOf(collision.target)} already exists in ${folder} with different content (${ids}); edit or remove it there to import`
         : `import collision: ${textOf(collision.target)} differs between ${ids}; choose one with --import <id>`;

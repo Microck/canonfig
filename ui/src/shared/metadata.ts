@@ -231,21 +231,21 @@ const allBut = (...missing: SurfaceCategory[]): SurfaceCategory[] => SURFACE_CAT
  * the adapters. tests/projection-adapters.test.ts fails when the two disagree.
  */
 export const SURFACE_SUPPORT: Record<HarnessId, SurfaceCategory[]> = {
-  codex: allBut("commands"),
+  codex: allBut(),
   "claude-code": allBut(),
   amp: allBut(),
   "oh-my-pi": allBut(),
   pi: allBut("agents"),
   "factory-droid": allBut(),
-  cursor: allBut("instructions", "rules", "commands"),
-  devin: allBut("commands"),
+  cursor: allBut("instructions", "rules"),
+  devin: allBut(),
   opencode: allBut(),
-  "grok-build": allBut("commands"),
-  antigravity: allBut("commands"),
-  "copilot-cli": allBut("commands"),
-  kimi: allBut("commands"),
+  "grok-build": allBut(),
+  antigravity: allBut(),
+  "copilot-cli": allBut(),
+  kimi: allBut(),
   kilo: allBut(),
-  hermes: allBut("instructions", "rules", "agents", "commands", "settings"),
+  hermes: allBut("instructions", "rules", "agents", "settings"),
   qwen: allBut(),
 };
 

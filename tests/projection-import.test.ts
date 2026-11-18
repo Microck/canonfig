@@ -5,8 +5,9 @@ import { dirname, posix } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { RootContext } from "../src/projection/harness.ts";
+import { readFolderSkillNames } from "../src/projection/folder.ts";
 import { markdownWithFrontmatter, parseMarkdownDocument } from "../src/projection/frontmatter.ts";
+import type { RootContext } from "../src/projection/harness.ts";
 import { SkillReader } from "../src/projection/import-skills.ts";
 import {
   existingFolderItems,
@@ -350,7 +351,9 @@ describe("scanImports", () => {
     const document = parseMarkdownDocument(new TextDecoder().decode(flat.files[0]!.content));
     expect(document.data).toMatchObject({ name: "flat", description: "Shared flat skill" });
     expect(document.content).toBe("Use flat.");
-    expect(selectImports(scan, new Map(), { kind: "some", sources: ["qwen"], items: [] }).chosen.map((entry) => entry.name)).toEqual(["lint"]);
+    const folderSkills = await readFolderSkillNames(`${home}/.canonfig`);
+    const choice = selectImports(scan, new Map(), { kind: "some", sources: ["qwen"], items: [] }, folderSkills);
+    expect(choice.chosen.map((entry) => entry.name)).toEqual(["lint"]);
   });
 
   it("refuses a flat skill whose generated SKILL.md exceeds 1 MiB in UTF-8", async () => {
@@ -433,11 +436,12 @@ describe("scanImports", () => {
     expect(scan.candidates.filter((entry) => entry.name === "same")).toHaveLength(1);
     expect(scan.skipped).toEqual([]);
     expect((await scanImports(input)).candidates).toEqual(scan.candidates);
-    expect(selectImports(scan, new Map(), { kind: "all" }).collisions).toEqual([
+    const folderSkills = await readFolderSkillNames(input.folder);
+    expect(selectImports(scan, new Map(), { kind: "all" }, folderSkills).collisions).toEqual([
       { target: "skills/deploy", candidates: competing.map((entry) => entry.id), folder: false },
     ]);
     const explicit = competing.find((entry) => entry.path.includes("/config/"))!;
-    const selected = selectImports(scan, new Map(), { kind: "some", sources: ["antigravity"], items: [explicit.id] });
+    const selected = selectImports(scan, new Map(), { kind: "some", sources: ["antigravity"], items: [explicit.id] }, folderSkills);
     expect(selected.collisions).toEqual([]);
     expect(selected.unknown).toEqual([]);
     expect(selected.chosen.find((entry) => entry.name === "deploy")?.id).toBe(explicit.id);
@@ -687,7 +691,8 @@ describe("selectImports", () => {
     const existing = await existingFolderItems(folder);
     expect([...existing.keys()].sort()).toEqual(["commands/ship.md", "rules/style.md"]);
 
-    const all = selectImports(scan, existing, { kind: "all" });
+    const folderSkills = await readFolderSkillNames(folder);
+    const all = selectImports(scan, existing, { kind: "all" }, folderSkills);
     expect(all.chosen.map((entry) => entry.id)).toEqual(["claude-code/instructions/AGENTS.md"]);
     expect(all.present).toEqual(["claude-code/rules/style"]);
     expect(all.collisions).toEqual([
@@ -700,12 +705,12 @@ describe("selectImports", () => {
       kind: "some",
       sources: ["claude-code", "cursor"],
       items: ["oh-my-pi/skills/deploy", "nope/skills/missing"],
-    });
+    }, folderSkills);
     expect(some.chosen.map((entry) => entry.id)).toEqual(["claude-code/instructions/AGENTS.md", "oh-my-pi/skills/deploy"]);
     expect(some.collisions).toEqual([{ target: "commands/ship.md", candidates: ["claude-code/commands/ship"], folder: true }]);
     expect(some.unknown).toEqual(["cursor", "nope/skills/missing"]);
 
-    expect(selectImports(scan, existing, { kind: "none" })).toEqual({ chosen: [], present: [], collisions: [], unknown: [] });
+    expect(selectImports(scan, existing, { kind: "none" }, folderSkills)).toEqual({ chosen: [], present: [], collisions: [], unknown: [] });
   });
 
   it("reads an imported skill and MCP server back as present", async () => {
@@ -721,7 +726,7 @@ describe("selectImports", () => {
     for (const file of deploy.files) put(`${folder}/skills/deploy/${file.path}`, new TextDecoder().decode(file.content));
     put(`${folder}/canonfig.jsonc`, `// imported\n{ "version": 1, "harnesses": [], "mcp": { "github": ${JSON.stringify(github.server)} } }\n`);
 
-    const choice = selectImports(scan, await existingFolderItems(folder), { kind: "all" });
+    const choice = selectImports(scan, await existingFolderItems(folder), { kind: "all" }, await readFolderSkillNames(folder));
     expect(choice.present).toEqual(["claude-code/mcp/github", "claude-code/skills/deploy"]);
     expect(choice.chosen).toEqual([]);
   });
@@ -742,7 +747,7 @@ describe("selectImports", () => {
     for (const file of flat.files) {
       put(`${folder}/skills/flat/${file.path}`, new TextDecoder().decode(file.content));
     }
-    const choice = selectImports(scan, await existingFolderItems(folder), { kind: "all" });
+    const choice = selectImports(scan, await existingFolderItems(folder), { kind: "all" }, await readFolderSkillNames(folder));
     expect(choice).toEqual({ chosen: [], present: ["agents/skills/flat"], collisions: [], unknown: [] });
   });
 });

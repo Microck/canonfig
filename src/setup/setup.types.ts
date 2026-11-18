@@ -258,9 +258,10 @@ export const SetupImportSkip = Schema.Struct({
   reason: Schema.String,
 });
 export const SetupImportCollision = Schema.Struct({
-  kind: Schema.Literals(["candidates", "folder"]),
+  kind: Schema.Literals(["candidates", "folder", "projected-skill"]),
   target: Schema.String,
   candidates: Schema.Array(SetupImportLocation),
+  folderItems: Schema.optional(Schema.Array(Schema.String)),
 });
 export type SetupImportCollision = typeof SetupImportCollision.Type;
 

@@ -142,7 +142,7 @@ it("loads distinct Amp agents whose IDs differ by hyphens and underscores", asyn
   const ids = ["review-fast", "review_fast", "review_hfast"];
   const source = ampPluginSource(runtime.hookRunner, [], ids.map((id) => ({
     agent: { ...model.agents[0]!, id }, tools: [],
-  })), []);
+  })));
   const javascript = stripTypeScriptTypes(source);
   // The generated module exists only at runtime; load it to catch syntax collisions.
   const plugin = await import(`data:text/javascript;base64,${Buffer.from(javascript).toString("base64")}`);
@@ -418,7 +418,6 @@ describe("adapter goldens", () => {
           ]
         }
       }
-    ! warning FEATURE_UNSUPPORTED: Codex has no global slash-command directory. Profile commands were not added there.
     ! warning AGENT_OPTION_UNSUPPORTED: Codex custom agents inherit the parent sandbox, so read-only agent reviewer can still write.
     "
   `));
@@ -597,16 +596,6 @@ describe("adapter goldens", () => {
             return result.text;
           },
         });
-        {
-          const prompt = "Inspect the current release.";
-          amp.registerCommand("release-check", { title: "release-check", description: "Check release readiness" }, async (ctx) => {
-            if (!ctx.thread) { await ctx.ui.notify("Open a thread first, then run this command again."); return; }
-            const input = await ctx.ui.input({ title: "[scope]" });
-            if (input === undefined || input === null) return;
-            const content = input.trim() ? \`\${prompt}\\n\\nArguments: \${input.trim()}\` : prompt;
-            await ctx.thread.append([{ type: "user-message", content }]);
-          });
-        }
       }
     == config settings
       amp\\.mcpServers = {
@@ -959,11 +948,15 @@ describe("adapter goldens", () => {
   it("cursor", () => expect(golden("cursor")).toMatchInlineSnapshot(`
     "
     root ~/.cursor (shared skills)
+    directory commands ~/.cursor/commands
     directory agents ~/.cursor/agents
     file hooks ~/.cursor/hooks.json
     config mcp ~/.cursor/mcp.json json [mcpServers]
     config settings ~/.cursor/cli-config.json json [] settings reserved []
     never ~/.cursor/chats, ~/.cursor/worktrees, ~/.cursor/extensions
+    == directory commands
+      -- release-check.md
+        Inspect the current release.
     == directory agents
       -- reviewer.md
         ---
@@ -1017,7 +1010,6 @@ describe("adapter goldens", () => {
       }
     ! warning FEATURE_UNSUPPORTED: Cursor keeps user rules in its settings, outside the filesystem. Profile instructions were not added there.
     ! warning FEATURE_UNSUPPORTED: Cursor keeps user rules in its settings, outside the filesystem. Profile rules were not added there.
-    ! warning FEATURE_UNSUPPORTED: Cursor has no global command directory. Profile commands were not added there.
     "
   `));
   it("devin", () => expect(golden("devin")).toMatchInlineSnapshot(`
@@ -1104,7 +1096,6 @@ describe("adapter goldens", () => {
           }
         }
       }
-    ! warning FEATURE_UNSUPPORTED: Devin has no global command directory. Profile commands were not added there.
     "
   `));
   it("opencode", () => expect(golden("opencode")).toMatchInlineSnapshot(`
@@ -1229,6 +1220,7 @@ describe("adapter goldens", () => {
     "
     root ~/.grok (shared skills)
     file instructions ~/.grok/AGENTS.md
+    directory commands ~/.grok/commands
     directory agents ~/.grok/agents
     file hooks ~/.grok/hooks/canonfig.json
     config config ~/.grok/config.toml toml [mcp_servers] settings reserved [model.*.api_key]
@@ -1244,6 +1236,13 @@ describe("adapter goldens", () => {
 
       - \`/home/user/.canonfig/rules/source.md\` (applies to \`src/**\`): Source rules
       - \`/home/user/.canonfig/rules/style.md\` (always applies)
+    == directory commands
+      -- release-check.md
+        ---
+        description: Check release readiness
+        argument-hint: "[scope]"
+        ---
+        Inspect the current release.
     == directory agents
       -- reviewer.md
         ---
@@ -1303,7 +1302,6 @@ describe("adapter goldens", () => {
           }
         }
       }
-    ! warning FEATURE_UNSUPPORTED: Grok has no global command directory. Profile commands were not added there.
     "
   `));
   it("antigravity", () => expect(golden("antigravity")).toMatchInlineSnapshot(`
@@ -1411,7 +1409,6 @@ describe("adapter goldens", () => {
           }
         }
       }
-    ! warning FEATURE_UNSUPPORTED: Antigravity has no global command directory. Profile commands were not added there.
     "
   `));
   it("copilot-cli", () => expect(golden("copilot-cli")).toMatchInlineSnapshot(`
@@ -1521,7 +1518,6 @@ describe("adapter goldens", () => {
           ]
         }
       }
-    ! warning FEATURE_UNSUPPORTED: Copilot CLI has no global command directory. Profile commands were not added there.
     "
   `));
   it("kimi", () => expect(golden("kimi")).toMatchInlineSnapshot(`
@@ -1586,7 +1582,6 @@ describe("adapter goldens", () => {
           }
         }
       }
-    ! warning FEATURE_UNSUPPORTED: Kimi has no global command directory. Profile commands were not added there.
     "
   `));
   it("kilo", () => expect(golden("kilo")).toMatchInlineSnapshot(`
@@ -1750,7 +1745,6 @@ describe("adapter goldens", () => {
     ! warning FEATURE_UNSUPPORTED: SOUL.md is an identity, not an instruction file. Profile instructions were not added there.
     ! warning FEATURE_UNSUPPORTED: Hermes has no global rules location. Profile rules were not added there.
     ! warning FEATURE_UNSUPPORTED: Hermes has no subagent definitions. Profile agents were not added there.
-    ! warning FEATURE_UNSUPPORTED: Hermes has no command directory. Profile commands were not added there.
     "
   `));
   it("qwen", () => expect(golden("qwen")).toMatchInlineSnapshot(`

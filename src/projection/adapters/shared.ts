@@ -68,7 +68,7 @@ export function unsupportedFeatures(
       level: "warning",
       code: "FEATURE_UNSUPPORTED",
       harness,
-      // The reason already names the harness ("Codex has no global slash-command directory."), so the sentence after it only says what was skipped.
+      // The reason already names the harness ("Hermes has no global instructions file."), so the sentence after it only says what was skipped.
       message: `${reason} Profile ${feature} were not added there.`,
     }));
 }

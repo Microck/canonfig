@@ -4,16 +4,18 @@ import { join } from "node:path";
 import { Effect, Schema } from "effect";
 
 import { ConfigValue } from "../domain/resource.ts";
+import { localProjectionFollower } from "../domain/synchronization.ts";
 import type { SetupImportRequest } from "../cli/setup-commands.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { canonicalJson, sha256Hex, type JsonValue } from "../profile/profile-codec.ts";
 import { detectHarnesses } from "../projection/detect.ts";
-import { CanonicalFolderError, readFolderConfig } from "../projection/folder.ts";
+import { CanonicalFolderError, readFolderConfig, readFolderSkillNames } from "../projection/folder.ts";
 import {
   existingFolderItems,
   ImportChangedError,
   ImportSizeLimitError,
   importContentBytes,
+  projectedImportCollisions,
   readImportContent,
   scanImports,
   selectImports,
@@ -132,12 +134,18 @@ const reviewImports = (input: SourceFolderInput, selected: ReadonlyArray<TargetI
     )).map((takeover) => takeover.harness));
     const scanned = selected.filter((harness) => !takenOver.has(harness));
     const context = yield* contextFor(input.environment);
+    const appliedResources = yield* repository.loadAppliedResources(localProjectionFollower).pipe(
+      Effect.mapError((cause) => fail("setup harnesses", `applied resources could not be read: ${cause.message}`, "state")),
+    );
     const scan: ImportScan = yield* Effect.tryPromise({
-      try: () => scanImports({ context, harnesses: scanned, folder: input.folder }),
+      try: () => scanImports({ context, harnesses: scanned, folder: input.folder, appliedResources }),
       catch: (error) => folderFailure(error instanceof Error ? error : new Error(String(error))),
     });
-    const existing = yield* Effect.tryPromise({ try: () => existingFolderItems(input.folder), catch: (error) => folderFailure(error instanceof Error ? error : new Error(String(error))) });
-    const choice = selectImports(scan, existing, importSelection(input.imports));
+    const [existing, folderSkills] = yield* Effect.tryPromise({
+      try: () => Promise.all([existingFolderItems(input.folder), readFolderSkillNames(input.folder)]),
+      catch: (error) => folderFailure(error instanceof Error ? error : new Error(String(error))),
+    });
+    const choice = selectImports(scan, existing, importSelection(input.imports), folderSkills);
     if (choice.unknown.length > 0) {
       return yield* fail(
         "setup harnesses",
@@ -178,8 +186,9 @@ const reviewImports = (input: SourceFolderInput, selected: ReadonlyArray<TargetI
           ...skip, path: displayPath(skip.path), reason: skip.reason.replaceAll(context.home, "~"),
         })),
         collisions: choice.collisions.map((collision) => ({
-          kind: collision.folder ? "folder" : "candidates",
+          kind: collision.projectedSkill ? "projected-skill" : collision.folder ? "folder" : "candidates",
           target: collision.target,
+          folderItems: collision.folderItems,
           candidates: collision.candidates.map((id) => {
             const candidate = candidates.get(id)!;
             return { id, source: candidate.source, path: displayPath(candidate.path) };
@@ -476,6 +485,20 @@ export const executeHarnessImport = (item: SetupPlanItem, environment: Environme
       remainingBytes -= importContentBytes(content);
       yield* assertFree(detail.folder, candidate);
       contents.push([candidate, content]);
+    }
+    const folderSkills = yield* Effect.tryPromise({
+      try: () => readFolderSkillNames(detail.folder),
+      catch: (cause) => applyFailure(`the Canonical Folder skill names could not be checked: ${String(cause)}`),
+    });
+    const conflicts = projectedImportCollisions(folderSkills, detail.items);
+    if (conflicts.length > 0) {
+      const names = conflicts.map(({ target, candidates, folderItems }) =>
+        `${[...candidates, ...folderItems ?? []].join(" and ")} project to ${target}`);
+      return yield* applyFailure(
+        names.join("\n"),
+        "prerequisite",
+        "Run setup plan again and resolve the skill name conflicts before importing.",
+      );
     }
     const servers: Array<readonly [string, ConfigValue]> = [];
     for (const [candidate, content] of contents) {

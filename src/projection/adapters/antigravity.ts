@@ -17,7 +17,6 @@ import {
   skillDirectoryFiles,
   triggerRuleMarkdown,
   under,
-  unsupportedFeatures,
   VERIFIED_AT,
 } from "./shared.ts";
 import { nativeTools } from "./tools.ts";
@@ -61,6 +60,7 @@ export const antigravityAdapter: HarnessAdapter = {
     name: "Google Antigravity CLI",
     executables: ["agy"],
     docs: [
+      "https://antigravity.google/docs/migration/workflows-to-skills",
       "https://antigravity.google/docs/customization-discovery?tab=cli",
       "https://antigravity.google/docs/settings?tab=cli",
       "https://antigravity.google/docs/mcp",
@@ -71,9 +71,9 @@ export const antigravityAdapter: HarnessAdapter = {
     verifiedAt: VERIFIED_AT,
     capabilities: {
       instructions: "native", rules: "native", skills: "native", mcp: "native",
-      hooks: "native", agents: "native", commands: "unsupported",
+      hooks: "native", agents: "native", commands: "translated",
     },
-    notes: ["~/.gemini is shared by the Antigravity CLI, App and IDE; only config/ and AGENTS.md are written."],
+    notes: ["Commands become Agent Skills in the harness's skill directory.", "~/.gemini is shared by the Antigravity CLI, App and IDE; only config/ and AGENTS.md are written."],
   },
   layout(context) {
     const root = context.join(context.home, ".gemini");
@@ -104,10 +104,7 @@ export const antigravityAdapter: HarnessAdapter = {
   },
   project(model, _layout, runtime) {
     const contents: Array<SurfaceContent> = [];
-    const diagnostics = [
-      ...unsupportedFeatures("antigravity", model, [["commands", "Antigravity has no global command directory."]]),
-      ...mcpGapDiagnostics("antigravity", model.mcp, ["sse"]),
-    ];
+    const diagnostics = mcpGapDiagnostics("antigravity", model.mcp, ["sse"]);
 
     const instructions = instructionsText(model, false);
     if (instructions) contents.push({ kind: "file", surface: "instructions", content: instructions });

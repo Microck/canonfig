@@ -13,7 +13,6 @@ import {
   nativeHooks,
   secretTable,
   triggerRuleMarkdown,
-  unsupportedFeatures,
   VERIFIED_AT,
   xdgDataHome,
 } from "./shared.ts";
@@ -43,6 +42,7 @@ export const devinAdapter: HarnessAdapter = {
     name: "Devin CLI",
     executables: ["devin"],
     docs: [
+      "https://docs.devin.ai/cli/extensibility/skills/overview",
       "https://docs.devin.ai/cli/extensibility/configuration",
       "https://docs.devin.ai/cli/extensibility/rules",
       "https://docs.devin.ai/cli/extensibility/mcp/configuration",
@@ -53,9 +53,9 @@ export const devinAdapter: HarnessAdapter = {
     verifiedAt: VERIFIED_AT,
     capabilities: {
       instructions: "native", rules: "native", skills: "portable", mcp: "native",
-      hooks: "native", agents: "native", commands: "unsupported",
+      hooks: "native", agents: "native", commands: "translated",
     },
-    notes: ["Skills go to the shared ~/.agents/skills/."],
+    notes: ["Commands become Agent Skills in the harness's skill directory.", "Skills go to the shared ~/.agents/skills/."],
   },
   layout(context) {
     const windows = context.platform === "windows";
@@ -88,10 +88,7 @@ export const devinAdapter: HarnessAdapter = {
   },
   project(model, _layout, runtime) {
     const contents: Array<SurfaceContent> = [];
-    const diagnostics = [
-      ...unsupportedFeatures("devin", model, [["commands", "Devin has no global command directory."]]),
-      ...mcpGapDiagnostics("devin", model.mcp, ["timeoutMs", "enabledTools", "disabledTools", "cwd"]),
-    ];
+    const diagnostics = mcpGapDiagnostics("devin", model.mcp, ["timeoutMs", "enabledTools", "disabledTools", "cwd"]);
 
     const instructions = instructionsText(model, false);
     if (instructions) contents.push({ kind: "file", surface: "instructions", content: instructions });

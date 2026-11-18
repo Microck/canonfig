@@ -11,6 +11,8 @@ import {
   adapterFor,
   hookCommand,
 } from "../src/projection/adapters/index.ts";
+import { commandSkill } from "../src/projection/adapters/shared-documents.ts";
+import { parseMarkdownDocument } from "../src/projection/frontmatter.ts";
 import type {
   HarnessProjection,
   ProjectionRuntime,
@@ -106,6 +108,20 @@ function fileText(projection: HarnessProjection, surface: string): string {
 }
 
 const codes = (projection: HarnessProjection) => projection.diagnostics.map((diagnostic) => diagnostic.code);
+
+it("renders valid skill names and descriptions for long command IDs", () => {
+  const sharedPrefix = "Release__".repeat(8);
+  const description = "Review the release. ".repeat(60);
+  const first = commandSkill({ id: `${sharedPrefix}Linux`, description, content: "Check Linux." });
+  const second = commandSkill({ id: `${sharedPrefix}Windows`, description, content: "Check Windows." });
+  expect(first.name).toMatch(/^command-(?:[a-z0-9]+-)*[a-z0-9]+$/u);
+  expect(first.name).toHaveLength(64);
+  expect(first.name).not.toBe(second.name);
+  expect(parseMarkdownDocument(new TextDecoder().decode(first.files[0]?.content))).toEqual({
+    data: { name: first.name, description: description.slice(0, 1024) },
+    content: "Check Linux.",
+  });
+});
 
 describe("hook mapping", () => {
   it("calls the runner by absolute path", () => {

@@ -76,7 +76,13 @@ export class SkillReader {
     }>,
   ) {}
 
-  static async create(context: RootContext, neverTouch: ReadonlyArray<string>, folder: string, configPaths: ReadonlyArray<string>): Promise<SkillReader> {
+  static async create(
+    context: RootContext,
+    neverTouch: ReadonlyArray<string>,
+    folder: string,
+    configPaths: ReadonlyArray<string>,
+    projectedSkills: Iterable<string> = [],
+  ): Promise<SkillReader> {
     const exclusions = [
       ...neverTouch.map((path) => ({ path: resolve(path), reason: "never-touch path" })),
       ...configPaths.map((path) => ({
@@ -85,8 +91,18 @@ export class SkillReader {
       { path: resolve(folder), reason: "inside the Canonical Folder" },
     ];
     const aliases = await Promise.all(exclusions.map(async (entry) => ({ ...entry, path: await exclusionAlias(entry.path) })));
-    return new SkillReader(resolve(context.home), await realpath(context.home),
-      [...exclusions, ...aliases].map((entry) => {
+    const home = resolve(context.home);
+    const physicalHome = await realpath(home);
+    const owned = [...projectedSkills].flatMap((target) => {
+      const path = resolve(target);
+      const reason = "Canonfig already projected this skill.";
+      // Use both home spellings without following a link someone put at an owned path.
+      return home !== physicalHome && path.startsWith(home.endsWith(sep) ? home : `${home}${sep}`)
+        ? [{ path, reason }, { path: join(physicalHome, relative(home, path)), reason }]
+        : [{ path, reason }];
+    });
+    return new SkillReader(home, physicalHome,
+      [...exclusions, ...aliases, ...owned].map((entry) => {
         const prefix = entry.path.endsWith(sep) ? entry.path : `${entry.path}${sep}`;
         return { ...entry, prefix, foldedPath: entry.path.toLowerCase(), foldedPrefix: prefix.toLowerCase() };
       }));

@@ -104,7 +104,7 @@ describe("Canonical Folder loader", () => {
       "agents/reviewer.md": `---\ndescription: Reviews\n${tools}---\nReview the change.\n`,
     });
     const { model } = await loadCanonicalFolder(root);
-    const source = ampPluginSource("", [], model.agents.map((agent) => ({ agent, tools: nativeTools("amp", agent) })), []);
+    const source = ampPluginSource("", [], model.agents.map((agent) => ({ agent, tools: nativeTools("amp", agent) })));
     // Execute the generated module to inspect the permissions passed to Amp.
     const javascript = stripTypeScriptTypes(source);
     const plugin = await import(`data:text/javascript;base64,${Buffer.from(javascript).toString("base64")}`);

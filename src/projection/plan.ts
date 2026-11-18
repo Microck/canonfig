@@ -48,6 +48,7 @@ import type {
   SynchronizationArtifact,
 } from "../synchronization/synchronization.types.ts";
 import { adapterFor } from "./adapters/index.ts";
+import { commandSkill, groupProjectedSkillNames, skillDirectoryFiles } from "./adapters/shared-documents.ts";
 import { CanonicalFolderError, type KeyClaim, type LoadedFolder } from "./folder.ts";
 import type {
   ConfigFormat,
@@ -58,7 +59,7 @@ import type {
   RootContext,
   SurfaceContent,
 } from "./harness.ts";
-import { type CanonicalModel, modelFor, SURFACE_CATEGORIES, type SurfaceCategory, TARGET_IDS, type TargetId } from "./model.ts";
+import { type CanonicalModel, modelFor, type SkillTree, SURFACE_CATEGORIES, type SurfaceCategory, TARGET_IDS, type TargetId } from "./model.ts";
 import { hookRegistryJson, hookRunnerSource } from "./templates/runtime.ts";
 import type { Snapshot, SnapshotEntry, TakeoverUnit } from "./takeover.ts";
 import { canonicalFolderOwner, snapshotCopy } from "./takeover.ts";
@@ -353,6 +354,7 @@ export const projectSurfaces = (
   loaded: LoadedFolder,
   context: RootContext,
   takeovers: ReadonlyArray<HarnessTakeover>,
+  excludedSkills: ReadonlySet<string>,
 ) =>
   Effect.gen(function*() {
     const model = loaded.model;
@@ -416,16 +418,45 @@ export const projectSurfaces = (
       if (issue !== undefined) return yield* new CanonicalFolderError({ path: configPath, message: issue });
     }
     const harnesses: Array<HarnessPlan> = [];
-    // Set when a harness that reads the shared skills directory is given skills.
-    let sharesSkills = false;
+    let sharedAuthoredSkills: ReadonlyArray<SkillTree> = [];
+    type CompiledCommand = { readonly id: string; readonly skill: SkillTree };
+    let sharedCommands: ReadonlyArray<CompiledCommand> = [];
+    let compiledCommands: ReadonlyArray<CompiledCommand> | undefined;
+    const checkSkillNames = (skills: ReadonlyArray<SkillTree>, generated: ReadonlyArray<CompiledCommand>, destination: string) => {
+      if (generated.length === 0) return Effect.void;
+      const names = groupProjectedSkillNames([
+        ...skills.map(({ name }) => ({ category: "skills" as const, name, source: `skills/${name}` })),
+        ...generated.map(({ id }) => ({ category: "commands" as const, name: id, source: `commands/${id}.md` })),
+      ], excludedSkills);
+      for (const [name, group] of names) {
+        const [other, item] = group;
+        if (other !== undefined && item !== undefined) return Effect.fail(new CanonicalFolderError({
+          path: configPath,
+          message: `${item.source} and ${other.source} both project to skill '${name}' in ${destination}; rename one of these items`,
+        }));
+      }
+      return Effect.void;
+    };
     for (const harness of model.harnesses) {
       const adapter = adapterFor(harness);
       const scoped = modelFor(model, harness);
-      const layout = adapter.layout(context, scoped);
+      // The command category controls translation independently of authored skills.
+      const generated = adapter.descriptor.capabilities.commands === "translated" && scoped.commands.length > 0
+        ? compiledCommands ??= scoped.commands.map((command) => ({ id: command.id, skill: commandSkill(command) }))
+        : [];
+      const input = generated.length > 0
+        ? { ...scoped, commands: [], skills: [...scoped.skills, ...generated.map(({ skill }) => skill)] }
+        : scoped;
+      const layout = adapter.layout(context, input);
+      if (layout.sharedSkills) {
+        if (scoped.skills.length > 0) sharedAuthoredSkills = scoped.skills;
+        if (generated.length > 0) sharedCommands = generated;
+      } else {
+        yield* checkSkillNames(scoped.skills, generated, harness);
+      }
       yield* checkRoot(harness, layout.root);
       harnesses.push({ harness, layout });
-      if (layout.sharedSkills && scoped.skills.length > 0) sharesSkills = true;
-      const projection = adapter.project(scoped, layout, runtime);
+      const projection = adapter.project(input, layout, runtime);
       diagnostics.push(...projection.diagnostics);
       const contents = yield* Effect.try({
         try: () => withSettings(harness, layout, projection.contents, scoped.settings[harness] ?? [], configPath),
@@ -456,22 +487,18 @@ export const projectSurfaces = (
         });
       }
     }
-    if (sharesSkills) {
+    if (sharedAuthoredSkills.length > 0 || sharedCommands.length > 0) {
       const root = paths.join(context.home, ".agents");
       yield* checkRoot(sharedSkillsOwner, root);
+      const target = paths.join(root, "skills");
+      // Different harnesses can request either category on this same directory.
+      yield* checkSkillNames(sharedAuthoredSkills, sharedCommands, target);
+      const skills = [...sharedAuthoredSkills, ...sharedCommands.map(({ skill }) => skill)];
       surfaces.push({
         harness: sharedSkillsOwner,
         root,
-        surface: { id: "skills", kind: "directory", target: paths.join(root, "skills") },
-        content: {
-          kind: "directory",
-          surface: "skills",
-          files: model.skills.flatMap((skill) => skill.files.map((file) => ({
-            path: `${skill.name}/${file.path}`,
-            content: file.content,
-            executable: file.executable,
-          }))),
-        },
+        surface: { id: "skills", kind: "directory", target },
+        content: { kind: "directory", surface: "skills", files: skillDirectoryFiles(skills) },
         appendLocal: sharedCategory("skills"),
       });
     }
@@ -793,7 +820,7 @@ export const buildProjection = (
     }
     const excludedSkills = new Set(loaded.local.excludeSkills);
     const model = { ...loaded.model, harnesses: loaded.model.harnesses.filter((harness) => !held.includes(harness)) };
-    const projected = yield* projectSurfaces({ ...loaded, model }, context, takeovers);
+    const projected = yield* projectSurfaces({ ...loaded, model }, context, takeovers, excludedSkills);
     const owned = new Set(takeovers.map((takeover) => `${takeover.harness}\0${takeover.surface}`));
     const isHeldHarness = heldResource([...held, ...loaded.local.excludeHarnesses], context, loaded.model);
     // A resource this machine excludes (as `restore` does) keeps its outputs and ownership too.

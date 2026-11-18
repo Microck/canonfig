@@ -58,6 +58,7 @@ export const hermesAdapter: HarnessAdapter = {
     name: "Hermes Agent",
     executables: ["hermes"],
     docs: [
+      "https://hermes-agent.nousresearch.com/docs/reference/slash-commands",
       "https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/configuration.md",
       "https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/mcp.md",
       "https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/hooks.md",
@@ -66,9 +67,10 @@ export const hermesAdapter: HarnessAdapter = {
     verifiedAt: VERIFIED_AT,
     capabilities: {
       instructions: "unsupported", rules: "unsupported", skills: "native", mcp: "native",
-      hooks: "native", agents: "unsupported", commands: "unsupported",
+      hooks: "native", agents: "unsupported", commands: "translated",
     },
     notes: [
+      "Commands become Agent Skills in the harness's skill directory.",
       "SOUL.md is Hermes's identity, not instructions, so instructions and rules are not projected.",
       "Each published skill owns one skills/<name> directory; Hermes's own skills stay untouched.",
       "Hermes asks once per new hook command before running it.",
@@ -115,7 +117,6 @@ export const hermesAdapter: HarnessAdapter = {
         ["instructions", "SOUL.md is an identity, not an instruction file."],
         ["rules", "Hermes has no global rules location."],
         ["agents", "Hermes has no subagent definitions."],
-        ["commands", "Hermes has no command directory."],
       ]),
       ...mcpGapDiagnostics("hermes", model.mcp, ["timeoutMs", "enabledTools", "disabledTools"]),
     ];

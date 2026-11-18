@@ -38,6 +38,7 @@ export const cursorAdapter: HarnessAdapter = {
     executables: ["cursor-agent", "agent"],
     genericExecutables: ["agent"],
     docs: [
+      "https://forum.cursor.com/t/remote-ssh-user-level-rules-not-read-from-wsl-home-cursor/159359/5",
       "https://cursor.com/docs/cli/reference/configuration",
       "https://cursor.com/docs/mcp",
       "https://cursor.com/docs/rules#user-rules",
@@ -46,9 +47,10 @@ export const cursorAdapter: HarnessAdapter = {
     verifiedAt: VERIFIED_AT,
     capabilities: {
       instructions: "unsupported", rules: "unsupported", skills: "portable", mcp: "native",
-      hooks: "native", agents: "native", commands: "unsupported",
+      hooks: "native", agents: "native", commands: "native",
     },
     notes: [
+      "Commands go to the harness's global commands directory.",
       "Cursor keeps user rules in its settings, outside the filesystem.",
       "Skills go to the shared ~/.agents/skills/.",
     ],
@@ -65,6 +67,7 @@ export const cursorAdapter: HarnessAdapter = {
     return {
       root,
       surfaces: [
+        { id: "commands", kind: "directory", target: context.join(root, "commands") },
         { id: "agents", kind: "directory", target: context.join(root, "agents") },
         { id: "hooks", kind: "file", target: context.join(root, "hooks.json") },
         { id: "mcp", kind: "config", target: context.join(root, "mcp.json"), format: "json", keys: ["mcpServers"] },
@@ -88,10 +91,13 @@ export const cursorAdapter: HarnessAdapter = {
       ...unsupportedFeatures("cursor", model, [
         ["instructions", "Cursor keeps user rules in its settings, outside the filesystem."],
         ["rules", "Cursor keeps user rules in its settings, outside the filesystem."],
-        ["commands", "Cursor has no global command directory."],
       ]),
       ...mcpGapDiagnostics("cursor", model.mcp, ["timeoutMs", "enabledTools", "disabledTools"]),
     ];
+
+    if (model.commands.length > 0) {
+      contents.push({ kind: "directory", surface: "commands", files: documentFiles(model.commands, ".md", (command) => `${command.content}\n`) });
+    }
 
     if (model.agents.length > 0) {
       contents.push({
