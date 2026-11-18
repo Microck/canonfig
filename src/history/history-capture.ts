@@ -1,13 +1,14 @@
-import { Effect, Schema } from "effect";
+import { Effect, Result, Schema } from "effect";
 
 import { gitWhere } from "../git/git-transport.ts";
 import { findGitleaks } from "../git/plaintext-scan.ts";
+import type { ProfileRevision } from "../domain/profile.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { canonicalJson } from "../profile/profile-codec.ts";
-import type { PublishFolderInput } from "../profile/publication.ts";
+import type { PublicationHistoryInput } from "../profile/publication.ts";
 import type { FolderFile } from "../projection/folder.ts";
-import { HistoryError, historyWork, readHistorySettings, writeHistorySettings, type HistorySettings } from "./history-config.ts";
-import { historyRepository, type HistoryCapture, type HistoryPush } from "./history-repository.ts";
+import { HistoryError, readHistorySettings, writeHistorySettings, type HistorySettings } from "./history-config.ts";
+import { historyRepositoryWork, type HistoryCapture, type HistoryPush } from "./history-repository.ts";
 
 export const findHistoryGit = Effect.gen(function*() {
   const machine = yield* MachineState;
@@ -24,12 +25,13 @@ export const pushHistory = Effect.fn("History.push")(function*(
   const remote = settings.remote;
   if (remote === undefined) return { status: "local" } satisfies HistoryPush;
   const outcome: HistoryPush = yield* Effect.gen(function*() {
-    const pending = yield* historyWork("Could not check the history backlog",
-      signal => historyRepository(folder, executable, signal).pendingTip());
-    if (pending === undefined) return { status: "up-to-date" } as const;
-    const scanner = yield* findHistoryScanner;
-    return yield* historyWork("Could not scan or push Canonical Folder history",
-      signal => historyRepository(folder, executable, signal).push(remote, settings.branch, scanner, pending));
+    const scanner = yield* Effect.result(findHistoryScanner);
+    return yield* historyRepositoryWork(folder, executable, "Could not scan or push Canonical Folder history", async repo => {
+      const pending = await repo.pendingTip();
+      if (pending === undefined) return { status: "up-to-date" } as const;
+      if (Result.isFailure(scanner)) throw scanner.failure;
+      return repo.push(remote, settings.branch, scanner.success, pending);
+    });
   }).pipe(Effect.catch(error => Effect.succeed({
     status: "not-pushed" as const, reason: error.message, code: error.code === "usage" ? "integrity" as const : error.code,
   })));
@@ -41,15 +43,13 @@ export const pushHistory = Effect.fn("History.push")(function*(
   return outcome;
 });
 
-type Publication = Parameters<NonNullable<PublishFolderInput["onPublished"]>>[0];
-
 const CanonicalResources = Schema.Struct({ resources: Schema.Array(Schema.StructWithRest(
   Schema.Struct({ id: Schema.String }), [Schema.Record(Schema.String, Schema.MutableJson)],
 )) });
 
 const canonicalResources = (bytes: string) => Schema.decodeUnknownSync(CanonicalResources)(JSON.parse(bytes)).resources;
 
-const publicationSummary = ({ revision, previous }: Publication): string => {
+const publicationSummary = (revision: ProfileRevision, previous: ProfileRevision | undefined): string => {
   // These entries include computed verification, policy, and blob identity.
   const old = new Map((previous === undefined ? [] : canonicalResources(previous.canonicalBytes))
     .map(resource => [resource.id, canonicalJson(resource)]));
@@ -68,34 +68,41 @@ const publicationSummary = ({ revision, previous }: Publication): string => {
   ].filter(Boolean).join("; ").slice(0, 500) || "update profile";
 };
 
-export const capturePublication = (folder: string, publication: Publication) => Effect.gen(function*() {
+const captureError = (error: HistoryError): HistoryCapture => ({ error: error.message });
+
+export const preparePublicationHistory = (folder: string, { revision, candidate }: PublicationHistoryInput) => Effect.gen(function*() {
   const settings = yield* readHistorySettings(folder);
-  if (!settings.enabled) return undefined;
-  const { revision, reviewer, files } = publication;
+  if (!settings.enabled) return Effect.succeed(undefined);
+  const machine = yield* MachineState;
   const executable = yield* findHistoryGit;
-  const commit = yield* historyWork("Could not record the Profile Revision in history. Publish again to retry.", async signal => {
-    const repo = historyRepository(folder, executable, signal);
-    const head = await repo.latest();
-    if (head?.revision === revision.id || settings.enabledAfter === revision.id) return undefined;
-    const tree = await repo.writeTree(files());
-    return repo.commitTree({ tree, date: revision.publishedAt, author: reviewer,
-      publication: { id: revision.id, sequence: revision.sequence, summary: publicationSummary(publication) } });
-  });
-  const push = yield* pushHistory(folder, settings, executable);
-  return captureResult(commit, push);
-}).pipe(Effect.catch(error => Effect.succeed({ error: error.message } satisfies HistoryCapture)));
+  if (candidate !== undefined) {
+    yield* historyRepositoryWork(folder, executable, "Could not stage the Profile Revision for history", async repo => {
+      const { previous, files, reviewer } = candidate;
+      // A previous publish may have committed to SQLite before Git advanced.
+      // Recover that commit before staging its successor.
+      if (previous !== undefined) await repo.finishPublication(previous.id);
+      // The revision digest covers the normalized profile. Only a pre-publish
+      // commit can preserve the exact JSONC, including comments and formatting.
+      await repo.commitTree({ files: files(), date: revision.publishedAt, author: reviewer,
+        publication: { id: revision.id, sequence: revision.sequence, summary: publicationSummary(revision, previous) } });
+    });
+  }
+  return Effect.gen(function*() {
+    const commit = yield* historyRepositoryWork(folder, executable,
+      "Could not record the Profile Revision in history. Publish again to retry.", repo => repo.finishPublication(revision.id));
+    const push = yield* pushHistory(folder, settings, executable);
+    return captureResult(commit, push);
+  }).pipe(Effect.provideService(MachineState, machine), Effect.catch(error => Effect.succeed(captureError(error))));
+}).pipe(Effect.catch(error => Effect.succeed(Effect.succeed(captureError(error)))));
 
 export const captureApply = (folder: string, settings: HistorySettings, files: ReadonlyMap<string, FolderFile>) =>
   Effect.gen(function*() {
     const executable = yield* findHistoryGit;
-    const commit = yield* historyWork("Could not record the apply in history. Apply again to retry.", async signal => {
-      const repo = historyRepository(folder, executable, signal);
-      const tree = await repo.writeTree([...files].map(([path, file]) => ({ path, ...file })));
-      return repo.commitTree({ tree, date: new Date().toISOString(), author: "Canonfig" });
-    });
+    const commit = yield* historyRepositoryWork(folder, executable, "Could not record the apply in history. Apply again to retry.",
+      repo => repo.commitTree({ files: [...files].map(([path, file]) => ({ path, ...file })), date: new Date().toISOString(), author: "Canonfig" }));
     const push = yield* pushHistory(folder, settings, executable);
     return captureResult(commit, push);
-  }).pipe(Effect.catch(error => Effect.succeed({ error: error.message } satisfies HistoryCapture)));
+  }).pipe(Effect.catch(error => Effect.succeed(captureError(error))));
 
 const captureResult = (commit: string | undefined, push: HistoryPush): HistoryCapture | undefined =>
   commit === undefined && (push.status === "local" || push.status === "up-to-date") ? undefined

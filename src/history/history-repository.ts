@@ -10,12 +10,14 @@ import { probeBackupTool, probeFailure, runBackupTool } from "../git/tool-proces
 import { archivePathProblem, caseCollision, folderEntryOf } from "../projection/archive.ts";
 import type { FolderFile } from "../projection/folder.ts";
 import { revisionSelector, shortHistoryId } from "../gui/contract/history.ts";
-import { HistoryError } from "./history-config.ts";
+import { HistoryError, historyWork } from "./history-config.ts";
 
 const headRef = "refs/heads/canonfig";
 const pushedRef = "refs/canonfig/pushed";
+const pendingRef = "refs/canonfig/pending";
 const diffLimit = 1024 * 1024;
 const restoreLimit = 256 * 1024 * 1024;
+const revisionInMessage = (message: string) => /^Canonfig-Revision: (\S+)$/mu.exec(message)?.[1];
 
 export const historyPath = (folder: string) => join(folder, ".history.git");
 
@@ -81,7 +83,7 @@ async function* fileChunks(source: string, digest: string): AsyncGenerator<Uint8
     await file.close();
   }
   if (hash.digest("hex") !== digest) throw new HistoryError({
-    code: "conflict", message: "An authored file changed during publication. Publish again to finish recording history.",
+    code: "conflict", message: "An authored file changed while staging the Profile Revision for history.",
   });
 }
 
@@ -94,7 +96,7 @@ const counts = (changes: ReadonlyArray<string>): string => {
   return parts.length === 0 ? "no file changes" : parts.join(", ");
 };
 
-export const historyRepository = (folder: string, executable: string, signal: AbortSignal) => {
+const openHistoryRepository = async (folder: string, executable: string, signal: AbortSignal) => {
   const repository = historyPath(folder);
   const args = gitArgs(repository);
   const cwd = folder;
@@ -104,35 +106,35 @@ export const historyRepository = (folder: string, executable: string, signal: Ab
   const probe = (command: ReadonlyArray<string>, env: Record<string, string | undefined> = environment) => probeBackupTool(executable, [...args, ...command],
     { cwd, signal, environment: env, timeoutMilliseconds: 30_000 });
 
-  const exists = async () => {
-    const info = await lstat(repository).catch((cause: NodeJS.ErrnoException) => {
-      if (cause.code === "ENOENT") return undefined;
-      throw cause;
-    });
-    if (info === undefined) return false;
-    if (!info.isDirectory() || (await git(["rev-parse", "--is-bare-repository"])).trim() !== "true") {
-      throw new HistoryError({ code: "integrity", message: ".history.git must be a Canonfig-owned bare repository" });
-    }
-    return true;
-  };
+  const info = await lstat(repository).catch((cause: NodeJS.ErrnoException) => {
+    if (cause.code === "ENOENT") return undefined;
+    throw cause;
+  });
+  let present = info !== undefined;
+  if (info !== undefined && (!info.isDirectory() || (await git(["rev-parse", "--is-bare-repository"])).trim() !== "true")) {
+    throw new HistoryError({ code: "integrity", message: ".history.git must be a Canonfig-owned bare repository" });
+  }
+
   const ref = async (name: string): Promise<string | undefined> => {
+    if (!present) return undefined;
     const result = await probe(["rev-parse", "--verify", "--quiet", "--end-of-options", `${name}^{commit}`]);
     if (result.ok) return result.stdout.trim();
     if (result.code === 1) return undefined;
     throw new HistoryError({ code: "integrity", message: "Could not read a history reference" });
   };
 
-  const entries = async (limit?: number): Promise<ReadonlyArray<HistoryEntry>> => {
-    if (!(await exists()) || (await ref(headRef)) === undefined) return [];
+  const entries = async (): Promise<ReadonlyArray<HistoryEntry>> => {
+    const head = await ref(headRef);
+    if (head === undefined) return [];
     const acknowledged = await ref(pushedRef);
-    const log = await git(["log", "--first-parent", ...(limit === undefined ? [] : [`--max-count=${limit}`]), "-z", "--format=%H%x00%aI%x00%an%x00%B", headRef, "--"]);
+    const log = await git(["log", "--first-parent", "-z", "--format=%H%x00%aI%x00%an%x00%B", head, "--"]);
     const fields = log.split("\0");
     const result: Array<HistoryEntry> = [];
     let pushed = false;
     for (let index = 0; index + 3 < fields.length; index += 4) {
       const [id, date, author, message] = fields.slice(index, index + 4);
       const sequence = /^Canonfig-Sequence: ([1-9][0-9]*)$/mu.exec(message!)?.[1];
-      const revision = /^Canonfig-Revision: (\S+)$/mu.exec(message!)?.[1];
+      const revision = revisionInMessage(message!);
       pushed ||= id === acknowledged;
       result.push({ id: id!, date: date!, author: author!, subject: message!.split("\n", 1)[0]!, pushed,
         revision, sequence: sequence === undefined ? undefined : Number(sequence) });
@@ -155,28 +157,52 @@ export const historyRepository = (folder: string, executable: string, signal: Ab
     return (await git(["write-tree"], { cwd, signal, environment: indexEnvironment })).trim();
   };
 
-  const commitTree = async (input: { readonly tree: string; readonly date: string; readonly author: string;
+  const commitTree = async (input: { readonly files: ReadonlyArray<HistoryFile>; readonly date: string; readonly author: string;
     readonly publication?: { readonly id: string; readonly sequence: number; readonly summary: string };
   }): Promise<string | undefined> => {
+    const tree = await withHistoryScratch(scratch => writeTree(input.files, scratch));
     const old = await ref(headRef);
-    const previousTree = old === undefined ? undefined : (await git(["rev-parse", `${old}^{tree}`])).trim();
     const publication = input.publication;
-    if (publication === undefined && previousTree === input.tree) return undefined;
-    const changes = publication !== undefined ? [] : previousTree === undefined
-      ? (await git(["ls-tree", "-r", "--name-only", "-z", input.tree])).split("\0").filter(Boolean).map(() => "A")
-      : (await git(["diff", "--no-renames", "--name-status", "-z", previousTree, input.tree, "--"])).split("\0")
-        .filter((_, index) => index % 2 === 0);
-    const message = publication === undefined ? `Apply: ${counts(changes)}\n`
-      : `Revision ${publication.sequence}: ${publication.summary}\n\nCanonfig-Revision: ${publication.id}\nCanonfig-Sequence: ${publication.sequence}\n`;
+    let message: string;
+    if (publication === undefined) {
+      const previousTree = old === undefined ? undefined : (await git(["rev-parse", `${old}^{tree}`])).trim();
+      if (previousTree === tree) return undefined;
+      const changes = previousTree === undefined
+        ? (await git(["ls-tree", "-r", "--name-only", "-z", tree])).split("\0").filter(Boolean).map(() => "A")
+        : (await git(["diff", "--no-renames", "--name-status", "-z", previousTree, tree, "--"])).split("\0")
+          .filter((_, index) => index % 2 === 0);
+      message = `Apply: ${counts(changes)}\n`;
+    } else {
+      message = `Revision ${publication.sequence}: ${publication.summary}\n\nCanonfig-Revision: ${publication.id}\nCanonfig-Sequence: ${publication.sequence}\n`;
+    }
     const slug = input.author.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, "") || "reviewer";
     const date = `${Math.floor(Date.parse(input.date) / 1000)} +0000`;
-    const commit = (await git(["commit-tree", input.tree, ...(old === undefined ? [] : ["-p", old]), "--no-gpg-sign", "-F", "-"], {
+    const commit = (await git(["commit-tree", tree, ...(old === undefined ? [] : ["-p", old]), "--no-gpg-sign", "-F", "-"], {
       cwd, signal, text: message, environment: { ...environment, GIT_AUTHOR_NAME: input.author,
         GIT_AUTHOR_EMAIL: `${slug}@canonfig.invalid`, GIT_AUTHOR_DATE: date,
         GIT_COMMITTER_NAME: "Canonfig", GIT_COMMITTER_EMAIL: "canonfig@canonfig.invalid", GIT_COMMITTER_DATE: date },
     })).trim();
+    if (publication !== undefined) {
+      await git(["update-ref", "--no-deref", pendingRef, commit]);
+      return undefined;
+    }
     await git(["update-ref", "--no-deref", "--create-reflog", "-m", "record Canonfig history", headRef, commit, old ?? ""]);
     return shortHistoryId(commit);
+  };
+
+  const finishPublication = async (revision: string): Promise<string | undefined> => {
+    const pending = await ref(pendingRef);
+    if (pending === undefined) return undefined;
+    const [parent, message] = (await git(["show", "-s", "--format=%P%x00%B", pending])).split("\0");
+    if (revisionInMessage(message!) !== revision) return undefined;
+    const head = await ref(headRef);
+    // Keep the pending commit reachable until the branch advances. If a
+    // process ends before cleanup, the next publish only removes the ref.
+    if (head !== pending) {
+      await git(["update-ref", "--no-deref", "--create-reflog", "-m", "record Canonfig history", headRef, pending, parent ?? ""]);
+    }
+    await git(["update-ref", "--no-deref", "-d", pendingRef, pending]);
+    return head === pending ? undefined : shortHistoryId(pending);
   };
 
   const push = async (remote: string, branch: string, scanner: string, tip: string): Promise<HistoryPush> => {
@@ -249,17 +275,16 @@ export const historyRepository = (folder: string, executable: string, signal: Ab
   };
 
   return {
-    entries, diff, extract, push, commitTree,
-    latest: async () => (await entries(1))[0],
-    writeTree: (files: ReadonlyArray<HistoryFile>) => withHistoryScratch(scratch => writeTree(files, scratch)),
+    entries, diff, extract, push, commitTree, finishPublication,
     init: async () => {
-      if (await exists()) return;
+      if (present) return;
       // Publish the private directory only after Git finishes initialization.
       const staged = await mkdtemp(join(folder, ".history-"));
       try {
         await runBackupTool(executable, [...gitArgs(staged), "init", "--bare", "--template=", "--initial-branch=canonfig", "--quiet"],
           { cwd, signal, environment });
         await rename(staged, repository);
+        present = true;
       } finally {
         await rm(staged, { recursive: true, force: true });
       }
@@ -270,8 +295,13 @@ export const historyRepository = (folder: string, executable: string, signal: Ab
     },
     clearAcknowledgement: async () => { await git(["update-ref", "--no-deref", "-d", pushedRef]); },
     pendingTip: async () => {
+      if (!present) throw new HistoryError({ code: "integrity", message: ".history.git is missing" });
       const tip = await ref(headRef);
       return tip === await ref(pushedRef) ? undefined : tip;
     },
   };
 };
+
+export const historyRepositoryWork = <A>(folder: string, executable: string, message: string,
+  work: (repo: Awaited<ReturnType<typeof openHistoryRepository>>) => Promise<A>) =>
+  historyWork(message, async signal => work(await openHistoryRepository(folder, executable, signal)));

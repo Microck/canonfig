@@ -38,8 +38,6 @@ const HistorySettings = Schema.Struct({
   enabled: Schema.Boolean,
   remote: Schema.optional(Schema.String.check(Schema.makeFilter(value => historyRemoteIssue(value)?.message ?? true))),
   branch: Schema.String,
-  // An idempotent publish of the revision already current at enable time is not a backfill.
-  enabledAfter: Schema.optional(Schema.String),
   lastPushError: Schema.optional(Schema.String),
 });
 export type HistorySettings = typeof HistorySettings.Type;

@@ -323,7 +323,7 @@ canonfig history restore 6 --reviewer Maria
 | Command | Behavior |
 | --- | --- |
 | `history` | List commits newest first, the safe remote label, and the number of commits awaiting push. |
-| `history enable [--remote <url>] [--branch <name>]` | Enable capture. Omit the remote for local history. The branch defaults to `main`. |
+| `history enable [--remote <url>] [--branch <name>]` | Enable capture or update settings. Omit either option to keep its value. Use `--remote ''` to remove the remote. The initial branch is `main`. |
 | `history disable` | Stop capture and pushes and keep the existing commits. |
 | `history push` | Retry the backlog against the configured remote. |
 | `history diff <a> [<b>]` | Show changed paths and a unified patch. Omit `b` to compare against the latest commit. |

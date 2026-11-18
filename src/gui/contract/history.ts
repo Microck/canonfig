@@ -12,7 +12,9 @@ export const HistoryRequest = Schema.Union([
   Schema.Struct({ action: Schema.Literal("list") }),
   Schema.Struct({ action: Schema.Literal("disable") }),
   Schema.Struct({ action: Schema.Literal("push") }),
-  Schema.Struct({ action: Schema.Literals(["enable", "check"]), remote: Schema.optionalKey(Schema.String), branch: Schema.String }),
+  // Omit remote to keep the saved value. A URL replaces it and null removes it.
+  Schema.Struct({ action: Schema.Literals(["enable", "check"]), remote: Schema.optional(Schema.NullOr(Schema.String)),
+    branch: Schema.optional(Schema.String) }),
   Schema.Struct({ action: Schema.Literal("diff"), from: Schema.String, to: Schema.optionalKey(Schema.String) }),
   Schema.Struct({ action: Schema.Literal("restore"), revision: Schema.String, reviewer: Schema.optionalKey(Schema.String) }),
 ]);

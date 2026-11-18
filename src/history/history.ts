@@ -20,7 +20,7 @@ import { assertUpgradeGate } from "../synchronization/upgrade-gate.ts";
 import { withRunLock } from "../synchronization/run-lock.ts";
 import { findHistoryGit, findHistoryScanner, historyRemoteLabel, pushHistory } from "./history-capture.ts";
 import { HistoryError, historyRemoteIssue, historyWork, readHistorySettings, writeHistorySettings, type HistorySettings } from "./history-config.ts";
-import { historyPath, historyRepository, withHistoryScratch } from "./history-repository.ts";
+import { historyPath, historyRepositoryWork, withHistoryScratch } from "./history-repository.ts";
 
 interface HistoryContext {
   readonly statePath: string;
@@ -29,10 +29,9 @@ interface HistoryContext {
 }
 
 const checkDestination = (folder: string, executable: string, request: {
-  readonly branch: string; readonly remote?: string;
+  readonly branch: string; readonly remote: string | undefined;
 }) => Effect.gen(function*() {
-  yield* historyWork("Could not validate the history branch", signal =>
-    historyRepository(folder, executable, signal).validateBranch(request.branch));
+  yield* historyRepositoryWork(folder, executable, "Could not validate the history branch", repo => repo.validateBranch(request.branch));
   const remote = request.remote;
   if (remote === undefined) return { warnings: [] };
   const issue = historyRemoteIssue(remote);
@@ -56,7 +55,7 @@ const historyStatus = (folder: string, settings: HistorySettings) => Effect.gen(
   });
   const entries = present ? yield* Effect.gen(function*() {
     const executable = yield* findHistoryGit;
-    return yield* historyWork("Could not read Canonical Folder history", signal => historyRepository(folder, executable, signal).entries());
+    return yield* historyRepositoryWork(folder, executable, "Could not read Canonical Folder history", repo => repo.entries());
   }) : [];
   const remote = historyRemoteLabel(settings);
   return { enabled: settings.enabled, branch: settings.branch,
@@ -88,8 +87,8 @@ const restore = (context: HistoryContext, executable: string, request: Extract<H
     const reviewer = request.reviewer?.trim();
     if (identity.role === "source") yield* validateReviewer(reviewer ?? "");
     yield* assertUpgradeGate(localProjectionFollower);
-    const { entry, files } = yield* historyWork("Could not extract the history entry", signal =>
-      historyRepository(folder, executable, signal).extract(request.revision));
+    const { entry, files } = yield* historyRepositoryWork(folder, executable, "Could not extract the history entry",
+      repo => repo.extract(request.revision));
     yield* Effect.tryPromise({
       try: () => loadCanonicalFolder(folder, files),
       catch: cause => new HistoryError({ code: "integrity",
@@ -123,18 +122,17 @@ const restore = (context: HistoryContext, executable: string, request: Extract<H
 const configure = (context: HistoryContext, settings: HistorySettings, executable: string,
   request: Extract<HistoryRequest, { action: "enable" | "check" }>) => Effect.gen(function*() {
   const folder = folderOf(context.statePath);
-  const checked = yield* checkDestination(folder, executable, request);
+  const remote = request.remote === undefined ? settings.remote : request.remote ?? undefined;
+  const branch = request.branch ?? settings.branch;
+  const checked = yield* checkDestination(folder, executable, { branch, remote });
   if (request.action === "check") return checked;
-  const destinationChanged = settings.remote !== request.remote || settings.branch !== request.branch;
-  yield* historyWork("Could not initialize .history.git", async signal => {
-    const repo = historyRepository(folder, executable, signal);
+  const destinationChanged = settings.remote !== remote || settings.branch !== branch;
+  yield* historyRepositoryWork(folder, executable, "Could not initialize .history.git", async repo => {
     await repo.init();
     // Clear the acknowledgement before saving. If interrupted, retrying the old destination is harmless.
     if (destinationChanged) await repo.clearAcknowledgement();
   });
-  const repository = yield* StateRepository;
-  const enabledAfter = settings.enabled ? settings.enabledAfter : (yield* repository.listRevisions()).at(-1)?.id;
-  const next = { enabled: true, remote: request.remote, branch: request.branch, enabledAfter,
+  const next = { enabled: true, remote, branch,
     lastPushError: destinationChanged ? undefined : settings.lastPushError };
   yield* writeHistorySettings(folder, next);
   return { ...(yield* historyStatus(folder, next)), ...checked };
@@ -157,8 +155,8 @@ export const historyCommand = (context: HistoryContext, request: HistoryRequest)
       case "check":
         return yield* configure(context, settings, executable, request);
       case "diff":
-        return yield* historyWork("Could not diff history entries within the 1 MiB output limit", signal =>
-          historyRepository(folder, executable, signal).diff(request.from, request.to));
+        return yield* historyRepositoryWork(folder, executable, "Could not diff history entries within the 1 MiB output limit",
+          repo => repo.diff(request.from, request.to));
       case "restore":
         return yield* restore(context, executable, request);
       case "push": {

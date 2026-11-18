@@ -832,8 +832,7 @@ const evaluateHistoryCommand = (action: string | undefined, rest: ReadonlyArray<
     const options = parseOptions(rest, new Set(["--remote", "--branch"]), new Set());
     if (options.positionals.length !== 0) return invalid("Usage: canonfig history enable [--remote <url>] [--branch <name>]");
     const remote = one(options, "--remote");
-    const branch = one(options, "--branch") ?? "main";
-    return history(remote === undefined ? { action, branch } : { action, branch, remote });
+    return history({ action, branch: one(options, "--branch"), remote: remote === "" ? null : remote });
   }
   if (action === "diff" || action === "restore") {
     const options = parseOptions(rest, new Set(action === "restore" ? ["--reviewer"] : []), new Set());

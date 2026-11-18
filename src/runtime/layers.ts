@@ -1,5 +1,5 @@
 import { historyCommand } from "../history/history.ts";
-import { capturePublication } from "../history/history-capture.ts";
+import { preparePublicationHistory } from "../history/history-capture.ts";
 import { backupCommand } from "../backup/backup.ts";
 import { reconcileBackupSchedules } from "../backup/backup-schedule.ts";
 import { localPreservation } from "../projection/authoring.ts";
@@ -565,7 +565,7 @@ const runtimeProfileCatalogLayer: Layer.Layer<
           const { signer } = yield* loadSourceSigner(enrollment);
           return yield* makePublication(signer, repository).publish({
             ...input,
-            onPublished: publication => capturePublication(input.folder, publication).pipe(Effect.provideService(MachineState, machine)),
+            prepareHistory: publication => preparePublicationHistory(input.folder, publication).pipe(Effect.provideService(MachineState, machine)),
           });
         }),
       getRevision: repository.getRevision,

@@ -33,7 +33,7 @@ import type {
 } from "../synchronization/synchronization.types.ts";
 import { detectHarnesses, emptyModel, harnessReport } from "./detect.ts";
 import { adapterFor } from "./adapters/index.ts";
-import { CanonicalFolderError, holdsEntries, LocalItemCollisionError, loadCanonicalFolder, readSelectedAuthoredFiles, parseOverlay, type FolderFile } from "./folder.ts";
+import { CanonicalFolderError, holdsEntries, LocalItemCollisionError, loadCanonicalFolder, readSelectedAuthoredFiles, parseOverlay } from "./folder.ts";
 import type { TargetId } from "./model.ts";
 import {
   keyClaimIssue,
@@ -292,9 +292,9 @@ export const editLocalList = (
     return listed;
   });
 
-const loadFolder = (statePath: string, files?: ReadonlyMap<string, FolderFile>) =>
+const loadFolder = (statePath: string, snapshot?: Awaited<ReturnType<typeof readSelectedAuthoredFiles>>) =>
   Effect.tryPromise({
-    try: () => loadCanonicalFolder(folderOf(statePath), files),
+    try: () => loadCanonicalFolder(folderOf(statePath), snapshot?.files, snapshot?.directories),
     catch: (error) =>
       error instanceof CanonicalFolderError || error instanceof LocalItemCollisionError
         ? error
@@ -503,11 +503,11 @@ export const applyLocalProjection = Effect.fn("LocalProjection.synchronize")(fun
   const folder = folderOf(statePath);
   const settings = mode === "apply" && (yield* machineIdentity).role === "standalone"
     ? yield* readHistorySettings(folder) : undefined;
-  const files = settings?.enabled === true ? yield* Effect.tryPromise({
+  const snapshot = settings?.enabled === true ? yield* Effect.tryPromise({
     try: () => readSelectedAuthoredFiles(folder),
     catch: cause => cause instanceof CanonicalFolderError ? cause : new CanonicalFolderError({ path: folder, message: "Could not read authored files" }),
   }) : undefined;
-  const loaded = yield* loadFolder(statePath, files);
+  const loaded = yield* loadFolder(statePath, snapshot);
   const context = yield* rootContext(options.environment);
   const takeovers = yield* repository.loadHarnessTakeovers();
   const applied = yield* repository.loadAppliedResources(localProjectionFollower);
@@ -538,8 +538,8 @@ export const applyLocalProjection = Effect.fn("LocalProjection.synchronize")(fun
     backup,
     home: context.home,
   });
-  const history = result.outcome.outcome === "Converged" && settings !== undefined && files !== undefined
-    ? yield* captureApply(folder, settings, files) : undefined;
+  const history = result.outcome.outcome === "Converged" && settings !== undefined && snapshot !== undefined
+    ? yield* captureApply(folder, settings, snapshot.files) : undefined;
   return { ...base, snapshot: result.snapshot, outcome: result.outcome, history };
 });
 

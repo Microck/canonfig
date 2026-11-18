@@ -3,9 +3,9 @@ title: Keep version history
 description: Save Canonical Folder versions in Git and restore an earlier revision.
 ---
 
-History keeps a plaintext Git commit for each new Profile Revision you publish.
-On an unenrolled machine, `sync --apply` records a commit when it converges and
-the authored files have changed. Followers use the Source's history.
+On a Source, History keeps a plaintext Git commit for each new Profile Revision
+you publish. On a standalone machine, `sync --apply` records a commit when it
+converges and the authored files have changed. Followers refuse History commands.
 
 ## Turn on history
 
@@ -24,10 +24,14 @@ CLI, pass the remote when you enable history:
 canonfig history enable --remote git@github.com:maria/agent-config.git
 ```
 
-Git uses your SSH settings or credential helper. The remote branch defaults to
-`main`. Use `--branch <name>` to choose another branch. History starts with your
-next new publication or converged apply and contains the eight authored entries
-of the Canonical Folder. Machine-local files stay on the machine.
+Git uses your SSH settings or credential helper. The remote branch starts at
+`main`. Use `--branch <name>` to change it and omit `--remote` to keep the saved
+remote. To remove the remote, turn on **Remove saved remote** in Settings and
+save, or run `canonfig history enable --remote ''`.
+
+History starts with your next new publication or converged apply and contains
+the eight authored entries of the Canonical Folder. Machine-local files stay
+on the machine.
 
 ## Check what changed
 

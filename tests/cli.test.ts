@@ -925,7 +925,8 @@ it.each(["source", "schedule", "setup", "tunnel", "profile", "agent", "follower"
 
 it.each([
   [["history"], { action: "list" }],
-  [["history", "enable"], { action: "enable", branch: "main" }],
+  [["history", "enable"], { action: "enable" }],
+  [["history", "enable", "--remote", ""], { action: "enable", remote: null }],
   [["history", "enable", "--remote", "git@example.org:me/config.git", "--branch", "work"], { action: "enable", remote: "git@example.org:me/config.git", branch: "work" }],
   [["history", "diff", "3", "abcdef1"], { action: "diff", from: "3", to: "abcdef1" }],
   [["history", "restore", "3", "--reviewer", "Maria"], { action: "restore", revision: "3", reviewer: "Maria" }],

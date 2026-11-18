@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
@@ -444,6 +445,38 @@ describe("backup preflight on save, enable and check", () => {
     expect(await machine.configure({ destination: { kind: "git", remote: `file://${repository}` }, passwordReference: "recovery" })).toMatchObject({ warnings: [] });
     // The dry-run push created nothing at the destination.
     expect(spawnSync("git", ["--git-dir", repository, "for-each-ref"], { encoding: "utf8" }).stdout).toBe("");
+  }, 60_000);
+
+  it.each(["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"])("honors %s during Git preflight and backup while ignoring inline overrides", async selector => {
+    const machine = fixture();
+    const repository = join(machine.root, "backups.git");
+    bareRepository(repository);
+    const alias = join(machine.root, "alias");
+    mkdirSync(alias);
+    const remote = pathToFileURL(alias).href;
+    const config = join(machine.root, "transport.gitconfig");
+    writeFileSync(config, `[url "${pathToFileURL(repository).href}"]\n\tinsteadOf = ${remote}\n`);
+    await machine.run({ action: "password", name: "recovery", value: Redacted.make("frost library maple canvas") });
+    await withEnvironment({ HOME: machine.home, XDG_CONFIG_HOME: join(machine.home, ".config"), [selector]: config,
+      GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "protocol.file.allow", GIT_CONFIG_VALUE_0: "never",
+      GIT_CONFIG_PARAMETERS: "'protocol.file.allow=never'",
+    }, async () => {
+      expect(await machine.configure({ destination: { kind: "git", remote }, passwordReference: "recovery" }))
+        .toMatchObject({ warnings: [] });
+      await machine.run({ action: "run", name: "daily" });
+      expect((await machine.list()).snapshots).toHaveLength(1);
+    });
+  }, 60_000);
+
+  it("checks a SHA-1 Git destination with an ambient SHA-256 default", async () => {
+    const machine = fixture();
+    const repository = join(machine.root, "backups.git");
+    bareRepository(repository);
+    await machine.run({ action: "password", name: "recovery", value: Redacted.make("frost library maple canvas") });
+    const saved = await withEnvironment({ GIT_DEFAULT_HASH: "sha256" }, () => machine.configure({
+      destination: { kind: "git", remote: pathToFileURL(repository).href }, passwordReference: "recovery",
+    }));
+    expect(saved).toMatchObject({ warnings: [] });
   }, 60_000);
 
   it.skipIf(!hasRclone)("refuses a missing rclone, an unknown remote name, and accepts a configured one", async () => {

@@ -56,7 +56,11 @@ export const pushOptions = ["--porcelain", "--no-signed", "--no-follow-tags", "-
 export const transportEnvironment = async (input: {
   readonly executable: string; readonly repository: string; readonly cwd: string; readonly signal: AbortSignal;
 }): Promise<Record<string, string | undefined>> => {
-  const environment = { ...baseEnvironment(), GIT_TERMINAL_PROMPT: "0",
+  // Keep config files for credential helpers and URL rewrites. Inline Git
+  // config can override the transport policy, so it stays out of this env.
+  const config = Object.fromEntries(Object.entries(process.env)
+    .filter(([name]) => /^GIT_CONFIG_(?:GLOBAL|SYSTEM|NOSYSTEM)$/iu.test(name)));
+  const environment = { ...baseEnvironment(), ...config, GIT_TERMINAL_PROMPT: "0",
     GCM_INTERACTIVE: "never", GIT_NO_REPLACE_OBJECTS: "1", LC_ALL: "C" };
   const command = process.env.GIT_SSH_COMMAND;
   if (command !== undefined) return { ...environment, GIT_SSH_COMMAND: command };
@@ -99,13 +103,15 @@ export const checkGitDestination = async (input: {
   const read = await probe(executable, [...gitArgs(repository), "ls-remote", "--heads", "--", remote], environment);
   if (!read.ok) return failed(read, "read");
   // A dry-run push asks the host for write access without creating anything there.
-  const local = (args: ReadonlyArray<string>, text?: string) => runBackupTool(executable, args, { cwd: scratch, signal, text });
-  await local([...gitArgs(repository), "init", "--bare", "--quiet", "--template="]);
-  const tree = (await local([...gitArgs(repository), "mktree"], "")).trim();
-  const commit = (await runBackupTool(executable, [...gitArgs(repository), "commit-tree", tree, "--no-gpg-sign"], {
-    cwd: scratch, signal, text: "Canonfig destination check\n",
-    environment: { ...localGitEnvironment(), GIT_AUTHOR_NAME: "Canonfig", GIT_AUTHOR_EMAIL: "backup@canonfig.invalid", GIT_COMMITTER_NAME: "Canonfig", GIT_COMMITTER_EMAIL: "backup@canonfig.invalid" },
-  })).trim();
+  const localEnvironment = {
+    ...localGitEnvironment(), GIT_AUTHOR_NAME: "Canonfig", GIT_AUTHOR_EMAIL: "backup@canonfig.invalid",
+    GIT_COMMITTER_NAME: "Canonfig", GIT_COMMITTER_EMAIL: "backup@canonfig.invalid",
+  };
+  const local = (args: ReadonlyArray<string>, text?: string) =>
+    runBackupTool(executable, [...gitArgs(repository), ...args], { cwd: scratch, signal, text, environment: localEnvironment });
+  await local(["init", "--bare", "--quiet", "--template="]);
+  const tree = (await local(["mktree"], "")).trim();
+  const commit = (await local(["commit-tree", tree, "--no-gpg-sign"], "Canonfig destination check\n")).trim();
   const push = await probe(executable, [...gitArgs(repository),
     "push", "--dry-run", ...pushOptions, "--", remote, `${commit}:refs/heads/${probeRef}`], environment);
   return push.ok ? { warnings: [] } : failed(push, "push");

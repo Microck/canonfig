@@ -64,18 +64,23 @@ import { asJson, canonicalJson } from "./profile-codec.ts";
  * credential-looking literal stops publication before anything is signed.
  */
 
+export interface PublicationHistoryInput {
+  readonly revision: ProfileRevision;
+  /** There are authored bytes to stage only when SQLite is about to publish a new revision. */
+  readonly candidate?: {
+    readonly previous: ProfileRevision | undefined;
+    readonly files: () => ReadonlyArray<HistoryFile>;
+    readonly reviewer: string;
+  };
+}
+
 export interface PublishFolderInput {
   /** The Canonical Folder, `~/.canonfig/`. */
   readonly folder: string;
   /** Who reviewed the folder content being published. */
   readonly reviewer: string;
   readonly publishedAt: string;
-  readonly onPublished?: (input: {
-    readonly revision: ProfileRevision;
-    readonly previous: ProfileRevision | undefined;
-    readonly files: () => ReadonlyArray<HistoryFile>;
-    readonly reviewer: string;
-  }) => Effect.Effect<HistoryCapture | undefined>;
+  readonly prepareHistory?: (input: PublicationHistoryInput) => Effect.Effect<Effect.Effect<HistoryCapture | undefined>>;
 }
 
 export type PublishedFolder = ProfileRevision & { readonly history?: HistoryCapture };
@@ -552,22 +557,17 @@ export const makePublication = (
       const latest = publishedRevisions.at(-1);
       const canonicalBytes = encoded.canonicalBytes;
       const digest = encoded.digest;
-      const finish = (revision: ProfileRevision, previous: ProfileRevision | undefined, reviewer: string) => Effect.gen(function*() {
-        if (input.onPublished === undefined) return revision;
-        const files = () => {
-          const modes = new Map(encoded.profile.resources.flatMap(resource => resource.spec.kind === "file"
-            ? [[resource.spec.source, resource.spec.executable] as const] : []));
-          const selectedModes = new Map(selection.map(file => [file.path, file.executable]));
-          const selected: Array<HistoryFile> = [{ path: "canonfig.jsonc", ...configFile }];
-          for (const [path, published] of sources) {
-            const executable = path.startsWith("hooks/") ? modes.get(path) : selectedModes.get(path);
-            selected.push({ path, executable: executable ?? false, source: published.path, digest: published.blob });
-          }
-          return selected;
-        };
-        const history = yield* input.onPublished({ revision, previous, reviewer, files });
-        return history === undefined ? revision : { ...revision, history };
-      });
+      const files = () => {
+        const modes = new Map(encoded.profile.resources.flatMap(resource => resource.spec.kind === "file"
+          ? [[resource.spec.source, resource.spec.executable] as const] : []));
+        const selectedModes = new Map(selection.map(file => [file.path, file.executable]));
+        const selected: Array<HistoryFile> = [{ path: "canonfig.jsonc", ...configFile }];
+        for (const [path, published] of sources) {
+          const executable = path.startsWith("hooks/") ? modes.get(path) : selectedModes.get(path);
+          selected.push({ path, executable: executable ?? false, source: published.path, digest: published.blob });
+        }
+        return selected;
+      };
       const approval = {
         proposalDigest: digest,
         reviewer: input.reviewer,
@@ -588,6 +588,14 @@ export const makePublication = (
           reason: cause instanceof Error ? cause.message : "revision metadata exceeds its transport budget",
         }),
       });
+      const persist = (publication: PublicationHistoryInput) => Effect.gen(function*() {
+        const { revision } = publication;
+        yield* validateMetadata(revision);
+        const finishHistory = input.prepareHistory === undefined ? undefined : yield* input.prepareHistory(publication);
+        yield* repository.publishRevision({ revision, blobs: encoded.blobs, approval });
+        const history = finishHistory === undefined ? undefined : yield* finishHistory;
+        return history === undefined ? revision : { ...revision, history };
+      });
 
       // Publishing the content that is already latest is idempotent. Storing
       // its blobs again repairs a Source that lost blob rows.
@@ -598,12 +606,7 @@ export const makePublication = (
             message: "the latest revision digest names different content",
           });
         }
-        yield* validateMetadata(latest);
-        yield* repository.publishRevision({ revision: latest, blobs: encoded.blobs, approval });
-        if (input.onPublished === undefined) return latest;
-        const recorded = yield* repository.loadRevisionApproval(latest.id);
-        const previous = publishedRevisions.at(-2);
-        return yield* finish(latest, previous, recorded?.reviewer ?? input.reviewer);
+        return yield* persist({ revision: latest });
       }
 
       // Any other content becomes the next sequence, including content an
@@ -664,9 +667,7 @@ export const makePublication = (
         groups: unsigned.groups,
         scheduleDefault: unsigned.scheduleDefault,
       };
-      yield* validateMetadata(revision);
-      yield* repository.publishRevision({ revision, blobs: encoded.blobs, approval });
-      return yield* finish(revision, latest, input.reviewer);
+      return yield* persist({ revision, candidate: { previous: latest, files, reviewer: input.reviewer } });
     });
 
   return { publish };

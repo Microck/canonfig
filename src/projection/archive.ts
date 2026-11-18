@@ -226,7 +226,7 @@ export const archivePathProblem = (value: string): string | undefined => {
     [...segment].some((character) => character.charCodeAt(0) < 0x20)
     || /[:<>"|?*]/u.test(segment)
     || /[. ]$/u.test(segment)
-    || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(segment);
+    || /^(?:con|prn|aux|nul|(?:com|lpt)[1-9¹²³])(?:\.|$)/iu.test(segment);
   return segments.some(unportable) ? "has a name some operating systems cannot store" : undefined;
 };
 

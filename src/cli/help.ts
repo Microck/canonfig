@@ -49,6 +49,7 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     notes: [
       "Record authored files on Source publish or standalone sync --apply.",
       "History is plaintext. A remote requires Git and gitleaks.",
+      "Omitting --remote keeps the saved remote. Use --remote '' to remove it.",
       "Use a Profile Revision number or a commit prefix of at least seven hex characters.",
       "Restoring on a Source requires --reviewer and publishes the restored content.",
     ],

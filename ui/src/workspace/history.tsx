@@ -23,14 +23,19 @@ function HistorySettings({ status, history, report }: {
 }) {
   const [enabled, setEnabled] = useState(status.enabled);
   const [remote, setRemote] = useState("");
+  const [removeRemote, setRemoveRemote] = useState(false);
   const [branch, setBranch] = useState(status.branch);
   const busy = history.action.loading;
   async function save(action: "enable" | "check" | "disable") {
-    const destination = remote.trim();
+    const destination = removeRemote ? null : remote.trim() || undefined;
     const result = await history.run(action === "disable" ? { action } : {
-      action, branch: branch.trim(), ...(destination === "" ? {} : { remote: destination }),
+      action, branch: branch.trim(), ...(destination === undefined ? {} : { remote: destination }),
     });
     if (result === null || "diff" in result) return;
+    if (action === "enable") {
+      setRemote("");
+      setRemoveRemote(false);
+    }
     const warning = result.warnings?.join(" ");
     report(warning || (action === "check" ? "Git destination check passed." : "History settings saved."));
   }
@@ -40,9 +45,14 @@ function HistorySettings({ status, history, report }: {
       <Switch aria-label="Record history" checked={enabled} disabled={busy} onCheckedChange={setEnabled} />
     </SettingRow>
     {enabled && <>
-      <SettingRow title={<Label htmlFor="history-remote">Git remote</Label>} description="History is plaintext. Leave this field empty to save locally.">
-        <Input id="history-remote" value={remote} onChange={event => setRemote(event.target.value)} placeholder="Optional" />
+      <SettingRow title={<Label htmlFor="history-remote">Git remote</Label>} description={status.remote === undefined
+        ? "History is plaintext. Leave this field empty to save locally."
+        : "History is plaintext. Enter a URL to replace the saved remote."}>
+        <Input id="history-remote" value={remote} disabled={busy || removeRemote} onChange={event => setRemote(event.target.value)} placeholder="Optional" />
       </SettingRow>
+      {status.remote !== undefined && <SettingRow title="Remove saved remote">
+        <Switch aria-label="Remove saved remote" checked={removeRemote} disabled={busy} onCheckedChange={setRemoveRemote} />
+      </SettingRow>}
       <SettingRow title={<Label htmlFor="history-branch">Branch</Label>}>
         <Input id="history-branch" value={branch} onChange={event => setBranch(event.target.value)} required />
       </SettingRow>
