@@ -17,7 +17,6 @@ import {
   secretTable,
   skillDirectoryFiles,
   under,
-  unsupportedFeatures,
   VERIFIED_AT,
 } from "./shared.ts";
 import { nativeTools } from "./tools.ts";
@@ -60,6 +59,7 @@ export const copilotAdapter: HarnessAdapter = {
     name: "GitHub Copilot CLI",
     executables: ["copilot"],
     docs: [
+      "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills",
       "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference",
       "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks",
       "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers",
@@ -67,8 +67,9 @@ export const copilotAdapter: HarnessAdapter = {
     verifiedAt: VERIFIED_AT,
     capabilities: {
       instructions: "native", rules: "native", skills: "native", mcp: "native",
-      hooks: "native", agents: "native", commands: "unsupported",
+      hooks: "native", agents: "native", commands: "translated",
     },
+    notes: ["Commands become Agent Skills in the harness's skill directory."],
   },
   layout(context) {
     const root = context.environment("COPILOT_HOME") ?? context.join(context.home, ".copilot");
@@ -99,10 +100,7 @@ export const copilotAdapter: HarnessAdapter = {
   },
   project(model, _layout, runtime) {
     const contents: Array<SurfaceContent> = [];
-    const diagnostics = [
-      ...unsupportedFeatures("copilot-cli", model, [["commands", "Copilot CLI has no global command directory."]]),
-      ...mcpGapDiagnostics("copilot-cli", model.mcp, ["timeoutMs", "disabledTools", "cwd"]),
-    ];
+    const diagnostics = mcpGapDiagnostics("copilot-cli", model.mcp, ["timeoutMs", "disabledTools", "cwd"]);
 
     const instructions = instructionsText(model, false);
     if (instructions) contents.push({ kind: "file", surface: "instructions", content: instructions });

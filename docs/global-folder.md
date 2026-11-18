@@ -99,7 +99,9 @@ narrows what one harness gets: `modelFor` empties the categories it leaves
 out before that harness's adapter runs, so outputs for them are never built
 and earlier ones retire through the same removal path. The shared
 `~/.agents/skills/` directory is written when any harness that reads it gets
-`skills`.
+`skills` or translates `commands`. The planner compiles those commands into
+Agent Skills before computing the private or shared skill surfaces. Generated
+skills use the same takeover, drift and removal rules as authored skills.
 
 ## Adapters and owned surfaces
 

@@ -48,6 +48,7 @@ import type {
   SynchronizationArtifact,
 } from "../synchronization/synchronization.types.ts";
 import { adapterFor } from "./adapters/index.ts";
+import { commandSkill, skillDirectoryFiles } from "./adapters/shared-documents.ts";
 import { CanonicalFolderError, type KeyClaim, type LoadedFolder } from "./folder.ts";
 import type {
   ConfigFormat,
@@ -58,7 +59,7 @@ import type {
   RootContext,
   SurfaceContent,
 } from "./harness.ts";
-import { type CanonicalModel, modelFor, SURFACE_CATEGORIES, type SurfaceCategory, TARGET_IDS, type TargetId } from "./model.ts";
+import { type CanonicalModel, modelFor, type SkillTree, SURFACE_CATEGORIES, type SurfaceCategory, TARGET_IDS, type TargetId } from "./model.ts";
 import { hookRegistryJson, hookRunnerSource } from "./templates/runtime.ts";
 import type { Snapshot, SnapshotEntry, TakeoverUnit } from "./takeover.ts";
 import { canonicalFolderOwner, snapshotCopy } from "./takeover.ts";
@@ -416,16 +417,43 @@ export const projectSurfaces = (
       if (issue !== undefined) return yield* new CanonicalFolderError({ path: configPath, message: issue });
     }
     const harnesses: Array<HarnessPlan> = [];
-    // Set when a harness that reads the shared skills directory is given skills.
-    let sharesSkills = false;
+    let sharedAuthoredSkills: ReadonlyArray<SkillTree> = [];
+    type CompiledCommand = { readonly source: string; readonly skill: SkillTree };
+    let sharedCommands: ReadonlyArray<CompiledCommand> = [];
+    let compiledCommands: ReadonlyArray<CompiledCommand> | undefined;
+    const checkSkillNames = (skills: ReadonlyArray<SkillTree>, generated: ReadonlyArray<CompiledCommand>, destination: string) => {
+      if (generated.length === 0) return Effect.void;
+      const names = new Map(skills.map(({ name }) => [name, `skills/${name}`]));
+      for (const { source, skill } of generated) {
+        const other = names.get(skill.name);
+        if (other !== undefined) return Effect.fail(new CanonicalFolderError({
+          path: configPath,
+          message: `${source} and ${other} both project to skill '${skill.name}' in ${destination}; rename one of these items`,
+        }));
+        names.set(skill.name, source);
+      }
+      return Effect.void;
+    };
     for (const harness of model.harnesses) {
       const adapter = adapterFor(harness);
       const scoped = modelFor(model, harness);
-      const layout = adapter.layout(context, scoped);
+      // The command category controls translation independently of authored skills.
+      const generated = adapter.descriptor.capabilities.commands === "translated" && scoped.commands.length > 0
+        ? compiledCommands ??= scoped.commands.map((command) => ({ source: `commands/${command.id}.md`, skill: commandSkill(command) }))
+        : [];
+      const input = generated.length > 0
+        ? { ...scoped, commands: [], skills: [...scoped.skills, ...generated.map(({ skill }) => skill)] }
+        : scoped;
+      const layout = adapter.layout(context, input);
+      if (layout.sharedSkills) {
+        if (scoped.skills.length > 0) sharedAuthoredSkills = scoped.skills;
+        if (generated.length > 0) sharedCommands = generated;
+      } else {
+        yield* checkSkillNames(scoped.skills, generated, harness);
+      }
       yield* checkRoot(harness, layout.root);
       harnesses.push({ harness, layout });
-      if (layout.sharedSkills && scoped.skills.length > 0) sharesSkills = true;
-      const projection = adapter.project(scoped, layout, runtime);
+      const projection = adapter.project(input, layout, runtime);
       diagnostics.push(...projection.diagnostics);
       const contents = yield* Effect.try({
         try: () => withSettings(harness, layout, projection.contents, scoped.settings[harness] ?? [], configPath),
@@ -456,22 +484,18 @@ export const projectSurfaces = (
         });
       }
     }
-    if (sharesSkills) {
+    if (sharedAuthoredSkills.length > 0 || sharedCommands.length > 0) {
       const root = paths.join(context.home, ".agents");
       yield* checkRoot(sharedSkillsOwner, root);
+      const target = paths.join(root, "skills");
+      // Different harnesses can request either category on this same directory.
+      yield* checkSkillNames(sharedAuthoredSkills, sharedCommands, target);
+      const skills = [...sharedAuthoredSkills, ...sharedCommands.map(({ skill }) => skill)];
       surfaces.push({
         harness: sharedSkillsOwner,
         root,
-        surface: { id: "skills", kind: "directory", target: paths.join(root, "skills") },
-        content: {
-          kind: "directory",
-          surface: "skills",
-          files: model.skills.flatMap((skill) => skill.files.map((file) => ({
-            path: `${skill.name}/${file.path}`,
-            content: file.content,
-            executable: file.executable,
-          }))),
-        },
+        surface: { id: "skills", kind: "directory", target },
+        content: { kind: "directory", surface: "skills", files: skillDirectoryFiles(skills) },
         appendLocal: sharedCategory("skills"),
       });
     }

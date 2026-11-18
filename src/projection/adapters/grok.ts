@@ -3,6 +3,7 @@ import type { Diagnostic, HarnessAdapter, SurfaceContent } from "../harness.ts";
 import type { McpServer } from "../model.ts";
 import {
   agentMarkdown,
+  commandMarkdown,
   claudeStyleHooks,
   type ConfigTable,
   documentFiles,
@@ -15,7 +16,6 @@ import {
   nativeHooks,
   secretTable,
   under,
-  unsupportedFeatures,
   VERIFIED_AT,
 } from "./shared.ts";
 import { nativeTools } from "./tools.ts";
@@ -48,6 +48,7 @@ export const grokAdapter: HarnessAdapter = {
     name: "Grok Build CLI",
     executables: ["grok"],
     docs: [
+      "https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/08-skills.md",
       "https://docs.x.ai/build/settings/reference",
       "https://docs.x.ai/build/features/mcp-servers",
       "https://docs.x.ai/build/features/hooks",
@@ -55,9 +56,9 @@ export const grokAdapter: HarnessAdapter = {
     verifiedAt: VERIFIED_AT,
     capabilities: {
       instructions: "native", rules: "translated", skills: "portable", mcp: "native",
-      hooks: "native", agents: "native", commands: "unsupported",
+      hooks: "native", agents: "native", commands: "native",
     },
-    notes: ["Rules are linked from AGENTS.md; skills go to the shared ~/.agents/skills/."],
+    notes: ["Commands go to the harness's global commands directory.", "Rules are linked from AGENTS.md; skills go to the shared ~/.agents/skills/."],
   },
   layout(context) {
     const root = context.environment("GROK_HOME") ?? context.join(context.home, ".grok");
@@ -65,6 +66,7 @@ export const grokAdapter: HarnessAdapter = {
       root,
       surfaces: [
         { id: "instructions", kind: "file", target: context.join(root, "AGENTS.md") },
+        { id: "commands", kind: "directory", target: context.join(root, "commands") },
         { id: "agents", kind: "directory", target: context.join(root, "agents") },
         { id: "hooks", kind: "file", target: context.join(root, "hooks", "canonfig.json") },
         {
@@ -91,13 +93,14 @@ export const grokAdapter: HarnessAdapter = {
   },
   project(model, _layout, runtime) {
     const contents: Array<SurfaceContent> = [];
-    const diagnostics = [
-      ...unsupportedFeatures("grok-build", model, [["commands", "Grok has no global command directory."]]),
-      ...mcpGapDiagnostics("grok-build", model.mcp, ["enabledTools", "disabledTools"]),
-    ];
+    const diagnostics = mcpGapDiagnostics("grok-build", model.mcp, ["enabledTools", "disabledTools"]);
 
     const instructions = instructionsText(model, true);
     if (instructions) contents.push({ kind: "file", surface: "instructions", content: instructions });
+    if (model.commands.length > 0) {
+      contents.push({ kind: "directory", surface: "commands", files: documentFiles(model.commands, ".md", commandMarkdown) });
+    }
+
     if (model.agents.length > 0) {
       contents.push({
         kind: "directory", surface: "agents",

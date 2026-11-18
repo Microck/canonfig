@@ -24,6 +24,7 @@ The production entry is `ui/src/live-app.tsx`, selected through Vite's build-sel
 | --- | --- | --- | --- |
 | Report a Canonfig issue, check or turn off automatic reporting | Sidebar → Issue reporting | Sidebar → Issue reporting | Open glossary → Issue reporting |
 | Enable automatic issue reporting | Agent consent prompt or CLI | Agent consent prompt or CLI | Agent consent prompt or CLI |
+| Project Profile commands as native commands or Agent Skills | Harnesses → Surfaces → Commands, then Sync | Existing sync plan and apply; the Source selects the surfaces | Source setup can import existing native commands |
 | Machine-readable preview and submission (`report-issue`) | CLI | CLI | CLI |
 
 The browser links to the Canonfig issue templates and can revoke consent.

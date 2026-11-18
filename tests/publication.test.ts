@@ -373,16 +373,16 @@ describe("publishing the Canonical Folder", () => {
   });
 
   it.each([
-    ["an unlisted harness", { hermes: ["mcp"] }, "surfaces names hermes, which harnesses does not list"],
-    ["a category the harness cannot take", { codex: ["commands"] }, "surfaces.codex: OpenAI Codex does not support commands"],
-  ])("refuses to publish a surfaces selection with %s", async (_case, surfaces, message) => {
-    const fixture = workspace({ surfaces });
+    ["an unlisted harness", baseConfig.harnesses, { hermes: ["mcp"] }, "surfaces names hermes, which harnesses does not list"],
+    ["a category the harness cannot take", [...baseConfig.harnesses, "hermes"], { hermes: ["rules"] }, "surfaces.hermes: Hermes Agent does not support rules"],
+  ])("refuses to publish a surfaces selection with %s", async (_case, harnesses, surfaces, message) => {
+    const fixture = workspace({ harnesses, surfaces });
     const failure = await publishFailure(fixture, makeSigner().signer);
     expect(String(failure.message)).toContain(message);
   });
 
   it("publishes a valid surfaces selection", async () => {
-    const fixture = workspace({ surfaces: { codex: ["mcp", "skills"] } });
+    const fixture = workspace({ surfaces: { codex: ["mcp", "skills", "commands"] } });
     const published = await publishAt(fixture, makeSigner().signer);
     expect(published.resources.map((resource) => resource.id)).toContain("surfaces");
   });

@@ -1,5 +1,5 @@
 import type { NativeHook } from "../adapters/shared-hooks.ts";
-import type { AgentDocument, CommandDocument, Hook, HookEvent } from "../model.ts";
+import type { AgentDocument, Hook, HookEvent } from "../model.ts";
 
 /**
  * Generated runtime files. The hook runner lives at
@@ -208,33 +208,11 @@ function ampAgentRegistration({ agent, tools }: AmpAgent): Array<string> {
   ];
 }
 
-/** A command palette entry that appends the command prompt to the thread. */
-function ampCommandRegistration(command: CommandDocument): Array<string> {
-  const argument = command.argumentHint
-    ? [
-      `      const input = await ctx.ui.input({ title: ${JSON.stringify(command.argumentHint)} });`,
-      "      if (input === undefined || input === null) return;",
-      "      const content = input.trim() ? `${prompt}\\n\\nArguments: ${input.trim()}` : prompt;",
-    ]
-    : ["      const content = prompt;"];
-  return [
-    "  {",
-    `    const prompt = ${JSON.stringify(command.content.trim())};`,
-    `    amp.registerCommand(${JSON.stringify(command.id)}, { title: ${JSON.stringify(command.id)}, description: ${JSON.stringify(command.description)} }, async (ctx) => {`,
-    "      if (!ctx.thread) { await ctx.ui.notify(\"Open a thread first, then run this command again.\"); return; }",
-    ...argument,
-    "      await ctx.thread.append([{ type: \"user-message\", content }]);",
-    "    });",
-    "  }",
-  ];
-}
-
-/** Amp plugin carrying hooks, subagents and commands. */
+/** Amp plugin carrying hooks and subagents. */
 export function ampPluginSource(
   runner: string,
   hooks: ReadonlyArray<NativeHook>,
   agents: ReadonlyArray<AmpAgent>,
-  commands: ReadonlyArray<CommandDocument>,
 ): string {
   const registrations = hooks.map(({ hook, event }) => {
     const rejection = event === "tool.call"
@@ -245,7 +223,6 @@ export function ampPluginSource(
   const body = [
     ...registrations,
     ...agents.flatMap(ampAgentRegistration),
-    ...commands.flatMap(ampCommandRegistration),
   ];
   return `${pluginPreamble("amp", runner, ['import type { PluginAPI } from "@ampcode/plugin";'])}\nexport default function canonfig(amp: PluginAPI) {\n${body.join("\n")}\n}\n`;
 }

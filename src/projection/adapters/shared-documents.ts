@@ -1,3 +1,4 @@
+import { sha256Hex } from "../../profile/profile-codec.ts";
 import type { ProjectedFile } from "../harness.ts";
 import { type FrontmatterData, markdownWithFrontmatter } from "../frontmatter.ts";
 import type {
@@ -98,6 +99,22 @@ export function commandMarkdown(command: CommandDocument): string {
   const data: Array<[string, string]> = [["description", command.description]];
   if (command.argumentHint) data.push(["argument-hint", command.argumentHint]);
   return markdownWithFrontmatter(Object.fromEntries(data), command.content);
+}
+
+/** Render a command as a portable Agent Skill, including a directory-safe manifest name. */
+export function commandSkill(command: CommandDocument): SkillTree {
+  const normalized = `command-${command.id.toLowerCase().replace(/[-_]+/gu, "-").replace(/-$/u, "")}`;
+  const name = normalized.length <= 64
+    ? normalized
+    : `${normalized.slice(0, 51).replace(/-$/u, "")}-${sha256Hex(command.id).slice(0, 12)}`;
+  const description = [...command.description.trim()].slice(0, 1024).join("") || `Run the ${command.id} command.`;
+  const body = command.argumentHint ? `${command.content}\n\nArgument hint: ${command.argumentHint}` : command.content;
+  const markdown = markdownWithFrontmatter({ name, description }, body);
+  return {
+    name,
+    description,
+    files: [{ path: "SKILL.md", content: new TextEncoder().encode(markdown), executable: false }],
+  };
 }
 
 /** One file per document, named `<id><suffix>`. */

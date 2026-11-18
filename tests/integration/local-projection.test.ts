@@ -351,6 +351,64 @@ describe("local projection", () => {
     expect(appliedRecord(value, "harness:agents:skills")).toBeUndefined();
   });
 
+  it("projects command-only selections through shared and private skills and retires them normally", async () => {
+    const value = fixture(["codex", "amp", "devin", "kimi", "copilot-cli", "antigravity", "hermes"], {
+      surfaces: { codex: ["commands"], amp: ["commands"], devin: ["commands"], kimi: ["commands"], "copilot-cli": ["commands", "skills"], hermes: ["commands", "skills"] },
+    });
+    write(join(value.folder, "commands", "ship.md"), '---\ndescription: "Release: check it"\nargumentHint: "<branch>"\n---\nShip the change.\n');
+    const sameNameSkill = "---\nname: ship\ndescription: Authored shipping skill\n---\nRead the shipping guide.\n";
+    write(join(value.folder, "skills", "ship", "SKILL.md"), sameNameSkill);
+    const shared = join(value.home, ".agents", "skills");
+    const previousSkill = join(shared, "previous", "SKILL.md");
+    write(previousSkill, "previous local skill\n");
+    const skillRoots = [shared, join(value.home, ".copilot", "skills"), join(value.home, ".gemini", "config", "skills"), join(value.home, ".hermes", "skills")];
+    expect((await sync(value, "plan")).diagnostics ?? []).not.toContainEqual(expect.objectContaining({ code: "FEATURE_UNSUPPORTED" }));
+    expect(readFileSync(previousSkill, "utf8")).toBe("previous local skill\n");
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    for (const root of skillRoots) {
+      expect(readFileSync(join(root, "command-ship", "SKILL.md"), "utf8")).toBe(
+        "---\nname: command-ship\ndescription: \"Release: check it\"\n---\nShip the change.\n\nArgument hint: <branch>\n",
+      );
+    }
+    expect(readdirSync(shared)).toEqual(["command-ship"]);
+    expect(existsSync(previousSkill)).toBe(false);
+    expect(existsSync(join(value.home, ".config", "amp", "plugins", "canonfig.ts"))).toBe(false);
+    expect(existsSync(join(value.home, ".copilot", "skills", "deploy", "SKILL.md"))).toBe(true);
+    expect(readFileSync(join(value.home, ".copilot", "skills", "ship", "SKILL.md"), "utf8")).toBe(sameNameSkill);
+    expect(takeoverRows(value).filter((row) => row.harness === "agents").map((row) => row.surface)).toEqual(["skills"]);
+    expect(takeoverRows(value)).toContainEqual(expect.objectContaining({ harness: "hermes", surface: "skill.command-ship" }));
+
+    editFolderConfig(value, { surfaces: { codex: [], amp: [], devin: ["skills"], kimi: ["skills"], "copilot-cli": ["skills"], antigravity: ["skills"], hermes: ["skills"] } });
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    for (const root of skillRoots) {
+      expect(existsSync(join(root, "command-ship"))).toBe(false);
+      expect(existsSync(join(root, "deploy", "SKILL.md"))).toBe(true);
+    }
+  });
+
+  it("refuses a generated name that collides across shared skill consumers", async () => {
+    const value = fixture(["codex", "kilo"], { surfaces: { codex: ["commands"], kilo: ["skills"] } });
+    write(join(value.folder, "skills", "command-ship", "SKILL.md"), "---\nname: command-ship\ndescription: Authored skill\n---\nKeep this.\n");
+    await expect(sync(value, "apply")).rejects.toThrow(/commands\/ship\.md and skills\/command-ship both project to skill 'command-ship'/u);
+    expect(existsSync(join(value.home, ".agents", "skills"))).toBe(false);
+  });
+
+  it("projects Cursor and Grok commands only to their native directories", async () => {
+    const value = fixture(["cursor", "grok-build"], { surfaces: { cursor: ["commands"], "grok-build": ["commands"] } });
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(join(value.home, ".cursor", "commands", "ship.md"), "utf8")).toBe("Ship the change.\n");
+    expect(readFileSync(join(value.home, ".grok", "commands", "ship.md"), "utf8")).toBe("---\ndescription: Ship it\n---\nShip the change.\n");
+    expect(existsSync(join(value.home, ".agents", "skills"))).toBe(false);
+  });
+
+  it("refuses commands whose IDs normalize to the same private skill name", async () => {
+    const value = fixture(["hermes"], { surfaces: { hermes: ["commands"] } });
+    for (const id of ["review-pr", "review_PR"]) {
+      write(join(value.folder, "commands", `${id}.md`), "---\ndescription: Review the PR\n---\nCheck the changes.\n");
+    }
+    await expect(sync(value, "plan")).rejects.toThrow(/both project to skill 'command-review-pr' in hermes/u);
+  });
+
   it("refuses a surface selection for a harness that is not listed", async () => {
     const value = fixture(["codex"], { surfaces: { "claude-code": ["mcp"] } });
     await expect(sync(value, "plan")).rejects.toThrow(/surfaces names claude-code/u);
@@ -358,7 +416,7 @@ describe("local projection", () => {
 
   it("refuses a category the harness cannot take", async () => {
     const value = fixture(["codex", "hermes"], { surfaces: { hermes: ["mcp", "rules"] } });
-    await expect(sync(value, "plan")).rejects.toThrow("surfaces.hermes: Hermes Agent does not support rules; it supports skills, hooks, mcp");
+    await expect(sync(value, "plan")).rejects.toThrow("surfaces.hermes: Hermes Agent does not support rules; it supports skills, commands, hooks, mcp");
   });
 
   it("protects drift when a revision replaces every owned config key", async () => {

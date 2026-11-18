@@ -53,10 +53,28 @@ Required (exit 3):
 ## Shared skills directory
 
 Codex, Amp, Cursor, Devin, Grok Build, Kimi, Kilo, and Qwen read skills from
-the shared `~/.agents/skills/`. While any of them is projected, Canonfig owns
-that whole directory and writes every skill there once. Their private skill
+the shared `~/.agents/skills/`. When a selected harness receives skills or
+commands translated to skills there, Canonfig writes the shared output once. Their private skill
 directories are left alone. In plans, snapshots, and restores this surface
 belongs to the pseudo-harness `agents`.
+
+## How commands are projected
+
+| Harnesses | Where commands go |
+| --- | --- |
+| Claude Code, Factory Droid, Oh My Pi, OpenCode, Kilo, Qwen, Cursor, Grok Build | `commands/<id>.md` under the harness root |
+| Pi | `prompts/<id>.md` under the harness root |
+| Codex, Amp, Devin, Kimi | `~/.agents/skills/command-<id>/SKILL.md` |
+| Antigravity, Copilot CLI, Hermes | `command-<id>/SKILL.md` in the harness's skill directory below |
+
+For a translated command, invoke the generated skill as you would any other
+skill in that harness. Canonfig lowercases the command ID, turns runs of
+hyphens and underscores into one hyphen, and shortens long names with a
+digest. The skill contains the command prompt and any argument hint. Give it
+the arguments as part of your request.
+
+If two items would write the same skill, the sync plan names the conflict.
+Rename one of the items in the Canonical Folder and plan again.
 
 ## Rules without a global rules location
 
@@ -79,7 +97,7 @@ the harness has no global place for. Canonfig reports them in the plan as
 - **Owns:** `AGENTS.md`, `agents/` (one `<id>.toml` per subagent), `hooks.json`; skills in `~/.agents/skills/`.
 - **Keys:** `config.toml`: `mcp_servers`, declared settings.
 - **Never touches:** `auth.json`, `history.jsonl`, `log/`, `sessions/`, `rules/` (the execution policy Codex writes).
-- **Not projected:** commands. Subagents always inherit the parent sandbox, so a subagent without `writable` can still write; the plan warns about it.
+- **Subagent permissions:** Subagents always inherit the parent sandbox, so a subagent without `writable` can still write; the plan warns about it.
 - **After apply:** Codex runs a new or changed hook only after you review it. Open Codex, run `/hooks`, and trust each Canonfig hook.
 
 ### `claude-code`
@@ -91,7 +109,7 @@ the harness has no global place for. Canonfig reports them in the plan as
 
 ### `amp`
 
-- **Owns:** `AGENTS.md`, `plugins/canonfig.ts` (hooks, subagents, and commands compile into this one plugin; it sits in `$XDG_CONFIG_HOME/amp/plugins/` when that variable is set); skills in `~/.agents/skills/`.
+- **Owns:** `AGENTS.md`, `plugins/canonfig.ts` (hooks and subagents compile into this plugin; it sits in `$XDG_CONFIG_HOME/amp/plugins/` when that variable is set); skills in `~/.agents/skills/`.
 - **Keys:** `settings.json` (or `settings.jsonc`): `amp.mcpServers`, declared settings.
 - **Never touches:** `~/.local/share/amp/secrets.json`, `~/.local/share/amp/threads/`, `~/.cache/amp/`.
 - **Not projected:** nothing.
@@ -124,17 +142,17 @@ under your home (default `.omp`), and a named profile in `OMP_PROFILE` or
 
 ### `cursor`
 
-- **Owns:** `agents/`, `hooks.json`; skills in `~/.agents/skills/`.
+- **Owns:** `agents/`, `commands/`, `hooks.json`; skills in `~/.agents/skills/`.
 - **Keys:** `mcp.json`: `mcpServers`. `cli-config.json`: declared settings. On Linux, when `XDG_CONFIG_HOME` is set and `CURSOR_CONFIG_DIR` is not, that file is `$XDG_CONFIG_HOME/cursor/cli-config.json`.
 - **Never touches:** `chats/`, `worktrees/`, `extensions/`.
-- **Not projected:** instructions and rules (Cursor keeps user rules in its settings, outside the filesystem), commands.
+- **Not projected:** instructions and rules (Cursor keeps user rules in its settings, outside the filesystem).
 
 ### `devin`
 
 - **Owns:** `AGENTS.md`, `agents/`, `~/.devin/rules/`; skills in `~/.agents/skills/`.
 - **Keys:** `config.json`: `hooks`, declared settings. `mcp_config.json`: `mcpServers`.
 - **Never touches:** `credentials.toml` (in the root on Windows; `~/.local/share/devin/` elsewhere), `cli/logs/`, `sessions/`.
-- **Not projected:** commands.
+- **Not projected:** nothing.
 
 ### `opencode`
 
@@ -145,10 +163,10 @@ under your home (default `.omp`), and a named profile in `OMP_PROFILE` or
 
 ### `grok-build`
 
-- **Owns:** `AGENTS.md`, `agents/`, `hooks/canonfig.json`; skills in `~/.agents/skills/`.
+- **Owns:** `AGENTS.md`, `agents/`, `commands/`, `hooks/canonfig.json`; skills in `~/.agents/skills/`.
 - **Keys:** `config.toml`: `mcp_servers`, declared settings.
 - **Never touches:** `sessions/`, `logs/`, `crash/`, `mcp_credentials.json`, `trusted_folders.toml`, and `model.*.api_key` keys.
-- **Not projected:** commands.
+- **Not projected:** nothing.
 
 ### `antigravity`
 
@@ -158,21 +176,21 @@ only `AGENTS.md` and files under `config/` and `antigravity-cli/`.
 - **Owns:** `AGENTS.md`, `config/rules/`, `config/skills/`, `config/agents/`, `config/hooks.json`.
 - **Keys:** `config/mcp_config.json`: `mcpServers`. `antigravity-cli/settings.json`: declared settings.
 - **Never touches:** `antigravity-cli/brain/`, `antigravity/`, `antigravity-ide/`, and the `trustedWorkspaces` and `gcp` keys.
-- **Not projected:** commands.
+- **Not projected:** nothing.
 
 ### `copilot-cli`
 
 - **Owns:** `copilot-instructions.md`, `instructions/` (rules), `skills/`, `agents/`, `hooks/canonfig.json`.
 - **Keys:** `mcp-config.json`: `mcpServers`. `settings.json`: declared settings.
 - **Never touches:** `config.json`, `mcp-oauth-config/`, `mcp-secrets/`, `session-state/`, `session-store.db`, `command-history-state/`, `logs/`, `ide/`, `plugin-data/`, `permissions-config.json`, `providers.json`.
-- **Not projected:** commands.
+- **Not projected:** nothing.
 
 ### `kimi`
 
 - **Owns:** `AGENTS.md`, `agents/`; skills in `~/.agents/skills/`.
 - **Keys:** `mcp.json`: `mcpServers`. `config.toml`: `hooks`, declared settings.
 - **Never touches:** `credentials/`, `sessions/`, `session_index.jsonl`, `user-history/`, `logs/`, `bin/`, and the `providers` and `services.*.api_key` keys.
-- **Not projected:** commands.
+- **Not projected:** nothing.
 
 ### `kilo`
 
@@ -186,7 +204,7 @@ only `AGENTS.md` and files under `config/` and `antigravity-cli/`.
 - **Owns:** one `skills/<name>/` directory per published skill. Hermes's own skills stay as they are.
 - **Keys:** `config.yaml`: `mcp_servers`, `hooks`.
 - **Never touches:** `SOUL.md`, `.env`, `auth.json`, `sessions/`, `state.db`, `logs/`, `cache/`, `memories/`, `skills/.hub/`, `skills/.bundled_manifest`.
-- **Not projected:** instructions and rules (`SOUL.md` is an identity, not instructions), subagents, commands. Hermes has no settings file, so `settings.hermes` fails validation. Hermes asks once before it runs each new hook command.
+- **Not projected:** instructions and rules (`SOUL.md` is an identity, not instructions), subagents. Hermes has no settings file, so `settings.hermes` fails validation. Hermes asks once before it runs each new hook command.
 
 ### `qwen`
 

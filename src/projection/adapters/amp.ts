@@ -17,6 +17,7 @@ export const ampAdapter: HarnessAdapter = {
     name: "Amp",
     executables: ["amp"],
     docs: [
+      "https://ampcode.com/news/slashing-custom-commands",
       "https://ampcode.com/docs/markdown/cli/settings",
       "https://ampcode.com/docs/markdown/customize/agents-md",
       "https://ampcode.com/docs/markdown/customize/skills",
@@ -30,7 +31,8 @@ export const ampAdapter: HarnessAdapter = {
       hooks: "shim", agents: "translated", commands: "translated",
     },
     notes: [
-      "Hooks, subagents and commands compile into one Amp plugin.",
+      "Commands become Agent Skills in the harness's skill directory.",
+      "Hooks and subagents compile into one Amp plugin.",
       "Rules are linked from AGENTS.md; skills go to the shared ~/.agents/skills/.",
     ],
   },
@@ -76,14 +78,13 @@ export const ampAdapter: HarnessAdapter = {
     if (instructions) contents.push({ kind: "file", surface: "instructions", content: instructions });
 
     const hooks = nativeHooks("amp", model.hooks, AMP_PLUGIN_EVENTS, diagnostics);
-    if (hooks.length > 0 || model.agents.length > 0 || model.commands.length > 0) {
+    if (hooks.length > 0 || model.agents.length > 0) {
       contents.push({
         kind: "file", surface: "plugin",
         content: ampPluginSource(
           runtime.hookRunner,
           hooks,
           model.agents.map((agent) => ({ agent, tools: nativeTools("amp", agent) })),
-          model.commands,
         ),
       });
     }
