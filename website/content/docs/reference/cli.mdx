@@ -46,6 +46,80 @@ use `--json` for the full value and in scripts.
 Every failure Canonfig can explain uses a code other than 1, so a script can
 tell a refusal from a crash.
 
+## Report a Canonfig issue
+
+Preview a report with `canonfig report-issue --stdin`. Pipe in a UTF-8 JSON
+object with a single-line `title` and a Markdown `body`. For example, save a
+report as `issue.json` with these fields:
+
+```json
+{
+  "title": "The harness list omits Cursor after setup",
+  "body": "## Steps to reproduce\n1. Install Cursor.\n2. Open Local settings and check the harness list.\n\n## Expected\nCursor should appear in the list."
+}
+```
+
+```bash
+cat issue.json | canonfig report-issue --stdin
+```
+
+On PowerShell, set the pipeline output encoding before previewing or
+submitting the report.
+
+```powershell
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+Get-Content -Raw -Encoding UTF8 issue.json | canonfig report-issue --stdin
+```
+
+Review the title and body, including the Canonfig version and platform
+added to the draft. Remove private details before sharing. Once you
+approve the draft for the public Canonfig tracker, submit the same
+input with the GitHub CLI installed and signed in to GitHub.com.
+
+```bash
+cat issue.json | canonfig report-issue --stdin --submit
+```
+
+On PowerShell, add `--submit` to the preview command above.
+
+The command returns the new issue URL. With `--json`, the preview includes
+`data.title` and `data.body`, and a successful submission includes `data.url`.
+If submission fails, check the tracker for the report before retrying.
+You can also open **Issue reporting** in the browser interface, then select
+**Report an issue on GitHub** to choose a template and submit there.
+
+Check for an existing issue before filing. Use the private advisory form
+for security vulnerabilities. [Issue tracker](https://github.com/Microck/canonfig/issues)
+· [Private advisory form](https://github.com/Microck/canonfig/security/advisories/new)
+
+### Report future bugs automatically
+
+When your agent finds a Canonfig bug, you can opt in to automatic public issue
+reporting. Reports use the GitHub account that opted in on this machine. Your
+agent can file verified bugs it finds in later sessions without asking again.
+
+To opt in yourself, sign in to GitHub.com with the GitHub CLI. Check the login
+and review the command printed for that account.
+
+```sh
+canonfig report-issue automatic account
+```
+
+Run the printed command to enable automatic reporting. It includes the
+account ID and preference revision so a stale approval cannot override
+a later choice.
+
+```sh
+canonfig report-issue automatic enable --account 12345 --revision absent
+```
+
+For an agent or script, pipe the same UTF-8 JSON into
+`canonfig report-issue --stdin --automatic --json`. Canonfig checks the
+saved preference and GitHub account before posting. Use `automatic status`
+to see what’s configured and `automatic disable` to turn it off.
+You can also turn it off from **Issue reporting** in the browser interface.
+A report that has already started sending may still finish.
+
 ## Browser interface
 
 ```bash

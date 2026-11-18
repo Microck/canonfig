@@ -1,6 +1,6 @@
 ---
 name: operate-canonfig
-description: Operate Canonfig 7.7.0 Source and Follower Machines safely. Use for ~/.canonfig/ edits and publication, tool discovery, machine-local MCP and skill preservation, the Source service and tunnel, invitations, groups, revocation, unenrollment, harness selection and exclusions, takeover snapshots and restore, local/ items, synchronization planning or apply, no-input runs, agent policy and harness bounds, schedules, status or doctor diagnostics, client trust, Follower Drift, Human Action Required, and interrupted-run recovery.
+description: Operate Canonfig 7.7.0 Source and Follower Machines safely. Use for ~/.canonfig/ edits and publication, tool discovery, machine-local MCP and skill preservation, the Source service and tunnel, invitations, groups, revocation, unenrollment, harness selection and exclusions, takeover snapshots and restore, local/ items, synchronization planning or apply, no-input runs, agent policy and harness bounds, schedules, status or doctor diagnostics, client trust, Follower Drift, Human Action Required, interrupted-run recovery, and reporting Canonfig issues.
 ---
 
 # Operate Canonfig
@@ -110,6 +110,59 @@ canonfig agent harness codex --executable /opt/codex --allow-path /home/operator
 Use exact HTTPS origins and platform-local paths. Elevation, login, restart,
 and reboot remain denied unless both task and harness authorize them. A policy
 change is not a repair for Human Action Required.
+
+## Report a Canonfig issue
+
+Report reproducible Canonfig defects. Search the
+[public issue tracker](https://github.com/Microck/canonfig/issues) for duplicates
+before filing. If you cannot check for duplicates, hold the report. Use the
+[private advisory form](https://github.com/Microck/canonfig/security/advisories/new)
+for security vulnerabilities.
+
+Run `canonfig report-issue automatic status --json` to read the preference on
+this machine. If `data.status` is `ask`, run
+`canonfig report-issue automatic account --json` and use the returned login
+in the prompt. If the account lookup returns a different `data.status`,
+follow that newer preference. If you cannot verify the GitHub account, offer
+a one-time draft instead. Only show the following prompt if the account
+lookup still returns `ask`. Use the agent's question tool or ask in chat,
+present these choices, and wait for the user's answer:
+
+> I found a Canonfig bug. Would you like me to report this and future Canonfig bugs automatically? These reports help the maintainers reproduce and fix problems.
+>
+> Reports will be posted publicly on Canonfig’s GitHub issue tracker under your GitHub account, @<login>. You can turn automatic reporting off at any time.
+
+- **Enable automatic reporting**: After explicit approval, run
+  `canonfig report-issue automatic enable --account <id> --revision <revision> --json`
+  with the account ID and preference revision returned before the prompt.
+  If either has changed, check the current preference. Honor `disabled`
+  without asking again unless the user explicitly requests automatic
+  reporting. A retry requires fresh approval. If enable succeeds, file
+  this issue using the automatic path below.
+- **Review this report only**: Run `canonfig report-issue automatic disable --json`
+  and follow the one-time review path below.
+- **Don’t report**: Run `canonfig report-issue automatic disable --json` and stop.
+  A missing answer leaves the preference alone and sends no report.
+
+Prepare a JSON object with a single-line `title` and a Markdown `body` covering
+what happened, how to reproduce it, and what you expected. Include only relevant,
+verified details. Leave out credentials, invitations, private configuration,
+raw logs, conversation history, and user, machine, or organization identifiers.
+
+- If automatic reporting is enabled, pipe the report into
+  `canonfig report-issue --stdin --automatic --json`. Report the resulting
+  `data.url` to the user. If Canonfig refuses automatic submission, do not
+  retry with `--submit` without fresh approval.
+- For one-time review, pipe the report into `canonfig report-issue --stdin --json`.
+  Show the resulting title and body, then wait for approval to file the public
+  issue. After approval, pipe the same JSON into
+  `canonfig report-issue --stdin --submit --json` and return `data.url`.
+- If automatic reporting is disabled, offer a one-time draft when relevant.
+  Only enable automatic reporting again if the user explicitly asks.
+
+If submission fails, check the tracker before retrying. When the user asks
+to stop automatic reporting, run `canonfig report-issue automatic disable --json`
+and verify the returned status.
 
 ## Safety boundary
 

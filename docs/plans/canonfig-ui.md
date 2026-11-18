@@ -18,6 +18,18 @@ The production entry is `ui/src/live-app.tsx`, selected through Vite's build-sel
 
 `src/runtime/layers.ts` implements status. A Source without follower configuration reports unreached follower lifecycle stages. That is not proof the Source service is unhealthy. A follower's response can include synchronization state, active recovery, a completion receipt, and convergence evidence. The GUI does not infer fleet health, pending folder changes or remote schedules from these fields.
 
+## CLI/GUI capability matrix additions
+
+| Capability | Source Machine | Follower Machine | Before setup |
+| --- | --- | --- | --- |
+| Report a Canonfig issue, check or turn off automatic reporting | Sidebar → Issue reporting | Sidebar → Issue reporting | Open glossary → Issue reporting |
+| Enable automatic issue reporting | Agent consent prompt or CLI | Agent consent prompt or CLI | Agent consent prompt or CLI |
+| Machine-readable preview and submission (`report-issue`) | CLI | CLI | CLI |
+
+The browser links to the Canonfig issue templates and can revoke consent.
+Automatic opt-in stays with the agent or CLI because it authorizes filing
+from that environment’s GitHub CLI account. Neither workflow requires setup. See [the CLI reference](https://canonfig.micr.dev/docs/reference/cli#report-a-canonfig-issue).
+
 ## Phase 2 ownership
 
 The shared foundation and all four feature areas are implemented and registered once. The ownership table records the integrated modules. Missing CLI/domain operations remain hidden, not implemented as GUI-only mutations.

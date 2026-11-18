@@ -26,6 +26,7 @@ const SINGLE_COMMANDS = new Set([
   "export",
   "import",
   "recover",
+  "report-issue",
   "restore",
   "status",
   "sync",

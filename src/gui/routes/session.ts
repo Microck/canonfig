@@ -2,15 +2,35 @@ import { Effect, Schema } from "effect";
 import { FollowerCommands } from "../../cli/follower-commands.ts";
 import { sanitizeCliData } from "../../cli/render.ts";
 import { CliCommandFailure } from "../../cli/source-commands.ts";
+import {
+  issueReportingPreferenceBusy, issueReportingPreferenceError, readIssueReportingPreference, writeIssueReportingPreference,
+} from "../../runtime/issue-reporting-preference.ts";
+import { RunLockHeldError } from "../../synchronization/synchronization.errors.ts";
 import { GuiStatus, guiEndpoints } from "../contract/session.ts";
 import { GuiQueries } from "../queries.ts";
-import { queryRoute } from "../routing.ts";
+import { EmptyBody, mutationRoute, queryRoute } from "../routing.ts";
+
+const preferenceFailure = () => new CliCommandFailure({
+  category: "usage-or-configuration", message: issueReportingPreferenceError,
+});
 
 export const sessionRoutes = Effect.gen(function*() {
   const commands = yield* FollowerCommands;
   const queries = yield* GuiQueries;
   return [
     queryRoute(guiEndpoints.session, queries.session),
+    queryRoute(guiEndpoints.issueReporting, () => Effect.tryPromise({
+      try: readIssueReportingPreference, catch: preferenceFailure,
+    })),
+    mutationRoute("DELETE", guiEndpoints.issueReporting, EmptyBody, () => Effect.tryPromise({
+      try: async () => {
+        await writeIssueReportingPreference({ preference: { status: "disabled" } });
+        return { status: "disabled" } as const;
+      },
+      catch: (cause) => cause instanceof RunLockHeldError ? new CliCommandFailure({
+        category: "conflict-or-drift", message: issueReportingPreferenceBusy,
+      }) : preferenceFailure(),
+    })),
     queryRoute(guiEndpoints.status, () => commands.status(undefined).pipe(
       Effect.map(sanitizeCliData),
       Effect.flatMap(Schema.decodeUnknownEffect(GuiStatus)),

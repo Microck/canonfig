@@ -36,6 +36,18 @@ export const uiUsage = "ui [--port <n>] [--tailnet | --host <address>] [--origin
 
 export const helpGroups: ReadonlyArray<HelpGroup> = [
   {
+    title: "Report an issue",
+    areas: ["report-issue"],
+    usage: ["report-issue --stdin [--submit | --automatic]", "report-issue automatic status|account|disable", "report-issue automatic enable --account <id> --revision <revision>"],
+    notes: [
+      "Pipe in a UTF-8 JSON object with title and body strings (up to 60 KiB).",
+      "Preview locally by default. After review, --submit creates a public issue in Microck/canonfig",
+      "using the GitHub CLI signed in to github.com and returns the issue URL.",
+      "--automatic requires opt-in on this machine and uses the account that opted in.",
+      "Leave out private data. Report vulnerabilities at github.com/Microck/canonfig/security/advisories/new.",
+    ],
+  },
+  {
     title: "MCP launcher",
     areas: ["mcp"],
     usage: ["mcp run <name>"],
