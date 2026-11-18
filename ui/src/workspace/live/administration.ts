@@ -1,14 +1,15 @@
 import { Schema } from "effect";
 import { FleetUpdate } from "../../../../src/domain/fleet-update";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import {
   GuiAgentHarness, GuiAgentHarnessRead, GuiAgentPolicy, GuiDoctorReport, GuiInstallerCheck, GuiInstallerRemoval, GuiInstallerSet, GuiInstallers,
   GuiSourceServiceChange, GuiSourceServiceRemoval, GuiSourceServiceReport,
 } from "../../../../src/gui/contract/administration";
 import type { GuiSession } from "../../../../src/gui/contract/session";
 import { GuiRequestError, type WorkspaceBackend } from "../../gui-client";
-import { failingItems, type AdministrationSlice, type HarnessDraft, type PolicySave, type SavedPolicy } from "../administration-types";
+import { failingItems, probeResult, type AdministrationSlice, type HarnessDraft, type PolicySave, type SavedPolicy } from "../administration-types";
 import { useLiveSelfUpdate, type InstalledUpdate } from "./self-update";
+import { LiveResourcesContext } from "./resource";
 
 function requestError(cause: unknown): GuiRequestError {
   return cause instanceof GuiRequestError ? cause : new GuiRequestError({
@@ -86,6 +87,7 @@ function policyTransition(state: PolicySave, event: PolicyEvent): PolicySave {
 
 export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSession, paths: readonly string[], onInstalled: (result: InstalledUpdate) => void): AdministrationSlice {
   const configured = session.role !== "unconfigured";
+  const resources = useContext(LiveResourcesContext);
   const sourceLoad = useCallback((signal: AbortSignal) => backend.request("/api/source-service", GuiSourceServiceReport, signal), [backend]);
   const service = useAdministrationResource(session.role === "source" ? sourceLoad : null, paths.includes("/api/source-service"));
   const fleetLoad = useCallback((signal: AbortSignal) => backend.request("/api/fleet-update", Schema.NullOr(FleetUpdate), signal), [backend]);
@@ -190,6 +192,8 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
   const runDoctor = (timeoutMilliseconds = 5_000) => { void doctor.run(async (signal) => {
     const report = await backend.request("/api/doctor", GuiDoctorReport, signal, { method: "POST", body: { timeoutMilliseconds } });
     if (!signal.aborted) doctor.setData(report);
+    // A Source records its own report for the Machines page, so that page's cached copy is now old.
+    if (!signal.aborted && report.sourceReport?.status === "recorded") resources?.cache.invalidate(["/api/machines"]);
   }); };
   const settings = version.data?.settings;
   const updateSettings = settings !== null && typeof settings === "object" && !Array.isArray(settings)
@@ -255,12 +259,12 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
     },
     doctor: {
       data: doctor.data?.probes.map((probe) => ({
-        check: probe.name, result: probe.status === "pass" ? "ok" : probe.status === "warning" ? "warn" : probe.status === "fail" ? "bad" : "off",
+        check: probe.name, result: probeResult(probe.status),
         detail: probe.message, items: failingItems(probe.details), evidence: { ...probe }, commands: [...probe.message.matchAll(/`([^`]+)`/g)].map((match) => match[1]!),
       })) ?? null,
       // Failed probes are shown in the list itself; only a request that could not run the checks is an error.
       loading: doctor.loading, busy: doctor.busy, error: doctor.error,
-      reload: () => runDoctor(), status: doctor.data?.status ?? null, run: runDoctor,
+      reload: () => runDoctor(), status: doctor.data?.status ?? null, sourceReport: doctor.data?.sourceReport, run: runDoctor,
     },
     version: {
       ...version,

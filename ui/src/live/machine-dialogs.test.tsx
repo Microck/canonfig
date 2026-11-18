@@ -44,7 +44,7 @@ async function fixture(handler: Handler) {
     "/api/profile/items": { items: [], config: { profile: { id: "dialog", name: "Dialog" }, groups: { work: [] } }, supportedSurfaces: {} },
     "/api/source-service": { report: { ...serviceNetwork, state: "not-installed", platform: "linux", mechanism: "systemd-user-service", serviceName: "dialog-fixture", endpoint: "", manager: { installed: false, matches: false, enabled: false, active: false, state: "not-installed" }, serving: false, supportedModes: "", logs: "", detail: "" }, error: null },
     "/api/revisions": { revisions: [] },
-    "/api/machines": { followers: [follower], invitations: [] },
+    "/api/machines": { followers: [follower], invitations: [], health: {} },
   };
   const requests: string[] = [];
   const server = createServer((incoming, outgoing) => {
@@ -127,7 +127,7 @@ it("shows stored enrollment evidence without remote convergence claims", async (
     assert.ok(!text.includes("Enrollment pending"));
     assert.ok(!text.includes("Credential present"));
     assert.ok(!text.includes("local-file:"));
-    app.responses["/api/machines"] = { followers: [{ ...follower, revoked: true, pending: true, credentialPresent: false, credentialLifecycle: { _tag: "Retired" } }], invitations: [] };
+    app.responses["/api/machines"] = { followers: [{ ...follower, revoked: true, pending: true, credentialPresent: false, credentialLifecycle: { _tag: "Retired" } }], invitations: [], health: {} };
     await click("Reload page");
     await until(() => document.body.textContent?.includes("Retired") === true, "Updated credential lifecycle missing");
     for (const expected of ["Revoked", "Enrollment pending", "Credential", "Missing"]) {
@@ -156,7 +156,7 @@ it("group invitation retains its submitted follower after failure, retry and inv
     assert.equal(document.getElementById("cg-canonfig:secrets")?.getAttribute("data-state"), "checked");
     await click("Create invitation");
     await until(() => document.body.textContent?.includes("Re-join Original laptop with its new groups") === true, "Created invitation missing");
-    app.responses["/api/machines"] = { followers: [], invitations: [] };
+    app.responses["/api/machines"] = { followers: [], invitations: [], health: {} };
     await click("Reload page");
     await until(() => document.querySelector('[data-testid="followers"]')?.textContent === "", "Inventory not refreshed");
     assert.ok(document.body.textContent?.includes("Re-join Original laptop with its new groups"), "Created invitation reverted to editing when follower disappeared");

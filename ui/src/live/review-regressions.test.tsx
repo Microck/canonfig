@@ -142,7 +142,7 @@ const sourceResponses = () => ({
   "/api/revisions": { revisions: [] },
   "/api/skills": { version: 1, skills: [] },
   "/api/secrets": { secrets: [] },
-  "/api/machines": { followers: [follower], invitations: [] },
+  "/api/machines": { followers: [follower], invitations: [], health: {} },
 });
 
 for (const path of ["/source/secrets", "/source/profile/groups"]) {
@@ -168,7 +168,7 @@ for (const path of ["/source/secrets", "/source/profile/groups"]) {
       fail = false;
       await click("Reload page");
       await until(() => app.requests.filter((request) => request === "GET /api/machines").length === 3, "Reload did not refresh membership");
-      await act(async () => { pending?.end(JSON.stringify({ followers: [{ ...follower, name: "Renamed laptop" }], invitations: [] })); });
+      await act(async () => { pending?.end(JSON.stringify({ followers: [{ ...follower, name: "Renamed laptop" }], invitations: [], health: {} })); });
       await until(() => app.container.textContent?.includes("Renamed laptop") === true, "Refreshed membership was not shown");
     } finally { await app.close(); }
   });

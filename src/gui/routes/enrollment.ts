@@ -17,6 +17,7 @@ import { GuiQueries } from "../queries.ts";
 import { commandFailure, mutationRoute, queryRoute } from "../routing.ts";
 import { fetchSourceLook } from "../../enrollment/follower-client.ts";
 import { readSourceLook, writeSourceLook } from "../../enrollment/source-look.ts";
+import { readMachineHealth } from "../../enrollment/fleet-update.ts";
 import { MachineState } from "../../machine/machine-state.service.ts";
 
 const json = (value: CliPayload | GuiMachines) => Schema.decodeUnknownEffect(Schema.Json)(value).pipe(
@@ -69,7 +70,12 @@ export const enrollmentRoutes = Effect.gen(function*() {
       yield* requireRole(["source"]);
       const followers = yield* repository.listEnrollmentFollowers().pipe(Effect.mapError(commandFailure));
       const invitations = yield* repository.listEnrollmentInvitations().pipe(Effect.mapError(commandFailure));
-      return yield* json({ followers, invitations });
+      const state = yield* repository.databaseFile().pipe(Effect.mapError(commandFailure));
+      const health = yield* Effect.try({
+        try: () => readMachineHealth(state).machines,
+        catch: (cause) => new CliCommandFailure({ category: "internal", message: `Machine health could not be read: ${String(cause)}` }),
+      });
+      return yield* json({ followers, invitations, health });
     })),
     queryRoute("/api/enrollment", enrollment),
     mutationRoute("POST", "/api/invitations", GuiInviteInput, (input) => Effect.gen(function*() {

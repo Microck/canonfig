@@ -1,8 +1,8 @@
 import { createHash, createPrivateKey, createPublicKey, randomUUID, sign, verify } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, openSync, closeSync, fsyncSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync, openSync, closeSync, fsyncSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Effect, Redacted, Schema } from "effect";
-import { FleetDirective, FleetUpdate, type FleetReport, type FleetStart, SignedFleetDirective } from "../domain/fleet-update.ts";
+import { FleetDirective, FleetUpdate, type MachineHealth, MachineHealthEntry, type FleetReport, type FleetStart, type MachineHealthReport, SignedFleetDirective } from "../domain/fleet-update.ts";
 import { ProfileRevisionId } from "../domain/brand.ts";
 import { asJson, canonicalJson } from "../profile/profile-codec.ts";
 import type { StateRepository } from "../state/state-repository.service.ts";
@@ -40,6 +40,48 @@ export function writeFleetRecord<Value>(path: string, value: Value): void {
   syncDirectory(dirname(path));
 }
 
+/**
+ * One file per machine, so concurrent reports never contend for a lock and
+ * the store grows with the fleet without a shared size limit. File names
+ * encode the key because follower ids may contain `:`, which Windows forbids.
+ */
+export const machineHealthDirectory = (state: string): string => `${state}.machine-health`;
+const machineHealthFile = (state: string, key: string): string =>
+  join(machineHealthDirectory(state), `${Buffer.from(key).toString("base64url")}.json`);
+// A report is capped below the Source's 64 KiB request limit; this leaves room for the stored envelope.
+const maximumMachineHealthEntryBytes = 1_048_576;
+
+/** The latest doctor report of every machine that sent one, as recorded on the Source. */
+export function readMachineHealth(state: string): MachineHealth {
+  const directory = machineHealthDirectory(state);
+  // A store that cannot be listed (missing, a file, unreadable) holds no reports; it must not hide the inventory.
+  let files: Array<string>;
+  try { files = readdirSync(directory); } catch { return { machines: {} }; }
+  const machines: Record<string, { name: string; report: MachineHealthReport }> = {};
+  for (const file of files.filter((name) => name.endsWith(".json")).sort()) {
+    // One unreadable or oversized record only hides that machine's health; it must not hide the inventory.
+    try {
+      const path = join(directory, file);
+      regular(path);
+      if (statSync(path).size > maximumMachineHealthEntryBytes) continue;
+      const entry = Schema.decodeUnknownSync(Schema.fromJsonString(MachineHealthEntry), { onExcessProperty: "error" })(readFileSync(path, "utf8"));
+      machines[entry.key] = { name: entry.name, report: entry.report };
+    } catch {
+      continue;
+    }
+  }
+  return { machines };
+}
+
+/** Replaces one machine's report with an atomic write of its own file. */
+export const recordMachineHealth = (state: string, key: string, name: string, report: MachineHealthReport) => Effect.try({
+  try: () => {
+    mkdirSync(machineHealthDirectory(state), { recursive: true, mode: 0o700 });
+    writeFleetRecord(machineHealthFile(state, key), { key, name, report });
+  },
+  catch: (cause) => failure({ message: `Machine health could not be recorded: ${String(cause)}` }),
+});
+
 export function verifyFleetDirective(signed: SignedFleetDirective, follower: string, fingerprint: string, now = Date.now()): FleetDirective {
   const directive = signed.directive;
   const key = createPublicKey(signed.publicKey);
@@ -60,6 +102,7 @@ export interface FleetSource {
   readonly stopFleetUpdate: (apply: boolean) => Effect.Effect<FleetUpdate | null, EnrollmentError>;
   readonly pollFleetUpdate: (credential: string) => Effect.Effect<{ directive: SignedFleetDirective | null }, EnrollmentError>;
   readonly reportFleetUpdate: (credential: string, report: FleetReport) => Effect.Effect<void, EnrollmentError>;
+  readonly reportMachineHealth: (credential: string, report: MachineHealthReport) => Effect.Effect<void, EnrollmentError>;
 }
 interface FleetSourceDependencies {
   readonly repository: StateRepository["Service"];
@@ -153,6 +196,12 @@ export function fleetSource(dependencies: FleetSourceDependencies): FleetSource 
           signature: `ed25519:${sign(null, Buffer.from(canonicalJson(asJson(directive))), privateKey).toString("base64url")}`,
         } };
       }));
+    }),
+    // Authentication failures keep their own error, so the follower gets 401/403 rather than a storage error.
+    reportMachineHealth: Effect.fn("FleetSource.reportMachineHealth")(function*(credential: string, report: MachineHealthReport) {
+      const { follower } = yield* authenticate(credential);
+      yield* operation(Effect.flatMap(repository.databaseFile(), (state) =>
+        recordMachineHealth(state, follower.id, follower.name, report)));
     }),
     reportFleetUpdate: (credential, report) => Effect.gen(function*() {
       const authenticated = yield* authenticate(credential);

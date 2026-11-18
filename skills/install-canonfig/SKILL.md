@@ -182,9 +182,11 @@ canonfig status --json
 canonfig harnesses
 ```
 
-`doctor` runs eight probes: `runtime`, `state`, `credentials`, `source`,
-`scheduler`, `package-managers`, `agent-adapter`, and `harnesses` (listed
-harnesses that are not installed, pinned roots, snapshots).
+`doctor` runs ten probes: `runtime`, `state`, `credentials`, `source`,
+`scheduler`, `package-managers`, `agent-adapter`, `harnesses` (listed
+harnesses that are not installed, pinned roots, snapshots), `mcp` (starts every
+MCP server the installed harnesses declare and requires it to answer) and
+`tailscale`. An enrolled follower then sends the report to the Source.
 
 Interpret exit code `2` as usage, configuration, or version mismatch, `3` as
 Human Action Required (including a locked or unavailable local credential

@@ -215,7 +215,7 @@ it("self-update offers a same-major minor, preserves major notices and pairing w
     "/api/status": { machineRole: { role: "source" }, lifecycle: {}, tunnel: null },
     "/api/self-update": { enabled: true, pending: false, platform: "linux", settings: { npmCli: "/tmp/update-fixture/npm/bin/npm-cli.js" } },
     "/api/fleet-update": null,
-    "/api/machines": { followers: [], invitations: [] },
+    "/api/machines": { followers: [], invitations: [], health: {} },
     "/api/self-update/check": { current: "7.1.0", candidate: "7.1.0", status: "available", detail },
     "/api/self-update/apply": { id: "update-operation" },
   };

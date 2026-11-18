@@ -60,6 +60,17 @@ export const failingItems = (details: Readonly<Record<string, boolean | number |
     return text.startsWith(failingDetailPrefix) ? [`${item}: ${text.slice(failingDetailPrefix.length)}`] : [];
   });
 
+/** Plain names for the CLI's doctor probes; the demo's names are already plain and pass through. */
+export const CHECK_LABEL: Record<string, string> = {
+  runtime: "Node.js runtime", state: "Local database", credentials: "Credential storage", source: "Connection to the Source",
+  scheduler: "Update schedule", "package-managers": "Package managers", "agent-adapter": "AI agent", harnesses: "AI coding tools",
+  mcp: "MCP servers",
+};
+
+/** The health screen's mark for a doctor probe status. */
+export const probeResult = (status: "pass" | "warning" | "fail" | "skipped"): DoctorCheck["result"] =>
+  status === "pass" ? "ok" : status === "warning" ? "warn" : status === "fail" ? "bad" : "off";
+
 export interface DoctorCheck {
   check: string;
   result: "ok" | "warn" | "bad" | "off";
@@ -109,6 +120,8 @@ export interface AdministrationSlice {
   };
   doctor: AdministrationResource<readonly DoctorCheck[]> & {
     status: string | null;
+    /** Whether the Source's Machines view got this report, or why it did not. */
+    sourceReport?: { status: "sent" | "recorded" | "failed"; detail: string } | undefined;
     progress?: number;
     run: (timeoutMilliseconds?: number) => void;
   };

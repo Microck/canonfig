@@ -16,7 +16,7 @@ import { shq } from "@/shared/shell";
 import { ErrorNotice } from "@/live/session";
 import { SetupJournal } from "@/onboarding/enrollment-controller";
 import { useWorkspace, type Workspace } from "./store";
-import type { InstallerChoice, SavedPolicy } from "./administration-types";
+import { CHECK_LABEL, type InstallerChoice, type SavedPolicy } from "./administration-types";
 export type { SavedPolicy } from "./administration-types";
 import { Body, CommandBox, EmptyState, Field, ListHead, ListRow, PageHeader, SectionLabel, SettingRow, settingsGroup, useDialogReturnFocus, useLeaveGuard } from "./kit";
 import { focusPageHeading, workspaceHref } from "./routes";
@@ -755,12 +755,6 @@ export function SetupView() {
   );
 }
 
-/** Plain names for the CLI's doctor probes; the demo's names are already plain and pass through. */
-const CHECK_LABEL: Record<string, string> = {
-  runtime: "Node.js runtime", state: "Local database", credentials: "Credential storage", source: "Connection to the Source",
-  scheduler: "Update schedule", "package-managers": "Package managers", "agent-adapter": "AI agent", harnesses: "AI coding tools",
-  mcp: "MCP servers",
-};
 
 /**
  * Where a problem can be fixed in the GUI, keyed by the CLI probe name or the demo's display name (lowercased,
@@ -821,6 +815,12 @@ export function DoctorView() {
           {doctor.data && <p role="status" className="mb-4 text-base font-medium">
             {issues === 0 ? "Everything checks out" : `${issues} ${issues === 1 ? "thing needs" : "things need"} attention`}
           </p>}
+          {/* Only a failed share needs words: the Source can no longer see this machine's health. */}
+          {doctor.data && !running && doctor.sourceReport?.status === "failed" && (
+            <p className="-mt-2 mb-4 flex items-center gap-2 text-sm text-pretty text-muted-foreground">
+              <StatusMark kind="warn" /> Results not shown on the Source: {doctor.sourceReport.detail}
+            </p>
+          )}
           <div className="mb-4 h-1.5">{running && progress !== undefined && <DitherProgress label="Running health check" value={progress} />}</div>
           <div data-tour="doctor-results" className={cn(relevant.length > 0 && "border-t border-border")} aria-live="polite">
             {relevant.map((d, i) => {

@@ -1,6 +1,8 @@
 import { localPreservation } from "../projection/authoring.ts";
 import { readFollowerFleet } from "./follower-fleet-update.ts";
-import { readFleetUpdate } from "../enrollment/fleet-update.ts";
+import { readFleetUpdate, recordMachineHealth } from "../enrollment/fleet-update.ts";
+import type { DoctorSourceReport } from "../domain/fleet-update.ts";
+import { reportMachineHealth } from "../enrollment/follower-client.ts";
 import { runtimeCredentialPolicy } from "./credential-policy.ts";
 import { runtimeStateLayer } from "./state-layer.ts";
 import {
@@ -11,7 +13,7 @@ import {
   verify as verifyPayload,
 } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 import { Effect, Layer, Option, Redacted, Schema } from "effect";
@@ -130,6 +132,8 @@ import type { CliFailureCategory } from "../cli/exit-codes.ts";
 import {
   doctorFailureCategory,
   runDoctorProbes,
+  machineHealthOf,
+  type DoctorReport,
   type DoctorAgentConfiguration,
   type DoctorSourceConfiguration,
 } from "./doctor.ts";
@@ -1754,7 +1758,7 @@ const followerCommandsLayer = (
                 message: `${rollbackRecoveryDetail}. ${probe.message}`,
                 details: { ...probe.details, enrollmentLifecycle: "RollbackPending", recovery: rollbackRecoveryDetail },
               }),
-            }));
+            }), Effect.flatMap((report) => shareDoctorReport(report, configuration, input.timeoutMilliseconds)));
           }),
         ).pipe(
           Effect.provideService(MachineState, machine),
@@ -1775,6 +1779,45 @@ const followerCommandsLayer = (
     return FollowerCommands.of(service);
   }),
 );
+
+/**
+ * Gives the Source's Machines view this machine's latest doctor report. An
+ * active Follower sends it; a Source records its own. Sharing never changes
+ * the probes, and a failure is reported beside them rather than hidden.
+ */
+const shareDoctorReport = (
+  report: DoctorReport,
+  configuration: FollowerSynchronizationConfiguration | undefined,
+  timeoutMilliseconds: number,
+) =>
+  Effect.gen(function*() {
+    const withSourceReport = (sourceReport: DoctorSourceReport): DoctorReport => ({ ...report, sourceReport });
+    const share = <E, R>(send: Effect.Effect<void, E, R>, done: DoctorSourceReport, failure: (error: E) => string) => send.pipe(
+      Effect.as(withSourceReport(done)),
+      Effect.catch((error) => Effect.succeed(withSourceReport({ status: "failed", detail: failure(error) }))),
+    );
+    if (configuration?.lifecycle._tag === "Active") {
+      // When the source probe already waited out an unreachable Source (transport) or a credential store
+      // that did not answer (human-action-required), a second attempt would only repeat that wait. Other
+      // source failures, such as a release-line mismatch, still allow the report, which crosses release lines.
+      const source = report.probes.find((probe) => probe.name === "source");
+      if (source?.status === "fail" && (source.category === "transport" || source.category === "human-action-required")) {
+        return withSourceReport({ status: "failed", detail: `not shared with the Source: ${source.message}` });
+      }
+      return yield* share(reportMachineHealth({
+        endpoint: configuration.source.endpoint, tlsFingerprint: configuration.source.tlsFingerprint,
+        sourceFingerprint: configuration.source.signingFingerprint, credentialReference: configuration.credentialReference,
+        timeoutMilliseconds,
+      }, machineHealthOf(report)), { status: "sent", detail: "shared with the Source's Machines view" },
+      (error) => `not shared with the Source: ${describeRuntimeError(error).message}`);
+    }
+    const repository = yield* StateRepository;
+    const sourceRecord = yield* repository.getEnrollmentSource().pipe(Effect.option);
+    if (Option.isNone(sourceRecord) || sourceRecord.value === undefined) return report;
+    // The same resolved database path the Machines route reads from.
+    const record = Effect.flatMap(repository.databaseFile(), (state) => recordMachineHealth(state, "source", hostname(), machineHealthOf(report)));
+    return yield* share(record, { status: "recorded", detail: "recorded for this Source's Machines view" }, (error) => error.message);
+  });
 
 const machineLayer = (statePath: string): Layer.Layer<MachineState> => {
   // The enrolled policy wins: it is what a scheduled run has to rely on.

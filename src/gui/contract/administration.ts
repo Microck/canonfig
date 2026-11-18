@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { DoctorSourceReport } from "../../domain/fleet-update.ts";
 import { TailnetReport } from "../../domain/tailnet.ts";
 import type { AgentPolicy } from "../../domain/identity.ts";
 import type { FollowerAgentHarnessConfiguration } from "../../synchronization/follower-sync-config.ts";
@@ -104,6 +105,7 @@ export const GuiDoctorReport = Schema.Struct({
     category: Schema.optionalKey(GuiError.fields.category),
     details: Schema.optionalKey(Schema.Record(Schema.String, Schema.Union([Schema.Boolean, Schema.Number, Schema.String]))),
   })),
+  sourceReport: Schema.optionalKey(DoctorSourceReport),
 });
 export const GuiSelfUpdateStatus = Schema.Struct({
   platform: Schema.String,

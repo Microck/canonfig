@@ -6,6 +6,16 @@ import { CertificateFingerprint, FollowerId } from "./brand.ts";
  * (`fail · codex · command not found: ...`). The GUI lists those items.
  */
 export const failingDetailPrefix = "fail · ";
+/** The longest message or detail value a machine health report carries. */
+export const machineHealthTextLimit = 512;
+/** The longest detail key a machine health report carries. */
+export const machineHealthKeyLimit = 200;
+/** Where the Source's Machines view gets a doctor report, as doctor reports it. */
+export const DoctorSourceReport = Schema.Struct({
+  status: Schema.Literals(["sent", "recorded", "failed"]),
+  detail: Schema.String,
+});
+export interface DoctorSourceReport extends Schema.Schema.Type<typeof DoctorSourceReport> {}
 export const FleetVersion = Schema.String.check(Schema.isPattern(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u));
 export const FleetIntegrity = Schema.String.check(Schema.isPattern(/^sha512-[A-Za-z0-9+/]{86}==$/u));
 export const FleetDirective = Schema.Struct({
@@ -55,3 +65,33 @@ export interface FleetUpdate extends Schema.Schema.Type<typeof FleetUpdate> {}
 export const FleetPoll = Schema.Struct({ directive: Schema.NullOr(SignedFleetDirective) });
 export const FleetStart = Schema.Struct({ canary: FollowerId, apply: Schema.Boolean });
 export interface FleetStart extends Schema.Schema.Type<typeof FleetStart> {}
+
+/**
+ * One machine's latest doctor report as the Source keeps it. Followers send
+ * theirs after `canonfig doctor`; the Source records its own. Text is capped
+ * so a report fits the Source's 64 KiB request limit.
+ */
+export const MachineHealthProbe = Schema.Struct({
+  name: Schema.String.check(Schema.isMaxLength(64)),
+  status: Schema.Literals(["pass", "warning", "fail", "skipped"]),
+  message: Schema.String.check(Schema.isMaxLength(machineHealthTextLimit)),
+  details: Schema.optionalKey(Schema.Record(
+    Schema.String.check(Schema.isMaxLength(machineHealthKeyLimit)),
+    Schema.Union([Schema.Boolean, Schema.Number, Schema.String.check(Schema.isMaxLength(machineHealthTextLimit))]),
+  )),
+});
+export interface MachineHealthProbe extends Schema.Schema.Type<typeof MachineHealthProbe> {}
+export const MachineHealthReport = Schema.Struct({
+  recordedAt: Schema.String,
+  version: Schema.String.check(Schema.isMaxLength(64)),
+  status: Schema.Literals(["healthy", "degraded", "unhealthy"]),
+  probes: Schema.Array(MachineHealthProbe).check(Schema.isMaxLength(32)),
+});
+export interface MachineHealthReport extends Schema.Schema.Type<typeof MachineHealthReport> {}
+/** One machine's stored record: its key is a follower id, or `source` for the Source itself. */
+export const MachineHealthEntry = Schema.Struct({ key: Schema.String, name: Schema.String, report: MachineHealthReport });
+export const MachineHealth = Schema.Struct({
+  /** Keyed by follower id, or `source` for the Source itself. */
+  machines: Schema.Record(Schema.String, Schema.Struct({ name: Schema.String, report: MachineHealthReport })),
+});
+export interface MachineHealth extends Schema.Schema.Type<typeof MachineHealth> {}
