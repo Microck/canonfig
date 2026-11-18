@@ -1,3 +1,4 @@
+import { guardEndpoints } from "../../../src/guard/contract";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import type { InstalledUpdate } from "./live/self-update";
 import type { GuiSession, WorkspaceBackend } from "../gui-client";
@@ -34,6 +35,7 @@ export function livePageResources(session: GuiSession, route: WorkspaceRoute): r
     machine: ["/api/enrollment", "/api/tunnel", "/api/local/items"],
     agent: ["/api/agent/policy", "/api/agent/harness"],
     installers: ["/api/installers"],
+    guard: [guardEndpoints.status],
     version: session.role === "source" ? ["/api/self-update", "/api/fleet-update", "/api/machines"] : ["/api/self-update"],
     setup: ["/api/setup"],
   };

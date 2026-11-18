@@ -2,16 +2,21 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { ErrorNotice } from "../live/session";
+import { ErrorNotice, GuardFindings } from "../live/session";
 import { Field } from "./kit";
 import { useWorkspace } from "./store";
 import type { ExactDraft } from "./profile-authoring";
 
 export function ProfileActionNotice() {
   const { profileLive } = useWorkspace();
-  return profileLive?.error ? <div className="grid gap-2 p-4"><ErrorNotice error={profileLive.error} />{profileLive.skillObservationLost
+  if (!profileLive) return null;
+  if (profileLive.error) return <div className="grid gap-2 p-4"><ErrorNotice error={profileLive.error} />{profileLive.skillObservationLost
     ? <Button type="button" variant="outline" size="sm" onClick={profileLive.resumeSkillObservation}>Resume status check</Button>
-    : <Button type="button" variant="outline" size="sm" disabled={profileLive.busy} onClick={profileLive.reload}>Reload</Button>}</div> : null;
+    : <Button type="button" variant="outline" size="sm" disabled={profileLive.busy} onClick={profileLive.reload}>Reload</Button>}</div>;
+  return profileLive.guard ? <div role="status" className="px-4 py-3">
+    <p className="text-sm">Guard findings</p>
+    <GuardFindings report={profileLive.guard} />
+  </div> : null;
 }
 
 /** Exact bytes stay editable beside the ordinary field form, including binary skill assets. */

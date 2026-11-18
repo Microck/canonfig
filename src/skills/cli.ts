@@ -1,3 +1,4 @@
+import { guardMessage, GuardHold } from "../guard/guard.ts";
 import { homedir } from "node:os";
 import path from "node:path";
 import { automaticSkillUpdates, type AutomaticSkillOptions } from "./automatic.ts";
@@ -87,8 +88,8 @@ export async function runSkillsCli(args: readonly string[], io: CliIo, signal?: 
     if (command === "track") {
       const source = values.get("--source"); const ref = values.get("--ref"); const directory = values.get("--path");
       if (names.length !== 1 || !source || !ref || !directory) throw new CanonfigError("SKILL_TRACK_REQUIRED", "track requires exactly one --name, --path, --source and --ref");
-      const skill = await trackSkill(location, { name: names[0]!, path: directory, source, ref, subdir: values.get("--subdir") ?? "." });
-      renderCommandResult(io, { command: "skills.track", message: "Skill provenance recorded", data: toCliPayload(skill), exitCode: CliExitCode.success, json, human: `Tracking ${skill.name} at ${skill.path} (${skill.commit})\n` }); return;
+      const skill = await trackSkill(location, { name: names[0]!, path: directory, source, ref, subdir: values.get("--subdir") ?? "." }, signal);
+      renderCommandResult(io, { command: "skills.track", message: "Skill provenance recorded", data: toCliPayload(skill), exitCode: CliExitCode.success, json, human: `Tracking ${skill.name} at ${skill.path} (${skill.commit})\n${skill.guard ? guardMessage(skill.guard) + "\n" : ""}` }); return;
     }
     if (command === "list") {
       if (names.length) throw new CanonfigError("SKILL_OPTION_NOT_ALLOWED", "list does not accept --name; use check for selection");
@@ -102,23 +103,26 @@ export async function runSkillsCli(args: readonly string[], io: CliIo, signal?: 
           command: "skills.auto", message: apply ? "Automatic skill update pass completed" : "Automatic skill update preview",
           data: toCliPayload({ applied: apply, pass, skills }),
           exitCode: skills.some((skill) => skill.status === "local-edits") ? CliExitCode.conflictOrDrift : CliExitCode.success,
-          json, human: `Pass ${pass}: ${skills.map((skill) => `${skill.name}: ${apply && skill.status === "update-available" ? "updated" : skill.status}`).join(", ")}\n${apply ? "No profile was published or harness configuration applied.\n" : "Preview only; use auto --apply for periodic updates or add --once for an external scheduler.\n"}`,
+          json, human: `Pass ${pass}: ${skills.map((skill) => `${skill.name}: ${apply && skill.status === "update-available" ? "updated" : skill.status}`).join(", ")}\n${skills.flatMap((skill) => skill.guard ? [guardMessage(skill.guard) + "\n"] : []).join("")}${apply ? "No profile was published or harness configuration applied.\n" : "Preview only; use auto --apply for periodic updates or add --once for an external scheduler.\n"}`,
         }),
       };
       const passes = await automaticSkillUpdates(location, names, automaticOptions);
       if (passes === 0) renderCommandResult(io, { command: "skills.auto", message: "No automatic update pass ran", exitCode: CliExitCode.success, json });
       return;
     }
-    const checks = command === "update" && apply ? await updateSkills(location, names) : await checkSkills(location, names);
+    const checks = command === "update" && apply ? await updateSkills(location, names, undefined, undefined, undefined, signal) : await checkSkills(location, names);
     const conflicts = checks.some((check) => check.status === "local-edits");
     renderCommandResult(io, { command: `skills.${command}`, message: apply ? "Skill updates applied" : "Skill update preview", data: toCliPayload({ applied: apply, skills: checks }), exitCode: conflicts ? CliExitCode.conflictOrDrift : CliExitCode.success, json,
-      human: checks.length ? checks.map((check) => `${check.name}: ${apply && check.status === "update-available" ? "updated" : check.status} (+${check.added.length} ~${check.changed.length} -${check.removed.length})`).join("\n") + (apply ? "\n" : "\nPreview only. Use update --apply to write; local edits will block the entire selected update.\n") : "No skills tracked. Nothing changed.\n" });
+      human: checks.length ? checks.map((check) => `${check.name}: ${apply && check.status === "update-available" ? "updated" : check.status} (+${check.added.length} ~${check.changed.length} -${check.removed.length})${check.guard ? "\n" + guardMessage(check.guard) : ""}`).join("\n") + (apply ? "\n" : "\nPreview only. Use update --apply to write; local edits will block the entire selected update.\n") : "No skills tracked. Nothing changed.\n" });
   } catch (error) {
     const code = error instanceof CanonfigError ? error.code : undefined;
-    const exitCode = code === "SKILL_FETCH_FAILED" ? CliExitCode.transport
+    const exitCode = error instanceof GuardHold ? CliExitCode.humanActionRequired
+      : code === "SKILL_FETCH_FAILED" ? CliExitCode.transport
       : code === "SKILL_RECOVERY_REQUIRED" ? CliExitCode.humanActionRequired
       : code === "SKILL_VERIFY_FAILED" ? CliExitCode.verificationOrApplyFailure
       : commandFailureExitCode(code);
-    renderCommandResult(io, { command: `skills.${command}`, message: errorMessage(error), data: error instanceof CanonfigError ? { code: error.code } : undefined, exitCode, json });
+    const details = error instanceof GuardHold ? toCliPayload({ code: error.code, guard: error.report })
+      : error instanceof CanonfigError ? { code: error.code } : undefined;
+    renderCommandResult(io, { command: `skills.${command}`, message: errorMessage(error), data: details, exitCode, json });
   }
 }

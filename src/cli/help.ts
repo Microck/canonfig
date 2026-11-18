@@ -390,6 +390,11 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     ],
   },
   {
+    title: "Configuration admission",
+    areas: ["guard"],
+    usage: ["guard scan [--json]", "guard status [--json]"],
+  },
+  {
     title: "Upstream skills (details: canonfig skills --help)",
     areas: ["skills"],
     usage: ["skills track|list|check|update [--root <path>] [--name <id>...] [--apply]", "skills auto [--root <path>] [--name <id>...] [--apply] [--once] [--interval <seconds>]"],

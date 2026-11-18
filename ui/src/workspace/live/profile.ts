@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Schema } from "effect";
 import { HARNESS_NAMES, LOCAL_CATEGORIES, APPEND_LOCAL_CATEGORIES, SURFACE_CATEGORIES, type HarnessId, type SurfaceCategory } from "@/shared/metadata";
-import { GuiProfileSnapshot, GuiProfileSaved, GuiProfileValidation, GuiRevisions, GuiRevisionInspection, GuiScanReview, GuiSkills, GuiTrackedSkill, GuiSkillChecks, profileEndpoints, type GuiProfileConfigWrite, type GuiSkillCheck } from "../../../../src/gui/contract/profile";
+import { GuiProfileSnapshot, GuiProfileSaved, GuiProfileValidation, GuiProfileGuardResult, GuiRevisions, GuiRevisionInspection, GuiScanReview, GuiSkills, GuiSkillTrackResult, GuiSkillChecks, profileEndpoints, type GuiProfileConfigWrite, type GuiSkillCheck } from "../../../../src/gui/contract/profile";
 import { GuiArchiveDownload, GuiSecrets, GuiSecretSummary, GuiSecretRemoval } from "../../../../src/gui/contract/synchronization";
 import { GuiOperationTicket } from "../../../../src/gui/contract/operations";
 import { GuiRequestError, type GuiSession, type WorkspaceBackend } from "../../gui-client";
@@ -51,12 +51,13 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
   const secrets = useLiveResource(backend, "/api/secrets", GuiSecrets, source);
   const operations = useLiveActions(backend, reload);
   const active = useRef<AbortController | null>(null);
-  const [actionState, setActionState] = useState({ loading: false, error: null as GuiRequestError | null });
+  type ActionGuard = typeof GuiProfileGuardResult.Type.guard;
+  const [actionState, setActionState] = useState<{ loading: boolean; error: GuiRequestError | null; guard?: ActionGuard }>({ loading: false, error: null });
   type SkillTicket = { id: string; kind: "check" | "update" };
   const skillTicket = useRef<SkillTicket | null>(null);
   const [skillResult, setSkillResult] = useState<NonNullable<ProfileSlice["profileLive"]>["skillResult"]>(null);
   useEffect(() => () => active.current?.abort(), []);
-  async function run(action: (signal: AbortSignal) => Promise<unknown>, refresh = true, resumeSkill = false) {
+  async function run(action: (signal: AbortSignal) => Promise<ActionGuard | void>, refresh = true, resumeSkill = false) {
     if (active.current || skillTicket.current && !resumeSkill) {
       setActionState((state) => ({ ...state, error: new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: "Another profile action is running. Wait for it to finish, then retry." }) }));
       return false;
@@ -65,9 +66,9 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
     setActionState({ loading: true, error: null });
     if (refresh) publishEvent({ kind: "Invalidate" });
     try {
-      await action(controller.signal);
+      const guard = await action(controller.signal);
       if (controller.signal.aborted) return false;
-      setActionState({ loading: false, error: null });
+      setActionState({ loading: false, error: null, guard: guard ?? undefined });
       if (refresh) reload();
       return true;
     } catch (cause) {
@@ -121,7 +122,9 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
     const configured = object(config.surfaces)[id];
     if (configured !== undefined) surfaces[id] = SURFACE_CATEGORIES.filter((category) => strings(configured).includes(category));
   }
-  const saveConfig = (snapshot: GuiProfileSnapshot, edits: typeof GuiProfileConfigWrite.Type.edits) => run((signal) => backend.request(profileEndpoints.config, GuiProfileSaved, signal, { method: "PUT", body: { expectedDigest: snapshot.items.find((item) => item.path === "canonfig.jsonc")?.digest ?? null, edits, changes: [] } }));
+  const saveConfig = (snapshot: GuiProfileSnapshot, edits: typeof GuiProfileConfigWrite.Type.edits) => run(async (signal) => {
+    await backend.request(profileEndpoints.config, GuiProfileSaved, signal, { method: "PUT", body: { expectedDigest: snapshot.items.find((item) => item.path === "canonfig.jsonc")?.digest ?? null, edits, changes: [] } });
+  });
   const saveItem: NonNullable<ProfileSlice["profileLive"]>["saveItem"] = (snapshot, before, next, exact, remove) => run(async (signal) => {
     await backend.request(profileEndpoints.config, GuiProfileSaved, signal, { method: "PUT", body: itemWrite(snapshot, before, next, exact, remove) });
     if (next.category === "skills") {
@@ -161,13 +164,17 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
     }, kind === "update");
   }
   const profileLive: NonNullable<ProfileSlice["profileLive"]> = {
-    snapshot: items.data, busy: actionState.loading || skillTicket.current !== null, error: actionState.error, validation, publication, archive, skillChecks, skillBusy, skillResult,
+    snapshot: items.data, busy: actionState.loading || skillTicket.current !== null, error: actionState.error, guard: actionState.guard, validation, publication, archive, skillChecks, skillBusy, skillResult,
     skillObservationLost: skillTicket.current !== null && !actionState.loading,
     resumeSkillObservation: () => { const ticket = skillTicket.current; if (ticket) void run((signal) => observeSkills(ticket, signal), ticket.kind === "update", true); },
     discovery, revisionDetail,
     reload: () => { publishEvent({ kind: "Invalidate" }); refresh(); }, saveItem, saveConfig,
-    setSecret: (name, value) => run((signal) => backend.request("/api/secrets", GuiSecretSummary, signal, { method: "PUT", body: { name, value } })),
-    removeSecret: (name) => run((signal) => backend.request("/api/secrets", GuiSecretRemoval, signal, { method: "DELETE", body: { name } })),
+    setSecret: (name, value) => run(async (signal) => {
+      await backend.request("/api/secrets", GuiSecretSummary, signal, { method: "PUT", body: { name, value } });
+    }),
+    removeSecret: (name) => run(async (signal) => {
+      await backend.request("/api/secrets", GuiSecretRemoval, signal, { method: "DELETE", body: { name } });
+    }),
     validate: async () => {
       publishEvent({ kind: "Validate", snapshot: observation });
       const accepted = await run(async (signal) => {
@@ -196,16 +203,19 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
     acceptScan: () => {
       const reviewed = discoveryRef.current;
       if (reviewed.kind !== "Results") return Promise.resolve(false);
-      return run((signal) => backend.request(profileEndpoints.acceptScan, Schema.Json, signal, {
-        method: "POST", body: { reviewDigest: reviewed.reviewDigest, confirmAll: true },
-      }));
+      return run(async (signal) => {
+        const { guard } = await backend.request(profileEndpoints.acceptScan, GuiProfileGuardResult, signal, {
+          method: "POST", body: { reviewDigest: reviewed.reviewDigest, confirmAll: true },
+        });
+        return guard;
+      });
     },
     inspectRevision,
     trackSkill: (name, source, ref, subdir) => run(async (signal) => {
       setSkillBusy(`track:skills/${name}`);
       try {
         const completed = await operations.operation(profileEndpoints.track, { name, source, ref, subdir }, signal);
-        Schema.decodeUnknownSync(GuiTrackedSkill)(completed.result);
+        return Schema.decodeUnknownSync(GuiSkillTrackResult)(completed.result).guard;
       }
       finally { setSkillBusy(null); }
     }),
@@ -228,8 +238,10 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
     publish: (reviewer, onDone) => { void run(async (signal) => {
       publishEvent({ kind: "Publish", snapshot: observation });
       try {
-        await operations.operation(profileEndpoints.publications, { reviewer }, signal);
+        const completed = await operations.operation(profileEndpoints.publications, { reviewer }, signal);
+        const { guard } = Schema.decodeUnknownSync(GuiProfileGuardResult)(completed.result);
         publishEvent({ kind: "Published" }); setPending([]); onDone(); reload();
+        return guard;
       } catch (cause) { publishEvent({ kind: "Failed", stage: "publication", error: requestError(cause) }); throw cause; }
     }, false); },
     listed, setListed: (update) => { if (!items.data) return; const next = typeof update === "function" ? update(listed) : update; void saveConfig(items.data, [{ path: ["harnesses"], value: next }, { path: ["surfaces"], value: Object.fromEntries(Object.entries(surfaces).filter(([id]) => next.includes(id as HarnessId))) }]); },

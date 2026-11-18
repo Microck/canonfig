@@ -1,3 +1,6 @@
+import { scanGuardFolder } from "../../guard/commands.ts";
+import { guardEffect, guardStatus, saveGuardPolicy } from "../../guard/guard.ts";
+import { guardEndpoints, GuiGuardWrite } from "../../guard/contract.ts";
 import { FleetStart } from "../../domain/fleet-update.ts";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -89,7 +92,30 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
       settings: enabled ? readSettings(directory) : null,
     });
   };
+  const guardLocation = Effect.gen(function*() {
+    const session = yield* queries.session();
+    if (session.role === "unconfigured") {
+      return yield* new CliCommandFailure({ category: "usage-or-configuration", message: "Set up a machine before opening Guard Settings." });
+    }
+    return { root: session.folderPath, follower: session.role === "follower" };
+  });
   const routes: GuiRoute[] = [
+    queryRoute(guardEndpoints.status, () => guardLocation.pipe(
+      Effect.flatMap(({ root, follower }) => guardEffect(() => guardStatus(root, follower))),
+      Effect.map(toJson), Effect.mapError(commandFailure),
+    )),
+    mutationRoute("PUT", guardEndpoints.status, GuiGuardWrite, (input) => guardLocation.pipe(
+      Effect.flatMap(({ root, follower }) => follower
+        ? Effect.fail(new CliCommandFailure({ category: "usage-or-configuration", message: "Followers use offline Guard." }))
+        : guardEffect(() => saveGuardPolicy(root, input)).pipe(Effect.mapError(commandFailure)),
+      ), Effect.as({ saved: true }),
+    )),
+    mutationRoute("POST", guardEndpoints.scan, EmptyBody, () => guardLocation.pipe(
+      Effect.flatMap(({ root, follower }) => operations.start(
+        guardEffect((signal) => scanGuardFolder(root, follower, signal)).pipe(Effect.map(toJson), Effect.mapError(commandFailure)),
+        () => Effect.succeed(null),
+      )), Effect.map(toJson),
+    ), 202),
     queryRoute("/api/fleet-update", () => sourceOnly(source.fleetStatus()).pipe(Effect.map(toJson))),
     mutationRoute("POST", "/api/fleet-update", FleetStart, (input) => sourceOnly(source.startFleetUpdate(input)).pipe(Effect.map(toJson))),
     mutationRoute("POST", "/api/fleet-update/stop", Schema.Struct({ apply: Schema.Boolean }), (input) => sourceOnly(source.stopFleetUpdate(input.apply)).pipe(Effect.map(toJson))),

@@ -1,3 +1,5 @@
+import { guardStateOverlap, refuseManagedFollowerRoot } from "../guard/local-role.ts";
+import { enforceGuard, guardReserved, inspectGuard, type GuardItem, type GuardReport } from "../guard/guard.ts";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -10,7 +12,7 @@ export interface TrackedSkill extends SkillSource { name: string; path: string; 
 export interface SkillConfig { version: 1; skills: TrackedSkill[] }
 export interface SkillLocation { root: string; config: string }
 export interface SkillUpdateExpectation { name: string; path: string; previousCommit: string; nextCommit: string; previousDigest: string; nextDigest: string }
-export interface SkillCheck extends SkillUpdateExpectation { status: "unchanged" | "update-available" | "local-edits"; added: string[]; changed: string[]; removed: string[] }
+export interface SkillCheck extends SkillUpdateExpectation { status: "unchanged" | "update-available" | "local-edits"; added: string[]; changed: string[]; removed: string[]; guard?: GuardReport }
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new CanonfigError("SKILL_CONFIG_INVALID", "Expected a configuration object");
@@ -38,11 +40,13 @@ export function parseConfig(input: unknown): SkillConfig {
   });
   return { version: 1, skills };
 }
-function configPath(location: SkillLocation): string {
-  return path.join(location.root, safePath(location.config));
+async function configPath(location: SkillLocation): Promise<string> {
+  const relative = safePath(location.config);
+  if (guardReserved(relative) || await guardStateOverlap(location.root, path.join(location.root, relative))) throw new CanonfigError("SKILL_CONFIG_INVALID", "Skill tracking configuration overlaps Guard state");
+  return path.join(location.root, relative);
 }
 async function readConfig(location: SkillLocation): Promise<SkillConfig> {
-  const file = configPath(location);
+  const file = await configPath(location);
   await assertNoSymlinkPathComponents(location.root, file);
   try {
     const stat = await fs.stat(file);
@@ -54,21 +58,23 @@ async function readConfig(location: SkillLocation): Promise<SkillConfig> {
     throw new CanonfigError("SKILL_CONFIG_INVALID", "Could not parse skill source configuration; it was not reset or overwritten");
   }
 }
-function checkDestination(location: SkillLocation, skill: TrackedSkill): void {
-  const destination = safePath(skill.path).normalize("NFC").toLowerCase();
+async function checkDestination(location: SkillLocation, skill: TrackedSkill): Promise<void> {
+  const relative = safePath(skill.path);
+  if (guardReserved(relative) || await guardStateOverlap(location.root, path.join(location.root, relative))) throw new CanonfigError("SKILL_PATH_CONFLICT", "Tracked skill path overlaps Guard state");
+  const destination = relative.normalize("NFC").toLowerCase();
   const config = safePath(location.config).normalize("NFC").toLowerCase();
   if (config === destination || config.startsWith(`${destination}/`) || destination.startsWith(`${config}/`)) throw new CanonfigError("SKILL_PATH_CONFLICT", "A skill directory cannot contain its source configuration");
 }
 async function writeConfig(location: SkillLocation, config: SkillConfig, write = atomicWrite): Promise<void> {
   const validated = parseConfig(config);
-  for (const skill of validated.skills) checkDestination(location, skill);
-  await write(configPath(location), JSON.stringify(validated, null, 2) + "\n", 0o600, location.root);
+  for (const skill of validated.skills) await checkDestination(location, skill);
+  await write(await configPath(location), JSON.stringify(validated, null, 2) + "\n", 0o600, location.root);
 }
 async function exists(file: string): Promise<boolean> {
   try { await fs.lstat(file); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 }
 async function withLock<T>(location: SkillLocation, action: () => Promise<T>): Promise<T> {
-  const lock = `${configPath(location)}.lock`;
+  const lock = `${await configPath(location)}.lock`;
   await ensureDirectoryNoFollow(location.root, path.dirname(lock));
   await assertNoSymlinkPathComponents(location.root, lock);
   let handle;
@@ -79,10 +85,10 @@ async function withLock<T>(location: SkillLocation, action: () => Promise<T>): P
   }
   try {
     await handle.writeFile(JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }) + "\n");
-    if (await exists(`${configPath(location)}.pending`)) {
+    if (await exists(`${await configPath(location)}.pending`)) {
       let journal: SkillTransaction;
       try {
-        journal = Schema.decodeUnknownSync(SkillTransaction)(JSON.parse(await fs.readFile(`${configPath(location)}.pending`, "utf8")));
+        journal = Schema.decodeUnknownSync(SkillTransaction)(JSON.parse(await fs.readFile(`${await configPath(location)}.pending`, "utf8")));
       } catch {
         throw new CanonfigError("SKILL_RECOVERY_REQUIRED", "The skill update recovery journal is invalid or unreadable. Preserve it and inspect the installed skills and source configuration before retrying");
       }
@@ -93,21 +99,29 @@ async function withLock<T>(location: SkillLocation, action: () => Promise<T>): P
   } finally { await handle.close(); await fs.unlink(lock); }
 }
 export async function listSkills(location: SkillLocation): Promise<SkillConfig> { return readConfig(location); }
-export async function trackSkill(location: SkillLocation, input: SkillSource & { name: string; path: string }): Promise<TrackedSkill> {
+export async function trackSkill(location: SkillLocation, input: SkillSource & { name: string; path: string }, signal?: AbortSignal): Promise<TrackedSkill & { guard?: GuardReport }> {
+  await refuseManagedFollowerRoot(location.root, [safePath(location.config), safePath(input.path)]);
   return withLock(location, async () => {
     const config = await readConfig(location);
     const source = normalizeSource(input.source, location.root);
     const fetched = await fetchSkill({ ...input, source });
     const skill: TrackedSkill = { ...input, source, commit: fetched.commit, digest: fingerprint(fetched.files) };
     const candidate = parseConfig({ version: 1, skills: [...config.skills, skill] });
-    checkDestination(location, skill);
-    const local = await readLocalSkill(location.root, skill.path);
-    if (fingerprint(local) !== skill.digest) throw new CanonfigError("SKILL_LOCAL_EDITED", "Installed skill differs from the specified upstream revision; tracking refuses to adopt or overwrite unexplained local edits. Select its original ref or reconcile it first");
+    await checkDestination(location, skill);
+    const assertInstalledMatches = async () => {
+      const local = await readLocalSkill(location.root, skill.path);
+      if (fingerprint(local) !== skill.digest) throw new CanonfigError("SKILL_LOCAL_EDITED", "Installed skill differs from the specified upstream revision; tracking refuses to adopt or overwrite unexplained local edits. Select its original ref or reconcile it first");
+    };
+    await assertInstalledMatches();
+    const guard = await enforceGuard([skillGuardItem(skill.name, fetched.files)], { root: location.root, trigger: "skills.track", signal });
     if (JSON.stringify(await readConfig(location)) !== JSON.stringify(config)) throw new CanonfigError("SKILL_CONFIG_EDITED", "Source configuration changed during tracking; nothing was recorded");
+    await assertInstalledMatches();
     await writeConfig(location, candidate);
-    return skill;
+    return guard.verdict === "warn" || guard.recordUnavailable ? { ...skill, guard } : skill;
   });
 }
+const skillGuardItem = (name: string, files: readonly SkillFile[]): GuardItem => ({ kind: "skills", id: `skills:${name}`, files });
+
 interface Prepared { skill: TrackedSkill; check: SkillCheck; files: SkillFile[]; digest: string }
 async function prepare(location: SkillLocation, config: SkillConfig, names: readonly string[]): Promise<Prepared[]> {
   const wanted = new Set(names.map((name) => name.toLowerCase()));
@@ -115,7 +129,7 @@ async function prepare(location: SkillLocation, config: SkillConfig, names: read
   const result: Prepared[] = [];
   for (const skill of config.skills) {
     if (wanted.size && !wanted.has(skill.name.toLowerCase())) continue;
-    checkDestination(location, skill);
+    await checkDestination(location, skill);
     const local = await readLocalSkill(location.root, skill.path);
     const fetched = await fetchSkill({ ...skill, source: normalizeSource(skill.source, location.root) });
     const digest = fingerprint(fetched.files);
@@ -132,7 +146,12 @@ async function prepare(location: SkillLocation, config: SkillConfig, names: read
   return result;
 }
 export async function checkSkills(location: SkillLocation, names: readonly string[]): Promise<SkillCheck[]> {
-  return (await prepare(location, await readConfig(location), names)).map((item) => item.check);
+  const prepared = await prepare(location, await readConfig(location), names);
+  return Promise.all(prepared.map(async ({ skill, check, files }) => {
+    if (check.status !== "update-available") return check;
+    const guard = await inspectGuard([skillGuardItem(skill.name, files)], { root: location.root, trigger: "skills.check", preview: true });
+    return guard.verdict === "allow" ? check : { ...check, guard };
+  }));
 }
 
 /** Injectable transaction boundary; defaults always use the real filesystem. */
@@ -224,10 +243,14 @@ const transactionTransitions = {
   RollingBack: ["Finished"],
   Finished: [],
 } satisfies Readonly<Record<SkillTransaction["_tag"], ReadonlyArray<SkillTransaction["_tag"]>>>;
-export async function updateSkills(location: SkillLocation, names: readonly string[], operations: SkillUpdateOperations = skillUpdateOperations, validateSelection?: (config: SkillConfig) => void, expected?: readonly SkillUpdateExpectation[]): Promise<SkillCheck[]> {
+export async function updateSkills(location: SkillLocation, names: readonly string[], operations: SkillUpdateOperations = skillUpdateOperations, validateSelection?: (config: SkillConfig) => void, expected?: readonly SkillUpdateExpectation[], signal?: AbortSignal): Promise<SkillCheck[]> {
+  await refuseManagedFollowerRoot(location.root, [safePath(location.config)]);
   return withLock(location, async () => {
     const original = await readConfig(location);
     validateSelection?.(original);
+    const wanted = new Set(names.map((name) => name.toLowerCase()));
+    await refuseManagedFollowerRoot(location.root, original.skills
+      .filter((skill) => wanted.size === 0 || wanted.has(skill.name.toLowerCase())).map((skill) => skill.path));
     const prepared = await prepare(location, original, names);
     if (expected !== undefined) {
       const reviewed = new Map(expected.map((check) => [check.name, check]));
@@ -241,6 +264,10 @@ export async function updateSkills(location: SkillLocation, names: readonly stri
     if (prepared.some((item) => item.check.status === "local-edits")) throw new CanonfigError("SKILL_LOCAL_EDITED", "Local edits detected. No skill was updated; check the preview and reconcile changes before applying");
     const changed = prepared.filter((item) => item.check.status === "update-available");
     if (!changed.length) return prepared.map((item) => item.check);
+    const guard = await enforceGuard(changed.map(({ skill, files }) => skillGuardItem(skill.name, files)), {
+      root: location.root, trigger: "skills.update", signal,
+    });
+    if (guard.verdict === "warn" || guard.recordUnavailable) changed[0]!.check.guard = guard;
     const swaps: SkillSwap[] = [];
     for (const item of changed) {
       const destination = path.join(location.root, item.skill.path);
@@ -253,7 +280,7 @@ export async function updateSkills(location: SkillLocation, names: readonly stri
         previousDigest: item.skill.digest, expectedDigest: item.digest,
       });
     }
-    const journal = `${configPath(location)}.pending`;
+    const journal = `${await configPath(location)}.pending`;
     let transaction = Schema.decodeUnknownSync(SkillTransaction)({ _tag: "Preparing", version: 2, previousConfig: original, swaps });
     const swapAt = (index: number): SkillSwap => {
       const swap = transaction.swaps[index];

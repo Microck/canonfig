@@ -1222,3 +1222,10 @@ command group, including `secrets`, uses this schema. Secret-like fields are
 removed from `data` before printing. With `CANONFIG_DEBUG=1`, an internal
 failure adds `data.diagnostic`; review it before you share it, because it can
 contain paths.
+
+## `canonfig guard`
+
+`canonfig guard scan [--json]` checks the current folder and records the
+result locally. Exit 3 indicates a hold, including required checker
+unavailability. `canonfig guard status [--json]` reads the latest record
+without running a checker. Correct or deselect a blocked item before retrying.

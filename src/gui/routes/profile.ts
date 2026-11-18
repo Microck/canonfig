@@ -1,3 +1,4 @@
+import { GuardHold } from "../../guard/guard.ts";
 import { join } from "node:path";
 import { Effect, Schema } from "effect";
 import { CliCommandFailure, SourceCommands } from "../../cli/source-commands.ts";
@@ -52,6 +53,7 @@ export const profileRoutes = Effect.gen(function*() {
     Effect.flatMap((location) => Effect.tryPromise({
       try: () => run({ root: location.folder, config: "skills-sources.json" }),
       catch: (error) => {
+        if (error instanceof GuardHold) return commandFailure(error);
         const code = error instanceof CanonfigError ? error.code : undefined;
         const categories = { 0: "internal", 1: "internal", 2: "usage-or-configuration", 3: "human-action-required", 4: "conflict-or-drift", 5: "authentication-or-revocation", 6: "transport", 7: "verification-or-apply-failure" } satisfies Record<number, CliFailureCategory>;
         const exit = code === "SKILL_FETCH_FAILED" ? 6 : code === "SKILL_RECOVERY_REQUIRED" ? 3 : code === "SKILL_VERIFY_FAILED" ? 7 : commandFailureExitCode(code);

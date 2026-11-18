@@ -1,3 +1,4 @@
+import { ErrorNotice, GuardFindings } from "@/live/session";
 // Upstream skill updates on the Source, in a skill's detail panel: `canonfig skills track`, `check` and `update`
 // (src/skills/manager.ts, docs/skill-updates.md). The record of where each skill came from is
 // ~/.canonfig/skills-sources.json, which stays on the Source and is never published. An update only changes the
@@ -5,13 +6,12 @@
 // The workspace supplies upstream records and owns whether these operations are available.
 import { useId, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
-import { WarningCircle } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { DEMO, skillManifest, type Resource, type SkillSource, type UpstreamSkill } from "@/shared/metadata";
-import { CliText, Mono, StatusMark, type StatusKind } from "@/shared/shared";
+import { Mono, StatusMark, type StatusKind } from "@/shared/shared";
 import { useSharedReader, useSharedState, useWorkspace } from "./store";
 import { Field, Prop, SectionLabel, useDialogReturnFocus } from "./kit";
 import { ProfileActionNotice } from "./profile-authoring-controls";
@@ -399,7 +399,7 @@ function SkillBatchReview({ onClose }: { onClose: () => void }) {
           </label>;
         })}
       </fieldset>
-      {live.error && <p role="alert" className="flex items-start gap-2 text-sm text-bad"><WarningCircle className="mt-0.5 size-4 shrink-0" /><span className="whitespace-pre-wrap [overflow-wrap:anywhere]"><CliText>{live.error.message}</CliText></span></p>}
+      {live.error && <ErrorNotice error={live.error} />}
       {reviewed && <section aria-label={reviewed.kind === "update" ? "Update result" : "Update preview"} className="grid gap-3" aria-live="polite">
         {reviewed.checks.map((check) => <div key={check.name} className="grid gap-1.5 border-t border-border pt-2">
           <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -409,6 +409,7 @@ function SkillBatchReview({ onClose }: { onClose: () => void }) {
           </div>
           <p className="break-all font-mono text-xs text-faint">{short(check.previousCommit)} → {short(check.nextCommit)}</p>
           {check.status !== "unchanged" && <FileChanges check={check} />}
+          {check.guard && <GuardFindings report={check.guard} />}
         </div>)}
         {conflicts && <p className="text-sm text-muted-foreground">Deselect skills with local edits or reconcile them, then check again.</p>}
         {reviewed.kind === "check" && updates > 0 && !conflicts && <p className="text-sm text-muted-foreground">Apply replaces the changed skill folders on this Source.</p>}

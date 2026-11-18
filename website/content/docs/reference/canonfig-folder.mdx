@@ -442,3 +442,17 @@ Publishing content equal to the latest Profile Revision returns that
 revision. Any other content, including an older revision's, becomes the next
 sequence number, which is how you roll back. See
 [Publish changes from the folder](/docs/how-to/publish-from-the-folder).
+
+## Machine-local Guard policy
+
+`guard.jsonc` and `.guard/` hold machine-owned checker policy and local
+results. Canonfig excludes them from exported archives and Profile Revisions.
+A Source or standalone machine can configure one optional checker. Followers
+scan with the built-in offline rules.
+
+The built-in rules use text heuristics without parsing shell or language
+syntax. A literal `curl -k ... | sh` can trigger a hold in executable or
+script-like files and inline execution declarations, even in comments or
+quoted strings. The same pattern in prose only triggers a warning. Configure
+the optional checker for broader coverage of reworded instructions or commands
+padded or split beyond the built-in rules' fixed limits.

@@ -17,6 +17,7 @@ export interface TaggedRuntimeError extends Error {
   readonly blob?: string | undefined;
   readonly capability?: string | undefined;
   readonly category?: string | undefined;
+  readonly code?: string | undefined;
   readonly availableBytes?: bigint | undefined;
   readonly collection?: string | undefined;
   readonly command?: ReadonlyArray<string> | undefined;
@@ -150,6 +151,12 @@ const declared = (
  * `CliCommandFailure` with an explicit category.
  */
 export const failureTaxonomy = {
+  GuardHold: declared("human-action-required", () => "Guard held the operation"),
+  GuardPolicyError: classified(
+    (error) => error.code === "GUARD_POLICY_CONFLICT" ? "conflict-or-drift" : "usage-or-configuration",
+    (error) => declaredMessage(error) ?? "Guard policy or input is invalid",
+  ),
+  GuardCandidateChanged: declared("conflict-or-drift", () => "A candidate file changed during Guard verification"),
   // Plan and profile construction invariants. Reaching the CLI means Canonfig
   // built something malformed itself, so these are defects, not operator input.
   ActionCycleError: describe(

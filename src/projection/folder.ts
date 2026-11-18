@@ -1,4 +1,8 @@
-import { lstat, readdir, readFile, realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { constants } from "node:fs";
+import { guardFileLimit, guardRetentionBudget, guardRetentionPriority, hasShebang, type GuardFile } from "../guard/guard.ts";
+import { guardPublicationTargetOverlap, guardTargetOverlap } from "../guard/local-role.ts";
+import { lstat, open, readdir, readFile, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 
 import { parse as parseJsonc, type ParseError, printParseErrorCode } from "jsonc-parser";
@@ -336,6 +340,7 @@ export interface LoadedFolder {
   /** Local items `local.allow` does not admit; reported, never projected. */
   readonly ignoredLocal: ReadonlyArray<string>;
   readonly overlays: ReadonlyArray<OverlayStatus>;
+  readonly guardLocalFiles?: ReadonlyMap<string, FolderFile>;
 }
 
 /** An authored file: its bytes and whether its owner may execute it. */
@@ -396,7 +401,17 @@ const byName = <Entry extends { readonly name: string }>(left: Entry, right: Ent
  * folder's own path can pass through a link (macOS `/var` is `/private/var`,
  * or a home directory on another volume), and that must not reject every file.
  */
-const diskSource = (folder: string): FolderSource => {
+export type GuardFolderFile = FolderFile | {
+  readonly executable: boolean;
+  readonly content?: never;
+  readonly oversized: NonNullable<GuardFile["oversized"]>;
+};
+
+const diskSource = (folder: string): FolderSource & {
+  readonly guardDeclaration: (path: string) => Promise<Uint8Array | undefined>;
+  readonly guardFile: (path: string, maximumBytes: number) => Promise<GuardFolderFile | undefined>;
+  readonly guardShebang: (path: string) => Promise<boolean>;
+} => {
   let realFolder: Promise<string> | undefined;
   const insideFolder = async (path: string): Promise<void> => {
     realFolder ??= realpath(folder);
@@ -420,12 +435,70 @@ const diskSource = (folder: string): FolderSource => {
     await insideFolder(path);
     return found;
   };
+  const openGuardFile = async (path: string) => {
+    if (await regularFile(path) === undefined) return undefined;
+    return open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  };
   return {
     folder,
     holdsEntries,
     file: async (path) => {
       const found = await regularFile(path);
       return found === undefined ? undefined : { content: await readFile(path), executable: (found.mode & 0o100) !== 0 };
+    },
+    guardDeclaration: async (path) => {
+      const location = join(folder, path);
+      const handle = await openGuardFile(location);
+      if (handle === undefined) return undefined;
+      const maximumBytes = 16 * 1024 * 1024;
+      try {
+        const stat = await handle.stat();
+        if (!stat.isFile()) throw failure(location, "is not a regular file");
+        if (stat.size > maximumBytes) throw failure(path, "Guard declaration exceeds 16 MiB");
+        const chunks: Buffer[] = [];
+        let length = 0;
+        // The inclusive end lets us detect growth with at most one excess byte.
+        for await (const chunk of handle.createReadStream({ autoClose: false, start: 0, end: maximumBytes })) {
+          length += chunk.byteLength;
+          if (length > maximumBytes) throw failure(path, "Guard declaration exceeds 16 MiB");
+          chunks.push(chunk);
+        }
+        return Buffer.concat(chunks, length);
+      } finally { await handle.close(); }
+    },
+    guardFile: async (path, maximumBytes) => {
+      const handle = await openGuardFile(path);
+      if (handle === undefined) return undefined;
+      try {
+        const stat = await handle.stat();
+        if (!stat.isFile()) throw failure(path, "is not a regular file");
+        const executable = (stat.mode & 0o100) !== 0;
+        const hash = createHash("sha256");
+        let chunks: Buffer[] | undefined = stat.size <= maximumBytes ? [] : undefined;
+        let length = 0;
+        let shebang = false;
+        for await (const chunk of handle.createReadStream({ autoClose: false })) {
+          if (length === 0) shebang = hasShebang(chunk);
+          length += chunk.byteLength;
+          hash.update(chunk);
+          if (length > maximumBytes) chunks = undefined;
+          chunks?.push(chunk);
+        }
+        if (chunks !== undefined) return { executable, content: Buffer.concat(chunks, length) };
+        const oversized = { digest: hash.digest("hex"), length };
+        return { executable, oversized: shebang ? { ...oversized, shebang: true } : oversized };
+      } finally { await handle.close(); }
+    },
+    guardShebang: async (path) => {
+      const handle = await openGuardFile(path);
+      if (handle === undefined) return false;
+      try {
+        if (!(await handle.stat()).isFile()) throw failure(path, "is not a regular file");
+        // At most a UTF-8 BOM and the two shebang bytes.
+        const prefix = Buffer.alloc(5);
+        await handle.read(prefix, 0, prefix.length, 0);
+        return hasShebang(prefix);
+      } finally { await handle.close(); }
     },
     executable: async (path) => {
       const found = await regularFile(path);
@@ -576,9 +649,10 @@ const loadCommands = async (source: FolderSource, directory: string): Promise<Re
   }));
 
 /** Regular files beneath a directory, relative with forward slashes, unread. */
-const listFiles = async (source: FolderSource, directory: string, prefix = ""): Promise<Array<ListedFile>> => {
+const listFiles = async (source: FolderSource, directory: string, prefix = "", excluded?: ReadonlySet<string>): Promise<Array<ListedFile>> => {
   const files: Array<ListedFile> = [];
   for (const entry of await source.entries(directory)) {
+    if (excluded?.has(entry.name)) continue;
     const path = join(directory, entry.name);
     const relativePath = `${prefix}${entry.name}`;
     if (entry.directory) {
@@ -886,6 +960,59 @@ export const listFolderFiles = (folder: string, directory: string): Promise<Read
 /** The authoring allowlist: the only top-level entries of `~/.canonfig/` that are published or mirrored. */
 export const AUTHORING_ENTRIES = ["canonfig.jsonc", "AGENTS.md", "rules", "skills", "agents", "commands", "hooks", "files"] as const;
 
+/** Use the folder's containment checks without loading projection content. */
+export async function readGuardFolderFiles(folder: string, follower: boolean): Promise<Map<string, GuardFolderFile>> {
+  const source = diskSource(folder);
+  const files = new Map<string, GuardFolderFile | undefined>();
+  const attachments: string[] = [];
+  let remaining = guardRetentionBudget;
+  const readContent = async (path: string) => {
+    const file = await source.guardFile(join(folder, path), Math.min(guardFileLimit, remaining));
+    if (file === undefined) return;
+    remaining -= file.content?.byteLength ?? 0;
+    files.set(path, file);
+  };
+  const configPath = "canonfig.jsonc";
+  const configuration = await source.guardDeclaration(configPath);
+  if (configuration !== undefined) files.set(configPath, { content: configuration, executable: false });
+
+  const readTree = async (kind: string, prefix = "", excludedSkills?: ReadonlySet<string>) => {
+    const entry = `${prefix}${kind}`;
+    for (const listed of await listFiles(source, join(folder, entry), "", excludedSkills)) {
+      const path = `${entry}/${listed.path}`;
+      if (guardRetentionPriority(kind, path, listed.executable) || await source.guardShebang(join(folder, path))) {
+        await readContent(path);
+      } else {
+        // Keep candidate order for Guard reports and checker calls.
+        files.set(path, undefined);
+        attachments.push(path);
+      }
+    }
+  };
+  for (const entry of AUTHORING_ENTRIES) {
+    if (entry === "AGENTS.md") await readContent(entry);
+    else if (entry !== configPath) await readTree(entry);
+  }
+
+  if (follower && configuration !== undefined) {
+    const allow = decodeFolderConfig(configPath, decodeText(configPath, configuration)).local?.allow ?? [];
+    const localPath = "local/local.jsonc";
+    const localBytes = await source.guardDeclaration(localPath);
+    const local = localBytes === undefined ? {} : decodeLocalConfig(localPath, decodeText(localPath, localBytes));
+    for (const category of ["instructions", "rules", "skills", "agents", "commands"] as const) {
+      if (!allow.includes(category)) continue;
+      if (category === "instructions") await readContent("local/AGENTS.md");
+      else await readTree(category, "local/", category === "skills" ? new Set(local.excludeSkills) : undefined);
+    }
+    if (allow.includes("mcp") && local.mcp !== undefined) {
+      const mcp = Object.fromEntries(Object.entries(local.mcp).filter(([, server]) => server.enabled !== false));
+      files.set(localPath, { executable: false, content: new TextEncoder().encode(JSON.stringify({ mcp })) });
+    }
+  }
+  for (const path of attachments) await readContent(path);
+  return new Map([...files].filter((entry): entry is [string, GuardFolderFile] => entry[1] !== undefined));
+}
+
 /**
  * Whether a path holds something: any file, and any directory with something
  * in it. Nothing beneath it is read or checked.
@@ -981,11 +1108,13 @@ const loadResources = async <File extends { readonly executable: boolean }>(
   inputs: Readonly<Record<string, FolderResourceInput>> | undefined,
   path: string,
   reader: FileReader<File>,
+  targetOverlap: typeof guardTargetOverlap,
 ): Promise<ReadonlyArray<FolderResource<File>>> => {
   const resources: Array<FolderResource<File>> = [];
   for (const [id, input] of Object.entries(inputs ?? {}).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) {
     const label = `resources.${id}`;
     if (input.target.slice(2).split("/").some(dotSegment)) throw failure(path, `${label}.target ${input.target} has a . or .. segment`);
+    if (await targetOverlap(source.folder, input.target)) throw failure(path, `${label}.target overlaps machine-owned Guard state`);
     const overlap = resources.find((other) => targetsOverlap(other.target, input.target));
     if (overlap !== undefined) throw failure(path, `${label}.target ${input.target} overlaps resources.${overlap.id}.target ${overlap.target}`);
     if (input.kind === "config") {
@@ -1014,6 +1143,7 @@ const loadResources = async <File extends { readonly executable: boolean }>(
 const loadAuthored = async <File extends { readonly executable: boolean }>(
   source: FolderSource,
   reader: FileReader<File>,
+  targetOverlap = guardTargetOverlap,
 ): Promise<AuthoredFolder<File>> => {
   const folder = source.folder;
   const configPath = join(folder, "canonfig.jsonc");
@@ -1030,13 +1160,13 @@ const loadAuthored = async <File extends { readonly executable: boolean }>(
     commands: await loadCommands(source, join(folder, "commands")),
     hooks: await loadHooks(source, config.hooks ?? [], configPath),
     settings: settingsFor(config.settings, configPath),
-    resources: await loadResources(source, config.resources, configPath, reader),
+    resources: await loadResources(source, config.resources, configPath, reader, targetOverlap),
   };
 };
 
 /** Load and check the folder's authored items, ignoring `local/`, with skill and resource files listed but unread. */
 export const loadAuthoredFolder = (folder: string): Promise<AuthoredFolder<ListedFile>> =>
-  loadAuthored(diskSource(folder), listing);
+  loadAuthored(diskSource(folder), listing, guardPublicationTargetOverlap);
 
 /** Instructions followed by this machine's own: `local/AGENTS.md` after the published text. */
 const withLocalInstructions = (published: string | undefined, local: string | undefined): string | undefined => {
@@ -1052,7 +1182,8 @@ const withLocalInstructions = (published: string | undefined, local: string | un
 export const loadCanonicalFolder = async (
   folder: string,
   mirror?: ReadonlyMap<string, FolderFile>,
-): Promise<LoadedFolder> => loadFolderSource(mirror === undefined ? diskSource(folder) : mirrorSource(folder, mirror));
+  captureGuardLocal = false,
+): Promise<LoadedFolder> => loadFolderSource(mirror === undefined ? diskSource(folder) : mirrorSource(folder, mirror), captureGuardLocal);
 
 /** Validate a complete candidate in memory, including local edits, before publishing any file. */
 export const loadCanonicalFiles = (folder: string, files: ReadonlyMap<string, FolderFile>): Promise<LoadedFolder> =>
@@ -1133,8 +1264,17 @@ export const readFolderSkillNames = async (folder: string): Promise<FolderSkillN
   };
 };
 
-const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => {
-  const folder = source.folder;
+const loadFolderSource = async (input: FolderSource, captureGuardLocal = false): Promise<LoadedFolder> => {
+  const folder = input.folder;
+  // Capture the bytes the loader actually admits. Excluded categories only
+  // check presence, so their files never enter the Guard candidate.
+  const guardLocalFiles = new Map<string, FolderFile>();
+  const source: FolderSource = !captureGuardLocal ? input : { ...input, file: async (path) => {
+    const file = await input.file(path);
+    const key = relative(folder, path).split(sep).join("/");
+    if (file !== undefined && key.startsWith("local/") && key !== "local/local.jsonc") guardLocalFiles.set(key, file);
+    return file;
+  } };
   const authored = await loadAuthored(source, loading);
   const config = authored.config;
   const allow = config.local?.allow ?? [];
@@ -1244,5 +1384,15 @@ const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => 
     claims,
     backups: localConfig.backups ?? true,
   };
-  return { model, authoredResources: authored.resources, local, digest: modelDigest(model, local), ignoredLocal, overlays: overlayStatus };
+  if (captureGuardLocal) {
+    for (const name of local.excludeSkills) {
+      for (const path of guardLocalFiles.keys()) if (path.startsWith(`local/skills/${name}/`)) guardLocalFiles.delete(path);
+    }
+    if (localMcp.length > 0) {
+      guardLocalFiles.set("local/local.jsonc", { executable: false,
+        content: new TextEncoder().encode(JSON.stringify({ mcp: Object.fromEntries(localMcp.filter(([, server]) => server.enabled !== false)) })) });
+    }
+  }
+  return { model, authoredResources: authored.resources, local, digest: modelDigest(model, local), ignoredLocal, overlays: overlayStatus,
+    guardLocalFiles: captureGuardLocal ? guardLocalFiles : undefined };
 };

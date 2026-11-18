@@ -46,7 +46,7 @@ export const makeGuiOperations = Effect.gen(function*() {
     yield* operation.pipe(
       Effect.match({
         onSuccess: (result) => { finish(entry, { id, state: "succeeded", journal: null, result }); },
-        onFailure: (error) => { finish(entry, { id, state: "failed", journal: null, failure: failureBody(error.category, error.message) }); },
+        onFailure: (error) => { finish(entry, { id, state: "failed", journal: null, failure: failureBody(error.category, error.message, error.details) }); },
       }),
       Effect.catchCause(() => Effect.sync(() => {
         finish(entry, { id, state: "failed", journal: null, failure: failureBody("internal", "The operation stopped unexpectedly. Inspect its journal before retrying.") });

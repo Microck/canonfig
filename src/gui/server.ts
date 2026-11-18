@@ -273,7 +273,7 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
     if (route !== undefined) {
       try {
         await Effect.runPromise(route.handle(request, url).pipe(Effect.match({
-          onFailure: (failure) => json(response, failure.category === "internal" ? 500 : failure.category === "conflict-or-drift" ? 409 : 400, failureBody(failure.category, failure.message)),
+          onFailure: (failure) => json(response, failure.category === "internal" ? 500 : failure.category === "conflict-or-drift" ? 409 : 400, failureBody(failure.category, failure.message, failure.details)),
           onSuccess: (body) => {
             if (route.afterResponse !== undefined) response.once("finish", () => route.afterResponse?.(body));
             json(response, route.status ?? 200, body);

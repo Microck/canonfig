@@ -13,7 +13,7 @@ import { navItem } from "./nav";
 import { ChangeGroupsDialog, InviteDialog, MachinesView } from "./machines";
 import { ProfileView } from "./profile";
 import { PublishDialog, RevisionsView, SecretsView, SourceOverview } from "./source";
-import { AgentPolicyView, DoctorView, InstallersView, ServiceView, SetupView, VersionView } from "./settings";
+import { AgentPolicyView, DoctorView, GuardView, InstallersView, ServiceView, SetupView, VersionView } from "./settings";
 import { BackupsView } from "./harnesses";
 // Local settings is shared by both roles. Load this chunk only when one of its screens opens.
 const follower = () => import("./follower");
@@ -33,6 +33,7 @@ import type { Workspace } from "./workspace-types";
 
 const SOURCE_SCREENS: Partial<Record<View, React.ComponentType>> = {
   overview: SourceOverview,
+  guard: GuardView,
   profile: ProfileView,
   machines: MachinesView,
   revisions: RevisionsView,
@@ -49,6 +50,7 @@ const SOURCE_SCREENS: Partial<Record<View, React.ComponentType>> = {
 
 const FOLLOWER_SCREENS: Partial<Record<View, React.ComponentType>> = {
   overview: FollowerOverview,
+  guard: GuardView,
   machines: MachinesView,
   sync: SyncView,
   schedule: ScheduleView,

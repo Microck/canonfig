@@ -1,5 +1,10 @@
+import { Schema } from "effect";
+import { GuardPolicy, GuardReport, GuiGuardStatus, guardEndpoints } from "../../../src/guard/contract";
+import type { WorkspaceBackend } from "@/gui-client";
+import { GuardFindings } from "@/live/session";
+import { LiveResourcesContext, useLiveActions, useLiveResource } from "./live/resource";
 // Settings shared by both machine roles where the feature exists on both.
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { Check, Circle, HourglassMedium, Warning, WarningCircle, X } from "@/components/icons";
 import { cn, removeKeepingFocus } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -1054,4 +1059,97 @@ function FleetUpdates() {
       body="No more followers will be admitted. A follower already activating may finish. Installed releases and applied configuration stay in place."
       confirm="Stop rollout" onConfirm={fleet.stop} />
   </section>;
+}
+
+export function GuardView() {
+  const { enrollmentBackend, role } = useWorkspace();
+  return enrollmentBackend ? <LiveGuardSettings backend={enrollmentBackend} source={role === "source"} /> : null;
+}
+
+function LiveGuardSettings({ backend, source }: { backend: WorkspaceBackend; source: boolean }) {
+  const resources = useContext(LiveResourcesContext);
+  const current = useLiveResource(backend, guardEndpoints.status, GuiGuardStatus, true);
+  const actions = useLiveActions(backend, () => resources?.cache.invalidate([guardEndpoints.status]));
+  const [draft, setDraft] = useState<{ text: string; original: string; digest: string } | null>(null);
+  const [consent, setConsent] = useState(false);
+  const [invalidPolicy, setInvalidPolicy] = useState(false);
+  const [scanReport, setScanReport] = useState<typeof GuardReport.Type | null>(null);
+  const failedReport = actions.state.error?.failure.guard;
+  const latest = failedReport ?? scanReport ?? current.data?.latest;
+  const policy = current.data?.policy;
+  const digest = current.data?.digest;
+  const { dialog: leaveDialog } = useLeaveGuard(draft !== null && (draft.text !== draft.original || consent), "the checker policy");
+  const cancelEdit = () => {
+    setDraft(null);
+    setConsent(false);
+    setInvalidPolicy(false);
+  };
+  const save = () => {
+    if (draft === null) return;
+    let decoded: typeof GuardPolicy.Type;
+    try {
+      decoded = Schema.decodeUnknownSync(GuardPolicy, { onExcessProperty: "error" })(JSON.parse(draft.text));
+    } catch {
+      setInvalidPolicy(true);
+      return;
+    }
+    void actions.run(async (signal) => {
+      await backend.request(guardEndpoints.status, Schema.Struct({ saved: Schema.Boolean }), signal, {
+        method: "PUT", body: { policy: decoded, digest: draft.digest, consent },
+      });
+      cancelEdit();
+    });
+  };
+  const scan = () => void actions.run(async (signal) => {
+    const operation = await actions.operation(guardEndpoints.scan, {}, signal);
+    setScanReport(Schema.decodeUnknownSync(GuardReport)(operation.result));
+  });
+  return <>
+    <PageHeader crumbs={["Settings", "Guard"]} actions={
+      <Button variant="outline" size="sm" disabled={current.loading || actions.state.loading} onClick={scan}>Scan current folder</Button>
+    } />
+    <Body reloading={current.loading}><Column>
+      {current.error && <ErrorNotice error={current.error} />}
+      {actions.state.error && <ErrorNotice error={actions.state.error} />}
+      {(current.data || latest) && <div className={settingsGroup}>
+        {current.data && <>
+          <SettingRow title="Built-in rules">Offline</SettingRow>
+          {source && <SettingRow title="Optional checker">{policy?.checker?.kind ?? "Off"}</SettingRow>}
+          {source && policy?.checker?.authentication === "bearer-env" && <SettingRow title="Bearer credential">{current.data.bearerAvailable ? "Available" : "Missing"}</SettingRow>}
+        </>}
+        <SettingRow title={failedReport || scanReport ? "Scan result" : "Last recorded scan"}>{latest
+          ? `${latest.verdict} · ${latest.trigger} · ${latest.at}`
+          : "No result recorded"}</SettingRow>
+        {latest && !failedReport && <div className="px-4 pb-4">
+          <p className="mt-2 text-sm">{latest.checked} files checked, {latest.unsupported} unsupported, {latest.unavailable} unavailable</p>
+          <GuardFindings report={latest} />
+          {latest.next && <p className="mt-2 text-sm">{latest.next}</p>}
+        </div>}
+      </div>}
+      {source && digest && policy && <div className="mt-6 space-y-3">
+        <Label htmlFor="guard-policy">Checker policy</Label>
+        <Textarea id="guard-policy" className="font-mono" rows={8} spellCheck={false} readOnly={draft === null || actions.state.loading}
+          value={draft?.text ?? JSON.stringify(policy, null, 2)}
+          onChange={(event) => {
+            if (draft !== null) setDraft({ ...draft, text: event.target.value });
+            setInvalidPolicy(false);
+          }} />
+        {draft === null ? <Button variant="outline" onClick={() => {
+          const original = JSON.stringify(policy, null, 2);
+          setDraft({ text: original, original, digest });
+        }}>Edit checker policy</Button> : <>
+          <Label className="flex items-start gap-2">
+            <Checkbox checked={consent} disabled={actions.state.loading} onCheckedChange={(checked) => setConsent(checked === true)} />
+            I allow this checker to receive eligible instruction and script text. This can include confidential material. A local proxy can forward it, and remote services may charge for requests.
+          </Label>
+          {invalidPolicy && <p role="alert" className="text-bad">Enter a valid Guard policy in JSON.</p>}
+          <div className="flex gap-2">
+            <Button variant="primary" disabled={actions.state.loading} onClick={save}>Save policy</Button>
+            <Button variant="outline" disabled={actions.state.loading} onClick={cancelEdit}>Cancel</Button>
+          </div>
+        </>}
+      </div>}
+    </Column></Body>
+    {leaveDialog}
+  </>;
 }

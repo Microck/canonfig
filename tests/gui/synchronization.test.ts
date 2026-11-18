@@ -361,6 +361,9 @@ it("plans and applies an enrolled follower and performs digest-checked local ope
   success(source.invoke(["source", "invite", "--endpoint", `https://127.0.0.1:${port}`, "--output", invitation]));
   success(follower.invoke(["follower", "enroll", "--stdin", "--name", "GUI follower"], readFileSync(invitation, "utf8")));
   const api = await gui(follower);
+  expect((await api.call("/api/guard")).payload).toMatchObject({ mode: "static", latest: null });
+  expect((await api.call("/api/guard", "PUT", { policy: { version: 1 }, digest: "fixture", consent: true })).payload)
+    .toMatchObject({ exitCode: 2 });
   for (const path of ["/api/imports/preview", "/api/imports"]) {
     expect((await api.call(path, "POST", { base64: "YWJj", replace: true, ...(path === "/api/imports" ? { sha256: createHash("sha256").update("abc").digest("hex") } : {}) })).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   }

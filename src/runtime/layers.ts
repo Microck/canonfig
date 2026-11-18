@@ -1,3 +1,4 @@
+import { GuardHold, guardStatus } from "../guard/guard.ts";
 import { localPreservation } from "../projection/authoring.ts";
 import { readFollowerFleet } from "./follower-fleet-update.ts";
 import { readFleetUpdate, recordMachineHealth } from "../enrollment/fleet-update.ts";
@@ -192,6 +193,7 @@ const commandFailure = (
   return new CliCommandFailure({
     category: category ?? described.category,
     message: described.message,
+    details: error instanceof GuardHold ? payload({ guard: error.report }) : undefined,
   });
 };
 
@@ -1377,13 +1379,19 @@ const followerCommandsLayer = (
                 const tunnelReport = yield* mapFailure(tunnel.tunnelStatus({
                   stateDirectory: join(dirname(statePath), "tunnel"),
                 }));
+                const guard = yield* Effect.tryPromise({
+                  try: () => guardStatus(dirname(statePath), configuration !== undefined),
+                  catch: () => "Guard status unavailable" as const,
+                }).pipe(Effect.map(({ mode, latest }) => ({
+                  mode, latest: latest === null ? null : { verdict: latest.verdict, trigger: latest.trigger, at: latest.at, findingCount: latest.findingCount },
+                })), Effect.catch(() => Effect.succeed({ mode: "unavailable" })));
                 if (configuration === undefined) {
                   const notReached = (detail: string) => ({
                     reached: false,
                     detail,
                   });
                   return {
-                    machineRole,
+                    machineRole, guard,
                     fleetUpdate: yield* Effect.try({ try: () => readFleetUpdate(statePath), catch: (cause) => new CliCommandFailure({ category: "human-action-required", message: String(cause) }) }),
                     lifecycle: {
                       discovered: notReached("no Source endpoint is configured"),
@@ -1426,7 +1434,7 @@ const followerCommandsLayer = (
                     sourceFingerprint: configuration.source.signingFingerprint,
                     tlsFingerprint: configuration.source.tlsFingerprint,
                   },
-                  ...state,
+                  ...state, guard,
                   fleetUpdate: yield* Effect.try({ try: () => readFollowerFleet(statePath), catch: (cause) => new CliCommandFailure({ category: "human-action-required", message: String(cause) }) }),
                   enrollmentLifecycle: configuration.lifecycle._tag,
                   enrollmentRecovery: configuration.lifecycle._tag === "RollbackPending" ? rollbackRecoveryDetail : undefined,

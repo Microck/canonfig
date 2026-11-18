@@ -20,11 +20,11 @@ const { LiveWorkspaceProvider } = await import("../workspace/live-provider");
 const { createRoot } = await import("react-dom/client");
 const { ProfileView } = await import("../workspace/profile");
 const { LocalView } = await import("../workspace/follower");
-const { RevisionsView, SecretsView } = await import("../workspace/source");
+const { PublishDialog, RevisionsView, SecretsView } = await import("../workspace/source");
 const { FollowerOperationEvidence } = await import("../workspace/follower-evidence");
 const { SetupJournal } = await import("../onboarding/enrollment-controller");
 const { TooltipProvider } = await import("../components/ui/tooltip");
-const { AgentPolicyView } = await import("../workspace/settings");
+const { AgentPolicyView, GuardView } = await import("../workspace/settings");
 after(async () => { await GlobalRegistrator.unregister(); });
 
 function Probe() {
@@ -67,7 +67,9 @@ function Fixture({ backend, session }: { backend: WorkspaceBackend; session: Gui
     {route.view === "local" && <LocalView />}
     {route.view === "secrets" && <SecretsView />}
     {route.view === "revisions" && <RevisionsView />}
+    {route.role === "source" && <PublishDialog />}
     {route.view === "agent" && <AgentPolicyView />}
+    {route.view === "guard" && <GuardView />}
     {route.role === "follower" && <FollowerOperationEvidence />}
   </LiveWorkspaceProvider></TooltipProvider>;
 }
@@ -145,6 +147,12 @@ const sourceResponses = () => ({
   "/api/machines": { followers: [follower], invitations: [], health: {} },
 });
 
+const guardWarning = (trigger: string, item: string) => ({
+  trigger, at: "2026-11-06T00:00:00Z", verdict: "warn",
+  checked: 1, unsupported: 0, unavailable: 0, cacheHits: 0, findingCount: 1,
+  findings: [{ severity: "warn", checker: "static", code: "encoded-looking-text", item, digest: "a".repeat(64) }],
+});
+
 for (const path of ["/source/secrets", "/source/profile/groups"]) {
   it(`${path} cold entry loads follower membership, reports failures and refreshes it`, async () => {
     let pending: ServerResponse | undefined;
@@ -173,6 +181,100 @@ for (const path of ["/source/secrets", "/source/profile/groups"]) {
     } finally { await app.close(); }
   });
 }
+
+it("locks the checker policy and consent while saving", async () => {
+  const saving = Promise.withResolvers<ServerResponse>();
+  const app = await fixture("/source/settings/guard", {
+    ...sourceResponses(),
+    "/api/guard": { mode: "static", policy: { version: 1 }, digest: "fixture-digest", latest: null, bearerAvailable: false },
+  }, (path, method, _body, outgoing) => {
+    if (path !== "/api/guard" || method !== "PUT") return false;
+    saving.resolve(outgoing);
+    return true;
+  });
+  try {
+    await until(() => app.container.querySelector("#guard-policy") !== null, "Guard policy did not load");
+    await click("Edit checker policy");
+    const policy = app.container.querySelector<HTMLTextAreaElement>("#guard-policy");
+    const consent = app.container.querySelector<HTMLButtonElement>('[role="checkbox"]');
+    assert.ok(policy && consent);
+    assert.equal(policy.readOnly, false);
+    assert.equal(consent.disabled, false);
+    await click("Save policy");
+    const response = await saving.promise;
+    assert.equal(policy.readOnly, true);
+    assert.equal(consent.disabled, true);
+    await act(async () => { response.end(JSON.stringify({ saved: true })); });
+    await until(() => app.container.querySelector('[role="checkbox"]') === null, "Guard policy edit did not finish");
+  } finally { await app.close(); }
+});
+
+it("protects a checker policy draft until save or cancel", async () => {
+  let rejectSave = true;
+  const app = await fixture("/source/settings/guard", {
+    ...sourceResponses(),
+    "/api/guard": { mode: "static", policy: { version: 1 }, digest: "fixture-digest", latest: null },
+  }, (path, method, _body, outgoing) => {
+    if (path !== "/api/guard" || method !== "PUT") return false;
+    if (rejectSave) {
+      outgoing.statusCode = 409;
+      outgoing.end(JSON.stringify({ category: "usage-or-configuration", exitCode: 2, message: "Checker policy changed." }));
+    } else {
+      outgoing.end(JSON.stringify({ saved: true }));
+    }
+    return true;
+  });
+  const leave = () => act(async () => { navigate("/source/overview"); });
+  const draft = JSON.stringify({ version: 1, checker: { kind: "http", endpoint: "http://127.0.0.1:9000" } });
+  try {
+    await until(() => app.container.querySelector("#guard-policy") !== null, "Guard policy did not load");
+    await click("Edit checker policy");
+    await fill("#guard-policy", draft);
+    await leave();
+    assert.ok(document.querySelector('[role="dialog"]')?.textContent?.includes("Discard unsaved changes?"));
+    await click("Keep editing");
+    await click("Save policy");
+    await until(() => app.container.textContent?.includes("Checker policy changed.") === true, "The save failure did not appear");
+    await leave();
+    assert.ok(document.querySelector('[role="dialog"]')?.textContent?.includes("Discard unsaved changes?"));
+    await click("Keep editing");
+    assert.equal(app.container.querySelector<HTMLTextAreaElement>("#guard-policy")?.value, draft);
+    await click("Cancel");
+    await leave();
+    assert.equal(window.location.pathname, "/source/overview");
+
+    await act(async () => { navigate("/source/settings/guard"); });
+    await click("Edit checker policy");
+    await fill("#guard-policy", draft);
+    rejectSave = false;
+    await click("Save policy");
+    await until(() => app.container.querySelector<HTMLTextAreaElement>("#guard-policy")?.readOnly === true
+      && app.container.querySelector('[role="checkbox"]') === null, "The save did not close the draft");
+    await leave();
+    assert.equal(window.location.pathname, "/source/overview");
+  } finally { await app.close(); }
+});
+
+it("shows an unsaved scan result when Guard status still reports an older verdict", async () => {
+  const older = { ...guardWarning("profile.publish", "skills:old"), verdict: "allow", findingCount: 0, findings: [] };
+  const report = { ...guardWarning("guard.scan", "skills:current"), recordUnavailable: true };
+  const app = await fixture("/source/settings/guard", {
+    ...sourceResponses(),
+    "/api/guard": { mode: "static", latest: older },
+    "/api/guard/scan": { id: "scan" },
+    "/api/operations/scan": { id: "scan", journal: null, state: "succeeded", result: report },
+  });
+  try {
+    await until(() => app.container.textContent?.includes("allow · profile.publish") === true, "The recorded verdict did not appear");
+    await click("Scan current folder");
+    await until(() => app.requests.filter((request) => request === "GET /api/guard").length === 2
+      && [...app.container.querySelectorAll("button")].some((button) => button.textContent === "Scan current folder" && !button.disabled),
+    "Guard status did not finish refreshing");
+    assert.ok(app.container.textContent?.includes("warn · guard.scan"));
+    assert.ok(app.container.textContent?.includes("skills:current encoded-looking-text (static)"));
+    assert.ok(app.container.textContent?.includes("The local result could not be saved."));
+  } finally { await app.close(); }
+});
 
 const revisionMetadata = {
   approval: { revision: "fixture", proposalDigest: "proposal", revisionDigest: "digest", reviewer: "Alice", reviewedAt: "2026-11-06T00:00:00Z", recordedAt: "2026-11-06T00:00:00Z" },
@@ -503,6 +605,34 @@ it("only a successful plan enables Apply and successful Apply reaches done", asy
   } finally { await app.close(); }
 });
 
+for (const verdict of ["block", "warn"] as const) {
+  it(`renders structured Guard findings when follower Sync returns ${verdict}`, async () => {
+    const digest = "a".repeat(64);
+    const code = verdict === "block" ? "instruction-credential-concealment" : "credential-file-reference";
+    const guard = {
+      trigger: "follower.sync", at: "2026-11-06T00:00:00Z", verdict,
+      checked: 1, unsupported: 0, unavailable: 0, cacheHits: 0, findingCount: 1,
+      findings: [{ severity: verdict, checker: "static", code, item: "skills:fixture", digest, path: "references/review.md", line: 2 }],
+    };
+    const operation = verdict === "block"
+      ? { state: "failed", failure: { category: "human-action-required", exitCode: 3, message: "Guard held Sync.", guard } }
+      : { state: "succeeded", result: { planDigest: digest, guard } };
+    const app = await fixture("/follower/overview", {
+      ...sourceResponses(),
+      "/api/sync/plan": { id: "guard" },
+      "/api/operations/guard": { id: "guard", journal: null, ...operation },
+    });
+    try {
+      await click("Check follower");
+      await until(() => app.container.querySelector("li code")?.textContent === "skills:fixture / references/review.md:2",
+        "Sync did not show the Guard finding location");
+      const finding = app.container.querySelector("li");
+      assert.ok(finding?.textContent?.includes(`${code} (static)`));
+      assert.equal(app.container.querySelector('[data-testid="can-apply"]')?.textContent, String(verdict === "warn"));
+    } finally { await app.close(); }
+  });
+}
+
 it("a profile save refresh keeps edits made after the submitted draft", async () => {
   const snapshot = (digest: string, body: string) => ({ ...profile, items: [{ path: "AGENTS.md", digest, files: [{ path: "AGENTS.md", base64: Buffer.from(body).toString("base64"), executable: false }] }] });
   let refresh: ServerResponse | undefined;
@@ -552,7 +682,9 @@ it("the counted discovery action confirms accepted tools and retains a failed ac
   }, (path, _method, _body, outgoing) => {
     if (path !== "/api/profile/scan/accept") return false;
     outgoing.statusCode = ++attempts === 1 ? 400 : 200;
-    outgoing.end(JSON.stringify(attempts === 1 ? { category: "usage-or-configuration", exitCode: 2, message: "Write refused" } : { written: ["ruff"] }));
+    outgoing.end(JSON.stringify(attempts === 1 ? { category: "usage-or-configuration", exitCode: 2, message: "Write refused" } : {
+      written: ["ruff"], guard: guardWarning("source.scan", "tools:ruff"),
+    }));
     return true;
   });
   try {
@@ -568,6 +700,7 @@ it("the counted discovery action confirms accepted tools and retains a failed ac
     assert.ok(document.querySelector('[role="dialog"]'));
     await click("Add 1 accepted tool");
     await until(() => !document.querySelector('[role="dialog"]'), "Successful acceptance did not close");
+    assert.match(app.container.textContent ?? "", /tools:ruff encoded-looking-text \(static\)/u);
     assert.deepEqual(app.mutations.filter(({ path }) => path === "/api/profile/scan/accept").map(({ body }) => body), [
       { reviewDigest: "reviewed", confirmAll: true }, { reviewDigest: "reviewed", confirmAll: true },
     ]);
@@ -618,6 +751,31 @@ it("a changed folder snapshot invalidates publication review evidence", async ()
     await click("Reload page");
     await until(() => app.container.querySelector('[data-testid="profile-name"]')?.textContent === "Changed", "Folder did not refresh");
     assert.equal(app.container.querySelector('[data-testid="validation"]')?.textContent, "undefined");
+  } finally { await app.close(); }
+});
+
+it("shows the publication warning after navigating to Revisions", async () => {
+  const app = await fixture("/source/profile", {
+    ...sourceResponses(),
+    "/api/profile/validate": { valid: true, errors: [], profile: {} },
+    "/api/publications": { id: "publish" },
+    "/api/operations/publish": {
+      id: "publish", state: "succeeded", journal: null,
+      result: { id: "review:1", guard: guardWarning("source.publish", "instructions") },
+    },
+  });
+  try {
+    await until(() => !app.container.querySelector('[aria-busy="true"]'), "Profile did not load");
+    const publish = app.container.querySelector<HTMLButtonElement>('button[data-tour="publish"]');
+    assert.ok(publish);
+    await act(async () => { publish.click(); });
+    await fill("#pub-reviewer", "Reviewer");
+    const submit = document.querySelector<HTMLButtonElement>('[role="dialog"] button[type="submit"]');
+    assert.ok(submit);
+    await until(() => !submit.disabled, "Publication validation did not finish");
+    await act(async () => { submit.click(); });
+    await until(() => window.location.pathname === "/source/revisions" && !document.querySelector('[role="dialog"]'), "Publication did not finish");
+    assert.match(app.container.textContent ?? "", /instructions encoded-looking-text \(static\)/u);
   } finally { await app.close(); }
 });
 
@@ -794,6 +952,28 @@ const skillCheck = (name: string, status: "update-available" | "local-edits" = "
   name, path: `skills/${name}`, previousCommit: "a".repeat(40), nextCommit: "c".repeat(40),
   previousDigest: "b".repeat(64), nextDigest: "d".repeat(64),
   status, added: ["reference.txt"], changed: ["SKILL.md"], removed: [],
+});
+
+it("shows the Guard warning in the skill editor after tracking succeeds", async () => {
+  const skill = trackedSkills[0]!;
+  const app = await fixture("/source/profile?focus=skills%2Freview", {
+    ...sourceResponses(),
+    "/api/profile/items": trackedProfile,
+    "/api/skills/track": { id: "track" },
+    "/api/operations/track": {
+      id: "track", state: "succeeded", journal: null,
+      result: { ...skill, guard: guardWarning("skills.track", "skills:review") },
+    },
+  });
+  try {
+    await until(() => app.container.textContent?.includes("Track upstream…") === true, "Skill editor did not load");
+    await click("Track upstream…");
+    await fill("#track-source", skill.source);
+    await fill("#track-ref", skill.ref);
+    await click("Track skill");
+    await until(() => !document.querySelector('[role="dialog"]'), "Skill tracking did not finish");
+    assert.match(app.container.textContent ?? "", /skills:review encoded-looking-text \(static\)/u);
+  } finally { await app.close(); }
 });
 
 it("reviews all tracked skills, invalidates preview on selection changes and applies one selected-set operation", async () => {

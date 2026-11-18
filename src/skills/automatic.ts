@@ -58,7 +58,7 @@ export async function automaticSkillUpdates(
   let passes = 0;
   while (!options.signal?.aborted) {
     const checks = options.apply
-      ? await run.update(location, selectedNames, skillUpdateOperations, (config) => assertAutomaticSelection(config.skills, selected))
+      ? await run.update(location, selectedNames, skillUpdateOperations, (config) => assertAutomaticSelection(config.skills, selected), undefined, options.signal)
       : await run.check(location, selectedNames);
     options.onPass(checks, ++passes);
     // Preview is always one read-only pass, even without --once.

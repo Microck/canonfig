@@ -31,6 +31,7 @@ const setupFailure = (error: SetupError): CliCommandFailure => {
   return new CliCommandFailure({
     category: described.category,
     message: described.message,
+    details: error.guard === undefined ? undefined : Schema.decodeUnknownSync(Schema.MutableJson)({ guard: error.guard }),
   });
 };
 

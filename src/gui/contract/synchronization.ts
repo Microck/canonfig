@@ -1,3 +1,4 @@
+import { GuardReport } from "../../guard/contract.ts";
 import { Schema } from "effect";
 import { ContentDigest } from "../../domain/brand.ts";
 import { TARGET_IDS } from "../../projection/model.ts";
@@ -128,5 +129,6 @@ export const GuiArchiveImportResult = Schema.Struct({
   plan: Schema.Json,
   backup: Schema.optionalKey(Schema.String),
   outcome: Schema.optionalKey(Schema.Json),
+  guard: Schema.optionalKey(GuardReport),
 });
 export interface GuiArchiveImportResult extends Schema.Schema.Type<typeof GuiArchiveImportResult> {}
