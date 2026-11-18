@@ -10,6 +10,7 @@ export default defineProject({
       "tests/command-log.test.ts",
       "tests/documentation-command-validation.test.ts",
       "tests/doctor.test.ts",
+      "tests/mcp-check.test.ts",
       "tests/foundation.test.ts",
       "tests/packed-cli.test.ts",
       "tests/mcp-secrets.test.ts",

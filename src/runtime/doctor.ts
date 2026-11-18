@@ -9,6 +9,8 @@ import { Effect, Option, Redacted, Ref, Schema } from "effect";
 
 import { installerMethods } from "../domain/installer-binding.ts";
 import { harnessReport } from "../projection/detect.ts";
+import { TARGET_IDS } from "../projection/model.ts";
+import { checkInstalledHarnessMcp, MCP_MAXIMUM_STARTUP_MILLISECONDS, MCP_STARTUP_TIMEOUT_MILLISECONDS, type McpCheckResult } from "./mcp-check.ts";
 import { rootContext } from "../projection/plan.ts";
 import { resolveInstallerInvocation } from "../synchronization/installer-bindings.ts";
 import { programVersion } from "../cli/help.ts";
@@ -50,6 +52,7 @@ export const doctorProbeNames = [
   "package-managers",
   "agent-adapter",
   "harnesses",
+  "mcp",
   "tailscale",
 ] as const;
 
@@ -119,6 +122,11 @@ export interface DoctorInput {
   readonly agent?: DoctorAgentConfiguration | undefined;
   /** The environment harness roots resolve from. */
   readonly environment: (name: string) => string | undefined;
+  /**
+   * The environment and folder harnesses would start MCP servers with. The mcp
+   * probe starts real processes, so it runs only when the caller supplies this.
+   */
+  readonly mcpLaunch?: { readonly environment: NodeJS.ProcessEnv; readonly cwd: string } | undefined;
 }
 
 const pass = (
@@ -566,6 +574,48 @@ const harnessProbe = (
       : pass("harnesses", `${report.harnesses.filter((row) => row.status === "selected").length} listed harness(es) installed`, details);
   });
 
+// A failing line starts with `failingDetailPrefix` (src/domain/fleet-update.ts), which the GUI relies on.
+const mcpLine = (result: McpCheckResult): string =>
+  [result.status, result.harnesses.join(","), result.detail, ...result.milliseconds === undefined ? [] : [`${result.milliseconds} ms`]].join(" · ");
+
+/**
+ * Launches every MCP server the installed harnesses are configured to start,
+ * the way they start them, and requires initialize and tools/list to answer.
+ * Each server gets at least Codex's default startup budget, because a doctor
+ * timeout shorter than the harness's would report healthy servers as failing.
+ */
+const mcpProbe = (input: DoctorInput, perServerMilliseconds: number) =>
+  Effect.gen(function*() {
+    if (input.mcpLaunch === undefined) return skipped("mcp", "MCP servers are checked only by canonfig doctor and the GUI health check");
+    const results = yield* checkInstalledHarnessMcp({
+      context: yield* rootContext(input.environment),
+      folder: dirname(input.statePath),
+      environment: input.mcpLaunch.environment,
+      cwd: input.mcpLaunch.cwd,
+      timeoutMilliseconds: perServerMilliseconds,
+    });
+    if (results.length === 0) return skipped("mcp", "no installed harness declares an MCP server");
+    // A name declared differently by several harnesses gets one row per launch, keyed by its harnesses.
+    const nameCounts = new Map<string, number>();
+    for (const result of results) nameCounts.set(result.name, (nameCounts.get(result.name) ?? 0) + 1);
+    const label = (result: McpCheckResult) =>
+      (nameCounts.get(result.name) ?? 0) > 1 ? `${result.name} (${result.harnesses.join(",")})` : result.name;
+    const details = Object.fromEntries(
+      [...results].sort((left, right) => left.name.localeCompare(right.name)).map((result) => [label(result), mcpLine(result)]),
+    );
+    const failing = results.filter((result) => result.status === "fail");
+    const unchecked = results.filter((result) => result.status === "skipped");
+    const answered = results.length - failing.length - unchecked.length;
+    if (failing.length > 0) {
+      const names = failing.map((result) => `${result.name} (${result.harnesses.join(",")})`).join(", ");
+      return failed("mcp", "verification-or-apply-failure", `${failing.length} of ${results.length} MCP server(s) failed to start or answer: ${names}`, details);
+    }
+    const message = `${answered} MCP server(s) started and listed their tools`;
+    return unchecked.length > 0
+      ? { name: "mcp" as const, status: "warning" as const, message: `${message}; ${unchecked.length} not checked`, details }
+      : pass("mcp", message, details);
+  });
+
 export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
   input: DoctorInput,
 ): Effect.fn.Return<
@@ -577,6 +627,7 @@ export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
   const schedules = yield* ScheduleManager;
   const repository = yield* StateRepository;
   const timeout = input.timeoutMilliseconds;
+  const mcpPerServerMilliseconds = Math.max(timeout, MCP_STARTUP_TIMEOUT_MILLISECONDS);
   const sourceStage = yield* Ref.make<SourceProbeStage>("not-started");
   const sourceTimedOut = Effect.map(Ref.get(sourceStage), (stage) =>
     stage === "loading-credential"
@@ -652,6 +703,17 @@ export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
       (error) =>
         failed("harnesses", "usage-or-configuration", `harness selection could not be read: ${error.message}`),
       "internal",
+    ),
+    isolated(
+      "mcp",
+      // The probe bounds each server and checks one harness at a time, so this
+      // only guards against a hang outside them.
+      // Entry budgets may exceed the default but are capped, so this bounds a harness's slowest server.
+      // Each harness batch may also spend up to 2 s closing HTTP sessions.
+      (Math.max(mcpPerServerMilliseconds, MCP_MAXIMUM_STARTUP_MILLISECONDS) + 2_000) * TARGET_IDS.length + 5_000,
+      mcpProbe(input, mcpPerServerMilliseconds),
+      () => failed("mcp", "internal", "MCP server check failed"),
+      "verification-or-apply-failure",
     ),
     isolated("tailscale", timeout, detectTailnet().pipe(Effect.map((report): DoctorProbe => ({
       name: "tailscale",

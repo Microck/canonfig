@@ -1,4 +1,4 @@
-import type { FleetUpdate } from "../../../src/domain/fleet-update";
+import { failingDetailPrefix, type FleetUpdate } from "../../../src/domain/fleet-update";
 import type { Schema } from "effect";
 import type { UpdateLifecycle } from "./live/self-update";
 import type { GuiAgentHarness, GuiAgentPolicy, GuiInstallerMethod, GuiSourceServiceStatus, GuiSelfUpdateCheck, GuiSelfUpdateStatus, GuiSelfUpdateProgress } from "../../../src/gui/contract/administration";
@@ -53,10 +53,19 @@ export type PolicySave =
   | { kind: "HarnessFirstFailed"; draft: SavedPolicy; error: GuiRequestError }
   | { kind: "PolicyLastFailed"; draft: SavedPolicy; error: GuiRequestError };
 
+/** The failing items a probe lists in its details (such as MCP servers), as `name: reason`. */
+export const failingItems = (details: Readonly<Record<string, boolean | number | string>> | undefined): string[] =>
+  Object.entries(details ?? {}).flatMap(([item, value]) => {
+    const text = String(value);
+    return text.startsWith(failingDetailPrefix) ? [`${item}: ${text.slice(failingDetailPrefix.length)}`] : [];
+  });
+
 export interface DoctorCheck {
   check: string;
   result: "ok" | "warn" | "bad" | "off";
   detail: string;
+  /** Failing items from the probe's details, shown under a problem. */
+  items?: string[];
   fix?: { why: string; command: string };
   evidence?: Schema.Json;
   commands?: readonly string[];

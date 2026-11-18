@@ -1,6 +1,11 @@
 import { Schema } from "effect";
 import { CertificateFingerprint, FollowerId } from "./brand.ts";
 
+/**
+ * How a doctor probe detail value marks a failing item, such as one MCP server
+ * (`fail · codex · command not found: ...`). The GUI lists those items.
+ */
+export const failingDetailPrefix = "fail · ";
 export const FleetVersion = Schema.String.check(Schema.isPattern(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u));
 export const FleetIntegrity = Schema.String.check(Schema.isPattern(/^sha512-[A-Za-z0-9+/]{86}==$/u));
 export const FleetDirective = Schema.Struct({

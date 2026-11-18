@@ -119,7 +119,7 @@ const MIB = 1024 * 1024;
 const MAX_FILE_BYTES = MIB;
 // `~/.claude.json` keeps project history next to `mcpServers` and often
 // passes 1 MiB; a config file is parsed whole anyway, so it gets a wider bound.
-const MAX_CONFIG_BYTES = 16 * MIB;
+export const MAX_CONFIG_BYTES = 16 * MIB;
 const MAX_SKILL_FILES = 512;
 
 const DOCUMENT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/u;
