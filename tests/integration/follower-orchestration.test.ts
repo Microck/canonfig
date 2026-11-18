@@ -1290,18 +1290,22 @@ process.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringi
       hooks: [{ id: "check", event: "before_tool", run: ["hooks/check.sh"], onFailure: "block" }],
     }, {
       "hooks/check.sh": "#!/bin/sh\nexit 0\n",
-      "commands/review.md": "---\ndescription: Review\n---\nReview the change.\n",
+      // Keep the plugin active after removing its only hook so this exercises a plugin update.
+      "agents/reviewer.md": "---\ndescription: Reviews changes\n---\nReview the change.\n",
     }));
     const follower = await enroll(root, source, { name: "Hook follower", harnesses: ["amp"] });
     expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
     const plugin = join(follower.home, ".config", "amp", "plugins", "canonfig.ts");
     const original = read(plugin);
-    write(plugin, `${original}\n// Local edit\n`);
+    expect(original).toContain('runCanonfig("check"');
+    const edited = `${original}\n// Local edit\n`;
+    write(plugin, edited);
     writeConfig(source.folder, { harnesses: ["amp"], hooks: [] });
     rmSync(join(source.folder, "hooks", "check.sh"));
     await source.publish();
     const script = join(follower.folder, "hooks", "check.sh");
     expect((await follower.apply()).outcome).toMatchObject({ outcome: "FollowerDrift" });
+    expect(read(plugin)).toBe(edited);
     expect(read(script)).toBe("#!/bin/sh\nexit 0\n");
     write(plugin, original);
     expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });

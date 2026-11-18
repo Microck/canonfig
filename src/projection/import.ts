@@ -11,7 +11,9 @@ import { containsLiteralCredential, isEnvironmentReference, isSecretField } from
 import { getConfigPath, parseConfigDocument } from "../synchronization/config-codec.ts";
 import { type ConfigJson, type ConfigObject, isConfigObject } from "../synchronization/config-value.ts";
 import { adapterFor } from "./adapters/index.ts";
+import { commandSkill } from "./adapters/shared-documents.ts";
 import { emptyModel } from "./detect.ts";
+import { readFolderCommands } from "./folder.ts";
 import { type MarkdownDocument, markdownWithFrontmatter, parseMarkdownDocument } from "./frontmatter.ts";
 import { maxImportContentBytes, SkillReader, type ImportReadLimit } from "./import-skills.ts";
 import type { HarnessLayout, OwnedSurface, RootContext, SkillReadSource } from "./harness.ts";
@@ -702,6 +704,8 @@ class ScanCollector {
   readonly skipped: Array<ImportSkip> = [];
   private readonly candidates = new Map<string, Array<ImportCandidate>>();
 
+  constructor(private readonly generatedSkillDigests: ReadonlySet<string>) {}
+
   skip(source: ImportSource, path: string, reason: string): void {
     this.skipped.push({ source, path, reason });
   }
@@ -715,6 +719,9 @@ class ScanCollector {
   ): void {
     if (outcome.kind === "missing") return;
     if (outcome.kind === "skip" || outcome.kind === "limit") return this.skip(source, path, outcome.reason);
+    if (category === "skills" && this.generatedSkillDigests.has(outcome.digest)) {
+      return this.skip(source, path, "Already projected from a Canonical Folder command.");
+    }
     const id = `${source}/${category}/${outcome.name}`;
     const group = this.candidates.get(id) ?? [];
     const identical = group.find((candidate) => candidate.digest === outcome.digest);
@@ -827,7 +834,14 @@ export const scanImports = async (input: {
   const { context, folder } = input;
   const scope = harnessScope(context, folder);
   const layouts = [...new Set(input.harnesses)].map((harness) => scope.layouts.find(([id]) => id === harness)!);
-  const collector = new ScanCollector();
+  // A newly selected harness can discover command skills projected by a shared reader.
+  // Compare complete skill trees so native skills with similar names remain importable.
+  const commands = layouts.some(([, layout]) => layout.skillSources.length > 0) ? await readFolderCommands(folder) : [];
+  const generatedSkillDigests = new Set(commands.map((command) => {
+    const { name, files } = commandSkill(command);
+    return contentDigest("skills", name, { kind: "tree", files });
+  }));
+  const collector = new ScanCollector(generatedSkillDigests);
   const reader = await SkillReader.create(context, scope.neverTouch, scope.folder, scope.configPaths);
   const shared = new Map<string, Array<readonly [TargetId, SkillReadSource]>>();
   for (const [harness, layout] of layouts) {

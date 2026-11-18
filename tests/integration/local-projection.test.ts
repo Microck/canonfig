@@ -30,6 +30,7 @@ import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts"
 import { StateRepository } from "../../src/state/state-repository.service.ts";
 import type { ConfigValue } from "../../src/domain/resource.ts";
 import { localProjectionFollower } from "../../src/domain/synchronization.ts";
+import { executeFolderScaffold, executeHarnessImport, planSourceFolder } from "../../src/setup/setup.folder.ts";
 import { withRunLock } from "../../src/synchronization/run-lock.ts";
 import { SynchronizationLive } from "../../src/synchronization/synchronization.layer.ts";
 
@@ -391,6 +392,32 @@ describe("local projection", () => {
     write(join(value.folder, "skills", "command-ship", "SKILL.md"), "---\nname: command-ship\ndescription: Authored skill\n---\nKeep this.\n");
     await expect(sync(value, "apply")).rejects.toThrow(/commands\/ship\.md and skills\/command-ship both project to skill 'command-ship'/u);
     expect(existsSync(join(value.home, ".agents", "skills"))).toBe(false);
+  });
+
+  it("skips projected command skills when Source setup imports from a new shared reader", async () => {
+    const value = fixture(["codex"], { surfaces: { codex: ["instructions", "commands"] } });
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(takeoverRows(value)).toContainEqual(expect.objectContaining({ harness: "codex" }));
+    const sharedSkills = join(value.home, ".agents", "skills");
+    const generated = join(sharedSkills, "command-ship", "SKILL.md");
+    expect(readFileSync(generated, "utf8")).toContain("Ship the change.");
+    const nativeSkill = "---\nname: command-review\ndescription: Review changes\n---\nRead the diff.\n";
+    write(join(value.home, ".kimi-code", "skills", "command-review", "SKILL.md"), nativeSkill);
+    const environment = environmentOf(value);
+    await Effect.runPromise(Effect.gen(function*() {
+      const plan = yield* planSourceFolder({
+        folder: value.folder, environment, harnesses: ["codex", "kimi"], imports: { kind: "all" },
+      });
+      expect(plan.imports.offered.map((candidate) => candidate.target)).toEqual(["skills/command-review"]);
+      for (const item of plan.items) {
+        if (item.kind === "folder-scaffold") yield* executeFolderScaffold(item);
+        if (item.kind === "harness-import") yield* executeHarnessImport(item, environment);
+      }
+    }).pipe(Effect.provide(layer(value))));
+
+    expect(readFileSync(join(value.folder, "skills", "command-review", "SKILL.md"), "utf8")).toBe(nativeSkill);
+    expect(existsSync(join(value.folder, "skills", "command-ship"))).toBe(false);
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
   });
 
   it("projects Cursor and Grok commands only to their native directories", async () => {

@@ -873,6 +873,10 @@ export const readHarnessSelection = async (folder: string): Promise<HarnessSelec
 export const readFolderConfig = (folder: string): Promise<FolderConfig | undefined> =>
   readJsonc(diskSource(folder), join(folder, "canonfig.jsonc"), CanonfigJsonc);
 
+/** Only the authored commands, for recognizing their skill projections during import. */
+export const readFolderCommands = (folder: string): Promise<ReadonlyArray<CommandDocument>> =>
+  loadCommands(diskSource(folder), join(folder, "commands"));
+
 /** Decode `canonfig.jsonc` text, for a caller that edits the file and checks the result. */
 export const decodeFolderConfig = (path: string, text: string): FolderConfig => decodeJsonc(path, text, CanonfigJsonc);
 
