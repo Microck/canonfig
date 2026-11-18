@@ -78,6 +78,7 @@ const recordingLayers = (
     inspectProfile: (input) => invoke("profile.show", input),
   };
   const follower: FollowerCommandsService = {
+    history: (input) => invoke(`history.${input.action}`, input),
     enroll: (input) => invoke("follower.enroll", input),
     unenroll: () => invoke("follower.unenroll"),
     synchronize: synchronize ?? ((input) => invoke("sync", input)),
@@ -920,4 +921,25 @@ it.each([
 
 it.each(["source", "schedule", "setup", "tunnel", "profile", "agent", "follower"])("names the missing action for %s", (group) => {
   expect(evaluateCli([group])).toMatchObject({ _tag: "InvalidInput", message: `Missing ${group} command` });
+});
+
+it.each([
+  [["history"], { action: "list" }],
+  [["history", "enable"], { action: "enable", branch: "main" }],
+  [["history", "enable", "--remote", "git@example.org:me/config.git", "--branch", "work"], { action: "enable", remote: "git@example.org:me/config.git", branch: "work" }],
+  [["history", "diff", "3", "abcdef1"], { action: "diff", from: "3", to: "abcdef1" }],
+  [["history", "restore", "3", "--reviewer", "Maria"], { action: "restore", revision: "3", reviewer: "Maria" }],
+  [["history", "push"], { action: "push" }],
+] as const)("parses %j", (argv, request) => {
+  expect(evaluateCli([...argv, "--json"])).toMatchObject({ _tag: "Command", format: "json", command: { _tag: "History", request } });
+});
+
+it.each([["diff", "0"], ["diff", "abcdef"], ["diff", "2", "HEAD"], ["restore", "2", "3"], ["push", "extra"]])(
+  "rejects malformed history arguments %s %s", (...args) => {
+    expect(evaluateCli(["history", ...args])).toMatchObject({ _tag: "InvalidInput" });
+  },
+);
+
+it("shows history help", () => {
+  expect(evaluateCli(["history", "--help"])).toMatchObject({ _tag: "Help" });
 });

@@ -1,3 +1,4 @@
+import type { HistoryRequest } from "../gui/contract/history.ts";
 import type { BackupRequest } from "../backup/backup.types.ts";
 import { Context, type Effect } from "effect";
 
@@ -102,6 +103,7 @@ export interface TunnelStartCommandInput {
 }
 
 export interface FollowerCommandsService {
+  readonly history: (request: HistoryRequest) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly backup: (request: BackupRequest) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly enroll: (
     input: FollowerEnrollInput,

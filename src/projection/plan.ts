@@ -609,6 +609,8 @@ export interface PlanBuiltInput {
   /** The resources a retirement runs after; none unless given. */
   readonly retiredDependsOn?: ((record: AppliedResourceRecord) => ReadonlyArray<ResourceIdType>) | undefined;
   readonly appliedResources: ReadonlyArray<AppliedResourceRecord>;
+  /** Authoring targets the run removes after taking a snapshot. */
+  readonly removeTargets?: ReadonlyArray<ResourceIdType> | undefined;
   /** Resources whose ownership the run ends although it writes them (restore). */
   readonly endsOwnership?: ReadonlyArray<ResourceIdType> | undefined;
   /** See `SynchronizationPlannerInput.noReplace`; only import sets it. */
@@ -688,7 +690,8 @@ export const planBuilt = (input: PlanBuiltInput) =>
       ),
     };
     const plan = yield* planSynchronization({
-      revision: { ...revision, removedResources },
+      revision: { ...revision, removedResources: [...removedResources, ...input.removeTargets ?? []] },
+      removeTargets: input.removeTargets,
       follower: input.follower,
       observedState: {
         platform: (yield* machine.userDirectories()).home.platform,

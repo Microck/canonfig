@@ -158,7 +158,14 @@ it("plans and applies an enrolled follower and performs digest-checked local ope
   const invitation = join(source.home, "invitation");
   success(source.invoke(["source", "invite", "--endpoint", `https://127.0.0.1:${port}`, "--output", invitation]));
   success(follower.invoke(["follower", "enroll", "--stdin", "--name", "GUI follower"], readFileSync(invitation, "utf8")));
+  const history = follower.invoke(["history"]);
+  expect(history.status).toBe(2);
+  expect(JSON.parse(history.stderr).message).toContain("cannot use Canonical Folder history");
   const api = await gui(follower);
+  expect((await api.call("/api/history/status")).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  expect(await api.operation("/api/history", { action: "enable", branch: "main" })).toMatchObject({
+    state: "failed", failure: { category: "usage-or-configuration", exitCode: 2 },
+  });
   for (const path of [
     "/api/sync/plan", "/api/sync/apply", "/api/sync/reviews", "/api/recovery",
     "/api/recovery/abandon", "/api/secrets/sync", "/api/tunnel/start", "/api/tunnel/stop", "/api/enrollment",

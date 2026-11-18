@@ -1032,6 +1032,7 @@ const intendedStates = (
       case "remove-resource": {
         if (context.resource.kind === "directory" || context.resource.kind === "skill") {
           if (root === undefined) return intended;
+          if (detail.requireAbsent === true) intended.set(root.absolute, { state: "absent" });
           for (const relative of detail.paths) {
             intended.set((yield* normalizeRelative(root, relative)).absolute, { state: "absent" });
           }
@@ -1765,7 +1766,8 @@ const prepareRemoval = (
           // captured the root, so it recreates it.
           yield* machine.removeEmptyDirectory({ path: root }).pipe(
             Effect.catchTag("MachineFilesystemError", (error) =>
-              /\b(?:ENOTEMPTY|EEXIST|ENOENT)\b/u.test(error.message) ? Effect.void : Effect.fail(error)
+              error.message.includes("ENOENT") || (detail.requireAbsent !== true && /\b(?:ENOTEMPTY|EEXIST)\b/u.test(error.message))
+                ? Effect.void : Effect.fail(error)
             ),
           );
         });

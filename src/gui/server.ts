@@ -19,6 +19,7 @@ import { enrollmentRoutes } from "./routes/enrollment.ts";
 import { synchronizationRoutes } from "./routes/synchronization.ts";
 import { administrationRoutes } from "./routes/administration.ts";
 import { backupRoutes } from "./routes/backup.ts";
+import { historyRoutes } from "./routes/history.ts";
 import { managedCommandLease, type ManagedCommandLease } from "../runtime/self-update/coordination.ts";
 import { detectTailnet, isTailnetAddress, tailnetBinding } from "../enrollment/tailnet.ts";
 
@@ -186,6 +187,7 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
     enrollmentRoutes,
     synchronizationRoutes,
     backupRoutes,
+    historyRoutes,
     administrationRoutes(lease, () => { Effect.runSync(Deferred.succeed(stopped, undefined)); }, updateSettled),
   ]).pipe(Effect.provideService(GuiOperations, operations))).flat();
   routes.push(operations.route);

@@ -1,3 +1,4 @@
+import { revisionSelector, type HistoryRequest } from "../gui/contract/history.ts";
 import { BackupName, SnapshotId, type BackupRequest } from "../backup/backup.types.ts";
 import { fileURLToPath } from "node:url";
 import { prepareFleetSync, finishFleetSync, restartFleetSync } from "../runtime/follower-fleet-update.ts";
@@ -54,6 +55,7 @@ import type { StateRepository } from "../state/state-repository.service.ts";
 import { sourceEndpointUrl } from "../enrollment/tailnet.ts";
 
 export type CliCommand =
+  | { readonly _tag: "History"; readonly request: HistoryRequest }
   | { readonly _tag: "Backup"; readonly request: BackupRequest }
   | { readonly _tag: "Ui"; readonly port: number; readonly open: boolean; readonly host: string; readonly origin: string | undefined }
   | { readonly _tag: "SourceInit" }
@@ -824,6 +826,32 @@ const evaluateAgentHarnessCommand = (
   }, format);
 };
 
+const evaluateHistoryCommand = (action: string | undefined, rest: ReadonlyArray<string>, format: CliOutputFormat): CliOutcome => {
+  const history = (request: HistoryRequest) => command({ _tag: "History", request }, format);
+  if (action === "enable") {
+    const options = parseOptions(rest, new Set(["--remote", "--branch"]), new Set());
+    if (options.positionals.length !== 0) return invalid("Usage: canonfig history enable [--remote <url>] [--branch <name>]");
+    const remote = one(options, "--remote");
+    const branch = one(options, "--branch") ?? "main";
+    return history(remote === undefined ? { action, branch } : { action, branch, remote });
+  }
+  if (action === "diff" || action === "restore") {
+    const options = parseOptions(rest, new Set(action === "restore" ? ["--reviewer"] : []), new Set());
+    const [from, to] = options.positionals;
+    if (from === undefined || !revisionSelector.test(from)
+      || (action === "diff" ? options.positionals.length > 2 || (to !== undefined && !revisionSelector.test(to)) : to !== undefined)) {
+      return invalid(action === "diff" ? "Usage: canonfig history diff <rev> [<rev>]" : "Usage: canonfig history restore <rev> [--reviewer <name>]");
+    }
+    if (action === "diff") return history(to === undefined ? { action, from } : { action, from, to });
+    const reviewer = one(options, "--reviewer");
+    return history(reviewer === undefined ? { action, revision: from } : { action, revision: from, reviewer });
+  }
+  if (rest.length === 0 && (action === undefined || action === "disable" || action === "push")) {
+    return history({ action: action ?? "list" });
+  }
+  return invalid("Choose a history command. Run 'canonfig history --help' for usage.");
+};
+
 const evaluateBackupCommand = (action: string | undefined, rest: ReadonlyArray<string>, format: CliOutputFormat): CliOutcome => {
   if (action === "status" || action === "schedule") {
     const options = parseOptions(rest, new Set(), new Set());
@@ -922,6 +950,7 @@ const evaluateCommand = (
       }, format);
     }
     if (area === "source") return evaluateSourceCommand(action, rest, format);
+    if (area === "history") return evaluateHistoryCommand(action, rest, format);
     if (area === "backup") return evaluateBackupCommand(action, rest, format);
     // The positional invitation below serves the private `--stdin`
     // redispatch built in main.ts from in-memory argv. Real process argv
@@ -1126,6 +1155,7 @@ export const evaluateCli = (arguments_: ReadonlyArray<string>): CliOutcome => {
 
 export const commandName = (value: CliCommand): string => {
   switch (value._tag) {
+    case "History": return `history.${value.request.action}`;
     case "Backup": return `backup.${value.request.action}`;
     case "Ui": return "ui";
     case "SourceInit": return "source.init";
@@ -1186,6 +1216,7 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
   const follower = yield* FollowerCommands;
   const setup = yield* SetupCommands;
   switch (value._tag) {
+    case "History": return yield* follower.history(value.request);
     case "Backup": return yield* follower.backup(value.request);
     case "SourceInit": return yield* source.initialize();
     case "SourceScan": return yield* source.scan({ write: value.write });

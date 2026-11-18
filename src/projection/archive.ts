@@ -1,3 +1,4 @@
+import { machineIdentity, MachineRole } from "../state/machine-role.ts";
 import { createHash, createPublicKey, verify as verifySignature } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
@@ -5,7 +6,7 @@ import { gunzipSync, gzipSync } from "node:zlib";
 
 import { Effect, Schema } from "effect";
 
-import { ContentDigest, ResourceId, Timestamp, type FollowerId, type SourceSignature } from "../domain/brand.ts";
+import { ContentDigest, ResourceId, Timestamp, type SourceSignature } from "../domain/brand.ts";
 import { ConfigValue } from "../domain/resource.ts";
 import { localProjectionFollower, type AppliedResourceRecord } from "../domain/synchronization.ts";
 import { TaggedError } from "../domain/tagged-error.ts";
@@ -149,8 +150,6 @@ export const ManifestFile = Schema.Struct({
 });
 export type ManifestFile = typeof ManifestFile.Type;
 
-export const MachineRole = Schema.Literals(["source", "follower", "standalone"]);
-export type MachineRole = typeof MachineRole.Type;
 
 export const ExportManifest = Schema.Struct({
   format: Schema.Literal("canonfig-export"),
@@ -236,7 +235,7 @@ const credentialFileName = (name: string): boolean =>
   name === ".env" || name.startsWith(".env.") || /^(?:auth|credentials)\.json$/iu.test(name);
 
 /** The folder entry (`skills`, `AGENTS.md`) a path below `folder/` belongs to, if the allowlist admits it. */
-const folderEntryOf = (folderPath: string): string | undefined => {
+export const folderEntryOf = (folderPath: string): string | undefined => {
   const [entry = "", ...rest] = folderPath.split("/");
   if (!FOLDER_ENTRIES.includes(entry)) return undefined;
   return FOLDER_FILES.has(entry) === (rest.length === 0) ? entry : undefined;
@@ -425,24 +424,7 @@ const verifyArchive = async (path: string, bytes: Uint8Array, maximumFiles: numb
 
 // ── export ───────────────────────────────────────────────────────────────
 
-export interface MachineIdentity {
-  readonly role: MachineRole;
-  /** Whose Applied Resource Records describe this machine's harnesses. */
-  readonly follower: FollowerId;
-}
 
-/** Which role this machine plays: an enrolled follower, an initialized Source, or neither. */
-export const machineIdentity = Effect.gen(function*() {
-  const repository = yield* StateRepository;
-  const configuration = yield* repository.getFollowerSynchronizationConfiguration();
-  const identity: MachineIdentity = configuration !== undefined
-    ? { role: "follower", follower: configuration.follower.id }
-    : {
-      role: (yield* repository.getEnrollmentSource()) === undefined ? "standalone" : "source",
-      follower: localProjectionFollower,
-    };
-  return identity;
-});
 
 /**
  * Run filesystem work for an export or import. Archive and folder errors pass
@@ -1106,58 +1088,81 @@ export const planImport = (input: {
       });
     }
 
-    const byEntry = new Map<string, Array<ArchivedFolderFile>>();
-    for (const file of verified.folderFiles) {
-      const entry = folderEntryOf(file.path)!;
-      byEntry.set(entry, [...byEntry.get(entry) ?? [], file]);
-    }
-    const present: Array<string> = [];
-    for (const entry of FOLDER_ENTRIES) {
-      if (yield* archiveWork(join(input.folder, entry), () => holdsEntries(join(input.folder, entry)))) {
-        present.push(entry);
-      }
-    }
-    // The authored folder must be empty, and `local/` too when the archive
-    // brings its own: an import never writes over what is there unasked.
-    const occupied = present.filter((entry) => entry !== "local" || byEntry.has("local"));
-    if (!input.replace && occupied.length > 0) {
-      return yield* new ArchiveConflictError({
-        path: input.folder,
-        message: `already holds ${occupied.join(", ")}, and an import never overwrites them unasked. Pass --replace to replace the entries the archive holds (it snapshots them to ${join(input.folder, ".backups")} first), or move them out of ${input.folder}`,
-      });
-    }
-
-    const built: Array<BuiltResource> = [];
-    for (const entry of FOLDER_ENTRIES) {
-      const files = byEntry.get(entry);
-      if (files === undefined) continue;
-      const id = Schema.decodeUnknownSync(ResourceId)(`import:${entry}`);
-      const target = join(input.folder, entry);
-      const executable = (mode: number) => (mode & 0o100) !== 0;
-      built.push(FOLDER_FILES.has(entry)
-        ? fileResource(id, target, "replace", files[0]!.content, executable(files[0]!.mode))
-        : directoryResource(id, target, "replace", files.map((file) => ({
-          path: file.path.slice(entry.length + 1),
-          content: file.content,
-          executable: executable(file.mode),
-        }))));
-    }
-    const planned = yield* planBuilt({
-      follower: localProjectionFollower,
-      origin: "archive",
-      originDigest: verified.manifestSha256,
-      built,
-      retired: [],
-      appliedResources: input.appliedResources,
-      endsOwnership: built.map((item) => item.resource.id),
-      // Without --replace every target was empty when checked above; a file
-      // created there since makes its write fail instead of being replaced.
-      noReplace: !input.replace,
+    const planned = yield* planVerifiedFolder({
+      folder: input.folder, files: verified.folderFiles, digest: verified.manifestSha256,
+      mode: input.replace ? "replace" : "create", appliedResources: input.appliedResources,
     });
     return {
       ...planned,
       archive: verified,
-      replaced: present.filter((entry) => byEntry.has(entry)),
-      kept: present.filter((entry) => !byEntry.has(entry)),
     } satisfies ImportPlan;
   });
+
+/** Plan writing already verified folder files through the same journal as archive import. */
+export const planVerifiedFolder = (input: {
+  readonly folder: string;
+  readonly files: ReadonlyArray<ArchivedFolderFile>;
+  readonly digest: ContentDigest;
+  readonly mode: "create" | "replace" | "exact";
+  readonly appliedResources: ReadonlyArray<AppliedResourceRecord>;
+}) => Effect.gen(function*() {
+  const byEntry = new Map<string, Array<ArchivedFolderFile>>();
+  for (const file of input.files) {
+    const entry = folderEntryOf(file.path)!;
+    const group = byEntry.get(entry);
+    if (group === undefined) byEntry.set(entry, [file]);
+    else group.push(file);
+  }
+  const present: Array<string> = [];
+  for (const entry of FOLDER_ENTRIES) {
+    if (yield* archiveWork(join(input.folder, entry), () => input.mode === "exact" && entry !== "local"
+      ? lstat(join(input.folder, entry)).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; })
+      : holdsEntries(join(input.folder, entry)))) {
+      present.push(entry);
+    }
+  }
+  // The authored folder must be empty, and `local/` too when the archive
+  // brings its own: an import never writes over what is there unasked.
+  const occupied = present.filter((entry) => entry !== "local" || byEntry.has("local"));
+  if (input.mode === "create" && occupied.length > 0) {
+    return yield* new ArchiveConflictError({
+      path: input.folder,
+      message: `already holds ${occupied.join(", ")}, and an import never overwrites them unasked. Pass --replace to replace the entries the archive holds (it snapshots them to ${join(input.folder, ".backups")} first), or move them out of ${input.folder}`,
+    });
+  }
+
+  const omitted = input.mode === "exact" ? present.filter(entry => entry !== "local" && !byEntry.has(entry)) : [];
+  const built: Array<BuiltResource> = [];
+  for (const entry of FOLDER_ENTRIES) {
+    const files = byEntry.get(entry);
+    if (files === undefined && !omitted.includes(entry)) continue;
+    const id = Schema.decodeUnknownSync(ResourceId)(`import:${entry}`);
+    const target = join(input.folder, entry);
+    const executable = (mode: number) => (mode & 0o100) !== 0;
+    built.push(FOLDER_FILES.has(entry)
+      ? fileResource(id, target, "replace", files?.[0]?.content ?? new Uint8Array(), executable(files?.[0]?.mode ?? 0))
+      : directoryResource(id, target, "replace", (files ?? []).map((file) => ({
+        path: file.path.slice(entry.length + 1),
+        content: file.content,
+        executable: executable(file.mode),
+      }))));
+  }
+  const planned = yield* planBuilt({
+    follower: localProjectionFollower,
+    origin: "archive",
+    originDigest: input.digest,
+    built,
+    retired: [],
+    appliedResources: input.appliedResources,
+    removeTargets: omitted.map(entry => Schema.decodeUnknownSync(ResourceId)(`import:${entry}`)),
+    endsOwnership: built.map((item) => item.resource.id),
+    // Without --replace every target was empty when checked above; a file
+    // created there since makes its write fail instead of being replaced.
+    noReplace: input.mode === "create",
+  });
+  return {
+    ...planned,
+    replaced: present.filter(entry => byEntry.has(entry) || omitted.includes(entry)),
+    kept: present.filter(entry => !byEntry.has(entry) && !omitted.includes(entry)),
+  };
+});

@@ -261,6 +261,25 @@ if (args.includes("fetch")) {
     }, 60_000,
   );
 
+  it("records GUI publications in History and restores through an operation ticket", async () => {
+    const machine = fixture();
+    expect(machine.invoke(["source", "init"]).status).toBe(0);
+    writeFileSync(join(machine.folder, "canonfig.jsonc"), '{"version":1,"profile":{"id":"workstation","name":"Workstation"},"harnesses":[]}');
+    const gui = await server(machine.env);
+    expect((await gui.request("/api/history/status")).value).toMatchObject({ enabled: false, entries: [] });
+    expect((await gui.operation("/api/history", { action: "enable", branch: "main" })).state).toBe("succeeded");
+    writeFileSync(join(machine.folder, "AGENTS.md"), "First version.\n");
+    const first = await gui.operation("/api/publications", { reviewer: "Maria" });
+    expect(first.result).toMatchObject({ sequence: 1, history: { commit: expect.any(String) } });
+    writeFileSync(join(machine.folder, "AGENTS.md"), "Second version.\n");
+    expect((await gui.operation("/api/publications", { reviewer: "Maria" })).result).toMatchObject({ sequence: 2 });
+    const diff = await gui.operation("/api/history", { action: "diff", from: "1" });
+    expect(diff.result).toMatchObject({ names: ["M\tAGENTS.md"], patch: expect.stringContaining("+Second version.") });
+    const restored = await gui.operation("/api/history", { action: "restore", revision: "1", reviewer: "Maria" });
+    expect(restored.result).toMatchObject({ backup: expect.any(String), revision: { sequence: 3 } });
+    expect(readFileSync(join(machine.folder, "AGENTS.md"), "utf8")).toBe("First version.\n");
+  }, 120_000);
+
   it("refuses every profile operation without the Source role", async () => {
     const machine = fixture(); const gui = await server(machine.env);
     for (const path of ["/api/profile/items", "/api/revisions", "/api/skills"]) expect((await gui.request(path)).value).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });

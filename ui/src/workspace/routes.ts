@@ -18,6 +18,7 @@ const SOURCE_PATHS: Record<SourceView, string> = {
   revisions: "revisions",
   backups: "backups",
   secrets: "secrets",
+  history: "settings/history",
   service: "settings/service",
   installers: "settings/installers",
   setup: "settings/setup",

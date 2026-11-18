@@ -36,6 +36,24 @@ export const uiUsage = "ui [--port <n>] [--tailnet | --host <address>] [--origin
 
 export const helpGroups: ReadonlyArray<HelpGroup> = [
   {
+    title: "Canonical Folder history",
+    areas: ["history"],
+    usage: [
+      "history",
+      "history enable [--remote <url>] [--branch <name>]",
+      "history disable",
+      "history push",
+      "history diff <rev> [<rev>]",
+      "history restore <rev> [--reviewer <name>]",
+    ],
+    notes: [
+      "Record authored files on Source publish or standalone sync --apply.",
+      "History is plaintext. A remote requires Git and gitleaks.",
+      "Use a Profile Revision number or a commit prefix of at least seven hex characters.",
+      "Restoring on a Source requires --reviewer and publishes the restored content.",
+    ],
+  },
+  {
     title: "Backups",
     areas: ["backup"],
     usage: [

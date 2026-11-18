@@ -9,7 +9,8 @@ import { ContentDigest } from "../domain/brand.ts";
 import { openAnchoredDirectory, sameIdentity } from "../machine/anchored-directory.ts";
 import { archivePathProblem, caseCollision, type ArchiveFile, type ManifestFile } from "../projection/archive.ts";
 import type { BackupPolicy } from "./backup.types.ts";
-import { BackupIoError, hashBackupFile, runBackupTool } from "./backup-io.ts";
+import { BackupIoError } from "../git/tool-process.ts";
+import { hashBackupFile } from "./backup-io.ts";
 
 export interface BackupCapture {
   readonly files: ReadonlyArray<ManifestFile>;
@@ -196,15 +197,4 @@ export const captureBackupFiles = async (input: {
   const spellings = new Set(files.flatMap(file => file.path.split("/").map((_, index, parts) => parts.slice(0, index + 1).join("/"))));
   if (caseCollision([...spellings]) !== undefined) throw new BackupIoError("BACKUP_INVALID", "Captured paths collide on a case-insensitive filesystem");
   return { files, directory, skippedCredentials, skippedLinks };
-};
-
-/** No captured config, inline allow comment or inherited GITLEAKS variable can disable the required plaintext Git scan. */
-export const scanPlaintextGitBackup = async (directory: string, scratch: string, signal: AbortSignal): Promise<void> => {
-  const config = join(scratch, "gitleaks.toml");
-  const ignore = join(scratch, "gitleaks.ignore");
-  await writeFile(config, "[extend]\nuseDefault = true\n", { flag: "wx", mode: 0o600 });
-  await writeFile(ignore, "", { flag: "wx", mode: 0o600 });
-  const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GITLEAKS_")));
-  await runBackupTool("gitleaks", ["dir", directory, "--config", config, "--gitleaks-ignore-path", ignore,
-    "--ignore-gitleaks-allow", "--redact=100", "--no-banner", "--no-color", "--max-decode-depth", "3"], { cwd: scratch, signal, environment });
 };

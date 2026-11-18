@@ -22,6 +22,7 @@ export type SourceView =
   | "machines"
   | "revisions"
   | "backups"
+  | "history"
   | "secrets"
   | "service"
   | "installers"
@@ -412,4 +413,5 @@ export interface BackupSlice {
 export interface Workspace extends OverviewSlice, ProfileSlice, MachinesSlice, FollowerSlice {
   admin: AdministrationSlice;
   backup: BackupSlice;
+  history?: ReturnType<typeof import("./live/history").useLiveHistory>;
 }

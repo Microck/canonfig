@@ -23,6 +23,8 @@ in each harness is in the [harness reference](/docs/reference/harnesses).
   hooks/...               scripts that hooks in canonfig.jsonc run
   files/...               content of authored resources
   local/                  this machine's own items, never published
+  .history.git/           local Git history
+  history.json            local History settings
   .backups/               takeover snapshots
   .runtime/               the generated hook runner
   state.sqlite  setup.json  canonfig.log  installers/  skills-sources.json  tunnel/  cache/
@@ -42,6 +44,7 @@ it.
 | `hooks/` | Yes | Scripts a hook runs. Every file here must be run by a hook. |
 | `files/` | Yes | Content of [authored resources](/docs/how-to/manage-files-outside-harnesses). Every file here must be read by a resource. |
 | `local/` | No | Items only this machine projects. See [The local folder](#the-local-folder). |
+| `.history.git/`, `history.json` | No | Machine-local Git history and its settings. See [Keep version history](/docs/how-to/keep-version-history). |
 | `.backups/` | No | Takeover snapshots, of harnesses and of folder entries `canonfig import --replace` replaced. See [Restore a harness from a backup](/docs/how-to/restore-from-a-backup). |
 | `.runtime/` | No | `hook-runner.mjs`, which every projected hook calls. |
 | `state.sqlite` | No | Enrollment, Profile Revisions, run journal, Applied Resource Records, and the export and import journal. |

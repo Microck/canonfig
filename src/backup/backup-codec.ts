@@ -7,7 +7,8 @@ import { constants, createZstdCompress, createZstdDecompress } from "node:zlib";
 import { Decrypter, Encrypter } from "age-encryption";
 import { Redacted } from "effect";
 import type { BackupCodec, BackupCompression } from "./backup.types.ts";
-import { BackupIoError, runBackupTool } from "./backup-io.ts";
+import { BackupIoError, runBackupTool } from "../git/tool-process.ts";
+
 
 interface CodecInput {
   readonly preset: BackupCompression;

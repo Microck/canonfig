@@ -1,3 +1,6 @@
+import { captureApply } from "../history/history-capture.ts";
+import { readHistorySettings } from "../history/history-config.ts";
+import { machineIdentity } from "../state/machine-role.ts";
 import { randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -30,7 +33,7 @@ import type {
 } from "../synchronization/synchronization.types.ts";
 import { detectHarnesses, emptyModel, harnessReport } from "./detect.ts";
 import { adapterFor } from "./adapters/index.ts";
-import { CanonicalFolderError, holdsEntries, LocalItemCollisionError, loadCanonicalFolder, parseOverlay } from "./folder.ts";
+import { CanonicalFolderError, holdsEntries, LocalItemCollisionError, loadCanonicalFolder, readSelectedAuthoredFiles, parseOverlay, type FolderFile } from "./folder.ts";
 import type { TargetId } from "./model.ts";
 import {
   keyClaimIssue,
@@ -45,7 +48,7 @@ import {
   takeoverSummary,
   type FolderPlan,
 } from "./plan.ts";
-import { ArchiveConflictError, ArchiveRequestError, FOLDER_FILES, journalError, machineIdentity, planImport } from "./archive.ts";
+import { ArchiveConflictError, ArchiveRequestError, FOLDER_FILES, journalError, planImport, type planVerifiedFolder } from "./archive.ts";
 import {
   canonicalFolderOwner,
   deleteSnapshot,
@@ -289,9 +292,9 @@ export const editLocalList = (
     return listed;
   });
 
-const loadFolder = (statePath: string) =>
+const loadFolder = (statePath: string, files?: ReadonlyMap<string, FolderFile>) =>
   Effect.tryPromise({
-    try: () => loadCanonicalFolder(folderOf(statePath)),
+    try: () => loadCanonicalFolder(folderOf(statePath), files),
     catch: (error) =>
       error instanceof CanonicalFolderError || error instanceof LocalItemCollisionError
         ? error
@@ -487,7 +490,7 @@ export const writeAdoptionReviews = (
  * projects only once installed; until then it is reported and its earlier
  * outputs are held, and the run can still converge.
  */
-export const synchronizeLocal = Effect.fn("LocalProjection.synchronize")(function*(
+export const applyLocalProjection = Effect.fn("LocalProjection.synchronize")(function*(
   statePath: string,
   mode: "plan" | "apply",
   options: LocalSyncOptions,
@@ -497,7 +500,14 @@ export const synchronizeLocal = Effect.fn("LocalProjection.synchronize")(functio
   if (mode === "apply" && (yield* repository.loadRecovery(localProjectionFollower)) !== undefined) {
     return yield* new ActiveRunExistsError({ follower: localProjectionFollower });
   }
-  const loaded = yield* loadFolder(statePath);
+  const folder = folderOf(statePath);
+  const settings = mode === "apply" && (yield* machineIdentity).role === "standalone"
+    ? yield* readHistorySettings(folder) : undefined;
+  const files = settings?.enabled === true ? yield* Effect.tryPromise({
+    try: () => readSelectedAuthoredFiles(folder),
+    catch: cause => cause instanceof CanonicalFolderError ? cause : new CanonicalFolderError({ path: folder, message: "Could not read authored files" }),
+  }) : undefined;
+  const loaded = yield* loadFolder(statePath, files);
   const context = yield* rootContext(options.environment);
   const takeovers = yield* repository.loadHarnessTakeovers();
   const applied = yield* repository.loadAppliedResources(localProjectionFollower);
@@ -528,8 +538,15 @@ export const synchronizeLocal = Effect.fn("LocalProjection.synchronize")(functio
     backup,
     home: context.home,
   });
-  return { ...base, snapshot: result.snapshot, outcome: result.outcome };
-}, (effect, statePath, mode) => mode === "plan" ? effect : withRunLock(statePath, "sync --apply", effect));
+  const history = result.outcome.outcome === "Converged" && settings !== undefined && files !== undefined
+    ? yield* captureApply(folder, settings, files) : undefined;
+  return { ...base, snapshot: result.snapshot, outcome: result.outcome, history };
+});
+
+export const synchronizeLocal = (statePath: string, mode: "plan" | "apply", options: LocalSyncOptions) => {
+  const projection = applyLocalProjection(statePath, mode, options);
+  return mode === "plan" ? projection : withRunLock(statePath, "sync --apply", projection);
+};
 
 /**
  * `canonfig restore [<snapshot>]`: write a takeover snapshot back as a
@@ -613,7 +630,6 @@ export const importLocal = Effect.fn("LocalProjection.import")(function*(
   maximumFiles?: number,
 ) {
   const repository = yield* StateRepository;
-  const synchronization = yield* Synchronization;
   const identity = yield* machineIdentity;
   if (identity.role === "follower") {
     return yield* new ArchiveRequestError({
@@ -651,20 +667,7 @@ export const importLocal = Effect.fn("LocalProjection.import")(function*(
   if (mode === "plan") {
     return { ...base, next: "nothing was written; run the same command without --dry-run to import", outcome: undefined };
   }
-  const run = newRunId();
-  const backup = yield* snapshotFolderEntries(statePath, run, planned.replaced);
-  const outcome = yield* Effect.gen(function*() {
-    yield* repository.recordLocalRevision(planned.revision, new Date().toISOString());
-    yield* storeArtifacts(run, planned.artifacts);
-    return yield* synchronization.run({
-      id: run,
-      plan: planned.plan,
-      revision: planned.revision,
-      appliedResources: planned.appliedResources,
-      artifacts: planned.artifacts,
-    });
-  }).pipe(Effect.tapError(() => discardFailedRun(statePath, localProjectionFollower, run, backup)));
-  const finished = yield* finishProjectionRun(statePath, localProjectionFollower, run, outcome, planned.revision);
+  const { run, backup, outcome } = yield* applyVerifiedFolder(statePath, planned);
   // A file appeared at a target after the folder was checked, and the run
   // rolled back rather than overwrite it: the same conflict the check
   // reports, found later. With rollback incomplete the outcome says more.
@@ -683,9 +686,31 @@ export const importLocal = Effect.fn("LocalProjection.import")(function*(
     sha256: planned.archive.archiveSha256,
     signer,
   });
-  return { ...base, backup: finished.snapshotDeleted ? undefined : backup, outcome };
+  return { ...base, backup, outcome };
 }, (effect, statePath, archive, mode) =>
   mode === "plan" ? effect : withRunLock(statePath, "import", effect).pipe(journalError("import", archive)));
+
+/** Apply verified files under the caller's run lock and preserve the undo snapshot on success. */
+export const applyVerifiedFolder = (statePath: string, planned: Effect.Success<ReturnType<typeof planVerifiedFolder>>) =>
+  Effect.gen(function*() {
+  const repository = yield* StateRepository;
+  const synchronization = yield* Synchronization;
+  const run = newRunId();
+  const backup = yield* snapshotFolderEntries(statePath, run, planned.replaced);
+  const outcome = yield* Effect.gen(function*() {
+    yield* repository.recordLocalRevision(planned.revision, new Date().toISOString());
+    yield* storeArtifacts(run, planned.artifacts);
+    return yield* synchronization.run({
+      id: run,
+      plan: planned.plan,
+      revision: planned.revision,
+      appliedResources: planned.appliedResources,
+      artifacts: planned.artifacts,
+    });
+  }).pipe(Effect.tapError(() => discardFailedRun(statePath, localProjectionFollower, run, backup)));
+  const finished = yield* finishProjectionRun(statePath, localProjectionFollower, run, outcome, planned.revision);
+  return { run, backup: finished.snapshotDeleted ? undefined : backup, outcome };
+});
 
 export interface HarnessExclusionChange {
   readonly action: "include" | "exclude";

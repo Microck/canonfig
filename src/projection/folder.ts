@@ -885,6 +885,33 @@ export const listFolderFiles = (folder: string, directory: string): Promise<Read
 /** The authoring allowlist: the only top-level entries of `~/.canonfig/` that are published or mirrored. */
 export const AUTHORING_ENTRIES = ["canonfig.jsonc", "AGENTS.md", "rules", "skills", "agents", "commands", "hooks", "files"] as const;
 
+/** The authored path and executable mode set shared by publication and history. */
+export const selectAuthoredFiles = async (folder: string): Promise<ReadonlyArray<ListedFile>> => {
+  const source = diskSource(folder);
+  const files: Array<ListedFile> = [];
+  for (const entry of AUTHORING_ENTRIES) {
+    const location = join(folder, entry);
+    if (entry === "canonfig.jsonc" || entry === "AGENTS.md") {
+      const executable = await source.executable(location);
+      if (executable !== undefined) files.push({ path: entry, executable });
+    } else {
+      for (const file of await listFiles(source, location)) files.push({ ...file, path: `${entry}/${file.path}` });
+    }
+  }
+  return files;
+};
+
+export const readSelectedAuthoredFiles = async (folder: string): Promise<ReadonlyMap<string, FolderFile>> => {
+  const source = diskSource(folder);
+  const files = new Map<string, FolderFile>();
+  for (const { path } of await selectAuthoredFiles(folder)) {
+    const file = await source.file(join(folder, path));
+    if (file === undefined) throw failure(path, "disappeared while reading the Canonical Folder");
+    files.set(path, file);
+  }
+  return files;
+};
+
 /**
  * Whether a path holds something: any file, and any directory with something
  * in it. Nothing beneath it is read or checked.
@@ -922,6 +949,7 @@ export const itemResourceId = (reference: string): string => reference.replace("
  * the bytes itself.
  */
 export interface AuthoredFolder<File = SkillFile> {
+  readonly configFile: FolderFile;
   readonly config: FolderConfig;
   readonly instructions?: string | undefined;
   readonly rules: ReadonlyArray<RuleDocument>;
@@ -1016,12 +1044,14 @@ const loadAuthored = async <File extends { readonly executable: boolean }>(
 ): Promise<AuthoredFolder<File>> => {
   const folder = source.folder;
   const configPath = join(folder, "canonfig.jsonc");
-  const config = await readJsonc(source, configPath, CanonfigJsonc);
-  if (config === undefined) {
+  const configFile = await source.file(configPath);
+  if (configFile === undefined) {
     throw failure(configPath, "does not exist; scaffold the folder with 'canonfig setup plan --role source', or enroll this machine as a follower");
   }
+  const config = decodeFolderConfig(configPath, decodeText(configPath, configFile.content));
   return {
     config,
+    configFile,
     instructions: await readText(source, join(folder, "AGENTS.md")),
     rules: await loadRules(source, join(folder, "rules")),
     skills: await loadSkills(source, join(folder, "skills"), reader.tree),
