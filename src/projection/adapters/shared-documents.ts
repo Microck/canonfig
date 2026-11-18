@@ -109,6 +109,27 @@ export function commandSkillName(id: string): string {
     : `${normalized.slice(0, 51).replace(/-$/u, "")}-${sha256Hex(id).slice(0, 12)}`;
 }
 
+export interface SkillNameSource {
+  readonly category: "skills" | "commands";
+  readonly name: string;
+}
+
+/** Group authored skills and translated commands by the name they write. */
+export function groupProjectedSkillNames<Item extends SkillNameSource>(
+  items: Iterable<Item>,
+  excluded: ReadonlySet<string>,
+): ReadonlyMap<string, ReadonlyArray<Item>> {
+  const names = new Map<string, Array<Item>>();
+  for (const item of items) {
+    const name = item.category === "commands" ? commandSkillName(item.name) : item.name;
+    if (excluded.has(name)) continue;
+    const group = names.get(name);
+    if (group === undefined) names.set(name, [item]);
+    else group.push(item);
+  }
+  return names;
+}
+
 /** Render a command as a portable Agent Skill, including a directory-safe manifest name. */
 export function commandSkill(command: CommandDocument): SkillTree {
   const name = commandSkillName(command.id);

@@ -380,3 +380,29 @@ it("Source setup requires clearing a skill name conflict before continuing", asy
     container.remove();
   }
 });
+
+it("shows the Canonical Folder item that blocks a conflicting import", async () => {
+  const command: ImportOffer = {
+    id: "claude-code/commands/release", name: "release", target: "commands/release.md",
+    source: "claude-code", harnesses: ["claude-code"], category: "commands", path: "~/.claude/commands/release.md", secrets: [], notes: [],
+  };
+  const review: OnboardingData = {
+    ...data, offers: [command], skipped: [],
+    collisions: [{
+      kind: "projected-skill", target: "skills/command-release", candidates: [command], folderItems: ["skills/command-release"],
+    }],
+  };
+  const app = await fixture(new Map(), { review });
+  try {
+    await search(app.container, "release");
+    assert.equal(control(app.container, "release from Claude Code").disabled, true);
+    await click(app.container, "Select everything from Claude Code");
+    assert.equal(app.choices.size, 0);
+    await click(app.container, "Review skill name conflict for release from Claude Code");
+    const dialog = document.querySelector('[role="dialog"]');
+    assert.ok(dialog);
+    assert.ok(dialog.textContent?.includes("~/.canonfig/skills/command-release"));
+    assert.ok(dialog.textContent?.includes(command.path));
+    assert.match(dialog.textContent ?? "", /Rename or remove the Canonical Folder item/u);
+  } finally { await app.close(); }
+});

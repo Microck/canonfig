@@ -790,7 +790,8 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
   const selected = harnesses.filter((h) => listed.includes(h.id)).map((h) => h.id);
   const offered = useMemo(() => data.offers.filter((offer) =>
     offer.harnesses.some((harness) => listed.includes(harness)) && !data.present.includes(offer.id)
-    && !data.collisions.some((collision) => collision.kind === "folder" && collision.candidates.some((candidate) => candidate.id === offer.id)))
+    && !data.collisions.some((collision) => (collision.kind === "folder" || collision.folderItems !== undefined)
+      && collision.candidates.some((candidate) => candidate.id === offer.id)))
     .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
   [data.offers, data.present, data.collisions, listed]);
   const collisionIds = useMemo(() => new Set(data.collisions.filter((collision) => collision.kind !== "folder")

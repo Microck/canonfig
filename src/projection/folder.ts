@@ -1082,22 +1082,55 @@ const loadLocalFolder = async (source: FolderSource, allow: ReadonlyArray<LocalC
     return parsed;
   });
   const overlays = new Set(overlayEntries.flatMap((entry) => entry.kind === "item" ? [entry.item] : []));
-  const mergeCommands = async (published: ReadonlyArray<CommandDocument>) => {
-    const localCommands = await localItems("commands", (directory) => loadCommands(source, directory));
-    const commands = addLocal(published, localCommands, (command) => command.id, "commands", "command", localDirectory, overlays);
-    return { commands, localCommands };
+  const mergeItems = async <Item>(
+    category: LocalCategory & OverlayCategory,
+    label: string,
+    published: ReadonlyArray<Item>,
+    name: (item: Item) => string,
+    load: (directory: string) => Promise<ReadonlyArray<Item>>,
+  ) => {
+    const local = await localItems(category, load);
+    return { local, effective: addLocal(published, local, name, category, label, localDirectory, overlays) };
   };
-  return { localPath, localDirectory, localConfig, ignoredLocal, localItems, overlayEntries, overlays, mergeCommands };
+  return { localPath, localDirectory, localConfig, ignoredLocal, overlayEntries, overlays, mergeItems };
 };
 
-/** Effective commands retain every published ID, including commands with a Local Overlay. */
-export const readCommandIdsForSkillImport = async (folder: string): Promise<ReadonlyArray<string>> => {
+export interface FolderSkillNames {
+  readonly items: ReadonlyArray<{
+    readonly category: "skills" | "commands";
+    readonly name: string;
+    readonly path: string;
+  }>;
+  readonly excluded: ReadonlySet<string>;
+}
+
+/** Read the effective skill namespace for import, including before a folder is scaffolded. */
+export const readFolderSkillNames = async (folder: string): Promise<FolderSkillNames> => {
   const source = diskSource(folder);
   const config = await readJsonc(source, join(folder, "canonfig.jsonc"), CanonfigJsonc);
-  const published = await loadCommands(source, join(folder, "commands"));
-  const local = await loadLocalFolder(source, config?.local?.allow ?? []);
-  const { commands } = await local.mergeCommands(published);
-  return commands.map((command) => command.id);
+  const { mergeItems, localConfig } = await loadLocalFolder(source, config?.local?.allow ?? []);
+  // The manifest identifies a skill. Import review need not read its payload.
+  const skills = (directory: string) => loadSkills(source, directory, async () => []);
+  const commands = (directory: string) => loadCommands(source, directory);
+  const { effective: effectiveSkills, local: localSkills } =
+    await mergeItems("skills", "skill", await skills(join(folder, "skills")), (skill) => skill.name, skills);
+  const { effective: effectiveCommands, local: localCommands } =
+    await mergeItems("commands", "command", await commands(join(folder, "commands")), (command) => command.id, commands);
+  const localSkillItems = new Set(localSkills);
+  const localCommandItems = new Set(localCommands);
+  return {
+    items: [
+      ...effectiveSkills.map((skill) => ({
+        category: "skills" as const, name: skill.name,
+        path: `${localSkillItems.has(skill) ? "local/" : ""}skills/${skill.name}`,
+      })),
+      ...effectiveCommands.map((command) => ({
+        category: "commands" as const, name: command.id,
+        path: `${localCommandItems.has(command) ? "local/" : ""}commands/${command.id}.md`,
+      })),
+    ],
+    excluded: new Set(localConfig.excludeSkills),
+  };
 };
 
 const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => {
@@ -1105,19 +1138,20 @@ const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => 
   const authored = await loadAuthored(source, loading);
   const config = authored.config;
   const allow = config.local?.allow ?? [];
-  const { localPath, localDirectory, localConfig, ignoredLocal, localItems, overlayEntries, overlays, mergeCommands } =
+  const { localPath, localDirectory, localConfig, ignoredLocal, overlayEntries, overlays, mergeItems } =
     await loadLocalFolder(source, allow);
   const claims = overlayEntries.flatMap((entry): ReadonlyArray<KeyClaim> =>
     entry.kind === "claim" ? [{ harness: entry.harness, key: entry.key }] : []
   );
 
-  const localRules = await localItems("rules", (directory) => loadRules(source, directory));
-  const localSkills = await localItems("skills", (directory) => loadSkills(source, directory, loadFiles));
-  const localAgents = await localItems("agents", (directory) => loadAgents(source, directory));
-  const { commands, localCommands } = await mergeCommands(authored.commands);
-  const rules = addLocal(authored.rules, localRules, (rule) => rule.id, "rules", "rule", localDirectory, overlays);
-  const skills = addLocal(authored.skills, localSkills, (skill) => skill.name, "skills", "skill", localDirectory, overlays);
-  const agents = addLocal(authored.agents, localAgents, (agent) => agent.id, "agents", "agent", localDirectory, overlays);
+  const { effective: rules, local: localRules } =
+    await mergeItems("rules", "rule", authored.rules, (rule) => rule.id, (directory) => loadRules(source, directory));
+  const { effective: skills, local: localSkills } =
+    await mergeItems("skills", "skill", authored.skills, (skill) => skill.name, (directory) => loadSkills(source, directory, loadFiles));
+  const { effective: agents, local: localAgents } =
+    await mergeItems("agents", "agent", authored.agents, (agent) => agent.id, (directory) => loadAgents(source, directory));
+  const { effective: commands, local: localCommands } =
+    await mergeItems("commands", "command", authored.commands, (command) => command.id, (directory) => loadCommands(source, directory));
 
   const localInstructionsPath = join(localDirectory, "AGENTS.md");
   let localInstructions: string | undefined;

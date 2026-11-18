@@ -45,7 +45,8 @@ export function ImportReview({ data, listed, choices, onChoices }: {
   const [query, setQuery] = useState("");
   const model = useMemo(() => {
     const present = new Set(data.present);
-    const held = new Set(data.collisions.filter((collision) => collision.kind === "folder").map((collision) => collision.target));
+    const held = new Set(data.collisions.filter((collision) => collision.kind === "folder" || collision.folderItems !== undefined)
+      .flatMap((collision) => collision.candidates.map(({ id }) => id)));
     const differing = new Map(data.collisions.filter((collision) => collision.kind !== "folder")
       .flatMap((collision) => collision.candidates.map(({ id }) => [id, collision] as const)));
     const offered = data.offers.filter((offer) => offer.harnesses.some((harness) => listed.includes(harness)) && !present.has(offer.id));
@@ -77,7 +78,7 @@ export function ImportReview({ data, listed, choices, onChoices }: {
   }, [data.offers, data.collisions, data.present, data.skipped, listed]);
 
   const state = (offer: ImportOffer): RowState => {
-    if (model.held.has(offer.target)) return "held";
+    if (model.held.has(offer.id)) return "held";
     const pick = choices.get(offer.target);
     if (pick === undefined) return "off";
     if (pick === offer.id || (model.byId.has(pick) && !model.differing.has(offer.id))) return "on";
@@ -109,7 +110,7 @@ export function ImportReview({ data, listed, choices, onChoices }: {
     const on = takeable.filter((offer) => state(offer) === "on").length;
     return on === 0 ? false : on === takeable.length ? true : "indeterminate";
   };
-  const selected = [...choices.values()].filter((id) => model.byId.has(id) && !model.held.has(model.byId.get(id)!.target)).length;
+  const selected = [...choices.values()].filter((id) => model.byId.has(id) && !model.held.has(id)).length;
 
   const search = query.trim().toLocaleLowerCase();
   const includes = (text: string) => text.toLocaleLowerCase().includes(search);
@@ -205,13 +206,14 @@ function OfferRow({ offer, state, chosen, chosenOffer, collision, showPath, read
 }) {
   const describedBy = useId();
   const versionDescription = useId();
-  const showVersions = collision !== undefined && state !== "held";
+  const showVersions = collision !== undefined;
   const projected = collision?.kind === "projected-skill";
+  const folderItems = collision?.folderItems;
   const warning = projected ? "These items project to the same skill." : "Different local versions found.";
   // Only the source/ prefix is meaningful; the rest of an offer id is opaque.
   const chosenTool = chosen && sourceName(chosen.slice(0, chosen.indexOf("/")) as Source);
   let status: string | null = null;
-  if (state === "held") status = "Already in ~/.canonfig/";
+  if (state === "held") status = folderItems ? "Skill name already in use" : "Already in ~/.canonfig/";
   else if (state === "other") {
     if (!chosenOffer) status = `Chosen from ${chosenTool}, which isn't listed`;
     else if (chosenOffer.source === offer.source || chosenOffer.source === "agents") status = `Using ${chosenOffer.path}`;
@@ -249,13 +251,22 @@ function OfferRow({ offer, state, chosen, chosenOffer, collision, showPath, read
       <PopoverContent align="end" className="w-80 max-w-[calc(100vw-2rem)]" aria-labelledby={`${versionDescription}-title`} aria-describedby={`${versionDescription}-body`}>
         <p id={`${versionDescription}-title`} className="font-medium">{projected ? "Skill name conflict" : "Different versions found"}</p>
         <p id={`${versionDescription}-body`}>
-          {projected ? <>These items project to <Mono>{collision.target}</Mono>. Select one to import.</>
-            : "Local copies have different contents or settings. Only the version you select is imported."}
+          {projected ? <>
+            These items project to <Mono>{collision.target}</Mono>. {folderItems
+              ? "Rename or remove the Canonical Folder item to import."
+              : "Select one to import."}
+          </> : "Local copies have different contents or settings. Only the version you select is imported."}
         </p>
-        <ul className="space-y-2">{collision.candidates.map((copy) => <li key={copy.id}>
-          <span>{sourceName(copy.source)}{copy.id === chosen ? " (selected)" : ""}</span>
-          <Mono className="block break-all text-xs text-muted-foreground">{copy.path}</Mono>
-        </li>)}</ul>
+        <ul className="space-y-2">
+          {folderItems?.map((path) => <li key={path}>
+            <span>Canonical Folder</span>
+            <Mono className="block break-all text-xs text-muted-foreground">~/.canonfig/{path}</Mono>
+          </li>)}
+          {collision.candidates.map((copy) => <li key={copy.id}>
+            <span>{sourceName(copy.source)}{copy.id === chosen && state !== "held" ? " (selected)" : ""}</span>
+            <Mono className="block break-all text-xs text-muted-foreground">{copy.path}</Mono>
+          </li>)}
+        </ul>
       </PopoverContent>
     </Popover>}
     </div>

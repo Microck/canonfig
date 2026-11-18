@@ -413,7 +413,46 @@ describe("local projection", () => {
     expect(existsSync(join(skills, "deploy", "SKILL.md"))).toBe(true);
   });
 
-  it("requires a choice between a command and a skill with the same projected name during Source setup", async () => {
+  it.each([
+    { commandIn: "folder", skillIn: "harness", folderItem: "commands/release.md" },
+    { commandIn: "harness", skillIn: "folder", folderItem: "skills/command-release" },
+    { commandIn: "harness", skillIn: "harness", folderItem: undefined },
+    { commandIn: "local", skillIn: "harness", folderItem: "local/commands/release.md" },
+    { commandIn: "harness", skillIn: "local", folderItem: "local/skills/command-release" },
+  ] as const)("reports a $commandIn command and $skillIn skill sharing a projected name during Source setup", async ({
+    commandIn, skillIn, folderItem,
+  }) => {
+    const value = fixture(["claude-code", "codex"], { local: { allow: ["commands", "skills"] } });
+    const roots = { folder: value.folder, local: join(value.folder, "local") };
+    const commandPath = join(commandIn === "harness" ? join(value.home, ".claude") : roots[commandIn], "commands", "release.md");
+    const skillPath = join(skillIn === "harness" ? join(value.home, ".codex") : roots[skillIn], "skills", "command-release", "SKILL.md");
+    write(commandPath, "---\ndescription: Prepare the release\n---\nCheck the changelog.\n");
+    write(skillPath, "---\nname: command-release\ndescription: Release guide\n---\nRead the release guide.\n");
+    const candidates = [
+      ...(commandIn === "harness" ? [{ id: "claude-code/commands/release", source: "claude-code", path: "~/.claude/commands/release.md" }] : []),
+      ...(skillIn === "harness" ? [{ id: "codex/skills/command-release", source: "codex", path: "~/.codex/skills/command-release" }] : []),
+    ];
+    const input = { folder: value.folder, environment: environmentOf(value), harnesses: ["claude-code", "codex"] };
+
+    await Effect.runPromise(Effect.gen(function*() {
+      for (const imports of [
+        { kind: "offer" },
+        { kind: "all" },
+        { kind: "some", requested: candidates.map(({ id }) => id) },
+      ] as const) {
+        const plan = yield* planSourceFolder({ ...input, imports });
+        expect(plan.imports.collisions).toEqual([{
+          kind: "projected-skill",
+          target: "skills/command-release",
+          candidates,
+          folderItems: folderItem === undefined ? undefined : [folderItem],
+        }]);
+        expect(plan.items.map(({ kind }) => kind)).toEqual(["folder-scaffold"]);
+      }
+    }).pipe(Effect.provide(layer(value))));
+  });
+
+  it("imports one of two competing items and refuses a stale plan for the other", async () => {
     const value = fixture(["claude-code", "codex"]);
     const command = "claude-code/commands/release";
     const skill = "codex/skills/command-release";
@@ -424,25 +463,10 @@ describe("local projection", () => {
     const input = { folder: value.folder, environment, harnesses: ["claude-code", "codex"] };
 
     await Effect.runPromise(Effect.gen(function*() {
-      const review = yield* planSourceFolder({ ...input, imports: { kind: "offer" } });
-      expect(review.imports.collisions).toEqual([{
-        kind: "projected-skill",
-        target: "skills/command-release",
-        candidates: [
-          { id: command, source: "claude-code", path: "~/.claude/commands/release.md" },
-          { id: skill, source: "codex", path: "~/.codex/skills/command-release" },
-        ],
-      }]);
-      const all = yield* planSourceFolder({ ...input, imports: { kind: "all" } });
-      const both = yield* planSourceFolder({ ...input, imports: { kind: "some", requested: [command, skill] } });
-      for (const plan of [all, both]) {
-        expect(plan.imports.collisions).toEqual(review.imports.collisions);
-        expect(plan.items.map((item) => item.kind)).toEqual(["folder-scaffold"]);
-      }
       const commandOnly = yield* planSourceFolder({ ...input, imports: { kind: "some", requested: [command] } });
       expect(commandOnly.imports.collisions).toEqual([]);
-      expect(commandOnly.items.find((item) => item.kind === "harness-import")?.detail.items)
-        .toEqual([expect.objectContaining({ id: command })]);
+      const commandImport = commandOnly.items.find((item) => item.kind === "harness-import");
+      expect(commandImport?.detail.items).toEqual([expect.objectContaining({ id: command })]);
 
       const skillOnly = yield* planSourceFolder({ ...input, imports: { kind: "some", requested: [skill] } });
       expect(skillOnly.imports.collisions).toEqual([]);
@@ -450,6 +474,8 @@ describe("local projection", () => {
         if (item.kind === "folder-scaffold") yield* executeFolderScaffold(item);
         if (item.kind === "harness-import") yield* executeHarnessImport(item, environment);
       }
+      const stale = yield* Effect.flip(executeHarnessImport(commandImport!, environment));
+      expect(stale.message).toContain(`${command} and skills/command-release project to skills/command-release`);
     }).pipe(Effect.provide(layer(value))));
 
     expect(readFileSync(join(value.folder, "skills", "command-release", "SKILL.md"), "utf8")).toBe(nativeSkill);
@@ -457,7 +483,7 @@ describe("local projection", () => {
     expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
   });
 
-  it("skips a published command skill when Source setup runs before syncing its new Local Overlay", async () => {
+  it("reports a Local Overlay conflict and skips its previously projected skill", async () => {
     const value = fixture(["codex"], {
       surfaces: { codex: ["instructions", "commands"] },
       local: { allow: ["commands"] },
@@ -480,14 +506,20 @@ describe("local projection", () => {
     expect(readFileSync(generated, "utf8")).toBe(publishedSkill);
 
     await Effect.runPromise(Effect.gen(function*() {
+      const input = { folder: value.folder, environment, harnesses: ["codex", "kimi"] };
+      const review = yield* planSourceFolder({ ...input, imports: { kind: "all" } });
+      expect(review.imports.offered.map((candidate) => candidate.target)).toEqual(["skills/command-review", "skills/command-ship"]);
+      expect(review.imports.collisions).toEqual([{
+        kind: "projected-skill", target: "skills/command-ship", folderItems: ["local/commands/ship.md"],
+        candidates: [{ id: "kimi/skills/command-ship", source: "kimi", path: "~/.kimi-code/skills/command-ship" }],
+      }]);
+      expect(review.imports.skipped).toContainEqual({
+        source: "agents", path: "~/.agents/skills/command-ship", reason: "Canonfig already projected this skill.",
+      });
       const plan = yield* planSourceFolder({
-        folder: value.folder, environment, harnesses: ["codex", "kimi"], imports: { kind: "all" },
+        ...input, imports: { kind: "some", requested: ["kimi/skills/command-review"] },
       });
-      expect(plan.imports.offered.map((candidate) => candidate.target)).toEqual(["skills/command-review"]);
-      expect(plan.imports.skipped).toContainEqual({
-        source: "kimi", path: "~/.kimi-code/skills/command-ship",
-        reason: "This skill name is reserved by a Canonical Folder command.",
-      });
+      expect(plan.imports.collisions).toEqual([]);
       for (const item of plan.items) {
         if (item.kind === "folder-scaffold") yield* executeFolderScaffold(item);
         if (item.kind === "harness-import") yield* executeHarnessImport(item, environment);

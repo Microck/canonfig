@@ -48,7 +48,7 @@ import type {
   SynchronizationArtifact,
 } from "../synchronization/synchronization.types.ts";
 import { adapterFor } from "./adapters/index.ts";
-import { commandSkill, skillDirectoryFiles } from "./adapters/shared-documents.ts";
+import { commandSkill, groupProjectedSkillNames, skillDirectoryFiles } from "./adapters/shared-documents.ts";
 import { CanonicalFolderError, type KeyClaim, type LoadedFolder } from "./folder.ts";
 import type {
   ConfigFormat,
@@ -419,22 +419,21 @@ export const projectSurfaces = (
     }
     const harnesses: Array<HarnessPlan> = [];
     let sharedAuthoredSkills: ReadonlyArray<SkillTree> = [];
-    type CompiledCommand = { readonly source: string; readonly skill: SkillTree };
+    type CompiledCommand = { readonly id: string; readonly skill: SkillTree };
     let sharedCommands: ReadonlyArray<CompiledCommand> = [];
     let compiledCommands: ReadonlyArray<CompiledCommand> | undefined;
     const checkSkillNames = (skills: ReadonlyArray<SkillTree>, generated: ReadonlyArray<CompiledCommand>, destination: string) => {
       if (generated.length === 0) return Effect.void;
-      const names = new Map(skills
-        .filter(({ name }) => !excludedSkills.has(name))
-        .map(({ name }) => [name, `skills/${name}`]));
-      for (const { source, skill } of generated) {
-        if (excludedSkills.has(skill.name)) continue;
-        const other = names.get(skill.name);
-        if (other !== undefined) return Effect.fail(new CanonicalFolderError({
+      const names = groupProjectedSkillNames([
+        ...skills.map(({ name }) => ({ category: "skills" as const, name, source: `skills/${name}` })),
+        ...generated.map(({ id }) => ({ category: "commands" as const, name: id, source: `commands/${id}.md` })),
+      ], excludedSkills);
+      for (const [name, group] of names) {
+        const [other, item] = group;
+        if (other !== undefined && item !== undefined) return Effect.fail(new CanonicalFolderError({
           path: configPath,
-          message: `${source} and ${other} both project to skill '${skill.name}' in ${destination}; rename one of these items`,
+          message: `${item.source} and ${other.source} both project to skill '${name}' in ${destination}; rename one of these items`,
         }));
-        names.set(skill.name, source);
       }
       return Effect.void;
     };
@@ -443,7 +442,7 @@ export const projectSurfaces = (
       const scoped = modelFor(model, harness);
       // The command category controls translation independently of authored skills.
       const generated = adapter.descriptor.capabilities.commands === "translated" && scoped.commands.length > 0
-        ? compiledCommands ??= scoped.commands.map((command) => ({ source: `commands/${command.id}.md`, skill: commandSkill(command) }))
+        ? compiledCommands ??= scoped.commands.map((command) => ({ id: command.id, skill: commandSkill(command) }))
         : [];
       const input = generated.length > 0
         ? { ...scoped, commands: [], skills: [...scoped.skills, ...generated.map(({ skill }) => skill)] }

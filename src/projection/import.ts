@@ -12,9 +12,9 @@ import { containsLiteralCredential, isEnvironmentReference, isSecretField } from
 import { getConfigPath, parseConfigDocument } from "../synchronization/config-codec.ts";
 import { type ConfigJson, type ConfigObject, isConfigObject } from "../synchronization/config-value.ts";
 import { adapterFor } from "./adapters/index.ts";
-import { commandSkillName } from "./adapters/shared-documents.ts";
+import { groupProjectedSkillNames, type SkillNameSource } from "./adapters/shared-documents.ts";
 import { emptyModel } from "./detect.ts";
-import { readCommandIdsForSkillImport } from "./folder.ts";
+import type { FolderSkillNames } from "./folder.ts";
 import { type MarkdownDocument, markdownWithFrontmatter, parseMarkdownDocument } from "./frontmatter.ts";
 import { maxImportContentBytes, SkillReader, type ImportReadLimit } from "./import-skills.ts";
 import type { HarnessLayout, OwnedSurface, RootContext, SkillReadSource } from "./harness.ts";
@@ -110,6 +110,8 @@ export interface ImportCollision {
   readonly folder: boolean;
   /** True when different destinations project to the same skill target. */
   readonly projectedSkill?: true;
+  /** Folder-relative items occupying the projected name. */
+  readonly folderItems?: ReadonlyArray<string>;
 }
 
 export interface ImportChoice {
@@ -708,8 +710,6 @@ class ScanCollector {
   readonly skipped: Array<ImportSkip> = [];
   private readonly candidates = new Map<string, Array<ImportCandidate>>();
 
-  constructor(private readonly reservedSkillNames: ReadonlySet<string>) {}
-
   skip(source: ImportSource, path: string, reason: string): void {
     this.skipped.push({ source, path, reason });
   }
@@ -723,9 +723,6 @@ class ScanCollector {
   ): void {
     if (outcome.kind === "missing") return;
     if (outcome.kind === "skip" || outcome.kind === "limit") return this.skip(source, path, outcome.reason);
-    if (category === "skills" && this.reservedSkillNames.has(outcome.name)) {
-      return this.skip(source, path, "This skill name is reserved by a Canonical Folder command.");
-    }
     const id = `${source}/${category}/${outcome.name}`;
     const group = this.candidates.get(id) ?? [];
     const identical = group.find((candidate) => candidate.digest === outcome.digest);
@@ -860,10 +857,7 @@ export const scanImports = async (input: {
   const { context, folder } = input;
   const scope = harnessScope(context, folder);
   const layouts = [...new Set(input.harnesses)].map((harness) => scope.layouts.find(([id]) => id === harness)!);
-  const commandIds = layouts.some(([, layout]) => layout.skillSources.length > 0)
-    ? await readCommandIdsForSkillImport(folder)
-    : [];
-  const collector = new ScanCollector(new Set(commandIds.map(commandSkillName)));
+  const collector = new ScanCollector();
   const reader = await SkillReader.create(
     context, scope.neverTouch, scope.folder, scope.configPaths, projectedSkillPaths(context, input.appliedResources ?? []),
   );
@@ -1036,6 +1030,37 @@ const unknownRequests = (scan: ImportScan, selection: ImportSelection): Array<st
   ])].sort(compare);
 };
 
+type ImportSkillNameSource = SkillNameSource & (
+  | { readonly path: string }
+  | { readonly candidate: ImportCandidate }
+);
+
+/** Multiple copies of one destination are one item in the projected namespace. */
+export const projectedImportCollisions = (folder: FolderSkillNames, candidates: ReadonlyArray<ImportCandidate>): ImportCollision[] => {
+  const items: ImportSkillNameSource[] = [...folder.items];
+  for (const candidate of candidates) {
+    const { category, name } = candidate;
+    if (category === "commands" || category === "skills") items.push({ category, name, candidate });
+  }
+  const collisions: ImportCollision[] = [];
+  for (const [name, group] of groupProjectedSkillNames(items, folder.excluded)) {
+    if (group.length < 2) continue;
+    const copies = group.flatMap((item) => "candidate" in item ? [item.candidate] : []);
+    const [first] = copies;
+    if (first === undefined) continue;
+    const folderItems = group.flatMap((item) => "path" in item ? [item.path] : []);
+    if (folderItems.length === 0 && copies.every((copy) => copy.target === first.target)) continue;
+    collisions.push({
+      target: targetOf("skills", name),
+      candidates: copies.map((copy) => copy.id).sort(compare),
+      folder: false,
+      projectedSkill: true,
+      folderItems: folderItems.length > 0 ? folderItems.sort(compare) : undefined,
+    });
+  }
+  return collisions;
+};
+
 /**
  * Resolve the operator's selection against the scan and the folder: items
  * already in the folder are `present`, different content at an occupied
@@ -1047,22 +1072,20 @@ export const selectImports = (
   scan: ImportScan,
   existing: ReadonlyMap<string, string>,
   selection: ImportSelection,
+  folderSkills: FolderSkillNames,
 ): ImportChoice => {
   const named = new Set(selection.kind === "some" ? selection.items : []);
   const selected = scan.candidates.filter((candidate) => isSelected(candidate, selection, named));
   const groups = EffectArray.groupBy(selected, (candidate) => candidate.target);
   const chosen: Array<ImportCandidate> = [];
   const present: Array<string> = [];
-  const collisions: Array<ImportCollision> = [];
-  const skillGroups = EffectArray.groupBy(scan.candidates.filter(({ category }) => category === "commands" || category === "skills"),
-    (candidate) => candidate.category === "commands" ? targetOf("skills", commandSkillName(candidate.name)) : candidate.target);
-  for (const [target, group] of Object.entries(skillGroups)) {
-    const destinations = new Set(group.map((candidate) => candidate.target)
-      .filter((destination) => Object.hasOwn(groups, destination) && !existing.has(destination)));
-    if (destinations.size < 2) continue;
-    for (const destination of destinations) delete groups[destination];
-    const candidates = group.filter((candidate) => destinations.has(candidate.target)).map((candidate) => candidate.id);
-    collisions.push({ target, candidates: candidates.sort(compare), folder: false, projectedSkill: true });
+  // An occupied canonical destination cannot add a projected name. Keep every
+  // offered copy of each selected, free destination so the review can show the choices.
+  const selectable = scan.candidates.filter(({ target }) => Object.hasOwn(groups, target) && !existing.has(target));
+  const collisions = projectedImportCollisions(folderSkills, selectable);
+  const blocked = new Set(collisions.flatMap((collision) => collision.candidates));
+  for (const candidate of selectable) {
+    if (blocked.has(candidate.id)) delete groups[candidate.target];
   }
   for (const target of Object.keys(groups).sort(compare)) {
     const group = groups[target]!.sort((left, right) => compare(left.id, right.id));
