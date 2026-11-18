@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { createServer, type Socket } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { Schema } from "effect";
@@ -260,6 +261,47 @@ if (args.includes("fetch")) {
       }
     }, 60_000,
   );
+
+  it("records GUI publications in History and restores through an operation ticket", async () => {
+    const machine = fixture();
+    expect(machine.invoke(["source", "init"]).status).toBe(0);
+    writeFileSync(join(machine.folder, "canonfig.jsonc"), '{"version":1,"profile":{"id":"workstation","name":"Workstation"},"harnesses":[]}');
+    const gui = await server(machine.env);
+    expect((await gui.request("/api/history/status")).value).toMatchObject({ enabled: false, entries: [] });
+    expect((await gui.operation("/api/history", { action: "enable", branch: "main" })).state).toBe("succeeded");
+    writeFileSync(join(machine.folder, "AGENTS.md"), "First version.\n");
+    const first = await gui.operation("/api/publications", { reviewer: "Maria" });
+    expect(first.result).toMatchObject({ sequence: 1, history: { commit: expect.any(String) } });
+    const credentialUrl = "https://fixture-user:fixture-password@example.invalid/notes";
+    writeFileSync(join(machine.folder, "AGENTS.md"), `Second version.\n${credentialUrl}\n`);
+    expect((await gui.operation("/api/publications", { reviewer: "Maria" })).result).toMatchObject({ sequence: 2 });
+    const diff = await gui.operation("/api/history", { action: "diff", from: "1" });
+    expect(diff.result).toMatchObject({ names: ["M\tAGENTS.md"], patch: expect.stringContaining("+Second version.") });
+    const cliDiff = machine.invoke(["history", "diff", "1"]);
+    expect(cliDiff.status, cliDiff.stderr).toBe(0);
+    const safeDiff = Schema.decodeUnknownSync(Schema.Struct({ data: Schema.Struct({ patch: Schema.String }) }))(JSON.parse(cliDiff.stdout));
+    expect(safeDiff.data.patch).toContain("https://[REDACTED]@example.invalid/notes");
+    expect(diff.result).toMatchObject({ patch: safeDiff.data.patch });
+    const restored = await gui.operation("/api/history", { action: "restore", revision: "1", reviewer: "Maria" });
+    expect(restored.result).toMatchObject({ backup: expect.any(String), revision: { sequence: 3 } });
+    expect(readFileSync(join(machine.folder, "AGENTS.md"), "utf8")).toBe("First version.\n");
+  }, 120_000);
+
+  it("updates GUI history settings without disclosing or clearing the saved remote on a branch edit", async () => {
+    const machine = fixture();
+    expect(machine.invoke(["source", "init"]).status).toBe(0);
+    const repository = join(machine.home, "remote.git");
+    expect(spawnSync("git", ["init", "--bare", repository], { env: machine.env }).status).toBe(0);
+    const remote = pathToFileURL(repository).href;
+    const gui = await server(machine.env);
+    expect((await gui.operation("/api/history", { action: "enable", branch: "main", remote })).result)
+      .toMatchObject({ remote: repository });
+    expect((await gui.operation("/api/history", { action: "enable", branch: "config" })).result)
+      .toMatchObject({ remote: repository, branch: "config" });
+    expect((await gui.operation("/api/history", { action: "enable", branch: "config", remote: null })).state)
+      .toBe("succeeded");
+    expect((await gui.request("/api/history/status")).value).not.toHaveProperty("remote");
+  }, 60_000);
 
   it("refuses every profile operation without the Source role", async () => {
     const machine = fixture(); const gui = await server(machine.env);

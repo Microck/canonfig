@@ -177,6 +177,8 @@ export interface SynchronizationPlannerInput {
   readonly follower: FollowerId;
   readonly observedState: ObservedState;
   readonly appliedResources: ReadonlyArray<AppliedResourceRecord>;
+  /** Explicitly replaced authoring targets, observed and snapshotted by the import run. */
+  readonly removeTargets?: ReadonlyArray<ResourceId> | undefined;
   /**
    * Plan every `write-file` to publish without replacing: a file that
    * appears at the target after planning fails the write instead of being

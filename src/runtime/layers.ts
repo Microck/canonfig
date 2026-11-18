@@ -1,3 +1,5 @@
+import { historyCommand } from "../history/history.ts";
+import { preparePublicationHistory } from "../history/history-capture.ts";
 import { backupCommand } from "../backup/backup.ts";
 import { reconcileBackupSchedules } from "../backup/backup-schedule.ts";
 import { localPreservation } from "../projection/authoring.ts";
@@ -329,14 +331,15 @@ const supervisedSourceModes =
   "Unlock the Source credential store in the session that runs the service, then supervise it with `canonfig source service install`. "
   + "Linux linger (`loginctl enable-linger <user>`) extends the user manager lifecycle to boot and logout, but does not unlock an encrypted login keyring. Verify `canonfig source service status` reports `serving: true` in the intended mode";
 
-/** Source commands; `folder` is the Canonical Folder that holds the state database. */
-const sourceCommandsLayer = (folder: string): Layer.Layer<
+/** Source commands for the Canonical Folder that holds the state database. */
+const sourceCommandsLayer = (statePath: string): Layer.Layer<
   SourceCommands,
   never,
   Enrollment | MachineState | ProfileCatalog | StateRepository | SourceService
 > => Layer.effect(
   SourceCommands,
   Effect.gen(function*() {
+    const folder = dirname(statePath);
     const enrollment = yield* Enrollment;
     const machine = yield* MachineState;
     const profiles = yield* ProfileCatalog;
@@ -367,7 +370,7 @@ const sourceCommandsLayer = (folder: string): Layer.Layer<
       scan: (input) =>
         asSource("scan its folder for tools", mapFailure(profiles.scan({ folder, write: input.write })).pipe(Effect.map(payload))),
       publish: (input) =>
-        asSource("publish a revision", profiles.publish({ folder, reviewer: input.reviewer, publishedAt: new Date().toISOString() }).pipe(
+        asSource("publish a revision", withRunLock(statePath, "source publish", profiles.publish({ folder, reviewer: input.reviewer, publishedAt: new Date().toISOString() })).pipe(
           Effect.mapError((error) =>
             error instanceof InvalidPublicationResourcesError
               ? invalidResourcesFailure(error.errors)
@@ -548,10 +551,11 @@ const loadSourceSigner = (enrollment: Enrollment["Service"]) =>
 const runtimeProfileCatalogLayer: Layer.Layer<
   ProfileCatalog,
   never,
-  Enrollment | StateRepository
+  Enrollment | MachineState | StateRepository
 > = Layer.effect(
   ProfileCatalog,
   Effect.gen(function*() {
+    const machine = yield* MachineState;
     const enrollment = yield* Enrollment;
     const repository = yield* StateRepository;
     return ProfileCatalog.of({
@@ -559,7 +563,10 @@ const runtimeProfileCatalogLayer: Layer.Layer<
       publish: (input) =>
         Effect.gen(function*() {
           const { signer } = yield* loadSourceSigner(enrollment);
-          return yield* makePublication(signer, repository).publish(input);
+          return yield* makePublication(signer, repository).publish({
+            ...input,
+            prepareHistory: publication => preparePublicationHistory(input.folder, publication).pipe(Effect.provideService(MachineState, machine)),
+          });
         }),
       getRevision: repository.getRevision,
     });
@@ -584,10 +591,11 @@ const followerCommandsLayer = (
   FollowerCommands,
   never,
   Enrollment | MachineState | ScheduleManager | StateRepository
-  | Synchronization | AgentResolution | Tunnel
+  | Synchronization | AgentResolution | Tunnel | ProfileCatalog
 > => Layer.effect(
   FollowerCommands,
   Effect.gen(function*() {
+    const profiles = yield* ProfileCatalog;
     const enrollment = yield* Enrollment;
     const machine = yield* MachineState;
     const schedules = yield* ScheduleManager;
@@ -844,6 +852,14 @@ const followerCommandsLayer = (
       });
 
     const service: FollowerCommandsService = {
+      history: request => mapFailure(historyCommand({
+        statePath,
+        publish: reviewer => profiles.publish({ folder: dirname(statePath), reviewer, publishedAt: new Date().toISOString() }),
+        environment: name => process.env[name],
+      }, request).pipe(
+        Effect.provideService(StateRepository, repository), Effect.provideService(MachineState, machine),
+        Effect.provideService(Synchronization, synchronization),
+      )).pipe(Effect.flatMap(value => "outcome" in value ? outcomePayload(value) : Effect.succeed(payload(value)))),
       backup: request => mapFailure(backupCommand({ statePath,
         sourceSigner: loadSourceSigner(enrollment).pipe(Effect.map(({ archiveSigner }) => archiveSigner)),
         environment: name => process.env[name],
@@ -1806,7 +1822,7 @@ export const runtimeLayer = (
     machine,
     state,
     guiQueriesLayer(dirname(statePath)).pipe(Layer.provide(state)),
-    sourceCommandsLayer(dirname(statePath)).pipe(Layer.provide(dependencies)),
+    sourceCommandsLayer(statePath).pipe(Layer.provide(dependencies)),
     followerCommandsLayer(
       statePath,
       options.doctorSource ?? doctorSourceFromEnvironment(),

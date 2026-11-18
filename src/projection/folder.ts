@@ -450,27 +450,34 @@ const diskSource = (folder: string): FolderSource => {
  * A follower's mirror: authoring entries come from `files` (keyed by path
  * relative to the folder, `/`-separated), `local/` from disk.
  */
-const mirrorSource = (folder: string, files: ReadonlyMap<string, FolderFile>, includeLocal = false): FolderSource => {
+const mirrorSource = (folder: string, files: ReadonlyMap<string, FolderFile>, includeLocal = false,
+  directories: ReadonlySet<string> = new Set()): FolderSource => {
   const disk = diskSource(folder);
   const key = (path: string) => relative(folder, path).split(sep).join("/");
   const local = (relativePath: string) => !includeLocal && (relativePath === "local" || relativePath.startsWith("local/"));
+  const paths = [...files.keys(), ...directories];
   return {
     folder,
     holdsEntries: (path) => {
       const relativePath = key(path);
       return local(relativePath) ? disk.holdsEntries(path)
-        : Promise.resolve(files.has(relativePath) || [...files.keys()].some((name) => name.startsWith(`${relativePath}/`)));
+        : Promise.resolve(files.has(relativePath) || paths.some((name) => name.startsWith(`${relativePath}/`)));
     },
     file: (path) => local(key(path)) ? disk.file(path) : Promise.resolve(files.get(key(path))),
     executable: (path) => local(key(path)) ? disk.executable(path) : Promise.resolve(files.get(key(path))?.executable),
     entries: (directory) => {
-      const prefix = key(directory);
-      if (local(prefix)) return disk.entries(directory);
+      const directoryKey = key(directory);
+      if (local(directoryKey)) return disk.entries(directory);
+      const prefix = `${directoryKey}/`;
       const children = new Map<string, boolean>();
-      for (const path of files.keys()) {
-        if (!path.startsWith(`${prefix}/`)) continue;
-        const [name, ...rest] = path.slice(prefix.length + 1).split("/");
-        children.set(name!, (children.get(name!) ?? false) || rest.length > 0);
+      // Empty directories still count as children. For example, each
+      // directory under skills/ must contain a SKILL.md.
+      for (const path of paths) {
+        if (!path.startsWith(prefix)) continue;
+        const relativePath = path.slice(prefix.length);
+        const slash = relativePath.indexOf("/");
+        const name = slash === -1 ? relativePath : relativePath.slice(0, slash);
+        children.set(name, slash !== -1 || directories.has(path) || children.get(name) === true);
       }
       return Promise.resolve([...children].map(([name, directory]) => ({ name, directory })).sort(byName));
     },
@@ -575,13 +582,14 @@ const loadCommands = async (source: FolderSource, directory: string): Promise<Re
   }));
 
 /** Regular files beneath a directory, relative with forward slashes, unread. */
-const listFiles = async (source: FolderSource, directory: string, prefix = ""): Promise<Array<ListedFile>> => {
+const listFiles = async (source: FolderSource, directory: string, prefix = "", directories?: Set<string>): Promise<Array<ListedFile>> => {
   const files: Array<ListedFile> = [];
   for (const entry of await source.entries(directory)) {
     const path = join(directory, entry.name);
     const relativePath = `${prefix}${entry.name}`;
     if (entry.directory) {
-      files.push(...await listFiles(source, path, `${relativePath}/`));
+      directories?.add(relativePath);
+      files.push(...await listFiles(source, path, `${relativePath}/`, directories));
       continue;
     }
     const executable = await source.executable(path);
@@ -885,6 +893,35 @@ export const listFolderFiles = (folder: string, directory: string): Promise<Read
 /** The authoring allowlist: the only top-level entries of `~/.canonfig/` that are published or mirrored. */
 export const AUTHORING_ENTRIES = ["canonfig.jsonc", "AGENTS.md", "rules", "skills", "agents", "commands", "hooks", "files"] as const;
 
+const listAuthoredFiles = async (source: FolderSource, directories?: Set<string>): Promise<ReadonlyArray<ListedFile>> => {
+  const files: Array<ListedFile> = [];
+  for (const entry of AUTHORING_ENTRIES) {
+    const location = join(source.folder, entry);
+    if (entry === "canonfig.jsonc" || entry === "AGENTS.md") {
+      const executable = await source.executable(location);
+      if (executable !== undefined) files.push({ path: entry, executable });
+    } else {
+      files.push(...await listFiles(source, location, `${entry}/`, directories));
+    }
+  }
+  return files;
+};
+
+/** The authored path and executable mode set shared by publication and history. */
+export const selectAuthoredFiles = (folder: string) => listAuthoredFiles(diskSource(folder));
+
+export const readSelectedAuthoredFiles = async (folder: string) => {
+  const source = diskSource(folder);
+  const files = new Map<string, FolderFile>();
+  const directories = new Set<string>();
+  for (const { path } of await listAuthoredFiles(source, directories)) {
+    const file = await source.file(join(folder, path));
+    if (file === undefined) throw failure(path, "disappeared while reading the Canonical Folder");
+    files.set(path, file);
+  }
+  return { files, directories };
+};
+
 /**
  * Whether a path holds something: any file, and any directory with something
  * in it. Nothing beneath it is read or checked.
@@ -922,6 +959,7 @@ export const itemResourceId = (reference: string): string => reference.replace("
  * the bytes itself.
  */
 export interface AuthoredFolder<File = SkillFile> {
+  readonly configFile: FolderFile;
   readonly config: FolderConfig;
   readonly instructions?: string | undefined;
   readonly rules: ReadonlyArray<RuleDocument>;
@@ -1016,12 +1054,14 @@ const loadAuthored = async <File extends { readonly executable: boolean }>(
 ): Promise<AuthoredFolder<File>> => {
   const folder = source.folder;
   const configPath = join(folder, "canonfig.jsonc");
-  const config = await readJsonc(source, configPath, CanonfigJsonc);
-  if (config === undefined) {
+  const configFile = await source.file(configPath);
+  if (configFile === undefined) {
     throw failure(configPath, "does not exist; scaffold the folder with 'canonfig setup plan --role source', or enroll this machine as a follower");
   }
+  const config = decodeFolderConfig(configPath, decodeText(configPath, configFile.content));
   return {
     config,
+    configFile,
     instructions: await readText(source, join(folder, "AGENTS.md")),
     rules: await loadRules(source, join(folder, "rules")),
     skills: await loadSkills(source, join(folder, "skills"), reader.tree),
@@ -1051,7 +1091,8 @@ const withLocalInstructions = (published: string | undefined, local: string | un
 export const loadCanonicalFolder = async (
   folder: string,
   mirror?: ReadonlyMap<string, FolderFile>,
-): Promise<LoadedFolder> => loadFolderSource(mirror === undefined ? diskSource(folder) : mirrorSource(folder, mirror));
+  directories?: ReadonlySet<string>,
+): Promise<LoadedFolder> => loadFolderSource(mirror === undefined ? diskSource(folder) : mirrorSource(folder, mirror, false, directories));
 
 /** Validate a complete candidate in memory, including local edits, before publishing any file. */
 export const loadCanonicalFiles = (folder: string, files: ReadonlyMap<string, FolderFile>): Promise<LoadedFolder> =>

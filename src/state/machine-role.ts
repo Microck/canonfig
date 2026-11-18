@@ -1,8 +1,10 @@
-import { Effect } from "effect";
+import type { FollowerId } from "../domain/brand.ts";
+import { localProjectionFollower } from "../domain/synchronization.ts";
+import { Effect, Schema } from "effect";
 
 import type { FollowerSynchronizationConfiguration } from "../synchronization/follower-sync-config.ts";
 import { MachineRoleConflictError, type StateRepositoryError } from "./state-repository.errors.ts";
-import type { StateRepository } from "./state-repository.service.ts";
+import { StateRepository } from "./state-repository.service.ts";
 
 /**
  * A machine is either a Source or a Follower, never both (ADR 0003, section
@@ -76,3 +78,25 @@ export const refuseOnSource = (
         : Effect.fail(sourceRoleConflict(source.identity.publicKeyFingerprint, action, folder))
     ),
   );
+
+export const MachineRole = Schema.Literals(["source", "follower", "standalone"]);
+export type MachineRole = typeof MachineRole.Type;
+
+export interface MachineIdentity {
+  readonly role: MachineRole;
+  /** Whose Applied Resource Records describe this machine's harnesses. */
+  readonly follower: FollowerId;
+}
+
+/** Which role this machine plays: an enrolled follower, an initialized Source, or neither. */
+export const machineIdentity = Effect.gen(function*() {
+  const repository = yield* StateRepository;
+  const configuration = yield* repository.getFollowerSynchronizationConfiguration();
+  const identity: MachineIdentity = configuration !== undefined
+    ? { role: "follower", follower: configuration.follower.id }
+    : {
+      role: (yield* repository.getEnrollmentSource()) === undefined ? "standalone" : "source",
+      follower: localProjectionFollower,
+    };
+  return identity;
+});

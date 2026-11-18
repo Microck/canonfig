@@ -8,7 +8,7 @@ import type {
   ProfileCatalogRevisionError,
   ProfileCatalogScanError,
 } from "./profile-catalog.errors.ts";
-import type { PublishFolderInput } from "./publication.ts";
+import type { PublishedFolder, PublishFolderInput } from "./publication.ts";
 
 /**
  * C7 profile boundary. Scanning never publishes; `--write` only adds
@@ -21,7 +21,7 @@ export class ProfileCatalog extends Context.Service<ProfileCatalog, {
   ) => Effect.Effect<FolderScanResult, ProfileCatalogScanError>;
   readonly publish: (
     input: PublishFolderInput,
-  ) => Effect.Effect<ProfileRevision, ProfileCatalogPublishError>;
+  ) => Effect.Effect<PublishedFolder, ProfileCatalogPublishError>;
   readonly getRevision: (
     id: ProfileRevisionId,
   ) => Effect.Effect<ProfileRevision, ProfileCatalogRevisionError>;

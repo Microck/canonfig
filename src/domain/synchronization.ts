@@ -220,7 +220,7 @@ export type ActionDetail =
     readonly retentionNotice?: string | undefined;
   }
   | { readonly kind: "mirror-directory"; readonly target: string; readonly adds: ReadonlyArray<string>; readonly removes: ReadonlyArray<string> }
-  | { readonly kind: "remove-resource"; readonly target: string; readonly paths: ReadonlyArray<string>; readonly keys: ReadonlyArray<string> }
+  | { readonly kind: "remove-resource"; readonly target: string; readonly paths: ReadonlyArray<string>; readonly keys: ReadonlyArray<string>; readonly requireAbsent?: true | undefined }
   | { readonly kind: "install-tool"; readonly toolId: string; readonly method: AutomaticRecipeMethod; readonly package: string; readonly version?: string | undefined; readonly replaces?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly source?: RecipeSource | undefined; readonly buildPolicy?: BuildPolicy | undefined; readonly provenance?: InstallerRecipeProvenanceType | undefined; readonly platform?: "linux" | "macos" | "windows" | undefined; readonly architecture?: string | undefined; readonly entrypoint?: string | undefined }
   | { readonly kind: "verify-only"; readonly method: string }
   | { readonly kind: "human-action"; readonly reason: string; readonly instructions: string }
@@ -475,6 +475,7 @@ export const ActionDetailSchema = Schema.Union([
   }),
   Schema.Struct({
     kind: Schema.Literal("remove-resource"),
+    requireAbsent: Schema.optional(Schema.Literal(true)),
     target: Schema.NonEmptyString,
     paths: Schema.Array(Schema.NonEmptyString),
     keys: Schema.Array(Schema.NonEmptyString),

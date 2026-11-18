@@ -2,6 +2,10 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
+## Unreleased
+
+- Keep version history for the Canonical Folder on a Source or unenrolled machine. Use `canonfig history` or Settings → History to browse changes, restore an earlier version, and push to an optional Git remote.
+
 ## v7.2.0 - 2026-11-16
 
 ### Security

@@ -11,7 +11,8 @@ import { SecretNameSchema } from "../secrets/secret-store.ts";
 import { stateFormatVersion } from "../state/state-schema.ts";
 import { withRunLock } from "../synchronization/run-lock.ts";
 import { BackupError, backupWork, missingBackupFile } from "./backup-config.ts";
-import { BackupIoError, readBackupMetadata } from "./backup-io.ts";
+import { BackupIoError } from "../git/tool-process.ts";
+import { readBackupMetadata } from "./backup-io.ts";
 import type { BackupPolicy } from "./backup.types.ts";
 
 const Credential = Schema.Struct({ reference: CredentialReference, value: Schema.String });

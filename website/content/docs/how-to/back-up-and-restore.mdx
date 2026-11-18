@@ -63,6 +63,9 @@ Change `destination` in the policy, then run `backup configure` again.
 
 Install Git or rclone on every machine that uses that destination, including scheduled jobs. Never put a token or password in a destination URL. Configure the remote on each Follower Machine; its authentication does not travel in the Machine Profile.
 
+For a Git repository with browsable Canonical Folder files and commits, use
+[History](/docs/how-to/keep-version-history).
+
 ### Check a destination before the first run
 
 `backup configure`, `backup enable` and the GUI's save run the same check as `canonfig backup check <name>`, so a backup that can't run is refused when you set it up, not at its first scheduled run:

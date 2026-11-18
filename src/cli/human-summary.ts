@@ -1,3 +1,4 @@
+import { shortHistoryId } from "../gui/contract/history.ts";
 import { Schema } from "effect";
 
 import { CliExitCode } from "./exit-codes.ts";
@@ -358,6 +359,7 @@ const summarizeSync = (data: PayloadRecord, outline: Outline): boolean => {
     if (run !== undefined) outline.lines.push(`run: ${run}`);
     outlineRest(outline, outcome, ["outcome", "reason", "run"], "  ");
   }
+  summarizeHistoryCapture(data, outline);
   const resolutions = data.agentResolutions;
   if (isList(resolutions) && resolutions.length > 0) {
     outlineValue(outline, "", "agent resolutions: ", resolutions, 1);
@@ -365,7 +367,7 @@ const summarizeSync = (data: PayloadRecord, outline: Outline): boolean => {
   outlineRest(
     outline,
     data,
-    ["mode", "revision", "downloadedBlobs", "reusedBlobs", "plan", "outcome", "agentResolutions", "warnings", "clientSteps", "adoptionReviews", "origin", "harnesses", "notInstalled", "takeovers", "snapshot"],
+    ["mode", "revision", "history", "downloadedBlobs", "reusedBlobs", "plan", "outcome", "agentResolutions", "warnings", "clientSteps", "adoptionReviews", "origin", "harnesses", "notInstalled", "takeovers", "snapshot"],
   );
   const adoptionReviews = recordsOf(data.adoptionReviews);
   if (adoptionReviews.length > 0) {
@@ -399,12 +401,55 @@ const summarizeSync = (data: PayloadRecord, outline: Outline): boolean => {
 
 // ── source publication and profiles ──────────────────────────────────────
 
+const summarizeHistoryCapture = (data: PayloadRecord, outline: Outline): void => {
+  const history = objectOf(data.history);
+  if (history === undefined) return;
+  if (Schema.is(Schema.String)(history.error)) {
+    outline.lines.push(`history: ${history.error}`);
+    return;
+  }
+  const committed = Schema.is(Schema.String)(history.commit) ? `committed ${history.commit}` : "";
+  const push = objectOf(history.push);
+  const suffix = push?.status === "pushed" ? `pushed to ${textOf(push.remote)}`
+    : push?.status === "not-pushed" ? `not pushed (${textOf(push.reason)}); will retry on next ${"profileId" in data ? "publish" : "apply"}` : "";
+  const status = [committed, suffix].filter(Boolean).join(", ");
+  if (status !== "") outline.lines.push(`history: ${status}`);
+};
+
+const summarizeHistory = (data: PayloadRecord, outline: Outline): boolean => {
+  if (Schema.is(Schema.Boolean)(data.enabled)) {
+    const backlog = textOf(data.backlog);
+    const status = data.enabled ? "enabled" : "disabled";
+    outline.lines.push(backlog === undefined ? `history: ${status}`
+      : `history: ${status}, ${textOf(data.remote) ?? "local only"}, backlog ${backlog}`);
+    if (Schema.is(Schema.String)(data.lastPushError)) outline.lines.push(`last push: ${data.lastPushError}`);
+    for (const entry of recordsOf(data.entries)) {
+      outline.lines.push(`${shortHistoryId(textOf(entry.id) ?? "")}  ${textOf(entry.subject)}  ${textOf(entry.date)}  ${textOf(entry.author)}  ${entry.pushed === true ? "pushed" : "local"}`);
+    }
+    for (const warning of isList(data.warnings) ? data.warnings : []) outline.lines.push(`warning: ${textOf(warning)}`);
+    return true;
+  }
+  if (Schema.is(Schema.String)(data.patch) && isList(data.names)) {
+    outline.lines.push(...data.names.map(name => textOf(name) ?? ""), data.patch.trimEnd());
+    return true;
+  }
+  if (objectOf(data.outcome) !== undefined) {
+    const backup = textOf(data.backup);
+    if (backup !== undefined) outline.lines.push(`Takeover Snapshot: ${backup}`);
+    const revision = objectOf(data.revision);
+    if (revision !== undefined) return summarizeRevision(revision, outline);
+    return summarizeSync(data, outline);
+  }
+  return false;
+};
+
 const summarizeRevision = (data: PayloadRecord, outline: Outline): boolean => {
   if (!("profileId" in data) || !("sequence" in data) || !isList(data.resources)) return false;
   outline.lines.push(
     `profile: ${textOf(data.profileId) ?? "unknown"}, sequence ${textOf(data.sequence) ?? "?"}`,
     `revision: ${textOf(data.id) ?? "unknown"}`,
   );
+  summarizeHistoryCapture(data, outline);
   const publishedAt = textOf(data.publishedAt);
   if (publishedAt !== undefined) outline.lines.push(`published at: ${publishedAt}`);
   const resources = recordsOf(data.resources);
@@ -424,7 +469,7 @@ const summarizeRevision = (data: PayloadRecord, outline: Outline): boolean => {
   outlineRest(
     outline,
     data,
-    ["profileId", "sequence", "id", "digest", "publishedAt", "resources", "groups"],
+    ["profileId", "sequence", "id", "digest", "publishedAt", "resources", "groups", "history"],
   );
   return true;
 };
@@ -619,6 +664,7 @@ const summarizeHarnesses = (data: PayloadRecord, outline: Outline): boolean => {
 };
 
 const summaries: ReadonlyArray<readonly [(command: string) => boolean, (data: PayloadRecord, outline: Outline) => boolean]> = [
+  [(command) => command.startsWith("history."), summarizeHistory],
   [(command) => command === "doctor", summarizeDoctor],
   [(command) => command === "status", summarizeStatus],
   [(command) => command.startsWith("sync.") || command === "restore" || command.startsWith("import"), summarizeSync],

@@ -1,3 +1,5 @@
+import { machineIdentity } from "../state/machine-role.ts";
+import { findGitleaks, scanPlaintextGit } from "../git/plaintext-scan.ts";
 import { randomUUID } from "node:crypto";
 import { constants, createReadStream, createWriteStream } from "node:fs";
 import { chmod, copyFile, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
@@ -10,7 +12,7 @@ import { Effect, Option, Redacted, Schema } from "effect";
 import { ContentDigest, CredentialReference, Timestamp } from "../domain/brand.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { adapterFor, BUILTIN_ADAPTERS } from "../projection/adapters/index.ts";
-import { ArchiveIntegrityError, collectArchiveConfiguration, machineIdentity, MANIFEST_PATH, manifestSigningPayload, MAXIMUM_MANIFEST_BYTES, SIGNATURE_PATH, verifyArchiveStream, type ArchiveSigner, type ArchiveSignerError, type ExportManifest, type ManifestFile } from "../projection/archive.ts";
+import { ArchiveIntegrityError, collectArchiveConfiguration, MANIFEST_PATH, manifestSigningPayload, MAXIMUM_MANIFEST_BYTES, SIGNATURE_PATH, verifyArchiveStream, type ArchiveSigner, type ArchiveSignerError, type ExportManifest, type ManifestFile } from "../projection/archive.ts";
 import { encodeTar, type TarSource } from "../projection/archive-tar.ts";
 import { emptyModel } from "../projection/detect.ts";
 import { rootContext, sharedSkillsOwner } from "../projection/plan.ts";
@@ -18,10 +20,11 @@ import { importLocal } from "../projection/sync.ts";
 import { sha256BytesHex } from "../profile/profile-codec.ts";
 import { packageVersion } from "../runtime/build-identity.ts";
 import { withRunLock } from "../synchronization/run-lock.ts";
-import { captureBackupFiles, below, scanPlaintextGitBackup } from "./backup-capture.ts";
+import { captureBackupFiles, below } from "./backup-capture.ts";
 import { decodeBackup, encodeBackup } from "./backup-codec.ts";
 import { backupOwner, backupPassword, BackupError, backupWork, localBackupPath, readBackupOwner, readBackupPolicies, readBackupRuns, readLocalBackups, recordBackupOutcome, requireCapturePermission, validateBackupPolicy, writeLocalBackups } from "./backup-config.ts";
-import { BackupIoError, hashBackupFile, readBackupMetadata } from "./backup-io.ts";
+import { BackupIoError } from "../git/tool-process.ts";
+import { hashBackupFile, readBackupMetadata } from "./backup-io.ts";
 import { captureRecovery, readRecovery, restoreRecovery, withRecoveryCredentials, type Recovery } from "./backup-recovery.ts";
 import { backupScheduleStatus, reconcileBackupSchedules } from "./backup-schedule.ts";
 import { checkBackupDestination, listBackupOwners, openBackupStorage, type BackupStorage } from "./backup-storage.ts";
@@ -64,6 +67,9 @@ const readPasswordInput = () => backupWork("Read backup password", async () => {
  * problems fail; an unreachable host and missing local consent come back as warnings, since the run can
  * still succeed once the host is online or someone allows the capture.
  */
+const backupScanner = findGitleaks.pipe(Effect.mapError(() => new BackupError({ code: "BACKUP_TOOL_REQUIRED",
+  message: "An unencrypted Git backup needs gitleaks to scan for secrets before each push. Install gitleaks, or turn on encryption." })));
+
 const checkBackup = (folder: string, name: string, policy: BackupPolicy, local: LocalBackups, allowCredentials: boolean) => Effect.gen(function*() {
   const problem = validateBackupPolicy(policy);
   if (problem !== undefined) return yield* new BackupError({ code: "BACKUP_INVALID", message: problem });
@@ -73,7 +79,7 @@ const checkBackup = (folder: string, name: string, policy: BackupPolicy, local: 
   if (policy.compression === "small" || policy.compression === "max") yield* need("xz", `${policy.compression} compression needs xz. Install xz, or choose fast or balanced compression.`);
   if (policy.compression === "max") yield* need("zpaq-stream", "max compression needs zpaq-stream. Install it, or choose another compression level.");
   if (policy.destination.kind === "git" && policy.passwordReference === undefined) {
-    yield* need("gitleaks", "An unencrypted Git backup needs gitleaks to scan for secrets before each push. Install gitleaks, or turn on encryption.");
+    yield* backupScanner;
   }
   const owner = yield* backupOwner(folder);
   const destination = yield* Effect.acquireUseRelease(
@@ -238,7 +244,9 @@ const capture = (context: BackupContext, opened: OpenBackup, scheduled: boolean)
     return { staged, manifest, prefix, skippedManagedSurfaces: configuration.harnesses.skipped };
   }));
   if (opened.policy.destination.kind === "git" && password === undefined) {
-    yield* backupWork("Scan plaintext Git backup", signal => scanPlaintextGitBackup(captured.staged.directory, opened.scratch, signal));
+    const executable = yield* backupScanner;
+    yield* backupWork("Scan plaintext Git backup", signal => scanPlaintextGit({ executable, scratch: opened.scratch, signal,
+      target: { kind: "dir", directory: captured.staged.directory } }));
   }
   const archive = join(opened.scratch, "archive");
   const codec = yield* backupWork("Encode backup", signal => encodeBackup({ preset: opened.policy.compression, password, scratch: opened.scratch, output: archive,

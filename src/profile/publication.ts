@@ -1,3 +1,4 @@
+import type { HistoryCapture, HistoryFile } from "../history/history-repository.ts";
 import { validateBackupPolicy } from "../backup/backup-config.ts";
 import { assertProfileMetadataBudget } from "./metadata-budget.ts";
 import { createHash } from "node:crypto";
@@ -31,7 +32,7 @@ import {
   hookScript,
   intendedExecutable,
   itemResourceId,
-  listFolderFiles,
+  selectAuthoredFiles,
   loadAuthoredFolder,
 } from "../projection/folder.ts";
 import { emptyModel } from "../projection/detect.ts";
@@ -63,13 +64,26 @@ import { asJson, canonicalJson } from "./profile-codec.ts";
  * credential-looking literal stops publication before anything is signed.
  */
 
+export interface PublicationHistoryInput {
+  readonly revision: ProfileRevision;
+  /** There are authored bytes to stage only when SQLite is about to publish a new revision. */
+  readonly candidate?: {
+    readonly previous: ProfileRevision | undefined;
+    readonly files: () => ReadonlyArray<HistoryFile>;
+    readonly reviewer: string;
+  };
+}
+
 export interface PublishFolderInput {
   /** The Canonical Folder, `~/.canonfig/`. */
   readonly folder: string;
   /** Who reviewed the folder content being published. */
   readonly reviewer: string;
   readonly publishedAt: string;
+  readonly prepareHistory?: (input: PublicationHistoryInput) => Effect.Effect<Effect.Effect<HistoryCapture | undefined>>;
 }
+
+export type PublishedFolder = ProfileRevision & { readonly history?: HistoryCapture };
 
 /**
  * Signing owns credential access behind this boundary. Callers supply only a
@@ -158,9 +172,10 @@ const scheduleDefaultOf = (calendar: string): ScheduleDefault => {
  * sources relative to the folder. Groups and `requires` must name items the
  * folder declares, and every file under `hooks/` must be a script a hook runs.
  */
-export const folderProfile = async (folder: string): Promise<MachineProfile> => {
+const readPublication = async (folder: string) => {
   const authored = await loadAuthoredFolder(folder);
   const config = authored.config;
+  const selection = await selectAuthoredFiles(folder);
   const configPath = resolve(folder, "canonfig.jsonc");
   const refuse = (message: string) => new CanonicalFolderError({ path: configPath, message });
   if (config.profile === undefined) {
@@ -196,7 +211,7 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
   }
 
   // Hooks: the definition is a JSON item, the script it runs a file item.
-  const scripts = new Map((await listFolderFiles(folder, "hooks")).map((file) => [`hooks/${file.path}`, file.executable]));
+  const scripts = new Map(selection.filter(file => file.path.startsWith("hooks/")).map(file => [file.path, file.executable]));
   const scriptUsers = new Map<string, Array<string>>();
   const enabledScripts = new Set<string>();
   for (const [position, hook] of (config.hooks ?? []).entries()) {
@@ -226,7 +241,7 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
   // Authored resources: the definition is a JSON item, each file it reads a
   // file item under files/. Like a hook script, a file goes wherever one of
   // its resources goes, and a file no resource reads is refused.
-  const files = new Map((await listFolderFiles(folder, "files")).map((file) => [`files/${file.path}`, file.executable]));
+  const files = new Map(selection.filter(file => file.path.startsWith("files/")).map(file => [file.path, file.executable]));
   const fileUsers = new Map<string, Array<string>>();
   for (const resource of authored.resources) {
     const used = resource.kind === "file"
@@ -335,7 +350,7 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
     if (users.some((user) => !groupsOf.has(user))) continue;
     groupsOf.set(id, [...new Set(users.flatMap((user) => groupsOf.get(user)!))].sort(compareText));
   }
-  return normalizeMachineProfile({
+  const profile = normalizeMachineProfile({
     id: config.profile.id,
     version: 2,
     name: config.profile.name,
@@ -346,7 +361,11 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
     }),
     scheduleDefault: config.scheduleDefault === undefined ? undefined : scheduleDefaultOf(config.scheduleDefault),
   });
+  return { profile, selection, configFile: authored.configFile };
 };
+
+export const folderProfile = async (folder: string): Promise<MachineProfile> =>
+  (await readPublication(folder)).profile;
 
 /** `..` as a whole path segment, in either separator style. */
 const parentSegment = /(?:^|[\\/])\.\.(?:[\\/]|$)/u;
@@ -477,58 +496,78 @@ export const revisionSigningPayload = (
   return canonicalJson(asJson(signed));
 };
 
+export const validateReviewer = (reviewer: string) => reviewer.trim() === "" || /[\p{Cc}<>]/u.test(reviewer)
+  ? Effect.fail(new InvalidPublicationInputError({ reason: "reviewer must be a name without control characters or angle brackets" }))
+  : Effect.void;
+
+export const preparePublication = (folder: string, repository: StateRepository["Service"]) => Effect.gen(function*() {
+  const { profile, selection, configFile } = yield* Effect.tryPromise({
+    try: () => readPublication(folder),
+    catch: (cause) => new InvalidPublicationInputError({
+      reason: cause instanceof CanonicalFolderError
+        ? `${cause.path} ${cause.message}`
+        : `the Canonical Folder could not be read: ${String(cause)}`,
+    }),
+  });
+  // One Source publishes one Machine Profile. Followers select it by id,
+  // so a second id would leave them on the first.
+  const publishedRevisions = yield* repository.listRevisions();
+  const published = publishedRevisions.find((revision) => revision.profileId !== profile.id);
+  if (published !== undefined) {
+    return yield* new InvalidPublicationInputError({
+      reason: `this Source publishes profile ${published.profileId}; set "profile.id" in canonfig.jsonc back to ${published.profileId}`,
+    });
+  }
+  const sources = yield* resolveResourceSources(profile.resources, folder);
+  const errors = validateMachineProfile(profile);
+  if (errors.length > 0) {
+    return yield* Effect.fail(new InvalidPublicationResourcesError(errors));
+  }
+  const credentialIssue = publicationCredentialIssue(profile.resources);
+  if (credentialIssue !== undefined) {
+    return yield* new InvalidPublicationInputError({ reason: credentialIssue });
+  }
+
+  const encoded = yield* Effect.try({
+    try: () => compileProfileCandidate(profile, sources),
+    catch: (cause) =>
+      cause instanceof ProfileContractError
+        ? new InvalidPublicationResourcesError(cause.errors)
+        : new InvalidPublicationInputError({
+          reason: cause instanceof Error ? cause.message : `resource bytes could not be encoded: ${String(cause)}`,
+        }),
+  });
+  return { profile, selection, configFile, sources, encoded, publishedRevisions };
+});
+
 export const makePublication = (
   signer: ProfileRevisionSigner,
   repository: StateRepository["Service"],
 ) => {
   const publish = (
     input: PublishFolderInput,
-  ): Effect.Effect<ProfileRevision, ProfileCatalogPublishError> =>
+  ): Effect.Effect<PublishedFolder, ProfileCatalogPublishError> =>
     Effect.gen(function*() {
-      if (input.reviewer.trim().length === 0) {
-        return yield* new InvalidPublicationInputError({ reason: "reviewer is required" });
-      }
+      yield* validateReviewer(input.reviewer);
       yield* Effect.try({
         try: () => Schema.decodeUnknownSync(Timestamp)(input.publishedAt),
         catch: (cause) => new InvalidPublicationInputError({ reason: `invalid publication timestamp: ${String(cause)}` }),
       });
-      const profile = yield* Effect.tryPromise({
-        try: () => folderProfile(input.folder),
-        catch: (cause) => new InvalidPublicationInputError({
-          reason: cause instanceof CanonicalFolderError
-            ? `${cause.path} ${cause.message}`
-            : `the Canonical Folder could not be read: ${String(cause)}`,
-        }),
-      });
-      // One Source publishes one Machine Profile. Followers select it by id,
-      // so a second id would leave them on the first.
-      const published = (yield* repository.listRevisions()).find((revision) => revision.profileId !== profile.id);
-      if (published !== undefined) {
-        return yield* new InvalidPublicationInputError({
-          reason: `this Source publishes profile ${published.profileId}; set "profile.id" in canonfig.jsonc back to ${published.profileId}`,
-        });
-      }
-      const sources = yield* resolveResourceSources(profile.resources, input.folder);
-      const errors = validateMachineProfile(profile);
-      if (errors.length > 0) {
-        return yield* Effect.fail(new InvalidPublicationResourcesError(errors));
-      }
-      const credentialIssue = publicationCredentialIssue(profile.resources);
-      if (credentialIssue !== undefined) {
-        return yield* new InvalidPublicationInputError({ reason: credentialIssue });
-      }
-
-      const encoded = yield* Effect.try({
-        try: () => compileProfileCandidate(profile, sources),
-        catch: (cause) =>
-          cause instanceof ProfileContractError
-            ? new InvalidPublicationResourcesError(cause.errors)
-            : new InvalidPublicationInputError({
-              reason: cause instanceof Error ? cause.message : `resource bytes could not be encoded: ${String(cause)}`,
-            }),
-      });
+      const { profile, selection, configFile, sources, encoded, publishedRevisions } = yield* preparePublication(input.folder, repository);
+      const latest = publishedRevisions.at(-1);
       const canonicalBytes = encoded.canonicalBytes;
       const digest = encoded.digest;
+      const files = () => {
+        const modes = new Map(encoded.profile.resources.flatMap(resource => resource.spec.kind === "file"
+          ? [[resource.spec.source, resource.spec.executable] as const] : []));
+        const selectedModes = new Map(selection.map(file => [file.path, file.executable]));
+        const selected: Array<HistoryFile> = [{ path: "canonfig.jsonc", ...configFile }];
+        for (const [path, published] of sources) {
+          const executable = path.startsWith("hooks/") ? modes.get(path) : selectedModes.get(path);
+          selected.push({ path, executable: executable ?? false, source: published.path, digest: published.blob });
+        }
+        return selected;
+      };
       const approval = {
         proposalDigest: digest,
         reviewer: input.reviewer,
@@ -549,10 +588,17 @@ export const makePublication = (
           reason: cause instanceof Error ? cause.message : "revision metadata exceeds its transport budget",
         }),
       });
+      const persist = (publication: PublicationHistoryInput) => Effect.gen(function*() {
+        const { revision } = publication;
+        yield* validateMetadata(revision);
+        const finishHistory = input.prepareHistory === undefined ? undefined : yield* input.prepareHistory(publication);
+        yield* repository.publishRevision({ revision, blobs: encoded.blobs, approval });
+        const history = finishHistory === undefined ? undefined : yield* finishHistory;
+        return history === undefined ? revision : { ...revision, history };
+      });
 
       // Publishing the content that is already latest is idempotent. Storing
       // its blobs again repairs a Source that lost blob rows.
-      const latest = yield* repository.getLatestRevision(profile.id);
       if (latest !== undefined && latest.digest === digest) {
         if (latest.canonicalBytes !== canonicalBytes) {
           return yield* new RevisionImmutableError({
@@ -560,9 +606,7 @@ export const makePublication = (
             message: "the latest revision digest names different content",
           });
         }
-        yield* validateMetadata(latest);
-        yield* repository.publishRevision({ revision: latest, blobs: encoded.blobs, approval });
-        return latest;
+        return yield* persist({ revision: latest });
       }
 
       // Any other content becomes the next sequence, including content an
@@ -623,9 +667,7 @@ export const makePublication = (
         groups: unsigned.groups,
         scheduleDefault: unsigned.scheduleDefault,
       };
-      yield* validateMetadata(revision);
-      yield* repository.publishRevision({ revision, blobs: encoded.blobs, approval });
-      return revision;
+      return yield* persist({ revision, candidate: { previous: latest, files, reviewer: input.reviewer } });
     });
 
   return { publish };

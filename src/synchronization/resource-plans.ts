@@ -1414,3 +1414,15 @@ export const planResource = (
 };
 
 export const planRemoved = planRemovedResource;
+
+/** Restore takes over these entire targets through a snapshot, even when there is no Applied Resource Record. */
+export const planRemoveTarget = (context: ResourcePlanningContext): ReadonlyArray<ResourceActionDraft> => {
+  const { observed, resource } = context;
+  if (observed.state === "absent") return [];
+  if (resource.kind === "directory" ? observed.state !== "directory" : observed.state !== "present" || observed.objectKind !== "regular") {
+    return [{ kind: "human-action", detail: { kind: "human-action", reason: `Cannot remove ${resource.target}`,
+      instructions: "Move the unmanaged object out of the Canonical Folder and try again." } }];
+  }
+  return [{ kind: "remove-resource", detail: { kind: "remove-resource", target: resource.target,
+    paths: observed.state === "directory" ? presentObservedFiles(observed.files).map(file => file.path).sort() : [], keys: [], requireAbsent: true } }];
+};

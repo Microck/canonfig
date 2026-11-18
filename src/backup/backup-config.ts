@@ -5,7 +5,8 @@ import { Effect, Schema } from "effect";
 import { TaggedError } from "../domain/tagged-error.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { decodeFolderConfig } from "../projection/folder.ts";
-import { BackupIoError, readBackupMetadata } from "./backup-io.ts";
+import { BackupIoError } from "../git/tool-process.ts";
+import { readBackupMetadata } from "./backup-io.ts";
 import { BackupName, BackupPolicies, BackupPolicy, BackupRuns, LocalBackups, capturesCredentials, requiresEncryption, type BackupOutcome } from "./backup.types.ts";
 
 export class BackupError extends TaggedError<BackupError>()("BackupError", {

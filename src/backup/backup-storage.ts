@@ -1,13 +1,13 @@
-import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, copyFile, lstat, mkdir, open, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import { devNull } from "node:os";
+import { checkGitDestination, checkGitRemote, gitArgs, localGitEnvironment, transportEnvironment, unreachable, type DestinationCheck } from "../git/git-transport.ts";
+import { createHash, randomUUID } from "node:crypto";
+import { copyFile, lstat, mkdir, open, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, parse } from "node:path";
-import { fileURLToPath } from "node:url";
 import { Schema } from "effect";
 import { openAnchoredDirectory } from "../machine/anchored-directory.ts";
 import { BackupName, BackupSnapshot, SnapshotId, type BackupDestination } from "./backup.types.ts";
-import { BackupIoError, hashBackupFile, probeBackupTool, probeFailure, readBackupMetadata, runBackupTool, type ProbeResult } from "./backup-io.ts";
+import { BackupIoError, probeBackupTool, probeFailure, runBackupTool, type ProbeResult } from "../git/tool-process.ts";
+import { hashBackupFile, readBackupMetadata } from "./backup-io.ts";
 
 const partBytes = 48 * 1024 * 1024;
 const snapshotName = /^[0-9a-f]{64}\.json$/u;
@@ -85,16 +85,6 @@ const checkedSnapshot = (snapshot: BackupSnapshot, policy: string, owner: string
   return snapshot;
 };
 
-const checkGitRemote = (remote: string): void => {
-  if (isAbsolute(remote) || remote.startsWith("file:///") || /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9/_~.-]+$/u.test(remote)) return;
-  try {
-    const url = new URL(remote);
-    if ((url.protocol === "https:" && url.username === "" && url.password === "")
-      || (url.protocol === "ssh:" && url.password === "")) return;
-  } catch { /* Report one safe message without echoing a credential-bearing URL. */ }
-  throw new BackupIoError("BACKUP_INVALID", "Git backup needs an HTTPS, SSH, file URL or absolute local repository path. Keep tokens in the Git credential helper, never in the URL.");
-};
-
 /**
  * One writer owns one namespace. A restored machine gets a new owner id, never a copied lease.
  *
@@ -134,23 +124,26 @@ const openStorage = async (input: StorageInput): Promise<BackupStorage> => {
   const policy = Schema.decodeUnknownSync(BackupName)(input.policy);
   const owner = Schema.decodeUnknownSync(BackupName)(input.owner);
   const namespace = `canonfig-backup/${policy}/${owner}`;
-  const tool = (name: string, args: ReadonlyArray<string>, extra: { readonly output?: string; readonly text?: string; readonly environment?: NodeJS.ProcessEnv; readonly maximumOutputBytes?: number } = {}) =>
+  const tool = (name: string, args: ReadonlyArray<string>, extra: { readonly output?: string; readonly text?: string;
+    readonly environment?: Record<string, string | undefined>; readonly maximumOutputBytes?: number } = {}) =>
     runBackupTool(name, args, { cwd: input.scratch, signal: input.signal, ...extra });
   if (input.destination.kind === "git") {
     const remote = input.destination.remote;
     checkGitRemote(remote);
     const repository = join(input.scratch, "git");
-    await tool("git", ["init", "--bare", "--quiet", repository]);
-    const git = (args: ReadonlyArray<string>, extra: Parameters<typeof tool>[2] = {}) => tool("git", [
-      "--git-dir", repository, "-c", `core.hooksPath=${devNull}`, "-c", "protocol.ext.allow=never", ...args,
-    ], extra);
+    const environment = localGitEnvironment();
+    const git = (args: ReadonlyArray<string>, extra: Parameters<typeof tool>[2] = {}) =>
+      tool("git", [...gitArgs(repository), ...args], { environment, ...extra });
+    await git(["init", "--bare", "--quiet", "--template="]);
+    const transport = await transportEnvironment({ executable: "git", repository, cwd: input.scratch, signal: input.signal });
+    const transfer = (args: ReadonlyArray<string>) => git(args, { environment: transport });
     const refs = new Map<string, string>();
     const fetch = async (id: string): Promise<void> => {
       Schema.decodeUnknownSync(SnapshotId)(id);
-      await git(["fetch", "--quiet", "--no-tags", "--", remote, `refs/heads/${namespace}/${id}`]);
+      await transfer(["fetch", "--quiet", "--no-tags", "--", remote, `refs/heads/${namespace}/${id}`]);
     };
     const list = async (): Promise<ReadonlyArray<BackupSnapshot>> => {
-      const listed = await git(["ls-remote", "--refs", "--", remote, `refs/heads/${namespace}/*`]);
+      const listed = await transfer(["ls-remote", "--refs", "--", remote, `refs/heads/${namespace}/*`]);
       const snapshots: Array<BackupSnapshot> = [];
       for (const line of listed.trim().split("\n").filter(line => line !== "")) {
         const match = /^([0-9a-f]{40,64})\s+(.+)$/u.exec(line);
@@ -191,9 +184,9 @@ const openStorage = async (input: StorageInput): Promise<BackupStorage> => {
         const tree = (await git(["mktree"], { text: `${entries.join("\n")}\n` })).trim();
         const commit = (await git(["commit-tree", tree], {
           text: `Canonfig backup ${snapshot.id}\n`,
-          environment: { ...process.env, GIT_AUTHOR_NAME: "Canonfig", GIT_AUTHOR_EMAIL: "backup@canonfig.invalid", GIT_COMMITTER_NAME: "Canonfig", GIT_COMMITTER_EMAIL: "backup@canonfig.invalid" },
+          environment: { ...environment, GIT_AUTHOR_NAME: "Canonfig", GIT_AUTHOR_EMAIL: "backup@canonfig.invalid", GIT_COMMITTER_NAME: "Canonfig", GIT_COMMITTER_EMAIL: "backup@canonfig.invalid" },
         })).trim();
-        await git(["push", "--porcelain", "--", remote, `${commit}:refs/heads/${namespace}/${snapshot.id}`]);
+        await transfer(["push", "--porcelain", "--", remote, `${commit}:refs/heads/${namespace}/${snapshot.id}`]);
         await download(snapshot, join(input.scratch, "remote-proof"));
         return snapshot;
       },
@@ -202,7 +195,7 @@ const openStorage = async (input: StorageInput): Promise<BackupStorage> => {
           const ref = `refs/heads/${namespace}/${snapshot.id}`;
           const expected = refs.get(snapshot.id);
           if (expected === undefined) throw new BackupIoError("BACKUP_CONFLICT", "List the snapshot refs before pruning");
-          await git(["push", `--force-with-lease=${ref}:${expected}`, "--", remote, `:${ref}`]);
+          await transfer(["push", `--force-with-lease=${ref}:${expected}`, "--", remote, `:${ref}`]);
         }
       },
       close: async () => undefined,
@@ -314,25 +307,6 @@ const openStorage = async (input: StorageInput): Promise<BackupStorage> => {
 };
 
 /** Problems a later run may outgrow on its own (an offline host) come back as warnings; everything else throws. */
-export interface DestinationCheck { readonly warnings: ReadonlyArray<string> }
-
-const unreachable = (where: string): DestinationCheck => ({
-  warnings: [`Couldn't reach ${where} just now. The backup is saved and tries again when it runs; check the connection if this keeps happening.`],
-});
-
-/** Where a Git remote points, for messages. checkGitRemote already refused addresses with credentials in them. */
-const gitWhere = (remote: string): string => {
-  try {
-    const url = new URL(remote);
-    return url.protocol === "file:" ? fileURLToPath(url) : `${url.host}${url.pathname}`;
-  } catch { return remote; }
-};
-
-const localGitPath = (remote: string): string | undefined =>
-  isAbsolute(remote) ? remote : remote.startsWith("file:///") ? fileURLToPath(remote) : undefined;
-
-const writable = (path: string) => access(path, constants.W_OK).then(() => true, () => false);
-
 /**
  * The read-only "test connection" that save, enable and `backup check` share. It uses the tools and the
  * arguments a real run uses, and turns each failure into one specific message without tool output, which
@@ -367,47 +341,9 @@ export const checkBackupDestination = async (input: {
   }
 
   if (destination.kind === "git") {
-    const remote = destination.remote;
-    checkGitRemote(remote);
-    if ((await probe("git", ["--version"])).ok === false) {
-      throw new BackupIoError("BACKUP_TOOL_REQUIRED", "Git isn't installed on this machine, or it isn't on PATH. Install Git, then save again.");
-    }
-    const where = gitWhere(remote);
-    const localPath = localGitPath(remote);
-    if (localPath !== undefined) {
-      if (!(await stat(localPath).catch(() => undefined))?.isDirectory()) {
-        throw new BackupIoError("BACKUP_INVALID", `There is no Git repository at ${localPath}. Create one with git init --bare, then save again.`);
-      }
-      if (!(await writable(localPath))) throw new BackupIoError("BACKUP_INVALID", `Canonfig can't write to the Git repository at ${localPath}. Check its permissions.`);
-    }
-    // Never wait on a prompt: a credential the run can't answer at 3am should fail here, now.
-    const environment: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" };
-    if (process.env.GIT_SSH_COMMAND === undefined && !(await probe("git", ["config", "--get", "core.sshCommand"])).ok) environment.GIT_SSH_COMMAND = "ssh -o BatchMode=yes";
-    const failed = (result: Extract<ProbeResult, { readonly ok: false }>, stage: "read" | "push"): DestinationCheck => {
-      const reason = probeFailure(result);
-      if (reason === "network") return unreachable(where);
-      if (reason === "auth") {
-        throw new BackupIoError("BACKUP_CREDENTIAL_REQUIRED", stage === "read"
-          ? `Git couldn't sign in to ${where}. Set up an SSH key or a credential helper for it on this machine, then save again.`
-          : `Git can read ${where} but can't push to it. Give this machine's sign-in write access, then save again.`);
-      }
-      if (reason === "not-found") throw new BackupIoError("BACKUP_INVALID", `There is no Git repository at ${where}. Create an empty one there first, then save again.`);
-      throw new BackupIoError("BACKUP_INVALID", `Git couldn't use ${where}. Run git ls-remote with that address in a terminal to see why; Canonfig doesn't show Git's output because it can contain credentials.`);
-    };
-    const read = await probe("git", ["-c", "protocol.ext.allow=never", "ls-remote", "--heads", "--", remote], environment);
-    if (!read.ok) return failed(read, "read");
-    // A dry-run push asks the host for write access without creating anything there.
-    const repository = join(input.scratch, "check-git");
-    const local = (args: ReadonlyArray<string>, text?: string) => runBackupTool("git", args, { cwd: input.scratch, signal: input.signal, text });
-    await local(["init", "--bare", "--quiet", repository]);
-    const tree = (await local(["--git-dir", repository, "mktree"], "")).trim();
-    const commit = (await runBackupTool("git", ["--git-dir", repository, "commit-tree", tree], {
-      cwd: input.scratch, signal: input.signal, text: "Canonfig destination check\n",
-      environment: { ...process.env, GIT_AUTHOR_NAME: "Canonfig", GIT_AUTHOR_EMAIL: "backup@canonfig.invalid", GIT_COMMITTER_NAME: "Canonfig", GIT_COMMITTER_EMAIL: "backup@canonfig.invalid" },
-    })).trim();
-    const push = await probe("git", ["--git-dir", repository, "-c", "protocol.ext.allow=never", "-c", `core.hooksPath=${devNull}`,
-      "push", "--dry-run", "--porcelain", "--", remote, `${commit}:refs/heads/${namespace}/check`], environment);
-    return push.ok ? { warnings: [] } : failed(push, "push");
+    checkGitRemote(destination.remote);
+    return checkGitDestination({ remote: destination.remote, executable: "git", scratch: input.scratch,
+      signal: input.signal, probeRef: `${namespace}/check` });
   }
 
   const remote = destination.remote;

@@ -10,6 +10,7 @@ const pages: [WorkspaceRole, View, string][] = [
   ["source", "machines", "machines"],
   ["source", "revisions", "revisions"],
   ["source", "backups", "backups"],
+  ["source", "history", "settings/history"],
   ["source", "secrets", "secrets"],
   ["source", "service", "settings/service"],
   ["source", "installers", "settings/installers"],

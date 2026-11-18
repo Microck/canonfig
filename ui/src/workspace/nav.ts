@@ -40,6 +40,7 @@ const SOURCE_NAV: NavItem[] = [
 ];
 
 const SOURCE_SETTINGS: NavItem[] = [
+  { view: "history", label: "History", icon: ClockCounterClockwise },
   { view: "service", label: "Source service", icon: HardDrives },
   { view: "installers", label: "Installers", icon: Package },
   { view: "setup", label: "Setup", icon: ListChecks },

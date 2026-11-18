@@ -154,7 +154,7 @@ export const redactArguments = (
       return replacement;
     }
     const flag = /^--([A-Za-z][A-Za-z0-9_-]*)(?:=(.*))?$/u.exec(value);
-    if (flag !== null && isSecretField(flag[1]!)) {
+    if (flag !== null && (isSecretField(flag[1]!) || flag[1] === "remote")) {
       if (flag[2] !== undefined) return `--${flag[1]}=${replacement}`;
       redactNext = true;
       return value;

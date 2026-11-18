@@ -171,42 +171,9 @@ covers recipe fields and verification.
 
 ## Roll back to earlier content
 
-No command moves Follower Machines back to an earlier sequence number.
-Publish the earlier content again instead: it becomes the next sequence
-number, and Follower Machines move forward to it.
-
-This needs the earlier content. Keep the authoring entries in Git, with a
-`~/.canonfig/.gitignore` that leaves out everything machine-local:
-
-```text title="~/.canonfig/.gitignore"
-/*
-!/.gitignore
-!/canonfig.jsonc
-!/AGENTS.md
-!/rules/
-!/skills/
-!/agents/
-!/commands/
-!/hooks/
-```
-
-```bash
-cd ~/.canonfig/
-git init
-git add -A
-git commit -m "Add release-notes skill"
-```
-
-To roll back the last change:
-
-```bash
-cd ~/.canonfig/
-git revert --no-edit HEAD
-canonfig sync --apply
-canonfig source publish --reviewer "$USER"
-```
-
-Neither `.git/` nor `.gitignore` is published.
+Use [History](/docs/how-to/keep-version-history) to save and restore earlier
+versions of the authored folder. Restoring earlier content publishes it with
+the next sequence number, and Follower Machines move forward to it.
 
 ## If something fails
 

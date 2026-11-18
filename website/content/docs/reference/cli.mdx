@@ -309,6 +309,30 @@ in progress. Rollback is manual because restoring code does not reverse applied
 configuration. See the [fleet and recovery guide](https://github.com/Microck/canonfig/blob/main/docs/self-update.md#roll-out-the-sources-release).
 
 
+## Canonical Folder history
+
+```bash
+canonfig history
+canonfig history enable --remote git@github.com:maria/agent-config.git --branch main
+canonfig history disable
+canonfig history push
+canonfig history diff 6 7
+canonfig history restore 6 --reviewer Maria
+```
+
+| Command | Behavior |
+| --- | --- |
+| `history` | List commits newest first, the safe remote label, and the number of commits awaiting push. |
+| `history enable [--remote <url>] [--branch <name>]` | Enable capture or update settings. Omit either option to keep its value. Use `--remote ''` to remove the remote. The initial branch is `main`. |
+| `history disable` | Stop capture and pushes and keep the existing commits. |
+| `history push` | Retry the backlog against the configured remote. |
+| `history diff <a> [<b>]` | Show changed paths and a unified patch. Omit `b` to compare against the latest commit. |
+| `history restore <rev> [--reviewer <name>]` | Restore the exact authored tree. A Source requires a reviewer and publishes. An unenrolled machine runs Projection. |
+
+A revision selector is a positive Profile Revision number or a reachable Git
+commit prefix of at least seven hex characters. Followers cannot use these
+commands. See [Keep version history](/docs/how-to/keep-version-history).
+
 ## Machine-local preservation
 
 ```bash

@@ -44,6 +44,7 @@ import {
 import {
   desiredDirectoryEntries,
   planRemoved,
+  planRemoveTarget,
   planResource,
   type ResourceActionDraft,
 } from "./resource-plans.ts";
@@ -501,6 +502,7 @@ const buildPlan = (
   const tasks: Array<PlannedAgentTask> = [];
   const terminalByResource = new Map<string, ActionId>();
   const removedResources = new Set(input.revision.removedResources ?? []);
+  const removeTargets = new Set(input.removeTargets);
 
   const normalize = (path: string) => normalizedTargetPath(path, input.observedState.platform);
   const overlaps = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
@@ -555,7 +557,7 @@ const buildPlan = (
       platform: input.observedState.platform,
       noReplace: input.noReplace,
     };
-    let drafts = retired ? planRemoved(context) : planResource(context);
+    let drafts = removeTargets.has(resource.id) ? planRemoveTarget(context) : retired ? planRemoved(context) : planResource(context);
     const successors = retired && filesystem(resource) ? activeResources.filter((next) =>
       filesystem(next) && overlaps(target, normalize(indexed.resolvedTargets.get(next.id) ?? next.target))) : [];
     if (successors.length > 0) {

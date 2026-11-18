@@ -151,6 +151,11 @@ const declared = (
  * `CliCommandFailure` with an explicit category.
  */
 export const failureTaxonomy = {
+  HistoryError: classified(
+    error => error.code === "tool" ? "human-action-required" : error.code === "conflict" ? "conflict-or-drift"
+      : error.code === "integrity" ? "verification-or-apply-failure" : error.code === "transport" ? "transport" : "usage-or-configuration",
+    error => error.message,
+  ),
   BackupError: classified(
     error => error.code === "BACKUP_CREDENTIAL_REQUIRED" || error.code === "BACKUP_TOOL_REQUIRED" ? "human-action-required"
       : error.code === "BACKUP_CONFLICT" ? "conflict-or-drift"
