@@ -1090,13 +1090,14 @@ const loadLocalFolder = async (source: FolderSource, allow: ReadonlyArray<LocalC
   return { localPath, localDirectory, localConfig, ignoredLocal, localItems, overlayEntries, overlays, mergeCommands };
 };
 
-/** Read the commands projection would use, even when setup has yet to scaffold the folder. */
-export const readEffectiveFolderCommands = async (folder: string): Promise<ReadonlyArray<CommandDocument>> => {
+/** Read published and effective commands. A Local Overlay may change before its skill projection does. */
+export const readCommandsForSkillImport = async (folder: string): Promise<ReadonlyArray<CommandDocument>> => {
   const source = diskSource(folder);
   const config = await readJsonc(source, join(folder, "canonfig.jsonc"), CanonfigJsonc);
   const published = await loadCommands(source, join(folder, "commands"));
   const local = await loadLocalFolder(source, config?.local?.allow ?? []);
-  return (await local.mergeCommands(published)).commands;
+  const { commands } = await local.mergeCommands(published);
+  return [...new Set([...published, ...commands])];
 };
 
 const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => {

@@ -394,16 +394,45 @@ describe("local projection", () => {
     expect(existsSync(join(value.home, ".agents", "skills"))).toBe(false);
   });
 
-  it("skips projected command skills when Source setup imports from a new shared reader", async () => {
-    const value = fixture(["codex"], { surfaces: { codex: ["instructions", "commands"] } });
+  it.each([
+    { harness: "codex", root: ".agents" },
+    { harness: "hermes", root: ".hermes" },
+  ] as const)("ignores command skill collisions on skills excluded from $harness projection", async ({ harness, root }) => {
+    const value = fixture([harness], {
+      surfaces: { [harness]: ["skills", "commands"] },
+      local: { allow: ["skills"], appendLocal: ["skills"] },
+    });
+    write(join(value.folder, "local", "local.jsonc"), JSON.stringify({ excludeSkills: ["command-ship"] }));
+    write(join(value.folder, "local", "skills", "command-ship", "SKILL.md"), "---\nname: command-ship\ndescription: Local skill\n---\nUse the local guide.\n");
+    const skills = join(value.home, root, "skills");
+    const machineSkill = join(skills, "command-ship", "SKILL.md");
+    write(machineSkill, "Existing machine-owned skill.\n");
+
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(machineSkill, "utf8")).toBe("Existing machine-owned skill.\n");
+    expect(existsSync(join(skills, "deploy", "SKILL.md"))).toBe(true);
+  });
+
+  it("skips a published command skill when Source setup runs before syncing its new Local Overlay", async () => {
+    const value = fixture(["codex"], {
+      surfaces: { codex: ["instructions", "commands"] },
+      local: { allow: ["commands"] },
+    });
     expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
     expect(takeoverRows(value)).toContainEqual(expect.objectContaining({ harness: "codex" }));
     const sharedSkills = join(value.home, ".agents", "skills");
     const generated = join(sharedSkills, "command-ship", "SKILL.md");
-    expect(readFileSync(generated, "utf8")).toContain("Ship the change.");
+    const publishedSkill = readFileSync(generated, "utf8");
+    expect(publishedSkill).toContain("Ship the change.");
     const nativeSkill = "---\nname: command-review\ndescription: Review changes\n---\nRead the diff.\n";
     write(join(value.home, ".kimi-code", "skills", "command-review", "SKILL.md"), nativeSkill);
     const environment = environmentOf(value);
+    write(join(value.folder, "local", "commands", "ship.md"), "---\ndescription: Local procedure\n---\nFollow the machine-local procedure.\n");
+    await Effect.runPromise(overlaysLocal(value.statePath, environment, { action: "set", item: "commands/ship" }).pipe(
+      Effect.provide(layer(value)),
+    ));
+    expect(readFileSync(generated, "utf8")).toBe(publishedSkill);
+
     await Effect.runPromise(Effect.gen(function*() {
       const plan = yield* planSourceFolder({
         folder: value.folder, environment, harnesses: ["codex", "kimi"], imports: { kind: "all" },
@@ -418,6 +447,7 @@ describe("local projection", () => {
     expect(readFileSync(join(value.folder, "skills", "command-review", "SKILL.md"), "utf8")).toBe(nativeSkill);
     expect(existsSync(join(value.folder, "skills", "command-ship"))).toBe(false);
     expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(generated, "utf8")).toContain("Follow the machine-local procedure.");
   });
 
   it.each([

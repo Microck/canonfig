@@ -354,6 +354,7 @@ export const projectSurfaces = (
   loaded: LoadedFolder,
   context: RootContext,
   takeovers: ReadonlyArray<HarnessTakeover>,
+  excludedSkills: ReadonlySet<string>,
 ) =>
   Effect.gen(function*() {
     const model = loaded.model;
@@ -423,8 +424,11 @@ export const projectSurfaces = (
     let compiledCommands: ReadonlyArray<CompiledCommand> | undefined;
     const checkSkillNames = (skills: ReadonlyArray<SkillTree>, generated: ReadonlyArray<CompiledCommand>, destination: string) => {
       if (generated.length === 0) return Effect.void;
-      const names = new Map(skills.map(({ name }) => [name, `skills/${name}`]));
+      const names = new Map(skills
+        .filter(({ name }) => !excludedSkills.has(name))
+        .map(({ name }) => [name, `skills/${name}`]));
       for (const { source, skill } of generated) {
+        if (excludedSkills.has(skill.name)) continue;
         const other = names.get(skill.name);
         if (other !== undefined) return Effect.fail(new CanonicalFolderError({
           path: configPath,
@@ -817,7 +821,7 @@ export const buildProjection = (
     }
     const excludedSkills = new Set(loaded.local.excludeSkills);
     const model = { ...loaded.model, harnesses: loaded.model.harnesses.filter((harness) => !held.includes(harness)) };
-    const projected = yield* projectSurfaces({ ...loaded, model }, context, takeovers);
+    const projected = yield* projectSurfaces({ ...loaded, model }, context, takeovers, excludedSkills);
     const owned = new Set(takeovers.map((takeover) => `${takeover.harness}\0${takeover.surface}`));
     const isHeldHarness = heldResource([...held, ...loaded.local.excludeHarnesses], context, loaded.model);
     // A resource this machine excludes (as `restore` does) keeps its outputs and ownership too.
