@@ -13,7 +13,7 @@ import { type ConfigJson, type ConfigObject, isConfigObject } from "../synchroni
 import { adapterFor } from "./adapters/index.ts";
 import { commandSkill } from "./adapters/shared-documents.ts";
 import { emptyModel } from "./detect.ts";
-import { readFolderCommands } from "./folder.ts";
+import { readEffectiveFolderCommands } from "./folder.ts";
 import { type MarkdownDocument, markdownWithFrontmatter, parseMarkdownDocument } from "./frontmatter.ts";
 import { maxImportContentBytes, SkillReader, type ImportReadLimit } from "./import-skills.ts";
 import type { HarnessLayout, OwnedSurface, RootContext, SkillReadSource } from "./harness.ts";
@@ -836,7 +836,7 @@ export const scanImports = async (input: {
   const layouts = [...new Set(input.harnesses)].map((harness) => scope.layouts.find(([id]) => id === harness)!);
   // A newly selected harness can discover command skills projected by a shared reader.
   // Compare complete skill trees so native skills with similar names remain importable.
-  const commands = layouts.some(([, layout]) => layout.skillSources.length > 0) ? await readFolderCommands(folder) : [];
+  const commands = layouts.some(([, layout]) => layout.skillSources.length > 0) ? await readEffectiveFolderCommands(folder) : [];
   const generatedSkillDigests = new Set(commands.map((command) => {
     const { name, files } = commandSkill(command);
     return contentDigest("skills", name, { kind: "tree", files });

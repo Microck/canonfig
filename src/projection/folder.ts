@@ -873,10 +873,6 @@ export const readHarnessSelection = async (folder: string): Promise<HarnessSelec
 export const readFolderConfig = (folder: string): Promise<FolderConfig | undefined> =>
   readJsonc(diskSource(folder), join(folder, "canonfig.jsonc"), CanonfigJsonc);
 
-/** Only the authored commands, for recognizing their skill projections during import. */
-export const readFolderCommands = (folder: string): Promise<ReadonlyArray<CommandDocument>> =>
-  loadCommands(diskSource(folder), join(folder, "commands"));
-
 /** Decode `canonfig.jsonc` text, for a caller that edits the file and checks the result. */
 export const decodeFolderConfig = (path: string, text: string): FolderConfig => decodeJsonc(path, text, CanonfigJsonc);
 
@@ -1062,13 +1058,10 @@ export const loadCanonicalFolder = async (
 export const loadCanonicalFiles = (folder: string, files: ReadonlyMap<string, FolderFile>): Promise<LoadedFolder> =>
   loadFolderSource(mirrorSource(folder, files, true));
 
-const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => {
+const loadLocalFolder = async (source: FolderSource, allow: ReadonlyArray<LocalCategory>) => {
   const folder = source.folder;
-  const authored = await loadAuthored(source, loading);
-  const config = authored.config;
   const localPath = join(folder, "local", "local.jsonc");
   const localConfig = (await readJsonc(source, localPath, LocalJsonc)) ?? {};
-  const allow = config.local?.allow ?? [];
   const ignoredLocal: Array<string> = [];
   const localDirectory = join(folder, "local");
 
@@ -1089,6 +1082,30 @@ const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => 
     return parsed;
   });
   const overlays = new Set(overlayEntries.flatMap((entry) => entry.kind === "item" ? [entry.item] : []));
+  const mergeCommands = async (published: ReadonlyArray<CommandDocument>) => {
+    const localCommands = await localItems("commands", (directory) => loadCommands(source, directory));
+    const commands = addLocal(published, localCommands, (command) => command.id, "commands", "command", localDirectory, overlays);
+    return { commands, localCommands };
+  };
+  return { localPath, localDirectory, localConfig, ignoredLocal, localItems, overlayEntries, overlays, mergeCommands };
+};
+
+/** Read the commands projection would use, even when setup has yet to scaffold the folder. */
+export const readEffectiveFolderCommands = async (folder: string): Promise<ReadonlyArray<CommandDocument>> => {
+  const source = diskSource(folder);
+  const config = await readJsonc(source, join(folder, "canonfig.jsonc"), CanonfigJsonc);
+  const published = await loadCommands(source, join(folder, "commands"));
+  const local = await loadLocalFolder(source, config?.local?.allow ?? []);
+  return (await local.mergeCommands(published)).commands;
+};
+
+const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => {
+  const folder = source.folder;
+  const authored = await loadAuthored(source, loading);
+  const config = authored.config;
+  const allow = config.local?.allow ?? [];
+  const { localPath, localDirectory, localConfig, ignoredLocal, localItems, overlayEntries, overlays, mergeCommands } =
+    await loadLocalFolder(source, allow);
   const claims = overlayEntries.flatMap((entry): ReadonlyArray<KeyClaim> =>
     entry.kind === "claim" ? [{ harness: entry.harness, key: entry.key }] : []
   );
@@ -1096,11 +1113,10 @@ const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => 
   const localRules = await localItems("rules", (directory) => loadRules(source, directory));
   const localSkills = await localItems("skills", (directory) => loadSkills(source, directory, loadFiles));
   const localAgents = await localItems("agents", (directory) => loadAgents(source, directory));
-  const localCommands = await localItems("commands", (directory) => loadCommands(source, directory));
+  const { commands, localCommands } = await mergeCommands(authored.commands);
   const rules = addLocal(authored.rules, localRules, (rule) => rule.id, "rules", "rule", localDirectory, overlays);
   const skills = addLocal(authored.skills, localSkills, (skill) => skill.name, "skills", "skill", localDirectory, overlays);
   const agents = addLocal(authored.agents, localAgents, (agent) => agent.id, "agents", "agent", localDirectory, overlays);
-  const commands = addLocal(authored.commands, localCommands, (command) => command.id, "commands", "command", localDirectory, overlays);
 
   const localInstructionsPath = join(localDirectory, "AGENTS.md");
   let localInstructions: string | undefined;

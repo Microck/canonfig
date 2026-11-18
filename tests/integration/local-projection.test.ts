@@ -420,6 +420,37 @@ describe("local projection", () => {
     expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
   });
 
+  it.each([
+    { kind: "an admitted local command", id: "inspect", overlays: [] },
+    { kind: "a Local Overlay of a published command", id: "ship", overlays: ["commands/ship"] },
+  ])("skips skills projected from $kind during Source setup", async ({ id, overlays }) => {
+    const value = fixture(["codex"], {
+      surfaces: { codex: ["instructions", "commands"] },
+      local: { allow: ["commands"] },
+    });
+    write(join(value.folder, "local", "commands", `${id}.md`), "---\ndescription: Local procedure\n---\nFollow the machine-local procedure.\n");
+    write(join(value.folder, "local", "local.jsonc"), JSON.stringify({ overlays }));
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    const skill = `command-${id}`;
+    const generated = join(value.home, ".agents", "skills", skill, "SKILL.md");
+    expect(readFileSync(generated, "utf8")).toContain("Follow the machine-local procedure.");
+
+    const environment = environmentOf(value);
+    await Effect.runPromise(Effect.gen(function*() {
+      const plan = yield* planSourceFolder({
+        folder: value.folder, environment, harnesses: ["codex", "kimi"], imports: { kind: "all" },
+      });
+      expect(plan.imports.offered).toEqual([]);
+      for (const item of plan.items) {
+        if (item.kind === "folder-scaffold") yield* executeFolderScaffold(item);
+        if (item.kind === "harness-import") yield* executeHarnessImport(item, environment);
+      }
+    }).pipe(Effect.provide(layer(value))));
+
+    expect(existsSync(join(value.folder, "skills", skill))).toBe(false);
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+  });
+
   it("projects Cursor and Grok commands only to their native directories", async () => {
     const value = fixture(["cursor", "grok-build"], { surfaces: { cursor: ["commands"], "grok-build": ["commands"] } });
     expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
