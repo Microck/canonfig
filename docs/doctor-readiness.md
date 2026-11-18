@@ -4,14 +4,30 @@
 of an enrolled Follower Machine. Environment hints remain a fallback only before
 enrollment; they cannot silently replace its selected authority.
 
-`doctor` runs eight probes (`doctorProbeNames` in `src/runtime/doctor.ts`):
+`doctor` runs ten probes (`doctorProbeNames` in `src/runtime/doctor.ts`):
 `runtime`, `state`, `credentials`, `source`, `scheduler`, `package-managers`,
-`agent-adapter` and `harnesses`. The `harnesses` probe prints the same report
+`agent-adapter`, `harnesses`, `mcp` and `tailscale`. The `harnesses` probe prints the same report
 as `canonfig harnesses`: the folder's list, local exclusions, detected
 harnesses, pinned roots and takeover snapshots. It is skipped while
 `~/.canonfig/canonfig.jsonc` does not exist, and warns
 `listed but not installed: <harnesses>` when a listed harness is missing; the
 run still converges without it.
+
+The `mcp` probe starts every MCP server that each installed harness's own
+config file declares, including preserved and hand-written entries, and
+requires `initialize` and `tools/list` to answer. It starts one harness's
+servers at a time, all at once, as the harness does at session start, and
+gives Codex servers only the environment Codex passes them. Each server gets
+at least Codex's 10 second startup budget. The details list every server with
+the harnesses that declare it; remote servers that sign in with OAuth, and the
+legacy SSE transport, are reported as not checked.
+
+After the probes, an enrolled Follower sends its report to the Source and a
+Source records its own (`sourceReport` in the output says which, or why
+sending failed). The Source keeps each machine's latest report in
+one file per machine under `state.sqlite.machine-health/`, so
+reports never wait on each other, and shows it under Health in each machine's
+details on the Machines page.
 
 On macOS the credentials evidence goes beyond provider presence: the
 machine capability runs a disposable add/read-back/delete probe of a non-secret

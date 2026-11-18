@@ -32,7 +32,7 @@ async function fixture(role: "source" | "follower") {
   const responses: Record<string, unknown> = {
     "/api/status": { machineRole: { role }, lifecycle: {}, tunnel: null },
     "/api/secrets": { secrets: [{ name: "local-agent-key", origin: "local" }, { name: "shared-api-key", origin: "source" }] },
-    "/api/machines": { followers: [], invitations: [] },
+    "/api/machines": { followers: [], invitations: [], health: {} },
     "/api/tunnel": { lifecycle: "not-configured" },
     "/api/source-service": { report: {
       state: "not-serving", platform: "linux", mechanism: "systemd-user-service", serviceName: "secret-fixture", endpoint: "https://127.0.0.1:17342",

@@ -16,7 +16,7 @@ import { HumanActionRequiredError } from "../src/machine/machine-state.errors.ts
 import { MachineState } from "../src/machine/machine-state.service.ts";
 import { adapterFor } from "../src/projection/adapters/index.ts";
 import { TARGET_IDS } from "../src/projection/model.ts";
-import { doctorProbeNames, runDoctorProbes, schedulerProbe } from "../src/runtime/doctor.ts";
+import { doctorProbeNames, machineHealthOf, runDoctorProbes, schedulerProbe } from "../src/runtime/doctor.ts";
 import { credentialReadiness, describeUnattendedRuns, scheduledDefinitionReadiness } from "../src/runtime/readiness.ts";
 import { scheduleManagerLayer } from "../src/schedule/schedule-manager.layer.ts";
 import type { ScheduleStatus } from "../src/schedule/schedule-manager.types.ts";
@@ -57,6 +57,28 @@ const executeDoctor = (
       timeout: 60_000,
     },
   );
+
+describe("machine health report", () => {
+  it("stays under the Source's request limit by dropping passing lines first, then all lines", () => {
+    const lines = (count: number, status: string) =>
+      Object.fromEntries(Array.from({ length: count }, (_, index) => [`${status}-${index}`, `${status} · codex · ${"x".repeat(480)}`]));
+    const report = (details: Record<string, string>) => machineHealthOf({
+      schema: "canonfig.doctor/v1", status: "unhealthy", noInput: true, timeoutMilliseconds: 5_000,
+      probes: [{ name: "mcp", status: "fail", message: "servers failed", details }],
+    });
+    const bytes = (value: ReturnType<typeof machineHealthOf>) => Buffer.byteLength(JSON.stringify(value));
+
+    const small = report({ ...lines(3, "pass"), ...lines(2, "fail") });
+    expect(Object.keys(small.probes[0]?.details ?? {})).toHaveLength(5);
+
+    const passingDropped = report({ ...lines(150, "pass"), ...lines(5, "fail") });
+    expect(Object.keys(passingDropped.probes[0]?.details ?? {})).toEqual(Object.keys(lines(5, "fail")));
+    expect(bytes(passingDropped)).toBeLessThan(64 * 1024);
+
+    const allDropped = report(lines(200, "fail"));
+    expect(allDropped.probes[0]).toEqual({ name: "mcp", status: "fail", message: "servers failed" });
+  });
+});
 
 describe("doctor probes", () => {
   it("does not let an earlier invocation's late completion hide the latest-started failure", () => {

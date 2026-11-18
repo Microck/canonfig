@@ -5,7 +5,7 @@ import { request as httpsRequest } from "node:https";
 import { connect as tlsConnect } from "node:tls";
 import { dirname, join } from "node:path";
 
-import { Effect, Option, Redacted, Ref, Schema } from "effect";
+import { Effect, Option, Predicate, Redacted, Ref, Schema } from "effect";
 
 import { installerMethods } from "../domain/installer-binding.ts";
 import { harnessReport } from "../projection/detect.ts";
@@ -23,6 +23,9 @@ import { canonfigVersionHeader } from "../enrollment/version-handshake.ts";
 import { credentialReadiness, proveCredentialStorage, scheduledDefinitionReadiness } from "./readiness.ts";
 import type { ScheduleFireEvidence } from "./readiness.ts";
 import { AgentPolicy } from "../domain/identity.ts";
+import {
+  type DoctorSourceReport, failingDetailPrefix, machineHealthKeyLimit, machineHealthTextLimit, type MachineHealthProbe, type MachineHealthReport,
+} from "../domain/fleet-update.ts";
 import type { CliFailureCategory } from "../cli/exit-codes.ts";
 import {
   CertificateFingerprint,
@@ -73,7 +76,54 @@ export interface DoctorReport {
   readonly noInput: boolean;
   readonly timeoutMilliseconds: number;
   readonly probes: ReadonlyArray<DoctorProbe>;
+  /**
+   * Where the Source's Machines view gets this report: sent by an enrolled
+   * Follower, recorded locally by a Source, or why sending failed.
+   */
+  readonly sourceReport?: DoctorSourceReport | undefined;
 }
+
+const clip = (text: string): string =>
+  text.length <= machineHealthTextLimit ? text : `${text.slice(0, machineHealthTextLimit - 1)}…`;
+
+/**
+ * Leaves room under the Source's 64 KiB request limit (source-server.ts) for
+ * the HTTP framing; clipping each field alone does not bound a machine with
+ * many MCP servers.
+ */
+const machineHealthByteBudget = 48 * 1024;
+const serializedBytes = (report: MachineHealthReport): number => Buffer.byteLength(JSON.stringify(report));
+
+/**
+ * The report as the Source stores it, with text clipped to the wire limits.
+ * When it is still too large, passing detail lines go first, then every
+ * detail line; the messages still name what failed.
+ */
+export const machineHealthOf = (report: DoctorReport): MachineHealthReport => {
+  const full: MachineHealthReport = {
+    recordedAt: new Date().toISOString(),
+    version: buildIdentity.packageVersion,
+    status: report.status,
+    probes: report.probes.map((probe) => {
+      const health: MachineHealthProbe = { name: probe.name, status: probe.status, message: clip(probe.message) };
+      if (probe.details === undefined) return health;
+      const details = Object.fromEntries(Object.entries(probe.details).map(([key, value]) =>
+        [key.slice(0, machineHealthKeyLimit), Predicate.isString(value) ? clip(value) : value]));
+      return { ...health, details };
+    }),
+  };
+  if (serializedBytes(full) <= machineHealthByteBudget) return full;
+  const failingOnly: MachineHealthReport = {
+    ...full,
+    probes: full.probes.map((probe) => probe.details === undefined ? probe : {
+      ...probe,
+      details: Object.fromEntries(Object.entries(probe.details).filter(([, value]) =>
+        Predicate.isString(value) && value.startsWith(failingDetailPrefix))),
+    }),
+  };
+  if (serializedBytes(failingOnly) <= machineHealthByteBudget) return failingOnly;
+  return { ...full, probes: full.probes.map(({ details: _details, ...probe }) => probe) };
+};
 
 export interface DoctorSourceConfiguration {
   readonly endpoint: string;

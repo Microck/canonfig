@@ -1,4 +1,4 @@
-import { FleetReport, type SignedFleetDirective } from "../domain/fleet-update.ts";
+import { FleetReport, MachineHealthReport, type SignedFleetDirective } from "../domain/fleet-update.ts";
 import { defaultMaximumMetadataBytes } from "../domain/transport-limits.ts";
 import type { ServerResponse } from "node:http";
 import { createServer } from "node:https";
@@ -318,6 +318,15 @@ const startSourceServerScoped = (
               throw new MalformedEnrollmentRequestError({ message: "the Fleet Update report is malformed" });
             });
             await runRequestEffect(enrollment.reportFleetUpdate(bearerCredential(request.headers.authorization), report));
+            sendJson(response, 200, { ok: true });
+            return;
+          }
+          // Health reports cross release lines too: a skewed follower is the one most worth seeing.
+          if (request.url === "/v1/machine-health/report" && request.method === "POST") {
+            const report = await readBody(request, MachineHealthReport).catch(() => {
+              throw new MalformedEnrollmentRequestError({ message: "the machine health report is malformed" });
+            });
+            await runRequestEffect(enrollment.reportMachineHealth(bearerCredential(request.headers.authorization), report));
             sendJson(response, 200, { ok: true });
             return;
           }

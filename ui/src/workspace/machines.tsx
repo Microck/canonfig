@@ -12,8 +12,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { AnimatedNumber, Hint, Mono, StateLabel, Term } from "@/shared/shared";
-import { DEMO, PLAIN, SECRETS_GROUP, type Follower } from "@/shared/metadata";
+import { AnimatedNumber, Hint, Mono, StateLabel, StatusMark, Term } from "@/shared/shared";
+import { DEMO, PLAIN, SECRETS_GROUP, type Follower, type MachineHealthView } from "@/shared/metadata";
+import { CHECK_LABEL, probeResult } from "./administration-types";
 import { SOURCE_ID } from "@/shared/machine-map/model";
 import { shq } from "@/shared/shell";
 import { useSharedState, useWorkspace, type Invitation } from "./store";
@@ -425,7 +426,46 @@ function SourceDetail({ onClose, onCustomize }: { onClose: () => void; onCustomi
         </Prop>
         {ws.capabilities.simulatedTelemetry && <Prop label="Service">{serviceInstalled ? "Running" : "Not installed"}</Prop>}
       </div>
+      <HealthSection health={ws.sourceMachine.health} missing="Not checked yet. Run the health check on this machine to see its results here." />
     </DetailPanel>
+  );
+}
+
+const HEALTH = {
+  healthy: { label: "Healthy", mark: "ok" },
+  degraded: { label: "Needs attention", mark: "warn" },
+  unhealthy: { label: "Failing", mark: "bad" },
+} as const;
+
+/**
+ * A machine's latest health check, as it reported it to the Source: when it
+ * ran, and each check that warned or failed with the items that failed.
+ */
+function HealthSection({ health, missing }: { health: MachineHealthView | undefined; missing: string }) {
+  return (
+    <section className="grid gap-2 border-t border-border px-4 py-3" aria-label="Health">
+      <SectionLabel>Health</SectionLabel>
+      {!health ? <p className="text-sm text-pretty text-muted-foreground">{missing}</p> : <>
+        <p className="flex items-center gap-2 text-base">
+          <StatusMark kind={HEALTH[health.status].mark} />
+          {HEALTH[health.status].label}
+          <span className="text-sm text-muted-foreground">checked {new Date(health.recordedAt).toLocaleString()} on version {health.version}</span>
+        </p>
+        {health.problems.map((problem) => (
+          <div key={problem.check} className="grid gap-1">
+            <p className="flex items-center gap-2 text-sm">
+              <StatusMark kind={probeResult(problem.status)} />
+              {/* Probe names come from other machines, so only the table's own keys are labels. */}
+              <span>{Object.hasOwn(CHECK_LABEL, problem.check) ? CHECK_LABEL[problem.check] : problem.check}</span>
+            </p>
+            <p className="ml-5 text-sm text-pretty break-words text-muted-foreground">{problem.message}</p>
+            {problem.items.length > 0 && <ul className="ml-5 grid gap-0.5">
+              {problem.items.map((item) => <li key={item}><Mono className="text-xs break-all">{item}</Mono></li>)}
+            </ul>}
+          </div>
+        ))}
+      </>}
+    </section>
   );
 }
 
@@ -541,6 +581,7 @@ function FollowerDetail({ follower: f, onClose, onCustomize }: { follower: Follo
           {ws.status?.machineRole.sourceFingerprint && <Prop label="Source fingerprint"><Mono className="break-all">{ws.status.machineRole.sourceFingerprint}</Mono></Prop>}
         </>}
       </div>
+      <HealthSection health={f.health} missing="Not reported yet. A health check on that machine sends its results here." />
       {f.resources && <div className="border-t border-border px-4 pt-3">
         <SectionLabel>What it has</SectionLabel>
       </div>}

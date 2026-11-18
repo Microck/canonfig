@@ -61,6 +61,17 @@ export interface Follower {
   behind?: string;
   /** Per-resource state for the convergence matrix. */
   resources?: Record<string, FollowerState | "excluded">;
+  /** Its latest `canonfig doctor` report, when it has sent one. */
+  health?: MachineHealthView;
+}
+
+/** A machine's latest doctor report, reduced to what needs attention. */
+export interface MachineHealthView {
+  status: "healthy" | "degraded" | "unhealthy";
+  recordedAt: string;
+  version: string;
+  /** Checks that warned or failed, with the failing items from their details (such as MCP servers). */
+  problems: { check: string; status: "warning" | "fail"; message: string; items: string[] }[];
 }
 
 export interface Revision {

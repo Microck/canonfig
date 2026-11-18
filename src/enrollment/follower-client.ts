@@ -1,4 +1,4 @@
-import { FleetPoll, type FleetReport } from "../domain/fleet-update.ts";
+import { FleetPoll, type FleetReport, type MachineHealthReport } from "../domain/fleet-update.ts";
 import { defaultMaximumMetadataBytes } from "../domain/transport-limits.ts";
 import {
   createHash,
@@ -188,7 +188,7 @@ const requestJson = (
   endpoint: URL,
   path: string,
   certificate: PinnedCertificate,
-  body?: EnrollFollowerRequest | FleetReport | undefined,
+  body?: EnrollFollowerRequest | FleetReport | MachineHealthReport | undefined,
   authorization?: Redacted.Redacted<string> | undefined,
   timeoutMilliseconds = defaultTimeoutMilliseconds,
   versionPolicy: "paired" | "fleet" = "paired",
@@ -1071,6 +1071,14 @@ export const requestFleetUpdate = (input: FollowerTransportInput, report?: Fleet
   if (report !== undefined) return { directive: null };
   return yield* Schema.decodeUnknownEffect(FleetPoll, { onExcessProperty: "error" })(response.body).pipe(
     Effect.mapError(() => new TransportMalformedResponseError({ operation: "read Fleet Update", message: "The Source returned an invalid Fleet Update response" })));
+});
+
+/** Sends this follower's latest doctor report to the Source. */
+export const reportMachineHealth = (input: FollowerTransportInput, report: MachineHealthReport) => Effect.gen(function*() {
+  const context = yield* transportContext(input);
+  const response = yield* requestJson("POST", context.endpoint, "/v1/machine-health/report", context.certificate,
+    report, context.credential, input.timeoutMilliseconds, "fleet");
+  if (response.status !== 200) return yield* wireError(response);
 });
 
 const transportFailure = (

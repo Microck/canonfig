@@ -4,6 +4,21 @@ import { GuiEnrollment, GuiInvitationDownload, GuiMachines, GuiSetupStatus, GuiS
 import type { GuiSession, WorkspaceBackend } from "../../gui-client";
 import type { ChangeGroupsRequest, MachinesSlice } from "../workspace-types";
 import { resourceState, useLiveResource } from "./resource";
+import type { MachineHealthView } from "@/shared/metadata";
+import { failingItems } from "../administration-types";
+
+type HealthReport = GuiMachines["health"][string]["report"];
+
+/** Keeps the checks that warned or failed, and the failing items a check lists in its details. */
+export function healthView(report: HealthReport): MachineHealthView {
+  return {
+    status: report.status, recordedAt: report.recordedAt, version: report.version,
+    problems: report.probes.flatMap((probe) => probe.status === "warning" || probe.status === "fail" ? [{
+      check: probe.name, status: probe.status, message: probe.message,
+      items: failingItems(probe.details),
+    }] : []),
+  };
+}
 
 export function useLiveMachines(backend: WorkspaceBackend, session: GuiSession, reload: () => void): Omit<MachinesSlice, "machinesMode"> {
   const source = session.role === "source";
@@ -19,10 +34,16 @@ export function useLiveMachines(backend: WorkspaceBackend, session: GuiSession, 
   const [inviteOpen, setInviteOpen] = useState(false);
   const [changeGroups, setChangeGroups] = useState<ChangeGroupsRequest | null>(null);
   const endpoint = enrollment.data?.source.endpoint ?? "";
-  const followers = (inventory.data?.followers ?? []).map((entry) => ({
-    id: entry.id, name: entry.name, groups: [...entry.groups],
-    note: entry.revoked ? "Revoked" : entry.pending ? "Enrollment pending" : "Enrolled",
-  }));
+  const health = inventory.data?.health ?? {};
+  const followers = (inventory.data?.followers ?? []).map((entry) => {
+    const reported = health[entry.id];
+    return {
+      id: entry.id, name: entry.name, groups: [...entry.groups],
+      note: entry.revoked ? "Revoked" : entry.pending ? "Enrollment pending" : "Enrolled",
+      ...reported === undefined ? {} : { health: healthView(reported.report) },
+    };
+  });
+  const sourceHealth = health.source;
   const selfFollower = enrollment.data ? {
     id: enrollment.data.follower.id, name: enrollment.data.follower.name,
     groups: [...enrollment.data.follower.groups],
@@ -34,7 +55,10 @@ export function useLiveMachines(backend: WorkspaceBackend, session: GuiSession, 
     enrollmentFollowers: inventory.data?.followers,
     machinesState: resourceState([inventory, enrollment]),
     machineStates: { inventory, enrollment, setup },
-    sourceMachine: { hostname: source ? session.machineName : "Source", folder: source ? session.folderPath : "", endpoint, look: sourceLook.data?.look ?? undefined },
+    sourceMachine: {
+      hostname: source ? session.machineName : "Source", folder: source ? session.folderPath : "", endpoint,
+      look: sourceLook.data?.look ?? undefined, health: sourceHealth === undefined ? undefined : healthView(sourceHealth.report),
+    },
     followerSelf: { name: session.machineName, home: "", source: endpoint, local: [], overlays: [], kept: [] },
     selfFollower, endpoint, justJoined: enrollment.data?.pending ?? false,
     inviteOpen, setInviteOpen, followers,

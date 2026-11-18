@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { FollowerId, GroupName } from "../../domain/brand.ts";
+import { MachineHealth } from "../../domain/fleet-update.ts";
 import { SourceLook } from "../../enrollment/source-look.ts";
 import {
   SetupApproval, SetupDiscoveryInput, SetupItemSummary, SetupJournal, SetupMode,
@@ -56,6 +57,8 @@ export const GuiStoredInvitation = Schema.Struct({
 export const GuiMachines = Schema.Struct({
   followers: Schema.Array(GuiEnrollmentFollower),
   invitations: Schema.Array(GuiStoredInvitation),
+  /** Each machine's latest doctor report, keyed by follower id or `source`. */
+  health: MachineHealth.fields.machines,
 });
 export type GuiMachines = typeof GuiMachines.Type;
 export const GuiEnrollment = Schema.Struct({

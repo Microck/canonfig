@@ -127,12 +127,14 @@ canonfig agent policy
 canonfig agent harness
 ```
 
-`doctor` runs eight probes: `runtime`, `state`, `credentials`, `source`,
-`scheduler`, `package-managers`, `agent-adapter`, and `harnesses`. The
-`harnesses` probe warns `listed but not installed: <ids>` and reports pinned
-roots and snapshots. `status` reports only this follower. The Source has no
-fleet view, so each follower's own `canonfig status` is its completion
-evidence.
+`doctor` runs ten probes: `runtime`, `state`, `credentials`, `source`,
+`scheduler`, `package-managers`, `agent-adapter`, `harnesses`, `mcp` and
+`tailscale`. The `harnesses` probe warns `listed but not installed: <ids>` and
+reports pinned roots and snapshots. The `mcp` probe starts every MCP server the
+installed harnesses declare and lists each failing one. Doctor then sends the
+report to the Source, which shows it under Health in that machine's details.
+`status` reports only this follower, so its own `canonfig status` remains its
+completion evidence.
 
 ### Human Action Required
 

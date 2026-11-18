@@ -1,7 +1,7 @@
 import type { FollowerLive } from "./follower-types";
 import type { PublishedLook } from "@/shared/machine-map/model";
 import type { Dispatch, SetStateAction } from "react";
-import type { AppendLocalCategory, Follower, FollowerState, Harness, HarnessId, ItemCategory, KeptSurface, LocalCategory, LocalItem, Resource, Revision, SkillSource, Snapshot, SurfaceCategory, UpstreamSkill } from "@/shared/metadata";
+import type { AppendLocalCategory, Follower, FollowerState, Harness, HarnessId, ItemCategory, KeptSurface, LocalCategory, LocalItem, MachineHealthView, Resource, Revision, SkillSource, Snapshot, SurfaceCategory, UpstreamSkill } from "@/shared/metadata";
 import type { GuiRequestError, GuiSession, GuiStatus } from "../gui-client";
 import type { MachinesMode, Navigate, NavigateOptions, ProfileTab, WorkspaceRole } from "./routes";
 import type { AdministrationSlice } from "./administration-types";
@@ -123,6 +123,8 @@ export interface SourceMachine {
   service?: string;
   /** How the Source's card is customized on the Source, shown on every map of this setup. */
   look?: PublishedLook | undefined;
+  /** The Source's own latest doctor report, when doctor has run on it. */
+  health?: MachineHealthView | undefined;
 }
 export interface FollowerSelf {
   name: string;
