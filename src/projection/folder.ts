@@ -1090,14 +1090,14 @@ const loadLocalFolder = async (source: FolderSource, allow: ReadonlyArray<LocalC
   return { localPath, localDirectory, localConfig, ignoredLocal, localItems, overlayEntries, overlays, mergeCommands };
 };
 
-/** Read published and effective commands. A Local Overlay may change before its skill projection does. */
-export const readCommandsForSkillImport = async (folder: string): Promise<ReadonlyArray<CommandDocument>> => {
+/** Effective commands retain every published ID, including commands with a Local Overlay. */
+export const readCommandIdsForSkillImport = async (folder: string): Promise<ReadonlyArray<string>> => {
   const source = diskSource(folder);
   const config = await readJsonc(source, join(folder, "canonfig.jsonc"), CanonfigJsonc);
   const published = await loadCommands(source, join(folder, "commands"));
   const local = await loadLocalFolder(source, config?.local?.allow ?? []);
   const { commands } = await local.mergeCommands(published);
-  return [...new Set([...published, ...commands])];
+  return commands.map((command) => command.id);
 };
 
 const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => {

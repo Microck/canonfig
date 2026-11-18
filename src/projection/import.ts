@@ -5,19 +5,21 @@ import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import { Predicate, Schema } from "effect";
 
 import { ConfigValue } from "../domain/resource.ts";
+import type { AppliedResourceRecord } from "../domain/synchronization.ts";
 import { TaggedError } from "../domain/tagged-error.ts";
 import { asJson, digestOf, sha256BytesHex, sha256Hex } from "../profile/profile-codec.ts";
 import { containsLiteralCredential, isEnvironmentReference, isSecretField } from "../secrets/credential-policy.ts";
 import { getConfigPath, parseConfigDocument } from "../synchronization/config-codec.ts";
 import { type ConfigJson, type ConfigObject, isConfigObject } from "../synchronization/config-value.ts";
 import { adapterFor } from "./adapters/index.ts";
-import { commandSkill } from "./adapters/shared-documents.ts";
+import { commandSkillName } from "./adapters/shared-documents.ts";
 import { emptyModel } from "./detect.ts";
-import { readCommandsForSkillImport } from "./folder.ts";
+import { readCommandIdsForSkillImport } from "./folder.ts";
 import { type MarkdownDocument, markdownWithFrontmatter, parseMarkdownDocument } from "./frontmatter.ts";
 import { maxImportContentBytes, SkillReader, type ImportReadLimit } from "./import-skills.ts";
 import type { HarnessLayout, OwnedSurface, RootContext, SkillReadSource } from "./harness.ts";
 import { TARGET_IDS, type TargetId } from "./model.ts";
+import { parseSurfaceResourceId, resourcesOwner } from "./plan.ts";
 
 /**
  * Source setup's one-time import: reads what the selected harnesses already
@@ -704,7 +706,7 @@ class ScanCollector {
   readonly skipped: Array<ImportSkip> = [];
   private readonly candidates = new Map<string, Array<ImportCandidate>>();
 
-  constructor(private readonly generatedSkillDigests: ReadonlySet<string>) {}
+  constructor(private readonly reservedSkillNames: ReadonlySet<string>) {}
 
   skip(source: ImportSource, path: string, reason: string): void {
     this.skipped.push({ source, path, reason });
@@ -719,8 +721,8 @@ class ScanCollector {
   ): void {
     if (outcome.kind === "missing") return;
     if (outcome.kind === "skip" || outcome.kind === "limit") return this.skip(source, path, outcome.reason);
-    if (category === "skills" && this.generatedSkillDigests.has(outcome.digest)) {
-      return this.skip(source, path, "Already projected from a Canonical Folder command.");
+    if (category === "skills" && this.reservedSkillNames.has(outcome.name)) {
+      return this.skip(source, path, "This skill name is reserved by a Canonical Folder command.");
     }
     const id = `${source}/${category}/${outcome.name}`;
     const group = this.candidates.get(id) ?? [];
@@ -825,24 +827,44 @@ const scanSkills = async (
   }, (path, reason) => collector.skip(source, path, reason));
 };
 
+/** Shared and private skills roots own named entries. Hermes records each skill separately. */
+const projectedSkillPaths = (
+  context: RootContext,
+  records: ReadonlyArray<AppliedResourceRecord>,
+): ReadonlySet<string> => {
+  const paths = new Set<string>();
+  for (const record of records) {
+    if (record.ownership !== "DirectoryEntries") continue;
+    const surface = parseSurfaceResourceId(record.resource);
+    if (surface === undefined || surface.harness === resourcesOwner) continue;
+    if (surface.surface === "skills") {
+      for (const file of record.ownedFiles) {
+        paths.add(context.join(record.target, file.path.split("/", 1)[0]!));
+      }
+    } else if (surface.surface.startsWith("skill.")) {
+      paths.add(record.target);
+    }
+  }
+  return paths;
+};
+
 /** Read-only scan of the selected harnesses for items to import into `folder`. */
 export const scanImports = async (input: {
   readonly context: RootContext;
   readonly harnesses: ReadonlyArray<TargetId>;
   readonly folder: string;
+  readonly appliedResources?: ReadonlyArray<AppliedResourceRecord>;
 }): Promise<ImportScan> => {
   const { context, folder } = input;
   const scope = harnessScope(context, folder);
   const layouts = [...new Set(input.harnesses)].map((harness) => scope.layouts.find(([id]) => id === harness)!);
-  // A newly selected harness can discover command skills projected by a shared reader.
-  // Compare complete skill trees so native skills with similar names remain importable.
-  const commands = layouts.some(([, layout]) => layout.skillSources.length > 0) ? await readCommandsForSkillImport(folder) : [];
-  const generatedSkillDigests = new Set(commands.map((command) => {
-    const { name, files } = commandSkill(command);
-    return contentDigest("skills", name, { kind: "tree", files });
-  }));
-  const collector = new ScanCollector(generatedSkillDigests);
-  const reader = await SkillReader.create(context, scope.neverTouch, scope.folder, scope.configPaths);
+  const commandIds = layouts.some(([, layout]) => layout.skillSources.length > 0)
+    ? await readCommandIdsForSkillImport(folder)
+    : [];
+  const collector = new ScanCollector(new Set(commandIds.map(commandSkillName)));
+  const reader = await SkillReader.create(
+    context, scope.neverTouch, scope.folder, scope.configPaths, projectedSkillPaths(context, input.appliedResources ?? []),
+  );
   const shared = new Map<string, Array<readonly [TargetId, SkillReadSource]>>();
   for (const [harness, layout] of layouts) {
     for (const surface of layout.surfaces) await scanSurface(scope, collector, harness, surface);

@@ -426,6 +426,8 @@ describe("local projection", () => {
     expect(publishedSkill).toContain("Ship the change.");
     const nativeSkill = "---\nname: command-review\ndescription: Review changes\n---\nRead the diff.\n";
     write(join(value.home, ".kimi-code", "skills", "command-review", "SKILL.md"), nativeSkill);
+    write(join(value.home, ".kimi-code", "skills", "command-ship", "SKILL.md"),
+      "---\nname: command-ship\ndescription: Native shipping skill\n---\nRead the native shipping guide.\n");
     const environment = environmentOf(value);
     write(join(value.folder, "local", "commands", "ship.md"), "---\ndescription: Local procedure\n---\nFollow the machine-local procedure.\n");
     await Effect.runPromise(overlaysLocal(value.statePath, environment, { action: "set", item: "commands/ship" }).pipe(
@@ -438,6 +440,10 @@ describe("local projection", () => {
         folder: value.folder, environment, harnesses: ["codex", "kimi"], imports: { kind: "all" },
       });
       expect(plan.imports.offered.map((candidate) => candidate.target)).toEqual(["skills/command-review"]);
+      expect(plan.imports.skipped).toContainEqual({
+        source: "kimi", path: "~/.kimi-code/skills/command-ship",
+        reason: "This skill name is reserved by a Canonical Folder command.",
+      });
       for (const item of plan.items) {
         if (item.kind === "folder-scaffold") yield* executeFolderScaffold(item);
         if (item.kind === "harness-import") yield* executeHarnessImport(item, environment);
@@ -451,19 +457,27 @@ describe("local projection", () => {
   });
 
   it.each([
-    { kind: "an admitted local command", id: "inspect", overlays: [] },
-    { kind: "a Local Overlay of a published command", id: "ship", overlays: ["commands/ship"] },
-  ])("skips skills projected from $kind during Source setup", async ({ id, overlays }) => {
+    { kind: "an admitted local command", id: "inspect", overlays: [], change: "none" },
+    { kind: "a Local Overlay of a published command", id: "ship", overlays: ["commands/ship"], change: "none" },
+    { kind: "a local command edited since sync", id: "inspect", overlays: [], change: "edit" },
+    { kind: "a local command deleted since sync", id: "inspect", overlays: [], change: "delete" },
+  ])("skips skills projected from $kind during Source setup", async ({ id, overlays, change }) => {
     const value = fixture(["codex"], {
-      surfaces: { codex: ["instructions", "commands"] },
-      local: { allow: ["commands"] },
+      surfaces: { codex: ["instructions", "commands", "skills"] },
+      local: { allow: ["commands", "skills"] },
     });
-    write(join(value.folder, "local", "commands", `${id}.md`), "---\ndescription: Local procedure\n---\nFollow the machine-local procedure.\n");
+    const command = join(value.folder, "local", "commands", `${id}.md`);
+    const localSkill = "private-guide";
+    write(join(value.folder, "local", "skills", localSkill, "SKILL.md"),
+      "---\nname: private-guide\ndescription: Machine-local guide\n---\nRead the private guide.\n");
+    write(command, "---\ndescription: Local procedure\n---\nFollow the machine-local procedure.\n");
     write(join(value.folder, "local", "local.jsonc"), JSON.stringify({ overlays }));
     expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
     const skill = `command-${id}`;
     const generated = join(value.home, ".agents", "skills", skill, "SKILL.md");
     expect(readFileSync(generated, "utf8")).toContain("Follow the machine-local procedure.");
+    if (change === "edit") write(command, "---\ndescription: Revised procedure\n---\nFollow the revised procedure.\n");
+    if (change === "delete") rmSync(command);
 
     const environment = environmentOf(value);
     await Effect.runPromise(Effect.gen(function*() {
@@ -471,6 +485,11 @@ describe("local projection", () => {
         folder: value.folder, environment, harnesses: ["codex", "kimi"], imports: { kind: "all" },
       });
       expect(plan.imports.offered).toEqual([]);
+      for (const projected of [skill, localSkill]) {
+        expect(plan.imports.skipped).toContainEqual({
+          source: "agents", path: `~/.agents/skills/${projected}`, reason: "Canonfig already projected this skill.",
+        });
+      }
       for (const item of plan.items) {
         if (item.kind === "folder-scaffold") yield* executeFolderScaffold(item);
         if (item.kind === "harness-import") yield* executeHarnessImport(item, environment);
@@ -478,7 +497,10 @@ describe("local projection", () => {
     }).pipe(Effect.provide(layer(value))));
 
     expect(existsSync(join(value.folder, "skills", skill))).toBe(false);
+    expect(existsSync(join(value.folder, "skills", localSkill))).toBe(false);
     expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    if (change === "edit") expect(readFileSync(generated, "utf8")).toContain("Follow the revised procedure.");
+    if (change === "delete") expect(existsSync(generated)).toBe(false);
   });
 
   it("projects Cursor and Grok commands only to their native directories", async () => {

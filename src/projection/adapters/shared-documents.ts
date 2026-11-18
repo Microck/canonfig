@@ -101,12 +101,17 @@ export function commandMarkdown(command: CommandDocument): string {
   return markdownWithFrontmatter(Object.fromEntries(data), command.content);
 }
 
+/** The portable skill name reserved by a command ID. */
+export function commandSkillName(id: string): string {
+  const normalized = `command-${id.toLowerCase().replace(/[-_]+/gu, "-").replace(/-$/u, "")}`;
+  return normalized.length <= 64
+    ? normalized
+    : `${normalized.slice(0, 51).replace(/-$/u, "")}-${sha256Hex(id).slice(0, 12)}`;
+}
+
 /** Render a command as a portable Agent Skill, including a directory-safe manifest name. */
 export function commandSkill(command: CommandDocument): SkillTree {
-  const normalized = `command-${command.id.toLowerCase().replace(/[-_]+/gu, "-").replace(/-$/u, "")}`;
-  const name = normalized.length <= 64
-    ? normalized
-    : `${normalized.slice(0, 51).replace(/-$/u, "")}-${sha256Hex(command.id).slice(0, 12)}`;
+  const name = commandSkillName(command.id);
   const description = [...command.description.trim()].slice(0, 1024).join("") || `Run the ${command.id} command.`;
   const body = command.argumentHint ? `${command.content}\n\nArgument hint: ${command.argumentHint}` : command.content;
   const markdown = markdownWithFrontmatter({ name, description }, body);

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { Effect, Schema } from "effect";
 
 import { ConfigValue } from "../domain/resource.ts";
+import { localProjectionFollower } from "../domain/synchronization.ts";
 import type { SetupImportRequest } from "../cli/setup-commands.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { canonicalJson, sha256Hex, type JsonValue } from "../profile/profile-codec.ts";
@@ -132,8 +133,11 @@ const reviewImports = (input: SourceFolderInput, selected: ReadonlyArray<TargetI
     )).map((takeover) => takeover.harness));
     const scanned = selected.filter((harness) => !takenOver.has(harness));
     const context = yield* contextFor(input.environment);
+    const appliedResources = yield* repository.loadAppliedResources(localProjectionFollower).pipe(
+      Effect.mapError((cause) => fail("setup harnesses", `applied resources could not be read: ${cause.message}`, "state")),
+    );
     const scan: ImportScan = yield* Effect.tryPromise({
-      try: () => scanImports({ context, harnesses: scanned, folder: input.folder }),
+      try: () => scanImports({ context, harnesses: scanned, folder: input.folder, appliedResources }),
       catch: (error) => folderFailure(error instanceof Error ? error : new Error(String(error))),
     });
     const existing = yield* Effect.tryPromise({ try: () => existingFolderItems(input.folder), catch: (error) => folderFailure(error instanceof Error ? error : new Error(String(error))) });

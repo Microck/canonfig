@@ -143,12 +143,17 @@ changes between scan and import fails with `ImportChangedError`.
 Size-budget refusals use the separate `ImportSizeLimitError` type.
 
 Skill discovery reads the adapters' explicit native skill sources, including
-locations Canonfig does not own for writes. Skill reads may follow links only
-within the user's home, outside protected harness state, mixed/key-scoped
-config files and their aliases, and the Canonical Folder. Import copies
-regular-file content, not links; broken links, cycles and unsafe targets are
-reported as skipped paths. This read policy does not expand the positive
-ownership allowlist for writes or backups.
+locations Canonfig does not own for writes. Setup skips harnesses it already
+manages. It also skips individual skill directories listed in the local Applied
+Resource Records, even if another harness reads them or their contents have
+changed. A skill whose name matches a published or effective command's
+generated skill name is skipped to avoid a projection collision.
+
+Skill reads may follow links only within the user's home, outside protected
+harness state, mixed/key-scoped config files and their aliases, and the
+Canonical Folder. Import copies regular-file content, not links. It reports
+broken links, cycles and unsafe targets as skipped paths. This read policy
+does not expand the positive ownership allowlist for writes or backups.
 Regular skill files must have exactly one hard link. If a file has another
 name, Canonfig cannot verify that it is separate from protected state and
 skips the skill. Leave it out, or use an independent copy of non-private
