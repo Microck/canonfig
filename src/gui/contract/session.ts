@@ -84,4 +84,5 @@ export type GuiError = typeof GuiError.Type;
 export const guiEndpoints = {
   session: "/api/session",
   status: "/api/status",
+  issueReporting: "/api/issue-reporting",
 } as const;

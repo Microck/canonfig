@@ -47,3 +47,35 @@ export const skillsArguments = (arguments_: ReadonlyArray<string>): ReadonlyArra
 /** MCP stdout is a protocol stream, so no JSON output option is accepted. */
 export const validMcpRunArguments = (args: ReadonlyArray<string>): boolean =>
   args.length === 2 && args[0] === "run" && /^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(args[1]!);
+
+export const isReportIssueCommand = (args: ReadonlyArray<string>): boolean =>
+  args.find((argument) => argument !== "--json") === "report-issue";
+
+export type IssueReportingPreferenceCommand =
+  | { readonly kind: "status" | "account" | "disable" }
+  | { readonly kind: "enable"; readonly accountId: string; readonly revision: string };
+
+type ReportIssueCommand = IssueReportingPreferenceCommand | { readonly kind: "preview" | "submit" | "automatic" };
+
+export function parseReportIssueArguments(args: ReadonlyArray<string>): ReportIssueCommand | undefined {
+  const [command, ...options] = args.filter((argument) => argument !== "--json");
+  if (command !== "report-issue") return undefined;
+  if (options[0] === "automatic") {
+    const setting = options[1];
+    if (options.length === 2 && (setting === "status" || setting === "account" || setting === "disable")) {
+      return { kind: setting };
+    }
+    const [, , accountFlag, accountId, revisionFlag, revision] = options;
+    if (options.length === 6 && setting === "enable" && accountFlag === "--account"
+      && accountId && /^[1-9]\d*$/u.test(accountId) && revisionFlag === "--revision" && revision
+      && /^(?:absent|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/u.test(revision)) {
+      return { kind: "enable", accountId, revision };
+    }
+    return undefined;
+  }
+  if (!options.includes("--stdin")) return undefined;
+  if (options.length === 1) return { kind: "preview" };
+  if (options.length === 2 && options.includes("--submit")) return { kind: "submit" };
+  if (options.length === 2 && options.includes("--automatic")) return { kind: "automatic" };
+  return undefined;
+}

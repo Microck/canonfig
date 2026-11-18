@@ -12,6 +12,7 @@ import { installCommandLog, observedSignalExitCode } from "../logging/command-lo
 import { supportedNodeVersions, nodeRuntimeIsSupported } from "./build-identity.ts";
 import {
   isSkillsCommand,
+  isReportIssueCommand,
   skillsArguments,
   installerArguments,
   groupHelpRequested,
@@ -181,6 +182,13 @@ if (early !== undefined) {
     exitCode: CliExitCode.humanActionRequired,
   }, format));
   nodeCliIo.setExitCode(CliExitCode.humanActionRequired);
+} else if (isReportIssueCommand(arguments_)) {
+  const [{ runReportIssueCli }, { runCancellablePromise }] = await Promise.all([
+    import("../cli/report-issue.ts"), import("./cancellable-promise.ts"),
+  ]);
+  await runMain(() => runCancellablePromise((signal) =>
+    runReportIssueCli(arguments_, nodeCliIo, process.stdin, format, signal)
+  ), "report-issue");
 } else if (selfUpdateCommand) {
   const [{ runSelfUpdateCli }, { runCancellablePromise }] = await Promise.all([
     import("./self-update/cli.ts"), import("./cancellable-promise.ts"),

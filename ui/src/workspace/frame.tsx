@@ -40,6 +40,7 @@ import {
 import { Kbd } from "@/components/ui/kbd";
 import { AnimatedNumber, Logo, StatusMark } from "@/shared/shared";
 import { DEMO, PLAIN } from "@/shared/metadata";
+import { IssueReporting } from "@/shared/issue-reporting";
 import { DemoSwitcher } from "@/shared/demo-switcher";
 import { useWorkspace, type View } from "./store";
 import { copy } from "./kit";
@@ -261,6 +262,9 @@ export function Sidebar({ className, onNavigate, onOpenTours }: { className?: st
           <FoldedMap className="size-3.5" />
           Take the tour
         </button>
+        {!DEMO && (
+          <IssueReporting className="flex h-10 w-full items-center gap-[6px] rounded text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 pointer-coarse:h-11" />
+        )}
         {role === "source" ? (
           <button type="button" onClick={() => ws.setView("service")} className="flex h-7 w-full items-center gap-[6px] rounded text-left text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 pointer-coarse:h-11">
             <StatusMark kind={ws.capabilities.simulatedTelemetry ? serviceInstalled ? "ok" : "off" : ws.admin.service.data?.state === "running" ? "ok" : "off"} />

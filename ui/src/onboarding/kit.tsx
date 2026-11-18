@@ -8,6 +8,7 @@ import { CollapsibleTrigger } from "@/components/ui/collapsible";
 import { RadioGroupItem } from "@/components/ui/radio-group";
 import { Sheet, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { DEMO } from "@/shared/metadata";
+import { IssueReporting } from "@/shared/issue-reporting";
 import { GLOSSARY, Logo } from "@/shared/shared";
 
 /**
@@ -163,6 +164,9 @@ export function OnboardingShell({ hostname, backdrop, actions, children }: { hos
           <div className="border-b border-border px-6 pt-5 pb-4">
             <SheetTitle className="text-[15px] font-medium">Glossary</SheetTitle>
             <SheetDescription className="sr-only">Definitions of Canonfig terms.</SheetDescription>
+            {!DEMO && (
+              <IssueReporting className="mt-2 inline-flex h-10 items-center gap-[6px] rounded text-sm text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 pointer-coarse:h-11" />
+            )}
           </div>
           <dl className="min-h-0 flex-1 divide-y divide-border overflow-y-auto px-6 pb-24">
             {Object.entries(GLOSSARY).map(([term, { plain, meaning }]) => (

@@ -1,3 +1,7 @@
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Effect, Layer, Schema } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
@@ -6,6 +10,8 @@ import {
   runCli,
   type CliIo,
 } from "../src/cli/cli.ts";
+import { issueReportingPath } from "../src/runtime/issue-reporting-preference.ts";
+import { programVersion } from "../src/cli/help.ts";
 import {
   CliExitCode,
   type CliFailureCategory,
@@ -951,4 +957,203 @@ it.each([
 
 it.each(["source", "schedule", "setup", "tunnel", "profile", "agent", "follower"])("names the missing action for %s", (group) => {
   expect(evaluateCli([group])).toMatchObject({ _tag: "InvalidInput", message: `Missing ${group} command` });
+});
+
+
+describe("report-issue command", () => {
+  const standaloneToken = "ghp_" + "aB1".repeat(12);
+  const input = JSON.stringify({
+    title: "Local settings exposes discard-this for 𠮷",
+    body: `## Steps to reproduce\nOpen Local settings.\n\nAPI_KEY=discard-this\n\n\`\`\`\n${standaloneToken}\n\`\`\``,
+  });
+
+  const isolatedHome = <A>(run: (home: string) => A): A => {
+    const home = mkdtempSync(join(tmpdir(), "canonfig-report-"));
+    try { return run(home); }
+    finally { rmSync(home, { recursive: true, force: true }); }
+  };
+  const invoke = (home: string, args: string[], stdin = input, fixtureAccount?: string, revoke = false, nodeDebug?: string) =>
+    spawnSync(process.execPath, ["--import", "tsx", "src/runtime/main.ts", ...args], {
+      cwd: new URL("..", import.meta.url),
+      encoding: "utf8",
+      env: {
+        SystemRoot: process.env.SystemRoot,
+        HOME: home,
+        USERPROFILE: home,
+        GH_CONFIG_DIR: home,
+        GH_TOKEN: "canonfig-test-invalid-token",
+        CANONFIG_LOG: "off",
+        PATH: home,
+        FIXTURE_ACCOUNT: fixtureAccount,
+        FIXTURE_NODE: process.execPath,
+        FIXTURE_REVOKE: revoke ? "1" : undefined,
+        NODE_DEBUG: nodeDebug,
+      },
+      input: stdin,
+      timeout: 10000,
+    });
+  const runReport = (args: string[], stdin = input) => isolatedHome((home) => invoke(home, args, stdin));
+
+  it("requires machine-local consent for automatic submission and remembers opting out", () => isolatedHome((home) => {
+    const initial = invoke(home, ["report-issue", "automatic", "status", "--json"]);
+    expect(initial.status).toBe(0);
+    expect(JSON.parse(initial.stdout).data).toEqual({ status: "ask" });
+
+    const blocked = invoke(home, ["report-issue", "--stdin", "--automatic", "--json"]);
+    expect(blocked.status).toBe(CliExitCode.humanActionRequired);
+    expect(blocked.stderr).toContain("requires consent");
+
+    expect(invoke(home, ["report-issue", "automatic", "disable"]).status).toBe(0);
+    const later = invoke(home, ["report-issue", "automatic", "status", "--json"]);
+    expect(later.status).toBe(0);
+    expect(JSON.parse(later.stdout).data).toEqual({ status: "disabled" });
+
+    const refused = invoke(home, ["report-issue", "--stdin", "--automatic", "--json"]);
+    expect(refused.status).toBe(CliExitCode.humanActionRequired);
+    expect(refused.stderr).toContain("requires consent");
+  }));
+
+  // Windows execFile requires a native executable. The default-off and
+  // opt-out tests exercise the normal CLI on all supported platforms.
+  it.skipIf(process.platform === "win32")("files automatically only with the account that opted in", () => isolatedHome((home) => {
+    writeFileSync(join(home, "gh"), '#!/bin/sh\nexec "$FIXTURE_NODE" "$0.cjs" "$@"\n', { mode: 0o700 });
+    writeFileSync(join(home, "gh.cjs"), `
+      const fs = require("node:fs");
+      const [command] = process.argv.slice(2);
+      const login = process.env.FIXTURE_ACCOUNT;
+      const token = "fixture-" + login;
+      if (command === "auth") console.log(token);
+      else if (command === "api" && process.env.GH_TOKEN === token) {
+        if (process.env.FIXTURE_REVOKE === "1") {
+          const { spawnSync } = require("node:child_process");
+          const disable = spawnSync(process.execPath, ["--import", "tsx", "src/runtime/main.ts", "report-issue", "automatic", "disable"]);
+          if (disable.status !== 0) process.exit(99);
+        }
+        console.log(JSON.stringify({ id: login === "alicia" ? 42 : 43, login }));
+      } else if (command === "issue" && login === "alicia" && process.env.GH_TOKEN === token) {
+        const body = fs.readFileSync(0, "utf8");
+        if (!body.includes("API_KEY=[REDACTED]") || body.includes("discard-this") || body.includes("ghp_")) process.exit(99);
+        fs.writeFileSync(process.env.HOME + "/created", "");
+        console.log("https://github.com/Microck/canonfig/issues/999999");
+      } else process.exit(99);
+    `);
+
+    const account = invoke(home, ["report-issue", "automatic", "account", "--json"], input, "alicia");
+    expect(JSON.parse(account.stdout).data).toMatchObject({ status: "ask", account: { id: 42, login: "alicia" } });
+    const enable = (revision: string) => ["report-issue", "automatic", "enable", "--account", "42", "--revision", revision, "--json"];
+    const currentRevision = () => JSON.parse(invoke(home, ["report-issue", "automatic", "account", "--json"], input, "alicia").stdout).data.revision;
+    const offeredRevision = JSON.parse(account.stdout).data.revision;
+    expect(invoke(home, enable(offeredRevision), input, "brenda").status).toBe(CliExitCode.humanActionRequired);
+
+    const afterDisable = invoke(home, ["report-issue", "automatic", "account", "--json"], input, "alicia", true);
+    expect(afterDisable.status).toBe(0);
+    expect(JSON.parse(afterDisable.stdout).data.status).toBe("disabled");
+    expect(invoke(home, enable(offeredRevision), input, "alicia").status).toBe(CliExitCode.conflictOrDrift);
+    expect(invoke(home, enable(currentRevision()), input, "alicia", true).status).toBe(CliExitCode.conflictOrDrift);
+    expect(JSON.parse(invoke(home, ["report-issue", "automatic", "status", "--json"]).stdout).data).toEqual({ status: "disabled" });
+
+    const optedIn = invoke(home, enable(currentRevision()), input, "alicia");
+    expect(optedIn.status).toBe(0);
+    expect(JSON.parse(optedIn.stdout).data).toEqual({ status: "enabled", account: { id: 42, login: "alicia" } });
+
+    const submit = ["report-issue", "--stdin", "--automatic", "--json"];
+    expect(invoke(home, submit, input, "brenda").status).toBe(CliExitCode.humanActionRequired);
+    expect(existsSync(join(home, "created"))).toBe(false);
+
+    const debug = invoke(home, submit, input, "alicia", false, "child_process");
+    expect(debug.status).toBe(CliExitCode.usageOrConfiguration);
+    expect(debug.stderr).toContain("Turn off NODE_DEBUG=child_process");
+    expect(debug.stderr).not.toContain("canonfig-test-invalid-token");
+    expect(debug.stderr).not.toContain("fixture-alicia");
+    expect(existsSync(join(home, "created"))).toBe(false);
+
+    const state = join(home, ".canonfig-issue-reporting");
+    const lease = join(state, `${readdirSync(state).find((name) => name.endsWith(".json"))}.run-lock`);
+    writeFileSync(lease, JSON.stringify({ pid: process.pid, operation: "fixture", since: new Date().toISOString(), token: "fixture" }));
+    const busy = invoke(home, ["report-issue", "automatic", "disable"]);
+    expect(busy.status).toBe(CliExitCode.conflictOrDrift);
+    expect(busy.stderr).toContain("another operation in progress");
+    expect(invoke(home, submit, input, "alicia").status).toBe(CliExitCode.conflictOrDrift);
+    expect(existsSync(join(home, "created"))).toBe(false);
+    rmSync(lease);
+
+    const created = invoke(home, submit, input, "alicia");
+    expect(created.status).toBe(0);
+    expect(JSON.parse(created.stdout).data).toEqual({ url: "https://github.com/Microck/canonfig/issues/999999" });
+
+    const directory = join(home, ".canonfig-issue-reporting");
+    const moved = join(home, "moved-consent");
+    renameSync(directory, moved);
+    symlinkSync(moved, directory, "dir");
+    expect(invoke(home, submit, input, "alicia").status).toBe(CliExitCode.usageOrConfiguration);
+    expect(invoke(home, ["report-issue", "automatic", "disable"]).status).toBe(CliExitCode.usageOrConfiguration);
+  }));
+
+  it("uses different consent files for different machines with the same home", () => isolatedHome((home) => {
+    const first = issueReportingPath(home, "linux", "0123456789abcdef0123456789abcdef");
+    const second = issueReportingPath(home, "linux", "123456789abcdef0123456789abcdef0");
+    expect(first).not.toBe(second);
+    expect(first).not.toContain("0123456789abcdef0123456789abcdef");
+  }));
+
+  it("preserves one-time preview after opting out of automatic reporting", () => isolatedHome((home) => {
+    expect(invoke(home, ["report-issue", "automatic", "disable"]).status).toBe(0);
+    const preview = invoke(home, ["report-issue", "--stdin", "--json"]);
+    expect(preview.status).toBe(0);
+    expect(JSON.parse(preview.stdout).data.repository).toBe("Microck/canonfig");
+  }));
+
+  it("previews a public report without GitHub CLI or enrollment", () => {
+    const preview = runReport(["--json", "report-issue", "--stdin"]);
+
+    expect(preview.status).toBe(0);
+    expect(preview.stdout).not.toContain(standaloneToken);
+    expect(JSON.parse(preview.stdout)).toMatchObject({
+      schema: "canonfig.cli/v1",
+      command: "report-issue",
+      data: {
+        repository: "Microck/canonfig",
+        title: "Local settings exposes [REDACTED] for 𠮷",
+        body: expect.stringContaining("API_KEY=[REDACTED]\n\n```\n[REDACTED]\n```\n\n---\nCanonfig " + programVersion),
+      },
+    });
+  });
+
+  it.each([
+    { title: "x ".repeat(30).trim(), body: "API_KEY=x", field: "title" },
+    { title: "Unexpected output", body: `API_KEY=x\n${"x ".repeat(7000)}`, field: "body" },
+  ])("rejects a $field that exceeds the limit after redaction", ({ title, body, field }) => {
+    const preview = runReport(["report-issue", "--stdin", "--json"], JSON.stringify({ title, body }));
+
+    expect(preview.status).toBe(CliExitCode.usageOrConfiguration);
+    expect(preview.stdout).toBe("");
+    expect(preview.stderr).toContain(`Shorten the report ${field}`);
+  });
+
+  it.each([
+    { title: "Invalid \ud800", body: "Report text" },
+    { title: "Unexpected output", body: "Invalid \udc00" },
+    { title: "Output for 𠮷", body: String.raw`Log fragment: {"API_KEY":"\ud842"}` },
+  ])("rejects malformed Unicode before preview", (draft) => {
+    const preview = runReport(["report-issue", "--stdin", "--json"], JSON.stringify(draft));
+
+    expect(preview.status).toBe(CliExitCode.usageOrConfiguration);
+    expect(preview.stdout).toBe("");
+  });
+
+  it("requires GitHub CLI for explicit submission", () => {
+    const submission = runReport(["report-issue", "--stdin", "--submit", "--json"]);
+
+    expect(submission.status).toBe(CliExitCode.humanActionRequired);
+    expect(submission.stdout).toBe("");
+    expect(submission.stderr).toContain("gh auth login --hostname github.com");
+  });
+
+  it("rejects invalid input before submission", () => {
+    const invalid = runReport(["report-issue", "--stdin", "--submit"], '{"body":"private fixture"}');
+
+    expect(invalid.status).toBe(CliExitCode.usageOrConfiguration);
+    expect(invalid.stdout).toBe("");
+    expect(invalid.stderr).not.toContain("private fixture");
+  });
 });
