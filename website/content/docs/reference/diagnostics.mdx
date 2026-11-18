@@ -3,7 +3,7 @@ title: Doctor probes and exit codes
 description: Look up what each canonfig doctor probe checks, what its result proves, and which exit code each failure category returns.
 ---
 
-`canonfig doctor` checks this machine with eight probes. Each probe has its own
+`canonfig doctor` checks this machine with ten probes. Each probe has its own
 time limit, so one slow or failing probe does not hide the others. To fix a
 specific error, see [Recover from a failed or blocked sync](/docs/how-to/recover).
 
@@ -51,6 +51,8 @@ A probe that runs past `--timeout-ms` fails with `<probe> probe timed out`.
 | `package-managers` | Which of apt, brew, bun, cargo, npm, pnpm, uv, and winget Canonfig can start |
 | `agent-adapter` | The agent policy and whether the configured Configuration Agent executable exists |
 | `harnesses` | Which Target Harnesses are installed, listed in `canonfig.jsonc`, and excluded on this machine, with pinned roots and takeover snapshots |
+| `mcp` | That every MCP server each installed harness declares starts and answers, the way that harness starts it |
+| `tailscale` | Whether Tailscale is running here, with its addresses and MagicDNS name |
 
 ### runtime
 
@@ -157,6 +159,35 @@ and changes nothing. `details` holds `listed`, `excluded`, `detected`,
 
 See [Choose which harnesses Canonfig manages](/docs/how-to/choose-harnesses) and
 the [harness reference](/docs/reference/harnesses).
+
+### mcp
+
+The probe reads each installed harness's own config file, including entries
+Canonfig did not write, and starts every MCP server it declares. It starts one
+harness's servers at a time, all at once, as that harness does when a session
+begins, and gives Codex servers only the environment Codex passes them. A
+server passes when it answers `initialize` and lists its tools. A server whose
+entry sets a startup timeout gets that, up to 120 seconds; any other server gets
+10 seconds, or `--timeout-ms` when that is longer. `details` has
+one line per server with the harnesses that declare it.
+
+| Result | Message |
+| --- | --- |
+| pass | `<n> MCP server(s) started and listed their tools` |
+| warning | Remote servers that sign in with OAuth, and the legacy SSE transport, are not checked. |
+| skipped | `no installed harness declares an MCP server` |
+| fail, apply failure | `<n> of <total> MCP server(s) failed to start or answer: <servers>`, with each server's reason in `details` |
+
+After the probes, an enrolled Follower sends its report to the Source, and a
+Source records its own. The Source shows each machine's latest report under
+**Health** in that machine's details on the Machines page.
+
+### tailscale
+
+| Result | Message |
+| --- | --- |
+| pass | `Tailscale is ready at <name>` |
+| skipped | Tailscale is not ready here: not installed, not running, logged out, an expired node key, userspace networking, MagicDNS unavailable, or no supported address. The message names the cause. |
 
 ## Exit codes
 
