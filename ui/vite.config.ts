@@ -3,6 +3,7 @@ import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
+import { demoOutputDirectory } from "./src/build-paths.ts";
 
 const SITE_URL = "https://canonfig.micr.dev/";
 // The public demo is a separate app under /demo/ (scripts/build-pages.mjs).
@@ -96,9 +97,35 @@ function applicationEntrypoint(): Plugin {
 
 export default defineConfig((env) => ({
   base: env.mode === "demo" ? "/demo/" : "/",
-  plugins: [react(), tailwindcss(), demoSite(), applicationEntrypoint()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    demoSite(),
+    applicationEntrypoint(),
+    {
+      name: "canonfig-ignore-demo-output",
+      apply: "serve",
+      configResolved({ root, server, inlineConfig }) {
+        // Vite's config merge drops null overrides when a config file is loaded.
+        if (server.watch === null || inlineConfig.server?.watch === null) {
+          server.watch = null;
+          return;
+        }
+        const { ignored = [] } = server.watch ?? {};
+        // Vite can resolve symlinks in the root before starting its watcher.
+        server.watch = {
+          ...server.watch,
+          ignored: [
+            ...Array.isArray(ignored) ? ignored : [ignored],
+            path.resolve(root, demoOutputDirectory),
+          ],
+        };
+      },
+    },
+  ],
   resolve: { alias: { "@": path.resolve(import.meta.dirname, "./src") } },
   build: {
+    outDir: env.mode === "demo" ? demoOutputDirectory : undefined,
     rolldownOptions: {
       output: {
         // Third-party code changes far less often than app code, so it gets its own long-cached chunk that the
@@ -117,8 +144,5 @@ export default defineConfig((env) => ({
     host: "0.0.0.0",
     port: 5317,
     allowedHosts: true,
-    // Vite skips its own outDir, but dist-demo's index.html and 404.html would otherwise reload every open
-    // dev page whenever the demo builds.
-    watch: { ignored: ["**/dist-demo/**"] },
   },
 }));
