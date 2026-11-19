@@ -1,3 +1,4 @@
+import { declarationGuardItem } from "../guard/candidates.ts";
 import { enforceGuard, guardEffect, GuardHold, guardMessage, guardText, type GuardItem } from "../guard/guard.ts";
 import { hostname } from "node:os";
 import { basename, join } from "node:path";
@@ -536,7 +537,7 @@ export const executeHarnessImport = (item: SetupPlanItem, environment: Environme
     yield* assertNoProjectedImportCollisions(detail.folder, detail.items);
     const guard = yield* guardEffect((signal) => enforceGuard(contents.map(([candidate, content]): GuardItem => {
       const id = `${candidate.category}:${candidate.name}`;
-      if (content.kind === "mcp") return { kind: "mcp", id, files: [], declaration: content.server };
+      if (content.kind === "mcp") return declarationGuardItem("mcp", candidate.name, content.server);
       const files = content.kind === "tree" ? content.files.map((file) => ({
         path: file.path, bytes: file.content, executable: file.executable,
       })) : [guardText(basename(candidate.target), content.content)];

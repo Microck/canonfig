@@ -10,13 +10,14 @@ import { GroupName } from "../../src/domain/brand.ts";
 import { EnrollmentLive } from "../../src/enrollment/enrollment.layer.ts";
 import { Enrollment } from "../../src/enrollment/enrollment.service.ts";
 import { startSourceServer } from "../../src/enrollment/source-server.ts";
-import { GuiOperation, GuiOperationTicket, GuiSyncApplyRequest } from "../../src/gui/contract.ts";
+import { GuiOperationTicket, GuiSyncApplyRequest } from "../../src/gui/contract.ts";
 import { runGui } from "../../src/gui/server.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import { runtimeLayer } from "../../src/runtime/layers.ts";
 import { listSecrets, SECRET_SHARE_GROUP, storeSecret } from "../../src/secrets/secret-store.ts";
 import { resolveSecretBindings } from "../../src/secrets/secret-bindings.ts";
+import { waitForOperation } from "./operation-test-helper.ts";
 
 function machineRuntime(home: string) {
   const folder = join(home, ".canonfig");
@@ -100,14 +101,10 @@ it("refreshes newly shared secrets before a GUI apply succeeds and preserves ref
       const response = await fetch(`${origin}/api/sync/apply`, { method: "POST", headers, body: JSON.stringify(approval) });
       expect(response.status).toBe(202);
       const ticket = Schema.decodeUnknownSync(GuiOperationTicket)(await response.json());
-      let operation: typeof GuiOperation.Type;
-      const deadline = Date.now() + 30_000;
-      do {
-        const polled = await fetch(`${origin}/api/operations/${ticket.id}`, { headers });
-        operation = Schema.decodeUnknownSync(GuiOperation)(await polled.json());
-        if (Date.now() > deadline) throw new Error("Apply did not finish");
-      } while (operation.state === "running");
-      return operation;
+      return waitForOperation(ticket, async (path) => {
+        const polled = await fetch(origin + path, { headers });
+        return { status: polled.status, payload: await polled.json() };
+      }, 30_000);
     }
     const applied = await apply(Schema.decodeUnknownSync(GuiSyncApplyRequest)(plan));
     expect(applied.state, JSON.stringify(applied)).toBe("succeeded");

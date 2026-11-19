@@ -7,7 +7,7 @@ import { GuiRequestError, type GuiSession, type GuiStatus, type WorkspaceBackend
 import { LOCAL_CATEGORIES, type LocalItem } from "../../shared/metadata";
 import type { FollowerSlice } from "../workspace-types";
 import type { FollowerCommand, FollowerCommandState, FollowerLive } from "../follower-types";
-import { requestError, resourceState, useLiveActions, useLiveResource } from "./resource";
+import { requestError, resourceState, useGuardStatusInvalidation, useLiveActions, useLiveResource } from "./resource";
 import { WEEK } from "../schedule";
 
 export function record(value: Schema.Json | undefined): Record<string, Schema.Json> {
@@ -78,6 +78,7 @@ export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, 
   const secrets = useLiveResource(backend, "/api/secrets", GuiSecrets, follower);
   const localSynchronization = useLiveResource(backend, "/api/local/synchronization", GuiLocalSynchronization, !follower);
   const actions = useLiveActions(backend, reload);
+  const invalidateGuardStatus = useGuardStatusInvalidation();
   // Inspection is read-only. Invalidating page resources here would unmount and erase the connection draft.
   const inspectionActions = useLiveActions(backend, () => {});
   const [command, setCommand] = useState<FollowerCommandState>({ kind: "Idle" });
@@ -136,7 +137,11 @@ export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, 
         transition({ kind: "Ticket", ticket: ticket.id });
         await observe(ticket.id, signal);
       } catch (cause) {
-        if (!signal.aborted && commandRef.current.kind === "Submitting") transition({ kind: "Lost", error: requestError(cause) });
+        if (!signal.aborted && commandRef.current.kind === "Submitting") {
+          const error = requestError(cause);
+          if (error.failure.guard) invalidateGuardStatus();
+          transition({ kind: "Lost", error });
+        }
         throw cause;
       }
     });

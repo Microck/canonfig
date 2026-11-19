@@ -400,6 +400,61 @@ it("setup stopping for human action is not reported as complete", async () => {
   } finally { await app.close(); }
 });
 
+it("shows structured findings when Guard holds the first harness import", async () => {
+  const plan = { ...journal, items: [{
+    id: "canonfig-folder", kind: "folder-scaffold", scope: "machine", optional: false, dependsOn: [],
+    detail: { folder: "/tmp/onboarding-test", harnesses: ["codex"], detected: ["codex"] },
+  }] };
+  const guard = {
+    trigger: "setup.import", verdict: "block", at: "2026-11-06T00:00:00Z",
+    checked: 1, unsupported: 0, unavailable: 0, cacheHits: 0, findingCount: 1,
+    findings: [{ item: "skills:demo", digest: "a".repeat(64), path: "SKILL.md", code: "instruction-credential-concealment",
+      severity: "block", checker: "static" }],
+  };
+  const app = await fixture((path, _method, out) => {
+    if (path === "/api/setup/plan") respond(out, plan);
+    else if (path === "/api/setup/approve") respond(out, { ...plan, approvals: [{ digest: "digest", approver: "Reviewer", approvedAt: "" }] });
+    else if (path === "/api/setup/apply") respond(out, { id: "setup" });
+    else if (path === "/api/operations/setup") respond(out, {
+      id: "setup", state: "failed", journal: null,
+      failure: { category: "human-action-required", exitCode: 3, message: "Guard held the operation.", guard },
+    });
+    else respond(out, { planDigest: "digest", stage: "approved", approved: true, items: [], approvals: [], discoveryPaths: [], stages: [], catalog: [] });
+  }, true);
+  const press = async (label: string) => {
+    const control = [...app.container.querySelectorAll("button")].find((button) => button.textContent?.trim() === label);
+    assert.ok(control, label);
+    await act(async () => control.click());
+  };
+  try {
+    const source = [...app.container.querySelectorAll("button")].find((button) => button.textContent?.includes("Make this the Source"));
+    assert.ok(source);
+    await act(async () => source.click());
+    await until(() => !!app.container.textContent?.includes("Profile name"));
+    await press("Continue");
+    await until(() => !!app.container.querySelector('[aria-label="Installed AI coding tools"]'));
+    await press("Continue");
+    await until(() => !!app.container.querySelector('[aria-label="Review imports"]'));
+    await press("Continue");
+    await until(() => !!app.container.textContent?.includes("Approve setup"));
+    await press("Approve setup");
+    const name = app.container.querySelector<HTMLInputElement>("#setup-approver");
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    assert.ok(name && setter);
+    await act(async () => { setter.call(name, "Reviewer"); name.dispatchEvent(new Event("input", { bubbles: true })); });
+    await press("Continue");
+    await until(() => !!app.container.textContent?.includes("Approved by Reviewer."));
+    const apply = app.container.querySelector<HTMLButtonElement>('button[type="submit"]');
+    assert.ok(apply && apply.textContent?.includes("Make Isolated test the Source"));
+    await act(async () => apply.click());
+    await until(() => !!app.container.textContent?.includes("Guard held the import"));
+    const alert = app.container.querySelector('[role="alert"]');
+    assert.ok(alert?.textContent?.includes("skills:demo / SKILL.md"));
+    assert.ok(alert?.textContent?.includes("instruction-credential-concealment (static)"));
+    assert.ok(alert?.textContent?.includes("remove them from the selection"));
+  } finally { await app.close(); }
+});
+
 it("preference retry preserves its draft and rechecks partial server progress", async () => {
   let writes = 0;
   let excluded: string[] = [];

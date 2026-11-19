@@ -1,4 +1,4 @@
-import { enforceGuard, guardEffect, guardFileLimit, guardRetentionBudget, guardRetentionPriority, hasShebang, type GuardFile, type GuardReport } from "../guard/guard.ts";
+import { effectiveExecuteBits, enforceGuard, guardEffect, guardFileLimit, guardRetentionBudget, guardRetentionPriority, hasShebang, type GuardFile, type GuardReport } from "../guard/guard.ts";
 import { publishedGuardItem } from "../guard/candidates.ts";
 import { assertProfileMetadataBudget } from "./metadata-budget.ts";
 import { createHash } from "node:crypto";
@@ -29,8 +29,9 @@ import { ConfigValue } from "../domain/resource.ts";
 import { sourceChunksIssue, sourceTextIssue } from "../domain/text-composition.ts";
 import {
   CanonicalFolderError,
+  folderFileExecutable,
+  folderToolResource,
   hookScript,
-  intendedExecutable,
   itemResourceId,
   listFolderFiles,
   loadAuthoredFolder,
@@ -118,16 +119,6 @@ const jsonItem = <Authored>(
   verify: { method: "digest" },
 });
 
-/** A file item the follower mirrors at the same place in its folder. */
-const fileItem = (id: string, path: string, executable: boolean): ProfileResourceInput => ({
-  id,
-  kind: "file",
-  policy: "replace-if-unmodified",
-  target: path,
-  spec: { kind: "file", source: path, executable, mode: fileMode(executable) },
-  verify: { method: "digest" },
-});
-
 /**
  * The resource id of a file item under `directory`, one segment per path
  * segment: `hooks/lib/run.sh` is `hook-scripts:lib:run.sh`, `files/a/b` is
@@ -171,13 +162,25 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
     throw refuse("needs \"profile\": { \"id\": ..., \"name\": ... } to publish; the id names the Machine Profile followers sync");
   }
   const resources: Array<ProfileResourceInput> = [];
-  if (authored.instructions !== undefined) resources.push(fileItem("instructions", "AGENTS.md", false));
+  const enabledScripts = new Set<string>();
+  const addFile = (id: string, path: string, observedExecutable = false) => {
+    const executable = folderFileExecutable(path, observedExecutable, enabledScripts);
+    resources.push({
+      id,
+      kind: "file",
+      policy: "replace-if-unmodified",
+      target: path,
+      spec: { kind: "file", source: path, executable, mode: fileMode(executable) },
+      verify: { method: "digest" },
+    });
+  };
+  if (authored.instructions !== undefined) addFile("instructions", "AGENTS.md");
   for (const [category, ids] of [
     ["rules", authored.rules.map((rule) => rule.id)],
     ["agents", authored.agents.map((agent) => agent.id)],
     ["commands", authored.commands.map((command) => command.id)],
   ] as const) {
-    for (const id of ids) resources.push(fileItem(`${category}:${id}`, `${category}/${id}.md`, false));
+    for (const id of ids) addFile(`${category}:${id}`, `${category}/${id}.md`);
   }
   for (const skill of authored.skills) {
     resources.push({
@@ -202,7 +205,6 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
   // Hooks: the definition is a JSON item, the script it runs a file item.
   const scripts = new Map((await listFolderFiles(folder, "hooks")).map((file) => [`hooks/${file.path}`, file.executable]));
   const scriptUsers = new Map<string, Array<string>>();
-  const enabledScripts = new Set<string>();
   for (const [position, hook] of (config.hooks ?? []).entries()) {
     const script = hookScript(hook, configPath);
     const dependsOn: Array<string> = [];
@@ -222,9 +224,7 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
         message: "is not run by any hook in canonfig.jsonc, so it would never reach a follower; reference it from a hook or remove it",
       });
     }
-    // Windows cannot report POSIX execute bits; see `intendedExecutable`.
-    const executableIntent = intendedExecutable(script, executable, enabledScripts);
-    resources.push(fileItem(hookScriptId(script, configPath), script, executableIntent));
+    addFile(hookScriptId(script, configPath), script, executable);
   }
 
   // Authored resources: the definition is a JSON item, each file it reads a
@@ -257,7 +257,7 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
         message: "is not read by any resource in canonfig.jsonc, so it would never reach a follower; reference it from a resource or remove it",
       });
     }
-    resources.push(fileItem(pathItemId("files", "files", path, configPath), path, executable));
+    addFile(pathItemId("files", "files", path, configPath), path, executable);
   }
   if (authored.instructions !== undefined && config.local?.appendLocal?.includes("instructions") === true) {
     const issue = sourceTextIssue(authored.instructions);
@@ -293,15 +293,7 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
       id: `tools:${id}`,
       kind: "tool",
       policy: "ensure",
-      target: tool.executable,
-      spec: {
-        kind: "tool",
-        toolId: id,
-        recipes: tool.recipes,
-        login: tool.login ?? { required: false },
-        agentInstall: tool.agentInstall,
-      },
-      verify: tool.verify ?? { method: "executable-present", executable: tool.executable },
+      ...folderToolResource(id, tool),
     });
   }
   for (const [id, credential] of Object.entries(config.credentials ?? {})) {
@@ -441,7 +433,7 @@ const checkPublicationCandidate = (folder: string, encoded: CompiledProfileCandi
     });
     const items = encoded.resources.flatMap((resource, index) => {
       const item = publishedGuardItem({ ...resource, spec: resource.spec!, verify: encoded.profile.resources[index]!.verify },
-        (path, blob, executable) => ({ path, executable, ...blobs.get(blob)! }));
+        (blob) => blobs.get(blob)!);
       return item === undefined ? [] : [item];
     });
     return yield* guardEffect((signal) => enforceGuard(items, { root: folder, trigger: "source.publish", signal }));
@@ -504,12 +496,12 @@ const resolveResourceSources = (
         const files = resource.spec.kind === "file"
           ? [{ ...resource.spec, path: resource.target }]
           : resource.spec.kind === "skill" ? resource.spec.files : [];
-        for (const { source, path, executable } of files) {
+        for (const { source, path, executable, mode } of files) {
           if (source === undefined) continue;
           const resolved = await resolveSource(resource.id, source, root);
           sources.set(source, resolved);
           // A shared blob gets priority if any of its published paths need scanning.
-          if (guardRetentionPriority(kind, path, executable === true, resolved.shebang)) priority.add(resolved.blob);
+          if (guardRetentionPriority(kind, path, effectiveExecuteBits({ executable, mode }) !== 0, resolved.shebang)) priority.add(resolved.blob);
         }
       }
       return { sources, priority };

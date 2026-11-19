@@ -1,5 +1,7 @@
 import { Schema } from "effect";
 
+import { GuardReport } from "../guard/contract.ts";
+import { guardMessage } from "../guard/guard.ts";
 import { CliExitCode } from "./exit-codes.ts";
 import type { CliPayload } from "./source-commands.ts";
 
@@ -419,12 +421,14 @@ const summarizeRevision = (data: PayloadRecord, outline: Outline): boolean => {
     outline.elided = true;
     outline.lines.push(`  … and ${resources.length - maximumListItems} more`);
   }
+  const guard = Schema.is(GuardReport)(data.guard) ? data.guard : undefined;
+  if (guard) outline.lines.push(guardMessage(guard));
   const groups = data.groups;
   if (isList(groups) && groups.length > 0) outlineValue(outline, "", "groups: ", groups, 1);
   outlineRest(
     outline,
     data,
-    ["profileId", "sequence", "id", "digest", "publishedAt", "resources", "groups"],
+    ["profileId", "sequence", "id", "digest", "publishedAt", "resources", "groups", ...(guard ? ["guard"] : [])],
   );
   return true;
 };

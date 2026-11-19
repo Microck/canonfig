@@ -1,3 +1,4 @@
+import { folderToolGuardItem } from "../guard/candidates.ts";
 import { enforceGuard, guardEffect } from "../guard/guard.ts";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
@@ -1361,9 +1362,10 @@ export const scanFolder = (
         ? new InvalidDiscoveryInputError({ reason: `the discovered tools would make ${cause.path} invalid: ${cause.message}` })
         : new InvalidDiscoveryInputError({ reason: `${configPath} could not be edited: ${String(cause)}` }),
     });
-    const guard = yield* guardEffect((signal) => enforceGuard(fresh.map((tool) => ({
-      kind: "tools", id: `tools:${tool.id}`, files: [], declaration: asJson(updated.tools?.[tool.id]),
-    })), { root: input.folder, trigger: "source.scan", staticOnly: true, signal }));
+    const guard = yield* guardEffect((signal) => enforceGuard(
+      fresh.map(({ id }) => folderToolGuardItem(id, updated.tools![id]!)),
+      { root: input.folder, trigger: "source.scan", staticOnly: true, signal },
+    ));
     yield* Effect.tryPromise({
       try: async () => {
         const temporary = `${configPath}.canonfig-scan-${process.pid}`;

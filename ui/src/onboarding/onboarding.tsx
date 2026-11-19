@@ -884,7 +884,11 @@ function SourceWizard({ job, onRun, onBack, onDone, data, live }: WizardProps<So
         ) : undefined
       }
     >
-      {live?.state.error && <ErrorNotice error={live.state.error} title="Setup could not continue" recovery="Follow the instructions above, then reload setup status before continuing. To review a new plan, go Back to machine choice and choose Source again." />}
+      {live?.state.error && <ErrorNotice error={live.state.error}
+        title={live.state.error.failure.guard ? "Guard held the import" : "Setup could not continue"}
+        recovery={live.state.error.failure.guard
+          ? "Correct the affected items or remove them from the selection, then go Back to machine choice and choose Source to review a new plan."
+          : "Follow the instructions above, then reload setup status before continuing. To review a new plan, go Back to machine choice and choose Source again."} />}
       {(live?.sourceState.kind === "observation-lost" || live?.sourceState.kind === "failed") && <div className="space-y-2"><p>Setup could not finish or refresh its status. Reload setup status to check what has already completed before continuing.</p><Button type="button" variant="outline" onClick={live.reloadStatus}>Reload setup status</Button></div>}
       {live?.sourceState.kind === "needs-human-action" && <p role="status">Setup needs your help. Follow the instructions in the setup details below, then resume the approved setup.</p>}
       {step === SOURCE_STEP.profile && (

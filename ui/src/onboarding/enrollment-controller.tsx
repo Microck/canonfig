@@ -168,7 +168,7 @@ export function useEnrollmentController(backend: WorkspaceBackend, session: GuiS
           await actions.operation("/api/setup/apply", { planDigest: digest }, signal);
           committed = true; await observe(signal);
         } finally {
-          resources?.cache.invalidate(["/api/status", "/api/profile/items", "/api/harnesses", "/api/skills", "/api/local/items", "/api/local/overlays"]);
+          resources?.cache.invalidate(["/api/status", "/api/profile/items", "/api/harnesses", "/api/skills", "/api/local/items", "/api/local/overlays", "/api/guard"]);
         }
       }, (error) => sendSource({ kind: "failed", error, ...(committed ? { committed: "apply" } : {}) }));
     },

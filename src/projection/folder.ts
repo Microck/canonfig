@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { guardFileLimit, guardRetentionBudget, guardRetentionPriority, hasShebang, type GuardFile } from "../guard/guard.ts";
+import { effectiveExecuteBits, guardFileLimit, guardRetentionBudget, guardRetentionPriority, hasShebang, type GuardFile } from "../guard/guard.ts";
 import { guardPublicationTargetOverlap, guardTargetOverlap } from "../guard/local-role.ts";
 import { lstat, open, readdir, readFile, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
@@ -10,7 +10,7 @@ import { Schema } from "effect";
 
 import { type ContentDigest, ProfileId } from "../domain/brand.ts";
 import { configPathIssue, configPathsOverlap } from "../domain/config-path.ts";
-import { AuthoredVerificationInputSchema } from "../domain/profile.ts";
+import { AuthoredVerificationInputSchema, type ProfileResourceInput } from "../domain/profile.ts";
 import { AgentInstallBounds, ConfigValue, LoginRequirement, ToolRecipeRef } from "../domain/resource.ts";
 import { TaggedError } from "../domain/tagged-error.ts";
 import { canonicalJson, sha256BytesHex, sha256Hex } from "../profile/profile-codec.ts";
@@ -256,6 +256,18 @@ export type FolderMcpServer = Schema.Schema.Type<typeof McpServerInput>;
 export type FolderHook = Schema.Schema.Type<typeof HookInput>;
 export type FolderTool = Schema.Schema.Type<typeof ToolInput>;
 
+export const folderToolResource = (id: string, tool: FolderTool) => ({
+  target: tool.executable,
+  spec: {
+    kind: "tool",
+    toolId: id,
+    recipes: tool.recipes,
+    login: tool.login ?? { required: false },
+    agentInstall: tool.agentInstall,
+  },
+  verify: tool.verify ?? { method: "executable-present", executable: tool.executable },
+}) satisfies Pick<ProfileResourceInput, "target" | "spec" | "verify">;
+
 export const keptLocalSkillName = /^[a-z0-9][a-z0-9-]*$/u;
 const LocalJsonc = Schema.Struct({
   mcp: Schema.optional(McpMap),
@@ -343,10 +355,11 @@ export interface LoadedFolder {
   readonly guardLocalFiles?: ReadonlyMap<string, FolderFile>;
 }
 
-/** An authored file: its bytes and whether its owner may execute it. */
+/** An authored file: its bytes, owner execute flag, and mode when read from disk. */
 export interface FolderFile {
   readonly content: Uint8Array;
   readonly executable: boolean;
+  readonly mode?: number | undefined;
 }
 
 /** A file's place and mode, without its bytes: what publication compiles skill files from. */
@@ -401,16 +414,16 @@ const byName = <Entry extends { readonly name: string }>(left: Entry, right: Ent
  * folder's own path can pass through a link (macOS `/var` is `/private/var`,
  * or a home directory on another volume), and that must not reject every file.
  */
-export type GuardFolderFile = FolderFile | {
-  readonly executable: boolean;
+export type GuardFileMode = Pick<FolderFile, "executable" | "mode">;
+export type GuardFolderFile = FolderFile | (GuardFileMode & {
   readonly content?: never;
   readonly oversized: NonNullable<GuardFile["oversized"]>;
-};
+});
 
 const diskSource = (folder: string): FolderSource & {
   readonly guardDeclaration: (path: string) => Promise<Uint8Array | undefined>;
   readonly guardFile: (path: string, maximumBytes: number) => Promise<GuardFolderFile | undefined>;
-  readonly guardShebang: (path: string) => Promise<boolean>;
+  readonly guardScript: (path: string, local: boolean) => Promise<boolean>;
 } => {
   let realFolder: Promise<string> | undefined;
   const insideFolder = async (path: string): Promise<void> => {
@@ -444,7 +457,7 @@ const diskSource = (folder: string): FolderSource & {
     holdsEntries,
     file: async (path) => {
       const found = await regularFile(path);
-      return found === undefined ? undefined : { content: await readFile(path), executable: (found.mode & 0o100) !== 0 };
+      return found === undefined ? undefined : { content: await readFile(path), executable: (found.mode & 0o100) !== 0, mode: found.mode };
     },
     guardDeclaration: async (path) => {
       const location = join(folder, path);
@@ -484,16 +497,18 @@ const diskSource = (folder: string): FolderSource & {
           if (length > maximumBytes) chunks = undefined;
           chunks?.push(chunk);
         }
-        if (chunks !== undefined) return { executable, content: Buffer.concat(chunks, length) };
+        if (chunks !== undefined) return { executable, mode: stat.mode, content: Buffer.concat(chunks, length) };
         const oversized = { digest: hash.digest("hex"), length };
-        return { executable, oversized: shebang ? { ...oversized, shebang: true } : oversized };
+        return { executable, mode: stat.mode, oversized: shebang ? { ...oversized, shebang: true } : oversized };
       } finally { await handle.close(); }
     },
-    guardShebang: async (path) => {
+    guardScript: async (path, local) => {
       const handle = await openGuardFile(path);
       if (handle === undefined) return false;
       try {
-        if (!(await handle.stat()).isFile()) throw failure(path, "is not a regular file");
+        const stat = await handle.stat();
+        if (!stat.isFile()) throw failure(path, "is not a regular file");
+        if (local && effectiveExecuteBits(stat) !== 0) return true;
         // At most a UTF-8 BOM and the two shebang bytes.
         const prefix = Buffer.alloc(5);
         await handle.read(prefix, 0, prefix.length, 0);
@@ -739,6 +754,11 @@ const mcpServer = (input: FolderMcpServer): McpServer =>
       disabledTools: input.disabledTools,
     };
 
+const relativeHookCommand = (command: string): string | undefined => {
+  if (isAbsolute(command) || !/[\\/]/u.test(command)) return undefined;
+  return command.replaceAll("\\", "/");
+};
+
 /**
  * The script a hook runs from the folder's `hooks/` directory, relative to
  * the folder (`hooks/format.sh`), or undefined for a command name or an
@@ -746,8 +766,8 @@ const mcpServer = (input: FolderMcpServer): McpServer =>
  */
 export const hookScript = (hook: FolderHook, path: string): string | undefined => {
   const command = hook.run[0]!;
-  if (isAbsolute(command) || !/[\\/]/u.test(command)) return undefined;
-  const normalized = command.replaceAll("\\", "/");
+  const normalized = relativeHookCommand(command);
+  if (normalized === undefined) return undefined;
   if (!normalized.startsWith("hooks/") || normalized.split("/").some((segment) => segment === ".." || segment === "." || segment === "")) {
     throw failure(path, `hook command ${command} must be a command name, an absolute path, or a script under hooks/`);
   }
@@ -769,6 +789,21 @@ export const intendedExecutable = (
   enabledScripts: ReadonlySet<string>,
   platform: NodeJS.Platform = process.platform,
 ): boolean => observedExecutable || (platform === "win32" && enabledScripts.has(script));
+
+/** Execute intent for a shared Canonical Folder file, as used by publication and Guard. */
+export function folderFileExecutable(path: string, observedExecutable: boolean, enabledScripts: ReadonlySet<string>): boolean {
+  switch (path.split("/", 1)[0]) {
+    case "AGENTS.md":
+    case "rules":
+    case "agents":
+    case "commands":
+      return false;
+    case "hooks":
+      return intendedExecutable(path, observedExecutable, enabledScripts);
+    default:
+      return observedExecutable;
+  }
+}
 
 /**
  * A relative `run[0]` names a script in the folder's `hooks/` directory and
@@ -961,26 +996,40 @@ export const listFolderFiles = (folder: string, directory: string): Promise<Read
 export const AUTHORING_ENTRIES = ["canonfig.jsonc", "AGENTS.md", "rules", "skills", "agents", "commands", "hooks", "files"] as const;
 
 /** Use the folder's containment checks without loading projection content. */
-export async function readGuardFolderFiles(folder: string, follower: boolean): Promise<Map<string, GuardFolderFile>> {
+export async function readGuardFolderFiles(
+  folder: string, follower: boolean, signedModes?: ReadonlyMap<string, GuardFileMode>,
+): Promise<Map<string, GuardFolderFile>> {
   const source = diskSource(folder);
   const files = new Map<string, GuardFolderFile | undefined>();
   const attachments: string[] = [];
+  const configPath = "canonfig.jsonc";
+  const configuration = await source.guardDeclaration(configPath);
+  const config = configuration === undefined ? undefined : decodeFolderConfig(configPath, decodeText(configPath, configuration));
+  const enabledScripts = new Set<string>();
+  for (const hook of config?.hooks ?? []) {
+    if (hook.enabled === false) continue;
+    // Only actual paths under hooks/ can match. Guard can still inspect a broken hook declaration.
+    const script = relativeHookCommand(hook.run[0]!);
+    if (script !== undefined) enabledScripts.add(script);
+  }
+  const modeFor = (path: string, observed: GuardFileMode): GuardFileMode => path.startsWith("local/")
+    ? observed : signedModes?.get(path) ?? { executable: folderFileExecutable(path, observed.executable, enabledScripts) };
   let remaining = guardRetentionBudget;
   const readContent = async (path: string) => {
     const file = await source.guardFile(join(folder, path), Math.min(guardFileLimit, remaining));
     if (file === undefined) return;
     remaining -= file.content?.byteLength ?? 0;
-    files.set(path, file);
+    const { executable, mode } = modeFor(path, file);
+    files.set(path, { ...file, executable, mode });
   };
-  const configPath = "canonfig.jsonc";
-  const configuration = await source.guardDeclaration(configPath);
   if (configuration !== undefined) files.set(configPath, { content: configuration, executable: false });
 
   const readTree = async (kind: string, prefix = "", excludedSkills?: ReadonlySet<string>) => {
     const entry = `${prefix}${kind}`;
     for (const listed of await listFiles(source, join(folder, entry), "", excludedSkills)) {
       const path = `${entry}/${listed.path}`;
-      if (guardRetentionPriority(kind, path, listed.executable) || await source.guardShebang(join(folder, path))) {
+      const executable = effectiveExecuteBits(modeFor(path, listed)) !== 0;
+      if (guardRetentionPriority(kind, path, executable) || await source.guardScript(join(folder, path), prefix === "local/")) {
         await readContent(path);
       } else {
         // Keep candidate order for Guard reports and checker calls.
@@ -994,8 +1043,8 @@ export async function readGuardFolderFiles(folder: string, follower: boolean): P
     else if (entry !== configPath) await readTree(entry);
   }
 
-  if (follower && configuration !== undefined) {
-    const allow = decodeFolderConfig(configPath, decodeText(configPath, configuration)).local?.allow ?? [];
+  if (follower && config !== undefined) {
+    const allow = config.local?.allow ?? [];
     const localPath = "local/local.jsonc";
     const localBytes = await source.guardDeclaration(localPath);
     const local = localBytes === undefined ? {} : decodeLocalConfig(localPath, decodeText(localPath, localBytes));

@@ -459,5 +459,7 @@ The Raft workspace and all disposable browser processes, homes and npm prefixes 
 | Capability | CLI | Source GUI | Follower GUI |
 | --- | --- | --- | --- |
 | Current scan and latest result | `guard scan`, `guard status` | Settings | Settings |
-| Optional checker policy | Machine-owned `guard.jsonc` | Settings with outbound consent | Built-in static summary |
-| Held operation and recovery | Human Action Required, exit 3 | Operation result | Sync result |
+| Built-in rule overrides | `guard.jsonc` rules | Settings rule controls | Settings rule controls |
+| Exact-version approvals | `guard approve`, `guard revoke`, `guard status` | Approve from the latest hold and revoke in Settings | Approve from the latest hold and revoke in Settings |
+| Optional checker policy | Machine-local `guard.jsonc` | Settings with outbound consent and a local Prompt Guard 2 preset | Offline Guard summary |
+| Held operation and recovery | Human Action Required, exit 3 | Structured findings in operation and first-time import results | Structured findings in the Sync result |

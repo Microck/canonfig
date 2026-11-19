@@ -445,10 +445,17 @@ sequence number, which is how you roll back. See
 
 ## Machine-local Guard policy
 
-`guard.jsonc` and `.guard/` hold machine-owned checker policy and local
-results. Canonfig excludes them from exported archives and Profile Revisions.
-A Source or standalone machine can configure one optional checker. Followers
-scan with the built-in offline rules.
+`guard.jsonc` and `.guard/` hold machine-local policy and results. Canonfig
+excludes them from archives, Profile Revisions and Follower mirrors.
+Source and standalone machines can configure an optional checker. Followers
+run offline checks.
+
+On either machine role, set the optional `rules` map from built-in rule code
+to `block`, `warn` or `off`. Overrides apply to offline findings. Use
+`guard status --json` to inspect the latest findings. The optional
+`approvals` array stores one entry per item with `item`, `digest` and
+optional `note`. An approval turns that exact version's blocks into warnings.
+Use `guard approve` and `guard revoke` to manage approvals from the CLI.
 
 The built-in rules use text heuristics without parsing shell or language
 syntax. A literal `curl -k ... | sh` can trigger a hold in executable or

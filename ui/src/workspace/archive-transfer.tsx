@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Mono } from "@/shared/shared";
 import { ErrorNotice, GuardFindings } from "@/live/session";
 import { GuiRequestError, type WorkspaceBackend } from "@/gui-client";
-import { requestError } from "./live/resource";
+import { requestError, useGuardStatusInvalidation } from "./live/resource";
 import { Prop } from "./kit";
 import { GuiOperationTicket } from "../../../src/gui/contract/operations";
 import { GuiArchiveImportResult, type GuiArchiveImportInput } from "../../../src/gui/contract/synchronization";
@@ -50,6 +50,7 @@ export function ArchiveImportButton({ backend, onImported, trigger }: { backend:
 }
 
 function ArchiveImportDialog({ backend, onClose, onImported }: { backend: WorkspaceBackend; onClose: () => void; onImported?: () => void }) {
+  const invalidateGuardStatus = useGuardStatusInvalidation();
   const [file, setFile] = useState<File | null>(null);
   const [expectKey, setExpectKey] = useState("");
   const [replace, setReplace] = useState(false);
@@ -86,17 +87,22 @@ function ArchiveImportDialog({ backend, onClose, onImported }: { backend: Worksp
         controller.signal.throwIfAborted();
         operation = await backend.operation(operationId, controller.signal);
       }
+      if (controller.signal.aborted) return;
       if (operation.state === "failed") {
+        if (operation.failure.guard) invalidateGuardStatus();
         setState({ kind: "editing", error: new GuiRequestError(operation.failure) });
         return;
       }
       const completed = Schema.decodeUnknownSync(GuiArchiveImportResult)(operation.result);
+      if (submission.kind === "apply") invalidateGuardStatus();
       setState(submission.kind === "preview" ? { kind: "review", submission, result: completed } : { kind: "complete", submission, result: completed });
     } catch (cause) {
       if (controller.signal.aborted) return;
+      const error = requestError(cause);
+      if (error.failure.guard) invalidateGuardStatus();
       // Only a non-2xx response confirms rejection. Transport or success-decoding failures may hide a started run.
       if (!operationId && cause instanceof GuiRequestError && cause.httpStatus !== undefined && (cause.httpStatus < 200 || cause.httpStatus >= 300)) setState({ kind: "editing", error: cause });
-      else setState({ kind: "lost", submission, ...(operationId ? { ticket: operationId } : {}), error: requestError(cause) });
+      else setState({ kind: "lost", submission, ...(operationId ? { ticket: operationId } : {}), error });
     } finally { active.current = null; }
   };
   const preview = async () => {

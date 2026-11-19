@@ -1,5 +1,6 @@
 import { Option, Schema } from "effect";
 
+import { ResourceId } from "../domain/brand.ts";
 import type { PublishedResource, PublishedResourceSpec } from "../domain/profile.ts";
 import { ConfigValue } from "../domain/resource.ts";
 import { canonicalJson } from "../profile/profile-codec.ts";
@@ -25,6 +26,9 @@ export type MirrorItem =
   | { readonly kind: "apply" };
 
 export type MirrorEntry = Extract<MirrorItem, { readonly kind: "entry" }>;
+
+/** The resource id of a follower's rendered `canonfig.jsonc`. */
+export const mirrorConfigResource = Schema.decodeUnknownSync(ResourceId)("mirror:canonfig.jsonc");
 
 /**
  * How a hook item travels: the hook as authored plus its index in the

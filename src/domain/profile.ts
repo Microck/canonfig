@@ -1165,6 +1165,43 @@ const normalizeManagedFile = (file: ManagedFileInput): ManagedFileInput => {
   return { path: file.path, source: file.source, mode, executable: (mode & 0o100) !== 0 };
 };
 
+export const normalizeToolResourceSpec = (
+  spec: Extract<ResourceSpecInput, { readonly kind: "tool" }>,
+): Extract<ResourceSpecInput, { readonly kind: "tool" }> => {
+  const normalized = {
+    kind: spec.kind,
+    toolId: spec.toolId,
+    recipes: [...spec.recipes].sort((left, right) =>
+      compareText(
+        JSON.stringify(left),
+        JSON.stringify(right),
+      )
+    ).map((recipe) => {
+      const indexPolicy = recipe.indexPolicy === undefined
+        ? undefined
+        : {
+          ...recipe.indexPolicy,
+          url: canonicalRecipeIndexUrl(recipe.indexPolicy.url) ?? recipe.indexPolicy.url,
+        };
+      const { indexPolicy: _indexPolicy, ...recipeWithoutIndex } = recipe;
+      const base = {
+        ...recipeWithoutIndex,
+        buildPolicy: recipe.buildPolicy ?? { mode: "scripts-disabled" as const },
+      };
+      return indexPolicy === undefined
+        ? base
+        : { ...base, indexPolicy };
+    }),
+    login: spec.login ?? { required: false },
+  };
+  if (spec.agentInstall === undefined) return normalized;
+  const paths = uniqueSorted(spec.agentInstall.paths);
+  const agentInstall = spec.agentInstall.origins === undefined
+    ? { paths }
+    : { paths, origins: uniqueSorted(spec.agentInstall.origins) };
+  return { ...normalized, agentInstall };
+};
+
 const normalizeResourceSpec = (spec: ResourceSpecInput): ResourceSpecInput => {
   switch (spec.kind) {
     case "file": {
@@ -1185,40 +1222,8 @@ const normalizeResourceSpec = (spec: ResourceSpecInput): ResourceSpecInput => {
           .map(normalizeManagedFile)
           .sort((left, right) => compareText(left.path, right.path)),
       };
-    case "tool": {
-      const normalized = {
-        kind: spec.kind,
-        toolId: spec.toolId,
-        recipes: [...spec.recipes].sort((left, right) =>
-          compareText(
-            JSON.stringify(left),
-            JSON.stringify(right),
-          )
-        ).map((recipe) => {
-          const indexPolicy = recipe.indexPolicy === undefined
-            ? undefined
-            : {
-              ...recipe.indexPolicy,
-              url: canonicalRecipeIndexUrl(recipe.indexPolicy.url) ?? recipe.indexPolicy.url,
-            };
-          const { indexPolicy: _indexPolicy, ...recipeWithoutIndex } = recipe;
-          const base = {
-            ...recipeWithoutIndex,
-            buildPolicy: recipe.buildPolicy ?? { mode: "scripts-disabled" as const },
-          };
-          return indexPolicy === undefined
-            ? base
-            : { ...base, indexPolicy };
-        }),
-        login: spec.login ?? { required: false },
-      };
-      if (spec.agentInstall === undefined) return normalized;
-      const paths = uniqueSorted(spec.agentInstall.paths);
-      const agentInstall = spec.agentInstall.origins === undefined
-        ? { paths }
-        : { paths, origins: uniqueSorted(spec.agentInstall.origins) };
-      return { ...normalized, agentInstall };
-    }
+    case "tool":
+      return normalizeToolResourceSpec(spec);
     case "credential":
       return { kind: spec.kind, reference: spec.reference };
   }
