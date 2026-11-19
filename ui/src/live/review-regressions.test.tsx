@@ -10,6 +10,7 @@ import { Schema } from "effect";
 import { request, type WorkspaceBackend } from "../gui-client";
 import { GuiOperation, GuiSession, GuiStatus } from "../../../src/gui/contract";
 import { GuiSkillSelection, GuiSkillUpdate, type GuiSkillCheck } from "../../../src/gui/contract/profile";
+import { installerMethods } from "../../../src/domain/installer-method";
 import { useWorkspace } from "../workspace/store";
 import { navigate, useAppRoute } from "../workspace/routes";
 
@@ -24,7 +25,7 @@ const { RevisionsView, SecretsView } = await import("../workspace/source");
 const { FollowerOperationEvidence } = await import("../workspace/follower-evidence");
 const { SetupJournal } = await import("../onboarding/enrollment-controller");
 const { TooltipProvider } = await import("../components/ui/tooltip");
-const { AgentPolicyView } = await import("../workspace/settings");
+const { AgentPolicyView, InstallersView } = await import("../workspace/settings");
 after(async () => { await GlobalRegistrator.unregister(); });
 
 function Probe() {
@@ -68,6 +69,7 @@ function Fixture({ backend, session }: { backend: WorkspaceBackend; session: Gui
     {route.view === "secrets" && <SecretsView />}
     {route.view === "revisions" && <RevisionsView />}
     {route.view === "agent" && <AgentPolicyView />}
+    {route.view === "installers" && <InstallersView />}
     {route.role === "follower" && <FollowerOperationEvidence />}
   </LiveWorkspaceProvider></TooltipProvider>;
 }
@@ -663,6 +665,26 @@ it("a failed harness save retains the committed policy as an explicit partial su
   } finally { await app.close(); }
 });
 
+it("offers the domain installer methods in Settings", async () => {
+  const app = await fixture("/source/settings/installers", {
+    ...sourceResponses(),
+    "/api/installers": { bindings: [], detected: [] },
+  });
+  try {
+    await until(() => app.container.textContent?.includes("No installers set up") === true, "Installers did not load");
+    await click("Add installer");
+    const trigger = document.querySelector("#installer-method");
+    assert.ok(trigger);
+    await act(async () => {
+      trigger.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    const choices = [...document.querySelectorAll('[role="option"]')].map((option) => option.textContent);
+    assert.deepEqual(choices, installerMethods);
+  } finally {
+    await app.close();
+  }
+});
+
 it("reviews and saves complete harness bounds while deterministic-only stays selected", async () => {
   const harness = {
     kind: "codex", executable: "codex", maximumInputBytes: 4096,
@@ -708,10 +730,12 @@ it("reviews and saves complete harness bounds while deterministic-only stays sel
     });
     const model = app.container.querySelector<HTMLInputElement>("#ap-model");
     assert.ok(model);
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(model, "test-model");
-      model.dispatchEvent(new window.Event("input", { bubbles: true }));
-    });
+    await fill("#ap-model", "two words");
+    await click("Review settings");
+    assert.equal(model.getAttribute("aria-invalid"), "true");
+    assert.equal(document.activeElement, model);
+    assert.equal(app.mutations.length, 0);
+    await fill("#ap-model", "test-model");
     await act(async () => {
       for (const id of ["ap-origins", "ap-executables", "ap-bindings"]) {
         const input = app.container.querySelector<HTMLTextAreaElement>(`#${id}`);

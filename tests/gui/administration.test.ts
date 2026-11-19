@@ -250,11 +250,15 @@ it("reads fresh enrolled Follower settings, saves them, and preserves malformed 
   const initialHarness = await api("/api/agent/harness");
   expect(initialHarness).toEqual({ status: 200, body: { configured: false } });
   expect(Schema.decodeUnknownSync(GuiAgentHarnessRead)(initialHarness.body)).toEqual(initialHarness.body);
-  const prepared = { kind: "codex", executable: "codex", maximumInputBytes: 4096,
+  const prepared = { kind: "codex", executable: "codex", model: "test-model", maximumInputBytes: 4096,
     allowedPaths: [follower.home], allowedExecutables: ["printf"], executableAuthorizations: [{ executable: "printf", behavior: "leaf" }],
     secretBindings: [{ name: "GITHUB_TOKEN", secret: "github-token" }],
     allowedOrigins: ["https://api.github.com"], allowedCapabilities: ["elevation", "login", "restart", "reboot"] };
   expect(await api("/api/agent/harness", "PUT", prepared)).toEqual({ status: 200, body: prepared });
+  for (const model of ["two words", "-flag"]) {
+    expect((await api("/api/agent/harness", "PUT", { ...prepared, model })).body)
+      .toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  }
   expect(await api("/api/agent/policy")).toEqual({ status: 200, body: "deterministic-only" });
   for (const origin of ["http://example.com", "https://example.com/", "https://example.com/path", "https://user:password@example.com"]) {
     expect((await api("/api/agent/harness", "PUT", { ...prepared, allowedOrigins: [origin] })).status).not.toBe(200);

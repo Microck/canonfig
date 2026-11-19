@@ -11,6 +11,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActionId, ResourceId, RunId } from "../../src/domain/brand.ts";
 import { installerRecipeProvenance } from "../../src/domain/mcp-qualification.ts";
 import { isLocalInstallerPath, parseInstallerBinding } from "../../src/domain/installer-binding.ts";
+import { installerMethods } from "../../src/domain/installer-method.ts";
+import { GuiInstallerMethod } from "../../src/gui/contract/administration.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { macosMachineStateLayer } from "../../src/machine/macos.layer.ts";
 import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
@@ -21,8 +23,19 @@ import {
   resolveInstallerInvocation, saveInstallerBinding, unboundInstallerRecovery,
 } from "../../src/synchronization/installer-bindings.ts";
 import { prepareResourceAction, verifyResource, type ResourceExecutionContext } from "../../src/synchronization/resource-executors.ts";
-import { runInstallerCli } from "../../src/runtime/installer-cli.ts";
+import { parseInstallerArguments, runInstallerCli } from "../../src/runtime/installer-cli.ts";
 import { installerArguments, isInstallerCommand } from "../../src/runtime/command-routing.ts";
+
+it("offers the same installer methods to Settings and the CLI", () => {
+  const decodeMethod = Schema.decodeUnknownSync(GuiInstallerMethod);
+  for (const method of installerMethods) {
+    expect(decodeMethod(method)).toBe(method);
+    expect(parseInstallerArguments(["check", method])).toEqual({ kind: "check", method });
+  }
+  expect(parseInstallerArguments(["check", "homebrew"])).toEqual({ kind: "check", method: "brew" });
+  expect(() => decodeMethod("unsupported")).toThrow();
+  expect(() => parseInstallerArguments(["check", "unsupported"])).toThrow("Unsupported installer method");
+});
 
 const roots: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });

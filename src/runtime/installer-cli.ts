@@ -3,7 +3,7 @@ import type { CliIo } from "../cli/cli.ts";
 import { CliExitCode } from "../cli/exit-codes.ts";
 import { installerHelp } from "../cli/help.ts";
 import { renderCliResult, renderUsageFailure } from "../cli/render.ts";
-import { normalizeInstallerMethod } from "../domain/installer-binding.ts";
+import { normalizeInstallerMethod } from "../domain/installer-method.ts";
 import { HumanActionRequiredError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import {

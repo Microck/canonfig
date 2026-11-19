@@ -4,13 +4,12 @@ import { basename, dirname, join, win32 } from "node:path";
 import { Effect, Option, Schema } from "effect";
 import {
   installerBindingFor,
-  installerMethods,
   isLocalInstallerPath,
   isCorepackPnpmEntrypoint,
-  normalizeInstallerMethod,
   parseInstallerBinding,
   type InstallerBinding,
 } from "../domain/installer-binding.ts";
+import { installerMethods, normalizeInstallerMethod } from "../domain/installer-method.ts";
 import { HumanActionRequiredError, type MachineStateError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import type { InstallDestinationHint, MachinePath } from "../machine/machine-state.types.ts";

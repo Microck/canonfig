@@ -1,9 +1,8 @@
 import { posix, win32 } from "node:path";
 
 import { Schema } from "effect";
+import { installerMethodInputs, normalizeInstallerMethod, type InstallerMethod } from "./installer-method.ts";
 
-export const installerMethods = ["apt", "brew", "bun", "cargo", "npm", "pnpm", "uv", "winget"] as const;
-export type InstallerMethod = typeof installerMethods[number];
 export type InstallerPlatform = "linux" | "macos" | "windows";
 
 export interface InstallerBinding {
@@ -22,7 +21,7 @@ export interface InstallerBinding {
 const InstallerBindingDocument = Schema.Struct({
   schema: Schema.Literal("canonfig.installer/v1"),
   // `homebrew` is the profile spelling of `brew`, so a document may carry it.
-  method: Schema.Literals([...installerMethods, "homebrew"]),
+  method: Schema.Literals(installerMethodInputs),
   platform: Schema.Literals(["linux", "macos", "windows"]),
   executable: Schema.String,
   arguments: Schema.Array(Schema.String),
@@ -33,15 +32,6 @@ type InstallerBindingDocument = Schema.Schema.Type<typeof InstallerBindingDocume
 // An unexpected key means the document was written against a different
 // contract, so reject it instead of silently dropping the key.
 const parseDocument = Schema.decodeUnknownSync(InstallerBindingDocument, { onExcessProperty: "error" });
-
-export const normalizeInstallerMethod = (method: string): InstallerMethod => {
-  const requested = method === "homebrew" ? "brew" : method;
-  const normalized = installerMethods.find((candidate) => candidate === requested);
-  if (normalized === undefined) {
-    throw new Error("Unsupported installer method");
-  }
-  return normalized;
-};
 
 /** C0 controls (U+0000 to U+001F) and DEL (U+007F). */
 const containsControlCharacter = (value: string): boolean => {

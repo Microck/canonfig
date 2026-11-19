@@ -7,7 +7,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { agentHarnessOriginProblem, parseAgentSecretBinding } from "../../../src/domain/agent-harness-bounds";
+import { agentHarnessOriginProblem, isAgentModelToken, parseAgentSecretBinding } from "../../../src/domain/agent-harness-bounds";
+import { installerMethods } from "../../../src/domain/installer-method";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -191,9 +192,6 @@ const CAPABILITIES = [
 
 const boundLines = (text: string) => text.split("\n").map((line) => line.trim()).filter(Boolean);
 
-/** Mirrors the CLI: one token, never starting with "-", so it can't become a second flag. */
-const MODEL_SHAPE = /^[^\s-]\S*$/u;
-
 /** JSON preserves every argv entry, including empty strings and embedded quotes. */
 function splitArguments(text: string): string[] | null {
   try {
@@ -271,7 +269,7 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
   const hasChanges = dirty || boundsDirty || pathPending;
   const maxError = tried && !off && maxInvalid ? `Enter a whole number from 1 to ${MAX_EVIDENCE_BYTES.toLocaleString("en-US")} bytes.` : null;
   const modelTyped = model.trim();
-  const modelInvalid = !custom && modelTyped !== "" && !MODEL_SHAPE.test(modelTyped);
+  const modelInvalid = !custom && modelTyped !== "" && !isAgentModelToken(modelTyped);
   const modelError = tried && !off && modelInvalid ? "Enter one model name with no spaces, like opus." : null;
   // A custom agent has no name Canonfig could look up on PATH, so it needs one.
   const executableInvalid = custom && executable.trim() === "";
@@ -556,9 +554,6 @@ function AgentPolicyForm({ saved }: { saved: SavedPolicy | null }) {
   );
 }
 
-/** Package managers a binding can name; mirrors the CLI's installer methods. */
-const INSTALLER_METHODS: readonly InstallerChoice["method"][] = ["apt", "brew", "bun", "cargo", "npm", "pnpm", "uv", "winget"];
-
 /**
  * Add an installer by hand: the method plus the exact executable, and for npm or pnpm run through Node, the
  * JavaScript entrypoint. Saving runs the same --version check as `canonfig installer set` before anything is written.
@@ -585,9 +580,9 @@ function AddInstallerDialog({ open, onOpenChange }: { open: boolean; onOpenChang
         </DialogHeader>
         <div className="grid gap-4">
           <Field label="Package manager" htmlFor="installer-method">
-            <Select value={method} onValueChange={(value) => { const next = INSTALLER_METHODS.find((entry) => entry === value); if (next) { setMethod(next); setExecutable(null); setEntrypoint(null); } }}>
+            <Select value={method} onValueChange={(value) => { const next = installerMethods.find((entry) => entry === value); if (next) { setMethod(next); setExecutable(null); setEntrypoint(null); } }}>
               <SelectTrigger id="installer-method" className="w-40"><SelectValue /></SelectTrigger>
-              <SelectContent>{INSTALLER_METHODS.map((entry) => <SelectItem key={entry} value={entry}>{entry}</SelectItem>)}</SelectContent>
+              <SelectContent>{installerMethods.map((entry) => <SelectItem key={entry} value={entry}>{entry}</SelectItem>)}</SelectContent>
             </Select>
           </Field>
           <Field label="Executable" htmlFor="installer-executable">

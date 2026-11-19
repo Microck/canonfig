@@ -11,7 +11,7 @@ import { sanitizeCliData } from "../../cli/render.ts";
 import { HumanActionRequiredError, type MachineStateError } from "../../machine/machine-state.errors.ts";
 import { MachineState } from "../../machine/machine-state.service.ts";
 import { asJson as toJson } from "../../profile/profile-codec.ts";
-import { installerMethods } from "../../domain/installer-binding.ts";
+import { installerMethods } from "../../domain/installer-method.ts";
 import { disable, enable, update, type UpdateProgress } from "../../runtime/self-update/core.ts";
 import { updateDirectory, type ManagedCommandLease } from "../../runtime/self-update/coordination.ts";
 import { readSettings } from "../../runtime/self-update/settings.ts";
@@ -113,8 +113,6 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
         message = "--model applies to codex and claude; pass a custom harness's model with --argument";
       } else if (input.kind !== "custom" && input.arguments !== undefined) {
         message = "--argument applies only to the custom harness; codex and claude get Canonfig's read-only flags";
-      } else if (input.model !== undefined && !/^[^\s-][^\s]*$/u.test(input.model)) {
-        message = "Invalid agent harness configuration";
       }
       for (const origin of input.allowedOrigins) {
         const problem = agentHarnessOriginProblem(origin);

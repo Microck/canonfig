@@ -1,5 +1,9 @@
 import { Schema } from "effect";
 
+/** Built-in harnesses pass this value as one argument to --model. */
+export const AgentModelToken = Schema.NonEmptyString.check(Schema.isPattern(/^[^\s-][^\s]*$/u));
+export const isAgentModelToken = Schema.is(AgentModelToken);
+
 /** Exact origins exclude paths, user credentials and URL normalization. */
 export const agentHarnessOriginProblem = (origin: string): string | undefined => {
   if (!URL.canParse(origin)) return `Invalid agent harness origin: ${origin}`;
