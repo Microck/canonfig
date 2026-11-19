@@ -73,19 +73,12 @@ export const mutationPathLengths = (
 
 const temporaryPattern = /^\.cf-[0-9a-f]{12}\.tmp$/u;
 const guardPattern = /^\.cf-[0-9a-f]{12}\.guard$/u;
-// Names written by releases before the fixed-length shape. Only a run those
-// releases left open can still contain them, and recovering or abandoning that
-// run after the upgrade has to clean them up the same way.
-const legacyTemporaryPattern =
-  /^(?:\..+\.canonfig-[0-9a-f]{24}|\.canonfig-(?:write|directory)-[0-9A-Za-z]{6})$/u;
-const legacyGuardPattern = /^(?:\..+\.canonfig-guard-|\.canonfig-guard-)[0-9a-f]{24}$/u;
+type TemporaryEntryKind = "temporary" | "guard";
 
-export type TemporaryEntryKind = "temporary" | "guard";
-
-export const temporaryEntryKind = (name: string): TemporaryEntryKind | undefined =>
-  guardPattern.test(name) || legacyGuardPattern.test(name)
+const temporaryEntryKind = (name: string): TemporaryEntryKind | undefined =>
+  guardPattern.test(name)
     ? "guard"
-    : temporaryPattern.test(name) || legacyTemporaryPattern.test(name)
+    : temporaryPattern.test(name)
     ? "temporary"
     : undefined;
 

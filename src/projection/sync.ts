@@ -497,7 +497,7 @@ export const synchronizeLocal = Effect.fn("LocalProjection.synchronize")(functio
 ) {
   const repository = yield* StateRepository;
   if (mode === "apply") yield* assertUpgradeGate(localProjectionFollower);
-  if (mode === "apply" && (yield* repository.loadRecovery(localProjectionFollower)) !== undefined) {
+  if (mode === "apply" && (yield* hasOpenLocalRun)) {
     return yield* new ActiveRunExistsError({ follower: localProjectionFollower });
   }
   const loaded = yield* loadFolder(statePath);
@@ -769,7 +769,7 @@ export const overlaysLocal = Effect.fn("LocalProjection.overlays")(function*(
 /** Whether this machine has an unfinished local run. */
 export const hasOpenLocalRun = Effect.gen(function*() {
   const repository = yield* StateRepository;
-  return (yield* repository.loadRecovery(localProjectionFollower)) !== undefined;
+  return (yield* repository.loadOpenRunIdentity(localProjectionFollower)) !== undefined;
 });
 
 /** Abandonment has its own durable intent, so retry never replays run actions. */
@@ -789,11 +789,11 @@ export const finishAbandonedProjection = (statePath: string, recovery: RecoveryS
 export const recoverLocal = Effect.fn("LocalProjection.recover")(function*(statePath: string) {
   const repository = yield* StateRepository;
   const synchronization = yield* Synchronization;
+  yield* assertUpgradeGate(localProjectionFollower);
   const recovery = yield* repository.loadRecovery(localProjectionFollower);
   if (recovery === undefined) {
     return yield* new CanonicalFolderError({ path: statePath, message: "no interrupted local run is waiting for recovery" });
   }
-  yield* assertUpgradeGate(localProjectionFollower);
   if (recovery.run.lifecycle._tag === "Abandoning") {
     yield* finishAbandonedProjection(statePath, recovery);
     return { run: recovery.run.id, origin: "abandonment", outcome: recovery.run.lifecycle.outcome };
@@ -814,11 +814,11 @@ export const recoverLocal = Effect.fn("LocalProjection.recover")(function*(state
  */
 export const abandonLocal = Effect.fn("LocalProjection.abandon")(function*(statePath: string) {
   const repository = yield* StateRepository;
+  yield* assertUpgradeGate(localProjectionFollower);
   const recovery = yield* repository.loadRecovery(localProjectionFollower);
   if (recovery === undefined) {
     return yield* new CanonicalFolderError({ path: statePath, message: "no interrupted local run is open" });
   }
-  yield* assertUpgradeGate(localProjectionFollower);
   yield* finishAbandonedProjection(statePath, recovery);
   return { run: recovery.run.id, revision: recovery.run.revision, abandoned: true as const };
 }, (effect, statePath) => withRunLock(statePath, "abandon", effect));

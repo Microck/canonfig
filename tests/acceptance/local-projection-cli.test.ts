@@ -2,6 +2,7 @@ import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -76,6 +77,33 @@ describe("local projection CLI", () => {
     expect(readFileSync(join(home, ".codex", "auth.json"), "utf8")).toBe("{\"token\":\"never touch\"}\n");
     expect(readFileSync(join(home, ".canonfig", "local", "local.jsonc"), "utf8")).toContain("codex");
   }, 120_000);
+
+  it("reports the creating build before decoding a foreign local run", () => {
+    const home = folderHome();
+    const applied = invoke(home, ["--json", "sync", "--apply"]);
+    expect(applied.status, applied.stdout + applied.stderr).toBe(0);
+
+    const database = new DatabaseSync(join(home, ".canonfig", "state.sqlite"));
+    try {
+      database.prepare(`
+        UPDATE synchronization_runs
+        SET phase = 'Interrupted', creating_version = '7.1.6', plan_json = 'foreign plan'
+      `).run();
+      const staging = join(home, ".codex", ".cf-0123456789ab.tmp");
+      writeFileSync(staging, "unfinished staging");
+      for (const command of ["recover", "abandon"]) {
+        const refused = invoke(home, ["--json", command]);
+        expect(refused.status, refused.stdout + refused.stderr).toBe(4);
+        expect(json(refused).message).toContain("was created by canonfig 7.1.6");
+        expect(json(refused).message).toContain("run 'canonfig recover' with the creating build");
+      }
+      expect(readFileSync(staging, "utf8")).toBe("unfinished staging");
+      expect(database.prepare("SELECT phase, plan_json FROM synchronization_runs").get())
+        .toMatchObject({ phase: "Interrupted", plan_json: "foreign plan" });
+    } finally {
+      database.close();
+    }
+  });
 
   it("exits with Human Action Required when CODEX_HOME moved after takeover", () => {
     const home = folderHome();
