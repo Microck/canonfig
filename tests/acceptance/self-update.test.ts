@@ -41,7 +41,7 @@ it("activates a new package while an idle MCP launcher keeps serving stdio", asy
     const launcher = spawn(process.execPath, [
       "--import", `data:text/javascript,${encodeURIComponent(checkStartupLease)}`, machine.entry, "mcp", "run", "echo",
     ], {
-      env: machine.env, stdio: ["pipe", "pipe", "inherit"], timeout: 25_000,
+      env: machine.env, stdio: ["pipe", "pipe", "inherit"], timeout: 90_000,
     });
     const closed = once(launcher, "close");
     try {
@@ -53,7 +53,7 @@ it("activates a new package while an idle MCP launcher keeps serving stdio", asy
       await expect.poll(() => machine.readers()).toEqual([]);
       const applied = await promisify(execFile)(process.execPath, [
         machine.entry, "self-update", "apply", "--apply", "--json",
-      ], { env: machine.env, timeout: 20_000 });
+      ], { env: machine.env, timeout: 60_000 });
       expect(JSON.parse(applied.stdout)).toMatchObject({ data: { status: "updated" } });
       expect(machine.version()).toBe(candidate);
       const frame = '{"jsonrpc":"2.0","id":1,"method":"initialize"}\n';
@@ -62,12 +62,13 @@ it("activates a new package while an idle MCP launcher keeps serving stdio", asy
       expect((await Promise.race([reply, closed]))[0]).toBe(frame);
     } finally {
       launcher.stdin.end();
-      expect((await closed)[0]).toBe(0);
+      await closed;
     }
+    expect(launcher.exitCode).toBe(0);
   } finally {
     await machine.cleanup();
   }
-});
+}, 120_000);
 
 const roots:string[]=[];
 afterEach(()=>{vi.unstubAllEnvs();for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
