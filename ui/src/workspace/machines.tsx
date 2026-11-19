@@ -17,7 +17,7 @@ import { DEMO, PLAIN, SECRETS_GROUP, type Follower, type MachineHealthView } fro
 import { CHECK_LABEL, probeResult } from "./administration-types";
 import { SOURCE_ID } from "@/shared/machine-map/model";
 import { shq } from "@/shared/shell";
-import { useSharedState, useWorkspace, type Invitation } from "./store";
+import { useWorkspace, type Invitation } from "./store";
 import { ErrorNotice } from "../live/session";
 import { requestError } from "./live/resource";
 import type { GuiRequestError } from "../gui-client";
@@ -392,8 +392,7 @@ function EnrollmentDetail({ source, onClose, onCustomize }: { source: boolean; o
 
 function SourceDetail({ onClose, onCustomize }: { onClose: () => void; onCustomize: () => void }) {
   const ws = useWorkspace();
-  // Same key and initial as the Source service page that owns it, so a removal shows here too.
-  const [serviceInstalled] = useSharedState("service-installed", ws.serviceInstalled);
+  const { serviceInstalled } = ws;
   return (
     <DetailPanel
       title={ws.machineName}

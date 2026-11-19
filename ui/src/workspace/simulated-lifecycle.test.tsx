@@ -4,23 +4,69 @@ import { after, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
+import type { Setup } from "@/onboarding/onboarding";
 import type { Workspace } from "./workspace-types";
 GlobalRegistrator.register({ url: "http://localhost/follower/sync" });
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 // Navigation preference modules need the isolated browser before loading.
 const { SimulatedWorkspaceProvider } = await import("./simulated-store");
-const { useWorkspace } = await import("./store");
+const { SharedStateProvider, seedSharedValue, sharedKey, useSharedReader, useSharedState, useWorkspace } = await import("./store");
 const { createRoot } = await import("react-dom/client");
 after(async () => { await GlobalRegistrator.unregister(); });
 let ws: Workspace;
 function Probe() { ws = useWorkspace(); return null; }
-async function fixture(role: "source" | "follower") {
+async function fixture(role: "source" | "follower", setup: Setup | null = null) {
   const container = document.createElement("div"); document.body.append(container);
   const root = createRoot(container);
-  await act(async () => root.render(<SimulatedWorkspaceProvider route={{ kind: "workspace", role, view: role === "source" ? "profile" : "sync", focus: null, profileTab: "items", machinesMode: "map" }} navigate={() => {}}><Probe /></SimulatedWorkspaceProvider>));
+  await act(async () => root.render(<SimulatedWorkspaceProvider route={{ kind: "workspace", role, view: role === "source" ? "profile" : "sync", focus: null, profileTab: "items", machinesMode: "map" }} navigate={() => {}} setup={setup}><Probe /></SimulatedWorkspaceProvider>));
   return async () => { await act(async () => root.unmount()); container.remove(); };
 }
 async function wait(ms: number) { await act(async () => { await delay(ms); }); }
+
+it("uses the seeded shared value for the first edit and keeps the draft across pages", async () => {
+  const draftKey = sharedKey("default");
+  const seed = [seedSharedValue(draftKey, "seed")];
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  function EditPage() {
+    const [draft, setDraft] = useSharedState(draftKey);
+    return <button onClick={() => setDraft((current) => `${current} draft`)}>{draft}</button>;
+  }
+  function ReadPage() {
+    const readDraft = useSharedReader(draftKey);
+    return <p>{readDraft()}</p>;
+  }
+  try {
+    await act(async () => root.render(<SharedStateProvider initial={() => seed}><EditPage /></SharedStateProvider>));
+    const edit = container.querySelector("button");
+    assert.ok(edit);
+    assert.equal(edit.textContent, "seed");
+    await act(async () => edit.click());
+    await act(async () => root.render(<SharedStateProvider initial={() => seed}><ReadPage /></SharedStateProvider>));
+    assert.equal(container.textContent, "seed draft");
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+it("keeps Source and Follower onboarding choices ahead of demo defaults", async () => {
+  const closeSource = await fixture("source", {
+    role: "source", profileName: "My Profile", harnesses: [], imported: [], service: "manual", port: 17342, scan: false,
+  });
+  try {
+    assert.equal(ws.serviceInstalled, false);
+    assert.deepEqual(ws.skillSources, []);
+  } finally {
+    await closeSource();
+  }
+  const closeFollower = await fixture("follower", { role: "follower", name: "My Follower", tunnel: false, schedule: false, excluded: [] });
+  try {
+    assert.equal(ws.tunnelUp, false);
+    assert.equal(ws.followerSchedule, null);
+  } finally {
+    await closeFollower();
+  }
+});
 
 it("held plan entries never become pending, running or done", async () => {
   const close = await fixture("follower");

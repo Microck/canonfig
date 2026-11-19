@@ -37,15 +37,18 @@ import type { Setup } from "@/onboarding/onboarding";
 import type { Navigate, WorkspaceRoute } from "./routes";
 import { ScreenContext, type ScreenGroup } from "./screen-context";
 import { PAGE_TIPS } from "./page-tips";
-import { SharedStateProvider, WorkspaceContext, useSharedState, useWorkspace } from "./store";
+import { SharedStateProvider, WorkspaceContext, seedSharedValue, sharedKey, useSharedState, useWorkspace } from "./store";
+import { followerScheduleKey, secretsRefreshKey, serviceInstalledKey, serviceSinceKey, skillSourcesKey, tunnelUpKey } from "./shared-keys";
 import type { Workspace, ChangeGroupsRequest, Invitation, ScannedTool, Secret, PlanItem, ProfileEdit, Run } from "./workspace-types";
-import { useSimulatedAdministration } from "./simulated-administration";
+import { serviceStartedNow, updateLifecycleKeys, useSimulatedAdministration } from "./simulated-administration";
 import { useWorkspaceNavigation } from "./navigation-state";
 import type { Schedule } from "./schedule";
 import { TransitionError, useStateMachine } from "@/lib/state-machine";
 import { pendingChanges, simulatedPlan, transitionPublication, transitionSimulatedFollower, type PublicationEvent, type SimulatedPublication, type SimulatedFollowerEvent, type SimulatedFollowerState } from "./simulated-state";
 
 const READY = { loading: false, error: null };
+const DEMO_PROFILE_SCHEDULE: Schedule = { cadence: "daily", days: [], time: "09:00" };
+const groupsKey = sharedKey<ScreenGroup[]>(profile.groups);
 
 
 /**
@@ -357,11 +360,11 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
       else toast.success(`Revision ${targetRevision} applied`, { description: next.evidence.humanAction ? "One step needs you: sign in to the GitHub CLI." : "This machine is up to date." });
     }, 140);
   }, [targetRevision, sendFollower]);
-  const [profileSchedule] = useSharedState<Schedule>("profile-schedule", { cadence: "daily", days: [], time: "09:00" });
-  const [followerSchedule] = useSharedState<Schedule | null>("follower-schedule", { cadence: "default", days: [], time: "09:00" });
-  const [tunnelUp] = useSharedState("tunnel-up", true);
-  const [secretsRefresh] = useSharedState("secrets-refresh", { busy: false, updated: "today at 08:45" });
-  const [serviceInstalled] = useSharedState("service-installed", true);
+  const [followerSchedule] = useSharedState(followerScheduleKey);
+  const [tunnelUp] = useSharedState(tunnelUpKey);
+  const [secretsRefresh] = useSharedState(secretsRefreshKey);
+  const [serviceInstalled] = useSharedState(serviceInstalledKey);
+  const [trackedSkillSources] = useSharedState(skillSourcesKey);
 
   return {
     ...navigation,
@@ -381,12 +384,12 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     followerSelf,
     selfFollower: { ...seedFollowers[0], name: machineName, revision: appliedRevision === 0 ? null : appliedRevision, state: humanAction ? "human-action" : plan.some((item) => item.action === "skip-drift") ? "drift" : appliedRevision === 0 ? "never-synced" : "converged" },
     profile,
-    profileSchedule,
+    profileSchedule: DEMO_PROFILE_SCHEDULE,
     followerSchedule,
     tunnelUp,
     secretsRefresh,
     serviceInstalled,
-    skillSources,
+    skillSources: trackedSkillSources,
     upstreamSkills,
     demoSkillsRepo: DEMO_SKILLS_REPO,
     scannedTools: SCANNED_TOOLS,
@@ -470,28 +473,26 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
 }
 
 
-/**
- * Onboarding choices that pages read through shared keys, as those keys' first values. A seeded key
- * wins over each reader's `initial`, so every page shows what the person chose until they change it.
- */
-function sharedSeed(setup: Setup | null): Record<string, unknown> {
-  if (setup?.role === "source")
-    return {
-      "service-installed": setup.service === "service",
-      // Setup just installed the service, so it started now, not at the demo's seeded time.
-      "service-since": `today ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`,
-      // A new Source tracks no skill upstreams and hasn't turned on Canonfig updates.
-      "skill-sources": [],
-      "self-update": { kind: "ready", status: { enabled: false, pending: false, platform: "linux", settings: null }, checked: null },
-    };
-  if (setup?.role === "follower")
-    return {
-      "tunnel-up": setup.tunnel,
-      // null: no schedule was ever set. With one, the readers' initial (`schedule set --default`) is what onboarding ran.
-      ...(setup.schedule ? {} : { "follower-schedule": null }),
-      "self-update": { kind: "ready", status: { enabled: false, pending: false, platform: "darwin", settings: null }, checked: null },
-    };
-  return {};
+/** Onboarding choices override demo defaults for this workspace session. */
+function sharedSeed(setup: Setup | null) {
+  if (setup === null) return [seedSharedValue(skillSourcesKey, skillSources)];
+  const source = setup.role === "source";
+  const selfUpdate = seedSharedValue(updateLifecycleKeys[setup.role], {
+    kind: "ready",
+    status: { enabled: false, pending: false, platform: source ? "linux" : "darwin", settings: null },
+    checked: null,
+  });
+  if (source) return [
+    selfUpdate,
+    seedSharedValue(serviceInstalledKey, setup.service === "service"),
+    seedSharedValue(serviceSinceKey, serviceStartedNow()),
+  ];
+  return [
+    selfUpdate,
+    seedSharedValue(skillSourcesKey, skillSources),
+    seedSharedValue(tunnelUpKey, setup.tunnel),
+    ...(setup.schedule ? [] : [seedSharedValue(followerScheduleKey, null)]),
+  ];
 }
 
 /** `setup` is what onboarding just created; null opens the seeded demo machine for `role`. */
@@ -501,7 +502,7 @@ export function SimulatedWorkspaceProvider({ route, navigate, setup = null, chil
   setup?: Setup | null;
   children: ReactNode;
 }) {
-  return <SharedStateProvider initial={sharedSeed(setup)}>
+  return <SharedStateProvider initial={() => sharedSeed(setup)}>
     <SimulatedWorkspace route={route} navigate={navigate} setup={setup}>{children}</SimulatedWorkspace>
   </SharedStateProvider>;
 }
@@ -519,7 +520,7 @@ function SimulatedWorkspace({ route, navigate, setup, children }: {
 
 function DemoScreenContext({ children }: { children: ReactNode }) {
   const workspace = useWorkspace();
-  const groups = useSharedState<ScreenGroup[]>("groups", profile.groups);
+  const groups = useSharedState(groupsKey);
   return <ScreenContext value={{
     pageLoading: workspace.pageLoading,
     navigate: workspace.navigate,

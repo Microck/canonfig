@@ -32,7 +32,7 @@ import {
   type LocalItem,
   type Resource,
 } from "@/shared/metadata";
-import { useSharedReader, useSharedState, useWorkspace, type PlanAction, type PlanItem, type Workspace } from "./store";
+import { sharedKey, useSharedReader, useSharedState, useWorkspace, type PlanAction, type PlanItem, type Workspace } from "./store";
 import { GetStarted } from "./guide";
 import { SecretsView, WorkspaceEvidence } from "./source";
 import { HarnessTable } from "./harnesses";
@@ -62,6 +62,7 @@ import {
 } from "./kit";
 import { Column, ConfirmDialog } from "./settings";
 import { EnrollmentOnboarding } from "@/onboarding/enrollment-controller";
+import { followerScheduleKey, secretsRefreshKey, tunnelUpKey } from "./shared-keys";
 import { ScheduleFields, nextCheck, scheduleError, type Schedule } from "./schedule";
 import { FollowerOperationEvidence, TunnelEvidence } from "./follower-evidence";
 import { LocalAuthoringEditor } from "./follower-authoring";
@@ -81,21 +82,15 @@ const ACTION: Record<PlanAction, { label: string; cls: string; hint: string }> =
 
 const DEFAULT_TIME = "09:00";
 
-/**
- * Shared-state keys this file owns (see FIXLIST shared contracts). Every reader passes the same
- * initial. `null` schedule means none is set: onboarding seeds it when the schedule was turned off.
- */
-const SCHEDULE_KEY = "follower-schedule";
-const TUNNEL_KEY = "tunnel-up";
-const TUNNEL_STARTED_KEY = "tunnel-started-here";
+const tunnelStartedKey = sharedKey(false);
 /**
  * Operations in flight and their results. Shared rather than page-local so leaving and returning
  * to a page within the role keeps a running operation busy and its finished result; the timers
  * that settle them are `ws.later`, which the workspace cancels when the role changes.
  */
-const CHECKING_KEY = "sync-checking";
-const TUNNEL_BUSY_KEY = "tunnel-busy";
-const SECRETS_KEY = "secrets-refresh";
+const checkingKey = sharedKey(false);
+const preservationKey = sharedKey<PreservationPreferences>({ excludeSkills: [], preserveMcp: false });
+const tunnelBusyKey = sharedKey(false);
 
 /**
  * Why this machine can't sync right now, or null. `stopped`: Stop syncing ended it, which blocks
@@ -105,10 +100,9 @@ const SECRETS_KEY = "secrets-refresh";
  */
 function useSyncBlocks() {
   const ws = useWorkspace();
-  const [tunnelUp] = useSharedState(TUNNEL_KEY, ws.tunnelUp);
-  const readTunnelUp = useSharedReader(TUNNEL_KEY, ws.tunnelUp);
+  const readTunnelUp = useSharedReader(tunnelUpKey);
   const stopped = ws.unenrolled ? `Syncing is stopped on this machine. Joining again needs a new invitation from ${ws.sourceMachine.hostname}.` : null;
-  const tunnelDown = ws.tunnelConfigured && !(ws.followerLive ? ws.tunnelUp : tunnelUp) ? `The SSH tunnel is stopped, so this machine can't reach ${ws.sourceMachine.hostname}. Start it in Settings, SSH tunnel.` : null;
+  const tunnelDown = ws.tunnelConfigured && !ws.tunnelUp ? `The SSH tunnel is stopped, so this machine can't reach ${ws.sourceMachine.hostname}. Start it in Settings, SSH tunnel.` : null;
   const unreachable = () => ws.isStopped() || (ws.tunnelConfigured && !(ws.followerLive ? ws.tunnelUp : readTunnelUp()));
   return { stopped, blocked: stopped ?? tunnelDown, unreachable };
 }
@@ -252,8 +246,7 @@ function LiveFollowerHeader() {
 export function FollowerOverview() {
   const ws = useWorkspace();
   const rev = ws.targetRevision;
-  const [schedule] = useSharedState<Schedule | null>(SCHEDULE_KEY, ws.followerSchedule);
-  const [tunnelUp] = useSharedState(TUNNEL_KEY, ws.tunnelUp);
+  const { followerSchedule: schedule, tunnelUp } = ws;
   const drifted = ws.plan.find(isHeld);
   const held = ws.plan.filter(isHeld).length;
   const changes = ws.plan.length - held;
@@ -511,7 +504,7 @@ function SyncForm() {
   // An empty focus means the user closed the panel, so it must not select the default.
   const selected = ws.focus ?? (sideBySide ? (steps.find(isHeld)?.resource ?? adoption?.resource ?? null) : null);
   const setSelected = (id: string | null) => ws.go("sync", id ?? "");
-  const [checking, setChecking] = useSharedState(CHECKING_KEY, false);
+  const [checking, setChecking] = useSharedState(checkingKey);
   const blocks = useSyncBlocks();
   const cols = "18px 92px minmax(150px,240px) minmax(200px,360px) minmax(220px,1fr)";
   // Column minimums + 4 gaps + row inset padding; narrower screens scroll the list sideways instead of clipping it.
@@ -760,7 +753,7 @@ function DriftPanel({ item, onClose }: { item: PlanItem; onClose: () => void }) 
 }
 
 /** Shared-state key for the private adoption review: what `sync --plan --review-local` writes, as it was written. */
-const REVIEW_KEY = "adoption-review";
+const adoptionReviewKey = sharedKey<AdoptionReview>(null);
 type AdoptionReview = { id: string; files: { target: string; sourceAddition: string; retainedLocal: string }[] } | null;
 /** The demo's review directory id; Canonfig names each one with a fresh UUID, which the real backend will report. */
 const DEMO_REVIEW_ID = "6b1d0e52-94c3-4f7a-8e21-0c5f3a9d7b14";
@@ -810,7 +803,7 @@ function sourceSection(published: Resource[], local: LocalItem[], home: string, 
  */
 function AdoptionPanel({ item, onClose }: { item: PlanItem; onClose: () => void }) {
   const ws = useWorkspace();
-  const [review, setReview] = useSharedState<AdoptionReview>(REVIEW_KEY, null);
+  const [review, setReview] = useSharedState(adoptionReviewKey);
   const file = review?.files.find((f) => f.target === item.target);
   const reviewDirOf = (id: string) => `~/.canonfig/.reviews/adoption-review-${id}/`;
   const reviewDir = review && reviewDirOf(review.id);
@@ -913,8 +906,8 @@ export function ScheduleView() {
 
 function ScheduleForm() {
   const ws = useWorkspace();
-  const [simulatedSaved, setSaved] = useSharedState<Schedule | null>(SCHEDULE_KEY, ws.followerSchedule);
-  const saved = ws.followerLive ? ws.followerSchedule : simulatedSaved;
+  const [, setSaved] = useSharedState(followerScheduleKey);
+  const saved = ws.followerSchedule;
   // This is an unsaved form draft, not evidence of an installed schedule.
   const initial: Schedule = saved ?? { cadence: "default", days: [], time: ws.profileSchedule?.time ?? "" };
   const [draft, setDraft] = useState<Schedule>(initial);
@@ -1144,7 +1137,7 @@ function LocalForm() {
   };
   const [removingOverlay, setRemovingOverlay] = useState<string | null>(null);
   const [disableBackups, setDisableBackups] = useState(false);
-  const [preservation, setPreservation] = useSharedState<PreservationPreferences>("local-preservation", { excludeSkills: [], preserveMcp: false });
+  const [preservation, setPreservation] = useSharedState(preservationKey);
   // local.jsonc keeps item overlays and key claims in one list; "Kept on this machine" shows the items, LocalHarnesses the claims.
   const itemOverlays = ws.overlays.filter((o) => claimOf(o) === null);
   const collisions = unsettledCollisions(ws.local, ws.overlays, ws);
@@ -1856,7 +1849,8 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
 
 export function FollowerSecretsView() {
   const ws = useWorkspace();
-  const [refresh, setRefresh] = useSharedState(SECRETS_KEY, ws.secretsRefresh);
+  const [, setRefresh] = useSharedState(secretsRefreshKey);
+  const refresh = ws.secretsRefresh;
   const { blocked, unreachable } = useSyncBlocks();
   return (
     <SecretsView
@@ -1898,11 +1892,11 @@ export function TunnelView() {
 
 function TunnelForm() {
   const ws = useWorkspace();
-  const [simulatedUp, setUp] = useSharedState(TUNNEL_KEY, ws.tunnelUp);
-  const up = ws.followerLive ? ws.tunnelUp : simulatedUp;
+  const [, setUp] = useSharedState(tunnelUpKey);
+  const up = ws.tunnelUp;
   // Started from this screen (or just now at enrollment), so the seeded uptime would be wrong.
-  const [startedHere, setStartedHere] = useSharedState(TUNNEL_STARTED_KEY, false);
-  const [simulatedBusy, setBusy] = useSharedState(TUNNEL_BUSY_KEY, false);
+  const [startedHere, setStartedHere] = useSharedState(tunnelStartedKey);
+  const [simulatedBusy, setBusy] = useSharedState(tunnelBusyKey);
   const busy = ws.followerLive ? ws.followerLive.action.loading : simulatedBusy;
   const [configure, setConfigure] = useState(false);
   const configurationDraft = useTunnelConfigureDraft();
@@ -1983,7 +1977,7 @@ function TunnelForm() {
 /** "Stop syncing this machine", reachable from the Overview's machine menu, the sidebar menu and Enrollment; always confirmed. */
 export function UnenrollDialog() {
   const ws = useWorkspace();
-  const [, setSchedule] = useSharedState<Schedule | null>(SCHEDULE_KEY, ws.followerSchedule);
+  const [, setSchedule] = useSharedState(followerScheduleKey);
   return (
     <ConfirmDialog
       open={ws.unenrollOpen}
