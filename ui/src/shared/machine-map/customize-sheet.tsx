@@ -60,14 +60,17 @@ async function readCustomIcon(file: File): Promise<string> {
   // or an opaque background has nearly all of them and would show as a solid block.
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = 32;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
-  ctx.drawImage(img, 0, 0, 32, 32);
+  const cannotCheckAlpha = new Error(type === "image/svg+xml"
+    ? "This browser could not check the SVG's transparency. Try a PNG with a transparent background or choose a built-in icon."
+    : "This browser could not check the PNG's transparency. Choose a built-in icon here. Custom icons uploaded in another browser stay in that browser.");
   let alpha: Uint8ClampedArray;
   try {
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (ctx === null) throw cannotCheckAlpha;
+    ctx.drawImage(img, 0, 0, 32, 32);
     alpha = ctx.getImageData(0, 0, 32, 32).data;
   } catch {
-    // Older WebKit taints canvases that drew an SVG; the upload is still valid, it just skips this check.
-    return url;
+    throw cannotCheckAlpha;
   }
   let visible = 0;
   let solid = 0;
