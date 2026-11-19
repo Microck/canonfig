@@ -3,7 +3,7 @@ import { scheduledDefinitionReadiness } from "../src/runtime/readiness.ts";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -17,6 +17,7 @@ import { ScheduleHumanActionRequiredError } from "../src/schedule/schedule-manag
 import { scheduleManagerLayer, validateSchedule } from "../src/schedule/schedule-manager.layer.ts";
 import { ScheduleManager } from "../src/schedule/schedule-manager.service.ts";
 import {
+  SyncScheduleSchema,
   desiredScheduleInput,
   syncScheduleFromDefault,
 } from "../src/schedule/schedule-manager.types.ts";
@@ -112,6 +113,23 @@ describe("schedule normalization", () => {
       weekdays: ["Mon", "Wed", "Fri"],
       localTime: "09:15",
     });
+  });
+});
+
+describe("weekly schedule input", () => {
+  it("parses one CLI weekday into the same list shape the scheduler decodes", () => {
+    const parsed = evaluateCli(["schedule", "set", "weekly:Mon@12:30"]);
+    expect(parsed).toMatchObject({
+      _tag: "Command",
+      command: { _tag: "ScheduleSet", schedule: { kind: "weekly", weekdays: ["Mon"], localTime: "12:30" } },
+    });
+    expect(() => Schema.decodeUnknownSync(SyncScheduleSchema)({ kind: "weekly", weekday: "Mon", localTime: "12:30" }))
+      .toThrow();
+  });
+
+  it("orders and deduplicates weekdays before native rendering", async () => {
+    const schedule = { kind: "weekly", weekdays: ["Fri", "Mon", "Fri"], localTime: "12:30" } as const;
+    expect(await Effect.runPromise(validateSchedule(schedule))).toEqual({ ...schedule, weekdays: ["Mon", "Fri"] });
   });
 });
 

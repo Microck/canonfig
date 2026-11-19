@@ -1,11 +1,7 @@
 import type { SchedulerCalendar } from "../machine/machine-state.types.ts";
-import {
-  normalizeSyncSchedule,
-  type SyncSchedule,
-} from "./schedule-manager.types.ts";
+import type { SyncSchedule } from "./schedule-manager.types.ts";
 
-export const linuxCalendar = (input: SyncSchedule): SchedulerCalendar => {
-  const schedule = normalizeSyncSchedule(input);
+export const linuxCalendar = (schedule: SyncSchedule): SchedulerCalendar => {
   if (schedule.kind === "daily") {
     return {
       kind: "daily",

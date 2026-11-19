@@ -39,14 +39,6 @@ export const SyncScheduleSchema = Schema.Union([
     localTime: Schema.NonEmptyString,
     timezone: Schema.optional(Schema.NonEmptyString),
   }),
-  // Accept v2 schedules written before multi-day weekly schedules were
-  // introduced. Normalization below converts this shape to `weekdays`.
-  Schema.Struct({
-    kind: Schema.Literal("weekly"),
-    weekday: Schema.Literals(scheduleWeekdays),
-    localTime: Schema.NonEmptyString,
-    timezone: Schema.optional(Schema.NonEmptyString),
-  }),
   Schema.Struct({
     kind: Schema.Literal("custom"),
     expression: Schema.NonEmptyString,
@@ -54,30 +46,7 @@ export const SyncScheduleSchema = Schema.Union([
   }),
 ]);
 
-export type SyncSchedule =
-  | {
-    readonly kind: "daily";
-    readonly localTime: string;
-    readonly timezone?: string | undefined;
-  }
-  | {
-    readonly kind: "weekly";
-    readonly weekdays: ReadonlyArray<ScheduleWeekday>;
-    readonly timezone?: string | undefined;
-    readonly localTime: string;
-  }
-  | {
-    /** Backward-compatible input shape; normalizeSyncSchedule removes it. */
-    readonly kind: "weekly";
-    readonly weekday: ScheduleWeekday;
-    readonly localTime: string;
-    readonly timezone?: string | undefined;
-  }
-  | {
-    readonly kind: "custom";
-    readonly expression: string;
-    readonly timezone?: string | undefined;
-  };
+export type SyncSchedule = typeof SyncScheduleSchema.Type;
 
 export interface SetScheduleInput {
   readonly schedule?: SyncSchedule | undefined;
@@ -199,7 +168,7 @@ export const defaultSyncSchedule: SyncSchedule = {
 /** Convert the signed profile-level schedule contract to native scheduler input. */
 export const syncScheduleFromDefault = (
   schedule: ScheduleDefault,
-): NormalizedSyncSchedule => {
+): SyncSchedule => {
   const timezone = schedule.timezone === "local" ? undefined : schedule.timezone;
   switch (schedule.type) {
     case "daily":
@@ -216,9 +185,7 @@ export const syncScheduleFromDefault = (
       });
       const normalized = {
         kind: "weekly" as const,
-        weekdays: [...new Set(weekdays)].sort(
-          (left, right) => weekdayIndex.get(left)! - weekdayIndex.get(right)!,
-        ),
+        weekdays: orderScheduleWeekdays(weekdays),
         localTime: schedule.at,
       };
       return timezone === undefined ? normalized : { ...normalized, timezone };
@@ -271,39 +238,6 @@ export const scheduleAvailableDetail = (schedule: ScheduleDefault): string => {
 export const unmanagedScheduleDetail =
   "a Canonfig native schedule installed by an earlier release is kept as is but no longer managed; run `canonfig schedule set --default` or `canonfig schedule set <calendar>` to manage it, or `canonfig schedule remove` to delete it";
 
-const weekdayIndex = new Map(
-  scheduleWeekdays.map((weekday, index) => [weekday, index] as const),
-);
-
-export const scheduleWeekdaysFor = (
-  schedule: Extract<SyncSchedule, { readonly kind: "weekly" }>,
-): ReadonlyArray<ScheduleWeekday> =>
-  "weekdays" in schedule
-    ? [...new Set(schedule.weekdays)].sort(
-      (left, right) => weekdayIndex.get(left)! - weekdayIndex.get(right)!,
-    )
-    : [schedule.weekday];
-
-export type NormalizedSyncSchedule = Exclude<SyncSchedule, {
-  readonly kind: "weekly";
-}> | {
-  readonly kind: "weekly";
-  readonly weekdays: ReadonlyArray<ScheduleWeekday>;
-  readonly localTime: string;
-  readonly timezone?: string | undefined;
-};
-
-export const normalizeSyncSchedule = (
-  schedule: SyncSchedule,
-): NormalizedSyncSchedule => {
-  if (schedule.kind !== "weekly") return schedule;
-  const normalized = {
-    kind: "weekly" as const,
-    weekdays: scheduleWeekdaysFor(schedule),
-    localTime: schedule.localTime,
-  };
-  return schedule.timezone === undefined
-    ? normalized
-    : { ...normalized, timezone: schedule.timezone };
-};
-
+/** Give native renderers a stable weekday order and one trigger per day. */
+export const orderScheduleWeekdays = (days: ReadonlyArray<ScheduleWeekday>): ReadonlyArray<ScheduleWeekday> =>
+  scheduleWeekdays.filter((day) => days.includes(day));

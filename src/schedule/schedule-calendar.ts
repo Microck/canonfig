@@ -1,6 +1,6 @@
 import type { MachinePlatform } from "../machine/machine-state.types.ts";
 import {
-  type NormalizedSyncSchedule,
+  type SyncSchedule,
   scheduleWeekdays,
 } from "./schedule-manager.types.ts";
 
@@ -86,7 +86,7 @@ const instantAt = (
 };
 
 /** The zone a schedule's local time is read in. */
-export const resolvedScheduleTimezone = (schedule: NormalizedSyncSchedule): string =>
+export const resolvedScheduleTimezone = (schedule: SyncSchedule): string =>
   schedule.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 interface ScheduledDay {
@@ -96,7 +96,7 @@ interface ScheduledDay {
 
 /** Each day, from `firstOffset` days after today in the schedule's zone, the schedule selects. */
 function* scheduledDays(
-  schedule: Exclude<NormalizedSyncSchedule, { readonly kind: "custom" }>,
+  schedule: Exclude<SyncSchedule, { readonly kind: "custom" }>,
   timezone: string,
   now: number,
   days: number,
@@ -122,7 +122,7 @@ function* scheduledDays(
 
 /** When the native scheduler next starts the job, if canonfig can compute it. */
 export const nextScheduledRun = (
-  schedule: NormalizedSyncSchedule,
+  schedule: SyncSchedule,
   now: number = Date.now(),
 ): string | undefined => {
   if (schedule.kind === "custom") return undefined;
@@ -140,7 +140,7 @@ export const nextScheduledRun = (
  * can compute it. A weekly schedule selects at least one day in any 8.
  */
 export const previousScheduledRun = (
-  schedule: NormalizedSyncSchedule,
+  schedule: SyncSchedule,
   now: number = Date.now(),
 ): string | undefined => {
   if (schedule.kind === "custom") return undefined;
@@ -164,7 +164,7 @@ const gapBehavior = {
  * does then. Undefined when every selected day has the time.
  */
 export const daylightSavingGapWarning = (
-  schedule: NormalizedSyncSchedule,
+  schedule: SyncSchedule,
   platform: MachinePlatform,
   now: number = Date.now(),
 ): string | undefined => {

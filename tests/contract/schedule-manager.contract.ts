@@ -469,6 +469,25 @@ export const scheduleManagerContract = (
       }));
     });
 
+    it.each([
+      { supplied: ["Mon"], canonical: ["Mon"] },
+      { supplied: ["Fri", "Mon", "Fri"], canonical: ["Mon", "Fri"] },
+    ] as const)("round-trips weekly schedule $supplied", async ({ supplied, canonical }) => {
+      const scheduler = new RecordingScheduler();
+      const layer = managerLayer(adapter, scheduler);
+      const schedule = { kind: "weekly", weekdays: supplied, localTime: "01:15" } as const;
+      await runWith(layer, Effect.gen(function*() {
+        const manager = yield* ScheduleManager;
+        const input = { executable: adapter.executable, schedule };
+        const installed = yield* manager.install(input);
+        const saved = yield* manager.snapshot(input);
+        const status = yield* manager.status({ ...input, schedule: { ...schedule, weekdays: canonical } });
+        expect(installed.status.schedule).toEqual({ ...schedule, weekdays: canonical });
+        expect(saved).toMatchObject({ state: "present", schedule: status.definition.schedule });
+        expect(status.state).toBe("current");
+      }));
+    });
+
     it("rejects malformed times and timezone names", async () => {
       const scheduler = new RecordingScheduler();
       const layer = managerLayer(adapter, scheduler);
