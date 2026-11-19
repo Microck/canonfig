@@ -1,5 +1,4 @@
 import { buildIdentity } from "../build-identity.ts";
-import { stateFormatVersion } from "../../state/state-schema.ts";
 import { renderCliResult } from "../../cli/render.ts";
 import { toCliPayload } from "../../cli/command-output.ts";
 import { Predicate } from "effect";
@@ -10,7 +9,6 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { CliIo } from "../../cli/cli.ts";
 import { updateDirectory } from "./coordination.ts";
-import { disable, enable, installation, update } from "./core.ts";
 
 export const selfUpdateHelp = `Usage: canonfig self-update <enable|disable|status|check|apply|auto|preflight> [options]
 
@@ -60,11 +58,15 @@ export async function runSelfUpdateCli(args: readonly string[],root:string,io:Cl
   const {help,command,apply,idle,once,npmCli,interval}=parseSelfUpdateArguments(args);
   commandName=`self-update.${help?"help":command}`;parsing=false;
   if(help){output(selfUpdateHelp);return;}
-  if(command==="preflight"){output({version:buildIdentity.packageVersion,stateFormat:stateFormatVersion});return;}
+  if(command==="preflight"){
+   const {stateFormatVersion}=await import("../../state/state-schema.ts");
+   output({version:buildIdentity.packageVersion,stateFormat:stateFormatVersion});return;
+  }
   const directory=updateDirectory(root);
   if(command==="status"){
    output({enabled:existsSync(join(directory,"settings.json")),pending:existsSync(join(directory,"pending.json")),settings:existsSync(join(directory,"settings.json"))?readSettings(directory):null});return;
   }
+  const {disable,enable,installation,update}=await import("./core.ts");
   if(command==="enable"){
    installation(root);if(!npmCli)throw new Error("enable requires --npm-cli");
    if(!apply){output("Preview: opt in to stable self-updates. Manual updates stay in this major; auto installs current-line patches or newer majors, never an in-major minor. Stop all current Canonfig processes/schedules, then rerun with --apply --confirm-idle.");return;}
