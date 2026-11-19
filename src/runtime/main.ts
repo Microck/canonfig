@@ -29,26 +29,6 @@ import {
 } from "./enrollment-input.ts";
 
 /**
- * Silences the `node:sqlite` experimental warning.
- *
- * This only works because nothing in this module's static import graph reaches
- * `@canonfig/effect-sql-sqlite-node`. Node emits that warning while it translates the
- * module, which happens before any module body runs, so a warning filter
- * cannot suppress a statically imported sqlite. Every command graph is
- * therefore loaded with a dynamic import, which happens after this filter is
- * installed.
- */
-const warningListeners = process.listeners("warning");
-process.removeAllListeners("warning");
-process.on("warning", (warning) => {
-  if (
-    warning.name === "ExperimentalWarning"
-    && warning.message === "SQLite is an experimental feature and might change at any time"
-  ) return;
-  for (const listener of warningListeners) listener.call(process, warning);
-});
-
-/**
  * Until runMain hands SIGINT and SIGTERM to the Effect runtime, a signal exits
  * with its conventional status (130/143); the command log's exit listener
  * records that same status. Without this, a signal that arrived while a command
