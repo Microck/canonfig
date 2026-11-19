@@ -889,7 +889,7 @@ describe("CLI rendering and exit semantics", () => {
     expect(evaluateCli(["--help"])._tag).toBe("Help");
     expect(evaluateCli(["--version"])).toEqual({
       _tag: "Version",
-      text: "7.8.0",
+      text: "7.8.1",
       exitCode: 0,
     });
   });

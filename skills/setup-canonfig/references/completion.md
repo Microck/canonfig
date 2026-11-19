@@ -175,7 +175,7 @@ Setup result: complete
 Machine
 - role: Follower Machine
 - name: laptop
-- Canonfig: 7.8.0
+- Canonfig: 7.8.1
 
 Trust
 - Source endpoint: https://127.0.0.1:17342
