@@ -2,6 +2,22 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
+## v7.8.1 - 2026-11-19
+
+### Synchronization
+
+- A follower no longer stops on a tool that has no install recipe for its
+  platform. When every recipe for a missing tool names other platforms (for
+  example a Linux and macOS only tool on Windows), the follower plans nothing
+  for it instead of asking for an action no one can take. Tools without
+  recipes, or with `agentInstall` bounds, still ask, and installed tools are
+  still verified everywhere.
+
+### MCP launcher
+
+- `canonfig mcp run` releases its self-update lease once the server starts, so
+  long-running MCP servers no longer hold off Canonfig updates.
+
 ## v7.8.0 - 2026-11-18
 
 ### MCP health check

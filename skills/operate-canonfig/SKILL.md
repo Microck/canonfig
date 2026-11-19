@@ -1,6 +1,6 @@
 ---
 name: operate-canonfig
-description: Operate Canonfig 7.8.0 Source and Follower Machines safely. Use for ~/.canonfig/ edits and publication, tool discovery, machine-local MCP and skill preservation, the Source service and tunnel, invitations, groups, revocation, unenrollment, harness selection and exclusions, takeover snapshots and restore, local/ items, synchronization planning or apply, no-input runs, agent policy and harness bounds, schedules, status or doctor diagnostics, client trust, Follower Drift, Human Action Required, interrupted-run recovery, and reporting Canonfig issues.
+description: Operate Canonfig 7.8.1 Source and Follower Machines safely. Use for ~/.canonfig/ edits and publication, tool discovery, machine-local MCP and skill preservation, the Source service and tunnel, invitations, groups, revocation, unenrollment, harness selection and exclusions, takeover snapshots and restore, local/ items, synchronization planning or apply, no-input runs, agent policy and harness bounds, schedules, status or doctor diagnostics, client trust, Follower Drift, Human Action Required, interrupted-run recovery, and reporting Canonfig issues.
 ---
 
 # Operate Canonfig
