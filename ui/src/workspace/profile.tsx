@@ -32,7 +32,7 @@ import {
   type LocalCategory,
   type Resource,
 } from "@/shared/metadata";
-import { useSharedState, useWorkspace } from "./store";
+import { sharedKey, useSharedState, useWorkspace } from "./store";
 import { authoredItems, draftFiles, type ExactDraft } from "./profile-authoring";
 import type { GuiProfileSnapshot } from "../../../src/gui/contract/profile";
 import { GuiRequestError } from "../gui-client";
@@ -349,6 +349,11 @@ interface ProfileDefaults {
   appendLocal: AppendLocalCategory[];
 }
 
+const profileDefaultsKeys = {
+  saved: sharedKey<ProfileDefaults | null>(null),
+  published: sharedKey<ProfileDefaults | null>(null),
+};
+
 /**
  * "saved" is what Profile → Defaults last saved. "published" is what the latest revision holds; it is
  * recorded when a defaults edit starts (until then the two match), so saving the published values back
@@ -356,12 +361,13 @@ interface ProfileDefaults {
  */
 function useProfileDefaults(which: "saved" | "published" = "saved") {
   const ws = useWorkspace();
-  return useSharedState<ProfileDefaults>(which === "saved" ? "profile-defaults" : "profile-defaults-published", {
+  const [value, set] = useSharedState(profileDefaultsKeys[which]);
+  return [value ?? {
     name: ws.profileName,
     schedule: ws.profileSchedule,
     localAllow: ws.profile.localAllow,
     appendLocal: ws.profile.appendLocal,
-  });
+  }, set] as const;
 }
 
 /** Whether two defaults write the same canonfig.jsonc values. Compares the written schedule, so days kept from a weekly choice don't count under daily. */

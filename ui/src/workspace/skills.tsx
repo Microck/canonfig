@@ -12,7 +12,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { DEMO, skillManifest, type Resource, type SkillSource, type UpstreamSkill } from "@/shared/metadata";
 import { CliText, Mono, StatusMark, type StatusKind } from "@/shared/shared";
-import { useSharedReader, useSharedState, useWorkspace } from "./store";
+import { sharedKey, useSharedReader, useSharedState, useWorkspace } from "./store";
+import { skillBusyKey, skillSourcesKey } from "./shared-keys";
 import { Field, Prop, SectionLabel, useDialogReturnFocus } from "./kit";
 import { ProfileActionNotice } from "./profile-authoring-controls";
 
@@ -27,24 +28,26 @@ interface SkillCheck {
   removed: readonly string[];
 }
 
-/** The Source's skills-sources.json. A Source fresh out of onboarding starts with none (store.tsx sharedSeed). */
+const skillChecksKey = sharedKey<Record<string, SkillCheck>>({});
+
+/** The Source's skills-sources.json. A Source fresh out of onboarding starts without tracked skills. */
 function useSkillSources() {
   const ws = useWorkspace();
-  const [sources, setSources] = useSharedState<SkillSource[]>("skill-sources", ws.skillSources);
-  return [ws.profileLive ? ws.skillSources : sources, setSources] as const;
+  const [, setSources] = useSharedState(skillSourcesKey);
+  return [ws.skillSources, setSources] as const;
 }
 
 /** The last check of each tracked skill this session, by item id. Checks aren't stored anywhere else: `list` reads no network. */
 function useSkillChecks() {
   const ws = useWorkspace();
-  const [checks, setChecks] = useSharedState<Record<string, SkillCheck>>("skill-checks", {});
+  const [checks, setChecks] = useSharedState(skillChecksKey);
   return [ws.profileLive ? ws.profileLive.skillChecks : checks, setChecks] as const;
 }
 
 /** The running check, update or tracking, as `<kind>:<item id>`: one at a time, like the CLI's skill lock. */
 function useSkillBusy() {
   const ws = useWorkspace();
-  const [busy, setBusy] = useSharedState<string | null>("skill-busy", null);
+  const [busy, setBusy] = useSharedState(skillBusyKey);
   return [ws.profileLive ? ws.profileLive.busy ? ws.profileLive.skillBusy ?? "busy" : null : busy, setBusy] as const;
 }
 
@@ -188,7 +191,7 @@ function FileChanges({ check }: { check: SkillCheck }) {
 export function SkillUpstream({ resource, editing }: { resource: Resource; editing: boolean }) {
   const ws = useWorkspace();
   const [sources, setSources] = useSkillSources();
-  const readSources = useSharedReader<SkillSource[]>("skill-sources", ws.skillSources);
+  const readSources = useSharedReader(skillSourcesKey);
   const [checks, setChecks] = useSkillChecks();
   // Shared, like the service page's busy state: the guard survives leaving the panel, and switching roles cancels the result.
   const [busy, setBusy] = useSkillBusy();

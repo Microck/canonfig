@@ -12,7 +12,7 @@ import { AnimatedNumber, CliText, DitherProgress, Hint, Mono, StateCell, StateLa
 import { DEMO, SECRETS_GROUP, STATE_META, type Revision } from "@/shared/metadata";
 import { ErrorNotice } from "../live/session";
 import { GuiRequestError } from "../gui-client";
-import { useSharedState, useWorkspace, type PendingChange, type Secret, type Workspace } from "./store";
+import { useWorkspace, type PendingChange, type Secret, type Workspace } from "./store";
 import { GetStarted } from "./guide";
 import { whyBehind } from "./machines";
 import { useChecks, warningName } from "./settings";
@@ -179,7 +179,7 @@ export function SourceOverview() {
   // The same checks the Health page shows, so a removed service or resolved linger reads the same here.
   const warn = useChecks().filter((d) => d.result === "warn");
   const gridResources = ws.resources.filter((r) => r.change !== "added");
-  const [serviceInstalled] = useSharedState("service-installed", ws.serviceInstalled);
+  const { serviceInstalled } = ws;
 
   return (
     <>

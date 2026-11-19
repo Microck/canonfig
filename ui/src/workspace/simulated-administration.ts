@@ -2,7 +2,8 @@ import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { APP_VERSION, DEMO } from "../shared/metadata";
 import { LATEST_PATCH, agentPolicy, doctor, installers, selfUpdateSeed } from "../shared/data";
-import { useSharedReader, useSharedState } from "./store";
+import { sharedKey, useSharedReader, useSharedState } from "./store";
+import { serviceInstalledKey, serviceSinceKey, skillBusyKey } from "./shared-keys";
 import type { Workspace } from "./workspace-types";
 import type { AdministrationSlice, DoctorCheck, InstallerChoice, SavedPolicy, SetupJournal } from "./administration-types";
 import { updateGate } from "./update-gate";
@@ -33,26 +34,38 @@ const INSTALLERS: readonly { name: string; path: string; status: "bound" | "not 
   ...installer, status: installer.status === "bound" ? "bound" as const : "not on this platform" as const, arguments: [],
 }));
 
-function startedNow() {
+const installersKey = sharedKey(INSTALLERS);
+const serviceActionKey = sharedKey<"install" | "remove" | "restart" | null>(null);
+const lingerMarkedKey = sharedKey(false);
+const agentPolicyKey = sharedKey(POLICY_SEED);
+const journalKey = sharedKey(JOURNAL_SEED);
+const checkingInstallerKey = sharedKey<string | null>(null);
+
+const updateLifecycleKey = (role: "source" | "follower") => sharedKey<UpdateLifecycle>({
+  kind: "ready",
+  status: { enabled: selfUpdateSeed[role].npmCli !== null, pending: false, platform: role === "source" ? "linux" : "darwin", settings: { npmCli: selfUpdateSeed[role].npmCli } },
+  checked: null,
+});
+export const updateLifecycleKeys = { source: updateLifecycleKey("source"), follower: updateLifecycleKey("follower") };
+
+export function serviceStartedNow() {
   return `today ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}`;
 }
 
 export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): AdministrationSlice {
   if (ws.role === "unconfigured") throw new Error("The demo requires a Source or Follower workspace.");
-  const [installed, setInstalled] = useSharedState("service-installed", true);
-  const [boundInstallers, setBoundInstallers] = useSharedState("installers", INSTALLERS);
-  const [serviceAction, setServiceAction] = useSharedState<"install" | "remove" | "restart" | null>("service-busy", null);
-  const readServiceAction = useSharedReader<"install" | "remove" | "restart" | null>("service-busy", null);
-  const [since, setSince] = useSharedState("service-since", "Monday 08:12");
-  const [lingerMarked, setLingerMarked] = useSharedState("linger-marked", false);
-  const [policy, setPolicy] = useSharedState("agent-policy", POLICY_SEED);
-  const [journal, setJournal] = useSharedState("setup-journal", JOURNAL_SEED);
-  const [checkingInstaller, setCheckingInstaller] = useSharedState<string | null>("installer-checking", null);
+  const [, setInstalled] = useSharedState(serviceInstalledKey);
+  const { serviceInstalled: installed, tunnelUp } = ws;
+  const [boundInstallers, setBoundInstallers] = useSharedState(installersKey);
+  const [serviceAction, setServiceAction] = useSharedState(serviceActionKey);
+  const readServiceAction = useSharedReader(serviceActionKey);
+  const [since, setSince] = useSharedState(serviceSinceKey);
+  const [lingerMarked, setLingerMarked] = useSharedState(lingerMarkedKey);
+  const [policy, setPolicy] = useSharedState(agentPolicyKey);
+  const [journal, setJournal] = useSharedState(journalKey);
+  const [checkingInstaller, setCheckingInstaller] = useSharedState(checkingInstallerKey);
   const [checkedInstaller, setCheckedInstaller] = useState<string | null>(null);
-  const [tunnelUp] = useSharedState("tunnel-up", true);
-  const [version, setVersion] = useSharedState<UpdateLifecycle>("self-update", {
-    kind: "ready", status: { enabled: selfUpdateSeed[ws.role].npmCli !== null, pending: false, platform: ws.role === "source" ? "linux" : "darwin", settings: { npmCli: selfUpdateSeed[ws.role].npmCli } }, checked: null,
-  });
+  const [version, setVersion] = useSharedState(updateLifecycleKeys[ws.role]);
   const latestVersion = useRef(version);
   latestVersion.current = version;
   const sendVersion = (event: UpdateEvent) => {
@@ -65,7 +78,7 @@ export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): Admini
   const settings = updateStatus?.settings;
   const settingsRecord = settings !== null && typeof settings === "object" && !Array.isArray(settings) ? Object.fromEntries(Object.entries(settings)) : null;
   const npmCli = typeof settingsRecord?.npmCli === "string" ? settingsRecord.npmCli : null;
-  const [skillBusy] = useSharedState<string | null>("skill-busy", null);
+  const [skillBusy] = useSharedState(skillBusyKey);
   const [doctorRunning, setDoctorRunning] = useState(false);
   const [doctorProgress, setDoctorProgress] = useState(100);
   const [savedMessage, setSavedMessage] = useState("");
@@ -107,7 +120,7 @@ export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): Admini
     setServiceAction(action);
     ws.later(() => {
       setInstalled(action !== "remove");
-      if (action !== "remove") setSince(startedNow());
+      if (action !== "remove") setSince(serviceStartedNow());
       setServiceAction(null);
       toast.success(`Source service ${action === "remove" ? "removed" : action === "restart" ? "restarted" : "installed"}${IN_DEMO}`);
     }, 800);
@@ -216,7 +229,7 @@ export function useSimulatedAdministration(ws: Omit<Workspace, "admin">): Admini
       apply: () => {
         setJournal({ phase: "applying", at: 0 });
         const advance = (index: number): void => ws.later(() => {
-          if (SETUP_STEPS[index - 1]?.id === "service") { setInstalled(true); if (!installed) setSince(startedNow()); }
+          if (SETUP_STEPS[index - 1]?.id === "service") { setInstalled(true); if (!installed) setSince(serviceStartedNow()); }
           if (index < SETUP_STEPS.length - 1) { setJournal({ phase: "applying", at: index }); advance(index + 1); return; }
           setJournal({ phase: "paused", at: index });
           toast("Setup paused at a step that needs you", { description: `Run ${LINGER_FIX}, then resume.` });
