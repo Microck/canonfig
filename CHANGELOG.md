@@ -2,6 +2,40 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
+## v7.8.0 - 2026-11-18
+
+### MCP health check
+
+- `canonfig doctor` and the browser Health check now start every MCP server each
+  installed harness declares, the way that harness starts it, and require it to
+  answer `initialize` and list its tools. Entries Canonfig did not write, and
+  harnesses whose MCP is preserved, are checked too. Each failing server is
+  listed with its reason, such as a missing command, a timeout, or an HTTP
+  error, with credentials redacted.
+- Codex servers get only the environment Codex passes them, and each harness's
+  servers start together, so failures that only happen at session start show
+  up in the check.
+
+### Machine health on the Source
+
+- After `canonfig doctor` or the Health check, an enrolled Follower sends its
+  report to the Source, and the Source records its own. Machines shows each
+  machine's latest report under **Health**, with the checks and MCP servers
+  that need attention. The report notes when sharing it failed.
+
+### Fixes
+
+- MCP servers started through `canonfig mcp run` no longer fail at random with
+  "Self-update coordination is busy" when a harness starts many of them at
+  once. Starting commands now wait briefly for the coordination gate; a running
+  self-update still blocks them.
+
+### Upgrading
+
+Use Node.js 24.15+ or 26+. Source and Followers must all use the 7.8 release line
+before resuming synchronization; 7.7.x and 7.8.x do not synchronize with each other.
+A 7.8.0 Source can roll followers on 7.7.x forward with a Fleet Update.
+
 ## v7.7.0 - 2026-11-17
 
 ### Machine-local MCP

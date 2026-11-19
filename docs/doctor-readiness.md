@@ -17,8 +17,10 @@ The `mcp` probe starts every MCP server that each installed harness's own
 config file declares, including preserved and hand-written entries, and
 requires `initialize` and `tools/list` to answer. It starts one harness's
 servers at a time, all at once, as the harness does at session start, and
-gives Codex servers only the environment Codex passes them. Each server gets
-at least Codex's 10 second startup budget. The details list every server with
+gives Codex servers only the environment Codex passes them. A server whose
+entry sets a startup timeout gets that, up to 120 seconds; any other server
+gets Codex's default 10 seconds, or `--timeout-ms` when that is longer. The
+details list every server with
 the harnesses that declare it; remote servers that sign in with OAuth, and the
 legacy SSE transport, are reported as not checked.
 
