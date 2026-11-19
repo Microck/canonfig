@@ -23,10 +23,10 @@ import { DEMO } from "@/shared/metadata";
 import { DitherBlock, DitherProgress, StatusMark } from "@/shared/shared";
 import { Tour, type TourStep } from "@/tour/tour";
 import { PAGE_TIPS } from "./page-tips";
-import { tourChapters, type TourChapter } from "./tour-steps";
+import { tourChapterPages, tourChapters, type TourChapter, type WorkspaceTourStep } from "./tour-steps";
 import { useWorkspace, type View, type Workspace } from "./store";
-import { NAV, navItem, type NavItem } from "./nav";
-import { focusPageHeading } from "./routes";
+import { NAV, navItem, navTourTarget, type NavItem } from "./nav";
+import { focusPageHeading, workspaceHref } from "./routes";
 
 export interface GetStartedItem {
   id: string;
@@ -393,12 +393,12 @@ export function StarPrompt() {
  * stop on the mobile top bar (machine name + menu button), listing what the menu holds.
  * Opening the sheet instead would fight the tour for focus and the click blocker.
  */
-function narrowSteps(steps: TourStep[]): TourStep[] {
+function narrowSteps(steps: WorkspaceTourStep[]): WorkspaceTourStep[] {
   if (window.matchMedia("(min-width: 48rem)").matches) return steps;
-  const sidebar = steps.filter((s) => s.target?.some((id) => id === "machine" || id.startsWith("nav-")));
+  const sidebar = steps.filter((step) => step.sidebar !== undefined || step.target?.includes("machine"));
   const [machineStop, ...navStops] = sidebar;
   if (!machineStop) return steps;
-  const topBar: TourStep = {
+  const topBar: WorkspaceTourStep = {
     selector: 'div:has(> button[aria-label="Open navigation"])',
     title: machineStop.title,
     body: (
@@ -416,11 +416,6 @@ function narrowSteps(steps: TourStep[]): TourStep[] {
   return [topBar, ...steps.filter((s) => !sidebar.includes(s))];
 }
 
-/** The picker's entries with each tour's sidebar stops folded for narrow screens; only the short tour has any. */
-function chaptersFor(ws: Workspace, live: () => Workspace) {
-  return tourChapters(ws, live).map((chapter) => ({ ...chapter, steps: narrowSteps(chapter.steps) }));
-}
-
 /**
  * The running tour. WorkspaceApp keys it by tour id, so "Next chapter" mounts a fresh one; steps
  * are built once per tour, and the short tour's last stop reads live state through a ref.
@@ -430,7 +425,15 @@ export function TourHost() {
   const live = useRef(ws);
   live.current = ws;
   // `tour` only ever holds an id from this role's list: the picker, the offer and ?tour=1 ("quick").
-  const [chapter] = useState(() => chaptersFor(ws, () => live.current).find((c) => c.id === ws.tour)!);
+  const [chapter] = useState(() => {
+    const definition = tourChapters(ws, () => live.current).find((chapter) => chapter.id === ws.tour)!;
+    const steps: TourStep[] = narrowSteps(definition.steps).map(({ route, sidebar, ...step }) => ({
+      ...step,
+      ...(sidebar === undefined ? {} : { target: [navTourTarget(sidebar)] }),
+      ...(route === undefined ? {} : { before: () => live.current.navigate(workspaceHref(ws.role, route.view, route)) }),
+    }));
+    return { id: definition.id, steps };
+  });
   const close = (finished: boolean) => {
     ws.closeTour(finished);
     // A Source fresh out of onboarding came to review the proposed tools; the short tour passed
@@ -488,7 +491,11 @@ export function TourPicker() {
  */
 export function ChapterPicker({ onChoose }: { onChoose: (id: string) => void }) {
   const ws = useWorkspace();
-  const chapters = chaptersFor(ws, () => ws);
+  const chapters = tourChapters(ws, () => ws).map((chapter) => ({
+    ...chapter,
+    pages: tourChapterPages(chapter),
+    steps: narrowSteps(chapter.steps),
+  }));
   const nextId = chapters.find((chapter) => !ws.tourFinished(chapter.id))?.id;
   const doneCount = chapters.filter((chapter) => ws.tourFinished(chapter.id)).length;
   const [selectedId, select] = useState(nextId ?? chapters[0].id);
@@ -588,7 +595,7 @@ function ChapterMark({ done, next }: { done: boolean; next: boolean }) {
  * The selected chapter: its route through a copy of the sidebar (from md up) or a numbered row of
  * pages (below md), what it covers, its steps and the one button that starts it.
  */
-function ChapterPreview({ chapter, done, onChoose, ref }: { chapter: TourChapter; done: boolean; onChoose: (id: string) => void; ref: Ref<HTMLElement> }) {
+function ChapterPreview({ chapter, done, onChoose, ref }: { chapter: TourChapter & { pages: View[] }; done: boolean; onChoose: (id: string) => void; ref: Ref<HTMLElement> }) {
   const role = useWorkspace().role;
   const nav = NAV[role];
   const route = chapter.pages.map((view) => navItem(role, view)!);

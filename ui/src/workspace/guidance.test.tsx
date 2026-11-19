@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { after, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import type { Window as HappyDOMWindow } from "happy-dom";
 import { act } from "react";
 import type { Workspace } from "./workspace-types";
 import type { WorkspaceRoute } from "./routes";
@@ -13,7 +14,8 @@ const { createRoot } = await import("react-dom/client");
 // Load browser modules only after HappyDOM registers the document and Motion's browser environment.
 const { WorkspaceContext } = await import("./store");
 const { useWorkspaceNavigation } = await import("./navigation-state");
-const { TourOffer } = await import("./guide");
+const { ChapterPicker, TourHost, TourOffer } = await import("./guide");
+const { tourChapterPages, tourChapters } = await import("./tour-steps");
 const { Tour } = await import("../tour/tour");
 after(async () => { await GlobalRegistrator.unregister(); });
 
@@ -39,6 +41,73 @@ function button(container: HTMLElement, label: string) {
   return found;
 }
 const route: WorkspaceRoute = { kind: "workspace", role: "source", view: "overview", focus: null, profileTab: "items", machinesMode: "list" };
+
+const tourFixture: Pick<Workspace, "machineName" | "resources" | "proposed" | "followers" | "invitations" | "milestones"> & {
+  capabilities: Pick<Workspace["capabilities"], "simulatedTelemetry">;
+} = {
+  machineName: "Example Machine",
+  capabilities: { simulatedTelemetry: true },
+  resources: [],
+  proposed: [],
+  followers: [],
+  invitations: [],
+  milestones: new Set(),
+};
+
+it("derives both quick tour previews without visiting their sidebar destinations", () => {
+  for (const [role, pages] of [["source", ["profile", "machines"]], ["follower", ["sync", "local"]]] as const) {
+    const workspace = { ...tourFixture, role } as Workspace;
+    const [quick] = tourChapters(workspace, () => workspace);
+    assert.deepEqual(tourChapterPages(quick), [...pages, "overview"]);
+    assert.deepEqual(quick.steps.flatMap((step) => step.sidebar ?? []), pages);
+    assert.deepEqual(quick.steps.flatMap((step) => step.route ?? []), [{ view: "overview" }]);
+  }
+});
+
+it("shows the same two Quick tour stops in the narrow picker count and preview", async () => {
+  const { innerWidth, happyDOM } = window as unknown as HappyDOMWindow;
+  happyDOM.setInnerWidth(420);
+  try {
+    function Fixture() {
+      const navigation = useWorkspaceNavigation(route, () => {});
+      const workspace = { ...tourFixture, ...navigation } as Workspace;
+      return <WorkspaceContext value={workspace}><ChapterPicker onChoose={() => {}} /></WorkspaceContext>;
+    }
+    const app = await mount(<Fixture />);
+    try {
+      assert.match(app.container.querySelector('[data-chapter="quick"]')?.textContent ?? "", /2 steps/u);
+      assert.equal(app.container.querySelectorAll('[aria-label="Preview: Quick tour"] ol:not([aria-hidden]) li').length, 2);
+    } finally {
+      await app.close();
+    }
+  } finally {
+    happyDOM.setInnerWidth(innerWidth);
+  }
+});
+
+it("enters the same chapter destination that the picker previews", async () => {
+  for (const [role, chapterId, page, href] of [
+    ["source", "profile", "profile", "/source/profile"],
+    ["follower", "schedule", "schedule", "/follower/schedule"],
+  ] as const) {
+    const destinations: string[] = [];
+    function Fixture() {
+      const navigation = useWorkspaceNavigation({ ...route, role }, (destination) => destinations.push(destination));
+      const workspace = { ...tourFixture, ...navigation, tour: chapterId } as Workspace;
+      const chapter = tourChapters(workspace, () => workspace).find((candidate) => candidate.id === chapterId);
+      assert.ok(chapter);
+      assert.deepEqual(tourChapterPages(chapter), [page]);
+      return <WorkspaceContext value={workspace}><TourHost /></WorkspaceContext>;
+    }
+    const app = await mount(<Fixture />);
+    try {
+      assert.deepEqual(destinations, [href]);
+    } finally {
+      await app.close();
+    }
+  }
+});
+
 function OfferFixture() {
   const navigation = useWorkspaceNavigation(route, () => {});
   // Only navigation and dialog availability are consumed by the guidance hosts.
