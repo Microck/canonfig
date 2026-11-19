@@ -8,11 +8,12 @@ import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { demoOutputDirectory } from "../ui/src/build-paths.ts";
 
 const SITE_URL = "https://canonfig.micr.dev";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const demoDir = join(root, "ui", "dist-demo");
+const demoDir = join(root, "ui", demoOutputDirectory);
 const websiteDir = join(root, "website", "out");
 const siteDir = join(root, "_site");
 

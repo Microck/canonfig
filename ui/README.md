@@ -30,6 +30,10 @@ The packaged UI also includes `licenses/shadcn.txt`; the CSS build strips commen
 | `npm --prefix ui run build` | `ui/dist/` | Production frontend; CLI packaging places the assets in root `dist/ui/` |
 | `npm --prefix ui run build:demo` | `ui/dist-demo/` | The public demo at https://canonfig.micr.dev/demo/, beside the landing page at `/` and docs under `/docs/` |
 
+The demo build and Pages packaging share the output path in `src/build-paths.ts`.
+The UI dev watcher ignores that directory so building the demo does not reload
+open dev pages.
+
 Vite's build-selected `@app` entrypoint loads `src/live-app.tsx` for production and `src/App.tsx` for development or mode `demo`. `src/gui-client.ts` sends same-origin requests with the session cookie and decodes responses using direct imports from `src/gui/contract.ts`. Area contracts are shared, not generated copies. Mutations use explicit typed endpoints, and long operations poll real results and journals. Errors preserve the CLI category, exit code and message. Reload reads fresh machine state.
 
 The production build checks its module graph and fails if it imports `src/shared/data.ts`, the simulated providers or the demo application. `src/workspace/store.tsx` is the shared context; `workspace-types.ts` defines the typed slices and capabilities. Live resources expose loading and decoded errors to the existing skeletons and error notices.
