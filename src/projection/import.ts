@@ -4,6 +4,7 @@ import { join as joinNative, sep as nativeSeparator } from "node:path";
 import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import { Array as EffectArray, Predicate, Schema } from "effect";
 
+import { parseSurfaceResourceId, resourcesOwner } from "../domain/brand.ts";
 import { ConfigValue } from "../domain/resource.ts";
 import type { AppliedResourceRecord } from "../domain/synchronization.ts";
 import { TaggedError } from "../domain/tagged-error.ts";
@@ -19,7 +20,6 @@ import { type MarkdownDocument, markdownWithFrontmatter, parseMarkdownDocument }
 import { maxImportContentBytes, SkillReader, type ImportReadLimit } from "./import-skills.ts";
 import type { HarnessLayout, OwnedSurface, RootContext, SkillReadSource } from "./harness.ts";
 import { TARGET_IDS, type TargetId } from "./model.ts";
-import { parseSurfaceResourceId, resourcesOwner } from "./plan.ts";
 
 /**
  * Source setup's one-time import: reads what the selected harnesses already

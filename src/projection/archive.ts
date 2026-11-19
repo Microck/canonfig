@@ -5,7 +5,7 @@ import { gunzipSync, gzipSync } from "node:zlib";
 
 import { Effect, Schema } from "effect";
 
-import { ContentDigest, ResourceId, Timestamp, type FollowerId, type SourceSignature } from "../domain/brand.ts";
+import { ContentDigest, parseSurfaceResourceId, ResourceId, resourcesOwner, Timestamp, type FollowerId, type SourceSignature } from "../domain/brand.ts";
 import { ConfigValue } from "../domain/resource.ts";
 import { localProjectionFollower, type AppliedResourceRecord } from "../domain/synchronization.ts";
 import { TaggedError } from "../domain/tagged-error.ts";
@@ -37,9 +37,7 @@ import { TARGET_IDS } from "./model.ts";
 import {
   directoryResource,
   fileResource,
-  parseSurfaceResourceId,
   planBuilt,
-  resourcesOwner,
   sharedSkillsOwner,
   type BuiltResource,
   type LocalRevisionPlan,

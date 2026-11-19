@@ -16,10 +16,12 @@ import {
   CredentialReference,
   FollowerId,
   GroupName,
+  parseSurfaceResourceId,
   type ProfileId as ProfileIdType,
   ProfileRevisionId,
   ResourceId,
   RunId,
+  surfaceResourceId,
   type FollowerId as FollowerIdType,
   type ProfileRevisionId as ProfileRevisionIdType,
   type RunId as RunIdType,
@@ -2329,9 +2331,12 @@ const makeRepository = Effect.gen(function*() {
               revision_id = excluded.revision_id, digest = excluded.digest,
               applied_at = excluded.applied_at, record_json = excluded.record_json
           `;
-          yield* sql`UPDATE harness_takeovers SET phase = ${input.state === "rolled-back" ? "Reserved" : "Owned"}
-            WHERE run_id = ${input.run} AND 'harness:' || harness || ':' ||
-              CASE WHEN instr(surface, '#') > 0 THEN substr(surface, 1, instr(surface, '#') - 1) ELSE surface END = ${record.resource}`;
+          const projection = parseSurfaceResourceId(record.resource);
+          if (projection !== undefined) {
+            yield* sql`UPDATE harness_takeovers SET phase = ${input.state === "rolled-back" ? "Reserved" : "Owned"}
+              WHERE run_id = ${input.run} AND harness = ${projection.harness} AND
+                CASE WHEN instr(surface, '#') > 0 THEN substr(surface, 1, instr(surface, '#') - 1) ELSE surface END = ${projection.surface}`;
+          }
         }
       });
       yield* sql.withTransaction(transaction).pipe(
@@ -2426,8 +2431,9 @@ const makeRepository = Effect.gen(function*() {
         if (input.outcome.outcome === "Failed" && input.outcome.rollbackIncomplete === true) {
           for (const takeover of yield* loadHarnessTakeovers()) {
             if (takeover.run !== input.run) continue;
-            const resource = `harness:${takeover.harness}:${takeover.surface.split("#")[0]}`;
-            if (input.outcome.failedRollbackResources === undefined || input.outcome.failedRollbackResources.includes(Schema.decodeUnknownSync(ResourceId)(resource))) {
+            const surface = takeover.surface.split("#", 1)[0]!;
+            if (input.outcome.failedRollbackResources === undefined
+              || input.outcome.failedRollbackResources.includes(surfaceResourceId(takeover.harness, surface))) {
               yield* sql`UPDATE harness_takeovers SET phase = 'Uncertain'
                 WHERE harness = ${takeover.harness} AND surface = ${takeover.surface}`;
             }

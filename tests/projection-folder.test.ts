@@ -3,8 +3,10 @@ import { stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, posix, win32 } from "node:path";
 
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
+
+import { classifyAuthoredResourceId, parseSurfaceResourceId, ResourceId, resourcesOwner, surfaceResourceId } from "../src/domain/brand.ts";
 
 import {
   CanonicalFolderError,
@@ -312,6 +314,21 @@ describe("canonfig.jsonc validation detail", () => {
 describe("authored resource targets", () => {
   const config = (resources: Readonly<Record<string, FolderResourceInput>>) =>
     JSON.stringify({ version: 1, harnesses: [], resources });
+
+  it("identifies authored surface IDs independently of native harness IDs", () => {
+    const authored = surfaceResourceId(resourcesOwner, "notes");
+    const native = surfaceResourceId("codex", "instructions");
+    const missingSurface = Schema.decodeUnknownSync(ResourceId)("harness:resources:");
+    expect(parseSurfaceResourceId(authored)).toEqual({ harness: resourcesOwner, surface: "notes" });
+    expect(classifyAuthoredResourceId(authored)).toBe("authored");
+    expect(classifyAuthoredResourceId(native)).toBe("other");
+    expect(classifyAuthoredResourceId(missingSurface)).toBe("invalid");
+    expect(parseSurfaceResourceId(missingSurface)).toBeUndefined();
+    expect(() => surfaceResourceId(resourcesOwner, "")).toThrow("Invalid projection resource owner or surface");
+    expect(() => surfaceResourceId("codex:extra", "instructions")).toThrow("Invalid projection resource owner or surface");
+    expect(parseSurfaceResourceId(surfaceResourceId("codex", "skill:name")))
+      .toEqual({ harness: "codex", surface: "skill:name" });
+  });
 
   it("refuses two targets that differ only in case, since the folder reaches case-insensitive file systems", async () => {
     const root = folder({
