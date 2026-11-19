@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "./shadcn.css";
+@plugin "./lib/tailwind-motion.ts";
 
 /*
  * UI text: Manrope (Mikhail Sharanda, OFL), a variable font on the weight axis,
@@ -81,12 +82,7 @@
   --text-2xl: 28px;
   --text-2xl--line-height: 1.2;
 
-  /*
-   * The one easing curve for motion that clarifies a change: ~150ms state
-   * changes, ~200ms popovers and tooltips, ~300ms overlays. Everything else
-   * is instant.
-   */
-  --ease-snap: cubic-bezier(0.175, 0.885, 0.32, 1.1);
+  --ease-snap: var(--canonfig-snap-easing);
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
