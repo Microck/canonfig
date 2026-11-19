@@ -23,6 +23,50 @@ export type ProfileRevisionId = Schema.Schema.Type<typeof ProfileRevisionId>;
 export const ResourceId = IdentifierText.pipe(Schema.brand("ResourceId"));
 export type ResourceId = Schema.Schema.Type<typeof ResourceId>;
 
+/**
+ * The pseudo-harness that owns authored `resources.<id>`: each resource is
+ * one of its surfaces, rooted at the home directory, so takeover, snapshots,
+ * restore and retirement treat it as they treat a harness surface.
+ */
+export const resourcesOwner = "resources";
+
+const projectionResourcePrefix = "harness:";
+
+/** A harness surface's resource id: `harness:<harness>:<surface>`. */
+export const surfaceResourceId = (harness: string, surface: string): ResourceId => {
+  const id = Schema.decodeUnknownSync(ResourceId)(`${projectionResourcePrefix}${harness}:${surface}`);
+  const parsed = parseSurfaceResourceId(id);
+  if (parsed?.harness !== harness || parsed.surface !== surface) {
+    throw new Error("Invalid projection resource owner or surface");
+  }
+  return id;
+};
+
+const splitSurfaceResourceId = (
+  id: ResourceId,
+): { readonly harness: string; readonly surface: string } | undefined => {
+  if (!id.startsWith(projectionResourcePrefix)) return undefined;
+  const separator = id.indexOf(":", projectionResourcePrefix.length);
+  if (separator <= projectionResourcePrefix.length) return undefined;
+  return {
+    harness: id.slice(projectionResourcePrefix.length, separator),
+    surface: id.slice(separator + 1),
+  };
+};
+
+/** The harness and surface a projection resource id names, if it names one. */
+export const parseSurfaceResourceId = (id: ResourceId): ReturnType<typeof splitSurfaceResourceId> => {
+  const parts = splitSurfaceResourceId(id);
+  return parts?.surface ? parts : undefined;
+};
+
+/** A missing surface cannot route a reserved authored ID through generic execution. */
+export const classifyAuthoredResourceId = (id: ResourceId): "authored" | "other" | "invalid" => {
+  const parts = splitSurfaceResourceId(id);
+  if (parts?.harness !== resourcesOwner) return "other";
+  return parts.surface.length === 0 ? "invalid" : "authored";
+};
+
 export const FollowerId = IdentifierText.pipe(Schema.brand("FollowerId"));
 export type FollowerId = Schema.Schema.Type<typeof FollowerId>;
 

@@ -131,7 +131,7 @@ const snapshots = (value: Fixture): ReadonlyArray<string> => {
 const takeoverRows = (value: Fixture) => {
   const database = new DatabaseSync(value.statePath, { readOnly: true });
   try {
-    return database.prepare("SELECT harness, surface, root, snapshot FROM harness_takeovers ORDER BY harness, surface").all();
+    return database.prepare("SELECT harness, surface, root, snapshot, phase FROM harness_takeovers ORDER BY harness, surface").all();
   } finally {
     database.close();
   }
@@ -799,6 +799,11 @@ describe("local projection", () => {
     const [id] = snapshots(value);
     const snapshot = join(value.folder, ".backups", id!);
     const manifest = JSON.parse(readFileSync(join(snapshot, "manifest.json"), "utf8"));
+    expect(takeoverRows(value)).toContainEqual(expect.objectContaining({
+      harness: "claude-code",
+      surface: "mcp#mcpServers",
+      phase: "Owned",
+    }));
     const claudeEntries = manifest.entries.filter((entry: { target: string }) => entry.target === join(value.home, ".claude.json"));
     expect(claudeEntries.map((entry: { kind: string; key: string }) => [entry.kind, entry.key])).toEqual([["config", "mcpServers"]]);
     expect(JSON.parse(readFileSync(join(snapshot, "claude-code", "keys.json"), "utf8"))).toEqual({

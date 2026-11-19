@@ -13,6 +13,7 @@ import {
 import type { AgentResolutionOutcome } from "../agent/agent-resolution.types.ts";
 import {
   ContentDigest,
+  parseSurfaceResourceId,
   ProfileId,
   ProfileRevisionId,
   ResourceId,
@@ -44,7 +45,6 @@ import { mirrorItem, renderMirrorConfig, type MirrorEntry } from "../projection/
 import {
   buildProjection,
   fileResource,
-  parseSurfaceResourceId,
   planBuilt,
   releaseExcludedSkillRecords,
   rootContext,

@@ -3,7 +3,7 @@ import { posix, win32 } from "node:path";
 
 import { Effect, Schema } from "effect";
 
-import { ContentDigest, ProfileRevisionId, ResourceId } from "../domain/brand.ts";
+import { ContentDigest, parseSurfaceResourceId, ProfileRevisionId, ResourceId, resourcesOwner, surfaceResourceId } from "../domain/brand.ts";
 import type {
   FollowerId,
   ProfileRevisionId as ProfileRevisionIdType,
@@ -111,13 +111,6 @@ export class ProjectionHumanActionError extends TaggedError<ProjectionHumanActio
 /** The pseudo-harness that owns the shared `~/.agents/skills/` surface. */
 export const sharedSkillsOwner = "agents";
 
-/**
- * The pseudo-harness that owns authored `resources.<id>`: each resource is
- * one of its surfaces, rooted at the home directory, so takeover, snapshots,
- * restore and retirement treat it as they treat a harness surface.
- */
-export const resourcesOwner = "resources";
-
 /** One surface with the content this run projects into it. */
 export interface ProjectedSurface {
   readonly harness: string;
@@ -130,18 +123,6 @@ export interface ProjectedSurface {
    */
   readonly appendLocal: boolean;
 }
-
-/** A harness surface's resource id: `harness:<harness>:<surface>`. */
-export const surfaceResourceId = (harness: string, surface: string): ResourceIdType =>
-  Schema.decodeUnknownSync(ResourceId)(`harness:${harness}:${surface}`);
-
-/** The harness and surface a projection resource id names, if it names one. */
-export const parseSurfaceResourceId = (
-  id: string,
-): { readonly harness: string; readonly surface: string } | undefined => {
-  const match = /^harness:([^:]+):(.+)$/u.exec(id);
-  return match === null ? undefined : { harness: match[1]!, surface: match[2]! };
-};
 
 const pathsFor = (platform: RootContext["platform"]) => platform === "windows" ? win32 : posix;
 

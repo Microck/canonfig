@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 
 import { Effect, Schema } from "effect";
 
-import { RunId } from "../domain/brand.ts";
+import { parseSurfaceResourceId, resourcesOwner, RunId, surfaceResourceId } from "../domain/brand.ts";
 import type { FollowerId, RunId as RunIdType } from "../domain/brand.ts";
 import { checkTextWriteTransition, localProjectionFollower, type SynchronizationOutcome } from "../domain/synchronization.ts";
 import { composeTextFile, parseTextComposition } from "../domain/text-composition.ts";
@@ -36,14 +36,11 @@ import { CanonicalFolderError, holdsEntries, LocalItemCollisionError, loadCanoni
 import type { TargetId } from "./model.ts";
 import {
   keyClaimIssue,
-  parseSurfaceResourceId,
   planFolder,
   planRestore,
   ProjectionHumanActionError,
-  resourcesOwner,
   rootContext,
   sharedSkillsOwner,
-  surfaceResourceId,
   takeoverSummary,
   type FolderPlan,
 } from "./plan.ts";

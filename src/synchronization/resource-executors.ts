@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect";
 import { dirname, isAbsolute, join, posix, relative, resolve, win32 } from "node:path";
 
-import { ContentDigest, CredentialReference, type RunId } from "../domain/brand.ts";
+import { classifyAuthoredResourceId, ContentDigest, CredentialReference, type RunId } from "../domain/brand.ts";
 import {
   type PublishedResource,
   type VerificationInput,
@@ -895,8 +895,8 @@ export const restoreRollbackReference = (
   void,
   SynchronizationExecutionInputError | MachineStateError,
   MachineState
-> =>
-  guardAuthoredTarget(context, Effect.gen(function*() {
+> => {
+  const restore = Effect.gen(function*() {
     const { stored, createdParents, root } = yield* loadRollbackMaterial(context, reference);
     if (composesText(context)) {
       yield* restoreAppendLocal(context, stored, reference);
@@ -904,7 +904,10 @@ export const restoreRollbackReference = (
       yield* restoreStoredFiles(stored, reference, root);
     }
     yield* removeCreatedParents(createdParents, true);
-  }));
+  });
+  const guard = authoredTargetGuard(context);
+  return guard === undefined ? restore : guard.pipe(Effect.andThen(restore));
+};
 
 /** What one action leaves at one path. `undefined` means it leaves it as it was. */
 type IntendedState =
@@ -2289,13 +2292,6 @@ const confirmInstalledVersion = (
 });
 
 /**
- * The id prefix of authored `resources.<id>` targets: projection writes them
- * as surfaces of its `resources` pseudo-harness (src/projection/plan.ts
- * `resourcesOwner`), so the two must stay in sync.
- */
-export const authoredResourcePrefix = "harness:resources:";
-
-/**
  * An authored resource target must lie under the home directory along real
  * directories only: every existing ancestor below home is checked without
  * following links, and the existing ancestry must resolve inside home. A
@@ -2336,22 +2332,31 @@ export const assertAuthoredTargetPath = (target: string) =>
     }
   });
 
-/** The ancestry check before `effect`, for authored resources only; projection's own targets pass straight through. */
-const guardAuthoredTarget = <A, E, R>(context: ResourceExecutionContext, effect: Effect.Effect<A, E, R>) =>
-  context.resource.id.startsWith(authoredResourcePrefix)
-    ? assertAuthoredTargetPath(context.resource.target).pipe(Effect.andThen(effect))
-    : effect;
+const authoredTargetGuard = (context: ResourceExecutionContext) => {
+  switch (classifyAuthoredResourceId(context.resource.id)) {
+    case "other":
+      return undefined;
+    case "invalid":
+      return Effect.fail(new InvalidExecutionPlanError({
+        message: "authored projection resource ID is missing its surface",
+      }));
+    case "authored":
+      return assertAuthoredTargetPath(context.resource.target);
+  }
+};
 
 /** Prepare deterministic work. Preparation stores rollback material before owned-file mutation. */
 export const prepareResourceAction = (
   context: ResourceExecutionContext,
 ): Effect.Effect<PreparedResourceAction, SynchronizationExecutionInputError | MachineStateError, MachineState> => {
-  if (!context.resource.id.startsWith(authoredResourcePrefix)) return prepareAction(context);
-  return guardAuthoredTarget(context, prepareAction(context)).pipe(
+  const guard = authoredTargetGuard(context);
+  if (guard === undefined) return prepareAction(context);
+  return guard.pipe(
+    Effect.flatMap(() => prepareAction(context)),
     Effect.map((prepared) => ({
       ...prepared,
-      execute: guardAuthoredTarget(context, prepared.execute),
-      rollback: prepared.rollback === undefined ? undefined : guardAuthoredTarget(context, prepared.rollback),
+      execute: guard.pipe(Effect.andThen(prepared.execute)),
+      rollback: prepared.rollback === undefined ? undefined : guard.pipe(Effect.andThen(prepared.rollback)),
     })),
   );
 };
