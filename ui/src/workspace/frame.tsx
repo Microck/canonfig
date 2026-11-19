@@ -46,7 +46,7 @@ import { useWorkspace, type View } from "./store";
 import { copy } from "./kit";
 import { useSelfUpdate } from "./settings";
 import { focusPageHeading, followLink, workspaceHref } from "./routes";
-import { navigationForRole, type NavItem } from "./nav";
+import { navigationForRole, navTourTarget, type NavItem } from "./nav";
 
 /** ⌘ on Apple platforms, Ctrl elsewhere; the palette listens for both. */
 const MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl ";
@@ -68,7 +68,7 @@ function NavButton({ item, active, badge, onNavigate }: { item: NavItem; active:
   return (
     <a
       href={workspaceHref(ws.role, item.view)}
-      data-tour={`nav-${item.view}`}
+      data-tour={navTourTarget(item.view)}
       onClick={(event) => followLink(event, (href) => {
         onNavigate?.();
         ws.navigate(href);

@@ -73,6 +73,8 @@ export const NAV: Record<WorkspaceRole, { main: NavItem[]; settings: NavItem[] }
   unconfigured: { main: FOLLOWER_NAV.filter((item) => item.view === "sync" || item.view === "backups"), settings: [] },
 };
 
+export const navTourTarget = (view: View): string => `nav-${view}`;
+
 /** The sidebar entry for a role's page, if it has one (the not-found view has none). */
 export function navItem(role: WorkspaceRole, view: View): NavItem | undefined {
   const navigation = navigationForRole(role);
