@@ -12,3 +12,6 @@ website/out/
 /_site/
 .e2e/
 .crabbox/
+
+# Python bytecode from tools/guard-adapters
+__pycache__/

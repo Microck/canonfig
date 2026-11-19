@@ -8,7 +8,7 @@ import { GuiRequestError, type GuiSession, type WorkspaceBackend } from "../../g
 import type { DiscoveryState, PublicationState, ProfileSlice, ProfileEdit } from "../workspace-types";
 import { authoredItems, itemWrite, object, strings } from "../profile-authoring";
 import { WEEK, type Schedule } from "../schedule";
-import { requestError, resourceState, useLiveActions, useLiveResource } from "./resource";
+import { requestError, resourceState, useGuardStatusInvalidation, useLiveActions, useLiveResource } from "./resource";
 
 function scheduleOf(value: Schema.Json | undefined): Schedule | null {
   if (typeof value !== "string") return null;
@@ -50,6 +50,7 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
   const skills = useLiveResource(backend, profileEndpoints.skills, GuiSkills, source);
   const secrets = useLiveResource(backend, "/api/secrets", GuiSecrets, source);
   const operations = useLiveActions(backend, reload);
+  const invalidateGuardStatus = useGuardStatusInvalidation();
   const active = useRef<AbortController | null>(null);
   type ActionGuard = typeof GuiProfileGuardResult.Type.guard;
   const [actionState, setActionState] = useState<{ loading: boolean; error: GuiRequestError | null; guard?: ActionGuard }>({ loading: false, error: null });
@@ -72,7 +73,11 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
       if (refresh) reload();
       return true;
     } catch (cause) {
-      if (!controller.signal.aborted) setActionState({ loading: false, error: requestError(cause) });
+      if (!controller.signal.aborted) {
+        const error = requestError(cause);
+        if (error.failure.guard) invalidateGuardStatus();
+        setActionState({ loading: false, error });
+      }
       return false;
     } finally { active.current = null; }
   }
@@ -146,6 +151,7 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
     setSkillBusy(null);
     if (completed.state === "failed") throw new GuiRequestError(completed.failure);
     const checks = Schema.decodeUnknownSync(GuiSkillChecks)(completed.result);
+    if (ticket.kind === "update") invalidateGuardStatus();
     setSkillResult({ kind: ticket.kind, names: checks.map(({ name }) => name), checks });
     setSkillChecks((previous) => ({ ...previous, ...Object.fromEntries(checks.map((check) => [`skills/${check.name}`, ticket.kind === "update" ? { ...check, status: "unchanged" as const, added: [], changed: [], removed: [] } : check])) }));
   }
@@ -207,6 +213,7 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
         const { guard } = await backend.request(profileEndpoints.acceptScan, GuiProfileGuardResult, signal, {
           method: "POST", body: { reviewDigest: reviewed.reviewDigest, confirmAll: true },
         });
+        invalidateGuardStatus();
         return guard;
       });
     },
@@ -215,7 +222,9 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
       setSkillBusy(`track:skills/${name}`);
       try {
         const completed = await operations.operation(profileEndpoints.track, { name, source, ref, subdir }, signal);
-        return Schema.decodeUnknownSync(GuiSkillTrackResult)(completed.result).guard;
+        const { guard } = Schema.decodeUnknownSync(GuiSkillTrackResult)(completed.result);
+        invalidateGuardStatus();
+        return guard;
       }
       finally { setSkillBusy(null); }
     }),
@@ -240,6 +249,7 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
       try {
         const completed = await operations.operation(profileEndpoints.publications, { reviewer }, signal);
         const { guard } = Schema.decodeUnknownSync(GuiProfileGuardResult)(completed.result);
+        invalidateGuardStatus();
         publishEvent({ kind: "Published" }); setPending([]); onDone(); reload();
         return guard;
       } catch (cause) { publishEvent({ kind: "Failed", stage: "publication", error: requestError(cause) }); throw cause; }

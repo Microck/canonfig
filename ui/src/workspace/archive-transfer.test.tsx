@@ -7,6 +7,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { request, type WorkspaceBackend } from "../gui-client";
+import { guardEndpoints } from "../../../src/guard/contract";
+import { LiveResourceCache, LiveResourcesContext } from "./live/resource";
 import { GuiOperation, GuiSession, GuiStatus } from "../../../src/gui/contract";
 
 GlobalRegistrator.register({ url: "http://localhost/setup", settings: { device: { prefersReducedMotion: "reduce" } } });
@@ -17,7 +19,7 @@ const { ArchiveImportButton } = await import("./archive-transfer");
 const { TooltipProvider } = await import("../components/ui/tooltip");
 after(async () => { await GlobalRegistrator.unregister(); });
 
-type ApplyResponse = "disconnect" | "unreadable" | "invalid-ticket" | "rejected" | "poll-failure";
+type ApplyResponse = "clean" | "disconnect" | "unreadable" | "invalid-ticket" | "rejected" | "poll-failure";
 const result = { sha256: "a".repeat(64), manifestSha256: "b".repeat(64), signer: "unsigned", folderFiles: 1, replaced: [], plan: {} };
 async function fixture(applyResponse: ApplyResponse) {
   let submissions = 0;
@@ -43,11 +45,13 @@ async function fixture(applyResponse: ApplyResponse) {
             outgoing.statusCode = 409;
             outgoing.end(JSON.stringify({ category: "conflict-or-drift", exitCode: 4, message: "Import rejected before starting" }));
             break;
+          case "clean":
           case "poll-failure": outgoing.end(JSON.stringify({ id: "apply" })); break;
         }
       } else if (incoming.url === "/api/operations/apply") {
         observations++;
-        if (observations === 1) { outgoing.statusCode = 500; outgoing.end(JSON.stringify({ category: "internal", exitCode: 1, message: "Observation unavailable" })); }
+        if (applyResponse === "clean") outgoing.end(JSON.stringify({ id: "apply", state: "succeeded", journal: null, result }));
+        else if (observations === 1) { outgoing.statusCode = 500; outgoing.end(JSON.stringify({ category: "internal", exitCode: 1, message: "Observation unavailable" })); }
         else outgoing.end(JSON.stringify({ id: "apply", state: "succeeded", journal: null, result: {
           ...result, guard: {
             trigger: "archive.import", at: "2026-11-06T00:00:00Z", verdict: "warn",
@@ -69,8 +73,13 @@ async function fixture(applyResponse: ApplyResponse) {
   };
   const container = document.createElement("div"); document.body.append(container);
   const root = createRoot(container);
-  await act(async () => root.render(<TooltipProvider><ArchiveImportButton backend={backend} /></TooltipProvider>));
+  const cache = new LiveResourceCache();
+  cache.set(guardEndpoints.status, { mode: "static", latest: null, approvals: [] });
+  await act(async () => root.render(<LiveResourcesContext value={{ cache, paths: [] }}>
+    <TooltipProvider><ArchiveImportButton backend={backend} /></TooltipProvider>
+  </LiveResourcesContext>));
   return {
+    cache,
     get submissions() { return submissions; },
     get observations() { return observations; },
     async close() {
@@ -141,5 +150,16 @@ it("shows the completed import's Guard warning after resuming the same ticket", 
     assert.match(document.querySelector('[role="dialog"] li')?.textContent ?? "", /instructions \/ AGENTS\.md invisible-control \(static\)/u);
     assert.equal(app.submissions, 1);
     assert.equal(app.observations, 2);
+  } finally { await app.close(); }
+});
+
+it("invalidates cached Guard status after a clean apply, before closing the archive dialog", async () => {
+  const app = await fixture("clean");
+  try {
+    await preview();
+    assert.equal(app.cache.get(guardEndpoints.status).stale, false);
+    await click("Import verified archive");
+    await until(() => !!document.querySelector('[role="status"]')?.textContent?.includes("Import complete"));
+    assert.equal(app.cache.get(guardEndpoints.status).stale, true);
   } finally { await app.close(); }
 });

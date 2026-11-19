@@ -186,7 +186,7 @@ it("locks the checker policy and consent while saving", async () => {
   const saving = Promise.withResolvers<ServerResponse>();
   const app = await fixture("/source/settings/guard", {
     ...sourceResponses(),
-    "/api/guard": { mode: "static", policy: { version: 1 }, digest: "fixture-digest", latest: null, bearerAvailable: false },
+    "/api/guard": { mode: "static", policy: { version: 1 }, digest: "fixture-digest", latest: null, bearerAvailable: false, approvals: [] },
   }, (path, method, _body, outgoing) => {
     if (path !== "/api/guard" || method !== "PUT") return false;
     saving.resolve(outgoing);
@@ -213,7 +213,7 @@ it("protects a checker policy draft until save or cancel", async () => {
   let rejectSave = true;
   const app = await fixture("/source/settings/guard", {
     ...sourceResponses(),
-    "/api/guard": { mode: "static", policy: { version: 1 }, digest: "fixture-digest", latest: null },
+    "/api/guard": { mode: "static", policy: { version: 1 }, digest: "fixture-digest", latest: null, approvals: [] },
   }, (path, method, _body, outgoing) => {
     if (path !== "/api/guard" || method !== "PUT") return false;
     if (rejectSave) {
@@ -260,7 +260,7 @@ it("shows an unsaved scan result when Guard status still reports an older verdic
   const report = { ...guardWarning("guard.scan", "skills:current"), recordUnavailable: true };
   const app = await fixture("/source/settings/guard", {
     ...sourceResponses(),
-    "/api/guard": { mode: "static", latest: older },
+    "/api/guard": { mode: "static", latest: older, approvals: [] },
     "/api/guard/scan": { id: "scan" },
     "/api/operations/scan": { id: "scan", journal: null, state: "succeeded", result: report },
   });
@@ -273,6 +273,70 @@ it("shows an unsaved scan result when Guard status still reports an older verdic
     assert.ok(app.container.textContent?.includes("warn · guard.scan"));
     assert.ok(app.container.textContent?.includes("skills:current encoded-looking-text (static)"));
     assert.ok(app.container.textContent?.includes("The local result could not be saved."));
+  } finally { await app.close(); }
+});
+
+for (const role of ["source", "follower"] as const) it(`confirms and revokes an exact version on a ${role}`, async () => {
+  const item = "skills:held";
+  const warning = guardWarning("guard.scan", item);
+  const digest = warning.findings[0]!.digest;
+  const latest = { ...warning, verdict: "block", blockedItems: [{ item, digest }],
+    findings: warning.findings.map((finding) => ({ ...finding, severity: "block" })) };
+  const code = "encoded-looking-text";
+  const policy = { version: 1, rules: { [code]: "off" } };
+  let approved = false;
+  let ruleSaved = false;
+  const app = await fixture(`/${role}/settings/guard`, {}, (path, method, body, outgoing) => {
+    if (path === "/api/guard" && method === "GET") {
+      outgoing.end(JSON.stringify({ mode: "static", latest, digest: approved ? "after" : "before",
+        policy: ruleSaved ? policy : { version: 1 }, approvals: approved ? [{ item, digest, status: "current" }] : [] }));
+      return true;
+    }
+    if (path === "/api/guard" && method === "PUT") {
+      assert.deepEqual(body, { policy, digest: "before", consent: false });
+      ruleSaved = true;
+      outgoing.end(JSON.stringify({ saved: true }));
+      return true;
+    }
+    if (path !== "/api/guard/approval") return false;
+    assert.deepEqual(body, approved
+      ? { change: { action: "revoke", item }, digest: "after" }
+      : { change: { action: "approve", approval: { item, digest } }, digest: "before" });
+    approved = !approved;
+    outgoing.end(JSON.stringify({ saved: true }));
+    return true;
+  });
+  try {
+    await until(() => app.container.textContent?.includes("Approve this exact version") === true, "The held item never appeared");
+    assert.equal(app.container.querySelectorAll('button[role="combobox"]').length, 9);
+    if (role === "source") {
+      await click("Edit checker policy");
+      await click("Prompt Guard 2 (local adapter)");
+      assert.deepEqual(JSON.parse(app.container.querySelector<HTMLTextAreaElement>("#guard-policy")?.value ?? ""), {
+        version: 1, checker: { kind: "http", endpoint: "http://127.0.0.1:8787/v1/guard" },
+      });
+      await click("Cancel");
+    } else assert.equal(app.container.querySelector("#guard-policy"), null);
+    await click("Approve this exact version");
+    const dialog = document.querySelector('[role="dialog"]');
+    assert.ok(dialog?.textContent?.includes(item));
+    assert.ok(dialog?.textContent?.includes(digest.slice(0, 12)));
+    assert.equal(app.mutations.length, 0);
+    await click("Approve version");
+    await until(() => !!app.container.querySelector('[aria-label="Revoke approval for skills:held"]'), "Approval never appeared");
+    await click("Revoke…");
+    await click("Revoke approval");
+    await until(() => app.container.textContent?.includes("No approvals") === true, "Revocation never appeared");
+    assert.equal(app.mutations.length, 2);
+    const rule = app.container.querySelector<HTMLButtonElement>(`#rule-${code}`);
+    assert.ok(rule && rule.textContent?.includes("Default (warn)"));
+    await act(async () => rule.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    const off = [...document.querySelectorAll('[role="option"]')].find((option) => option.textContent === "Off");
+    assert.ok(off);
+    await act(async () => off.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    await click("Save policy");
+    await until(() => ruleSaved && app.container.querySelector(`#rule-${code}`)?.textContent?.trim() === "Off"
+      && !app.container.textContent?.includes("Save policy"), "The saved rule override did not appear");
   } finally { await app.close(); }
 });
 
@@ -1078,5 +1142,61 @@ it("resumes a lost batch poll without resubmitting and applies its explicit revi
     assert.ok(submitted);
     const { expected } = Schema.decodeUnknownSync(GuiSkillUpdate)(submitted.body);
     assert.deepEqual(expected.map(({ name }) => name), trackedSkills.map(({ name }) => name));
+  } finally { await app.close(); }
+});
+
+for (const verdict of ["block", "warn"] as const) it(`refreshes cached Guard settings after a publication ${verdict}`, async () => {
+  const first = { item: "skills:first", digest: "a".repeat(64) };
+  const second = { item: "skills:second", digest: "b".repeat(64) };
+  const warning = guardWarning("source.publish", first.item);
+  const held = verdict === "block";
+  const guard = held ? {
+    ...warning, verdict, findingCount: 21,
+    findings: Array.from({ length: 20 }, (_, index) => ({ ...warning.findings[0]!, severity: "block", path: `reference-${index}.md` })),
+    blockedItems: [first, second],
+  } : {
+    ...warning, verdict, publicationPolicyWarnings: [first.item],
+    findings: [{ ...warning.findings[0]!, severity: "off", overriddenBy: "rule", code: "instruction-credential-concealment" }],
+  };
+  const status = { mode: "static", policy: { version: 1 }, digest: "fixture-digest", approvals: [] };
+  const responses: Record<string, unknown> = {
+    ...sourceResponses(),
+    "/api/guard": { ...status, latest: null },
+    "/api/profile/validate": { valid: true, errors: [], profile: {} },
+    "/api/publications": { id: "publication" },
+    "/api/operations/publication": {
+      id: "publication", journal: null,
+      ...(held ? { state: "failed", failure: { category: "human-action-required", exitCode: 3, message: "Guard held publication.", guard } }
+        : { state: "succeeded", result: { id: "review:1", guard } }),
+    },
+  };
+  const app = await fixture("/source/settings/guard", responses);
+  try {
+    await until(() => app.container.textContent?.includes("No result recorded") === true, "Initial Guard status did not load");
+    await act(async () => { navigate("/source/profile"); });
+    await until(() => !app.container.querySelector('[aria-busy="true"]'), "Profile did not load");
+    const publish = app.container.querySelector<HTMLButtonElement>('button[data-tour="publish"]');
+    assert.ok(publish);
+    await act(async () => { publish.click(); });
+    await fill("#pub-reviewer", "Reviewer");
+    const submit = document.querySelector<HTMLButtonElement>('[role="dialog"] button[type="submit"]');
+    assert.ok(submit);
+    await until(() => !submit.disabled, "Publication validation did not finish");
+    responses["/api/guard"] = { ...status, latest: guard };
+    await act(async () => { submit.click(); });
+    if (held) {
+      await until(() => document.querySelector('[role="dialog"] [role="alert"]')?.textContent?.includes("Guard held publication.") === true, "Publication hold did not appear");
+      await click("Cancel");
+    } else {
+      await until(() => window.location.pathname === "/source/revisions", "Publication did not finish");
+      assert.match(app.container.textContent ?? "", /Local Guard policy relaxed default blocks for skills:first\. Followers evaluate these items under their own Guard policy and may hold this revision\./u);
+    }
+    await act(async () => { navigate("/source/settings/guard"); });
+    await until(() => app.container.textContent?.includes(`${verdict} · source.publish`) === true, "Guard Settings showed the stale result");
+    if (held) {
+      const approvals = app.container.querySelector('[aria-label="Exact-version approvals"]');
+      assert.match(approvals?.textContent ?? "", /skills:second/u);
+      assert.equal([...approvals!.querySelectorAll("button")].filter((button) => button.textContent === "Approve this exact version").length, 2);
+    }
   } finally { await app.close(); }
 });

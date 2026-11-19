@@ -1,6 +1,6 @@
 import { Schema } from "effect";
-import { GuardPolicy, GuardReport, GuiGuardStatus, guardEndpoints } from "../../../src/guard/contract";
-import type { WorkspaceBackend } from "@/gui-client";
+import { GuardChecker, GuardReport, GuiGuardStatus, guardEndpoints, guardRules, promptGuardLocalEndpoint, type GuardApprovalChange, type GuardPolicy } from "../../../src/guard/contract";
+import { GuiRequestError, type WorkspaceBackend } from "@/gui-client";
 import { GuardFindings } from "@/live/session";
 import { LiveResourcesContext, useLiveActions, useLiveResource } from "./live/resource";
 // Settings shared by both machine roles where the feature exists on both.
@@ -1066,19 +1066,40 @@ export function GuardView() {
   return enrollmentBackend ? <LiveGuardSettings backend={enrollmentBackend} source={role === "source"} /> : null;
 }
 
+const CheckerDraft = Schema.Struct({ version: Schema.Literal(1), checker: Schema.optional(GuardChecker) });
+const GuardSaved = Schema.Struct({ saved: Schema.Boolean });
+
+interface GuardDraft {
+  readonly policy: typeof GuardPolicy.Type;
+  readonly digest: string;
+  readonly rules: NonNullable<typeof GuardPolicy.Type["rules"]>;
+  readonly checkerText: string | null;
+}
+
 function LiveGuardSettings({ backend, source }: { backend: WorkspaceBackend; source: boolean }) {
   const resources = useContext(LiveResourcesContext);
   const current = useLiveResource(backend, guardEndpoints.status, GuiGuardStatus, true);
   const actions = useLiveActions(backend, () => resources?.cache.invalidate([guardEndpoints.status]));
-  const [draft, setDraft] = useState<{ text: string; original: string; digest: string } | null>(null);
+  const [draft, setDraft] = useState<GuardDraft | null>(null);
   const [consent, setConsent] = useState(false);
   const [invalidPolicy, setInvalidPolicy] = useState(false);
   const [scanReport, setScanReport] = useState<typeof GuardReport.Type | null>(null);
-  const failedReport = actions.state.error?.failure.guard;
-  const latest = failedReport ?? scanReport ?? current.data?.latest;
+  const recorded = current.data?.latest;
+  const latest = scanReport && (!recorded || scanReport.at >= recorded.at) ? scanReport : recorded;
   const policy = current.data?.policy;
   const digest = current.data?.digest;
-  const { dialog: leaveDialog } = useLeaveGuard(draft !== null && (draft.text !== draft.original || consent), "the checker policy");
+  const checkerJson = (policy: typeof GuardPolicy.Type) => JSON.stringify({ version: 1, checker: policy.checker }, null, 2);
+  const changed = draft !== null && (
+    JSON.stringify(draft.rules) !== JSON.stringify(draft.policy.rules ?? {})
+    || (draft.checkerText !== null && draft.checkerText !== checkerJson(draft.policy)) || consent
+  );
+  const { dialog: leaveDialog } = useLeaveGuard(changed, "the Guard policy");
+  const busy = current.loading || actions.state.loading;
+  const edit = (change: (draft: GuardDraft) => GuardDraft) => {
+    if (policy && digest) setDraft((existing) => change(existing ?? {
+      policy, digest, rules: policy.rules ?? {}, checkerText: null,
+    }));
+  };
   const cancelEdit = () => {
     setDraft(null);
     setConsent(false);
@@ -1086,27 +1107,46 @@ function LiveGuardSettings({ backend, source }: { backend: WorkspaceBackend; sou
   };
   const save = () => {
     if (draft === null) return;
-    let decoded: typeof GuardPolicy.Type;
-    try {
-      decoded = Schema.decodeUnknownSync(GuardPolicy, { onExcessProperty: "error" })(JSON.parse(draft.text));
-    } catch {
-      setInvalidPolicy(true);
-      return;
+    let checker = draft.policy.checker;
+    if (draft.checkerText !== null) {
+      try {
+        checker = Schema.decodeUnknownSync(CheckerDraft, { onExcessProperty: "error" })(JSON.parse(draft.checkerText)).checker;
+      } catch {
+        setInvalidPolicy(true);
+        return;
+      }
     }
     void actions.run(async (signal) => {
-      await backend.request(guardEndpoints.status, Schema.Struct({ saved: Schema.Boolean }), signal, {
-        method: "PUT", body: { policy: decoded, digest: draft.digest, consent },
+      const policy = { ...draft.policy, rules: Object.keys(draft.rules).length ? draft.rules : undefined, checker };
+      await backend.request(guardEndpoints.status, GuardSaved, signal, {
+        method: "PUT", body: { policy, digest: draft.digest, consent },
       });
       cancelEdit();
     });
   };
   const scan = () => void actions.run(async (signal) => {
-    const operation = await actions.operation(guardEndpoints.scan, {}, signal);
-    setScanReport(Schema.decodeUnknownSync(GuardReport)(operation.result));
+    try {
+      const operation = await actions.operation(guardEndpoints.scan, {}, signal);
+      setScanReport(Schema.decodeUnknownSync(GuardReport)(operation.result));
+    } catch (error) {
+      if (error instanceof GuiRequestError && error.failure.guard) setScanReport(error.failure.guard);
+      else throw error;
+    }
   });
+  const changeApproval = (change: typeof GuardApprovalChange.Type) => {
+    if (!digest) return;
+    void actions.run(async (signal) => {
+      await backend.request(guardEndpoints.approval, GuardSaved, signal, {
+        method: "POST", body: { change, digest },
+      });
+    });
+  };
   return <>
     <PageHeader crumbs={["Settings", "Guard"]} actions={
-      <Button variant="outline" size="sm" disabled={current.loading || actions.state.loading} onClick={scan}>Scan current folder</Button>
+      <>
+        <Button variant="outline" size="sm" disabled={busy} onClick={scan}>Scan current folder</Button>
+        <Button variant="outline" size="sm" disabled={busy} onClick={() => resources?.cache.invalidate([guardEndpoints.status])}>Reload status</Button>
+      </>
     } />
     <Body reloading={current.loading}><Column>
       {current.error && <ErrorNotice error={current.error} />}
@@ -1117,39 +1157,104 @@ function LiveGuardSettings({ backend, source }: { backend: WorkspaceBackend; sou
           {source && <SettingRow title="Optional checker">{policy?.checker?.kind ?? "Off"}</SettingRow>}
           {source && policy?.checker?.authentication === "bearer-env" && <SettingRow title="Bearer credential">{current.data.bearerAvailable ? "Available" : "Missing"}</SettingRow>}
         </>}
-        <SettingRow title={failedReport || scanReport ? "Scan result" : "Last recorded scan"}>{latest
+        <SettingRow title={scanReport && latest === scanReport ? "Scan result" : "Last recorded scan"}>{latest
           ? `${latest.verdict} · ${latest.trigger} · ${latest.at}`
           : "No result recorded"}</SettingRow>
-        {latest && !failedReport && <div className="px-4 pb-4">
+        {latest && <div className="px-4 pb-4">
           <p className="mt-2 text-sm">{latest.checked} files checked, {latest.unsupported} unsupported, {latest.unavailable} unavailable</p>
           <GuardFindings report={latest} />
           {latest.next && <p className="mt-2 text-sm">{latest.next}</p>}
         </div>}
       </div>}
-      {source && digest && policy && <div className="mt-6 space-y-3">
-        <Label htmlFor="guard-policy">Checker policy</Label>
-        <Textarea id="guard-policy" className="font-mono" rows={8} spellCheck={false} readOnly={draft === null || actions.state.loading}
-          value={draft?.text ?? JSON.stringify(policy, null, 2)}
-          onChange={(event) => {
-            if (draft !== null) setDraft({ ...draft, text: event.target.value });
-            setInvalidPolicy(false);
-          }} />
-        {draft === null ? <Button variant="outline" onClick={() => {
-          const original = JSON.stringify(policy, null, 2);
-          setDraft({ text: original, original, digest });
-        }}>Edit checker policy</Button> : <>
-          <Label className="flex items-start gap-2">
-            <Checkbox checked={consent} disabled={actions.state.loading} onCheckedChange={(checked) => setConsent(checked === true)} />
-            I allow this checker to receive eligible instruction and script text. This can include confidential material. A local proxy can forward it, and remote services may charge for requests.
-          </Label>
-          {invalidPolicy && <p role="alert" className="text-bad">Enter a valid Guard policy in JSON.</p>}
-          <div className="flex gap-2">
-            <Button variant="primary" disabled={actions.state.loading} onClick={save}>Save policy</Button>
-            <Button variant="outline" disabled={actions.state.loading} onClick={cancelEdit}>Cancel</Button>
+      {current.data && digest && policy && <>
+        <GuardApprovals status={current.data} latest={latest} disabled={busy || draft !== null} onChange={changeApproval} />
+        <div className="mt-8">
+          <SectionLabel>Rule overrides</SectionLabel>
+          <div className={cn(settingsGroup, "max-sm:[&>div]:flex-col max-sm:[&>div]:items-start max-sm:[&>div]:gap-2")}>
+            {Object.entries(guardRules).map(([code, severity]) => <SettingRow key={code} title={<Mono>{code}</Mono>} htmlFor={`rule-${code}`}>
+              <Select disabled={busy} value={(draft?.rules ?? policy.rules)?.[code] ?? "default"} onValueChange={(value) => edit((existing) => {
+                const rules = { ...existing.rules };
+                if (value === "default") delete rules[code];
+                else if (value === "warn" || value === "block" || value === "off") rules[code] = value;
+                return { ...existing, rules };
+              })}>
+                <SelectTrigger id={`rule-${code}`} className="w-40"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">Default ({severity})</SelectItem>
+                  <SelectItem value="block">Block</SelectItem>
+                  <SelectItem value="warn">Warn</SelectItem>
+                  <SelectItem value="off">Off</SelectItem>
+                </SelectContent>
+              </Select>
+            </SettingRow>)}
           </div>
-        </>}
-      </div>}
+        </div>
+        {source && <div className="mt-8 space-y-3">
+          <Label htmlFor="guard-policy">Checker policy</Label>
+          <Textarea id="guard-policy" className="font-mono" rows={8} spellCheck={false} readOnly={draft?.checkerText == null || busy}
+            value={draft?.checkerText ?? checkerJson(policy)}
+            onChange={(event) => {
+              const checkerText = event.target.value;
+              edit((existing) => ({ ...existing, checkerText }));
+              setInvalidPolicy(false);
+            }} />
+          {draft?.checkerText == null ? <Button variant="outline" disabled={busy} onClick={() => {
+            edit((existing) => ({ ...existing, checkerText: checkerJson(existing.policy) }));
+          }}>Edit checker policy</Button> : <>
+            <Button variant="outline" disabled={busy} onClick={() => {
+              const checkerText = JSON.stringify({ version: 1, checker: { kind: "http", endpoint: promptGuardLocalEndpoint } }, null, 2);
+              edit((existing) => ({ ...existing, checkerText }));
+              setConsent(false);
+              setInvalidPolicy(false);
+            }}>Prompt Guard 2 (local adapter)</Button>
+            <Label className="flex items-start gap-2">
+              <Checkbox checked={consent} disabled={busy} onCheckedChange={(checked) => setConsent(checked === true)} />
+              I allow this checker to receive eligible instruction and script text. This can include confidential material. A local proxy can forward it, and remote services may charge for requests.
+            </Label>
+            {invalidPolicy && <p role="alert" className="text-bad">Enter a valid checker policy in JSON.</p>}
+          </>}
+        </div>}
+        {draft !== null && <div className="mt-4 flex gap-2">
+          <Button variant="primary" disabled={busy || (!changed && draft.checkerText === null)} onClick={save}>Save policy</Button>
+          <Button variant="outline" disabled={busy} onClick={cancelEdit}>Cancel</Button>
+        </div>}
+      </>}
     </Column></Body>
     {leaveDialog}
   </>;
+}
+
+function GuardApprovals({ status, latest, disabled, onChange }: {
+  status: typeof GuiGuardStatus.Type;
+  latest: typeof GuardReport.Type | null | undefined;
+  disabled: boolean;
+  onChange: (change: typeof GuardApprovalChange.Type) => void;
+}) {
+  const [confirmation, setConfirmation] = useState<typeof GuardApprovalChange.Type | null>(null);
+  const approvalKeys = new Set(status.approvals.map(({ item, digest }) => `${digest}:${item}`));
+  const held = latest?.blockedItems?.filter(({ item, digest }) => !approvalKeys.has(`${digest}:${item}`)) ?? [];
+  const approval = confirmation?.action === "approve" ? confirmation.approval : null;
+  return <section className="mt-8" aria-label="Exact-version approvals">
+    <SectionLabel>Exact-version approvals</SectionLabel>
+    <div className={settingsGroup}>
+      {status.approvals.length === 0 && <SettingRow title="No approvals" />}
+      {status.approvals.map(({ item, digest, note, status }) => <SettingRow key={item} title={<Mono>{item}</Mono>}
+        description={<><Mono>{digest.slice(0, 12)}</Mono> · {status}{note && <> · {note}</>}</>}>
+        <Button variant="outline" size="sm" disabled={disabled} aria-label={`Revoke approval for ${item}`}
+          onClick={() => setConfirmation({ action: "revoke", item })}>Revoke…</Button>
+      </SettingRow>)}
+      {held.map((approval) => <SettingRow key={`${approval.digest}:${approval.item}`} title={<Mono>{approval.item}</Mono>}
+        description={<Mono>{approval.digest.slice(0, 12)}</Mono>}>
+        <Button variant="outline" size="sm" disabled={disabled} onClick={() => setConfirmation({ action: "approve", approval })}>
+          Approve this exact version
+        </Button>
+      </SettingRow>)}
+    </div>
+    <ConfirmDialog open={confirmation !== null} onOpenChange={(open) => { if (!open) setConfirmation(null); }}
+      title={approval ? "Approve this exact version?" : "Revoke exact-version approval?"}
+      body={approval ? <>Guard will turn blocks for <Mono>{approval.item}</Mono> at <Mono>{approval.digest.slice(0, 12)}</Mono> into warnings on this machine.</>
+        : <>Guard will apply the configured rules again for <Mono>{confirmation?.action === "revoke" && confirmation.item}</Mono>.</>}
+      confirm={approval ? "Approve version" : "Revoke approval"} confirmVariant={approval ? "primary" : "destructive"}
+      onConfirm={() => { if (confirmation && !disabled) onChange(confirmation); }} />
+  </section>;
 }

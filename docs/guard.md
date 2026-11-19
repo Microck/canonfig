@@ -26,9 +26,62 @@ those files, Guard reports the item as unavailable. A hold is a record of one at
 pin a clean upstream ref, or deselect it and replan. On a Follower, ask the
 Source operator to publish the correction, then retry Sync.
 
-A Source or standalone operator can put `guard.jsonc` beside
-`canonfig.jsonc`, or in the explicit skill worker root. Source Settings also
-lets operators configure the checker. Followers use the built-in checker.
+Keep machine-local Guard policy in `guard.jsonc` beside `canonfig.jsonc`, or
+in the explicit skill worker root when using one. Policy and results stay on
+this machine. Profile Revisions, archives and mirrors exclude them.
+
+## Local rule overrides
+
+Use `rules` to set any built-in rule to `block`, `warn` or `off`. Omitted
+rules use their defaults. Unknown rule codes are configuration errors (exit 2).
+Status and scan reports retain suppressed findings with severity `off` and
+mark changed findings with `overriddenBy: "rule"`. External checker verdicts
+keep their original severity under rule overrides.
+
+```jsonc
+{
+  "version": 1,
+  "rules": {
+    "instruction-credential-concealment": "warn",
+    "unscanned-file": "off"
+  }
+}
+```
+
+| Default | Built-in rule codes |
+| --- | --- |
+| Block | `instruction-credential-concealment`, `unverified-download-execute` |
+| Warn | `instruction-risk-mention`, `download-execute`, `invisible-control`, `encoded-looking-text`, `credential-file-reference`, `tool-call-steering`, `unscanned-file` |
+
+## Approve an exact version
+
+After reviewing a held item, use the item ID and full digest from its finding.
+Replace the sample digest below with the one Guard reports.
+
+```sh
+canonfig guard approve skills:demo --digest 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef --note "Reviewed this version"
+canonfig guard status
+canonfig guard revoke skills:demo
+```
+
+Retry the held operation after approval. The approval changes that version's
+static and checker blocks into warnings marked with `overriddenBy: "approval"`.
+Changing any byte re-arms the block. Approving a new digest replaces the item's
+previous approval. `guard status` marks an approval stale when the latest scan
+saw a different digest for its item, or unseen when that scan has no observation
+for the item. The file stores approvals as `{ item, digest, note? }` entries
+in the optional `approvals` array.
+
+On Source and Follower Machines, Settings > Guard has rule controls, approval
+revocation and an **Approve this exact version** action for items in the latest
+held result. On a Follower, local rules and approvals apply to offline checks
+for both received and Local items before Sync. The Follower sends no candidate
+text to an external checker.
+
+## Optional checker
+
+Source and standalone operators can configure a checker in `guard.jsonc`.
+Source Settings also provides checker configuration.
 
 ```jsonc
 {
@@ -69,6 +122,16 @@ Return `{"schema":"canonfig.guard/v1","verdict":"allow","findings":[]}`.
 For `warn` or `block`, supply findings with a `code` and optional `path`
 and 1-based `line`. Codes are `prompt-injection`, `credential-disclosure`,
 `unsafe-execution`, `obfuscation` and `other-risk`.
+
+### Local Prompt Guard 2 adapter
+
+Start the [local adapter](../tools/guard-adapters/prompt-guard/README.md) with
+`uv run tools/guard-adapters/prompt-guard/server.py`. In Source Settings,
+choose **Prompt Guard 2 (local adapter)** while editing the checker policy.
+The preset uses kind `http` and endpoint `http://127.0.0.1:8787/v1/guard`.
+
+The model is gated on Hugging Face and requires accepting the Llama 4 license
+there. Set `HF_TOKEN` for the initial download.
 
 Guard checks declared content. Disabled hooks stay in scope so enabling one
 later cannot bypass the check. Its coverage excludes live MCP tool lists,

@@ -1,6 +1,6 @@
 import { scanGuardFolder } from "../../guard/commands.ts";
-import { guardEffect, guardStatus, saveGuardPolicy } from "../../guard/guard.ts";
-import { guardEndpoints, GuiGuardWrite } from "../../guard/contract.ts";
+import { changeGuardApproval, guardEffect, guardStatus, saveGuardPolicy } from "../../guard/guard.ts";
+import { guardEndpoints, GuiGuardApproval, GuiGuardWrite } from "../../guard/contract.ts";
 import { FleetStart } from "../../domain/fleet-update.ts";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -105,10 +105,12 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
       Effect.map(toJson), Effect.mapError(commandFailure),
     )),
     mutationRoute("PUT", guardEndpoints.status, GuiGuardWrite, (input) => guardLocation.pipe(
-      Effect.flatMap(({ root, follower }) => follower
-        ? Effect.fail(new CliCommandFailure({ category: "usage-or-configuration", message: "Followers use offline Guard." }))
-        : guardEffect(() => saveGuardPolicy(root, input)).pipe(Effect.mapError(commandFailure)),
-      ), Effect.as({ saved: true }),
+      Effect.flatMap(({ root, follower }) => guardEffect(() => saveGuardPolicy(root, input, follower))),
+      Effect.mapError(commandFailure), Effect.as({ saved: true }),
+    )),
+    mutationRoute("POST", guardEndpoints.approval, GuiGuardApproval, (input) => guardLocation.pipe(
+      Effect.flatMap(({ root }) => guardEffect(() => changeGuardApproval(root, input.digest, input.change))),
+      Effect.mapError(commandFailure), Effect.as({ saved: true }),
     )),
     mutationRoute("POST", guardEndpoints.scan, EmptyBody, () => guardLocation.pipe(
       Effect.flatMap(({ root, follower }) => operations.start(

@@ -1,4 +1,4 @@
-import type { GuardReport } from "../../../src/guard/contract";
+import { followerPublicationWarning, type GuardReport } from "../../../src/guard/contract";
 import type { ReactNode } from "react";
 import { WarningCircle } from "@/components/icons";
 import { CliText } from "@/shared/shared";
@@ -42,12 +42,16 @@ export function ErrorNotice({ error, title = "Operation failed", recovery }: { e
 
 export function GuardFindings({ report }: { report: typeof GuardReport.Type }) {
   return <>
+    {!!report.publicationPolicyWarnings?.length && <p className="mt-2 break-words text-sm">
+      Local Guard policy relaxed default blocks for <code>{report.publicationPolicyWarnings.join(", ")}</code>. {followerPublicationWarning}
+    </p>}
     {report.findings.length > 0 && (
       <ul className="mt-2 space-y-1 text-sm">
         {report.findings.map((finding, index) => (
           <li key={`${finding.digest}-${index}`} className="break-all">
             <code>{finding.item}{finding.path ? ` / ${finding.path}` : ""}{finding.line ? `:${finding.line}` : ""}</code>
             {" "}<code>{finding.code}</code> ({finding.checker})
+            {finding.overriddenBy && ` · ${finding.severity === "off" ? "Suppressed by rule" : `${finding.severity} by ${finding.overriddenBy}`}`}
           </li>
         ))}
       </ul>

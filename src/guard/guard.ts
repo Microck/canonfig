@@ -1,7 +1,7 @@
 import { asJson, canonicalJson } from "../profile/profile-codec.ts";
 import { BuildPolicy } from "../domain/resource.ts";
 import { TaggedError } from "../domain/tagged-error.ts";
-import { GuardChecker, GuardPolicy, GuardReport as GuardReportSchema } from "./contract.ts";
+import { GuardChecker, GuardPolicy, GuardReport as GuardReportSchema, followerPublicationWarning, guardApprovalDigestLength, guardApprovalLimit, guardApprovalNoteLimit, guardItemLabelLimit, guardReportFindingLimit, guardReportItemLimit, guardRules, type GuardApprovalChange, type GuardFinding } from "./contract.ts";
 import { containsGuardCredential, guardCredential, guardCredentialAvailable } from "./credential.ts";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
@@ -20,8 +20,21 @@ const policyFile = "guard.jsonc";
 const stateDir = ".guard";
 const fileLimit = 1024 * 1024;
 const responseLimit = 16 * 1024;
+// JSON can use six bytes per label or note character. Budget 96 bytes per
+// approval for field names and formatting, plus 16 KiB for rules and checker settings.
+const policyLimit = guardApprovalLimit * (6 * (guardItemLabelLimit + guardApprovalNoteLimit) + guardApprovalDigestLength + 96)
+  + 16 * 1024;
+// safeLabel allows no JSON escapes and UTF-8 uses at most three bytes per UTF-16 code unit.
+const reportLabelBytes = 3 * guardItemLabelLimit;
+const reportIdentityBytes = reportLabelBytes + guardApprovalDigestLength + 32;
+const reportLimit = (guardReportItemLimit + guardApprovalLimit) * reportIdentityBytes
+  + guardReportItemLimit * (reportLabelBytes + 3)
+  + guardReportFindingLimit * (2 * reportLabelBytes + guardApprovalDigestLength + 256)
+  + 4096; // Report metadata (including trigger and operator guidance).
 const version = "canonfig.guard/v1";
 const rulesRevision = 3;
+const defaultBlockRules: ReadonlySet<string> = new Set(Object.entries(guardRules)
+  .filter(([, severity]) => severity === "block").map(([code]) => code));
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const strict = { onExcessProperty: "error" } as const;
@@ -35,7 +48,7 @@ export const guardReserved = (relative: string): boolean => {
 type Policy = typeof GuardPolicy.Type;
 type Checker = typeof GuardChecker.Type;
 const policyError = () => new CanonfigError("GUARD_POLICY_INVALID",
-  "Guard policy is invalid. Correct guard.jsonc before retrying. Use a loopback IP address, or explicitly permit a remote HTTPS endpoint.");
+  "Guard policy is invalid. Check the rule codes, approval digests and checker settings in guard.jsonc.");
 
 function duplicateKeys(node: Node): boolean {
   if (node.type === "object") {
@@ -100,22 +113,21 @@ async function saveGuardState(root: string, relative: string, text: string): Pro
 
 export async function readGuardPolicy(root: string) {
   try {
-    const bytes = await readState(root, policyFile, 16 * 1024);
-    return { policy: bytes === undefined ? { version: 1 } as const : decodePolicy(decoder.decode(bytes)), digest: sha256(bytes ?? "") };
+    const bytes = await readState(root, policyFile, policyLimit);
+    const policy: Policy = bytes === undefined ? { version: 1 } : decodePolicy(decoder.decode(bytes));
+    return { policy, digest: sha256(bytes ?? "") };
   } catch { throw policyError(); }
 }
 
-export async function saveGuardPolicy(root: string, input: { policy: Policy; digest: string; consent: boolean }) {
-  const text = JSON.stringify(input.policy, null, 2) + "\n";
-  if (Buffer.byteLength(text) > 16 * 1024) throw policyError();
-  try { decodePolicy(text); } catch { throw policyError(); }
-  if (input.policy.checker && !input.consent) {
-    throw new CanonfigError("GUARD_CONSENT_REQUIRED", "Confirm that the checker may receive instruction and script text.");
-  }
+async function writeGuardPolicy(root: string, expectedDigest: string, edit: (previous: Policy) => Policy) {
   const conflict = () => new CanonfigError("GUARD_POLICY_CONFLICT", "Guard policy changed or another save is in progress. Reload Settings before saving.");
   await ensureGuardStateDirectory(root);
   const save = Effect.tryPromise(async () => {
-    if ((await readGuardPolicy(root)).digest !== input.digest) throw conflict();
+    const previous = await readGuardPolicy(root);
+    if (previous.digest !== expectedDigest) throw conflict();
+    const text = JSON.stringify(edit(previous.policy), null, 2) + "\n";
+    if (Buffer.byteLength(text) > policyLimit) throw policyError();
+    try { decodePolicy(text); } catch { throw policyError(); }
     await atomicWrite(join(root, policyFile), text, 0o600, root);
   });
   await Effect.runPromise(withRunLock(join(root, stateDir, policyFile), "save Guard policy", save).pipe(
@@ -124,9 +136,39 @@ export async function saveGuardPolicy(root: string, input: { policy: Policy; dig
   ));
 }
 
+export async function saveGuardPolicy(root: string, input: { policy: Policy; digest: string; consent: boolean }, follower: boolean) {
+  if (follower && input.policy.checker !== undefined) {
+    throw new CanonfigError("GUARD_CHECKER_NOT_ALLOWED", "Followers use offline Guard.");
+  }
+  await writeGuardPolicy(root, input.digest, (previous) => {
+    if (input.policy.checker && !input.consent
+      && canonicalJson(asJson(input.policy.checker)) !== canonicalJson(asJson(previous.checker ?? null))) {
+      throw new CanonfigError("GUARD_CONSENT_REQUIRED", "Confirm that the checker may receive instruction and script text.");
+    }
+    // Local controls remain editable on a Follower without changing stored checker configuration.
+    return follower ? { ...input.policy, checker: previous.checker } : input.policy;
+  });
+}
+
+export async function changeGuardApproval(root: string, digest: string, change: typeof GuardApprovalChange.Type) {
+  await writeGuardPolicy(root, digest, (previous) => {
+    const item = change.action === "approve" ? change.approval.item : change.item;
+    const approvals = (previous.approvals ?? []).filter((approval) => approval.item !== item);
+    if (change.action === "approve") {
+      if (approvals.length >= guardApprovalLimit) {
+        throw new CanonfigError("GUARD_POLICY_INVALID",
+          `Guard allows at most ${guardApprovalLimit} approvals. Revoke an existing approval before adding another.`);
+      }
+      approvals.push(change.approval);
+    }
+    return { ...previous, approvals: approvals.length ? approvals : undefined };
+  });
+}
+
 export interface GuardFile {
   readonly path: string;
   readonly executable: boolean;
+  readonly mode?: number | undefined;
   readonly bytes?: Uint8Array;
   /** Set when a file exceeds the per-file or remaining scan byte budget. */
   readonly oversized?: { readonly digest: string; readonly length: number; readonly shebang?: true };
@@ -138,6 +180,10 @@ export interface GuardItem {
   /** Only decoded declarations go here. They are never sent to a checker. */
   readonly declaration?: Schema.Json;
 }
+
+/** A signed mode takes precedence over the executable flag when Sync writes a file. */
+export const effectiveExecuteBits = ({ executable, mode }: { executable?: boolean | undefined; mode?: number | undefined }): number =>
+  (mode ?? (executable ? 0o700 : 0o600)) & 0o111;
 
 export const guardText = (path: string, text: string): GuardFile => ({ path, executable: false, bytes: encoder.encode(text) });
 export const guardFileLimit = fileLimit;
@@ -175,21 +221,13 @@ const VerdictWire = Schema.Struct({
 });
 type Verdict = typeof VerdictWire.Type;
 type Severity = "warn" | "block";
-type Finding = {
-  readonly checker: "static" | Checker["kind"];
-  readonly severity: Severity;
-  readonly code: string;
-  readonly item: string;
-  readonly digest: string;
-  readonly path?: string;
-  readonly line?: number;
-};
+type Finding = typeof GuardFinding.Type;
 export type GuardReport = typeof GuardReportSchema.Type;
 
 type Bearer = ReturnType<typeof guardCredential>;
 
 const safeLabel = (value: string, bearer: Bearer): string =>
-  /^[\p{L}\p{N}._+:/ -]{1,180}$/u.test(value) && !value.startsWith("/") && !/^[a-z]:\//iu.test(value)
+  value.length <= guardItemLabelLimit && /^[\p{L}\p{N}._+:/ -]+$/u.test(value) && !value.startsWith("/") && !/^[a-z]:\//iu.test(value)
     && !containsGuardCredential(value, bearer) ? value : `item-${sha256(value).slice(0, 12)}`;
 
 const override = /\b(?:ignore|override|disregard|bypass|forget)\b[^.!?\n]{0,100}\b(?:instructions?|polic(?:y|ies)|rules?|safeguards?|authorization)\b/iu;
@@ -313,17 +351,19 @@ function downloadPipeline(text: string, requireBypass: boolean): boolean {
   });
 }
 
-function scanText(text: string, code: readonly string[], prose: boolean): ReadonlyArray<readonly [Severity, string]> {
-  const findings: Array<readonly [Severity, string]> = [];
+type RuleCode = keyof typeof guardRules;
+
+function scanText(text: string, code: readonly string[], prose: boolean): readonly RuleCode[] {
+  const findings: RuleCode[] = [];
   const instruction = prose ? instructionFinding(text) : undefined;
-  if (instruction === "block") findings.push(["block", "instruction-credential-concealment"]);
-  if (instruction === "warn") findings.push(["warn", "instruction-risk-mention"]);
-  if (code.some((source) => downloadPipeline(source, true))) findings.push(["block", "unverified-download-execute"]);
-  else if (downloadPipeline(text, false)) findings.push(["warn", "download-execute"]);
-  if (/[\u202a-\u202e\u2066-\u2069\u200b\u2060]|[^\P{Cc}\t\n\r]/u.test(text)) findings.push(["warn", "invisible-control"]);
-  if (/[A-Za-z0-9+/]{512,}={0,2}/u.test(text)) findings.push(["warn", "encoded-looking-text"]);
-  if (credentialFile.test(text)) findings.push(["warn", "credential-file-reference"]);
-  if (/\b(?:ignore|override|replace) (?:all |any |the )?(?:other|unrelated) tool (?:calls|results|instructions)\b/iu.test(text)) findings.push(["warn", "tool-call-steering"]);
+  if (instruction === "block") findings.push("instruction-credential-concealment");
+  if (instruction === "warn") findings.push("instruction-risk-mention");
+  if (code.some((source) => downloadPipeline(source, true))) findings.push("unverified-download-execute");
+  else if (downloadPipeline(text, false)) findings.push("download-execute");
+  if (/[\u202a-\u202e\u2066-\u2069\u200b\u2060]|[^\P{Cc}\t\n\r]/u.test(text)) findings.push("invisible-control");
+  if (/[A-Za-z0-9+/]{512,}={0,2}/u.test(text)) findings.push("encoded-looking-text");
+  if (credentialFile.test(text)) findings.push("credential-file-reference");
+  if (/\b(?:ignore|override|replace) (?:all |any |the )?(?:other|unrelated) tool (?:calls|results|instructions)\b/iu.test(text)) findings.push("tool-call-steering");
   return findings;
 }
 
@@ -390,7 +430,6 @@ function declarationCode(kind: string, value: Schema.Json): string[] {
   if (kind === "mcp" && jsonString(record.command) && jsonArgv(record.args)) {
     return inlineCode(record.command, record.args);
   }
-  // Published hooks wrap the authored hook alongside its position.
   if (kind === "hooks") return argvCode(record.run ?? declarationRecord(record.hook).run);
   return kind === "tools" ? toolCode(record) : [];
 }
@@ -398,7 +437,7 @@ function declarationCode(kind: string, value: Schema.Json): string[] {
 const sortedFiles = (item: GuardItem) => [...item.files].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 function itemDigest(item: GuardItem): string {
   return sha256(canonicalJson(asJson([item.kind, item.id, item.declaration, sortedFiles(item).map((file) => [
-    file.path, file.executable, file.bytes?.byteLength ?? file.oversized?.length,
+    file.path, effectiveExecuteBits(file), file.bytes?.byteLength ?? file.oversized?.length,
     file.bytes === undefined ? file.oversized?.digest : sha256(file.bytes),
   ])])));
 }
@@ -528,7 +567,13 @@ const reason = new Map(Object.entries({
 export function guardMessage(report: GuardReport): string {
   const finding = report.findings[0];
   const detail = finding === undefined ? "" : ` ${finding.item}${finding.path ? ` (${finding.path})` : ""}: ${reason.get(finding.code) ?? finding.code}`;
-  return `Guard ${report.verdict === "block" ? "held the operation. Human Action Required." : report.verdict === "warn" ? "reported warnings." : "found no matching risks."}${detail}${report.next ? ` ${report.next}` : ""}${report.recordUnavailable ? " The local result could not be saved." : ""}`;
+  const policy = finding?.overriddenBy ? ` Local ${finding.overriddenBy} set severity to ${finding.severity}.` : "";
+  const digest = finding?.severity === "block" ? ` Item digest: ${finding.digest}.` : "";
+  const result = report.verdict === "block" ? "held the operation. Human Action Required."
+    : report.verdict === "warn" ? "reported warnings." : finding ? "suppressed findings under local rules." : "found no matching risks.";
+  const publicationWarning = report.publicationPolicyWarnings?.length
+    ? ` Local Guard policy relaxed default blocks for ${report.publicationPolicyWarnings.join(", ")}. ${followerPublicationWarning}` : "";
+  return `Guard ${result}${detail}${policy}${digest}${publicationWarning}${report.next ? ` ${report.next}` : ""}${report.recordUnavailable ? " The local result could not be saved." : ""}`;
 }
 
 export class GuardHold extends TaggedError<GuardHold>()("GuardHold", {
@@ -565,12 +610,30 @@ interface ScanState {
   cacheHits: number;
 }
 
-function scanItem(item: GuardItem, digest: string, state: ScanState, bearer: Bearer): void {
+interface IdentifiedItem {
+  readonly item: GuardItem;
+  readonly label: string;
+  readonly digest: string;
+  readonly approved: boolean;
+}
+
+function applyApproval(finding: Finding, approved: boolean): Finding {
+  return approved && finding.severity === "block"
+    ? { ...finding, severity: "warn", overriddenBy: "approval" } : finding;
+}
+
+function scanItem({ item, label, digest, approved }: IdentifiedItem, state: ScanState, bearer: Bearer, rules: Policy["rules"]): void {
   const local = item.id.startsWith("local/");
+  const addFinding = (code: RuleCode, path?: string) => {
+    const severity = rules?.[code] ?? guardRules[code];
+    const finding = applyApproval({
+      checker: "static", severity, code, item: label, digest, path: path === undefined ? undefined : safeLabel(path, bearer),
+      overriddenBy: severity === guardRules[code] ? undefined : "rule",
+    }, approved);
+    state.findings.push({ ...finding, local });
+  };
   const add = (text: string, code: readonly string[], prose: boolean, path?: string) => {
-    state.findings.push(...scanText(text, code, prose).map(([severity, code]) => ({
-      local, checker: "static" as const, severity, code, item: safeLabel(item.id, bearer), digest, path: path === undefined ? undefined : safeLabel(path, bearer),
-    })));
+    for (const finding of scanText(text, code, prose)) addFinding(finding, path);
   };
   if (item.declaration !== undefined) {
     state.checked++;
@@ -579,32 +642,31 @@ function scanItem(item: GuardItem, digest: string, state: ScanState, bearer: Bea
   const isInstruction = instructionKind.test(item.kind);
   for (const file of sortedFiles(item)) {
     const text = fileText(file);
-    const script = file.executable || scriptLike(file.path, fileHasShebang(file));
+    const script = effectiveExecuteBits(file) !== 0 || scriptLike(file.path, fileHasShebang(file));
     if (text !== undefined) {
       state.checked++;
       add(text, script ? [text] : [], isInstruction, file.path);
     } else {
       state.unsupported++;
       if (script || (isInstruction && instructionExtension.test(file.path))) {
-        state.findings.push({ local, checker: "static", severity: "warn", code: "unscanned-file",
-          item: safeLabel(item.id, bearer), path: safeLabel(file.path, bearer), digest });
+        addFinding("unscanned-file", file.path);
       }
     }
   }
 }
 
 const eligibleFile = (item: GuardItem, file: GuardFile): boolean =>
-  file.executable || scriptLike(file.path, fileHasShebang(file)) || instructionExtension.test(file.path)
+  effectiveExecuteBits(file) !== 0 || scriptLike(file.path, fileHasShebang(file)) || instructionExtension.test(file.path)
   || item.kind === "hooks" || item.kind === "hook-scripts";
 
 const relativeCheckerPath = (path: string): boolean =>
   !/(?:^[a-z]:|[\\\0])/iu.test(path) && path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 
-async function checkExternal(options: GuardOptions, items: readonly { item: GuardItem; digest: string }[],
+async function checkExternal(options: GuardOptions, items: readonly IdentifiedItem[],
   checker: Checker, state: ScanState, bearer: Bearer) {
   const signal = options.signal ?? new AbortController().signal;
   const deadline = Date.now() + 60_000;
-  for (const { item, digest } of items) {
+  for (const { item, label, digest, approved } of items) {
     const local = item.id.startsWith("local/");
     signal.throwIfAborted();
     const candidates = sortedFiles(item).filter((file) => eligibleFile(item, file));
@@ -628,13 +690,17 @@ async function checkExternal(options: GuardOptions, items: readonly { item: Guar
       : await checkItem(options.root, checker, item.kind, digest, files, bearer, signal, deadline);
     if (outcome.unavailable !== undefined) {
       state.unavailable++;
-      state.findings.push({ local, checker: checker.kind, severity: checker.onUnavailable ?? "block", code: outcome.unavailable, item: safeLabel(item.id, bearer), digest });
+      state.findings.push({ local, ...applyApproval({
+        checker: checker.kind, severity: checker.onUnavailable ?? "block", code: outcome.unavailable, item: label, digest,
+      }, approved) });
     } else if (outcome.verdict) {
       if (outcome.cached) state.cacheHits++;
       const severity = outcome.verdict.verdict;
       if (severity !== "allow") state.findings.push(...outcome.verdict.findings.map((finding) => ({
-        ...finding, path: finding.path === undefined ? undefined : safeLabel(finding.path, bearer),
-        local, checker: checker.kind, item: safeLabel(item.id, bearer), digest, severity,
+        local, ...applyApproval({
+          ...finding, path: finding.path === undefined ? undefined : safeLabel(finding.path, bearer),
+          checker: checker.kind, item: label, digest, severity,
+        }, approved),
       })));
     }
   }
@@ -644,13 +710,19 @@ export async function inspectGuard(items: readonly GuardItem[], options: GuardOp
   // Finish the entire offline scan before transmitting any candidate text.
   const state: ScanState = { findings: [], checked: 0, unsupported: 0, unavailable: 0, cacheHits: 0 };
   const bearer = guardCredential();
-  const identified = items.map((item) => ({ item, digest: itemDigest(item) }));
-  for (const { item, digest } of identified) scanItem(item, digest, state, bearer);
-  if (!options.staticOnly && !options.preview && !state.findings.some(({ severity }) => severity === "block")) {
-    const { policy } = await readGuardPolicy(options.root);
-    if (policy.checker !== undefined) await checkExternal(options, identified, policy.checker, state, bearer);
+  const { policy } = await readGuardPolicy(options.root);
+  const approvals = new Map(policy.approvals?.map(({ item, digest }) => [item, digest]));
+  const identified = items.map((item) => {
+    const label = safeLabel(item.id, bearer);
+    const digest = itemDigest(item);
+    return { item, label, digest, approved: approvals.get(label) === digest };
+  });
+  for (const item of identified) scanItem(item, state, bearer, policy.rules);
+  if (policy.checker !== undefined && !options.staticOnly && !options.preview && !state.findings.some(({ severity }) => severity === "block")) {
+    await checkExternal(options, identified, policy.checker, state, bearer);
   }
-  state.findings.sort((a, b) => Number(b.severity === "block") - Number(a.severity === "block"));
+  const order = { off: 0, warn: 1, block: 2 };
+  state.findings.sort((a, b) => order[b.severity] - order[a.severity]);
   const first = state.findings[0];
   const next = first?.severity !== "block" ? undefined : first.code.startsWith("checker-")
     ? "Restore the checker or review its availability policy, then retry."
@@ -661,13 +733,43 @@ export async function inspectGuard(items: readonly GuardItem[], options: GuardOp
     : options.trigger.startsWith("skills.")
     ? "Correct the upstream content or select a clean ref, then retry."
     : "Correct or deselect the affected item, then retry.";
+  // Retain an observation per approval, even for clean candidates. A matching
+  // digest takes precedence if more than one candidate has the same label.
+  const approvalObservations = new Map<string, { item: string; digest: string }>();
+  for (const { label, digest, approved } of identified) {
+    if (approvals.has(label) && (approved || !approvalObservations.has(label))) {
+      approvalObservations.set(label, { item: label, digest });
+    }
+  }
+  const blockedItems = new Map<string, { item: string; digest: string }>();
+  const publicationPolicyWarnings = new Set<string>();
+  for (const { severity, item, digest, overriddenBy, code, checker } of state.findings) {
+    if (severity === "block" && blockedItems.size < guardReportItemLimit) {
+      blockedItems.set(`${digest}:${item}`, { item, digest });
+    }
+    if (options.trigger === "source.publish" && checker === "static" && overriddenBy !== undefined && severity !== "block"
+      && defaultBlockRules.has(code)
+      && publicationPolicyWarnings.size < guardReportItemLimit) {
+      publicationPolicyWarnings.add(item);
+    }
+  }
+  const verdict = first?.severity === "block" ? "block"
+    : first?.severity === "warn" || publicationPolicyWarnings.size > 0 ? "warn" : "allow";
   const report: GuardReport = {
-    ...state, trigger: options.trigger, at: new Date().toISOString(), verdict: first?.severity ?? "allow",
-    findings: state.findings.slice(0, 20).map(({ local: _local, ...finding }) => finding), findingCount: state.findings.length, next,
+    ...state, trigger: options.trigger, at: new Date().toISOString(), verdict,
+    findings: state.findings.slice(0, guardReportFindingLimit).map(({ local: _local, ...finding }) => finding),
+    findingCount: state.findings.length, next,
+    blockedItems: blockedItems.size > 0 ? [...blockedItems.values()] : undefined,
+    publicationPolicyWarnings: publicationPolicyWarnings.size > 0 ? [...publicationPolicyWarnings] : undefined,
+    approvalObservations: approvalObservations.size > 0 ? [...approvalObservations.values()] : undefined,
   };
   options.signal?.throwIfAborted();
   if (!options.preview) {
-    try { await saveGuardState(options.root, join(stateDir, "latest.json"), JSON.stringify(report)); }
+    try {
+      const serialized = JSON.stringify(report);
+      if (Buffer.byteLength(serialized) > reportLimit) return { ...report, recordUnavailable: true };
+      await saveGuardState(options.root, join(stateDir, "latest.json"), serialized);
+    }
     catch { return { ...report, recordUnavailable: true }; }
   }
   return report;
@@ -680,12 +782,18 @@ export async function enforceGuard(items: readonly GuardItem[], options: GuardOp
 }
 
 export async function guardStatus(root: string, follower: boolean) {
-  const latest = await readState(root, join(stateDir, "latest.json"), 32 * 1024);
-  return {
-    ...(follower ? { mode: "static" as const } : await readGuardPolicy(root).then((settings) => ({
-      mode: settings.policy.checker === undefined ? "static" as const : "operator" as const,
-      ...settings, bearerAvailable: guardCredentialAvailable(guardCredential()),
-    }))),
-    latest: latest === undefined ? null : Schema.decodeUnknownSync(GuardReportSchema, strict)(JSON.parse(decoder.decode(latest))),
-  };
+  const { policy, digest } = await readGuardPolicy(root);
+  const bytes = await readState(root, join(stateDir, "latest.json"), reportLimit);
+  const latest = bytes === undefined ? null : Schema.decodeUnknownSync(GuardReportSchema, strict)(JSON.parse(decoder.decode(bytes)));
+  const observations = [...latest?.approvalObservations ?? [], ...latest?.findings ?? []];
+  const approvals = (policy.approvals ?? []).map((approval) => {
+    const seen = observations.filter(({ item }) => item === approval.item);
+    const status = seen.some(({ digest }) => digest === approval.digest) ? "current" : seen.length ? "stale" : "unseen";
+    return { ...approval, status };
+  });
+  const status = { digest, latest, approvals };
+  return follower
+    ? { ...status, mode: "static" as const, policy: { ...policy, checker: undefined } }
+    : { ...status, mode: policy.checker === undefined ? "static" as const : "operator" as const,
+      policy, bearerAvailable: guardCredentialAvailable(guardCredential()) };
 }

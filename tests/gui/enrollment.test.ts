@@ -8,8 +8,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import { Effect, Schema } from "effect";
 import { withRunLock } from "../../src/synchronization/run-lock.ts";
-import { GuiOperation } from "../../src/gui/contract/operations.ts";
 import { GuiSetupJournal, GuiSetupStatus } from "../../src/gui/contract/enrollment.ts";
+import { waitForOperation } from "./operation-test-helper.ts";
 
 const entry = resolve(import.meta.dirname, "../../src/runtime/main.ts");
 const homes: string[] = [];
@@ -56,14 +56,10 @@ interface GuiTestServer {
   request(path: string, body?: unknown): Promise<{ status: number; body: unknown }>;
 }
 async function finish(server: GuiTestServer, ticket: { id: string }, pollStatus?: () => Promise<void>) {
-  for (let attempt = 0; attempt < 500; attempt++) {
-    const [response] = await Promise.all([server.request(`/api/operations/${ticket.id}`), pollStatus?.()]);
-    expect(response.status, JSON.stringify(response.body)).toBe(200);
-    const operation = Schema.decodeUnknownSync(GuiOperation)(response.body);
-    if (operation.state !== "running") return operation;
-    await delay(20);
-  }
-  throw new Error("Operation did not finish");
+  return waitForOperation(ticket, async (path) => {
+    const [response] = await Promise.all([server.request(path), pollStatus?.()]);
+    return { status: response.status, payload: response.body };
+  }, 10_000);
 }
 afterEach(async () => {
   for (const child of children) {

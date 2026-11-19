@@ -1,3 +1,4 @@
+import { guardEndpoints } from "../../../../src/guard/contract";
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Schema } from "effect";
 import { GuiRequestError, type WorkspaceBackend } from "../../gui-client";
@@ -55,6 +56,11 @@ export class LiveResourceCache {
 }
 
 export const LiveResourcesContext = createContext<{ cache: LiveResourceCache; paths: readonly string[] } | null>(null);
+
+export function useGuardStatusInvalidation() {
+  const resources = useContext(LiveResourcesContext);
+  return () => resources?.cache.invalidate([guardEndpoints.status]);
+}
 
 export function useLiveResource<T>(backend: WorkspaceBackend, path: string, schema: Schema.Codec<T, unknown>, allowed: boolean): LiveResource<T> {
   const context = useContext(LiveResourcesContext);

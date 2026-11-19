@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 
 import { parseSelfUpdateArguments } from "../../src/runtime/self-update/cli.ts";
 import { parseSkillsArguments } from "../../src/skills/cli.ts";
+import { parseGuardArguments } from "../../src/guard/commands.ts";
 import { evaluateCli } from "../../src/cli/cli.ts";
 import { installerArguments, parseReportIssueArguments, validMcpRunArguments } from "../../src/runtime/command-routing.ts";
 import { parseInstallerArguments } from "../../src/runtime/installer-cli.ts";
@@ -153,6 +154,9 @@ export const validateDocumentation = async (
         parseSelfUpdateArguments(arguments_.slice(1));
       } else if (arguments_[0] === "skills") {
         try { parseSkillsArguments(arguments_.slice(1)); }
+        catch { throw new Error(`${path} contains an invalid CLI example: ${example}`); }
+      } else if (arguments_[0] === "guard") {
+        try { parseGuardArguments(arguments_); }
         catch { throw new Error(`${path} contains an invalid CLI example: ${example}`); }
       } else if (arguments_[0] === "report-issue") {
         if (parseReportIssueArguments(arguments_) === undefined) {

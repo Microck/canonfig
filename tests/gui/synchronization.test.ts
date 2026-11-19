@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Deferred, Effect, Fiber, Layer, Schema } from "effect";
 import { afterEach, expect, it } from "vitest";
-import { GuiArchiveDownload, GuiArchiveImportResult, GuiBackups, GuiLocalItems, GuiOperation, GuiOperationTicket, GuiScheduleStatus, GuiSyncApplyRequest } from "../../src/gui/contract.ts";
+import { GuiGuardStatus } from "../../src/guard/contract.ts";
+import { GuiArchiveDownload, GuiArchiveImportResult, GuiBackups, GuiLocalItems, GuiOperationTicket, GuiScheduleStatus, GuiSyncApplyRequest } from "../../src/gui/contract.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { macosMachineStateLayer } from "../../src/machine/macos.layer.ts";
 import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
@@ -16,6 +17,7 @@ import { MachineState } from "../../src/machine/machine-state.service.ts";
 import { synchronizeLocal } from "../../src/projection/sync.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 import { SynchronizationLive } from "../../src/synchronization/synchronization.layer.ts";
+import { waitForOperation } from "./operation-test-helper.ts";
 
 const project = resolve(import.meta.dirname, "../..");
 const children = new Set<ChildProcess>();
@@ -166,17 +168,7 @@ async function gui(machine: Fixture) {
     const started = await call(path, "POST", body);
     expect(started.status).toBe(202);
     const ticket = Schema.decodeUnknownSync(GuiOperationTicket)(started.payload);
-    let polled = Schema.decodeUnknownSync(GuiOperation)((await call(`/api/operations/${ticket.id}`)).payload);
-    const deadline = Date.now() + 60_000;
-    while (polled.state === "running") {
-      if (Date.now() > deadline) throw new Error("Operation did not finish");
-      // This polls a separate CLI process over HTTP, not an in-process timer under TestClock.
-      const { promise, resolve: tick } = Promise.withResolvers<void>();
-      setTimeout(tick, 20);
-      await promise;
-      polled = Schema.decodeUnknownSync(GuiOperation)((await call(`/api/operations/${ticket.id}`)).payload);
-    }
-    return polled;
+    return waitForOperation(ticket, call, 60_000);
   };
   return { call, operation };
 }
@@ -361,9 +353,16 @@ it("plans and applies an enrolled follower and performs digest-checked local ope
   success(source.invoke(["source", "invite", "--endpoint", `https://127.0.0.1:${port}`, "--output", invitation]));
   success(follower.invoke(["follower", "enroll", "--stdin", "--name", "GUI follower"], readFileSync(invitation, "utf8")));
   const api = await gui(follower);
-  expect((await api.call("/api/guard")).payload).toMatchObject({ mode: "static", latest: null });
-  expect((await api.call("/api/guard", "PUT", { policy: { version: 1 }, digest: "fixture", consent: true })).payload)
+  const guard = Schema.decodeUnknownSync(GuiGuardStatus)((await api.call("/api/guard")).payload);
+  expect(guard).toMatchObject({ mode: "static", latest: null });
+  expect((await api.call("/api/guard", "PUT", {
+    policy: { version: 1, checker: { kind: "http", endpoint: "http://127.0.0.1:8787/v1/guard" } }, digest: guard.digest, consent: true,
+  })).payload)
     .toMatchObject({ exitCode: 2 });
+  const rules = { "instruction-credential-concealment": "warn" };
+  expect((await api.call("/api/guard", "PUT", { policy: { version: 1, rules }, digest: guard.digest, consent: false })).payload)
+    .toMatchObject({ saved: true });
+  expect((await api.call("/api/guard")).payload).toMatchObject({ policy: { rules }, approvals: [] });
   for (const path of ["/api/imports/preview", "/api/imports"]) {
     expect((await api.call(path, "POST", { base64: "YWJj", replace: true, ...(path === "/api/imports" ? { sha256: createHash("sha256").update("abc").digest("hex") } : {}) })).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   }

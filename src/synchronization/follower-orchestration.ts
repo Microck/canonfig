@@ -41,7 +41,7 @@ import {
   loadCanonicalFolder,
   type FolderFile,
 } from "../projection/folder.ts";
-import { mirrorItem, renderMirrorConfig, type MirrorEntry } from "../projection/mirror.ts";
+import { mirrorConfigResource, mirrorItem, renderMirrorConfig, type MirrorEntry } from "../projection/mirror.ts";
 import {
   buildProjection,
   fileResource,
@@ -350,9 +350,6 @@ const desiredFor = (
   }
 };
 
-/** The resource id of a follower's rendered `canonfig.jsonc`. */
-const mirrorConfigResource = Schema.decodeUnknownSync(ResourceId)("mirror:canonfig.jsonc");
-
 const McpRequires = Schema.Struct({ requires: Schema.optional(Schema.Array(Schema.String)) });
 
 const encoder = new TextEncoder();
@@ -388,9 +385,7 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
   const inFolder = (path: string) => machine.normalizePath({ path, base: folderPath }).pipe(Effect.map((resolved) => resolved.absolute));
   const decoded = yield* decodeSpecs(fetched);
   const guardItems = decoded.flatMap((entry) => {
-    const item = publishedGuardItem({ ...entry.resource, spec: entry.spec }, (path, blob, executable) => ({
-      path, bytes: contentFor(entry.content, blob), executable,
-    }));
+    const item = publishedGuardItem({ ...entry.resource, spec: entry.spec }, (blob) => ({ bytes: contentFor(entry.content, blob) }));
     return item === undefined ? [] : [item];
   });
   const built: Array<BuiltResource> = [];

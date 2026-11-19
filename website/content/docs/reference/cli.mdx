@@ -1227,5 +1227,11 @@ contain paths.
 
 `canonfig guard scan [--json]` checks the current folder and records the
 result locally. Exit 3 indicates a hold, including required checker
-unavailability. `canonfig guard status [--json]` reads the latest record
-without running a checker. Correct or deselect a blocked item before retrying.
+unavailability. `canonfig guard status [--json]` reads the latest record and
+lists local approvals, including stale ones, without running a checker.
+
+`canonfig guard approve <item> --digest <sha256> [--note <text>] [--json]`
+turns blocks into warnings for the exact item version you reviewed. Use the
+item ID and full digest reported by Guard. `canonfig guard revoke <item>
+[--json]` removes that item's approval. Approvals are local to the machine
+that records them, including when that machine is a Follower.
