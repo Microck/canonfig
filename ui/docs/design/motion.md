@@ -15,7 +15,7 @@ Exits are quicker than entrances. The tour (200 to 240ms, `index.css`) and first
 
 ## Easing
 
-One curve: `--ease-snap`, `cubic-bezier(0.175, 0.885, 0.32, 1.1)`.
+The snap curve is defined in `src/lib/motion-token.ts`. Tailwind uses it to build `--ease-snap`.
 
 - In class names: `ease-snap` (`transition-[scale] duration-150 ease-snap`).
 - In `motion` or WAAPI code: import `SNAP` or `SNAP_EASING` from `@/lib/utils`. Never retype the numbers.
