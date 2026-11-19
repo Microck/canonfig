@@ -12,7 +12,7 @@ import { TaggedError } from "../domain/tagged-error.ts";
 import type { CredentialStorageError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import type { MachinePath } from "../machine/machine-state.types.ts";
-import type { SourceCredentialMismatchError } from "../enrollment/enrollment.errors.ts";
+import type { SourceCredentialMismatchError } from "../domain/identity.ts";
 import type { PublicationSigningError } from "../profile/profile-catalog.errors.ts";
 import { asJson, sha256BytesHex } from "../profile/profile-codec.ts";
 import { literalCredentialLocation } from "../profile/publication-credentials.ts";

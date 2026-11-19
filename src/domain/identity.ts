@@ -7,6 +7,7 @@ import {
   InvitationCode,
   Timestamp,
 } from "./brand.ts";
+import { TaggedError } from "./tagged-error.ts";
 
 /** Source Machine identity: an ed25519 signing key with a public fingerprint. */
 export const SourceIdentity = Schema.Struct({
@@ -14,6 +15,18 @@ export const SourceIdentity = Schema.Struct({
   publicKeyFingerprint: CertificateFingerprint,
 });
 export type SourceIdentity = Schema.Schema.Type<typeof SourceIdentity>;
+
+/**
+ * Source state lacks a credential namespace, or the store does not hold
+ * the keys for the recorded Source identity.
+ */
+export class SourceCredentialMismatchError extends TaggedError<SourceCredentialMismatchError>()(
+  "SourceCredentialMismatchError",
+  { message: Schema.String },
+) {}
+
+export const sourceCredentialRecovery =
+  "Move this state directory aside, run `canonfig source init` to create a new Source identity, then enroll its Followers with new invitations.";
 
 /** One issued Follower Identity with its independently revocable credential reference. */
 export const FollowerReference = Schema.Struct({

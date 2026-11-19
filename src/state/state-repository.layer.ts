@@ -24,7 +24,7 @@ import {
   type ProfileRevisionId as ProfileRevisionIdType,
   type RunId as RunIdType,
 } from "../domain/brand.ts";
-import { FollowerIdentity, SourceIdentity } from "../domain/identity.ts";
+import { FollowerIdentity, sourceCredentialRecovery, SourceCredentialMismatchError, SourceIdentity } from "../domain/identity.ts";
 import { ProfileRevision, ProfileRevisionSchema } from "../domain/profile.ts";
 import {
   AppliedResourceRecordSchema,
@@ -627,28 +627,14 @@ const makeRepository = Effect.gen(function*() {
   });
 
   const saveEnrollmentSource = Effect.fn("StateRepository.saveEnrollmentSource")(
-    function*(source: EnrollmentSourceRecord, expected?: EnrollmentSourceRecord): Effect.fn.Return<void, StateRepositoryError> {
+    function*(source: EnrollmentSourceRecord): Effect.fn.Return<void, StateRepositoryError> {
       const transaction = Effect.gen(function*() {
         // One role per machine, checked under the write lock: the Source
         // identity is refused while a follower configuration, pending or
         // complete, exists.
         const follower = yield* getFollowerSynchronizationConfiguration();
         if (follower !== undefined) return yield* followerRoleConflict(follower, "be a Source");
-        const stored = yield* getEnrollmentSource();
-        const lifecycle: { readonly _tag: "Absent" } | { readonly _tag: "Initialized"; readonly source: EnrollmentSourceRecord } =
-          stored === undefined ? { _tag: "Absent" } : { _tag: "Initialized", source: stored };
-        // Initialization is create-only. Relocation compares the entire old
-        // record under the write lock and cannot change either pinned identity.
-        if (
-          (lifecycle._tag === "Initialized" && expected === undefined)
-          || (expected !== undefined && (
-            lifecycle._tag !== "Initialized"
-            || !isDeepStrictEqual(lifecycle.source, expected)
-            || source.identity.keyId !== expected.identity.keyId
-            || source.identity.publicKeyFingerprint !== expected.identity.publicKeyFingerprint
-            || source.tlsFingerprint !== expected.tlsFingerprint
-          ))
-        ) {
+        if ((yield* getEnrollmentSource()) !== undefined) {
           return yield* new EnrollmentStateConflictError({
             reason: "credential-conflict",
             message: "the Source identity or credential references changed; retry the operation without replacing the initialized identity",
@@ -679,14 +665,8 @@ const makeRepository = Effect.gen(function*() {
             ${source.tlsKeyReference},
             ${source.tlsCertificateReference},
             ${source.tlsFingerprint},
-            ${source.credentialNamespace ?? null}
+            ${source.credentialNamespace}
           )
-          ON CONFLICT(singleton) DO UPDATE SET
-            signing_key_reference = excluded.signing_key_reference,
-            tls_key_reference = excluded.tls_key_reference,
-            tls_certificate_reference = excluded.tls_certificate_reference,
-            tls_fingerprint = excluded.tls_fingerprint,
-            credential_namespace = excluded.credential_namespace
         `;
       });
       yield* sql.withTransaction(transaction).pipe(
@@ -722,16 +702,19 @@ const makeRepository = Effect.gen(function*() {
         keyId: row.key_id,
         publicKeyFingerprint: row.public_key_fingerprint,
       }).pipe(Effect.mapError(decodeError("source identity", "1")));
-      const source = {
+      if (row.credential_namespace === null) {
+        return yield* new SourceCredentialMismatchError({
+          message: `This Source state directory predates namespaced credentials. ${sourceCredentialRecovery}`,
+        });
+      }
+      return {
         identity,
         signingKeyReference: row.signing_key_reference,
         tlsKeyReference: row.tls_key_reference,
         tlsCertificateReference: row.tls_certificate_reference,
         tlsFingerprint: row.tls_fingerprint,
+        credentialNamespace: row.credential_namespace,
       };
-      return row.credential_namespace === null
-        ? source
-        : { ...source, credentialNamespace: row.credential_namespace };
     },
   );
 

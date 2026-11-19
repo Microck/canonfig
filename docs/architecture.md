@@ -539,8 +539,10 @@ The live SQLite implementation uses `@effect/sql-sqlite-node`, rather than depen
 It establishes `source` or `follower` before role-specific inspection, then
 performs a bounded preflight and inventory of OS identity, account, loopback
 transport, Node runtime, native installers, and declared discovery files.
-Source preflight requires usable signing and TLS key storage before source
-initialization.
+Source preflight requires usable signing and TLS key storage before Source
+initialization. Each Source state directory has its own credential namespace.
+If the state directory predates namespaced credentials, move it aside,
+initialize a new Source, and enroll its Followers with new invitations.
 
 The plan digest covers intent, exclusions, inventory, and exact per-resource
 steps. Approval is valid only for that digest. Apply uses structured executable

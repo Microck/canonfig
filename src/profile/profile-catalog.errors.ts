@@ -2,7 +2,7 @@ import { Schema } from "effect";
 import { TaggedError } from "../domain/tagged-error.ts";
 
 import type { ProfileValidationError } from "../domain/profile.ts";
-import type { SourceCredentialMismatchError } from "../enrollment/enrollment.errors.ts";
+import type { SourceCredentialMismatchError } from "../domain/identity.ts";
 import type { CredentialStorageError } from "../machine/machine-state.errors.ts";
 import type { StateRepositoryError } from "../state/state-repository.errors.ts";
 

@@ -156,10 +156,9 @@ export interface EnrollmentSourceRecord {
   readonly tlsFingerprint: CertificateFingerprint;
   /**
    * Stable per-state-directory id that namespaces the Source's native
-   * credential items. Absent for a Source initialized before namespacing,
-   * whose items still use the legacy account-global names.
+   * credential items.
    */
-  readonly credentialNamespace?: string | undefined;
+  readonly credentialNamespace: string;
 }
 
 export interface CreateEnrollmentInvitationInput {

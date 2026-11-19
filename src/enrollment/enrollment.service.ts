@@ -27,10 +27,7 @@ export class Enrollment extends Context.Service<Enrollment, FleetSource & {
   ) => Effect.Effect<SourceEnrollmentMaterial, EnrollmentError>;
   /**
    * Load the Source's keys and certificate from the native store, verified
-   * against the recorded fingerprints. A Source initialized by an earlier
-   * release has account-global item names; those items are used only when
-   * they match this Source's fingerprints, and are then copied under this
-   * state directory's own credential namespace.
+   * against the recorded fingerprints. Loading does not change credentials.
    */
   readonly sourceCredentials: (
   ) => Effect.Effect<SourceCredentials, EnrollmentError>;
