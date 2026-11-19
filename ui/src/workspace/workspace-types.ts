@@ -11,6 +11,7 @@ import type { GuiEnrollment, GuiInvitationDownload, GuiMachines } from "../../..
 import type { Schema } from "effect";
 import type { GuiProfileSnapshot, GuiProfileValidation, GuiProfileConfigWrite, GuiSkillCheck } from "../../../src/gui/contract/profile";
 import type { GuiArchiveDownload } from "../../../src/gui/contract/synchronization";
+import type { GuardReport } from "../../../src/guard/contract";
 import type { ExactDraft } from "./profile-authoring";
 
 type SetState<T> = Dispatch<SetStateAction<T>>;
@@ -28,9 +29,10 @@ export type SourceView =
   | "installers"
   | "setup"
   | "doctor"
-  | "version";
+  | "version"
+  | "guard";
 
-export type FollowerView = "overview" | "machines" | "sync" | "schedule" | "local" | "backups" | "secrets" | "tunnel" | "agent" | "installers" | "setup" | "doctor" | "machine" | "version";
+export type FollowerView = "overview" | "machines" | "sync" | "schedule" | "local" | "backups" | "secrets" | "tunnel" | "agent" | "installers" | "setup" | "doctor" | "machine" | "version" | "guard";
 
 export type View = SourceView | FollowerView | "not-found";
 
@@ -243,6 +245,7 @@ export interface ProfileSlice {
     snapshot: GuiProfileSnapshot | null;
     busy: boolean;
     error: GuiRequestError | null;
+    guard: typeof GuardReport.Type | undefined;
     validation: GuiProfileValidation | null;
     publication: PublicationState;
     archive: GuiArchiveDownload | null;

@@ -85,9 +85,11 @@ export function navigationForRole(role: WorkspaceRole, live = !DEMO) {
   if (!live) return navigation;
   return {
     main: navigation.main,
-    settings: role === "follower"
-      ? [...navigation.settings, ...SOURCE_SETTINGS.filter((item) => item.view === "installers" || item.view === "setup")]
-      : navigation.settings,
+    settings: [
+      ...navigation.settings,
+      ...(role === "follower" ? SOURCE_SETTINGS.filter((item) => item.view === "installers" || item.view === "setup") : []),
+      ...(role === "unconfigured" ? [] : [{ view: "guard" as const, label: "Guard", icon: ListChecks }]),
+    ],
   };
 }
 

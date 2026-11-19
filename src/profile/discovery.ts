@@ -1,3 +1,4 @@
+import { enforceGuard, guardEffect } from "../guard/guard.ts";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
@@ -1353,20 +1354,23 @@ export const scanFolder = (
           text,
         );
         // The edited file must still be a valid canonfig.jsonc.
-        decodeFolderConfig(configPath, edited);
-        return edited;
+        const decoded = decodeFolderConfig(configPath, edited);
+        return { text: edited, tools: decoded.tools };
       },
       catch: (cause) => cause instanceof CanonicalFolderError
         ? new InvalidDiscoveryInputError({ reason: `the discovered tools would make ${cause.path} invalid: ${cause.message}` })
         : new InvalidDiscoveryInputError({ reason: `${configPath} could not be edited: ${String(cause)}` }),
     });
+    const guard = yield* guardEffect((signal) => enforceGuard(fresh.map((tool) => ({
+      kind: "tools", id: `tools:${tool.id}`, files: [], declaration: asJson(updated.tools?.[tool.id]),
+    })), { root: input.folder, trigger: "source.scan", staticOnly: true, signal }));
     yield* Effect.tryPromise({
       try: async () => {
         const temporary = `${configPath}.canonfig-scan-${process.pid}`;
-        await writeFile(temporary, updated, { mode: 0o600 });
+        await writeFile(temporary, updated.text, { mode: 0o600 });
         await rename(temporary, configPath);
       },
       catch: (cause) => folderFailure(configPath, "write", cause),
     });
-    return { ...result, reviewDigest, written: fresh.map((tool) => tool.id), declared };
+    return { ...result, reviewDigest, written: fresh.map((tool) => tool.id), declared, guard: guard.verdict === "warn" || guard.recordUnavailable ? guard : undefined };
   });

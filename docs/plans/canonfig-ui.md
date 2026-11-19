@@ -453,3 +453,11 @@ Verification completed in a disposable Paris Raft workspace:
 Playwright from `/tmp/pw` then exercised the locally rebuilt package at 1920×1080 and 390×844. Both viewports completed turn-on with idle confirmation, check, a deferred install while a real second GUI held a lease, and installation after that process stopped. Both servers exited with code 0, and both disposable installations reported 6.0.1. No browser page errors occurred. All 12 screenshots waited for no `[aria-busy=true]` and are retained with `results.json` under `/tmp/canonfig-ui/self-update/`, named `<width>-{off,enable,enabled,available,deferred,installed}.png`.
 
 The Raft workspace and all disposable browser processes, homes and npm prefixes were removed. Native macOS/Windows execution and a full future-release package were not exercised: the local candidate is a minimal real npm package with executable version/help checks. No live installation, public registry write, push or issue closure occurred. Vite still reports its advisory large-chunk warning. Issue #260 remains open until merge.
+
+### Guard capability
+
+| Capability | CLI | Source GUI | Follower GUI |
+| --- | --- | --- | --- |
+| Current scan and latest result | `guard scan`, `guard status` | Settings | Settings |
+| Optional checker policy | Machine-owned `guard.jsonc` | Settings with outbound consent | Built-in static summary |
+| Held operation and recovery | Human Action Required, exit 3 | Operation result | Sync result |

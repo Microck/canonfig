@@ -18,5 +18,6 @@ export class SetupError extends TaggedError<SetupError>()("SetupError", {
   operation: Schema.String,
   message: Schema.String,
   recovery: Schema.optional(Schema.String),
+  guard: Schema.optional(Schema.Json),
   category: Schema.Literals(["usage", "prerequisite", "conflict", "state"]),
 }) {}

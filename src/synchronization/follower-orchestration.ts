@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { enforceGuard, guardEffect, readVerifiedGuardBlob } from "../guard/guard.ts";
+import { folderGuardItems, publishedGuardItem } from "../guard/candidates.ts";
 import { dirname, isAbsolute, relative, sep } from "node:path";
 
 import { Effect, Option, Schema } from "effect";
@@ -231,6 +232,9 @@ const decodeSpecs = (
         );
       }
       const content = new Map<string, Uint8Array>();
+      const spec = resource.spec;
+      const sizes = new Map(spec.kind === "file" ? [[spec.blob, spec.bytes]] : spec.kind === "skill"
+        ? spec.files.map((file) => [file.blob, file.bytes] as const) : []);
       for (const id of resource.blobs) {
         const blob = fetched.blobs.find((entry) => entry.id === id);
         if (blob === undefined) {
@@ -239,8 +243,9 @@ const decodeSpecs = (
             `resource ${resource.id} is missing verified blob ${id}`,
           );
         }
+        const size = sizes.get(id);
         const bytes = yield* Effect.tryPromise({
-          try: () => readFile(blob.path),
+          try: () => readVerifiedGuardBlob(blob.path, id, size),
           catch: () =>
             configurationError(
               "stale",
@@ -382,6 +387,12 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
   const folderPath = yield* machine.normalizePath({ path: folder });
   const inFolder = (path: string) => machine.normalizePath({ path, base: folderPath }).pipe(Effect.map((resolved) => resolved.absolute));
   const decoded = yield* decodeSpecs(fetched);
+  const guardItems = decoded.flatMap((entry) => {
+    const item = publishedGuardItem({ ...entry.resource, spec: entry.spec }, (path, blob, executable) => ({
+      path, bytes: contentFor(entry.content, blob), executable,
+    }));
+    return item === undefined ? [] : [item];
+  });
   const built: Array<BuiltResource> = [];
   const mirrorFiles = new Map<string, FolderFile>();
   const entries: Array<MirrorEntry> = [];
@@ -445,12 +456,14 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
   mirrored.push(mirrorConfigResource);
 
   const loaded = yield* Effect.tryPromise({
-    try: () => loadCanonicalFolder(folder, mirrorFiles),
+    try: () => loadCanonicalFolder(folder, mirrorFiles, true),
     catch: (error) =>
       error instanceof CanonicalFolderError || error instanceof LocalItemCollisionError
         ? error
         : new CanonicalFolderError({ path: folder, message: String(error) }),
   });
+  const guard = yield* guardEffect((signal) => enforceGuard([...guardItems, ...folderGuardItems(loaded.guardLocalFiles ?? [])],
+    { root: folder, trigger: "follower.sync", staticOnly: true, signal }));
   const context = yield* rootContext(environment);
   const takeovers = yield* repository.loadHarnessTakeovers();
   // A listed harness projects only once installed; until then it is reported
@@ -514,6 +527,7 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
     harnesses: projection.harnesses,
     notInstalled,
     backups: loaded.local.backups,
+    guard,
     home: context.home,
   };
 });
@@ -1004,6 +1018,7 @@ export const synchronizeFollower = Effect.fn(
     : undefined;
   const base = {
     mode,
+    guard: followerPlan.guard.verdict === "warn" || followerPlan.guard.recordUnavailable ? followerPlan.guard : undefined,
     planDigest,
     revision: selected.id,
     downloadedBlobs: fetched.downloadedBlobs,

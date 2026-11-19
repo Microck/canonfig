@@ -1,3 +1,4 @@
+import type { GuardHold, GuardPolicyError } from "../guard/guard.ts";
 import { Schema } from "effect";
 import { TaggedError } from "../domain/tagged-error.ts";
 
@@ -34,7 +35,8 @@ export class InvalidDiscoveryInputError extends TaggedError<InvalidDiscoveryInpu
 export type ProfileCatalogScanError =
   | DiscoveryFilesystemError
   | DiscoveryParseError
-  | InvalidDiscoveryInputError;
+  | InvalidDiscoveryInputError
+  | GuardHold | GuardPolicyError;
 
 export class PublicationNotConfiguredError extends TaggedError<PublicationNotConfiguredError>()(
   "PublicationNotConfiguredError",
@@ -85,7 +87,12 @@ export class PublicationSourceError extends TaggedError<PublicationSourceError>(
   },
 ) {}
 
+export class GuardCandidateChanged extends TaggedError<GuardCandidateChanged>()("GuardCandidateChanged", {
+  message: Schema.String,
+}) {}
+
 export type ProfileCatalogPublishError =
+  | GuardHold | GuardPolicyError | GuardCandidateChanged
   | PublicationNotConfiguredError
   | PublicationSourceError
   | InvalidPublicationResourcesError

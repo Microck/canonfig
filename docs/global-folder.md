@@ -258,3 +258,9 @@ or a different root later, is Human Action Required
 - `applied_resources` and `action_journal`: the Applied Resource Records and
   the per-run journal shared with revision runs (see
   [file-rollback.md](file-rollback.md)).
+
+## Guard policy and records
+
+`guard.jsonc` and `.guard/` are machine-owned. The authoring allowlist
+excludes both from import, export and Profile Revisions. See [Guard](guard.md)
+for the checker policy and the latest local report.

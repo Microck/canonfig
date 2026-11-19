@@ -1,3 +1,4 @@
+import { GuardReport } from "../../guard/contract.ts";
 import { Schema } from "effect";
 
 /** The CLI and its bundled browser use this module directly, without generated copies. */
@@ -78,6 +79,7 @@ export const GuiError = Schema.Struct({
   ]),
   exitCode: Schema.Literals([1, 2, 3, 4, 5, 6, 7]),
   message: Schema.String,
+  guard: Schema.optionalKey(GuardReport),
 });
 export type GuiError = typeof GuiError.Type;
 

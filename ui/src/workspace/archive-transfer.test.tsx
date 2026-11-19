@@ -48,7 +48,13 @@ async function fixture(applyResponse: ApplyResponse) {
       } else if (incoming.url === "/api/operations/apply") {
         observations++;
         if (observations === 1) { outgoing.statusCode = 500; outgoing.end(JSON.stringify({ category: "internal", exitCode: 1, message: "Observation unavailable" })); }
-        else outgoing.end(JSON.stringify({ id: "apply", state: "succeeded", journal: null, result }));
+        else outgoing.end(JSON.stringify({ id: "apply", state: "succeeded", journal: null, result: {
+          ...result, guard: {
+            trigger: "archive.import", at: "2026-11-06T00:00:00Z", verdict: "warn",
+            checked: 1, unsupported: 0, unavailable: 0, cacheHits: 0, findingCount: 1,
+            findings: [{ severity: "warn", checker: "static", code: "invisible-control", item: "instructions", path: "AGENTS.md", digest: result.sha256 }],
+          },
+        } }));
       } else { outgoing.statusCode = 404; outgoing.end("{}"); }
     });
   });
@@ -124,7 +130,7 @@ it("unlocks editing only when the server rejects the apply request", async () =>
     assert.equal(button("Verify and preview").disabled, false);
   } finally { await app.close(); }
 });
-it("resumes a known import ticket without submitting another apply", async () => {
+it("shows the completed import's Guard warning after resuming the same ticket", async () => {
   const app = await fixture("poll-failure");
   try {
     await preview(); await click("Import verified archive");
@@ -132,6 +138,7 @@ it("resumes a known import ticket without submitting another apply", async () =>
     assert.ok(document.body.textContent?.includes("apply"));
     await click("Resume observation");
     await until(() => !!document.querySelector('[role="status"]')?.textContent?.includes("Import complete"));
+    assert.match(document.querySelector('[role="dialog"] li')?.textContent ?? "", /instructions \/ AGENTS\.md invisible-control \(static\)/u);
     assert.equal(app.submissions, 1);
     assert.equal(app.observations, 2);
   } finally { await app.close(); }

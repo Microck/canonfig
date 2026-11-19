@@ -1,9 +1,11 @@
-import type { Schema } from "effect";
+import { Schema } from "effect";
+import { GuardReport } from "../../../src/guard/contract";
 import type { GuiStatus } from "../../../src/gui/contract/session";
 import { CliText, Mono, StateBand, StatusMark, type StatusKind } from "../shared/shared";
 import { Button } from "../components/ui/button";
 import { CaretRight } from "@/components/icons";
 import { cn } from "@/lib/utils";
+import { GuardFindings } from "@/live/session";
 import { useWorkspace } from "./store";
 import { ListRow, SectionLabel, SettingRow, settingsGroup } from "./kit";
 import { record, strings, text } from "./live/follower";
@@ -175,6 +177,8 @@ export function FollowerOperationEvidence() {
   if (!operation) return observationLost ? <section aria-live="polite" className="px-[18px] py-4">{observationLost}</section> : null;
   const journal = record(operation.journal);
   const report = operation.state === "succeeded" ? record(operation.result) : record(journal.details ?? operation.journal);
+  const guard = operation.state === "failed" ? operation.failure.guard
+    : operation.state === "succeeded" && Schema.is(GuardReport)(report.guard) ? report.guard : undefined;
   const outcome = record(report.outcome);
   const plan = record(report.plan);
   const actions = Array.isArray(plan.actions) ? plan.actions.map(record) : [];
@@ -198,6 +202,7 @@ export function FollowerOperationEvidence() {
       {observationLost}
       {text(outcome.reason) && <p className="mt-2 text-sm text-muted-foreground">{text(outcome.reason)}</p>}
       {operation.state === "failed" && <p className="mt-2 text-sm text-bad">{operation.failure.message}</p>}
+      {guard && <GuardFindings report={guard} />}
     </div>
     <div className="px-[18px] has-[>:not(:empty)]:py-4">
       <div className={settingsGroup}>

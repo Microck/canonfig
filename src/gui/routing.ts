@@ -1,9 +1,12 @@
+import { GuardReport } from "../guard/contract.ts";
+import { GuardHold } from "../guard/guard.ts";
+import { toCliPayload } from "../cli/command-output.ts";
 import type { IncomingMessage } from "node:http";
 import { Effect, Schema } from "effect";
 import { exitCodeForFailure, type CliFailureCategory } from "../cli/exit-codes.ts";
 import { describeRuntimeError, type TaggedRuntimeError } from "../cli/failure-taxonomy.ts";
 import { redactText } from "../cli/redaction.ts";
-import { CliCommandFailure } from "../cli/source-commands.ts";
+import { CliCommandFailure, type CliPayload } from "../cli/source-commands.ts";
 import { maximumAuthoringBytes } from "../projection/authoring.ts";
 import type { GuiError } from "./contract.ts";
 
@@ -12,13 +15,22 @@ export const EmptyBody = Schema.Record(Schema.String, Schema.Never);
 // Allow the reader's aggregate byte budget in base64, plus bounded JSON fields and edits.
 export const maximumAuthoringBodyBytes = 4 * Math.ceil(maximumAuthoringBytes / 3) + 1024 * 1024;
 
-export const failureBody = (category: CliFailureCategory, message: string): GuiError => ({
+const guardDetails = (details?: CliPayload): Pick<GuiError, "guard"> => {
+  const checked = Schema.decodeUnknownOption(Schema.Struct({ guard: GuardReport }))(details);
+  return checked._tag === "Some" ? checked.value : {};
+};
+
+export const failureBody = (category: CliFailureCategory, message: string, details?: CliPayload): GuiError => ({
   category, message: redactText(message), exitCode: exitCodeForFailure(category),
+  ...guardDetails(details),
 });
 
 /** Reuse CLI classification for authoring and other domain errors at route boundaries. */
 export const commandFailure = (error: TaggedRuntimeError): CliCommandFailure =>
-  error instanceof CliCommandFailure ? error : new CliCommandFailure(describeRuntimeError(error));
+  error instanceof CliCommandFailure ? error : new CliCommandFailure({
+    ...describeRuntimeError(error),
+    details: error instanceof GuardHold ? toCliPayload({ guard: error.report }) : undefined,
+  });
 
 export interface GuiRoute {
   readonly method: "GET" | "POST" | "PUT" | "DELETE";

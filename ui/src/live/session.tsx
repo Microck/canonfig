@@ -1,3 +1,4 @@
+import type { GuardReport } from "../../../src/guard/contract";
 import type { ReactNode } from "react";
 import { WarningCircle } from "@/components/icons";
 import { CliText } from "@/shared/shared";
@@ -23,6 +24,7 @@ export function ErrorNotice({ error, title = "Operation failed", recovery }: { e
     <section role="alert" className="rounded-lg border border-bad/40 p-4">
       <h2 className="flex items-center gap-2 font-medium"><WarningCircle className="size-4 text-bad" />{title}</h2>
       <p className="mt-2 whitespace-pre-wrap [overflow-wrap:anywhere]"><CliText>{error.message}</CliText></p>
+      {error.failure.guard && <GuardFindings report={error.failure.guard} />}
       {recovery && <p className="mt-2 text-sm text-muted-foreground">{recovery}</p>}
       {/* Category and exit code help when reporting a bug, not when deciding what to do next. */}
       <details className="mt-3 text-sm">
@@ -37,3 +39,20 @@ export function ErrorNotice({ error, title = "Operation failed", recovery }: { e
   );
 }
 
+
+export function GuardFindings({ report }: { report: typeof GuardReport.Type }) {
+  return <>
+    {report.findings.length > 0 && (
+      <ul className="mt-2 space-y-1 text-sm">
+        {report.findings.map((finding, index) => (
+          <li key={`${finding.digest}-${index}`} className="break-all">
+            <code>{finding.item}{finding.path ? ` / ${finding.path}` : ""}{finding.line ? `:${finding.line}` : ""}</code>
+            {" "}<code>{finding.code}</code> ({finding.checker})
+          </li>
+        ))}
+      </ul>
+    )}
+    {report.findingCount > report.findings.length && <p className="mt-2 text-sm">{report.findingCount - report.findings.length} more findings</p>}
+    {report.recordUnavailable && <p className="mt-2 text-sm">The local result could not be saved.</p>}
+  </>;
+}

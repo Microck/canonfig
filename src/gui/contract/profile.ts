@@ -1,3 +1,4 @@
+import { GuardReport } from "../../guard/contract.ts";
 import { Schema } from "effect";
 
 /** Scan without regex backtracking or decoded copies, including multi-megabyte files. */
@@ -33,6 +34,7 @@ export const GuiPublicationRequest = Schema.Struct({ reviewer: Schema.NonEmptySt
 export const GuiRevisionSelection = Schema.Struct({ revision: Schema.NonEmptyString });
 export const GuiScanAcceptance = Schema.Struct({ reviewDigest: Schema.NonEmptyString, confirmAll: Schema.Literal(true) });
 export const GuiScanReview = Schema.Struct({ reviewDigest: Schema.NonEmptyString, declared: Schema.Array(Schema.String), tools: Schema.Array(Schema.Json) });
+export const GuiProfileGuardResult = Schema.Struct({ guard: Schema.optionalKey(GuardReport) });
 /** A missing exact ID is an empty read, not a failed operation. */
 export const GuiRevisionInspection = Schema.NullOr(Schema.Record(Schema.String, Schema.Json));
 export const GuiRevisionApproval = Schema.Struct({
@@ -54,12 +56,13 @@ export const GuiSkillTrack = Schema.Struct({ name: Schema.NonEmptyString, source
 /** An empty check selection reads every tracked skill, matching the CLI. */
 export const GuiSkillSelection = Schema.Struct({ names: Schema.Array(Schema.NonEmptyString) });
 export const GuiTrackedSkill = Schema.Struct({ name: Schema.String, path: Schema.String, source: Schema.String, ref: Schema.String, subdir: Schema.String, commit: Schema.String, digest: Schema.String });
+export const GuiSkillTrackResult = Schema.Struct({ ...GuiTrackedSkill.fields, ...GuiProfileGuardResult.fields });
 export const GuiSkills = Schema.Struct({ version: Schema.Literal(1), skills: Schema.Array(GuiTrackedSkill) });
 export interface GuiSkills extends Schema.Schema.Type<typeof GuiSkills> {}
 export const GuiSkillExpectation = Schema.Struct({ name: Schema.NonEmptyString, path: Schema.NonEmptyString, previousCommit: Schema.NonEmptyString, nextCommit: Schema.NonEmptyString, previousDigest: Schema.NonEmptyString, nextDigest: Schema.NonEmptyString });
 /** Apply always carries an explicit, nonempty reviewed selection. */
 export const GuiSkillUpdate = Schema.Struct({ expected: Schema.NonEmptyArray(GuiSkillExpectation) });
-export const GuiSkillCheck = Schema.Struct({ ...GuiSkillExpectation.fields, status: Schema.Literals(["unchanged", "update-available", "local-edits"]), added: Schema.Array(Schema.String), changed: Schema.Array(Schema.String), removed: Schema.Array(Schema.String) });
+export const GuiSkillCheck = Schema.Struct({ ...GuiSkillExpectation.fields, status: Schema.Literals(["unchanged", "update-available", "local-edits"]), added: Schema.Array(Schema.String), changed: Schema.Array(Schema.String), removed: Schema.Array(Schema.String), guard: Schema.optionalKey(GuardReport) });
 export const GuiSkillChecks = Schema.Array(GuiSkillCheck);
 export interface GuiSkillCheck extends Schema.Schema.Type<typeof GuiSkillCheck> {}
 export const profileEndpoints = { items: "/api/profile/items", config: "/api/profile/config", validate: "/api/profile/validate", scan: "/api/profile/scan", acceptScan: "/api/profile/scan/accept", publications: "/api/publications", revisions: "/api/revisions", revision: "/api/revisions/inspect", skills: "/api/skills", track: "/api/skills/track", check: "/api/skills/check", update: "/api/skills/update" } as const;

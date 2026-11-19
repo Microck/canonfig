@@ -1,3 +1,4 @@
+import { lstatSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { Option, Schema } from "effect";
 import type { CredentialPolicy } from "../machine/machine-state.types.ts";
@@ -21,40 +22,45 @@ const credentialPolicyFromEnvironment = (): CredentialPolicy | undefined => {
  * Read directly rather than through StateRepository because the machine layer
  * is built before that service exists, and this is one row of one table.
  */
-const enrolledCredentialPolicy = (
-  statePath: string,
-): CredentialPolicy | undefined => {
+export const enrolledFollowerRow = (statePath: string): string | undefined => {
+  try {
+    lstatSync(statePath);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+    throw error;
+  }
   try {
     const database = new DatabaseSync(statePath, { readOnly: true });
     try {
-      const row = database
-        .prepare(
-          "SELECT configuration_json FROM follower_sync_configuration WHERE singleton = 1",
-        )
-        .get();
-      const parsedRow = Schema.decodeUnknownOption(
-        Schema.Struct({ configuration_json: Schema.String }),
-      )(row);
-      if (Option.isNone(parsedRow)) return undefined;
-      const decoded = Schema.decodeUnknownOption(
-        Schema.Struct({
-          credentialPolicy: Schema.optional(Schema.Union([
-            Schema.Struct({ kind: Schema.Literal("secure-store") }),
-            Schema.Struct({
-              kind: Schema.Literal("local-file"),
-              path: Schema.NonEmptyString,
-            }),
-          ])),
-        }),
-      )(JSON.parse(parsedRow.value.configuration_json));
-      return Option.isNone(decoded) ? undefined : decoded.value.credentialPolicy;
+      const row = database.prepare(
+        "SELECT configuration_json FROM follower_sync_configuration WHERE singleton = 1",
+      ).get();
+      return Schema.is(Schema.String)(row?.configuration_json) ? row.configuration_json : undefined;
     } finally {
       database.close();
     }
+  } catch (error) {
+    // A new or pre-enrollment state has no follower row or table.
+    if (error instanceof Error && "code" in error && error.code === "ERR_SQLITE_ERROR"
+      && /no such table/u.test(String(error))) return undefined;
+    throw error;
+  }
+};
+
+const enrolledCredentialPolicy = (statePath: string): CredentialPolicy | undefined => {
+  try {
+    const row = enrolledFollowerRow(statePath);
+    if (row === undefined) return undefined;
+    const decoded = Schema.decodeUnknownOption(
+      Schema.Struct({
+        credentialPolicy: Schema.optional(Schema.Union([
+          Schema.Struct({ kind: Schema.Literal("secure-store") }),
+          Schema.Struct({ kind: Schema.Literal("local-file"), path: Schema.NonEmptyString }),
+        ])),
+      }),
+    )(JSON.parse(row));
+    return Option.isNone(decoded) ? undefined : decoded.value.credentialPolicy;
   } catch {
-    // No state yet, an unreadable database, or a schema older than the field.
-    // Enrollment is what records the policy, so an unenrolled machine falls
-    // back to the environment below.
     return undefined;
   }
 };

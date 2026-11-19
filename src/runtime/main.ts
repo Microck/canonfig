@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { captureGuardCredential } from "../guard/credential.ts";
 
 import { fileURLToPath } from "node:url";
 import { managedCommandLease, type ManagedCommandLease } from "./self-update/coordination.ts";
@@ -70,6 +71,8 @@ if (process.platform === "win32") {
   process.on("SIGHUP", () => process.emit("SIGTERM", "SIGTERM"));
 }
 
+// Keep the checker credential in-process before any child environment is built.
+captureGuardCredential();
 const arguments_ = process.argv.slice(2);
 const selfUpdateCommand = arguments_.filter((arg) => arg !== "--json")[0] === "self-update";
 const installedRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -212,6 +215,9 @@ if (early !== undefined) {
       `secrets.${secretsArgv.filter((value) => value !== "--json")[0] ?? "help"}`,
     );
   }
+} else if (arguments_.find((arg) => arg !== "--json") === "guard") {
+  const { runGuardCli } = await import("../guard/commands.ts");
+  await runMain((effect) => effect.Effect.promise((signal) => runGuardCli(arguments_, nodeCliIo, signal)), "guard");
 } else if (isSkillsCommand(arguments_)) {
   const argv = skillsArguments(arguments_);
   const { runSkillsCli } = await import("../skills/cli.ts");

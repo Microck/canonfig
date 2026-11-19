@@ -1,7 +1,9 @@
+import { enforceGuard, guardEffect, guardFileLimit, guardRetentionBudget, guardRetentionPriority, hasShebang, type GuardFile, type GuardReport } from "../guard/guard.ts";
+import { publishedGuardItem } from "../guard/candidates.ts";
 import { assertProfileMetadataBudget } from "./metadata-budget.ts";
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { lstat, realpath } from "node:fs/promises";
+import { constants, createReadStream } from "node:fs";
+import { lstat, open, realpath } from "node:fs/promises";
 import { isAbsolute, posix, relative, resolve, sep, win32 } from "node:path";
 
 import { Effect, Schema } from "effect";
@@ -40,11 +42,14 @@ import { RevisionImmutableError } from "../state/state-repository.errors.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import {
   compileProfileCandidate,
+  type CompiledProfileCandidate,
+  type CompiledResourceBlob,
   type ResolvedSourceFile,
   type ResolvedSourceFiles,
 } from "./compiler.ts";
 import { publicationCredentialIssue } from "./publication-credentials.ts";
 import {
+  GuardCandidateChanged,
   InvalidPublicationInputError,
   InvalidPublicationResourcesError,
   InvalidPublicationSignatureError,
@@ -352,7 +357,7 @@ const parentSegment = /(?:^|[\\/])\.\.(?:[\\/]|$)/u;
  */
 const resolveSourcePath = async (
   resource: string,
-  directory: string,
+  root: string,
   source: string,
 ): Promise<string> => {
   const failure = (reason: string) =>
@@ -360,7 +365,6 @@ const resolveSourcePath = async (
   if (isAbsolute(source) || win32.isAbsolute(source) || parentSegment.test(source)) {
     throw failure("a source must be a relative path inside the Canonical Folder");
   }
-  const root = await realpath(directory);
   const path = resolve(root, source);
   let target: string;
   try {
@@ -385,25 +389,83 @@ async function* sourceChunks(path: string): AsyncGenerator<Buffer> {
   }
 }
 
-/** Hash a regular file by streaming it. */
-const digestSourceFile = async (path: string): Promise<{ readonly blob: string; readonly bytes: number }> => {
+const candidateChanged = () => new GuardCandidateChanged({
+  message: "A candidate file changed during Guard verification. Review the current content and retry publication.",
+});
+
+/** Verify every compiled blob, retaining raw bytes only if they fit Guard's budget. */
+export async function verifyPublicationBlob(
+  folder: string, blob: CompiledResourceBlob, maximumBytes = guardFileLimit,
+): Promise<Pick<GuardFile, "bytes" | "oversized">> {
+  const hash = createHash("sha256");
+  const chunks: Buffer[] | undefined = blob.bytes <= maximumBytes ? [] : undefined;
+  let size = 0;
+  let shebang = false;
+  const root = await realpath(folder);
+  // The compiler's blob paths are already anchored at the real folder.
+  const path = await resolveSourcePath("Guard", root, relative(root, blob.path));
+  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  try {
+    if (!(await handle.stat()).isFile() || await realpath(folder) !== root) throw candidateChanged();
+    for await (const chunk of handle.createReadStream({ autoClose: false })) {
+      if (size === 0) shebang = hasShebang(chunk);
+      size += chunk.byteLength;
+      if (size > blob.bytes) throw candidateChanged();
+      hash.update(chunk);
+      chunks?.push(chunk);
+    }
+  } finally { await handle.close(); }
+  if (size !== blob.bytes || hash.digest("hex") !== blob.id) throw candidateChanged();
+  if (chunks !== undefined) return { bytes: Buffer.concat(chunks, size) };
+  const oversized = { digest: blob.id, length: size };
+  return { oversized: shebang ? { ...oversized, shebang: true } : oversized };
+}
+
+const checkPublicationCandidate = (folder: string, encoded: CompiledProfileCandidate, priority: ReadonlySet<string>) =>
+  Effect.gen(function*() {
+    const blobs = yield* Effect.tryPromise({
+      try: async () => {
+        const byId = new Map<string, Pick<GuardFile, "bytes" | "oversized">>();
+        let remaining = guardRetentionBudget;
+        for (const prioritized of [true, false]) {
+          for (const blob of encoded.blobs) {
+            if (priority.has(blob.id) !== prioritized) continue;
+            const file = await verifyPublicationBlob(folder, blob, Math.min(guardFileLimit, remaining));
+            remaining -= file.bytes?.byteLength ?? 0;
+            byId.set(blob.id, file);
+          }
+        }
+        return byId;
+      },
+      catch: candidateChanged,
+    });
+    const items = encoded.resources.flatMap((resource, index) => {
+      const item = publishedGuardItem({ ...resource, spec: resource.spec!, verify: encoded.profile.resources[index]!.verify },
+        (path, blob, executable) => ({ path, executable, ...blobs.get(blob)! }));
+      return item === undefined ? [] : [item];
+    });
+    return yield* guardEffect((signal) => enforceGuard(items, { root: folder, trigger: "source.publish", signal }));
+  });
+
+const digestSourceFile = async (path: string) => {
   const hash = createHash("sha256");
   let bytes = 0;
+  let shebang = false;
   for await (const chunk of sourceChunks(path)) {
+    if (bytes === 0) shebang = hasShebang(chunk);
     hash.update(chunk);
     bytes += chunk.byteLength;
   }
-  return { blob: hash.digest("hex"), bytes };
+  return { blob: hash.digest("hex"), bytes, shebang };
 };
 
 /** Hash one `source` found inside the folder. Links are never published. */
 const resolveSource = async (
   resource: string,
   source: string,
-  directory: string,
-  sources: Map<string, ResolvedSourceFile>,
-): Promise<void> => {
-  const path = await resolveSourcePath(resource, directory, source);
+  root: string,
+) => {
+  const path = await resolveSourcePath(resource, root, source);
   if (!(await lstat(path)).isFile()) {
     throw new PublicationSourceError({
       resource,
@@ -412,11 +474,12 @@ const resolveSource = async (
     });
   }
   const digested = await digestSourceFile(path);
-  sources.set(source, {
+  return {
     path,
     blob: Schema.decodeUnknownSync(BlobId)(digested.blob),
     bytes: digested.bytes,
-  });
+    shebang: digested.shebang,
+  };
 };
 
 /**
@@ -427,19 +490,29 @@ const resolveSource = async (
 const resolveResourceSources = (
   resources: ReadonlyArray<ProfileResourceInput>,
   directory: string,
-): Effect.Effect<ResolvedSourceFiles, PublicationSourceError | InvalidPublicationInputError> =>
+): Effect.Effect<
+  { readonly sources: ResolvedSourceFiles; readonly priority: ReadonlySet<string> },
+  PublicationSourceError | InvalidPublicationInputError
+> =>
   Effect.tryPromise({
     try: async () => {
+      const root = await realpath(directory);
       const sources = new Map<string, ResolvedSourceFile>();
+      const priority = new Set<string>();
       for (const resource of resources) {
+        const kind = resource.id.split(":")[0]!;
         const files = resource.spec.kind === "file"
-          ? [resource.spec.source]
-          : resource.spec.kind === "skill" ? resource.spec.files.map((file) => file.source) : [];
-        for (const source of files) {
-          if (source !== undefined) await resolveSource(resource.id, source, directory, sources);
+          ? [{ ...resource.spec, path: resource.target }]
+          : resource.spec.kind === "skill" ? resource.spec.files : [];
+        for (const { source, path, executable } of files) {
+          if (source === undefined) continue;
+          const resolved = await resolveSource(resource.id, source, root);
+          sources.set(source, resolved);
+          // A shared blob gets priority if any of its published paths need scanning.
+          if (guardRetentionPriority(kind, path, executable === true, resolved.shebang)) priority.add(resolved.blob);
         }
       }
-      return sources;
+      return { sources, priority };
     },
     catch: (cause) =>
       cause instanceof PublicationSourceError
@@ -477,7 +550,7 @@ export const makePublication = (
 ) => {
   const publish = (
     input: PublishFolderInput,
-  ): Effect.Effect<ProfileRevision, ProfileCatalogPublishError> =>
+  ): Effect.Effect<ProfileRevision & { guard?: GuardReport }, ProfileCatalogPublishError> =>
     Effect.gen(function*() {
       if (input.reviewer.trim().length === 0) {
         return yield* new InvalidPublicationInputError({ reason: "reviewer is required" });
@@ -502,7 +575,7 @@ export const makePublication = (
           reason: `this Source publishes profile ${published.profileId}; set "profile.id" in canonfig.jsonc back to ${published.profileId}`,
         });
       }
-      const sources = yield* resolveResourceSources(profile.resources, input.folder);
+      const { sources, priority } = yield* resolveResourceSources(profile.resources, input.folder);
       const errors = validateMachineProfile(profile);
       if (errors.length > 0) {
         return yield* Effect.fail(new InvalidPublicationResourcesError(errors));
@@ -521,6 +594,8 @@ export const makePublication = (
               reason: cause instanceof Error ? cause.message : `resource bytes could not be encoded: ${String(cause)}`,
             }),
       });
+      const guard = yield* checkPublicationCandidate(input.folder, encoded, priority);
+      const warnings = guard.verdict === "warn" || guard.recordUnavailable ? { guard } : {};
       const canonicalBytes = encoded.canonicalBytes;
       const digest = encoded.digest;
       const approval = {
@@ -556,7 +631,7 @@ export const makePublication = (
         }
         yield* validateMetadata(latest);
         yield* repository.publishRevision({ revision: latest, blobs: encoded.blobs, approval });
-        return latest;
+        return { ...latest, ...warnings };
       }
 
       // Any other content becomes the next sequence, including content an
@@ -619,7 +694,7 @@ export const makePublication = (
       };
       yield* validateMetadata(revision);
       yield* repository.publishRevision({ revision, blobs: encoded.blobs, approval });
-      return revision;
+      return { ...revision, ...warnings };
     });
 
   return { publish };

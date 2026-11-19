@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Mono } from "@/shared/shared";
-import { ErrorNotice } from "@/live/session";
+import { ErrorNotice, GuardFindings } from "@/live/session";
 import { GuiRequestError, type WorkspaceBackend } from "@/gui-client";
 import { requestError } from "./live/resource";
 import { Prop } from "./kit";
@@ -129,6 +129,7 @@ function ArchiveImportDialog({ backend, onClose, onImported }: { backend: Worksp
         <label className="flex items-start gap-3 text-sm"><Checkbox checked={replace} onCheckedChange={(value) => { setReplace(value === true); edit(); }} /><span>Allow replacement of existing folder entries<span className="mt-1 block text-muted-foreground">Matching whole files or directories are snapshotted to ~/.canonfig/.backups/ before replacement; canonfig restore puts them back.</span></span></label>
       </fieldset>}
       {busy && <p role="status">{state.kind === "reading" ? "Reading archive…" : state.submission.kind === "preview" ? "Verifying archive…" : "Importing archive…"}</p>}
+      {result?.guard && <GuardFindings report={result.guard} />}
       {error && <ErrorNotice error={error} title={state.kind === "lost" ? "Operation observation lost" : "Archive import failed"} />}
       {state.kind === "lost" && <div className="space-y-2 text-sm">{state.ticket ? <><Prop label="Operation"><Mono>{state.ticket}</Mono></Prop><Button onClick={() => void execute(state.submission, state.ticket)}>Resume observation</Button></> : <p>Check canonfig status, recover any interrupted run with canonfig recover, then reopen the GUI.</p>}</div>}
       {result && <div className="space-y-2 text-sm">

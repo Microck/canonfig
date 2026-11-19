@@ -1,5 +1,6 @@
+import { enforceGuard, guardEffect, GuardHold, guardMessage, guardText, type GuardItem } from "../guard/guard.ts";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { Effect, Schema } from "effect";
 
@@ -311,27 +312,31 @@ const decodeDetail = <S extends Schema.Decoder<unknown>>(schema: S, item: SetupP
   );
 
 /** File content, or undefined when the file does not exist. */
-const readOptional = (path: string) =>
+const readOptionalBytes = (path: string) =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const normalized = yield* machine.normalizePath({ path });
     return yield* machine.readFile({ path: normalized, maximumBytes: 1024 * 1024 }).pipe(
-      Effect.map((bytes) => new TextDecoder().decode(bytes)),
       Effect.catchTag("MachineFilesystemError", (error) =>
         /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message) ? Effect.succeed(undefined) : Effect.fail(error)
       ),
     );
   });
 
+const readOptional = (path: string) => readOptionalBytes(path).pipe(
+  Effect.map((bytes) => bytes === undefined ? undefined : new TextDecoder().decode(bytes)),
+);
+
 const utf8 = (text: string) => new TextEncoder().encode(text);
 
-const writeFile = (path: string, content: Uint8Array, mode = 0o600) =>
+const writeFile = (path: string, content: Uint8Array, mode = 0o600, noReplace?: boolean) =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     yield* machine.atomicWrite({
       path: yield* machine.normalizePath({ path }),
       content,
       mode,
+      noReplace,
     });
   });
 
@@ -399,55 +404,97 @@ export const executeFolderScaffold = (item: SetupPlanItem) =>
 
 type CandidateRecord = typeof ImportCandidateSchema.Type;
 
-/** Refuse to write over anything except the empty `AGENTS.md` the scaffold creates. */
-const assertFree = (folder: string, candidate: CandidateRecord) =>
+const importCollision = (path: string, candidate: CandidateRecord) => applyFailure(
+  `${path} appeared after the plan was approved; the import of ${candidate.id} would replace it`,
+  "prerequisite",
+  "Run setup plan again and review the import collisions.",
+);
+
+type ImportTargetSnapshot = { readonly instructions: Uint8Array | undefined };
+
+/** Refuse to replace a target except for unchanged empty instructions. */
+const assertFree = (folder: string, candidate: CandidateRecord, before?: ImportTargetSnapshot) =>
   Effect.gen(function*() {
-    if (candidate.category === "mcp") return;
+    if (candidate.category === "mcp") return { instructions: undefined };
     const path = join(folder, ...candidate.target.split("/"));
-    const occupied = candidate.category === "instructions"
-      ? ((yield* readOptional(path)) ?? "").trim().length > 0
-      : yield* pathExists(path);
-    if (occupied) {
-      return yield* applyFailure(
-        `${path} appeared after the plan was approved; the import of ${candidate.id} would replace it`,
-        "prerequisite",
-        "Run setup plan again and review the import collisions.",
-      );
+    if (candidate.category !== "instructions") {
+      if (yield* pathExists(path)) return yield* importCollision(path, candidate);
+      return { instructions: undefined };
     }
+    const instructions = yield* readOptionalBytes(path);
+    if (instructions === undefined) return { instructions };
+    if (new TextDecoder().decode(instructions).trim().length > 0 ||
+      (before !== undefined && (before.instructions === undefined || Buffer.compare(instructions, before.instructions) !== 0))) {
+      return yield* importCollision(path, candidate);
+    }
+    return { instructions };
   });
 
-const writeContent = (folder: string, candidate: CandidateRecord, content: Exclude<ImportContent, { readonly kind: "mcp" }>) =>
+const writeContent = (
+  folder: string,
+  candidate: CandidateRecord,
+  content: Exclude<ImportContent, { readonly kind: "mcp" }>,
+  before: ImportTargetSnapshot,
+) =>
   Effect.gen(function*() {
+    const { instructions } = yield* assertFree(folder, candidate, before);
     const path = join(folder, ...candidate.target.split("/"));
-    if (content.kind === "text") return yield* writeFile(path, utf8(content.content));
+    const write = (target: string, bytes: Uint8Array, mode: number, noReplace: boolean) =>
+      writeFile(target, bytes, mode, noReplace).pipe(Effect.mapError((error) =>
+        error._tag === "MachineFilesystemError" && /\bEEXIST\b/u.test(error.message) ? importCollision(target, candidate) : error));
+    if (content.kind === "text") return yield* write(path, utf8(content.content), 0o600, instructions === undefined);
     for (const file of content.files) {
       const segments = file.path.split("/");
       if (segments.some((segment) => segment === ".." || segment === "" || segment === ".")) {
         return yield* applyFailure(`skill file ${file.path} of ${candidate.id} is not a plain relative path`);
       }
       yield* ensureDirectory(join(path, ...segments.slice(0, -1)));
-      yield* writeFile(join(path, ...segments), file.content, file.executable ? 0o700 : 0o600);
+      yield* write(join(path, ...segments), file.content, file.executable ? 0o700 : 0o600, true);
     }
   });
 
+const assertMcpKeysFree = (
+  configPath: string,
+  current: string | undefined,
+  servers: ReadonlyArray<readonly [string, ConfigValue]>,
+) => {
+  const document = parseConfigDocument("json", current ?? "");
+  const taken = servers.filter(([name]) => getConfigPath(document, `mcp.${name}`) !== undefined).map(([name]) => name);
+  if (taken.length === 0) return Effect.void;
+  return Effect.fail(applyFailure(
+    `MCP server ${taken.join(", ")} appeared in ${configPath} after the plan was approved`,
+    "prerequisite",
+    "Run setup plan again and review the import collisions.",
+  ));
+};
+
 /** Add imported MCP servers to `canonfig.jsonc` in one comment-preserving edit. */
-const writeMcp = (folder: string, servers: ReadonlyArray<readonly [string, ConfigValue]>) =>
+const writeMcp = (configPath: string, servers: ReadonlyArray<readonly [string, ConfigValue]>) =>
   Effect.gen(function*() {
     if (servers.length === 0) return;
-    const configPath = join(folder, "canonfig.jsonc");
     const current = yield* readOptional(configPath);
-    const document = parseConfigDocument("json", current ?? "");
-    const taken = servers.filter(([name]) => getConfigPath(document, `mcp.${name}`) !== undefined).map(([name]) => name);
-    if (taken.length > 0) {
-      return yield* applyFailure(
-        `MCP server ${taken.join(", ")} appeared in ${configPath} after the plan was approved`,
-        "prerequisite",
-        "Run setup plan again and review the import collisions.",
-      );
-    }
+    yield* assertMcpKeysFree(configPath, current, servers);
     yield* writeFile(configPath, utf8(editConfigText("json", current, {
       sets: servers.map(([name, server]) => ({ path: `mcp.${name}`, value: server })),
     })));
+  });
+
+const assertNoProjectedImportCollisions = (folder: string, candidates: readonly CandidateRecord[]) =>
+  Effect.gen(function*() {
+    const folderSkills = yield* Effect.tryPromise({
+      try: () => readFolderSkillNames(folder),
+      catch: (cause) => applyFailure(`the Canonical Folder skill names could not be checked: ${String(cause)}`),
+    });
+    const conflicts = projectedImportCollisions(folderSkills, candidates);
+    if (conflicts.length > 0) {
+      const names = conflicts.map(({ target, candidates, folderItems }) =>
+        `${[...candidates, ...folderItems ?? []].join(" and ")} project to ${target}`);
+      return yield* applyFailure(
+        names.join("\n"),
+        "prerequisite",
+        "Run setup plan again and resolve the skill name conflicts before importing.",
+      );
+    }
   });
 
 /**
@@ -459,7 +506,7 @@ export const executeHarnessImport = (item: SetupPlanItem, environment: Environme
   Effect.gen(function*() {
     const detail = yield* decodeDetail(ImportDetail, item);
     const context = yield* contextFor(environment);
-    const contents: Array<readonly [CandidateRecord, ImportContent]> = [];
+    const contents: Array<readonly [CandidateRecord, ImportContent, ImportTargetSnapshot]> = [];
     let remainingBytes = maxImportContentBytes;
     for (const candidate of detail.items) {
       const content = yield* Effect.tryPromise({
@@ -483,32 +530,42 @@ export const executeHarnessImport = (item: SetupPlanItem, environment: Environme
         },
       });
       remainingBytes -= importContentBytes(content);
-      yield* assertFree(detail.folder, candidate);
-      contents.push([candidate, content]);
+      const before = yield* assertFree(detail.folder, candidate);
+      contents.push([candidate, content, before]);
     }
-    const folderSkills = yield* Effect.tryPromise({
-      try: () => readFolderSkillNames(detail.folder),
-      catch: (cause) => applyFailure(`the Canonical Folder skill names could not be checked: ${String(cause)}`),
-    });
-    const conflicts = projectedImportCollisions(folderSkills, detail.items);
-    if (conflicts.length > 0) {
-      const names = conflicts.map(({ target, candidates, folderItems }) =>
-        `${[...candidates, ...folderItems ?? []].join(" and ")} project to ${target}`);
-      return yield* applyFailure(
-        names.join("\n"),
-        "prerequisite",
-        "Run setup plan again and resolve the skill name conflicts before importing.",
-      );
-    }
+    yield* assertNoProjectedImportCollisions(detail.folder, detail.items);
+    const guard = yield* guardEffect((signal) => enforceGuard(contents.map(([candidate, content]): GuardItem => {
+      const id = `${candidate.category}:${candidate.name}`;
+      if (content.kind === "mcp") return { kind: "mcp", id, files: [], declaration: content.server };
+      const files = content.kind === "tree" ? content.files.map((file) => ({
+        path: file.path, bytes: file.content, executable: file.executable,
+      })) : [guardText(basename(candidate.target), content.content)];
+      return { kind: candidate.category, id, files };
+    }), { root: detail.folder, trigger: "setup.import", signal })).pipe(Effect.mapError((error) =>
+      new SetupError({
+        operation: "setup apply", message: error.message, category: error instanceof GuardHold ? "prerequisite" : "usage",
+        recovery: "Correct the content or select fewer items, then review and approve a new setup plan.",
+        guard: error instanceof GuardHold ? asJson(error.report) : undefined,
+      })));
+    // Check the whole batch after Guard so the remaining check-to-write window is the same as before Guard.
     const servers: Array<readonly [string, ConfigValue]> = [];
-    for (const [candidate, content] of contents) {
+    for (const [candidate, content, before] of contents) {
       if (content.kind === "mcp") servers.push([candidate.name, content.server]);
-      else yield* writeContent(detail.folder, candidate, content);
+      else yield* assertFree(detail.folder, candidate, before);
     }
-    yield* writeMcp(detail.folder, servers);
+    yield* assertNoProjectedImportCollisions(detail.folder, detail.items);
+    const configPath = join(detail.folder, "canonfig.jsonc");
+    if (servers.length > 0) {
+      const current = yield* readOptional(configPath);
+      yield* assertMcpKeysFree(configPath, current, servers);
+    }
+    for (const [candidate, content, before] of contents) {
+      if (content.kind !== "mcp") yield* writeContent(detail.folder, candidate, content, before);
+    }
+    yield* writeMcp(configPath, servers);
     const secrets = detail.items.flatMap((candidate) => candidate.secrets.map((secret) => secret.fromEnv));
     return {
-      evidence: `imported ${detail.items.length} item(s) into ${detail.folder}: ${detail.items.map((candidate) => candidate.target).join(", ")}`
+      evidence: (guard.verdict === "warn" || guard.recordUnavailable ? guardMessage(guard) + " " : "") + `imported ${detail.items.length} item(s) into ${detail.folder}: ${detail.items.map((candidate) => candidate.target).join(", ")}`
         + (secrets.length > 0 ? `; literal credentials replaced with fromEnv references: ${[...new Set(secrets)].join(", ")}` : ""),
     };
   }).pipe(Effect.mapError((cause) => cause instanceof SetupError ? cause : applyFailure(`the harness import failed: ${cause.message}`)));

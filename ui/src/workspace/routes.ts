@@ -24,6 +24,7 @@ const SOURCE_PATHS: Record<SourceView, string> = {
   installers: "settings/installers",
   setup: "settings/setup",
   doctor: "settings/health",
+  guard: "settings/guard",
   version: "settings/version",
 };
 
@@ -41,6 +42,7 @@ const FOLLOWER_PATHS: Record<FollowerView, string> = {
   setup: "settings/setup",
   doctor: "settings/health",
   machine: "settings/enrollment",
+  guard: "settings/guard",
   version: "settings/version",
 };
 

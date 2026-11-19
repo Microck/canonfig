@@ -627,3 +627,11 @@ Canonfig does not provide:
 - automatic deletion of historical revisions or blobs
 
 These exclusions keep authority, recovery, and user-visible outcomes explicit.
+
+## Configuration admission
+
+[Canonfig Guard](guard.md) checks candidate bytes before upstream skill
+adoption or update, import, discovery acceptance, publication and Follower
+planning. A hold changes no installed or published items. Followers use
+offline rules even for signed revisions. Source and standalone operations can
+also use a machine-owned checker for eligible text.

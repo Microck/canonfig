@@ -1,3 +1,5 @@
+import { GuardHold } from "../guard/guard.ts";
+import { guardTargetOverlap } from "../guard/local-role.ts";
 import { createPublicKey, verify as verifySignature } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
@@ -953,7 +955,7 @@ export interface ExportInput {
  */
 export const journalError = (command: ArchiveEvent["command"], archive: string) =>
 <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(Effect.tapError(() =>
+  effect.pipe(Effect.tapError((error) => error instanceof GuardHold ? Effect.void :
     Effect.flatMap(StateRepository, (repository) =>
       repository.recordArchiveEvent({ occurredAt: new Date().toISOString(), command, outcome: "Error", archive })
     ).pipe(Effect.ignore)
@@ -1160,8 +1162,8 @@ export const planImport = (input: {
     // Both are decoded as export validates them, so an archive with a file
     // this Canonfig cannot read is refused before anything is written,
     // rather than imported and failing every later sync.
-    const decodeOrRefuse = (name: string, decode: () => void) =>
-      Effect.try({
+    const decodeOrRefuse = (name: string, decode: () => Promise<void>) =>
+      Effect.tryPromise({
         try: decode,
         catch: (error) =>
           new ArchiveIntegrityError({
@@ -1169,11 +1171,16 @@ export const planImport = (input: {
             message: `holds a ${name} this Canonfig cannot read: ${error instanceof CanonicalFolderError ? error.message : String(error)}`,
           }),
       });
-    yield* decodeOrRefuse("canonfig.jsonc", () => {
-      decodeFolderConfig(join(input.folder, "canonfig.jsonc"), new TextDecoder().decode(configuration.content));
+    yield* decodeOrRefuse("canonfig.jsonc", async () => {
+      const decoded = decodeFolderConfig(join(input.folder, "canonfig.jsonc"), new TextDecoder().decode(configuration.content));
+      for (const { target } of Object.values(decoded.resources ?? {})) {
+        if (await guardTargetOverlap(input.folder, target)) {
+          throw new CanonicalFolderError({ path: "canonfig.jsonc", message: "A resource target overlaps machine-owned Guard state." });
+        }
+      }
     });
     if (local !== undefined) {
-      yield* decodeOrRefuse("local/local.jsonc", () => {
+      yield* decodeOrRefuse("local/local.jsonc", async () => {
         decodeLocalConfig(join(input.folder, "local", "local.jsonc"), new TextDecoder().decode(local.content));
       });
     }

@@ -1,3 +1,5 @@
+import { enforceGuard, guardEffect } from "../guard/guard.ts";
+import { folderGuardItems } from "../guard/candidates.ts";
 import { randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -635,10 +637,14 @@ export const importLocal = Effect.fn("LocalProjection.import")(function*(
     expectKey,
     appliedResources: yield* repository.loadAppliedResources(localProjectionFollower),
   });
+  const guard = yield* guardEffect((signal) => enforceGuard(folderGuardItems(planned.archive.folderFiles.map((file) =>
+    [file.path, { content: file.content, executable: (file.mode & 0o100) !== 0 }] as const)),
+  { root: folderOf(statePath), trigger: "archive.import", preview: mode === "plan", signal }));
   const harnesses = [...new Set(planned.archive.harnessFiles.map((file) => file.harness!))].sort();
   const signer = planned.archive.signer ?? "unsigned";
   const base = {
     archive,
+    guard: guard.verdict !== "allow" || guard.recordUnavailable ? guard : undefined,
     sha256: planned.archive.archiveSha256,
     manifestSha256: planned.archive.manifestSha256,
     signer,
