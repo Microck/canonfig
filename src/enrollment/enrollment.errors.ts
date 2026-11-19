@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import type { SourceCredentialMismatchError } from "../domain/identity.ts";
 import { TaggedError } from "../domain/tagged-error.ts";
 import type { CredentialStorageError } from "../machine/machine-state.errors.ts";
 import type { FollowerNotFoundError, MachineRoleConflictError } from "../state/state-repository.errors.ts";
@@ -107,18 +108,6 @@ export class SourceVersionMismatchError extends TaggedError<SourceVersionMismatc
     followerVersion: Schema.NullOr(Schema.String),
     message: Schema.String,
   },
-) {}
-
-/**
- * The Source's credential items in the native store do not belong to the
- * identity its state records. Earlier releases kept them under
- * account-global names, so another Canonfig state directory of the same OS
- * account could overwrite them; using them would serve or sign as another
- * Source.
- */
-export class SourceCredentialMismatchError extends TaggedError<SourceCredentialMismatchError>()(
-  "SourceCredentialMismatchError",
-  { message: Schema.String },
 ) {}
 
 export type EnrollmentError =

@@ -3,9 +3,9 @@ import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { X509Certificate } from "node:crypto";
 import { request as httpsRequest } from "node:https";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { connect as tlsConnect } from "node:tls";
 
@@ -17,6 +17,7 @@ import {
   FollowerId,
   GroupName,
 } from "../../src/domain/brand.ts";
+import { SourceCredentialMismatchError } from "../../src/domain/identity.ts";
 import {
   DuplicateFollowerIdentityError,
   EnrollmentConfigurationError,
@@ -26,7 +27,6 @@ import {
   InvitationReplayError,
   InvalidFollowerCredentialError,
   RevokedFollowerCredentialError,
-  SourceCredentialMismatchError,
   type EnrollmentError,
 } from "../../src/enrollment/enrollment.errors.ts";
 import { CredentialStorageError } from "../../src/machine/machine-state.errors.ts";
@@ -1013,6 +1013,7 @@ describe("loopback HTTPS enrollment", () => {
 
 describe("Source credentials shared by one OS account", () => {
   interface StateDirectory {
+    readonly path: string;
     readonly run: <Value, Failure>(
       effect: Effect.Effect<Value, Failure, Enrollment | MachineState | StateRepository>,
     ) => Promise<Value>;
@@ -1025,13 +1026,13 @@ describe("Source credentials shared by one OS account", () => {
     temporaryDirectories.push(root);
     const machine = machineLayer(join(root, "account"));
     const stateDirectory = (name: string): StateDirectory => {
-      const runtime = ManagedRuntime.make(
-        sourceApplicationLayer(join(root, `${name}.sqlite`), machine),
-      );
+      const path = join(root, name, ".canonfig", "state.sqlite");
+      mkdirSync(dirname(path), { recursive: true });
+      const runtime = ManagedRuntime.make(sourceApplicationLayer(path, machine));
       sourceRuntimes.push(runtime);
-      return { run: (effect) => runtime.runPromise(effect) };
+      return { path, run: (effect) => runtime.runPromise(effect) };
     };
-    return { stateDirectory };
+    return { root, stateDirectory, credentialDirectory: join(root, "account", "credentials") };
   };
 
   const legacyNames = {
@@ -1044,29 +1045,36 @@ describe("Source credentials shared by one OS account", () => {
   // account-global names and a state record with no credential namespace.
   const writeLegacySource = (
     directory: StateDirectory,
-    secretsOf: SourceCredentials,
-    recordOf: SourceCredentials,
-  ) =>
-    directory.run(Effect.gen(function*() {
+    original: SourceCredentials,
+  ) => {
+    return directory.run(Effect.gen(function*() {
       const machine = yield* MachineState;
       const repository = yield* StateRepository;
       const store = (name: string, value: Redacted.Redacted<string>) =>
         machine.storeCredential({ name, value });
       const references = {
-        signingKeyReference: yield* store(legacyNames.signingKeyReference, secretsOf.signingPrivateKey),
-        tlsKeyReference: yield* store(legacyNames.tlsKeyReference, secretsOf.tlsPrivateKey),
+        signingKeyReference: yield* store(legacyNames.signingKeyReference, original.signingPrivateKey),
+        tlsKeyReference: yield* store(legacyNames.tlsKeyReference, original.tlsPrivateKey),
         tlsCertificateReference: yield* store(
           legacyNames.tlsCertificateReference,
-          secretsOf.tlsCertificate,
+          original.tlsCertificate,
         ),
       };
       yield* repository.saveEnrollmentSource({
-        identity: recordOf.material.source,
+        identity: original.material.source,
         ...references,
-        tlsFingerprint: recordOf.material.tlsFingerprint,
+        tlsFingerprint: original.material.tlsFingerprint,
+        credentialNamespace: "a".repeat(32),
       });
+      const database = new DatabaseSync(directory.path);
+      try {
+        database.prepare("UPDATE enrollment_source SET credential_namespace = NULL").run();
+      } finally {
+        database.close();
+      }
       return references;
     }));
+  };
 
   const credentialsOf = (directory: StateDirectory) =>
     directory.run(Effect.gen(function*() {
@@ -1110,45 +1118,126 @@ describe("Source credentials shared by one OS account", () => {
     expect(served).toBe(first.material.tlsFingerprint);
   });
 
-  it("migrates legacy account-global items only when they match the recorded fingerprints", async () => {
+  it("refuses legacy Source state without copying or deleting native credentials", async () => {
     const account = accountStore();
     const original = await credentialsOf(account.stateDirectory("original"));
     const legacy = account.stateDirectory("legacy");
-    const legacyReferences = await writeLegacySource(legacy, original, original);
-
-    const migrated = await legacy.run(Effect.flatMap(Enrollment, (enrollment) =>
-      enrollment.sourceCredentials()
-    ));
-    expect(migrated.material.source).toEqual(original.material.source);
-    expect(migrated.material.signingKeyReference).not.toBe(legacyReferences.signingKeyReference);
-    const record = await legacy.run(Effect.flatMap(StateRepository, (repository) =>
-      repository.getEnrollmentSource()
-    ));
-    expect(record?.credentialNamespace).toMatch(/^[0-9a-f]{32}$/u);
-    expect(record?.tlsCertificateReference).toBe(migrated.material.tlsCertificateReference);
-    expect(Redacted.value(migrated.tlsCertificate)).toBe(Redacted.value(original.tlsCertificate));
-  });
-
-  it("refuses legacy items another Source overwrote and leaves the state as it was", async () => {
-    const account = accountStore();
-    const victim = await credentialsOf(account.stateDirectory("victim"));
-    const intruder = await credentialsOf(account.stateDirectory("intruder"));
-    const legacy = account.stateDirectory("legacy");
-    // The record says "victim", but the account-global items now hold the
-    // intruder's keys, as an earlier release's second `source init` left them.
-    await writeLegacySource(legacy, intruder, victim);
+    const references = await writeLegacySource(legacy, original);
+    const itemsBefore = readdirSync(account.credentialDirectory).sort();
 
     const refused = await legacy.run(Effect.flip(Effect.flatMap(Enrollment, (enrollment) =>
       enrollment.sourceCredentials()
     )));
     expect(refused).toBeInstanceOf(SourceCredentialMismatchError);
-    expect(refused.message).toContain(String(victim.material.source.publicKeyFingerprint));
+    expect(refused.message).toContain("predates namespaced credentials");
+    expect(refused.message).toContain("canonfig source init");
     expect(describeRuntimeError(refused).category).toBe("conflict-or-drift");
-    const record = await legacy.run(Effect.flatMap(StateRepository, (repository) =>
-      repository.getEnrollmentSource()
+    expect(await legacy.run(Effect.flip(startSourceServer()))).toBeInstanceOf(SourceCredentialMismatchError);
+    expect(readdirSync(account.credentialDirectory).sort()).toEqual(itemsBefore);
+
+    const database = new DatabaseSync(legacy.path, { readOnly: true });
+    try {
+      expect(database.prepare("SELECT signing_key_reference, credential_namespace FROM enrollment_source").get())
+        .toMatchObject({ signing_key_reference: references.signingKeyReference, credential_namespace: null });
+    } finally {
+      database.close();
+    }
+    const preserved = await legacy.run(Effect.flatMap(MachineState, (machine) =>
+      machine.loadCredential({ reference: references.tlsCertificateReference })
     ));
-    expect(record?.credentialNamespace).toBeUndefined();
-    const serve = await legacy.run(Effect.flip(startSourceServer()));
-    expect(serve).toBeInstanceOf(SourceCredentialMismatchError);
+    expect(Redacted.value(preserved)).toBe(Redacted.value(original.tlsCertificate));
+  });
+
+  it.runIf(process.platform === "linux")(
+    "reports legacy Source recovery in setup and service status before calling the credential store",
+    async () => {
+      const account = accountStore();
+      const original = await credentialsOf(account.stateDirectory("original"));
+      const legacy = account.stateDirectory("legacy");
+      await writeLegacySource(legacy, original);
+
+      const home = join(account.root, "legacy");
+      const bin = join(home, "bin");
+      const credentialCall = join(home, "credential-call");
+      mkdirSync(bin, { recursive: true });
+      writeFileSync(
+        join(bin, "secret-tool"),
+        `#!${process.execPath}\nrequire("node:fs").writeFileSync(${JSON.stringify(credentialCall)}, process.argv[2]);\nprocess.exit(1);\n`,
+        { mode: 0o755 },
+      );
+      const invoke = (...args: ReadonlyArray<string>) => {
+        const result = spawnSync(process.execPath, [
+          "--import", "tsx", resolve(import.meta.dirname, "../../src/runtime/main.ts"), "--json", ...args,
+        ], {
+          encoding: "utf8",
+          timeout: 15_000,
+          env: {
+            HOME: home,
+            PATH: bin,
+            DBUS_SESSION_BUS_ADDRESS: "unix:path=/nonexistent/canonfig-test-bus",
+            CANONFIG_LOG_FILE: join(home, "command.log"),
+            CANONFIG_SYSTEMCTL: join(bin, "systemctl"),
+            CANONFIG_TAILSCALE_EXECUTABLE: join(bin, "tailscale"),
+          },
+        });
+        expect(result.status, result.stdout + result.stderr).toBeGreaterThan(0);
+        return JSON.parse(result.stdout || result.stderr);
+      };
+      const setup = invoke("setup", "plan", "--role", "source");
+      expect(setup.message).toContain("predates namespaced credentials");
+      expect(setup.message).toContain("canonfig source init");
+      expect(existsSync(credentialCall)).toBe(false);
+
+      writeFileSync(join(home, ".canonfig", "source-service.json"), JSON.stringify({
+        version: 2,
+        registration: {
+          _tag: "Removing",
+          operationId: "interrupted-removal",
+          requested: { hostname: "127.0.0.1", port: 23456 },
+        },
+      }));
+      const service = invoke("source", "service", "status");
+      expect(service.message).toContain("predates namespaced credentials");
+      expect(service.exitCode).toBe(exitCodeForFailure("conflict-or-drift"));
+      expect(service.message).toContain("canonfig source init");
+      expect(service.data).toMatchObject({
+        state: "not-installed",
+        manager: { installed: false },
+        serving: false,
+        endpoint: "https://127.0.0.1:23456",
+        detail: expect.stringContaining("removing (interrupted-removal)"),
+      });
+      expect(service.data.detail).toContain("inspect the native service and retry that operation");
+
+      const unit = join(home, ".config", "systemd", "user", "canonfig-source.service");
+      mkdirSync(dirname(unit), { recursive: true });
+      writeFileSync(unit, "[Service]\nExecStart=/unused\n");
+      writeFileSync(join(bin, "systemctl"), "#!/bin/sh\necho 'Failed to connect to bus: No medium found' >&2\nexit 1\n", {
+        mode: 0o755,
+      });
+      const unavailable = invoke("source", "service", "status");
+      expect(unavailable.exitCode).toBe(exitCodeForFailure("conflict-or-drift"));
+      expect(unavailable.message).toContain("canonfig source init");
+      expect(unavailable.message).toContain("no user session bus");
+      expect(existsSync(credentialCall)).toBe(false);
+    },
+  );
+
+  it("refuses when a namespaced Source's signing key does not match the recorded identity", async () => {
+    const account = accountStore();
+    const firstDirectory = account.stateDirectory("first");
+    const first = await credentialsOf(firstDirectory);
+    const second = await credentialsOf(account.stateDirectory("second"));
+    const database = new DatabaseSync(firstDirectory.path);
+    try {
+      database.prepare("UPDATE enrollment_source SET signing_key_reference = ?").run(second.material.signingKeyReference);
+    } finally {
+      database.close();
+    }
+    const refused = await firstDirectory.run(Effect.flip(Effect.flatMap(Enrollment, (enrollment) =>
+      enrollment.sourceCredentials()
+    )));
+    expect(refused).toBeInstanceOf(SourceCredentialMismatchError);
+    expect(refused.message).toContain(String(first.material.source.publicKeyFingerprint));
   });
 });

@@ -335,12 +335,14 @@ describe("StateRepository SQLite adapter", () => {
       tlsKeyReference: CredentialReference,
       tlsCertificateReference: CredentialReference,
       tlsFingerprint: CertificateFingerprint,
+      credentialNamespace: Schema.NonEmptyString,
     }))({
       identity: { keyId: "ed25519:own", publicKeyFingerprint: "own" },
       signingKeyReference: "secure-store://canonfig/signing",
       tlsKeyReference: "secure-store://canonfig/tls-key",
       tlsCertificateReference: "secure-store://canonfig/tls-certificate",
       tlsFingerprint: "tls-own",
+      credentialNamespace: "a".repeat(32),
     });
     const rows = (path: string) => {
       const database = new DatabaseSync(path, { readOnly: true });
@@ -389,6 +391,7 @@ describe("StateRepository SQLite adapter", () => {
       tlsKeyReference: decode(CredentialReference)("secure-store://first/tls"),
       tlsCertificateReference: decode(CredentialReference)("secure-store://first/cert"),
       tlsFingerprint: decode(CertificateFingerprint)("first-tls"),
+      credentialNamespace: "a".repeat(32),
     };
     const second = { ...first, identity: decode(SourceIdentity)({ keyId: "second", publicKeyFingerprint: "second" }) };
     const result = await runWithRepository(path, Effect.gen(function*() {

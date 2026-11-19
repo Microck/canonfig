@@ -11,7 +11,7 @@ import { detectTailnet, isTailnetAddress, tailnetBinding } from "./tailnet.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { CredentialStorageError } from "../machine/machine-state.errors.ts";
 import { BlobId, type CertificateFingerprint } from "../domain/brand.ts";
-import type { SourceIdentity } from "../domain/identity.ts";
+import { SourceCredentialMismatchError, type SourceIdentity } from "../domain/identity.ts";
 import {
   loadSharedSecrets,
   SECRET_SHARE_GROUP,
@@ -28,7 +28,6 @@ import {
   InvalidFollowerCredentialError,
   MalformedEnrollmentRequestError,
   RevokedFollowerCredentialError,
-  SourceCredentialMismatchError,
   SourceNotInitializedError,
   TransportIntegrityError,
   TransportResourceNotFoundError,
@@ -231,11 +230,8 @@ const startSourceServerScoped = (
     }
     const enrollment = yield* Enrollment;
     const machine = yield* MachineState;
-    // The TLS key and certificate are checked against the recorded
-    // fingerprint (and moved under this state directory's credential
-    // namespace when an earlier release stored them account-globally), so the
-    // server never presents another Source's identity. A local store failure
-    // keeps its native recovery text.
+    // Verify the TLS key and certificate against the recorded fingerprint
+    // before serving. Preserve the credential store's recovery text.
     const credentials = yield* enrollment.sourceCredentials().pipe(
       Effect.mapError((error) =>
         error instanceof CredentialStorageError || error instanceof SourceCredentialMismatchError

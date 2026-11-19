@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import type { SourceCredentialMismatchError } from "../domain/identity.ts";
 import { TaggedError } from "../domain/tagged-error.ts";
 
 export class RepositorySqlError extends TaggedError<RepositorySqlError>()(
@@ -138,5 +139,6 @@ export type StateRepositoryError =
   | ActionNotInPlanError
   | InvalidRunTransitionError
   | EnrollmentStateConflictError
+  | SourceCredentialMismatchError
   // Saving one role's record while the other's exists.
   | MachineRoleConflictError;

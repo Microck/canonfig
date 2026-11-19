@@ -28,7 +28,7 @@ import {
   ProfileRevisionId,
   Timestamp,
 } from "../domain/brand.ts";
-import { FollowerIdentity, SourceIdentity } from "../domain/identity.ts";
+import { FollowerIdentity, sourceCredentialRecovery, SourceCredentialMismatchError, SourceIdentity } from "../domain/identity.ts";
 import {
   PublishedMachineProfileSchema,
   type ProfileRevision,
@@ -57,7 +57,6 @@ import {
   InvitationReplayError,
   InvalidFollowerCredentialError,
   RevokedFollowerCredentialError,
-  SourceCredentialMismatchError,
   SourceNotInitializedError,
   TransportIntegrityError,
   TransportResourceNotFoundError,
@@ -317,8 +316,8 @@ const repositoryError = (
   // problem: reporting one sent the operator looking for a revoked or corrupt
   // credential when they had simply named an id that does not exist.
   if (error instanceof FollowerNotFoundError) return error;
-  // A role conflict carries its own message and recovery.
-  if (error instanceof MachineRoleConflictError) return error;
+  // A role or Source credential conflict carries its own recovery instructions.
+  if (error instanceof MachineRoleConflictError || error instanceof SourceCredentialMismatchError) return error;
   return new EnrollmentConfigurationError({
     operation,
     message: "durable enrollment state is unavailable",
@@ -487,16 +486,7 @@ const makeEnrollment = Effect.gen(function*() {
       { discard: true },
     );
 
-  const sourceCredentials = Effect.fn("Enrollment.sourceCredentials")(function*(): Effect.fn.Return<
-    SourceCredentials,
-    EnrollmentError
-  > {
-    const record = yield* repository.getEnrollmentSource().pipe(
-      Effect.mapError(repositoryError("load source identity")),
-    );
-    if (record === undefined) {
-      return yield* new SourceNotInitializedError({ operation: "load source credentials" });
-    }
+  const verifySourceCredentials = Effect.fn("Enrollment.verifySourceCredentials")(function*(record: EnrollmentSourceRecord) {
     const material = sourceMaterial(record);
     const load = (reference: typeof CredentialReference.Type, label: string) =>
       machine.loadCredential({ reference }).pipe(
@@ -515,39 +505,24 @@ const makeEnrollment = Effect.gen(function*() {
     });
     const mismatch = sourceSecretsMismatch(material, secrets);
     if (mismatch !== undefined) {
-      const cause = record.credentialNamespace === undefined
-        ? "An earlier release kept Source credentials under account-global names, and another Canonfig state directory of this OS account has since replaced them"
-        : "The native credential store no longer holds this Source's own credentials";
       return yield* new SourceCredentialMismatchError({
-        message: `${cause}: ${mismatch}. They were not used, so nothing was signed or served as another Source. This Source's keys cannot be recovered from the store: move this state directory aside, run \`canonfig source init\` to create a new Source identity, then enroll its followers again with new invitations.`,
+        message: `The native credential store no longer holds this Source's own credentials: ${mismatch}. They were not used, so nothing was signed or served as another Source. This Source's keys cannot be recovered from the store. ${sourceCredentialRecovery}`,
       });
     }
-    if (record.credentialNamespace !== undefined) return { material, ...secrets };
-    // The legacy account-global items match this Source's fingerprints, so
-    // they are its own: copy them under this state directory's namespace and
-    // record the new references. The legacy items stay in place; another
-    // state directory restored from a copy of this one may still name them.
-    const namespace = randomBytes(16).toString("hex");
-    const references = yield* storeSourceSecrets(namespace, secrets);
-    const migrated: EnrollmentSourceRecord = {
-      ...record,
-      ...references,
-      credentialNamespace: namespace,
-    };
-    const current = yield* repository.getEnrollmentSource().pipe(
+    return { material, ...secrets };
+  });
+
+  const sourceCredentials = Effect.fn("Enrollment.sourceCredentials")(function*(): Effect.fn.Return<
+    SourceCredentials,
+    EnrollmentError
+  > {
+    const record = yield* repository.getEnrollmentSource().pipe(
       Effect.mapError(repositoryError("load source identity")),
-      Effect.tapError(() => removeSourceSecrets(sourceMaterial(migrated))),
     );
-    if (current?.credentialNamespace !== undefined) {
-      // A concurrent process migrated first; keep its copy.
-      yield* removeSourceSecrets(sourceMaterial(migrated));
-      return { material: sourceMaterial(current), ...secrets };
+    if (record === undefined) {
+      return yield* new SourceNotInitializedError({ operation: "load source credentials" });
     }
-    yield* repository.saveEnrollmentSource(migrated, record).pipe(
-      Effect.mapError(repositoryError("migrate source credentials")),
-      Effect.tapError(() => removeSourceSecrets(sourceMaterial(migrated))),
-    );
-    return { material: sourceMaterial(migrated), ...secrets };
+    return yield* verifySourceCredentials(record);
   });
 
   const source = Effect.fn("Enrollment.source")(function*() {
@@ -571,10 +546,8 @@ const makeEnrollment = Effect.gen(function*() {
     const existing = yield* repository.getEnrollmentSource().pipe(
       Effect.mapError(repositoryError("load source identity")),
     );
-    // An initialized Source is never replaced. Re-running init confirms that
-    // the native store still holds this Source's own credentials (moving
-    // legacy account-global items under this state directory's namespace).
-    if (existing !== undefined) return (yield* sourceCredentials()).material;
+    // Re-running init verifies this Source's credentials without replacing its identity.
+    if (existing !== undefined) return (yield* verifySourceCredentials(existing)).material;
 
     const generated = yield* Effect.tryPromise({
       try: async () => {

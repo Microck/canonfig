@@ -16,7 +16,7 @@ import { readFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-import { Effect, Layer, Option, Redacted, Schema } from "effect";
+import { Effect, Layer, Option, Redacted, Result, Schema } from "effect";
 
 import { ProfileId, SourceSignature } from "../domain/brand.ts";
 import { guiQueriesLayer } from "../gui/queries.ts";
@@ -415,10 +415,24 @@ const sourceCommandsLayer = (folder: string): Layer.Layer<
         })),
       serviceStatus: () =>
         Effect.gen(function*() {
-          const identity = yield* sourceIdentity.pipe(
-            Effect.catch(() => Effect.succeed(undefined)),
-          );
-          const status = yield* mapFailure(sourceService.status(identity));
+          const identity = yield* Effect.result(sourceIdentity);
+          const inspected = yield* Effect.result(mapFailure(sourceService.status(Result.getOrUndefined(identity))));
+          if (Result.isFailure(identity) && identity.failure._tag === "SourceCredentialMismatchError") {
+            const { category, message } = describeRuntimeError(identity.failure);
+            if (Result.isFailure(inspected)) {
+              return yield* new CliCommandFailure({
+                category,
+                message: `${message} Source service status could not be read: ${inspected.failure.message}`,
+              });
+            }
+            return yield* new CliCommandFailure({
+              category,
+              message,
+              details: payload(inspected.success),
+            });
+          }
+          if (Result.isFailure(inspected)) return yield* inspected.failure;
+          const status = inspected.success;
           if (status.state === "running" || status.state === "not-installed") {
             return payload(status);
           }
@@ -474,11 +488,9 @@ const sourceCommandsLayer = (folder: string): Layer.Layer<
 );
 
 /**
- * The Source's signing key as a signer. The key is checked against the
- * recorded Source identity: a key another state directory stored under an
- * earlier release's account-global name must never sign for this Source. A
- * local store failure or mismatch keeps its own category and text. Profile
- * Revisions and `canonfig export` manifests are both signed through it.
+ * Verify the signing key against the recorded Source identity before signing
+ * Profile Revisions or export manifests. Preserve the credential store's
+ * failure category and message.
  */
 const loadSourceSigner = (enrollment: Enrollment["Service"]) =>
   Effect.gen(function*() {

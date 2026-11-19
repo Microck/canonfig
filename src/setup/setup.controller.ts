@@ -5,7 +5,6 @@ import { basename, dirname, join, posix, win32 } from "node:path";
 
 import { Effect, Schema } from "effect";
 
-import { SourceNotInitializedError } from "../enrollment/enrollment.errors.ts";
 import { Enrollment } from "../enrollment/enrollment.service.ts";
 import { refuseOnFollower, refuseOnSource } from "../state/machine-role.ts";
 import { MachineRoleConflictError } from "../state/state-repository.errors.ts";
@@ -424,27 +423,21 @@ const probeTransport = (
     })),
     Effect.catchTag("SourceNotInitializedError", () =>
       Effect.succeed({ policy: "loopback" as const, initialized: false as const })),
-    Effect.catch((cause) =>
-      cause instanceof SourceNotInitializedError
-        ? Effect.succeed({ policy: "loopback" as const, initialized: false as const })
-        : Effect.fail(fail(
-          "setup inventory",
-          `source enrollment state could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
-          "state",
-        ))),
+    Effect.mapError((cause) =>
+      fail("setup inventory", `source enrollment state could not be read: ${cause.message}`, "state")),
   );
 
 /** Bounded typed inventory with verified identities. */
-export const collectSetupInventory = (
+const collectSetupInventory = (
   preflight: Pick<SetupInventory, "platform" | "home" | "credentialStorage">,
+  transport: SetupInventory["transport"],
 ): Effect.Effect<
   Omit<SetupInventory, "discoveryFiles" | "discoveryEvidence" | "discoveryDigest">,
   SetupError,
-  MachineState | Enrollment
+  MachineState
 > =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
-    const enrollment = yield* Enrollment;
     const osRelease = yield* probeOsRelease(preflight.platform);
     const account = yield* Effect.try({
       try: () => {
@@ -454,7 +447,6 @@ export const collectSetupInventory = (
       },
       catch: () => fail("setup inventory", "the current account identity could not be read", "state"),
     });
-    const transport = yield* probeTransport(enrollment);
     const tools = yield* probeTools(machine, preflight.platform);
     return {
       schema: "canonfig.setup-inventory/v1" as const,
@@ -863,8 +855,10 @@ export const planSetup = (
     yield* refuseOtherRole(role, journalPath, "setup plan");
     const requestScope = yield* establishSetupScope(input.scopeText ?? "full");
     const chosenMode = input.modeText === undefined ? undefined : yield* establishSetupMode(input.modeText);
+    // Reject unreadable Source state before preflight can probe the native store.
+    const transport = yield* probeTransport(yield* Enrollment);
     const preflight = yield* runSetupPreflight(role, requestScope);
-    const partial = yield* collectSetupInventory(preflight);
+    const partial = yield* collectSetupInventory(preflight, transport);
     const discovery = yield* runSetupDiscovery(input.files, partial.tools);
     const inventory: SetupInventory = {
       ...partial,
