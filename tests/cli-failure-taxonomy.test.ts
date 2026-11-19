@@ -3,13 +3,15 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inspect } from "node:util";
 import { Effect, Schema } from "effect";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import { exitCodeForFailure } from "../src/cli/exit-codes.ts";
 import {
   classifiedErrorTags,
   describeRuntimeError,
 } from "../src/cli/failure-taxonomy.ts";
+import { InvalidProfileScheduleError } from "../src/domain/profile.ts";
+import { InvalidScheduleError } from "../src/schedule/schedule-manager.errors.ts";
 import { SourceNotInitializedError } from "../src/enrollment/enrollment.errors.ts";
 import {
   MachineFilesystemError,
@@ -39,8 +41,8 @@ const typescriptFiles = async (
  * classifies failures from this tag alone, so an error type that is missing
  * from the taxonomy would fall through to exit 1 with a generic message.
  */
-const declaredErrorTags = async (): Promise<ReadonlySet<string>> => {
-  const tags = new Set<string>();
+const declaredErrorTags = async (): Promise<ReadonlyMap<string, readonly string[]>> => {
+  const tags = new Map<string, string[]>();
   for (const path of await typescriptFiles(sourceRoot)) {
     const source = await readFile(path, "utf8");
     for (
@@ -51,22 +53,33 @@ const declaredErrorTags = async (): Promise<ReadonlySet<string>> => {
       const tag = match.groups?.tag;
       // CliCommandFailure is the terminal failure the taxonomy produces, not a
       // leaf error it classifies.
-      if (tag !== undefined && tag !== "CliCommandFailure") tags.add(tag);
+      if (tag !== undefined && tag !== "CliCommandFailure") {
+        const paths = tags.get(tag) ?? [];
+        paths.push(path);
+        tags.set(tag, paths);
+      }
     }
   }
   return tags;
 };
 
 describe("CLI failure taxonomy", () => {
-  it("classifies every tagged error declared in the source tree", async () => {
-    const declared = await declaredErrorTags();
+  let declared: Awaited<ReturnType<typeof declaredErrorTags>>;
+  beforeAll(async () => {
+    declared = await declaredErrorTags();
+  });
+
+  it("classifies every tagged error declared in the source tree", () => {
     const classified = classifiedErrorTags();
-    const missing = [...declared].filter((tag) => !classified.has(tag)).sort();
+    const missing = [...declared.keys()].filter((tag) => !classified.has(tag)).sort();
     expect(missing).toEqual([]);
   });
 
-  it("classifies no error type that no longer exists", async () => {
-    const declared = await declaredErrorTags();
+  it("assigns a unique tag to each error declaration", () => {
+    expect([...declared].filter(([, paths]) => paths.length > 1)).toEqual([]);
+  });
+
+  it("classifies no error type that no longer exists", () => {
     const stale = [...classifiedErrorTags()]
       .filter((tag) => !declared.has(tag))
       .sort();
@@ -117,6 +130,23 @@ describe("CLI failure taxonomy", () => {
         }),
       ).message,
     ).toBe("resource link (file) cannot be verified by digest");
+  });
+
+  it("keeps invalid profile and native schedule diagnostics distinct", () => {
+    expect(describeRuntimeError(new InvalidProfileScheduleError({
+      id: "$scheduleDefault",
+      reason: "invalid weekly time 29:00",
+    }))).toMatchObject({
+      category: "usage-or-configuration",
+      message: "resource $scheduleDefault declares an invalid schedule: invalid weekly time 29:00",
+    });
+    expect(describeRuntimeError(new InvalidScheduleError({
+      field: "localTime",
+      message: "local time must use 24-hour HH:mm format",
+    }))).toMatchObject({
+      category: "usage-or-configuration",
+      message: "local time must use 24-hour HH:mm format",
+    });
   });
 
   it("prefers an error's own message over the fallback rendering", () => {

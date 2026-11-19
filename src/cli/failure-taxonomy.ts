@@ -442,17 +442,16 @@ export const failureTaxonomy = {
     "usage-or-configuration",
     (error) => `the scheduled job's ${text(error.field)} is not valid`,
   ),
-  // Declared twice with different fields: `{ id }` for an authored profile
-  // schedule and `{ field, message }` for a native scheduler job. Both render
-  // here until the duplicate tag is resolved.
-  InvalidScheduleError: declared(
+  InvalidProfileScheduleError: describe(
     "usage-or-configuration",
     (error) => {
-      const resource = text(error.id);
-      return resource.length > 0
-        ? `resource ${resource} declares an invalid schedule`
-        : `the schedule's ${text(error.field)} is not valid`;
+      const summary = `resource ${text(error.id)} declares an invalid schedule`;
+      return error.reason ? `${summary}: ${error.reason}` : summary;
     },
+  ),
+  InvalidScheduleError: declared(
+    "usage-or-configuration",
+    (error) => `the schedule's ${text(error.field)} is not valid`,
   ),
   UnsupportedHarnessError: describe(
     "usage-or-configuration",

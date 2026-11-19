@@ -21,6 +21,7 @@ import type { LocalPreservationChange } from "../projection/authoring.ts";
 import { TARGET_IDS, type TargetId } from "../projection/model.ts";
 import {
   defaultScheduleRunTimeoutMilliseconds,
+  orderScheduleWeekdays,
   scheduleWeekdays,
   type SyncSchedule,
 } from "../schedule/schedule-manager.types.ts";
@@ -373,9 +374,7 @@ const parseSchedule = (
   if (decodedWeekdays !== undefined && localTime !== undefined) {
     const schedule: SyncSchedule = {
       kind: "weekly",
-      weekdays: [...new Set(decodedWeekdays)].sort(
-        (left, right) => scheduleWeekdays.indexOf(left) - scheduleWeekdays.indexOf(right),
-      ),
+      weekdays: orderScheduleWeekdays(decodedWeekdays),
       localTime,
     };
     return timezone === undefined ? schedule : { ...schedule, timezone };

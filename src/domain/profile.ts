@@ -464,8 +464,8 @@ export interface ResourcePathResource {
   }>;
 }
 
-export class InvalidScheduleError extends TaggedError<InvalidScheduleError>()(
-  "InvalidScheduleError",
+export class InvalidProfileScheduleError extends TaggedError<InvalidProfileScheduleError>()(
+  "InvalidProfileScheduleError",
   { id: Schema.String, reason: Schema.String },
 ) {}
 
@@ -526,7 +526,7 @@ export type ProfileValidationError =
   | PolicyKindMismatchError
   | InvalidTargetError
   | ConflictingResourceTargetError
-  | InvalidScheduleError
+  | InvalidProfileScheduleError
   | DuplicateGroupError
   | MissingGroupReferenceError
   | ResourceSpecKindMismatchError
@@ -1085,29 +1085,29 @@ const dayNames = new Set(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]);
 
 const validateScheduleDefault = (
   schedule: ScheduleDefault,
-): InvalidScheduleError | null => {
+): InvalidProfileScheduleError | null => {
   if (schedule.type === "daily" && !timePattern.test(schedule.at)) {
-    return new InvalidScheduleError({
+    return new InvalidProfileScheduleError({
       id: "$scheduleDefault",
       reason: `invalid daily time ${schedule.at}`,
     });
   }
   if (schedule.type === "weekly") {
     if (!timePattern.test(schedule.at)) {
-      return new InvalidScheduleError({
+      return new InvalidProfileScheduleError({
         id: "$scheduleDefault",
         reason: `invalid weekly time ${schedule.at}`,
       });
     }
     if (schedule.days.length === 0) {
-      return new InvalidScheduleError({
+      return new InvalidProfileScheduleError({
         id: "$scheduleDefault",
         reason: "weekly schedule needs at least one day",
       });
     }
     for (const day of schedule.days) {
       if (!dayNames.has(day)) {
-        return new InvalidScheduleError({
+        return new InvalidProfileScheduleError({
           id: "$scheduleDefault",
           reason: `unknown day ${day}`,
         });

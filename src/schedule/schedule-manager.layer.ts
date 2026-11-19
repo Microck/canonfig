@@ -32,9 +32,8 @@ import {
   defaultScheduleRunTimeoutMilliseconds,
   type RunScheduleInput,
   defaultSyncSchedule,
-  normalizeSyncSchedule,
+  orderScheduleWeekdays,
   type ScheduleChange,
-  type NormalizedSyncSchedule,
   type ScheduleReconciliation,
   type ScheduleSnapshot,
   type ScheduleState,
@@ -49,8 +48,7 @@ const validLocalTime = /^([01]\d|2[0-3]):[0-5]\d$/u;
 
 export const validateSchedule = (
   schedule: SyncSchedule,
-): Effect.Effect<NormalizedSyncSchedule, InvalidScheduleError> => {
-  schedule = normalizeSyncSchedule(schedule);
+): Effect.Effect<SyncSchedule, InvalidScheduleError> => {
   if (schedule.kind === "custom") {
     if (
       schedule.expression.trim() !== schedule.expression
@@ -90,11 +88,14 @@ export const validateSchedule = (
       message: "local time must use 24-hour HH:mm format",
     }));
   }
-  if (schedule.kind === "weekly" && schedule.weekdays.length === 0) {
-    return Effect.fail(new InvalidScheduleError({
-      field: "weekdays",
-      message: "weekly schedule must declare at least one weekday",
-    }));
+  if (schedule.kind === "weekly") {
+    if (schedule.weekdays.length === 0) {
+      return Effect.fail(new InvalidScheduleError({
+        field: "weekdays",
+        message: "weekly schedule must declare at least one weekday",
+      }));
+    }
+    schedule = { ...schedule, weekdays: orderScheduleWeekdays(schedule.weekdays) };
   }
   if (schedule.timezone === undefined) return Effect.succeed(schedule);
   if (
@@ -175,7 +176,7 @@ const missedRunGraceMilliseconds = 5 * 60 * 1000;
  * from an earlier release that never ran and records no registration time.
  */
 const missedLoggedOnRun = (
-  schedule: NormalizedSyncSchedule,
+  schedule: SyncSchedule,
   inspection: SchedulerInspection,
 ): string | undefined => {
   if (inspection.runsOnlyWhileLoggedOn !== true) return undefined;
@@ -187,7 +188,7 @@ const missedLoggedOnRun = (
   return Date.parse(due) > Math.max(...known) ? due : undefined;
 };
 
-const bindingRepair = (schedule: NormalizedSyncSchedule, customExecutable: boolean): string => {
+const bindingRepair = (schedule: SyncSchedule, customExecutable: boolean): string => {
   if (!customExecutable) return "Manually run `canonfig sync --apply` from the current installation to repair it; do not wait for the scheduled job to repair itself";
   if (schedule.kind === "custom") return "Manually choose a supported daily or weekly calendar with `canonfig schedule set <calendar>` and omit --executable to clear the stale custom binding; the CLI cannot recreate a custom calendar";
   const calendar = schedule.kind === "daily" ? `daily@${schedule.localTime}`
@@ -198,7 +199,7 @@ const bindingRepair = (schedule: NormalizedSyncSchedule, customExecutable: boole
 
 /** The effective state of the native job with what it means for the user. */
 const statusFrom = (
-  schedule: NormalizedSyncSchedule,
+  schedule: SyncSchedule,
   definition: RenderedSchedulerJob,
   inspection: SchedulerInspection,
   customCommand?: InstalledSchedulerCommand,
@@ -352,7 +353,7 @@ export const scheduleManagerLayer: Layer.Layer<ScheduleManager, never, MachineSt
       const definition = Effect.fn("ScheduleManager.definition")(
         function*(input: SetScheduleInput = {}): Effect.fn.Return<
           {
-            readonly schedule: NormalizedSyncSchedule;
+            readonly schedule: SyncSchedule;
             readonly definition: RenderedSchedulerJob;
             readonly command: InstalledSchedulerCommand;
           },
