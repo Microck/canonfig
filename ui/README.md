@@ -18,8 +18,9 @@ npm run ui:dev
 
 Open `http://localhost:5317/source/overview` for the development demo. The independent frontend lockfile stays in `ui/package-lock.json`. Root scripts `ui:typecheck`, `ui:lint` and `ui:build` delegate to this package.
 
-The build imports the unchanged shadcn 4.23.0 stylesheet from `src/shadcn.css`,
-with its MIT license. The component generator is not a build dependency.
+The build imports `src/shadcn.css`, a copy of the shadcn 4.23.0 stylesheet
+with the unused generic shimmer utilities removed. It keeps the MIT license.
+The component generator is not a build dependency.
 The packaged UI also includes `licenses/shadcn.txt`; the CSS build strips comments.
 
 ## Builds
