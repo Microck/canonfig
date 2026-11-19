@@ -26,6 +26,10 @@ The production entry is `ui/src/live-app.tsx`, selected through Vite's build-sel
 | Enable automatic issue reporting | Agent consent prompt or CLI | Agent consent prompt or CLI | Agent consent prompt or CLI |
 | Project Profile commands as native commands or Agent Skills | Harnesses → Surfaces → Commands, then Sync | Existing sync plan and apply; the Source selects the surfaces | Source setup can import existing native commands |
 | Machine-readable preview and submission (`report-issue`) | CLI | CLI | CLI |
+| Launch an MCP server with `canonfig mcp run` | Harness-managed CLI process | Harness-managed CLI process | Harness-managed CLI process |
+
+The launcher hands stdio to an MCP server and forwards signals for the harness.
+Its lease ends after the child starts. The existing Version page handles user-initiated updates.
 
 The browser links to the Canonfig issue templates and can revoke consent.
 Automatic opt-in stays with the agent or CLI because it authorizes filing

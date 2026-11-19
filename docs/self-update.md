@@ -70,7 +70,9 @@ They require opt-in settings so the npm executable and installation prefix are
 already established. Automatic mode polls in the foreground (24 hours default;
 60 seconds to seven days), or runs once for an **explicitly operator-managed
 scheduler**. It installs eligible patches or newer majors only when idle. Active
-commands defer a pass. Unfinished synchronization runs, unknown/unreadable state,
+commands defer a pass. An MCP launcher holds its lease through server startup.
+After the child starts, the MCP session can stay open during package activation.
+Unfinished synchronization runs, unknown/unreadable state,
 invalid settings and update errors stop the worker. Finish or recover unfinished
 runs using their original build first.
 

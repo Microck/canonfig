@@ -221,7 +221,7 @@ if (early !== undefined) {
   const { runMcpCli } = await import("./mcp-run.ts");
   process.removeListener("SIGINT", exitBeforeRuntime);
   process.removeListener("SIGTERM", exitBeforeRuntime);
-  nodeCliIo.setExitCode(await runMcpCli(arguments_.slice(1)));
+  nodeCliIo.setExitCode(await runMcpCli(arguments_.slice(1), lease?.close));
 } else if (isInstallerCommand(arguments_)) {
   const installer = await import("./installer-cli.ts");
   const installerArgv = installerArguments(arguments_);
