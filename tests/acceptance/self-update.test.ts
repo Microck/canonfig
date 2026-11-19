@@ -2,13 +2,72 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { disable, enable, installation, selectAutomaticRelease, selectManualRelease, parseVersion, update, assertNoUnfinishedRun, run, type Runner, type UpdateProgress } from "../../src/runtime/self-update/core.ts";
 import { commandLease, managedCommandLease, updateDirectory, acquireGate } from "../../src/runtime/self-update/coordination.ts";
 import { runSelfUpdateCli } from "../../src/runtime/self-update/cli.ts";
 import { Effect, Fiber } from "effect";
 import { runCancellablePromise } from "../../src/runtime/cancellable-promise.ts";
+import { createGuiSelfUpdateFixture, candidate } from "../gui/self-update-fixture.ts";
+
+it("activates a new package while an idle MCP launcher keeps serving stdio", async () => {
+  const machine = await createGuiSelfUpdateFixture();
+  try {
+    const enabled = machine.invoke(["self-update", "enable", "--apply", "--confirm-idle", "--npm-cli", machine.npmCli]);
+    expect(enabled.status, enabled.stderr).toBe(0);
+    const folder = join(machine.home, ".canonfig");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "canonfig.jsonc"), JSON.stringify({
+      version: 1, harnesses: [],
+      mcp: { echo: { transport: "stdio", command: process.execPath,
+        args: ["-e", "process.stdout.write('ready\\n'); process.stdin.pipe(process.stdout)"], env: {} } },
+    }));
+    // Observe the real lazy import without changing how Node loads it.
+    const checkStartupLease = `
+      import { registerHooks } from "node:module";
+      import { readdirSync } from "node:fs";
+      import { ok } from "node:assert/strict";
+      registerHooks({load(url, context, nextLoad) {
+        if (url.endsWith("/dist/runtime/mcp-run.js")) {
+          const readers = readdirSync(${JSON.stringify(join(updateDirectory(machine.root), "readers"))});
+          ok(readers.some(name => name.startsWith(process.pid + "-")), "MCP graph loaded without a command lease");
+        }
+        return nextLoad(url, context);
+      }});
+    `;
+    const launcher = spawn(process.execPath, [
+      "--import", `data:text/javascript,${encodeURIComponent(checkStartupLease)}`, machine.entry, "mcp", "run", "echo",
+    ], {
+      env: machine.env, stdio: ["pipe", "pipe", "inherit"], timeout: 25_000,
+    });
+    const closed = once(launcher, "close");
+    try {
+      launcher.stdout.setEncoding("utf8");
+      const ready = await Promise.race([once(launcher.stdout, "data"), closed]);
+      expect(ready[0]).toBe("ready\n");
+      // The child writes directly to the inherited descriptor. Its output can
+      // reach this test before the launcher handles Node's spawn event.
+      await expect.poll(() => machine.readers()).toEqual([]);
+      const applied = await promisify(execFile)(process.execPath, [
+        machine.entry, "self-update", "apply", "--apply", "--json",
+      ], { env: machine.env, timeout: 20_000 });
+      expect(JSON.parse(applied.stdout)).toMatchObject({ data: { status: "updated" } });
+      expect(machine.version()).toBe(candidate);
+      const frame = '{"jsonrpc":"2.0","id":1,"method":"initialize"}\n';
+      const reply = once(launcher.stdout, "data");
+      launcher.stdin.write(frame);
+      expect((await Promise.race([reply, closed]))[0]).toBe(frame);
+    } finally {
+      launcher.stdin.end();
+      expect((await closed)[0]).toBe(0);
+    }
+  } finally {
+    await machine.cleanup();
+  }
+});
 
 const roots:string[]=[];
 afterEach(()=>{vi.unstubAllEnvs();for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});

@@ -145,6 +145,7 @@ export const prepareMcpRun = (name: string, environment: NodeJS.ProcessEnv = pro
 /** Inherited descriptors carry MCP frames directly, without capture or logging. */
 export const launchMcp = (
   invocation: McpInvocation, platform: NodeJS.Platform = process.platform,
+  onSpawn?: () => void,
 ): Promise<number> => new Promise((resolve, reject) => {
   // CRT argument quoting does not protect cmd.exe expansion (%VAR%, !VAR!)
   // or batch-file reparsing. Keep arbitrary server arguments out of a shell.
@@ -158,6 +159,8 @@ export const launchMcp = (
   const child = spawn(invocation.command, [...invocation.args], {
     env: invocation.env, cwd: invocation.cwd, stdio: "inherit", windowsHide: true,
   });
+  // After spawn, only the already-loaded signal and exit handlers run.
+  if (onSpawn !== undefined) child.once("spawn", onSpawn);
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
   const handlers = signals.map((signal) => {
     const handler = () => { child.kill(signal); };
@@ -177,7 +180,7 @@ export const launchMcp = (
   });
 });
 
-export const runMcpCli = async (args: ReadonlyArray<string>): Promise<number> => {
+export const runMcpCli = async (args: ReadonlyArray<string>, releaseCommandLease?: () => void): Promise<number> => {
   if (!validMcpRunArguments(args)) {
     process.stderr.write("Usage: canonfig mcp run <name>\n");
     return MCP_RUN_EXIT.configuration;
@@ -190,7 +193,7 @@ export const runMcpCli = async (args: ReadonlyArray<string>): Promise<number> =>
       Effect.match({ onFailure: (error) => error, onSuccess: (invocation) => invocation }),
     ));
     if (prepared instanceof McpRunError) throw prepared;
-    return await launchMcp(prepared);
+    return await launchMcp(prepared, process.platform, releaseCommandLease);
   } catch (error) {
     const safe = error instanceof McpRunError ? error
       : new McpRunError("MCP launcher failed. Check the applied folder and credential-store availability in this session.", MCP_RUN_EXIT.launch);
