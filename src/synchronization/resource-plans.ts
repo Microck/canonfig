@@ -1077,6 +1077,19 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
   if (context.observed.state === "unverifiable") {
     return [unresolvedAgentTask(context, `Verify or install tool ${context.desired.toolId}`)];
   }
+  // Recipes name the platforms a tool is meant for. An absent tool whose
+  // recipes all target other platforms (agent-tui has no Windows build) is not
+  // this follower's to install, so it gets no actions instead of a human action
+  // that no person could ever resolve. A tool with no recipes at all, or with
+  // agent installation bounds, still asks: the author named no platforms.
+  if (
+    context.observed.state === "absent"
+    && context.desired.agentInstall === undefined
+    && context.desired.recipes.length > 0
+    && !context.desired.recipes.some((candidate) => candidate.platform === context.platform)
+  ) {
+    return [];
+  }
   const recipe = selectToolRecipe(context.desired, context.platform);
   if (context.observed.state !== "present" && recipe === undefined && context.desired.recipes.some((candidate) => candidate.method === "binary")) {
     return [{ kind: "human-action", detail: { kind: "human-action", reason: `No binary recipe matches ${context.platform}/${process.arch}`, instructions: "Declare a binary recipe for this platform and architecture with an exact version, HTTPS source, and integrity." } }];

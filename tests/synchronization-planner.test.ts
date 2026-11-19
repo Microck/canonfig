@@ -1574,6 +1574,26 @@ describe("stable planning and bounded resolution", () => {
     });
   });
 
+  it("leaves an absent tool alone on a platform none of its recipes target", () => {
+    const subject: PublishedResource = { ...resource("unix-only", "tool", "ensure"), target: "unix-only" };
+    const desired = {
+      kind: "tool" as const,
+      toolId: "unix-only",
+      recipes: [{ platform: "linux" as const, method: "npm" as const, package: "unix-only", version: "1.0.0" }],
+      loginRequired: false,
+    };
+    const onWindows = (observed: ObservedResourceState) => {
+      const input = plannerInput([subject], { desired: [desired], observed: [observed] });
+      return runPlan({ ...input, observedState: { ...input.observedState, platform: "windows" } });
+    };
+
+    expect(onWindows({ state: "absent" }).actions).toEqual([]);
+    // Present tools are still checked, and the recipe platform still installs.
+    expect(onWindows({ state: "present", digest: sha256Hex("unix-only"), executable: true }).actions.map((action) => action.kind)).toEqual(["no-op"]);
+    expect(runPlan(plannerInput([subject], { desired: [desired], observed: [{ state: "absent" }] }))
+      .actions.map((action) => action.kind)).toEqual(["install-tool"]);
+  });
+
   it("creates a stable bounded Agent Task only when deterministic installation is unavailable", () => {
     const subject = resource("tool", "tool", "ensure");
     const input = plannerInput(
@@ -1671,7 +1691,8 @@ describe("stable planning and bounded resolution", () => {
     const subject = resource("tool", "tool", "ensure");
     const desired: DesiredResource = {
       kind: "tool", toolId: "tool", loginRequired: false,
-      recipes: [{ platform: "macos", method: "binary", package: "tool", version: "1.0.0", architecture: "arm64", entrypoint: "tool", source: "https://example.com/tool", integrity: `sha256-${Buffer.alloc(32).toString("base64")}` }],
+      // Same platform, other architecture: a platform no recipe names is not this follower's tool at all.
+      recipes: [{ platform: "linux", method: "binary", package: "tool", version: "1.0.0", architecture: process.arch === "arm64" ? "x64" : "arm64", entrypoint: "tool", source: "https://example.com/tool", integrity: `sha256-${Buffer.alloc(32).toString("base64")}` }],
     };
     const planFor = (observed: ObservedResourceState) =>
       runPlan(plannerInput([subject], { desired: [desired], observed: [observed] }));
