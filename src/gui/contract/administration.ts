@@ -4,14 +4,15 @@ import { TailnetReport } from "../../domain/tailnet.ts";
 import type { AgentPolicy } from "../../domain/identity.ts";
 import type { FollowerAgentHarnessConfiguration } from "../../synchronization/follower-sync-config.ts";
 import { GuiError } from "./session.ts";
-import { AgentSecretBindingSchema } from "../../domain/agent-harness-bounds.ts";
+import { AgentModelToken, AgentSecretBindingSchema } from "../../domain/agent-harness-bounds.ts";
+import { installerMethods } from "../../domain/installer-method.ts";
 
 export const GuiAgentPolicy = Schema.Literals(["deterministic-only", "agent-propose", "agent-apply"]) satisfies Schema.Codec<AgentPolicy>;
 /** Browser-safe wire fields. Domain configuration modules also define Node-only errors. */
 export const GuiAgentHarness = Schema.Struct({
   kind: Schema.Literals(["codex", "claude", "custom"]),
   executable: Schema.NonEmptyString,
-  model: Schema.optionalKey(Schema.NonEmptyString.check(Schema.isPattern(/^[^\s-][^\s]*$/u))),
+  model: Schema.optionalKey(AgentModelToken),
   /** Omitted in responses when credential-bearing; omitted writes preserve the stored collection. */
   arguments: Schema.optionalKey(Schema.Array(Schema.String)),
   /** Omitted in responses when credential-bearing; an explicit array replaces the stored collection. */
@@ -62,7 +63,7 @@ export const GuiSourceServiceChange = Schema.Struct({
 export const GuiSourceServiceRemoval = Schema.Struct({
   change: Schema.Literals(["removed", "unchanged"]), serviceName: Schema.String,
 });
-export const GuiInstallerMethod = Schema.Literals(["apt", "brew", "bun", "cargo", "npm", "pnpm", "uv", "winget"]);
+export const GuiInstallerMethod = Schema.Literals(installerMethods);
 export const GuiInstallerBinding = Schema.Struct({
   schema: Schema.Literal("canonfig.installer/v1"),
   method: GuiInstallerMethod,

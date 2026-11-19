@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 
 import { Effect, Option, Predicate, Redacted, Ref, Schema } from "effect";
 
-import { installerMethods } from "../domain/installer-binding.ts";
+import { installerMethods } from "../domain/installer-method.ts";
 import { harnessReport } from "../projection/detect.ts";
 import { TARGET_IDS } from "../projection/model.ts";
 import { checkInstalledHarnessMcp, MCP_MAXIMUM_STARTUP_MILLISECONDS, MCP_STARTUP_TIMEOUT_MILLISECONDS, type McpCheckResult } from "./mcp-check.ts";

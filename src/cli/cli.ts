@@ -14,7 +14,7 @@ import {
 import { AgentPolicy } from "../domain/identity.ts";
 import type { EnrollmentInvitationGrant } from "../enrollment/enrollment.types.ts";
 import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
-import { AgentSecretBindingSchema, agentHarnessOriginProblem, parseAgentSecretBinding } from "../domain/agent-harness-bounds.ts";
+import { AgentModelToken, AgentSecretBindingSchema, agentHarnessOriginProblem, parseAgentSecretBinding } from "../domain/agent-harness-bounds.ts";
 import { ExecutableAuthorizationSchema } from "../domain/synchronization.ts";
 import { parseOverlay, keptLocalSkillName } from "../projection/folder.ts";
 import type { LocalPreservationChange } from "../projection/authoring.ts";
@@ -753,7 +753,7 @@ const evaluateAgentHarnessCommand = (
     Schema.Struct({
       kind: SupportedAgentHarness,
       executable: Schema.NonEmptyString,
-      model: Schema.optional(Schema.NonEmptyString.check(Schema.isPattern(/^[^\s-][^\s]*$/u))),
+      model: Schema.optional(AgentModelToken),
       arguments: Schema.optional(Schema.Array(Schema.String)),
       maximumInputBytes: Schema.Int.check(
         Schema.isGreaterThan(0),
