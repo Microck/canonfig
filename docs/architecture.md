@@ -347,6 +347,12 @@ version, `--no-python-downloads` (with `UV_PYTHON_DOWNLOADS=never` in the child
 environment, so uv never fetches an interpreter), and `--no-build` under the
 default build policy.
 
+Recipes also name the platforms a tool is for. A follower plans nothing for an
+absent tool whose recipes all target other platforms, so a macOS-and-Linux tool
+does not stop a Windows follower with an action no one can take. A tool with no
+recipes, or with `agentInstall` bounds, still asks for a person or an agent, and
+a present tool is verified on every platform.
+
 A bare verifier executable resolves first in the directories where the tool's
 recipes install executables on that platform (for example the uv tool bin
 directory, the npm global prefix, `~/.cargo/bin`, or the WinGet links
