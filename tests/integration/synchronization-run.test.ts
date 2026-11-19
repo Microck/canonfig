@@ -27,6 +27,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { AgentResolution } from "../../src/agent/agent-resolution.service.ts";
 import { describeRuntimeError } from "../../src/cli/failure-taxonomy.ts";
+import { temporaryEntryName } from "../../src/machine/temporary-entries.ts";
 import {
   ActionId,
   AgentTaskId,
@@ -1961,10 +1962,8 @@ process.exit(1);
   );
 
   it("recovers a skill apply killed with its own temporary files inside the new tree", async () => {
-    // A kill during a skill apply left `.file-000.md.canonfig-<hex>` in a
-    // directory the run had created. Rolling that directory back failed with
-    // ENOTEMPTY on every `recover`, so the follower stayed stuck until someone
-    // deleted the partial tree by hand.
+    // An interrupted write can leave a staging entry inside a managed tree.
+    // Recovery removes its staging entry before rolling back the directory.
     const root = temporaryDirectory();
     const base = fileFixture(root, "run-skill-killed");
     const target = join(root, "managed-skill");
@@ -2010,7 +2009,12 @@ process.exit(1);
     }));
     const fixture: Fixture = { ...base, target, revision, input: { ...base.input, revision, plan } };
     const unrelated = join(root, "notes.txt");
+    const unrelatedLegacyName = join(root, `.notes.txt.canonfig-${"c".repeat(24)}`);
+    const unrelatedLegacyGuard = join(root, `.canonfig-guard-${"d".repeat(24)}`);
     writeFileSync(unrelated, "keep me");
+    writeFileSync(unrelatedLegacyName, "keep this too");
+    mkdirSync(unrelatedLegacyGuard);
+    writeFileSync(join(unrelatedLegacyGuard, "notes"), "leave this in place");
     const { desired: _, blobs: __, ...persistable } = revision;
     await Effect.runPromise(Effect.gen(function*() {
       const repository = yield* StateRepository;
@@ -2028,8 +2032,9 @@ process.exit(1);
       yield* prepared.execute;
     }).pipe(Effect.provide(applicationLayer(fixture))));
     const nested = join(target, "group-12", "nested-2");
-    writeFileSync(join(nested, ".cf-0123456789ab.tmp"), "partial");
-    writeFileSync(join(nested, `.file-000.md.canonfig-${"c".repeat(24)}`), "partial, older release");
+    writeFileSync(join(nested, temporaryEntryName()), "partial");
+    const parentStaging = join(root, temporaryEntryName());
+    writeFileSync(parentStaging, "partial");
 
     const outcome = await Effect.runPromise(Effect.flatMap(Synchronization, (synchronization) =>
       synchronization.recover({ follower: follower.id, revision, artifacts: [base.artifact] })
@@ -2039,6 +2044,9 @@ process.exit(1);
     expect(readdirSync(nested)).toEqual(["file-000.md"]);
     expect(await readFile(join(nested, "file-000.md"), "utf8")).toBe("canonical content");
     expect(readFileSync(unrelated, "utf8")).toBe("keep me");
+    expect(existsSync(parentStaging)).toBe(false);
+    expect(readFileSync(unrelatedLegacyName, "utf8")).toBe("keep this too");
+    expect(readFileSync(join(unrelatedLegacyGuard, "notes"), "utf8")).toBe("leave this in place");
   });
 
   it("refuses a run that cannot fit before recording it", async () => {

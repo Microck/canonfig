@@ -93,10 +93,11 @@ over without a snapshot. Later runs rely on the per-run journal only.
 
 ## Upgrade boundary
 
-This is the only file-rollback format Canonfig reads. Before installing another
-release, finish or recover any unfinished run with the CLI that created it. A
-journal in any other format is rejected with a recovery diagnostic and is not
-rewritten or deleted by a failed recovery attempt.
+Finish or recover any unfinished run with the Canonfig build that created it
+before upgrading. A build that finds an unfinished run from a different build
+or state format stops before it cleans up staging entries. Run
+`canonfig recover` with the creating build, then upgrade. Recovery only
+cleans up the current fixed-length staging and guard names.
 
 ## Acceptance
 

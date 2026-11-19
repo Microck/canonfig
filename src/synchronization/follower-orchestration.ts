@@ -1102,6 +1102,7 @@ export const abandonFollowerRun = Effect.fn(
   const configuration = yield* loadFollowerSynchronizationConfiguration(
     stateLocation,
   );
+  yield* assertUpgradeGate(configuration.follower.id);
   const recovery = yield* repository.loadRecovery(configuration.follower.id);
   if (recovery === undefined) {
     return yield* configurationError(
@@ -1109,7 +1110,6 @@ export const abandonFollowerRun = Effect.fn(
       "no durable interrupted synchronization run is available",
     );
   }
-  yield* assertUpgradeGate(configuration.follower.id);
   yield* finishAbandonedProjection(stateLocation, recovery);
   return {
     run: recovery.run.id,
@@ -1134,6 +1134,7 @@ export const recoverFollower = Effect.fn(
   const configuration = yield* loadFollowerSynchronizationConfiguration(
     stateLocation,
   );
+  yield* assertUpgradeGate(configuration.follower.id);
   const recovery = yield* repository.loadRecovery(configuration.follower.id);
   if (recovery === undefined) {
     return yield* configurationError(
@@ -1141,7 +1142,6 @@ export const recoverFollower = Effect.fn(
       "no durable interrupted synchronization run is available",
     );
   }
-  yield* assertUpgradeGate(configuration.follower.id);
   if (recovery.run.lifecycle._tag === "Abandoning") {
     yield* finishAbandonedProjection(stateLocation, recovery);
     return { revision: recovery.run.revision, outcome: recovery.run.lifecycle.outcome };

@@ -109,7 +109,14 @@ const gateFailureAfterMutation = async (
     yield* seed;
     const repository = yield* StateRepository;
     yield* startOpenRun(repository);
-    if (mutate !== undefined) mutate(new DatabaseSync(path));
+    if (mutate !== undefined) {
+      const database = new DatabaseSync(path);
+      try {
+        mutate(database);
+      } finally {
+        database.close();
+      }
+    }
     yield* assertUpgradeGate(follower.id).pipe(
       Effect.catch((error) =>
         Effect.sync(() => {
@@ -214,20 +221,21 @@ describe("upgrade gate", () => {
       `recorded in state format ${stateFormatVersion - 1}`,
     );
     expect(described.message).toContain(`uses state format ${stateFormatVersion}`);
-    expect(described.message).not.toContain("finish the run with the creating build");
+    expect(described.message).toContain(`run 'canonfig recover' with a build that uses state format ${stateFormatVersion - 1}`);
   });
 
-  it("accepts a foreign run when the operator explicitly migrates", async () => {
+  it("refuses an earlier release even when the digest matches and the old override is set", async () => {
     const previous = process.env.CANONFIG_ACCEPT_FOREIGN_BUILD;
     process.env.CANONFIG_ACCEPT_FOREIGN_BUILD = "1";
     try {
-      const path = join(temporaryDirectory("canonfig-gate-"), "state.sqlite");
-      await runWithRepository(path, Effect.gen(function*() {
-        yield* seed;
-        const repository = yield* StateRepository;
-        yield* startOpenRun(repository);
-        yield* assertUpgradeGate(follower.id);
-      }));
+      const failure = await gateFailureAfterMutation((database) => {
+        database.prepare("UPDATE synchronization_runs SET creating_version = ?").run("7.1.6");
+      });
+      expect(failure).toBeInstanceOf(UpgradeGateError);
+      if (failure === undefined) return;
+      const { message } = describeRuntimeError(failure);
+      expect(message).toContain("was created by canonfig 7.1.6");
+      expect(message).toContain("run 'canonfig recover' with the creating build, then upgrade");
     } finally {
       if (previous === undefined) {
         delete process.env.CANONFIG_ACCEPT_FOREIGN_BUILD;

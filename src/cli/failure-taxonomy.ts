@@ -683,9 +683,9 @@ export const failureTaxonomy = {
       // The same build can meet a run recorded under another state format;
       // naming that build twice told the operator to use the build already
       // running.
-      return error.creatingIdentity === error.currentIdentity
-        ? `run ${text(error.run)} was recorded in state format ${creatingFormat}, but this canonfig ${text(error.currentVersion)} (source ${text(error.currentIdentity)}) uses state format ${currentFormat}. finish the run with a build that uses state format ${creatingFormat} or set CANONFIG_ACCEPT_FOREIGN_BUILD=1 to accept the migration`
-        : `run ${text(error.run)} was created by canonfig ${text(error.creatingVersion)} (source ${text(error.creatingIdentity)}, state format ${creatingFormat}); this is canonfig ${text(error.currentVersion)} (source ${text(error.currentIdentity)}, state format ${currentFormat}). finish the run with the creating build or set CANONFIG_ACCEPT_FOREIGN_BUILD=1 to accept the upgrade`;
+      return error.creatingIdentity === error.currentIdentity && error.creatingVersion === error.currentVersion
+        ? `run ${text(error.run)} was recorded in state format ${creatingFormat}, but this canonfig ${text(error.currentVersion)} (source ${text(error.currentIdentity)}) uses state format ${currentFormat}. run 'canonfig recover' with a build that uses state format ${creatingFormat}, then upgrade`
+        : `run ${text(error.run)} was created by canonfig ${text(error.creatingVersion)} (source ${text(error.creatingIdentity)}, state format ${creatingFormat}); this is canonfig ${text(error.currentVersion)} (source ${text(error.currentIdentity)}, state format ${currentFormat}). run 'canonfig recover' with the creating build, then upgrade`;
     },
   ),
   DuplicateFollowerIdentityError: declared(

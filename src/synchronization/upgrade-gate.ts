@@ -14,8 +14,8 @@ import { stateFormatVersion } from "../state/state-schema.ts";
  * An upgrade must not change executable or state underneath a run that an
  * earlier build left unfinished: that run can only be finished or recovered
  * by the build that created it, because the journal and codec behavior of a
- * foreign build are unknown. The operator can accept the upgrade explicitly,
- * which is the migration path.
+ * foreign build are unknown. Staging cleanup recognizes only the current
+ * names, so a foreign run must stop before any cleanup begins.
  */
 export const assertUpgradeGate = Effect.fn(
   "FollowerOrchestration.upgradeGate",
@@ -24,8 +24,9 @@ export const assertUpgradeGate = Effect.fn(
   const open = yield* repository.loadOpenRunIdentity(follower);
   if (open === undefined) return;
   const compatible = open.creatingIdentity === buildIdentity.sourceDigest
+    && open.creatingVersion === buildIdentity.packageVersion
     && open.stateFormat === stateFormatVersion;
-  if (compatible || process.env.CANONFIG_ACCEPT_FOREIGN_BUILD === "1") return;
+  if (compatible) return;
   return yield* new UpgradeGateError({
     run: open.run,
     creatingVersion: open.creatingVersion,
