@@ -14,23 +14,32 @@
  */
 
 const SIZE = 4;
+const SIZE_8 = 8;
 
-// Bayer 4x4 ranks: interleave the bits of (x xor y) and y, least significant
+// Bayer ranks: interleave the bits of (x xor y) and y, least significant
 // first, so each 2x2 block of the previous size splits into four.
-const THRESHOLDS = Array.from({ length: SIZE * SIZE }, (_, index) => {
-  const x = index % SIZE;
-  const y = Math.floor(index / SIZE);
-  let rank = 0;
-  for (let bit = 1; bit < SIZE; bit *= 2) {
-    const xBit = Math.floor(x / bit) % 2;
-    const yBit = Math.floor(y / bit) % 2;
-    rank = rank * 4 + 2 * ((xBit + yBit) % 2) + yBit;
-  }
-  return (rank + 0.5) / (SIZE * SIZE);
-});
+function bayerThresholds(size: number) {
+  return Array.from({ length: size * size }, (_, index) => {
+    const x = index % size;
+    const y = Math.floor(index / size);
+    let rank = 0;
+    for (let bit = 1; bit < size; bit *= 2) {
+      const xBit = Math.floor(x / bit) % 2;
+      const yBit = Math.floor(y / bit) % 2;
+      rank = rank * 4 + 2 * ((xBit + yBit) % 2) + yBit;
+    }
+    return (rank + 0.5) / (size * size);
+  });
+}
 
-/** The Bayer threshold in (0, 1) at cell (x, y); coordinates wrap. */
+const THRESHOLDS = bayerThresholds(SIZE);
+const THRESHOLDS_8 = bayerThresholds(SIZE_8);
+
+/** The Bayer 4x4 threshold in (0, 1) at cell (x, y); coordinates wrap. */
 export const thresholdAt = (x: number, y: number) => THRESHOLDS[(y % SIZE) * SIZE + (x % SIZE)] ?? 1;
+
+/** The Bayer 8x8 threshold in (0, 1) at cell (x, y); coordinates wrap. */
+export const thresholdAt8 = (x: number, y: number) => THRESHOLDS_8[(y % SIZE_8) * SIZE_8 + (x % SIZE_8)] ?? 1;
 
 /** One SVG path covering the inked cells of a grid, in cell units. */
 function cellsPath(width: number, height: number, inked: (x: number, y: number) => boolean) {
@@ -130,17 +139,36 @@ const smoothstep = (edge0: number, edge1: number, x: number) => {
   return t * t * (3 - 2 * t);
 };
 
+const fract = (x: number) => x - Math.floor(x);
+
 /**
- * The GUI band's calm horizon at its still frame: two waves along the top of
- * a body that is densest at the bottom, shaded by a fine diagonal grain.
- * `u` runs 0 to 1 left to right, `v` 0 to 1 bottom to top; `aspect` is the
- * band's width over its height.
+ * The GUI `StateBand` still frame for `ok` (orbital iso-contours at t=4) and
+ * `warn` (moire fault seam at t=0.63). `u` runs 0 to 1 left to right, `v` 0 to 1
+ * bottom to top; `aspect` is the band's width over its height.
  */
-export function horizonLevel(u: number, v: number, aspect: number) {
-  const t = 4;
+export function horizonLevel(u: number, v: number, aspect: number, tone: 'ok' | 'warn' = 'ok') {
   const px = u * aspect;
-  const wave = 0.06 * Math.sin(px * 3 + t * 0.35) + 0.04 * Math.sin(px * 7 - t * 0.2);
-  const body = smoothstep(0.85, 0, v + wave);
-  const grain = 0.5 + 0.5 * Math.sin(px * 18 + v * 9 + t * 0.15);
-  return body * (0.75 + 0.25 * grain) * 0.9;
+  if (tone === 'warn') {
+    const t = 0.63;
+    const seam = (u - 0.68) * 1.4 + (v - 0.5) * 0.55 + 0.08 * Math.sin(v * 5 + t * 0.8);
+    const wA = 0.5 + 0.5 * Math.sin(px * 9.5 + v * 4 + t * 0.7);
+    const wB = 0.5 + 0.5 * Math.sin(px * 9.5 - v * 6.5 - t * 0.55 + 1.4);
+    const interference = seam > 0 ? wA * 0.65 + wB * 0.35 : wB * 0.75;
+    const faultGlow = Math.exp(-Math.abs(seam) * 5.2) * (0.65 + 0.35 * Math.sin(t * 2.4));
+    const base = smoothstep(0.28, 0.82, u) * (0.35 + 0.45 * interference);
+    return Math.min(1, Math.max(0, base * 0.72 + faultGlow * 0.88 * smoothstep(0.2, 0.55, u)));
+  }
+  const t = 4;
+  const dx = px - 0.86 * aspect;
+  const dy = v - 0.22;
+  const r = Math.hypot(dx, dy);
+  const ang = Math.atan2(dy, dx);
+  const warp = 0.08 * Math.sin(ang * 3 + t * 0.35) + 0.04 * Math.cos(r * 5 - t * 0.25);
+  const rings = Math.abs(fract((r + warp) * 3.1 - t * 0.08) - 0.5) * 2;
+  const ridge = smoothstep(0.55, 0.98, rings);
+  const core = Math.exp(-r * 1.15);
+  const strata = 0.32 * smoothstep(0.95, 0.05, v + 0.12 * Math.sin(px * 2.2 + t * 0.2));
+  const crest = Math.pow(Math.max(ridge, 0), 3) * smoothstep(1.9, 0.15, r) * 0.72;
+  const rightWeight = smoothstep(0.18, 0.78, u);
+  return Math.min(1, Math.max(0, (core * 0.65 + strata * 0.55 + crest) * (0.25 + 0.85 * rightWeight)));
 }
