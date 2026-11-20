@@ -560,7 +560,13 @@ const startSourceServerScoped = (
             message: "the enrollment endpoint does not exist",
           });
         };
-        route().catch((cause: unknown) => {
+        // The lease spans the whole request, so an update never replaces the
+        // package under a route that is still loading or running code.
+        const served = async (): Promise<void> => {
+          const release = (input.hold ?? (() => () => undefined))();
+          try { await route(); } finally { release(); }
+        };
+        served().catch((cause: unknown) => {
           const error = cause instanceof Error
             ? cause
             : new EnrollmentConfigurationError({

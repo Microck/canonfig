@@ -42,9 +42,11 @@ that requirement; report an unsupported override rather than starting without it
 
 For a manual self-update, `canonfig self-update apply` previews;
 `canonfig self-update apply --apply` installs. Read the installed help before
-using it. Its locks do not coordinate external package writers, and a running
-Source or watcher defers activation. Standalone self-update does not restart
-services. Keep a deferred update distinct from a completed update.
+using it. Its locks do not coordinate external package writers. A command that is
+working defers activation; an idle Source service, GUI or watcher does not, and
+exits with status 75 at its next request or pass so its supervisor restarts it on
+the new release. Standalone self-update does not restart services itself. Keep a
+deferred update distinct from a completed update.
 
 On Linux or macOS under a 0002 umask, a 7.4.x self-update to 7.5.0 leaves the
 installed package directory group-writable, so the next self-update refuses to

@@ -8,6 +8,8 @@ export interface AutomaticSkillOptions {
   readonly intervalSeconds: number;
   readonly signal?: AbortSignal | undefined;
   readonly onPass: (checks: readonly SkillCheck[], pass: number) => void;
+  /** Takes the command lease for one pass; the worker holds none while it sleeps. */
+  readonly hold?: (() => () => void) | undefined;
 }
 
 /** Pure identity: update-owned commit/digest may advance, but a running worker
@@ -47,7 +49,11 @@ export async function automaticSkillUpdates(
   if (!Number.isSafeInteger(options.intervalSeconds) || options.intervalSeconds < 60 || options.intervalSeconds > 604800) {
     throw new CanonfigError("SKILL_OPTION_INVALID", "--interval must be whole seconds between 60 and 604800 (7 days)");
   }
-  const configured = await run.list(location);
+  const leased = async <A>(work: () => Promise<A>): Promise<A> => {
+    const release = (options.hold ?? (() => () => undefined))();
+    try { return await work(); } finally { release(); }
+  };
+  const configured = await leased(() => run.list(location));
   const wanted = new Set(names.map((name) => name.toLowerCase()));
   for (const name of wanted) if (!configured.skills.some((skill) => skill.name.toLowerCase() === name)) {
     throw new CanonfigError("SKILL_NAME_NOT_FOUND", `Skill is not tracked: ${name}`);
@@ -57,9 +63,9 @@ export async function automaticSkillUpdates(
   const selectedNames = selected.map((skill) => skill.name);
   let passes = 0;
   while (!options.signal?.aborted) {
-    const checks = options.apply
-      ? await run.update(location, selectedNames, skillUpdateOperations, (config) => assertAutomaticSelection(config.skills, selected))
-      : await run.check(location, selectedNames);
+    const checks = await leased(() => options.apply
+      ? run.update(location, selectedNames, skillUpdateOperations, (config) => assertAutomaticSelection(config.skills, selected))
+      : run.check(location, selectedNames));
     options.onPass(checks, ++passes);
     // Preview is always one read-only pass, even without --once.
     if (!options.apply || options.once) return passes;

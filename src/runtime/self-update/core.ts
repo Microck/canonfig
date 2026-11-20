@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { acquireGate, assertPrivateDirectory, readersActive, regular, updateDirectory } from "./coordination.ts";
+import { acquireGate, assertPrivateDirectory, commandGateWaitMilliseconds, readersActive, regular, updateDirectory } from "./coordination.ts";
 
 type StableVersion = readonly [number, number, number];
 export const parseVersion = (value: string): StableVersion => {
@@ -215,10 +215,14 @@ export async function update(root:string,apply:boolean,mode:"manual"|"auto"|Flee
     syncFile(temporary); renameSync(temporary, path); syncDirectory(directory);
     onProgress?.(value);
   };
-  const release = apply ? acquireGate(directory) : () => {};
+  // The updater lock spans the registry check, download and staging, which can
+  // take minutes. Commands keep starting meanwhile: they wait for the command
+  // gate only, and the updater takes that just for the activation below.
+  const releaseUpdater = apply ? acquireGate(directory, 0, "updater") : () => {};
+  let releaseCommandGate: (() => void) | undefined;
   let committed: UpdateResult | undefined;
   const releaseGate = () => {
-    try { release(); }
+    try { releaseCommandGate?.(); releaseUpdater(); }
     catch(error) {
       if(!committed)throw error;
       committed.detail+=` Coordination cleanup also failed: ${error instanceof Error ? error.message : String(error)}. Preserve the updater gate for inspection.`;
@@ -259,10 +263,11 @@ export async function update(root:string,apply:boolean,mode:"manual"|"auto"|Flee
   }
     if(existsSync(join(directory,"pending.json")))throw new Error("Interrupted self-update: preserve and inspect the pending journal and retained backup. No automatic takeover.");
     if(fleet===undefined&&JSON.stringify(readSettings(directory))!==JSON.stringify(settings))throw new Error("Self-update settings changed while checking; no update applied");
-    if(readersActive(directory)) {
+    const deferred=():UpdateResult=>{
       progress({phase:"complete", candidate});
       return {...result,status:"deferred",detail:`Canonfig commands are active (or left a stale lease). Retry after they finish; do not remove live leases. ${result.detail}`};
-    }
+    };
+    if(readersActive(directory))return deferred();
     assertNoUnfinishedRun(settings.state);
     if(installation(root,home).version!==location.version)throw new Error("Installation changed during check");
     const token=operationId;const stage=join(directory,`stage-${token}`);const backup=join(directory,`backup-${location.version}-${token}`);
@@ -298,8 +303,18 @@ export async function update(root:string,apply:boolean,mode:"manual"|"auto"|Flee
       await fleet.confirmAdmission();
     }
     if(signal?.aborted)throw new Error("Self-update cancelled before activation");
+    // From here no command may start until the new package is in place or the
+    // journal records how to recover it.
+    releaseCommandGate=acquireGate(directory,commandGateWaitMilliseconds);
+    if(fleet===undefined&&JSON.stringify(readSettings(directory))!==JSON.stringify(settings))throw new Error("Self-update settings changed while staging; no update applied");
     assertNoUnfinishedRun(settings.state);
-    if(readersActive(directory)||installation(root,home).version!==location.version)throw new Error("Installation became busy or changed before activation");
+    if(installation(root,home).version!==location.version)throw new Error("Installation changed before activation");
+    // Commands keep starting while the candidate stages. One still working now
+    // defers this update like one found before staging; nothing was activated.
+    if(readersActive(directory)) {
+      rmSync(stage,{recursive:true,force:true});
+      return deferred();
+    }
     transaction = advanceUpdate(transaction, "Verified");
     const journal=join(directory,"pending.json");
     transaction = advanceUpdate(transaction, "Prepared"); writeTransaction(journal, transaction);

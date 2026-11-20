@@ -195,7 +195,7 @@ if (early !== undefined) {
 } else if (isSkillsCommand(arguments_)) {
   const argv = skillsArguments(arguments_);
   const { runSkillsCli } = await import("../skills/cli.ts");
-  await runMain((effect) => effect.Effect.promise((signal) => runSkillsCli(argv, nodeCliIo, signal)), `skills.${argv.filter((value) => value !== "--json")[0] ?? "help"}`);
+  await runMain((effect) => effect.Effect.promise((signal) => runSkillsCli(argv, nodeCliIo, signal, lease)), `skills.${argv.filter((value) => value !== "--json")[0] ?? "help"}`);
 } else if (arguments_[0] === "mcp") {
   // This protocol worker owns signal forwarding, not the Effect CLI runtime.
   const { runMcpCli } = await import("./mcp-run.ts");

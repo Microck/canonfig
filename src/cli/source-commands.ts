@@ -38,6 +38,8 @@ export interface SourcePublishInput {
 export interface SourceServeInput {
   readonly hostname: "127.0.0.1" | "::1" | "tailnet";
   readonly port: number;
+  /** Takes the command lease for one request; see ManagedCommandLease.hold. */
+  readonly hold?: (() => () => void) | undefined;
 }
 
 export interface SourceInviteInput {
