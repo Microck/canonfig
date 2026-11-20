@@ -70,9 +70,16 @@ export function PublishScene() {
               </span>
               <svg className="pub-progress" viewBox="0 0 60 6" preserveAspectRatio="none">
                 <defs>
-                  <FillPattern id={`pub-bar-${machine.name}`} fill="ramp-x" color="var(--sa-ok)" cell={1} width={60} from={1} to={0.25} />
+                  <FillPattern id={`pub-track-${machine.name}`} fill="dotted" color="var(--sa-track-dot)" cell={1} />
+                  <FillPattern id={`pub-bar-dim-${machine.name}`} fill="ramp-x" color="var(--sa-ok-dim)" cell={1} width={60} from={0.95} to={0.45} />
+                  <FillPattern id={`pub-bar-${machine.name}`} fill="ramp-x" color="var(--sa-ok)" cell={1} width={60} from={1} to={0.12} />
+                  <FillPattern id={`pub-bar-tip-${machine.name}`} fill="ramp-x" color="var(--sa-ok-bright)" cell={1} x={48} width={12} from={0.9} to={0} />
                 </defs>
+                <rect width="60" height="6" fill={`url(#pub-track-${machine.name})`} />
+                <rect width="60" height="6" fill={`url(#pub-bar-dim-${machine.name})`} />
                 <rect width="60" height="6" fill={`url(#pub-bar-${machine.name})`} />
+                <rect x="48" width="12" height="6" fill={`url(#pub-bar-tip-${machine.name})`} />
+                <rect x="58" width="2" height="6" fill="var(--sa-ok-bright)" />
               </svg>
               <span className="pub-states">
                 <span className="pub-old">
