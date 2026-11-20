@@ -117,13 +117,19 @@ function directoryToolchain(machine: MachineState["Service"], overrides: Readonl
   });
 }
 
+let linuxAbi: "gnu" | "musl" | undefined;
+
 function nativeHost(platform: MachinePath["platform"]): string {
   const architecture = machine();
   const rustArchitecture = architecture === "arm64" ? "aarch64" : architecture;
   switch (platform) {
     case "windows": return `${rustArchitecture}-pc-windows-msvc`;
     case "macos": return `${rustArchitecture}-apple-darwin`;
-    case "linux": return `${rustArchitecture}-unknown-linux-gnu`;
+    case "linux": {
+      // SAFETY: Node's diagnostic report has a header on both GNU and musl. Only GNU reports the glibc version.
+      linuxAbi ??= (process.report.getReport() as { header: { glibcVersionRuntime?: string } }).header.glibcVersionRuntime ? "gnu" : "musl";
+      return `${rustArchitecture}-unknown-linux-${linuxAbi}`;
+    }
   }
 }
 
@@ -179,13 +185,12 @@ function manifestChannel(channel: string): string {
   return channel;
 }
 
-function toolchainDirectory(home: string, toolchain: string, host: string): string {
-  if (isAbsolute(toolchain)) return toolchain;
+function resolveToolchain(home: string, toolchain: string, host: string) {
+  if (isAbsolute(toolchain)) return { directory: toolchain, custom: true };
   decodeToolchainName(toolchain);
   const release = channelSelector.exec(toolchain)?.groups;
-  if (!release?.channel) return join(home, "toolchains", toolchain);
-  const partial = targetTuple.exec(release.target ? `-${release.target}` : "")?.groups;
-  if (!partial) return join(home, "toolchains", toolchain);
+  const partial = release?.channel ? targetTuple.exec(release.target ? `-${release.target}` : "")?.groups : undefined;
+  if (!release?.channel || !partial) return { directory: join(home, "toolchains", toolchain), custom: true };
   const native = targetTuple.exec(`-${host}`)?.groups;
   const arch = partial.arch ?? native?.arch;
   const os = partial.os ?? native?.os;
@@ -193,7 +198,8 @@ function toolchainDirectory(home: string, toolchain: string, host: string): stri
   if (!arch || !os) throw new Error(`cannot complete the selected toolchain with host ${host}`);
   // Rustup maps these releases to their sole patch version before resolving a target.
   const channel = /^1\.[0-8]$/u.test(release.channel) ? `${release.channel}.0` : release.channel;
-  return join(home, "toolchains", [channel + (release.date ?? ""), arch, os, abi].filter(Boolean).join("-"));
+  const qualified = [channel + (release.date ?? ""), arch, os, abi].filter(Boolean).join("-");
+  return { directory: join(home, "toolchains", qualified), custom: false };
 }
 
 export function rustupHomePath(home: MachinePath): string {
@@ -227,10 +233,23 @@ function installedRustupCargo(
       ?? process.env["RUSTUP_OVERRIDE_HOST_TUPLE"] ?? process.env["RUSTUP_OVERRIDE_HOST_TRIPLE"] ?? nativeHost(home.platform);
     return yield* Effect.tryPromise({
       try: async () => {
-        const directory = toolchainDirectory(rustupHome, toolchain, host);
-        const cargo = join(directory, "bin", home.platform === "windows" ? "cargo.exe" : "cargo");
-        if (!(await stat(cargo)).isFile() || await cargoProxyTarget(cargo) !== undefined) {
-          return { reason: `Rustup's selected toolchain does not contain a real Cargo executable at ${cargo}. ${recovery}` } as const;
+        const { directory, custom } = resolveToolchain(rustupHome, toolchain, host);
+        const binary = home.platform === "windows" ? "cargo.exe" : "cargo";
+        let cargo = join(directory, "bin", binary);
+        let entry = await stat(cargo).catch(missingAsUndefined);
+        if (!entry && custom && (await stat(directory).catch(missingAsUndefined))?.isDirectory()) {
+          // Once a channel is present, verify it before reporting readiness.
+          // A broken installation must not be hidden by a lower-priority channel.
+          for (const channel of ["nightly", "beta", "stable"]) {
+            const fallback = resolveToolchain(rustupHome, channel, host).directory;
+            if (!(await stat(fallback).catch(missingAsUndefined))) continue;
+            cargo = join(fallback, "bin", binary);
+            entry = await stat(cargo).catch(missingAsUndefined);
+            break;
+          }
+        }
+        if (!entry?.isFile() || await cargoProxyTarget(cargo) !== undefined) {
+          return { reason: `Rustup did not find a real Cargo executable at ${cargo}. ${recovery}` } as const;
         }
         if (home.platform !== "windows") await access(cargo, constants.X_OK);
         return { executable: cargo } as const;

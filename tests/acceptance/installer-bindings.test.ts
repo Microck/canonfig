@@ -154,6 +154,17 @@ describe("local installer binding contract", () => {
     vi.stubEnv("RUSTUP_TOOLCHAIN", "1.8-unknown-freebsd");
     expect(await Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).toMatchObject({ verified: true });
 
+    const releaseCargo = join(rustupHome, "toolchains", "stable-aarch64-unknown-linux-gnu", "bin", "cargo");
+    mkdirSync(dirname(releaseCargo), { recursive: true });
+    writeFileSync(releaseCargo, "#!/bin/sh\necho 'cargo 1.99.0-backend'\n", { mode: 0o755 });
+    rmSync(backend);
+    vi.stubEnv("RUSTUP_TOOLCHAIN", "canonfig-fixture");
+    expect(await Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).toMatchObject({ verified: true });
+    // Rustup selects the first installed channel even when its Cargo component is absent.
+    writeFileSync(join(rustupHome, "toolchains", "nightly-aarch64-unknown-linux-gnu"), "invalid toolchain");
+    await expect(Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer))))
+      .rejects.toThrow("nightly-aarch64-unknown-linux-gnu");
+
     rmSync(rustup);
     if (kind === "hard link") {
       symlinkSync("rustup", rustup);
