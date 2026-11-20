@@ -277,6 +277,17 @@ it("round trips a signed archive through GUI preview/import with signer checks, 
   write(join(target.folder, "rules", "untouched.md"), "Not in archive\n");
   const replace = { ...input, replace: true };
   expect((await api.operation("/api/imports/preview", replace)).state).toBe("succeeded");
+  const backupRoot = join(target.folder, ".backups");
+  write(backupRoot, "blocks snapshot and staging cleanup");
+  const blocked = await api.operation("/api/imports", { ...replace, sha256: plan.sha256 });
+  expect(blocked).toMatchObject({
+    state: "failed",
+    failure: { category: "verification-or-apply-failure", exitCode: 7, message: expect.stringContaining("Run 'canonfig recover'") },
+  });
+  if (blocked.state === "failed") expect(blocked.failure.message).toContain("cannot take a takeover snapshot");
+  expect(readFileSync(join(target.folder, "AGENTS.md"), "utf8")).toBe("Keep this in a snapshot\n");
+  rmSync(backupRoot);
+  await api.operation("/api/recovery");
   const replaced = await api.operation("/api/imports", { ...replace, sha256: plan.sha256 });
   expect(replaced.state).toBe("succeeded");
   if (replaced.state !== "succeeded") throw new Error("Replacement failed");

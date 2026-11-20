@@ -8,6 +8,7 @@ import type { RunId } from "../domain/brand.ts";
 import { TaggedError } from "../domain/tagged-error.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import type { MachinePath } from "../machine/machine-state.types.ts";
+import { sha256Hex } from "../profile/profile-codec.ts";
 import { getConfigPath, parseConfigDocument } from "../synchronization/config-codec.ts";
 import type { ConfigJson } from "../synchronization/config-value.ts";
 import type { ConfigFormat } from "./harness.ts";
@@ -133,11 +134,11 @@ export interface Snapshot {
 
 const snapshotName = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(?:-\d+)?$/u;
 /**
- * A snapshot is built under `.tmp-<id>` and renamed to `<id>` once its
+ * A snapshot is staged under its run's private name and renamed to its id once its
  * manifest is complete, so a capture that fails or is killed never leaves a
  * directory that looks like a snapshot.
  */
-const temporaryPrefix = ".tmp-";
+const stagingName = (run: RunId) => `.tmp-${sha256Hex(run)}`;
 
 /** Wrap a typed failure (machine, schema) with the path it concerns. */
 const snapshotError = (path: string) => (error: { readonly message: string }) =>
@@ -157,6 +158,9 @@ const backupEntries = (backups: string): Effect.Effect<ReadonlyArray<string>, Ta
     catch: (error) => new TakeoverSnapshotError({ path: backups, message: String(error) }),
   });
 
+const snapshotCandidates = (backups: string) =>
+  backupEntries(backups).pipe(Effect.map((names) => names.filter((name) => snapshotName.test(name)).sort()));
+
 /**
  * Snapshot ids, oldest first. Names sort chronologically. Only a directory
  * with a valid manifest is a snapshot; anything else in `.backups/` is never
@@ -164,7 +168,7 @@ const backupEntries = (backups: string): Effect.Effect<ReadonlyArray<string>, Ta
  */
 export const listSnapshots = (backups: string): Effect.Effect<ReadonlyArray<string>, TakeoverSnapshotError> =>
   Effect.gen(function*() {
-    const named = (yield* backupEntries(backups)).filter((name) => snapshotName.test(name)).sort();
+    const named = yield* snapshotCandidates(backups);
     return yield* Effect.filter(named, (id) => readManifest(join(backups, id), id).pipe(Effect.isSuccess));
   });
 
@@ -175,19 +179,19 @@ export const deleteSnapshot = (backups: string, id: string): Effect.Effect<void,
     catch: (error) => new TakeoverSnapshotError({ path: join(backups, id), message: String(error) }),
   });
 
+export const discardSnapshotStaging = (backups: string, run: RunId) =>
+  deleteSnapshot(backups, stagingName(run));
+
 /**
  * Keep the first harness snapshot, the harnesses' state before Canonfig ever
  * wrote, the first folder snapshot, the folder before an import first
  * replaced it, and the four most recent. Kept apart, so a folder backup taken
  * before any takeover never pushes the first harness snapshot out. Called
- * after a run that wrote a new snapshot did not roll back. Runs hold the run
- * lock, so a temporary directory left then belongs to a capture that was
- * killed and is removed too.
+ * after a run that wrote a new snapshot did not roll back. Recovery reconciles
+ * staging directories by the run that owns them.
  */
 export const pruneSnapshots = (backups: string): Effect.Effect<ReadonlyArray<string>, TakeoverSnapshotError> =>
   Effect.gen(function*() {
-    const stale = (yield* backupEntries(backups)).filter((name) => name.startsWith(temporaryPrefix));
-    yield* Effect.forEach(stale, (name) => deleteSnapshot(backups, name), { discard: true });
     const snapshots = yield* listSnapshots(backups);
     const holdsFolder = new Set<string>();
     for (const id of snapshots) {
@@ -216,7 +220,7 @@ const readManifest = (directory: string, id: string) =>
 /** The snapshot a run wrote, if it wrote one. */
 export const snapshotOfRun = (backups: string, run: RunId) =>
   Effect.gen(function*() {
-    for (const id of yield* listSnapshots(backups)) {
+    for (const id of yield* snapshotCandidates(backups)) {
       const manifest = yield* readManifest(join(backups, id), id).pipe(Effect.option);
       if (manifest._tag === "Some" && manifest.value.run === run) return id;
     }
@@ -331,8 +335,8 @@ const isNotFound = (error: { readonly message: string }) => /\b(?:ENOENT|ENOTDIR
 /**
  * Copy every unit's prior state into a new snapshot and return its id.
  * Nothing outside the units' targets is read. The snapshot is built under a
- * temporary name, removed again if the capture fails, and renamed to its id
- * only once the manifest is complete.
+ * run-specific staging directory and renamed to its id once complete. A
+ * Preparing run already owns this directory before capture begins.
  */
 export const writeTakeoverSnapshot = (
   backups: string,
@@ -349,8 +353,8 @@ export const writeTakeoverSnapshot = (
     const createdAt = new Date();
     const base = createdAt.toISOString().replaceAll(":", "-").replace(".", "-");
     let id = base;
-    for (let suffix = 1; existing.includes(id) || existing.includes(`${temporaryPrefix}${id}`); suffix += 1) id = `${base}-${suffix}`;
-    const directory = paths.join(backups, `${temporaryPrefix}${id}`);
+    for (let suffix = 1; existing.includes(id); suffix += 1) id = `${base}-${suffix}`;
+    const directory = paths.join(backups, stagingName(run));
     const fail = (path: string, message: string) => new TakeoverSnapshotError({ path, message });
     const at = (path: string) => machine.normalizePath({ path }).pipe(Effect.mapError(snapshotError(path)));
     const ensure = (path: string) =>
@@ -386,15 +390,17 @@ export const writeTakeoverSnapshot = (
       });
 
     const capture = Effect.gen(function*() {
+      for (const unit of units) {
+        const relative = paths.relative(home, unit.target);
+        if (paths.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${paths.sep}`)) {
+          return yield* fail(unit.target, "takeover target must remain inside the home directory");
+        }
+      }
       yield* ensure(directory);
       const entries: Array<SnapshotEntry> = [];
       const keys = new Map<string, Record<string, Record<string, ConfigJson>>>();
       for (const unit of units) {
         const base = { harness: unit.harness, surface: unit.surface, root: unit.root, target: unit.target };
-        const relative = paths.relative(home, unit.target);
-        if (paths.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${paths.sep}`)) {
-          return yield* fail(unit.target, "takeover target must remain inside the home directory");
-        }
         const path = yield* at(unit.target);
         const object = yield* inspect(path);
         if (unit.kind === "config") {
@@ -469,9 +475,7 @@ export const writeTakeoverSnapshot = (
       });
       return id;
     });
-    return yield* capture.pipe(
-      Effect.onError(() => Effect.tryPromise(() => rm(directory, { recursive: true, force: true })).pipe(Effect.ignore)),
-    );
+    return yield* capture;
   }).pipe(Effect.mapError((error) => error instanceof TakeoverSnapshotError ? error : snapshotError(backups)(error)));
 
 /** Where a snapshot entry's copied bytes live. */

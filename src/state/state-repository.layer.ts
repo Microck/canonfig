@@ -2149,7 +2149,10 @@ const makeRepository = Effect.gen(function*() {
       return row;
     },
   );
-  const beginRun = Effect.fn("StateRepository.beginRun")(function*(id: RunIdType): Effect.fn.Return<void, StateRepositoryError> {
+  const beginRun = Effect.fn("StateRepository.beginRun")(function*(
+    id: RunIdType,
+    pendingRollbackReferences?: StartRunInput["pendingRollbackReferences"],
+  ): Effect.fn.Return<void, StateRepositoryError> {
     yield* sql.withTransaction(Effect.gen(function*() {
       const run = yield* loadRunStatus(id);
       const pending = yield* sql`SELECT harness FROM harness_takeovers WHERE run_id = ${id} AND backup_mode = 'Pending' LIMIT 1`;
@@ -2162,6 +2165,11 @@ const makeRepository = Effect.gen(function*() {
         const row = Schema.decodeUnknownSync(Schema.Array(Schema.Struct({ outcome_json: Schema.String })))(rows)[0];
         const outcome = yield* parseJson(SynchronizationOutcomeSchema, row?.outcome_json ?? "null", "run outcome", id);
         if (outcome.outcome !== "Failed" || outcome.rollbackIncomplete !== true) return yield* new InvalidRunTransitionError({ run: id, message: "only incomplete rollback can resume execution" });
+      }
+      // Persist paths before any pending action can try to write its rollback snapshot.
+      for (const [action, reference] of pendingRollbackReferences ?? []) {
+        yield* sql`UPDATE action_journal SET rollback_reference = ${reference}
+          WHERE run_id = ${id} AND action_id = ${action} AND state = 'pending' AND attempt = 0`;
       }
       yield* sql`UPDATE synchronization_runs SET phase = 'Applying' WHERE id = ${id} AND phase = ${run.phase}`;
     })).pipe(Effect.mapError((error) => error._tag === "SqlError" ? sqlError("begin synchronization run")(error) : error));

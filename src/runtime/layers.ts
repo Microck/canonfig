@@ -725,31 +725,33 @@ const followerCommandsLayer = (
       return { _tag: "Finished" as const, configuration, source: state.sourceIdentity, revocation };
     });
     const outcomePayload = <Value extends {
+      readonly archiveDiagnostics?: ReadonlyArray<string> | undefined;
       readonly outcome?: {
         readonly outcome: string;
       } | undefined;
     }>(value: Value) => {
       const outcome = value.outcome?.outcome;
+      const withDiagnostics = (message: string) => [message, ...(value.archiveDiagnostics ?? [])].join("\n");
       if (outcome === "HumanActionRequired") {
         return Effect.fail(new CliCommandFailure({
           category: "human-action-required",
-          message: "synchronization requires human action",
+          message: withDiagnostics("synchronization requires human action"),
           details: payload(value),
         }));
       }
       if (outcome === "FollowerDrift") {
         return Effect.fail(new CliCommandFailure({
           category: "conflict-or-drift",
-          message: "follower drift conflicts with the selected revision",
+          message: withDiagnostics("follower drift conflicts with the selected revision"),
           details: payload(value),
         }));
       }
       if (outcome === "Failed" || outcome === "Interrupted") {
         return Effect.fail(new CliCommandFailure({
           category: "verification-or-apply-failure",
-          message: outcome === "Interrupted"
+          message: withDiagnostics(outcome === "Interrupted"
             ? "synchronization was interrupted"
-            : "synchronization failed",
+            : "synchronization failed"),
           details: payload(value),
         }));
       }

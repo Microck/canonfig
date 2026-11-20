@@ -2,16 +2,19 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { gunzipSync, gzipSync } from "node:zlib";
 
 import { Effect, Layer, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { describeRuntimeError } from "../../src/cli/failure-taxonomy.ts";
 import { SourceIdentity } from "../../src/domain/identity.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
-import { importLocal } from "../../src/projection/sync.ts";
+import { importLocal, recoverLocal } from "../../src/projection/sync.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
+import { localProjectionFollower } from "../../src/domain/synchronization.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
 import {
   defaultScheduledInvocation,
@@ -215,8 +218,27 @@ describe("import refuses archives a Canonfig export never produces", () => {
   });
 });
 
+const installTrigger = async (target: ReturnType<typeof machine>, trigger: string) => {
+  await Effect.runPromise(Effect.flatMap(StateRepository, (repository) => repository.databaseFile()).pipe(Effect.provide(target.layer)));
+  const database = new DatabaseSync(target.statePath);
+  try { database.exec(trigger); }
+  finally { database.close(); }
+};
+
+it("cleans staged content if opening the archive run for apply fails", async () => {
+  const target = machine();
+  await installTrigger(target, `CREATE TRIGGER block_apply BEFORE UPDATE OF phase ON synchronization_runs
+    WHEN NEW.phase = 'Applying' BEGIN SELECT RAISE(ABORT, 'apply blocked'); END;`);
+  const error = await target.withArchive(archiveOf([config]));
+  expect(error._tag).toBe("RepositorySqlError");
+  expect(existsSync(join(target.folder, "canonfig.jsonc"))).toBe(false);
+  expect(readdirSync(join(target.home, ".cache", "canonfig", "projection"))).toEqual([]);
+  expect(await Effect.runPromise(Effect.flatMap(StateRepository, (repository) =>
+    repository.loadOpenRunIdentity(localProjectionFollower)).pipe(Effect.provide(target.layer)))).toBeUndefined();
+});
+
 describe("import never overwrites a file that appears while it runs", () => {
-  it("keeps a canonfig.jsonc created after the check, rolls back and reports a conflict", async () => {
+  it.each([undefined, "Finalizing", "Complete"] as const)("keeps the conflict classification when the journal rejects %s", async (blockedPhase) => {
     let racedPath: string | undefined;
     const target = machine((base) =>
       Layer.effect(MachineState, Effect.gen(function*() {
@@ -235,13 +257,40 @@ describe("import never overwrites a file that appears while it runs", () => {
         });
       })).pipe(Layer.provide(base))
     );
+    if (blockedPhase !== undefined) await installTrigger(target, `
+      CREATE TRIGGER block_finish BEFORE UPDATE OF phase ON synchronization_runs
+        WHEN NEW.phase = '${blockedPhase}' BEGIN SELECT RAISE(ABORT, 'private finish error'); END;
+      CREATE TRIGGER block_journal BEFORE INSERT ON archive_events
+        WHEN NEW.outcome = 'Error' BEGIN SELECT RAISE(ABORT, 'private journal error'); END;`);
     const error = await target.withArchive(archiveOf([
       config,
       { path: "folder/AGENTS.md", content: "# imported\n" },
       { path: "folder/rules/style.md", content: "imported rule\n" },
     ]));
-    expect(error._tag).toBe("ArchiveConflictError");
-    expect(error).toMatchObject({ path: racedPath });
+    const described = describeRuntimeError(error);
+    expect(described.category).toBe("conflict-or-drift");
+    expect(described.message).toContain(racedPath);
+    if (blockedPhase !== undefined) {
+      expect(described.message).toContain("Run 'canonfig recover'");
+      expect(described.message).toContain("could not record this failure in the archive history");
+      expect(described.message).not.toContain("private finish error");
+      expect(described.message).not.toContain("private journal error");
+      if (blockedPhase === "Finalizing") {
+        expect(described.message).toContain("could not record the outcome");
+        expect(readdirSync(join(target.home, ".cache", "canonfig", "projection"))).toHaveLength(1);
+      }
+      await installTrigger(target, "DROP TRIGGER block_finish");
+      const recover = recoverLocal(target.statePath).pipe(Effect.provide(target.layer));
+      if (blockedPhase === "Finalizing") {
+        // The conflicting file belongs to the user. Recovery must retain
+        // the run and its saved content until that file is resolved.
+        const refused = await Effect.runPromise(Effect.flip(recover));
+        expect(refused._tag).toBe("RecoveryLocalEditError");
+        expect(readdirSync(join(target.home, ".cache", "canonfig", "projection"))).toHaveLength(1);
+      } else {
+        expect((await Effect.runPromise(recover)).outcome.outcome).toBe("Failed");
+      }
+    }
     expect(readFileSync(join(target.folder, "canonfig.jsonc"), "utf8")).toBe("raced");
     // Everything else the run wrote was rolled back.
     expect(existsSync(join(target.folder, "AGENTS.md"))).toBe(false);

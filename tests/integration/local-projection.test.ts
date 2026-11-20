@@ -24,7 +24,7 @@ import {
   synchronizeLocal,
   writeAdoptionReviews,
 } from "../../src/projection/sync.ts";
-import { listSnapshots, pruneSnapshots, readSnapshot, writeTakeoverSnapshot, type TakeoverUnit } from "../../src/projection/takeover.ts";
+import { discardSnapshotStaging, listSnapshots, pruneSnapshots, readSnapshot, writeTakeoverSnapshot, type TakeoverUnit } from "../../src/projection/takeover.ts";
 import { RunId } from "../../src/domain/brand.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
@@ -1229,7 +1229,7 @@ describe("takeover snapshots", () => {
     expect(readFileSync(target, "utf8")).toBe("keep this outside home\n");
   });
 
-  it("leaves nothing in .backups when capturing a takeover fails", async () => {
+  it("retains an incomplete capture until its run reconciles it", async () => {
     const value = fixture(["claude-code"]);
     const backups = join(value.folder, ".backups");
     write(join(value.home, ".claude", "CLAUDE.md"), "old instructions\n");
@@ -1240,6 +1240,8 @@ describe("takeover snapshots", () => {
       { harness: "claude-code", surface: "mcp#mcpServers", root: value.home, kind: "config", target: join(value.home, ".claude.json"), format: "json", key: "mcpServers" },
     ]).pipe(Effect.flip, Effect.provide(machineLayer(value))));
     expect(failure._tag).toBe("TakeoverSnapshotError");
+    expect(readdirSync(backups)).toHaveLength(1);
+    await Effect.runPromise(discardSnapshotStaging(backups, runId("failed")));
     expect(readdirSync(backups)).toEqual([]);
   }, 60_000);
 
@@ -1267,7 +1269,7 @@ describe("takeover snapshots", () => {
     expect(await Effect.runPromise(pruneSnapshots(backups))).toEqual([ids[1]]);
     expect(await Effect.runPromise(listSnapshots(backups))).toEqual([ids[0], ...ids.slice(2)]);
     expect(readFileSync(join(backups, ids[0]!, "claude-code", ".claude", "CLAUDE.md"), "utf8")).toBe("original\n");
-    expect(existsSync(join(backups, `.tmp-${ids[0]}`))).toBe(false);
+    expect(existsSync(join(backups, `.tmp-${ids[0]}`))).toBe(true);
   }, 60_000);
 
   it("captures and restores a config key whose prior value is null", async () => {
