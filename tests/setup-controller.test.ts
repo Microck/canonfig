@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { accessSync, chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -348,20 +348,21 @@ process.exit(2);
     },
   );
 
-  it.runIf(process.platform === "linux" && process.env["RUSTUP_HOME"] === undefined)(
+  it.runIf(process.platform === "linux" && process.env["RUSTUP_HOME"] === undefined && process.env["RUSTUP_TOOLCHAIN"] === undefined && process.env["CARGO_HOME"] === undefined)(
     "probes installers without letting corepack or rustup shims write state",
     async () => {
       const root = mkdtempSync(join(tmpdir(), "canonfig-setup-probe-"));
       const home = join(root, "home");
-      const bin = join(root, "bin");
+      const bin = join(home, ".cargo", "bin");
       mkdirSync(home);
-      mkdirSync(bin);
+      mkdirSync(bin, { recursive: true });
       try {
-        // A rustup proxy writes its settings file on any invocation.
+        // Running the proxy would leave a marker. The backend executable reports a different version.
+        const proxyMarker = join(home, "proxy-ran");
         writeFileSync(join(bin, "rustup"), [
           "#!/bin/sh",
-          "mkdir -p \"$RUSTUP_HOME\" && touch \"$RUSTUP_HOME/settings.toml\"",
-          "echo 'cargo 1.99.0'",
+          `: > '${proxyMarker}'`,
+          "echo 'cargo proxy fixture'",
           "",
         ].join("\n"));
         chmodSync(join(bin, "rustup"), 0o755);
@@ -389,14 +390,34 @@ process.exit(2);
         expect(existsSync(join(home, ".rustup"))).toBe(false);
         expect(existsSync(join(home, ".cache"))).toBe(false);
 
-        // Once rustup is configured, running its proxy changes nothing new.
-        mkdirSync(join(home, ".rustup"));
-        writeFileSync(join(home, ".rustup", "settings.toml"), "version = \"12\"\n");
+        const rustupHome = join(home, ".rustup");
+        mkdirSync(rustupHome);
+        writeFileSync(join(rustupHome, "settings.toml"), 'version = "12"\ndefault_toolchain = "canonfig-fixture"\n');
+        const partial = await Effect.runPromise(probe);
+        expect(partial.find((tool) => tool.method === "cargo")).toMatchObject({
+          verified: false,
+          reason: expect.stringContaining("install Cargo in the selected toolchain"),
+        });
+
+        const cargo = join(rustupHome, "toolchains", "canonfig-fixture", "bin", "cargo");
+        mkdirSync(dirname(cargo), { recursive: true });
+        writeFileSync(cargo, "#!/bin/sh\necho 'cargo 1.99.0'\n", { mode: 0o755 });
         const configured = await Effect.runPromise(probe);
         expect(configured.find((tool) => tool.method === "cargo")).toMatchObject({
           verified: true,
           version: "cargo 1.99.0",
         });
+        const cargoProxy = join(bin, "cargo");
+        const rustup = join(bin, "rustup");
+        unlinkSync(cargoProxy);
+        linkSync(rustup, cargoProxy);
+        unlinkSync(rustup);
+        const orphaned = await Effect.runPromise(probe);
+        expect(orphaned.find((tool) => tool.method === "cargo")).toMatchObject({
+          verified: false,
+          reason: expect.stringContaining("proxy directory could not be verified"),
+        });
+        expect(existsSync(proxyMarker)).toBe(false);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

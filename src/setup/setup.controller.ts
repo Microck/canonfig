@@ -1,7 +1,6 @@
 import { detectTailnet } from "../enrollment/tailnet.ts";
-import { realpath, stat } from "node:fs/promises";
 import { arch, release, userInfo } from "node:os";
-import { basename, dirname, join, posix, win32 } from "node:path";
+import { dirname, join, posix, win32 } from "node:path";
 
 import { Effect, Schema } from "effect";
 
@@ -19,6 +18,7 @@ import {
   nodeRuntimeIsSupported,
 } from "../runtime/build-identity.ts";
 import { proveCredentialStorage } from "../runtime/readiness.ts";
+import { resolveCargoVersionProbe, rustupHomePath } from "../runtime/rustup-toolchain.ts";
 import type { SetupImportRequest } from "../cli/setup-commands.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
 import { runLockHolder, withRunLock } from "../synchronization/run-lock.ts";
@@ -317,29 +317,7 @@ const probeOsRelease = (
     catch: () => fail("setup inventory", "the OS release identity could not be read", "state"),
   });
 
-/**
- * Whether an executable is a rustup proxy: a link to, or hard-linked copy of,
- * the `rustup` binary beside it. Filesystem reads only.
- */
-const isRustupProxy = async (executable: string): Promise<boolean> => {
-  const resolved = await realpath(executable).catch(() => executable);
-  if (/^rustup(?:-init)?(?:\.exe)?$/iu.test(basename(resolved))) return true;
-  const extension = /\.exe$/iu.test(executable) ? ".exe" : "";
-  const [self, rustup] = await Promise.all([
-    stat(executable).catch(() => undefined),
-    stat(join(dirname(executable), `rustup${extension}`)).catch(() => undefined),
-  ]);
-  return self !== undefined && rustup !== undefined && self.dev === rustup.dev && self.ino === rustup.ino;
-};
-
-/**
- * `--version` for a probe, without the state some package-manager shims write
- * on first use. A plan in a fresh home used to download pnpm through corepack
- * and create ~/.rustup/settings.toml. Corepack now runs with network access
- * and auto-pinning disabled, so it only reads its cache. rustup writes its
- * settings file on any proxy invocation, even with auto-install disabled, so a
- * proxy runs only when that file already exists; otherwise it is not run.
- */
+/** Probe Corepack without downloads, and Cargo through the selected installed toolchain. */
 const probeVersion = (
   machine: MachineState["Service"],
   executable: MachinePath,
@@ -348,31 +326,18 @@ const probeVersion = (
   MachineStateError
 > =>
   Effect.gen(function*() {
-    const home = (yield* machine.userDirectories()).home;
-    const rustupHome = process.env["RUSTUP_HOME"] ?? join(home.absolute, ".rustup");
-    if (yield* Effect.promise(() => isRustupProxy(executable.absolute))) {
-      const settings = yield* machine.normalizePath({ path: join(rustupHome, "settings.toml") });
-      const configured = yield* machine.inspectPath(settings).pipe(
-        Effect.as(true),
-        Effect.catch(() => Effect.succeed(false)),
-      );
-      if (!configured) {
-        return {
-          ran: false,
-          reason:
-            `${executable.absolute} is a rustup proxy and rustup has no settings at ${settings.absolute}; running it would create them. Run \`rustup default stable\` to configure a toolchain, then rerun setup.`,
-        } as const;
-      }
-    }
+    const { home } = yield* machine.userDirectories();
+    const probe = yield* resolveCargoVersionProbe(machine, executable, home);
+    if ("reason" in probe) return { ran: false, reason: probe.reason } as const;
     const result = yield* machine.runProcess({
-      executable,
+      executable: probe.executable,
       arguments: ["--version"],
       environment: [
         { name: "COREPACK_ENABLE_NETWORK", value: "0" },
         { name: "COREPACK_ENABLE_AUTO_PIN", value: "0" },
         { name: "COREPACK_ENABLE_DOWNLOAD_PROMPT", value: "0" },
         { name: "RUSTUP_AUTO_INSTALL", value: "0" },
-        { name: "RUSTUP_HOME", value: rustupHome },
+        { name: "RUSTUP_HOME", value: rustupHomePath(home) },
       ],
       timeoutMilliseconds: setupProcessTimeoutMilliseconds,
       maximumOutputBytes: maxSetupProcessBytes,
@@ -398,7 +363,12 @@ export const probeTools = (
       );
       const result = probe?.ran === true ? probe.result : undefined;
       if (result === undefined || result.exitCode !== 0) {
-        tools.push({ method, executable: found.path.absolute, verified: false });
+        tools.push({
+          method,
+          executable: found.path.absolute,
+          verified: false,
+          reason: probe?.ran === false ? probe.reason : undefined,
+        });
         continue;
       }
       const version = new TextDecoder().decode(result.standardOutput).split("\n")[0]!.trim().slice(0, 200);
@@ -944,6 +914,7 @@ export const planSetup = (
         catalog.length > 0
           ? `Previously verified tool installation records reused: ${catalog.length}.`
           : "Canonfig found no previously verified tool installations.",
+        ...inventory.tools.flatMap((tool) => tool.reason ? [tool.reason] : []),
         ...folder?.decisions ?? [],
       ],
       exclusions,

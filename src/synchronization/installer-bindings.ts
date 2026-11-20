@@ -1,5 +1,6 @@
+import { inspectCargoProxy, resolveCargoVersionProbe, resolveRustupVersionProbe, rustupHomePath } from "../runtime/rustup-toolchain.ts";
 import { stableRuntimeExecutable } from "../schedule/schedule-command.ts";
-import { realpath, stat } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
 import { basename, dirname, join, win32 } from "node:path";
 import { Effect, Option, Schema } from "effect";
 import {
@@ -278,28 +279,22 @@ export const loadInstallerBinding = (method: string): Effect.Effect<InstallerBin
   Effect.flatMap(loadInstallerState(method), (state) =>
     state.status === "bound" ? Effect.succeed(state.binding) : Effect.succeed(undefined));
 
-/** rustup dispatches by argv[0], so retain the selected cargo proxy spelling. */
-const rustupProxyTarget = async (method: string, executable: string, arguments_: ReadonlyArray<string>): Promise<string | undefined> => {
-  if (method !== "cargo" || arguments_.length !== 0 || !/^cargo(?:\.exe)?$/iu.test(basename(executable))) return undefined;
-  try {
-    const target = await realpath(executable);
-    if (/^rustup(?:\.exe)?$/iu.test(basename(target))) return target;
-    const sibling = join(dirname(target), /\.exe$/iu.test(target) ? "rustup.exe" : "rustup");
-    const [self, proxy] = await Promise.all([stat(target, { bigint: true }), stat(sibling, { bigint: true })]);
-    return self.dev === proxy.dev && self.ino === proxy.ino ? sibling : undefined;
-  } catch { return undefined; }
-};
+const rustupProxyTarget = (method: string, executable: string, arguments_: ReadonlyArray<string>) =>
+  method === "cargo" && arguments_.length === 0 ? inspectCargoProxy(executable) : Effect.succeed(undefined);
 
 const inspectBindingFiles = (binding: InstallerBinding) => Effect.gen(function*() {
   const machine = yield* MachineState;
   const executable = yield* machine.normalizePath({ path: binding.executable });
+  const proxy = yield* rustupProxyTarget(binding.method, binding.executable, binding.arguments);
+  if (binding.rustupProxy && proxy === undefined) {
+    return yield* unavailable("The bound rustup proxy could not be verified. Repair it, then configure the binding again.");
+  }
   let permissionsPath = executable;
   for (const value of [binding.executable, ...binding.arguments]) {
     const path = yield* machine.normalizePath({ path: value });
     const kind = yield* inspectOptional(path);
     if (kind?.kind === "regular") continue;
-    const target = value === binding.executable && kind?.kind === "symlink"
-      ? yield* Effect.promise(() => rustupProxyTarget(binding.method, value, binding.arguments)) : undefined;
+    const target = value === binding.executable && kind?.kind === "symlink" ? proxy : undefined;
     if (target === undefined) return yield* unavailable("A bound executable or entrypoint is missing or no longer a regular file; configure the binding again.");
     permissionsPath = yield* machine.normalizePath({ path: target });
     if ((yield* inspectOptional(permissionsPath))?.kind !== "regular") return yield* unavailable("The cargo proxy target is not a regular rustup executable.");
@@ -308,29 +303,26 @@ const inspectBindingFiles = (binding: InstallerBinding) => Effect.gen(function*(
   if (executable.platform !== "windows" && !(yield* machine.permissions(permissionsPath)).executableByOwner) {
     return yield* unavailable("The bound installer executable is not executable by the current user.");
   }
-  return executable;
+  return { executable, proxy };
 });
 
 export const checkInstallerBinding = (binding: InstallerBinding) => Effect.gen(function*() {
   const machine = yield* MachineState;
-  const executable = yield* inspectBindingFiles(binding);
-  const home = (yield* machine.userDirectories()).home;
-  const rustupHome = process.env["RUSTUP_HOME"] ?? join(home.absolute, ".rustup");
-  if (yield* Effect.promise(() => rustupProxyTarget(binding.method, binding.executable, binding.arguments))) {
-    const settings = yield* machine.normalizePath({ path: join(rustupHome, "settings.toml") });
-    if ((yield* inspectOptional(settings))?.kind !== "regular") return yield* unavailable(
-      "The cargo proxy has no existing rustup settings. Configure a toolchain yourself with `rustup default stable`, then retry; validation has not run the proxy or created its settings.",
-    );
-  }
+  const { executable, proxy } = yield* inspectBindingFiles(binding);
+  const { home } = yield* machine.userDirectories();
+  const probe = proxy !== undefined
+    ? yield* resolveRustupVersionProbe(machine, home)
+    : yield* resolveCargoVersionProbe(machine, executable, home);
+  if ("reason" in probe) return yield* unavailable(probe.reason);
   // Native npm startup under software-emulated Windows can take minutes.
   const result = yield* machine.runProcess({
-    executable, arguments: [...binding.arguments, "--version"],
+    executable: probe.executable, arguments: [...binding.arguments, "--version"],
     environment: [
       { name: "COREPACK_ENABLE_NETWORK", value: "0" },
       { name: "COREPACK_ENABLE_AUTO_PIN", value: "0" },
       { name: "COREPACK_ENABLE_DOWNLOAD_PROMPT", value: "0" },
       { name: "RUSTUP_AUTO_INSTALL", value: "0" },
-      { name: "RUSTUP_HOME", value: rustupHome },
+      { name: "RUSTUP_HOME", value: rustupHomePath(home) },
     ],
     timeoutMilliseconds: 300_000, maximumOutputBytes: 16 * 1024,
   });
@@ -351,13 +343,13 @@ export const saveInstallerBinding = (
   // runtime and JS entrypoint. A versioned Cellar path disappears on upgrade.
   // The shared scheduler helper uses opt only when it resolves to this exact
   // file now; absent or unrelated opt links retain the canonical target.
+  const proxy = yield* rustupProxyTarget(paths.method, executable, arguments_);
   const resolved = yield* Effect.tryPromise({
     try: async () => {
       const target = await realpath(executable);
       if (paths.method === "pnpm" && arguments_.length === 0 && isCorepackPnpmEntrypoint(target, paths.platform)) {
         return { executable: stableRuntimeExecutable(await realpath(process.execPath)), arguments: [stableRuntimeExecutable(target)] };
       }
-      const proxy = await rustupProxyTarget(paths.method, executable, arguments_);
       return {
         executable: proxy === undefined ? stableRuntimeExecutable(target) : join(await realpath(dirname(executable)), basename(executable)),
         arguments: await Promise.all(arguments_.map(async (argument) => stableRuntimeExecutable(await realpath(argument)))),
@@ -367,7 +359,7 @@ export const saveInstallerBinding = (
   });
   let binding: InstallerBinding | undefined;
   try {
-    binding = installerBindingFor(paths.method, paths.platform, resolved.executable, resolved.arguments);
+    binding = installerBindingFor(paths.method, paths.platform, resolved.executable, resolved.arguments, proxy === undefined ? undefined : true);
   } catch {
     binding = undefined;
   }
@@ -466,7 +458,7 @@ export const resolveInstallerInvocation = (
   // silently falling back to whatever PATH happens to resolve.
   const state = yield* loadInstallerState(normalized);
   if (state.status === "bound") {
-    const executable = yield* inspectBindingFiles(state.binding);
+    const { executable } = yield* inspectBindingFiles(state.binding);
     return { executable, arguments: state.binding.arguments };
   }
   if (state.status === "removed") {
