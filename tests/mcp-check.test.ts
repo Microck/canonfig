@@ -1,4 +1,4 @@
-import { createServer, type Server } from "node:http";
+import { createServer, type Server, type ServerResponse } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { RootContext } from "../src/projection/harness.ts";
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
-import { checkMcpEntries, readHarnessMcpEntries, withLauncherSecrets } from "../src/runtime/mcp-check.ts";
+import { checkMcpEntries, readHarnessMcpEntries, responseEvents, withLauncherSecrets, type McpEntry } from "../src/runtime/mcp-check.ts";
 
 // A minimal stdio MCP server: it lists one tool per name in FIXTURE_TOOLS, or
 // exits with an error when FIXTURE_FAIL is set.
@@ -35,8 +35,19 @@ const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.
 `;
 
 /** What the fixture HTTP server reads from each JSON-RPC request and from its own bound address. */
-const FixtureRequest = Schema.Struct({ id: Schema.optionalKey(Schema.Number), method: Schema.optionalKey(Schema.String) });
+const FixtureRequest = Schema.Struct({
+  id: Schema.optionalKey(Schema.Number),
+  result: Schema.optionalKey(Schema.Json),
+  method: Schema.optionalKey(Schema.String),
+  params: Schema.optionalKey(Schema.Struct({ protocolVersion: Schema.optionalKey(Schema.String) })),
+});
 const ListeningAddress = Schema.Struct({ port: Schema.Number });
+
+function sseEntry(url: string): McpEntry {
+  return { harness: "claude-code", path: ".claude.json", name: "fixture-sse",
+    launch: { kind: "http", url, headers: { Authorization: "Bearer fixture", "X-Fixture-Credential": "fixture" }, sse: true, secrets: ["fixture"], timeoutMilliseconds: undefined },
+  };
+}
 
 const homes: Array<string> = [];
 const servers: Array<Server> = [];
@@ -44,6 +55,12 @@ afterEach(() => {
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
   for (const server of servers.splice(0)) server.close();
 });
+
+const listen = async (server: Server): Promise<string> => {
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return "http://127.0.0.1:" + Schema.decodeUnknownSync(ListeningAddress)(server.address()).port;
+};
 
 const fixtureHome = () => {
   const home = mkdtempSync(join(tmpdir(), "canonfig-mcp-check-"));
@@ -302,5 +319,125 @@ describe.skipIf(process.platform === "win32")("MCP server check", () => {
     expect(byName.unsupportedClose).toMatchObject({ status: "pass", tools: 1, detail: "1 tools" });
     // The fixture pings before every reply, and the check answers each ping.
     await pingAnswered.promise;
+  });
+});
+
+describe("Legacy HTTP+SSE MCP check", () => {
+  it("reads an endpoint across split CRLF delimiters", async () => {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of ["event: endpoint\r", "\ndata: /message", "\r", "\n", "\r", "\n"]) {
+          controller.enqueue(encoder.encode(chunk));
+        }
+        controller.close();
+      },
+    });
+    expect(await Array.fromAsync(responseEvents(new Response(body, {
+      headers: { "content-type": "text/event-stream" },
+    })))).toEqual([{ event: "endpoint", data: "/message" }]);
+  });
+
+  it("completes a legacy SSE handshake on the advertised message endpoint", async () => {
+    let stream: ServerResponse | undefined;
+    const closed = Promise.withResolvers<void>();
+    const messages: Array<string> = [];
+    const sessionQuery = "/message?sessionId=fixture";
+    const server = createServer(async (request, response) => {
+      if (request.headers.authorization !== "Bearer fixture") return void response.writeHead(403).end();
+      if (request.method === "GET" && request.url === "/stream") {
+        stream = response;
+        stream.once("close", closed.resolve);
+        stream.writeHead(200, { "content-type": "text/event-stream; charset=utf-8" });
+        stream.write(": connected\r\nevent: endpoint\r\ndata: " + sessionQuery + "\r\n\r\n");
+        return;
+      }
+      if (request.method !== "POST" || request.url !== sessionQuery || !stream) return void response.writeHead(404).end();
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      const message = Schema.decodeUnknownSync(Schema.fromJsonString(FixtureRequest))(body);
+      const pong = message.id === 91 && JSON.stringify(message.result) === "{}";
+      messages.push(message.method ?? (pong ? "pong" : "unexpected reply"));
+      response.writeHead(202).end();
+      const send = (value: Schema.Json) => stream?.write("event: message\ndata: " + JSON.stringify(value) + "\n\n");
+      if (message.method === "initialize" && message.params?.protocolVersion === "2024-11-05") {
+        send({ jsonrpc: "2.0", id: 91, method: "ping" });
+      }
+      if (pong) send({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} } } });
+      if (message.method === "tools/list") send({ jsonrpc: "2.0", id: 2, result: { tools: [{ name: "example" }] } });
+    });
+    const base = await listen(server);
+
+    const result = await checkMcpEntries([sseEntry(base + "/stream")], 10_000);
+    expect(result).toMatchObject([{ status: "pass", detail: "1 tools", tools: 1 }]);
+    expect(messages).toEqual(["initialize", "pong", "notifications/initialized", "tools/list"]);
+    await closed.promise;
+  });
+
+  it.each(["GET", "POST"] as const)("does not follow redirected legacy %s requests", async (redirectMethod) => {
+    const forwarded: Array<string | undefined> = [];
+    const destination = await listen(createServer((request, response) => {
+      forwarded.push(request.headers["x-fixture-credential"]?.toString());
+      response.writeHead(200).end();
+    }));
+    const requests: Array<string | undefined> = [];
+    const source = await listen(createServer((request, response) => {
+      requests.push(request.headers["x-fixture-credential"]?.toString());
+      if (request.method === redirectMethod) {
+        request.resume();
+        return void response.writeHead(307, { Location: destination }).end();
+      }
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write("event: endpoint\ndata: /message\n\n");
+    }));
+    const expected = redirectMethod === "GET" ? "HTTP 307 opening the SSE stream" : "initialize returned HTTP 307";
+    expect(await checkMcpEntries([sseEntry(source)], 10_000)).toMatchObject([{ status: "fail", detail: expected }]);
+    expect(requests).toEqual(redirectMethod === "GET" ? ["fixture"] : ["fixture", "fixture"]);
+    expect(forwarded).toEqual([]);
+  });
+
+  it("closes an oversized stream before reading its endpoint", async () => {
+    const closed = Promise.withResolvers<void>();
+    const base = await listen(createServer((_request, response) => {
+      response.once("close", closed.resolve);
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write(Buffer.alloc(4 * 1024 * 1024 + 1, "x"));
+      response.write("\nevent: endpoint\ndata: /message\n\n");
+    }));
+    expect(await checkMcpEntries([sseEntry(base)], 10_000)).toMatchObject([{
+      status: "fail", detail: "SSE stream did not advertise a usable same-origin message endpoint",
+    }]);
+    await closed.promise;
+  });
+
+  it.each(["broken", "stalled", "cancelled", "cross-origin"] as const)("handles a %s legacy SSE handshake", async (behavior) => {
+    const received = Promise.withResolvers<void>();
+    const closed = Promise.withResolvers<void>();
+    const server = createServer((request, response) => {
+      if (request.method === "POST") {
+        request.resume();
+        return void response.writeHead(500).end();
+      }
+      response.once("close", closed.resolve);
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      const endpoint = behavior === "cross-origin" ? "http://127.0.0.1:1/message" : "/message";
+      response.write(behavior === "stalled" ? ": waiting\n\n" : "event: endpoint\ndata: " + endpoint + "\n\n");
+      if (behavior === "cancelled") received.resolve();
+    });
+    const base = await listen(server);
+    const controller = new AbortController();
+    const operation = checkMcpEntries([sseEntry(base + "/stream")], behavior === "stalled" ? 1_000 : 10_000, controller.signal);
+    if (behavior === "cancelled") {
+      await received.promise;
+      controller.abort();
+    }
+    const outcomes = {
+      broken: { status: "fail", detail: "initialize returned HTTP 500" },
+      stalled: { status: "fail", detail: "no reply within 1000 ms" },
+      cancelled: { status: "skipped", detail: "not checked: the doctor run was cancelled" },
+      "cross-origin": { status: "fail", detail: "SSE stream did not advertise a usable same-origin message endpoint" },
+    };
+    expect(await operation).toMatchObject([outcomes[behavior]]);
+    await closed.promise;
   });
 });

@@ -434,60 +434,117 @@ const probeStdio = (launch: Extract<Launch, { kind: "stdio" }>, timeoutMilliseco
 /** The most a single HTTP response may send before the check gives up on it. */
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
-/**
- * The reply to request `id` in a Streamable HTTP response, sent as JSON or as
- * SSE events. An SSE stream may carry server requests first and stay open
- * after the reply, so it is read event by event until the reply arrives, then
- * cancelled. Either way at most MAX_RESPONSE_BYTES are read.
- */
-const responseMessage = async (response: Response, id: number, answer: (body: string) => Promise<void>): Promise<RpcReply | undefined> => {
-  if (response.body === null) return undefined;
-  const sse = (response.headers.get("content-type") ?? "").includes("text/event-stream");
+type HttpEvent = { event: string | undefined; data: string };
+
+function isEventStream(response: Response): boolean {
+  return (response.headers.get("content-type") ?? "").split(";", 1)[0]?.trim().toLowerCase() === "text/event-stream";
+}
+
+/** Read one bounded response, preserving SSE event boundaries across chunks. */
+export async function* responseEvents(response: Response): AsyncGenerator<HttpEvent> {
+  if (response.body === null) return;
+  const sse = isEventStream(response);
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
   let received = 0;
   let buffered = "";
-  // An event's data may span several `data:` lines; it is complete at the blank line that ends the event.
+  let event = "message";
   let eventData: Array<string> = [];
+  let skipLf = false;
   let failed = false;
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) {
-        if (sse) return undefined;
-        const reply = decodeReply(buffered);
-        return Option.isSome(reply) && isReplyTo(reply.value, id) ? reply.value : undefined;
+        if (!sse) yield { event: undefined, data: buffered };
+        return;
       }
       received += Buffer.byteLength(value);
-      if (received > MAX_RESPONSE_BYTES) return undefined;
-      buffered += value;
-      if (!sse) continue;
-      const lines = buffered.split(/\r?\n/u);
+      if (received > MAX_RESPONSE_BYTES) return;
+      if (!sse) {
+        buffered += value;
+        continue;
+      }
+      // A CR already ended its line, even when the LF arrives in the next chunk.
+      if (value.length === 0) continue;
+      const chunk: string = skipLf && value.startsWith("\n") ? value.slice(1) : value;
+      skipLf = chunk.endsWith("\r");
+      if (chunk.length === 0) continue;
+      // Split only the new chunk so long lines are not scanned again on each read.
+      const lines = chunk.split(/\r\n|[\r\n]/u);
+      if (lines.length === 1) {
+        buffered += chunk;
+        continue;
+      }
+      lines[0] = buffered + lines[0];
       buffered = lines.pop() ?? "";
       for (const line of lines) {
-        if (line.startsWith("data:")) {
-          eventData.push(line.slice(line.startsWith("data: ") ? 6 : 5));
-          continue;
+        const separator = line.indexOf(":");
+        const field = separator < 0 ? line : line.slice(0, separator);
+        const text = separator < 0 ? "" : line.slice(separator + 1).replace(/^ /u, "");
+        if (field === "event") event = text || "message";
+        else if (field === "data") eventData.push(text);
+        else if (line === "") {
+          if (eventData.length) yield { event, data: eventData.join("\n") };
+          event = "message";
+          eventData = [];
         }
-        if (line !== "" || eventData.length === 0) continue;
-        const reply = decodeReply(eventData.join("\n"));
-        eventData = [];
-        if (Option.isNone(reply)) continue;
-        const pong = pingAnswer(reply.value);
-        if (pong !== undefined) await answer(pong);
-        if (isReplyTo(reply.value, id)) return reply.value;
       }
     }
   } catch (error) {
     failed = true;
     throw error;
   } finally {
-    // A stream already errored by the request deadline can also reject cancellation.
-    try {
-      await reader.cancel();
-    } catch (error) {
-      if (!failed) throw error;
-    }
+    // An errored response can also reject cancellation. Preserve the read failure.
+    const cancelled = reader.cancel();
+    await (failed ? cancelled.catch(() => undefined) : cancelled);
   }
+}
+
+async function responseMessage(
+  events: AsyncGenerator<HttpEvent>, id: number, answer: (body: string) => Promise<void>, legacySse = false,
+): Promise<RpcReply | undefined> {
+  for (;;) {
+    const event = await events.next();
+    if (event.done) return undefined;
+    if (legacySse && event.value.event !== "message") continue;
+    const reply = decodeReply(event.value.data);
+    if (Option.isNone(reply)) continue;
+    const pong = event.value.event === undefined ? undefined : pingAnswer(reply.value);
+    if (pong !== undefined) await answer(pong);
+    if (isReplyTo(reply.value, id)) return reply.value;
+  }
+}
+
+async function streamableReply(response: Response, id: number, answer: (body: string) => Promise<void>) {
+  const events = responseEvents(response);
+  let reply: RpcReply | undefined;
+  try {
+    reply = await responseMessage(events, id, answer);
+  } catch (error) {
+    // An aborted stream can reject closure too. Keep the original reply failure.
+    await events.return(undefined).catch(() => undefined);
+    throw error;
+  }
+  await events.return(undefined);
+  return reply;
+}
+
+async function sseMessageEndpoint(events: AsyncGenerator<HttpEvent>, streamUrl: string): Promise<URL | undefined> {
+  for (;;) {
+    const event = await events.next();
+    if (event.done) return undefined;
+    if (event.value.event !== "endpoint") continue;
+    const endpoint = URL.parse(event.value.data, streamUrl);
+    // The advertised URL is server input. Keep configured headers within the stream origin.
+    if (endpoint === null || !["http:", "https:"].includes(endpoint.protocol)
+      || endpoint.origin !== new URL(streamUrl).origin || endpoint.username || endpoint.password) return undefined;
+    return endpoint;
+  }
+}
+
+const OAUTH_REQUIRED: ProbeOutcome = {
+  status: "skipped",
+  detail: "the server asks for OAuth sign-in, which only the harness holds; not checked",
 };
 
 class ServerReplyFailure extends Error {}
@@ -499,6 +556,8 @@ const probeHttp = async (launch: Extract<Launch, { kind: "http" }>, timeoutMilli
   // After initialize, requests carry the session and the negotiated protocol version, as the transport requires.
   let session: string | undefined;
   let protocolVersion: string | undefined;
+  let pushUrl = launch.url;
+  let events: AsyncGenerator<HttpEvent> | undefined;
   const requestHeaders = () => {
     const headers = new Headers(launch.headers);
     if (session !== undefined) headers.set("Mcp-Session-Id", session);
@@ -510,7 +569,7 @@ const probeHttp = async (launch: Extract<Launch, { kind: "http" }>, timeoutMilli
     const headers = requestHeaders();
     headers.set("Content-Type", "application/json");
     headers.set("Accept", "application/json, text/event-stream");
-    return fetch(launch.url, { method: "POST", headers, body, signal, redirect });
+    return fetch(pushUrl, { method: "POST", headers, body, signal, redirect: launch.sse ? "manual" : redirect });
   };
   const post = (body: RpcMessage) => send(JSON.stringify(body));
   const answer = async (body: string) => {
@@ -526,9 +585,16 @@ const probeHttp = async (launch: Extract<Launch, { kind: "http" }>, timeoutMilli
         : "could not send the reply to server ping");
     }
   };
-  // Close has its own deadline so it still runs after the probe times out.
-  // The protocol also allows a server to decline client-initiated termination with HTTP 405.
   const close = async (): Promise<string | undefined> => {
+    if (events) {
+      try {
+        await events.return(undefined);
+      } catch {
+        if (!signal.aborted) return "SSE stream cleanup failed";
+      }
+      return undefined;
+    }
+    // Session termination has its own deadline and the server may decline with HTTP 405.
     if (session === undefined) return undefined;
     const closeMilliseconds = 2_000;
     const closing = AbortSignal.timeout(closeMilliseconds);
@@ -546,24 +612,41 @@ const probeHttp = async (launch: Extract<Launch, { kind: "http" }>, timeoutMilli
   const run = async (): Promise<ProbeOutcome> => {
     try {
       if (launch.sse) {
-        // The legacy SSE transport answers on a second channel; reaching the stream is checked, the handshake is not.
-        const response = await fetch(launch.url, { headers: { ...launch.headers, Accept: "text/event-stream" }, signal });
-        await response.body?.cancel();
-        if (response.ok) return { status: "skipped", detail: "SSE stream reachable; handshake not verified for the legacy SSE transport" };
-        return { status: "fail", detail: `HTTP ${response.status} opening the SSE stream` };
+        const headers = requestHeaders();
+        headers.set("Accept", "text/event-stream");
+        const response = await fetch(launch.url, { headers, signal, redirect: "manual" });
+        if (response.status === 401 && !authorized) {
+          await response.body?.cancel();
+          return OAUTH_REQUIRED;
+        }
+        if (!response.ok || !isEventStream(response)) {
+          await response.body?.cancel();
+          return { status: "fail", detail: !response.ok ? "HTTP " + response.status + " opening the SSE stream" : "SSE endpoint did not return an event stream" };
+        }
+        events = responseEvents(response);
+        const endpoint = await sseMessageEndpoint(events, response.url);
+        if (endpoint === undefined) return { status: "fail", detail: "SSE stream did not advertise a usable same-origin message endpoint" };
+        pushUrl = endpoint.href;
       }
-      const initialized = await post(initializeRequest);
+      const readReply = async (response: Response, id: number) => {
+        if (!events) return streamableReply(response, id, answer);
+        await response.body?.cancel();
+        return responseMessage(events, id, answer, true);
+      };
+      const initialized = await post(launch.sse
+        ? { ...initializeRequest, params: { ...initializeRequest.params, protocolVersion: "2024-11-05" } }
+        : initializeRequest);
       if (initialized.status === 401 && !authorized) {
         await initialized.body?.cancel();
-        return { status: "skipped", detail: "the server asks for OAuth sign-in, which only the harness holds; not checked" };
+        return OAUTH_REQUIRED;
       }
       if (!initialized.ok) {
         await initialized.body?.cancel();
         return { status: "fail", detail: `initialize returned HTTP ${initialized.status}` };
       }
       // Recorded before the body is read, so the session is closed even if the body stalls or is invalid.
-      session = initialized.headers.get("mcp-session-id") ?? undefined;
-      const reply = await responseMessage(initialized, 1, answer);
+      if (!launch.sse) session = initialized.headers.get("mcp-session-id") ?? undefined;
+      const reply = await readReply(initialized, 1);
       if (reply?.result === undefined) return { status: "fail", detail: `initialize failed: ${reply === undefined ? "no JSON-RPC reply" : rpcError(reply, launch.secrets)}` };
       if (reply.result.protocolVersion === undefined) return { status: "fail", detail: "initialize reply has no protocolVersion" };
       protocolVersion = reply.result.protocolVersion;
@@ -576,7 +659,7 @@ const probeHttp = async (launch: Extract<Launch, { kind: "http" }>, timeoutMilli
         await listed.body?.cancel();
         return { status: "fail", detail: `tools/list returned HTTP ${listed.status}` };
       }
-      const tools = await responseMessage(listed, 2, answer);
+      const tools = await readReply(listed, 2);
       if (tools?.result === undefined) return { status: "fail", detail: `tools/list failed: ${tools === undefined ? "no JSON-RPC reply" : rpcError(tools, launch.secrets)}` };
       if (tools.result.tools === undefined) return { status: "fail", detail: "tools/list reply has no tools list" };
       const count = tools.result.tools.length;
@@ -584,9 +667,10 @@ const probeHttp = async (launch: Extract<Launch, { kind: "http" }>, timeoutMilli
     } catch (error) {
       if (cancel.aborted) return CANCELLED;
       if (error instanceof ServerReplyFailure) return { status: "fail", detail: error.message };
+      const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : "network error";
       return {
         status: "fail",
-        detail: signal.aborted ? `no reply within ${timeoutMilliseconds} ms` : `request failed: ${error instanceof Error && error.cause instanceof Error ? error.cause.message : "network error"}`,
+        detail: signal.aborted ? "no reply within " + timeoutMilliseconds + " ms" : "request failed: " + redactText(cause, launch.secrets),
       };
     }
   };
