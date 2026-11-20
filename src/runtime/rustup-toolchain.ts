@@ -79,7 +79,7 @@ function readSettings(machine: MachineState["Service"], filename: string) {
   });
 }
 
-function parseToolchainFile(text: string): string {
+function parseToolchainFile(text: string): string | undefined {
   const { toolchain } = decodeToolchainFile(parse(text));
   const { channel, path, profile, components, targets } = toolchain;
   if (path !== undefined) {
@@ -88,8 +88,12 @@ function parseToolchainFile(text: string): string {
     }
     return path;
   }
-  if (channel === undefined) throw new Error("the toolchain file must select a channel or absolute path");
-  return manifestChannel(channel);
+  if (channel !== undefined) return manifestChannel(channel);
+  if (components === undefined && targets === undefined) {
+    throw new Error("the toolchain file must select a channel or absolute path or declare components or targets");
+  }
+  // A nearest file that only declares components or targets inherits the default.
+  return undefined;
 }
 
 function directoryToolchain(machine: MachineState["Service"], overrides: Readonly<Record<string, string>> | undefined) {
@@ -234,7 +238,7 @@ function installedRustupCargo(
       return fallback?.default_toolchain;
     });
     // Match rustup's precedence for a command with no explicit +toolchain.
-    const toolchain = process.env["RUSTUP_TOOLCHAIN"]
+    const toolchain = (process.env["RUSTUP_TOOLCHAIN"] || undefined)
       ?? (yield* directoryToolchain(machine, settings?.overrides))
       ?? (yield* configuredDefault);
     if (!toolchain) return { reason: `Rustup has no selected toolchain in this session. ${recovery}` } as const;

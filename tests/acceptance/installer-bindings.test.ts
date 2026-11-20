@@ -140,6 +140,7 @@ describe("local installer binding contract", () => {
     const backend = join(rustupHome, "toolchains", "canonfig+stage", "bin", "cargo");
     mkdirSync(dirname(backend), { recursive: true });
     writeFileSync(backend, "#!/bin/sh\necho 'cargo 1.0.0-backend'\n", { mode: 0o755 });
+    vi.stubEnv("RUSTUP_TOOLCHAIN", "");
     const binding = await Effect.runPromise(saveInstallerBinding("cargo", cargo, []).pipe(Effect.provide(f.layer)));
     expect(binding.executable).toBe(join(await realpath(f.home), "cargo"));
     expect(binding.rustupProxy).toBe(true);
