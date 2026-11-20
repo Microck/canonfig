@@ -179,6 +179,30 @@ describe("Shield admission and projection", () => {
     expect(nativePluginDigest(plugin!.manifest, plugin!.files.map((file) => file.path.endsWith("hooks.json") ? { ...file, executable: !file.executable } : file))).not.toBe(plugin!.digest);
   });
 
+  it.each(["canonical", "local"] as const)("directs global instruction edits to the exact %s source", (scope) => {
+    const f = fixture();
+    const model = shieldModel({ ...emptyModel(f.folder), harnesses: ["claude-code", "codex"] }, f.context, scope, []);
+    const destination = join(f.folder, ...(scope === "local" ? ["local"] : []), "AGENTS.md");
+    expect(model.instructions).toContain(`Edit global instructions in ${destination}`);
+    const hook = model.hooks[0]!;
+    const execute = (toolName: string, toolInput: Record<string, string>) => spawnSync(process.execPath, hook.run.slice(1), {
+      input: JSON.stringify({ toolName, toolInput, cwd: f.home }), encoding: "utf8", cwd: f.home, timeout: 10_000,
+    });
+    for (const file of [join(f.home, ".codex", "AGENTS.md"), join(f.home, ".claude", "CLAUDE.md")]) {
+      for (const [toolName, toolInput] of [
+        ["Edit", { file_path: file }],
+        ["Bash", { command: `printf changed > "${file}"` }],
+      ] as const) {
+        const denied = execute(toolName, toolInput);
+        expect(denied.status, denied.stderr).toBe(2);
+        expect(JSON.parse(denied.stdout).reason).toContain(`blocked an edit to global instructions. Edit ${destination} instead.`);
+        expect(JSON.parse(denied.stdout).reason).toContain("canonfig sync --apply");
+      }
+    }
+    expect(execute("Edit", { file_path: destination }).status).toBe(0);
+    expect(execute("Edit", { file_path: join(f.home, "project", "AGENTS.md") }).status).toBe(0);
+  });
+
   it("blocks protected tool writes with the follower destination, including aliases and patch moves", () => {
     const f = fixture();
     mkdirSync(join(f.home, ".claude", "skills"), { recursive: true });

@@ -37,11 +37,12 @@ export const shieldExemptPaths = (model: CanonicalModel, context: RootContext, k
 };
 
 /** Generated, dependency-free guard. Shell inspection is advisory, not a shell parser or sandbox. */
-const guardSource = (paths: ReadonlyArray<string>, exempt: ReadonlyArray<string>, home: string, destination: string, logFile: string) => `
+const guardSource = (paths: ReadonlyArray<string>, exempt: ReadonlyArray<string>, instructionPaths: ReadonlyArray<string>, home: string, destination: string, logFile: string) => `
 import fs from "node:fs";
 import path from "node:path";
 const protectedPaths = ${JSON.stringify(paths)};
 const exemptPaths = ${JSON.stringify(exempt)};
+const instructionPaths = ${JSON.stringify(instructionPaths)};
 const home = ${JSON.stringify(home)};
 const destination = ${JSON.stringify(destination)};
 const logFile = ${JSON.stringify(logFile)};
@@ -114,7 +115,10 @@ if (blocked) {
   else if (blockedInstaller) entry.installer = blockedInstaller;
   try { fs.mkdirSync(path.dirname(logFile), { recursive: true, mode: 0o700 }); fs.appendFileSync(logFile, JSON.stringify(entry) + "\\n", { mode: 0o600 }); } catch {}
   const category = protectedPaths.includes(blocked) && /[/\\\\]skills$/.test(blocked) ? "skills/" + blockedRelative : "";
-  console.log(JSON.stringify({ decision: "deny", reason: "Canonfig Shield blocked a harness installation. Write authored content to " + path.join(destination, category) + "; for installers run canonfig shield install -- <original command>. Run canonfig sync --apply afterward. Native plugins need canonfig shield review before activation. Never publish automatically." }));
+  const reason = instructionPaths.includes(blocked)
+    ? "Canonfig Shield blocked an edit to global instructions. Edit " + path.join(destination, "AGENTS.md") + " instead. Run canonfig sync --apply afterward. Respect local.allow and Local Overlays. Never publish automatically."
+    : "Canonfig Shield blocked a harness installation. Write authored content to " + path.join(destination, category) + "; for installers run canonfig shield install -- <original command>. Run canonfig sync --apply afterward. Native plugins need canonfig shield review before activation. Never publish automatically.";
+  console.log(JSON.stringify({ decision: "deny", reason }));
   process.exit(2);
 }
 `;
@@ -124,13 +128,15 @@ export const shieldModel = (model: CanonicalModel, context: RootContext, scope: 
     throw new Error(`${shieldHookId} is reserved while Shield is enabled`);
   }
   const destination = scope === "local" ? context.join(model.folder, "local") : model.folder;
-  const instructions = `## Canonfig Shield\n\nInstall skills, MCP servers and native plugins through \`canonfig shield install -- <original command>\`. Never install into harness configuration folders or ~/.agents. Author skills under ${destination}/skills/, documents in the matching category, and MCP entries in ${destination}/${scope === "local" ? "local.jsonc" : "canonfig.jsonc"}. Respect local.allow and Local Overlays. Run \`canonfig sync --apply\` after changes. Review native plugin bytes with \`canonfig shield review <id> --digest <sha256> --reviewer <name>\` before activation. Redirected changes are not permission to publish.\n`;
+  const instructionPaths = model.harnesses.flatMap((harness) => adapterFor(harness).layout(context, model).surfaces
+    .filter((surface) => surface.id === "instructions").map((surface) => surface.target));
+  const instructions = `## Canonfig Shield\n\nInstall skills, MCP servers and native plugins through \`canonfig shield install -- <original command>\`. Never install into harness configuration folders or ~/.agents. Edit global instructions in ${context.join(destination, "AGENTS.md")}. Author skills under ${destination}/skills/, documents in the matching category, and MCP entries in ${destination}/${scope === "local" ? "local.jsonc" : "canonfig.jsonc"}. Respect local.allow and Local Overlays. Run \`canonfig sync --apply\` after changes. Review native plugin bytes with \`canonfig shield review <id> --digest <sha256> --reviewer <name>\` before activation. Redirected changes are not permission to publish.\n`;
   return {
     ...model,
     instructions: `${model.instructions === undefined ? "" : model.instructions + "\n"}${instructions}`,
     skills: [...model.skills, { name: shieldHookId, description: "Install agent configuration through Canonfig without contaminating harness folders.",
       files: [{ path: "SKILL.md", executable: false, content: new TextEncoder().encode(`---\nname: ${shieldHookId}\ndescription: Install skills, MCP servers and native plugins through Canonfig.\n---\n\n${instructions}`) }] }],
     hooks: [{ id: shieldHookId, event: "before_tool", matcher: { capabilities: [], tools: [] },
-      run: ["node", "--input-type=module", "-e", guardSource(shieldPaths(model, context), shieldExemptPaths(model, context, keptSkills), context.home, destination, context.join(model.folder, ...shieldLogSegments))], timeoutMs: 5000, onFailure: "block" }, ...model.hooks],
+      run: ["node", "--input-type=module", "-e", guardSource(shieldPaths(model, context), shieldExemptPaths(model, context, keptSkills), instructionPaths, context.home, destination, context.join(model.folder, ...shieldLogSegments))], timeoutMs: 5000, onFailure: "block" }, ...model.hooks],
   };
 };
