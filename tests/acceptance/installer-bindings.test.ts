@@ -136,8 +136,8 @@ describe("local installer binding contract", () => {
       .rejects.toThrow("no selected toolchain");
     expect(() => statSync(rustupHome)).toThrow();
     mkdirSync(rustupHome);
-    writeFileSync(join(rustupHome, "settings.toml"), "version = '12'\ndefault_toolchain = 'canonfig-fixture'\n");
-    const backend = join(rustupHome, "toolchains", "canonfig-fixture", "bin", "cargo");
+    writeFileSync(join(rustupHome, "settings.toml"), "version = '12'\ndefault_toolchain = 'canonfig+stage'\n");
+    const backend = join(rustupHome, "toolchains", "canonfig+stage", "bin", "cargo");
     mkdirSync(dirname(backend), { recursive: true });
     writeFileSync(backend, "#!/bin/sh\necho 'cargo 1.0.0-backend'\n", { mode: 0o755 });
     const binding = await Effect.runPromise(saveInstallerBinding("cargo", cargo, []).pipe(Effect.provide(f.layer)));
@@ -158,7 +158,7 @@ describe("local installer binding contract", () => {
     mkdirSync(dirname(releaseCargo), { recursive: true });
     writeFileSync(releaseCargo, "#!/bin/sh\necho 'cargo 1.99.0-backend'\n", { mode: 0o755 });
     rmSync(backend);
-    vi.stubEnv("RUSTUP_TOOLCHAIN", "canonfig-fixture");
+    vi.stubEnv("RUSTUP_TOOLCHAIN", "canonfig+stage");
     expect(await Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).toMatchObject({ verified: true });
     // Rustup selects the first installed channel even when its Cargo component is absent.
     writeFileSync(join(rustupHome, "toolchains", "nightly-aarch64-unknown-linux-gnu"), "invalid toolchain");

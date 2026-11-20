@@ -52,24 +52,22 @@ function readOptional(machine: MachineState["Service"], filename: string) {
   });
 }
 
-const ToolchainName = Schema.String.check(Schema.isPattern(/^[\w-][\w.-]*$/u));
 const RustupSettings = Schema.Struct({
   version: Schema.optional(Schema.String),
-  default_toolchain: Schema.optional(ToolchainName),
-  default_host_triple: Schema.optional(ToolchainName),
-  default_host_tuple: Schema.optional(ToolchainName),
-  overrides: Schema.optional(Schema.Record(Schema.String, ToolchainName)),
+  default_toolchain: Schema.optional(Schema.String),
+  default_host_triple: Schema.optional(Schema.String),
+  default_host_tuple: Schema.optional(Schema.String),
+  overrides: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 const ToolchainFile = Schema.Struct({
   toolchain: Schema.Struct({
-    channel: Schema.optional(ToolchainName),
+    channel: Schema.optional(Schema.String),
     path: Schema.optional(Schema.String),
     profile: Schema.optional(Schema.Literals(["minimal", "default", "complete"])),
     components: Schema.optional(Schema.Array(Schema.String)),
     targets: Schema.optional(Schema.Array(Schema.String)),
   }),
 });
-const decodeToolchainName = Schema.decodeUnknownSync(ToolchainName);
 const decodeSettings = Schema.decodeUnknownSync(RustupSettings);
 const decodeToolchainFile = Schema.decodeUnknownSync(ToolchainFile);
 
@@ -104,7 +102,7 @@ function directoryToolchain(machine: MachineState["Service"], overrides: Readonl
       const legacySelection = legacy?.trim();
       if (legacySelection && !legacySelection.includes("\n")) {
         return yield* Effect.try({
-          try: () => isAbsolute(legacySelection) ? legacySelection : manifestChannel(decodeToolchainName(legacySelection)),
+          try: () => isAbsolute(legacySelection) ? legacySelection : manifestChannel(legacySelection),
           catch: String,
         });
       }
@@ -176,7 +174,18 @@ const targetTuple = new RegExp(
   "u",
 );
 
-function manifestChannel(channel: string): string {
+/** Named toolchains occupy one directory below rustup's toolchains folder. */
+function namedToolchain(selector: string): string {
+  const name = selector.replace(/\/+$/u, "");
+  if (!name || name === "." || name === ".." || name === "none" || name.startsWith("+")
+    || /[/\\\0]/u.test(name) || (process.platform === "win32" && /[:]|[. ]$/u.test(name))) {
+    throw new Error("invalid Rustup toolchain name: " + JSON.stringify(selector));
+  }
+  return name;
+}
+
+function manifestChannel(selector: string): string {
+  const channel = namedToolchain(selector);
   const requestedTarget = channelSelector.exec(channel)?.groups?.target;
   if (requestedTarget !== undefined) {
     const target = targetTuple.exec(`-${requestedTarget}`)?.groups;
@@ -187,10 +196,10 @@ function manifestChannel(channel: string): string {
 
 function resolveToolchain(home: string, toolchain: string, host: string) {
   if (isAbsolute(toolchain)) return { directory: toolchain, custom: true };
-  decodeToolchainName(toolchain);
-  const release = channelSelector.exec(toolchain)?.groups;
+  const name = namedToolchain(toolchain);
+  const release = channelSelector.exec(name)?.groups;
   const partial = release?.channel ? targetTuple.exec(release.target ? `-${release.target}` : "")?.groups : undefined;
-  if (!release?.channel || !partial) return { directory: join(home, "toolchains", toolchain), custom: true };
+  if (!release?.channel || !partial) return { directory: join(home, "toolchains", name), custom: true };
   const native = targetTuple.exec(`-${host}`)?.groups;
   const arch = partial.arch ?? native?.arch;
   const os = partial.os ?? native?.os;
