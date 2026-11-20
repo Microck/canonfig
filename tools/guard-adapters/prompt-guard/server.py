@@ -23,20 +23,22 @@ import math
 import os
 import re
 import socket
-from bisect import bisect_right
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Protocol
 
-SCHEMA = "canonfig.guard/v1"
+_CONTRACT_PATH = Path(__file__).resolve().parents[3] / "src/guard/checker-wire.json"
+_CONTRACT = json.loads(_CONTRACT_PATH.read_text(encoding="utf-8"))
+SCHEMA = _CONTRACT["schema"]
 ENDPOINT = "/v1/guard"
 DEFAULT_MODEL = "meta-llama/Llama-Prompt-Guard-2-86M"
 
-# Guard enforces these limits in src/guard/guard.ts.
-REQUEST_LIMIT = 32 * 1024
-RESPONSE_LIMIT = 16 * 1024
-FINDINGS_LIMIT = 20
+REQUEST_LIMIT = _CONTRACT["requestBytes"]
+RESPONSE_LIMIT = _CONTRACT["responseBytes"]
+FINDINGS_LIMIT = _CONTRACT["maximumFindings"]
+LINE_BREAK = re.compile("|".join(re.escape(value) for value in _CONTRACT["lineBreaks"]))
 
 
 @dataclass(frozen=True)
@@ -205,10 +207,17 @@ def score_file(text: str, scorer: Scorer) -> tuple[float, int]:
             if score > best_score:
                 best_score, best_start = score, start
 
-    # Match Guard's CRLF, CR and LF line boundaries against original text offsets.
-    line_ends = [ending.end() for ending in re.finditer(r"\r\n|\r|\n", text)]
     offset = offsets[best_start][0] if offsets else 0
-    return best_score, bisect_right(line_ends, offset) + 1
+    return best_score, checker_line_at(text, offset)
+
+
+def checker_line_at(text: str, offset: int) -> int:
+    line = 1
+    for ending in LINE_BREAK.finditer(text):
+        if ending.end() > offset:
+            break
+        line += 1
+    return line
 
 
 def encode_verdict(

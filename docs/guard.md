@@ -123,6 +123,11 @@ For `warn` or `block`, supply findings with a `code` and optional `path`
 and 1-based `line`. Codes are `prompt-injection`, `credential-disclosure`,
 `unsafe-execution`, `obfuscation` and `other-risk`.
 
+The versioned [checker contract](../src/guard/checker-wire.json) defines the
+request and response byte caps, the maximum findings per verdict, and the
+ordered line breaks. CRLF counts as one break. An empty file has one line, and
+a trailing break starts an empty last line.
+
 ### Local Prompt Guard 2 adapter
 
 Start the [local adapter](../tools/guard-adapters/prompt-guard/README.md) with

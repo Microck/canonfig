@@ -1,0 +1,7 @@
+{
+  "schema": "canonfig.guard/v1",
+  "requestBytes": 32768,
+  "responseBytes": 16384,
+  "maximumFindings": 20,
+  "lineBreaks": ["\r\n", "\r", "\n"]
+}

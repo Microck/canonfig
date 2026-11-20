@@ -1,3 +1,6 @@
+import { buffer } from "node:stream/consumers";
+import checkerWire from "../src/guard/checker-wire.json" with { type: "json" };
+import checkerLocations from "./fixtures/guard/checker-locations.json" with { type: "json" };
 import { execFile, spawnSync } from "node:child_process";
 import { createServer, type IncomingMessage, type RequestListener, type Server } from "node:http";
 import { mkdir, mkdtemp, writeFile, readdir, readFile, rm, symlink, truncate } from "node:fs/promises";
@@ -418,6 +421,67 @@ it("withholds literal bearer text and removes it from report labels", async () =
     });
     expect(requests).toBe(0);
     expect(await readFile(join(root, ".guard", "latest.json"), "utf8")).not.toContain(key);
+  });
+});
+
+it.each(checkerLocations)("validates checker locations for $name", async ({ text, line }) => {
+  const root = await fixture();
+  const path = "references/review.md";
+  let findingLine = line;
+  const endpoint = await listen((_request, reply) => {
+    reply.end(JSON.stringify({
+      schema: checkerWire.schema,
+      verdict: "warn",
+      findings: [{ code: "other-risk", path, line: findingLine }],
+    }));
+  });
+  await checkerPolicy(root, endpoint);
+  await withBearer("guard-locations-fixture", async () => {
+    expect(await inspectGuard([skill(text, path)], { root, trigger: "test" })).toMatchObject({
+      unavailable: 0, findings: expect.arrayContaining([expect.objectContaining({ checker: "http", code: "other-risk", path, line })]),
+    });
+    findingLine = line + 1;
+    expect(await inspectGuard([skill(text + " ", path)], { root, trigger: "test" })).toMatchObject({
+      unavailable: 1, findings: expect.arrayContaining([expect.objectContaining({ code: "checker-unavailable" })]),
+    });
+  });
+});
+
+it("enforces the shared request, response and finding caps at the boundary", async () => {
+  const root = await fixture();
+  const path = "references/review.md";
+  let transmitted = 0;
+  let response = "";
+  const endpoint = await listen(async (request, reply) => {
+    transmitted = (await buffer(request)).byteLength;
+    reply.end(response);
+  });
+  const findings = Array.from({ length: checkerWire.maximumFindings }, () => ({ code: "other-risk", path, line: 1 }));
+  const payload = JSON.stringify({ schema: checkerWire.schema, verdict: "warn", findings });
+  response = payload.padEnd(checkerWire.responseBytes);
+  await checkerPolicy(root, endpoint);
+  await withBearer("guard-boundary-fixture", async () => {
+    const envelopeSize = Buffer.byteLength(JSON.stringify({
+      schema: checkerWire.schema, item: { kind: "skills", digest: "0".repeat(64), files: [{ path, text: "" }] },
+    }));
+    const contentBytes = checkerWire.requestBytes - envelopeSize;
+    const content = "word ".repeat(Math.ceil(contentBytes / 5)).slice(0, contentBytes);
+    const run = (text: string) => inspectGuard([skill(text, path)], { root, trigger: "test" });
+    expect(await run(content)).toMatchObject({ unavailable: 0, findingCount: checkerWire.maximumFindings });
+    expect(transmitted).toBe(checkerWire.requestBytes);
+    expect(await run(content + "a")).toMatchObject({
+      unavailable: 1, findings: [expect.objectContaining({ code: "checker-input" })],
+    });
+    response = payload.padEnd(checkerWire.responseBytes + 1);
+    expect(await run("response too large")).toMatchObject({
+      unavailable: 1, findings: expect.arrayContaining([expect.objectContaining({ code: "checker-unavailable" })]),
+    });
+    response = JSON.stringify({
+      schema: checkerWire.schema, verdict: "warn", findings: [...findings, findings[0]],
+    });
+    expect(await run("too many findings")).toMatchObject({
+      unavailable: 1, findings: expect.arrayContaining([expect.objectContaining({ code: "checker-unavailable" })]),
+    });
   });
 });
 
