@@ -136,7 +136,7 @@ async function click(label: string) {
   assert.equal(button.disabled, false, `${label} is disabled`);
   await act(async () => { button.click(); });
 }
-const profile = { items: [], config: { profile: { id: "review", name: "Review" }, groups: { work: [] } }, supportedSurfaces: {} };
+const profile = { items: [], config: { profile: { id: "review", name: "Review" }, groups: { work: [] } }, reservedPaths: [], caseSensitive: true, supportedSurfaces: {} };
 const follower = { id: "review-follower", name: "Review laptop", groups: ["work", "secrets"], enrolledAt: "2026-11-06T00:00:00Z", revoked: false, pending: false, credentialPresent: true, credentialLifecycle: { _tag: "Active" } };
 const sourceResponses = () => ({
   "/api/status": { machineRole: { role: "source" }, lifecycle: {}, tunnel: null },
@@ -324,7 +324,7 @@ it("saves a harness's Gets choices once when the menu closes", async () => {
   const items = {
     items: [{ path: "canonfig.jsonc", digest: "config-digest", files: [] }],
     config: { ...profile.config, harnesses: ["codex"] },
-    supportedSurfaces: { codex: ["instructions", "rules", "skills", "hooks"] },
+    reservedPaths: [], caseSensitive: true, supportedSurfaces: { codex: ["instructions", "rules", "skills", "hooks"] },
   };
   const responses: Record<string, unknown> = {
     ...sourceResponses(),
@@ -370,7 +370,7 @@ async function fill(selector: string, value: string) {
 
 for (const category of ["mcp", "settings"]) {
   it(`local ${category} reload resets its draft and saves against the refreshed local.jsonc digest`, async () => {
-    const snapshot = (digest: string, command: string) => ({ items: [{ path: "local.jsonc", digest, files: [] }], config: { [category]: { example: { command } } }, canonicalConfig: { local: { allow: [category] } } });
+    const snapshot = (digest: string, command: string) => ({ items: [{ path: "local.jsonc", digest, files: [] }], config: { [category]: { example: { command } } }, settingsFiles: {}, canonicalConfig: { local: { allow: [category] } } });
     const responses: Record<string, unknown> = {
       "/api/status": { machineRole: { role: "follower" }, lifecycle: {}, tunnel: null },
       "/api/harnesses": { folder: "/tmp/review-fixture", configured: true, listed: [], excluded: [], detected: [], notInstalled: [], snapshots: 0, harnesses: [] },

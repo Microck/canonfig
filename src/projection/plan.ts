@@ -1,5 +1,4 @@
 import { readFile } from "node:fs/promises";
-import { posix, win32 } from "node:path";
 
 import { Effect, Schema } from "effect";
 
@@ -50,31 +49,19 @@ import type {
 import { adapterFor } from "./adapters/index.ts";
 import { commandSkill, groupProjectedSkillNames, skillDirectoryFiles } from "./adapters/shared-documents.ts";
 import { CanonicalFolderError, type KeyClaim, type LoadedFolder } from "./folder.ts";
+import { pathsFor, reservedResourcePaths, settingsSurfaceOf, supportedCategories, within } from "./layout-metadata.ts";
 import type {
   ConfigFormat,
   Diagnostic,
-  HarnessAdapter,
   HarnessLayout,
   OwnedSurface,
   RootContext,
   SurfaceContent,
 } from "./harness.ts";
-import { type CanonicalModel, modelFor, type SkillTree, SURFACE_CATEGORIES, type SurfaceCategory, TARGET_IDS, type TargetId } from "./model.ts";
+import { type CanonicalModel, modelFor, type SkillTree, type SurfaceCategory, TARGET_IDS, type TargetId } from "./model.ts";
 import { hookRegistryJson, hookRunnerSource } from "./templates/runtime.ts";
 import type { Snapshot, SnapshotEntry, TakeoverUnit } from "./takeover.ts";
 import { canonicalFolderOwner, snapshotCopy } from "./takeover.ts";
-
-/**
- * The `surfaces` categories a harness can be given: every feature its adapter
- * does not mark unsupported, plus `settings` when it owns a settings file.
- * ui/src/shared/data.ts keeps a copy for the harness list; a test holds them equal.
- */
-export const supportedCategories = (adapter: HarnessAdapter, layout: HarnessLayout): ReadonlyArray<SurfaceCategory> =>
-  SURFACE_CATEGORIES.filter((category) =>
-    category === "settings"
-      ? layout.surfaces.some((surface) => surface.kind === "config" && surface.settings !== undefined)
-      : adapter.descriptor.capabilities[category] !== "unsupported"
-  );
 
 /**
  * Why `selected` is not a valid `surfaces.<harness>` entry, or undefined.
@@ -123,14 +110,6 @@ export interface ProjectedSurface {
    */
   readonly appendLocal: boolean;
 }
-
-const pathsFor = (platform: RootContext["platform"]) => platform === "windows" ? win32 : posix;
-
-/** True when `path` is `root` or lies beneath it. */
-const within = (paths: typeof posix, root: string, path: string): boolean => {
-  const fromRoot = paths.relative(root, path);
-  return fromRoot === "" || (!fromRoot.startsWith("..") && !paths.isAbsolute(fromRoot));
-};
 
 /** Whether a declared key and a reserved pattern (`*` matches one segment) overlap. */
 const reservedOverlap = (key: string, reserved: string): boolean => {
@@ -182,12 +161,6 @@ const resolveConfigTarget = (surface: Extract<OwnedSurface, { readonly kind: "co
     }
     return surface.target;
   });
-
-/** The config file that receives a harness's declared `settings.<harness>` keys, if it has one. */
-const settingsSurfaceOf = (layout: HarnessLayout) =>
-  layout.surfaces.find((candidate): candidate is Extract<OwnedSurface, { readonly kind: "config" }> =>
-    candidate.kind === "config" && candidate.settings !== undefined
-  );
 
 /** Merge a harness's declared settings into its settings file's content. */
 const withSettings = (
@@ -259,20 +232,7 @@ export const projectResources = (model: CanonicalModel, context: RootContext, co
   Effect.gen(function*() {
     if (model.resources.length === 0) return [];
     const paths = pathsFor(context.platform);
-    const reserved: Array<{ readonly owner: string; readonly path: string }> = [
-      { owner: "the Canonical Folder", path: model.folder },
-      { owner: "the shared agent directory", path: paths.join(context.home, ".agents") },
-    ];
-    for (const harness of TARGET_IDS) {
-      const layout = adapterFor(harness).layout(context, model);
-      const owner = adapterFor(harness).descriptor.name;
-      reserved.push(
-        { owner, path: layout.root },
-        ...layout.surfaces.flatMap((surface) => [surface.target, ...surface.kind === "config" ? surface.alternatives ?? [] : []])
-          .map((path) => ({ owner, path })),
-        ...layout.neverTouch.map((path) => ({ owner, path })),
-      );
-    }
+    const reserved = reservedResourcePaths(context, model);
     // macOS and Windows file systems ignore case by default, so `~/.Codex`
     // is `~/.codex` there; compare folded paths on those platforms.
     const fold = (path: string) => context.platform === "linux" ? path : path.toLowerCase();

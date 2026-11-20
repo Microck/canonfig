@@ -16,7 +16,7 @@ it("edits kept-local policies with the displayed digest and explains preservatio
   const writes: unknown[] = [];
   const live: Pick<FollowerLive, "local" | "action" | "savePreferences"> = {
     action: { loading: false, error: null },
-    local: { items: [{ path: "local.jsonc", digest: "displayed-digest", files: [] }], config: { excludeSkills: ["deploy"], preserveMcp: true }, canonicalConfig: { local: { appendLocal: ["skills"] } } },
+    local: { items: [{ path: "local.jsonc", digest: "displayed-digest", files: [] }], config: { excludeSkills: ["deploy"], preserveMcp: true }, settingsFiles: {}, canonicalConfig: { local: { appendLocal: ["skills"] } } },
     savePreferences: async (input) => { writes.push(input); return true; },
   };
   const container = document.createElement("div");
@@ -65,7 +65,7 @@ it("edits kept-local policies with the displayed digest and explains preservatio
     await act(async () => { container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
     assert.deepEqual(writes.shift(), { expectedDigest: "displayed-digest", edits: [{ path: ["excludeSkills"], value: ["deploy", "review"] }] });
     assert.ok(live.local);
-    live.local = { ...live.local, canonicalConfig: { local: { appendLocal: [] } } };
+    live.local = { ...live.local, settingsFiles: {}, canonicalConfig: { local: { appendLocal: [] } } };
     await render();
     assert.equal(container.querySelector('[aria-label="Skill name to keep local"]'), null);
     assert.equal(container.querySelector<HTMLButtonElement>('[aria-label="Remove kept-local skill deploy"]')?.disabled, true);

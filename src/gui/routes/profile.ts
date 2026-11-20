@@ -14,10 +14,9 @@ import { publicationCredentialIssue } from "../../profile/publication-credential
 import { InvalidPublicationInputError } from "../../profile/profile-catalog.errors.ts";
 import { decodeFolderConfig } from "../../projection/folder.ts";
 import { readAuthoringItems, writeAuthoringItems, editAuthoringConfig, type AuthoringChange } from "../../projection/authoring.ts";
-import { adapterFor } from "../../projection/adapters/index.ts";
-import { TARGET_IDS } from "../../projection/model.ts";
 import { emptyModel } from "../../projection/detect.ts";
-import { rootContext, supportedCategories } from "../../projection/plan.ts";
+import { rootContext } from "../../projection/plan.ts";
+import { projectionProfileMetadata } from "../../projection/layout-metadata.ts";
 import { CanonfigError } from "../../skills/errors.ts";
 import { listSkills, trackSkill, checkSkills, updateSkills, skillUpdateOperations } from "../../skills/manager.ts";
 import { GuiProfileConfigWrite, GuiProfileWrite, GuiPublicationRequest, GuiRevisionSelection, GuiScanAcceptance, GuiSkillSelection, GuiSkillTrack, GuiSkillUpdate, profileEndpoints } from "../contract/profile.ts";
@@ -45,8 +44,8 @@ export const profileRoutes = Effect.gen(function*() {
     const config = yield* Effect.try({ try: () => configItem?.files[0] === undefined ? {} : decodeFolderConfig("canonfig.jsonc", new TextDecoder("utf-8", { fatal: true }).decode(configItem.files[0].content)), catch: (error) => new CliCommandFailure({ category: "usage-or-configuration", message: String(error) }) });
     const context = yield* rootContext((name) => process.env[name]).pipe(Effect.provideService(MachineState, machine), Effect.mapError(commandFailure));
     const model = emptyModel(location.folder);
-    const supportedSurfaces = Object.fromEntries(TARGET_IDS.map((harness) => { const adapter = adapterFor(harness); return [harness, supportedCategories(adapter, adapter.layout(context, model))]; }));
-    return asJson({ config, supportedSurfaces, items: items.map((item) => ({ path: item.path, digest: item.digest, files: item.files.map((file) => ({ path: file.path, base64: Buffer.from(file.content).toString("base64"), executable: file.executable })) })) });
+    const { supportedSurfaces, reservedPaths, caseSensitive } = projectionProfileMetadata(context, model);
+    return asJson({ config, supportedSurfaces, reservedPaths, caseSensitive, items: items.map((item) => ({ path: item.path, digest: item.digest, files: item.files.map((file) => ({ path: file.path, base64: Buffer.from(file.content).toString("base64"), executable: file.executable })) })) });
   });
   const skillCall = <A>(run: (location: { root: string; config: string }) => Promise<A>) => target.pipe(
     Effect.flatMap((location) => Effect.tryPromise({

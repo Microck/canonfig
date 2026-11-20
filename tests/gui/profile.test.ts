@@ -81,6 +81,21 @@ describe("authoring base64 contracts", () => {
 });
 
 describe("profile GUI endpoints", () => {
+  it("reports the Source Machine's resolved projection metadata through the editor endpoints", async () => {
+    const machine = fixture();
+    machine.env["CODEX_HOME"] = join(machine.home, "tool-config", "codex");
+    const initialized = machine.invoke(["source", "init"]);
+    expect(initialized.status, initialized.stderr).toBe(0);
+    const gui = await server(machine.env);
+    const snapshot = await gui.snapshot();
+    expect(snapshot.reservedPaths).toContainEqual({ path: "~/tool-config/codex", owner: "OpenAI Codex" });
+    expect(snapshot.reservedPaths).not.toContainEqual({ path: "~/.codex", owner: "OpenAI Codex" });
+    expect(snapshot.supportedSurfaces["codex"]).toContain("settings");
+    expect((await gui.request("/api/local/items")).value).toMatchObject({
+      settingsFiles: { opencode: { owned: ["mcp"], reserved: ["provider"] } },
+    });
+  });
+
   it.each(["/api/profile/items", "/api/profile/config"])("saves an authored item above the default request limit through %s", async (endpoint) => {
     const machine = fixture();
     const initialized = machine.invoke(["source", "init"]);
