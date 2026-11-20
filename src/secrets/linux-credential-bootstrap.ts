@@ -1,6 +1,9 @@
-import { Effect, Redacted } from "effect";
+import { randomUUID } from "node:crypto";
+import { lstat } from "node:fs/promises";
+import { Effect, Option, Redacted, Schema } from "effect";
 
-import type { CredentialReference } from "../domain/brand.ts";
+import { CredentialReference } from "../domain/brand.ts";
+import { linuxCredentialKey, linuxSecretServiceReference, resolveLinuxSessionBus } from "../machine/linux.layer.ts";
 import type {
   CredentialStorageCapability,
   MachinePath,
@@ -8,25 +11,9 @@ import type {
 import type { MachineStateError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { SecretTransferError } from "./secret-store.ts";
+import { processIdentity } from "../synchronization/process-identity.ts";
 
-/**
- * Headless Linux credential bootstrap.
- *
- * The engine verifies the native Secret Service provider end to end without
- * ever printing a secret: package presence, D-Bus readiness with bounded
- * polling (so delayed bus registration is tolerated), a disposable round trip
- * whose attributes and bytes are compared tolerantly, and persistence across
- * a provider recycle. Every scenario runs against the injected host, which is
- * what makes cold start, existing provider, delayed registration, and restart
- * deterministic in tests.
- *
- * The production host never restarts a provider it did not start: replacing
- * another daemon can relock its collections. Restart and logout persistence
- * therefore report "manual" with rerun guidance unless the host attests an
- * actual recycle. Re-running after a restart or reboot takes the
- * existing-provider path and re-verifies.
- */
-
+/** Observe persistence across the system's next Secret Service restart. */
 export type CredentialPersistenceVerdict = "verified" | "failed" | "manual";
 
 export interface LinuxCredentialBootstrapResult {
@@ -54,14 +41,120 @@ export interface ProviderCommandOutput {
   readonly stderr: string;
 }
 
+const SecretServiceIdentity = Schema.Struct({
+  bus: Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/u)),
+  process: Schema.NonEmptyString,
+  owner: Schema.String.check(Schema.isPattern(/^:[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+$/u)),
+});
+type SecretServiceIdentity = typeof SecretServiceIdentity.Type;
+
+const PersistenceProbeId = Schema.String.check(Schema.isPattern(/^[a-f0-9-]{36}$/u));
+const SavedProbe = { probeId: PersistenceProbeId, keyring: Schema.NonEmptyString };
+const SettledEvidence = Schema.Union([
+  Schema.TaggedStruct("Idle", {}),
+  Schema.TaggedStruct("Failed", { keyring: Schema.NonEmptyString }),
+  Schema.TaggedStruct("Pending", { ...SavedProbe, provider: SecretServiceIdentity }),
+  Schema.TaggedStruct("Verified", {
+    provider: SecretServiceIdentity,
+    keyring: Schema.NonEmptyString,
+    probeId: Schema.optionalKey(PersistenceProbeId),
+  }),
+]);
+const PersistenceEvidence = Schema.Union([
+  SettledEvidence,
+  Schema.TaggedStruct("Preparing", { ...SavedProbe, previous: Schema.optionalKey(SettledEvidence) }),
+]);
+type PersistenceEvidence = typeof PersistenceEvidence.Type;
+
+const bootstrapProbeMaterial = (id: string) => ({
+  name: `canonfig-bootstrap-probe:${id}`,
+  value: Redacted.make(`canonfig-bootstrap-${id}`),
+});
+
+/** Re-derive only the disposable probe reference. A marker never selects an arbitrary credential. */
+const persistenceProbeOf = (probeId: string): ProbeRecord => {
+  const { name, value } = bootstrapProbeMaterial(probeId);
+  const key = linuxCredentialKey(name);
+  return { stored: { reference: linuxSecretServiceReference(key), key }, value };
+};
+
+const sameProvider = (left: SecretServiceIdentity, right: SecretServiceIdentity) =>
+  left.bus === right.bus && left.owner === right.owner && left.process === right.process;
+
+interface PersistenceStore {
+  readonly read: Effect.Effect<PersistenceEvidence | undefined, SecretTransferError>;
+  readonly write: (evidence: PersistenceEvidence) => Effect.Effect<void, SecretTransferError>;
+}
+
+const withPersistenceStore = <A>(
+  machine: MachineState["Service"],
+  create: boolean,
+  use: (store: PersistenceStore) => Effect.Effect<A, SecretTransferError>,
+) => Effect.gen(function*() {
+  const home = (yield* machine.userDirectories()).home;
+  const path = yield* machine.normalizePath({ path: ".canonfig/credential-persistence.json", base: home });
+  const markerExists = Effect.tryPromise({
+    try: async () => {
+      try { await lstat(path.absolute); return true; }
+      catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+        throw error;
+      }
+    },
+    catch: () => failure("the credential persistence marker could not be inspected"),
+  });
+  if (!create && !(yield* markerExists)) return undefined;
+  if (create) {
+    const folder = yield* machine.normalizePath({ path: ".canonfig", base: home });
+    yield* machine.ensureDirectory({ path: folder, mode: 0o700 });
+  }
+  const read = Effect.gen(function*() {
+    if (!(yield* markerExists)) return undefined;
+    const bytes = yield* machine.readFile({ path, anchor: home, maximumBytes: 2048 });
+    return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(PersistenceEvidence))(new TextDecoder().decode(bytes));
+  }).pipe(Effect.mapError(() => failure("the credential persistence marker could not be read")));
+  const write = (evidence: PersistenceEvidence) => machine.atomicWrite({
+    path, anchor: home, mode: 0o600,
+    content: new TextEncoder().encode(JSON.stringify(evidence) + "\n"),
+  }).pipe(
+    Effect.asVoid,
+    Effect.mapError(() => failure("the credential persistence marker could not be saved")),
+  );
+  const { withSqliteWriteLock } = yield* Effect.tryPromise({
+    try: () => import("../state/sqlite-write-lock.ts"),
+    catch: () => failure("the credential persistence marker is unavailable"),
+  });
+  return yield* withSqliteWriteLock(
+    `${path.absolute}.sqlite`, use({ read, write }),
+    () => failure("the credential persistence marker is in use or unavailable"),
+  );
+}).pipe(Effect.mapError((error) => error instanceof SecretTransferError
+  ? error : failure("the credential persistence marker is unavailable")));
+
+const BusStringReply = Schema.fromJsonString(Schema.Struct({
+  type: Schema.Literal("s"),
+  data: Schema.Tuple([Schema.String]),
+}));
+const BusPidReply = Schema.fromJsonString(Schema.Struct({
+  type: Schema.Literal("u"),
+  data: Schema.Tuple([Schema.Int.check(Schema.isGreaterThan(0))]),
+}));
+const SecretServiceAliasReply = Schema.fromJsonString(Schema.Struct({
+  type: Schema.Literal("o"),
+  data: Schema.Tuple([Schema.String]),
+}));
+const SecretServiceSearchReply = Schema.fromJsonString(Schema.Struct({
+  type: Schema.Literal("aoao"),
+  data: Schema.Tuple([Schema.Array(Schema.String), Schema.Array(Schema.String)]),
+}));
+
 export interface LinuxCredentialBootstrapHost {
   readonly capability: () => Effect.Effect<CredentialStorageCapability, MachineStateError>;
   readonly findExecutable: (name: string) => Effect.Effect<string | undefined>;
-  readonly runCommand: (
-    executable: string,
-    args: ReadonlyArray<string>,
-  ) => Effect.Effect<ProviderCommandOutput, SecretTransferError>;
   readonly sessionBusAddress: () => string | undefined;
+  readonly providerIdentity: () => Effect.Effect<SecretServiceIdentity | undefined>;
+  readonly keyringIdentity: () => Effect.Effect<string | undefined>;
+  readonly persistence?: PersistenceStore | undefined;
   readonly storeProbe: (
     name: string,
     value: Redacted.Redacted<string>,
@@ -76,11 +169,8 @@ export interface LinuxCredentialBootstrapHost {
   readonly removeProbe: (
     reference: CredentialReference,
   ) => Effect.Effect<void, SecretTransferError>;
-  /**
-   * Recycle the provider when the host owns it. The production host returns
-   * recycled false: it must not replace a daemon another session started.
-   */
-  readonly recycleProvider: () => Effect.Effect<{ readonly recycled: boolean }, SecretTransferError>;
+  /** True only when the current provider explicitly reports no matching item. */
+  readonly probeAbsent: (key: string) => Effect.Effect<boolean>;
   readonly sleep: (milliseconds: number) => Effect.Effect<void>;
   readonly randomProbeId: () => string;
 }
@@ -118,9 +208,6 @@ export const lookupAttributesMatch = (
 const secretToolPackages =
   "install the Secret Service client (Debian and Ubuntu: libsecret-tools; Fedora and RHEL: libsecret; Arch: libsecret)";
 
-const providerPackages =
-  "install and enable a Secret Service provider (for example gnome-keyring with its daemon enabled for the user session)";
-
 // dbus-run-session is not a remedy: its private bus activates a second,
 // empty keyring that needs a graphical prompter and never reaches the login
 // keyring, so nothing stored there helps a later run.
@@ -143,8 +230,8 @@ const storeBootstrapProbe = (
   host: LinuxCredentialBootstrapHost,
   probeId: string,
 ): Effect.Effect<ProbeRecord, SecretTransferError> => {
-  const value = Redacted.make(`canonfig-bootstrap-${probeId}`);
-  return host.storeProbe(`canonfig-bootstrap-probe:${probeId}`, value).pipe(
+  const { name, value } = bootstrapProbeMaterial(probeId);
+  return host.storeProbe(name, value).pipe(
     Effect.map((stored) => ({ stored, value })),
   );
 };
@@ -171,6 +258,74 @@ const verifyBootstrapProbe = (
     }
   });
 
+const pendingPersistenceDetail = "Run canonfig doctor after a natural Secret Service restart or next login to verify the saved test credential.";
+const unfinishedProbeDetail = "Canonfig could not remove an interrupted test credential. Unlock the same login keyring, then run canonfig doctor.";
+const restartLossDetail = "The saved test credential did not survive the Secret Service restart.";
+const retryAfterLossDetail = `${restartLossDetail} Check the provider’s persistence settings, then run canonfig secrets bootstrap again.`;
+const restartConfirmedDetail = "The saved test credential survived a Secret Service process restart.";
+
+const wrongKeyringDetail = "The saved test credential belongs to a different or unavailable session keyring. Use the original session and its default collection, then run canonfig doctor.";
+
+const removeSavedProbe = (host: LinuxCredentialBootstrapHost, probeId: string, keyring: string) =>
+  Effect.gen(function*() {
+    if ((yield* host.keyringIdentity()) !== keyring) return false;
+    const { stored } = persistenceProbeOf(probeId);
+    const removed = yield* host.removeProbe(stored.reference).pipe(Effect.result);
+    const absent = removed._tag === "Success" || (yield* host.probeAbsent(stored.key));
+    return absent && (yield* host.keyringIdentity()) === keyring;
+  });
+
+const hasUnfinishedProbe = (evidence: PersistenceEvidence): boolean =>
+  evidence._tag === "Preparing" || evidence._tag === "Pending"
+  || evidence._tag === "Verified" && evidence.probeId !== undefined;
+
+export const resumeLinuxCredentialPersistence = (host: LinuxCredentialBootstrapHost, store: PersistenceStore) =>
+  Effect.gen(function*() {
+    let evidence = yield* store.read;
+    if (evidence === undefined || evidence._tag === "Idle") return undefined;
+    if ((yield* host.keyringIdentity()) !== evidence.keyring) {
+      return hasUnfinishedProbe(evidence) ? { verdict: "manual" as const, detail: wrongKeyringDetail } : undefined;
+    }
+    if (evidence._tag === "Preparing") {
+      if (!(yield* removeSavedProbe(host, evidence.probeId, evidence.keyring))) {
+        return { verdict: "manual" as const, detail: unfinishedProbeDetail };
+      }
+      evidence = evidence.previous ?? { _tag: "Idle" };
+      yield* store.write(evidence);
+    }
+    if (evidence._tag === "Idle") return undefined;
+    if (evidence._tag === "Failed") return { verdict: "failed" as const, detail: retryAfterLossDetail };
+    let verifiedEvidence;
+    if (evidence._tag === "Pending") {
+      const provider = yield* host.providerIdentity();
+      if (provider === undefined || provider.process === evidence.provider.process) {
+        return { verdict: "manual" as const, detail: pendingPersistenceDetail };
+      }
+      const probe = persistenceProbeOf(evidence.probeId);
+      const verified = yield* verifyBootstrapProbe(host, probe, true).pipe(Effect.result);
+      const absent = verified._tag === "Failure" && (yield* host.probeAbsent(probe.stored.key));
+      const after = yield* host.providerIdentity();
+      const stable = after !== undefined && sameProvider(provider, after)
+        && (yield* host.keyringIdentity()) === evidence.keyring;
+      if (absent && stable) {
+        yield* store.write({ _tag: "Failed", keyring: evidence.keyring });
+        return { verdict: "failed" as const, detail: retryAfterLossDetail };
+      }
+      if (verified._tag === "Failure" || !stable) {
+        return { verdict: "manual" as const, detail: "The provider restarted but the saved test credential could not be verified. Unlock the same login keyring, then run canonfig doctor." };
+      }
+      verifiedEvidence = { _tag: "Verified", provider, keyring: evidence.keyring, probeId: evidence.probeId } as const;
+      yield* store.write(verifiedEvidence);
+    } else {
+      verifiedEvidence = evidence;
+    }
+    const { probeId, provider, keyring } = verifiedEvidence;
+    if (probeId !== undefined && (yield* removeSavedProbe(host, probeId, keyring))) {
+      yield* store.write({ _tag: "Verified", provider, keyring });
+    }
+    return { verdict: "verified" as const, detail: restartConfirmedDetail };
+  });
+
 const roundTrip = (
   host: LinuxCredentialBootstrapHost,
   probeId: string,
@@ -184,19 +339,19 @@ const roundTrip = (
     );
   });
 
-const retryProbe = (
+const retryProbe = <A>(
   host: LinuxCredentialBootstrapHost,
   options: LinuxCredentialBootstrapOptions,
-  attemptProbe: (attempt: number) => Effect.Effect<void, SecretTransferError>,
+  attemptProbe: (attempt: number) => Effect.Effect<A, SecretTransferError>,
   exhaustedMessage: string,
-): Effect.Effect<BusWait, SecretTransferError> => {
+): Effect.Effect<BusWait & { readonly value: A }, SecretTransferError> => {
   const maximum = options.maxBusAttempts ?? 30;
   const delay = options.busRetryDelayMilliseconds ?? 1000;
   const attempt = (
     number: number,
-  ): Effect.Effect<BusWait, SecretTransferError> =>
+  ): Effect.Effect<BusWait & { readonly value: A }, SecretTransferError> =>
     attemptProbe(number).pipe(
-      Effect.as({ attempts: number }),
+      Effect.map((value) => ({ attempts: number, value })),
       Effect.catch(() =>
         number >= maximum
           ? Effect.fail(failure(exhaustedMessage))
@@ -217,18 +372,6 @@ const waitForRoundTrip = (
     host.sessionBusAddress() === undefined
       ? `the Secret Service bus is not ready. ${busRecovery} ${lockRecovery}`
       : `the Secret Service bus is not ready. ${lockRecovery}`,
-  );
-
-const waitForStoredProbe = (
-  host: LinuxCredentialBootstrapHost,
-  probe: ProbeRecord,
-  options: LinuxCredentialBootstrapOptions,
-): Effect.Effect<BusWait, SecretTransferError> =>
-  retryProbe(
-    host,
-    options,
-    () => verifyBootstrapProbe(host, probe, true),
-    "the credential did not survive the provider restart",
   );
 
 const localFileBootstrap = (
@@ -259,89 +402,82 @@ const localFileBootstrap = (
 const secretServiceBootstrap = (
   host: LinuxCredentialBootstrapHost,
   options: LinuxCredentialBootstrapOptions,
-  startProvider: boolean,
 ): Effect.Effect<LinuxCredentialBootstrapResult, SecretTransferError> =>
   Effect.gen(function*() {
     const secretTool = yield* host.findExecutable("secret-tool");
     if (secretTool === undefined) {
       return yield* failure(`secret-tool is not on PATH. ${secretToolPackages}.`);
     }
-    const initialRoundTrip = yield* roundTrip(
-      host,
-      host.randomProbeId(),
-      true,
-    ).pipe(
-      Effect.match({
-        onFailure: () => false,
-        onSuccess: () => true,
-      }),
-    );
-    let bus: BusWait;
-    if (initialRoundTrip) {
-      bus = { attempts: 1 };
-    } else {
-      if (!startProvider) {
-        return yield* failure(`the Secret Service provider is unavailable. ${lockRecovery}`);
-      }
-      const daemon = yield* host.findExecutable("gnome-keyring-daemon");
-      if (daemon === undefined) {
-        return yield* failure(
-          `no Secret Service provider answered and no provider starter is installed. ${providerPackages}. ${lockRecovery}`,
-        );
-      }
-      const started = yield* host.runCommand(daemon, ["--start", "--components=secrets"]);
-      if (started.exitCode !== 0) {
-        return yield* failure(
-          `the credential provider did not start. ${providerPackages}. ${lockRecovery}`,
-        );
-      }
-      bus = yield* waitForRoundTrip(host, options);
+    const store = host.persistence;
+    if (store !== undefined && (yield* host.findExecutable("busctl")) === undefined) {
+      return yield* failure("busctl is required to identify and recover the Secret Service test credential. Install the systemd D-Bus tool and retry.");
     }
-    const persistenceProbe = yield* storeBootstrapProbe(host, host.randomProbeId());
-    const persistence = yield* Effect.ensuring(
-      Effect.gen(function*() {
-        yield* verifyBootstrapProbe(host, persistenceProbe, true);
-        const recycle = yield* host.recycleProvider();
-        if (!recycle.recycled) {
-          return {
-            verdict: "manual" as const,
-            attempts: 0,
-          };
-        }
-        return yield* waitForStoredProbe(host, persistenceProbe, options).pipe(
-          Effect.map((second) => ({
-            verdict: "verified" as const,
-            attempts: second.attempts,
-          })),
-          Effect.catch(() =>
-            Effect.succeed({
-              verdict: "failed" as const,
-              attempts: options.maxBusAttempts ?? 30,
-            })
-          ),
-        );
-      }),
-      host.removeProbe(persistenceProbe.stored.reference).pipe(Effect.ignore),
-    );
-    const manual = persistence.verdict === "manual";
+    const previous = store === undefined ? undefined : yield* resumeLinuxCredentialPersistence(host, store);
+    let busAttempts = 0;
+    let roundTripsPassed = 0;
+    let restartPersistence: CredentialPersistenceVerdict = previous?.verdict ?? "manual";
+    let detail = previous?.detail
+      ?? "Canonfig could not observe the Secret Service process. Make busctl available and run credential bootstrap to record the baseline.";
+    if (store !== undefined) {
+      let evidence = yield* store.read;
+      const collectionError = `the default Secret Service collection could not be identified. ${lockRecovery}`;
+      const collection = yield* retryProbe(host, options, () => host.keyringIdentity().pipe(
+        Effect.flatMap((keyring) => keyring === undefined ? Effect.fail(failure(collectionError)) : Effect.succeed(keyring)),
+      ), collectionError);
+      const keyring = collection.value;
+      if (evidence !== undefined && evidence._tag !== "Idle" && evidence.keyring !== keyring) {
+        if (hasUnfinishedProbe(evidence)) return yield* failure(wrongKeyringDetail);
+        evidence = undefined;
+      }
+      if (evidence?._tag === "Preparing") return yield* failure(unfinishedProbeDetail);
+      const probeId = randomUUID();
+      // Store can trigger normal D-Bus activation. Journal the same probe
+      // before the first write, even when its provider cannot yet be identified.
+      yield* store.write(evidence === undefined
+        ? { _tag: "Preparing", probeId, keyring }
+        : { _tag: "Preparing", probeId, keyring, previous: evidence });
+      const needsBaseline = evidence === undefined || evidence._tag === "Idle" || evidence._tag === "Failed";
+      let baseline: SecretServiceIdentity | undefined;
+      const readiness = yield* retryProbe(host, options, () => Effect.gen(function*() {
+        if ((yield* host.keyringIdentity()) !== keyring) return yield* failure(wrongKeyringDetail);
+        const probe = yield* storeBootstrapProbe(host, probeId);
+        const before = needsBaseline ? yield* host.providerIdentity() : undefined;
+        yield* verifyBootstrapProbe(host, probe, true);
+        const after = before === undefined ? undefined : yield* host.providerIdentity();
+        if ((yield* host.keyringIdentity()) !== keyring) return yield* failure(wrongKeyringDetail);
+        if (before !== undefined && after !== undefined && sameProvider(before, after)) baseline = before;
+      }), `the Secret Service bus is not ready. ${lockRecovery}`);
+      busAttempts = collection.attempts + readiness.attempts - 1;
+      roundTripsPassed = 1;
+      if (baseline !== undefined) {
+        yield* store.write({ _tag: "Pending", provider: baseline, probeId, keyring });
+        restartPersistence = "manual";
+        detail = previous?.verdict === "failed"
+          ? `${restartLossDetail} A new test credential is saved. ${pendingPersistenceDetail}`
+          : pendingPersistenceDetail;
+      } else if (yield* removeSavedProbe(host, probeId, keyring)) {
+        yield* store.write(evidence ?? { _tag: "Idle" });
+      } else {
+        detail = unfinishedProbeDetail;
+      }
+    } else {
+      busAttempts = (yield* waitForRoundTrip(host, options)).attempts;
+      roundTripsPassed = 1;
+    }
     return {
       provider: "secret-service",
       selectedPolicy: "secure-store",
       backupEncryption: "unknown",
       backupEncryptionDetail:
-        "backup encryption depends on the provider collection, which Canonfig cannot inspect " +
-        "without reading secrets. A login keyring is encrypted at rest and unlocks at login; " +
-        "a session collection may be memory-only.",
+        "backup encryption depends on the provider collection, which Canonfig cannot inspect "
+        + "without reading secrets. A login keyring is encrypted at rest and unlocks at login; "
+        + "a session collection may be memory-only.",
       secretTool,
-      busAttempts: bus.attempts + persistence.attempts,
-      roundTripsPassed: persistence.verdict === "failed" ? 1 : 2,
-      restartPersistence: persistence.verdict,
+      busAttempts,
+      roundTripsPassed,
+      restartPersistence,
       logoutPersistence: "manual",
-      persistenceDetail: manual
-        ? "Canonfig did not recycle the provider it found. Restart the provider (or reboot), " +
-          "then rerun this command: the existing-provider path re-verifies stored credentials."
-        : "logout and reboot persistence depend on the provider collection. Reboot (or log out and " +
-          "back in), then rerun this command: the existing-provider path re-verifies stored credentials.",
+      persistenceDetail: detail,
     } satisfies LinuxCredentialBootstrapResult;
   });
 
@@ -369,7 +505,7 @@ export const runLinuxCredentialBootstrap = (
       if (host.sessionBusAddress() === undefined) {
         return yield* failure(`the Secret Service bus is unavailable. ${capability.recovery}`);
       }
-      return yield* secretServiceBootstrap(host, options, true);
+      return yield* secretServiceBootstrap(host, options);
     }
     if (capability.provider !== "secret-service") {
       return yield* failure(
@@ -377,7 +513,7 @@ export const runLinuxCredentialBootstrap = (
         `the platform reported ${capability.provider}.`,
       );
     }
-    return yield* secretServiceBootstrap(host, options, true);
+    return yield* secretServiceBootstrap(host, options);
   });
 
 const searchAttributePattern =
@@ -400,12 +536,20 @@ export const parseSearchAttributes = (output: string): ReadonlyMap<string, strin
  * bounded and secret-bearing stdout stays in memory; only exit codes and step
  * names reach errors.
  */
-export const machineStateBootstrapHost = (
+// A single Unix endpoint remains the same when D-Bus republishes it with
+// a guid. For opaque transports or address lists, query the serving bus.
+const unixSessionEndpoint = (address: string): string | undefined => {
+  const endpoint = /^unix:([^;]+)$/u.exec(address)?.[1];
+  if (endpoint === undefined) return undefined;
+  const fields = endpoint.split(",").filter((field) => !field.startsWith("guid="));
+  if (fields.length !== 1 || !/^(?:path=(?:\/|%2f).*|abstract=.+)$/iu.test(fields[0]!)) return undefined;
+  return `unix:${fields[0]!.replace(/%[0-9a-f]{2}/giu, (byte) => byte.toUpperCase())}`;
+};
+
+const machineStateBootstrapHost = (
   machine: MachineState["Service"],
   environment: ReadonlyArray<{ readonly name: string; readonly value: string }>,
 ): LinuxCredentialBootstrapHost => {
-  let ownedProviderPid: number | undefined;
-  let ownedProviderExecutable: string | undefined;
   const findExecutable = (name: string): Effect.Effect<string | undefined> =>
     machine.findExecutable({ name }).pipe(
       Effect.map((found) => found.path.absolute),
@@ -425,28 +569,75 @@ export const machineStateBootstrapHost = (
           maximumOutputBytes: 1024 * 1024,
         })
       ),
-      Effect.map((result) => {
-        const stdout = new TextDecoder().decode(result.standardOutput);
-        const stderr = new TextDecoder().decode(result.standardError);
-        if (
-          args.includes("--components=secrets")
-          && executable.endsWith("gnome-keyring-daemon")
-          && result.exitCode === 0
-        ) {
-          const pid = /\bGNOME_KEYRING_PID=(\d+)\b/u.exec(stdout)?.[1];
-          ownedProviderPid = pid === undefined ? undefined : Number(pid);
-          ownedProviderExecutable = executable;
-        }
-        return { exitCode: result.exitCode, stdout, stderr };
-      }),
+      Effect.map((result) => ({
+        exitCode: result.exitCode,
+        stdout: new TextDecoder().decode(result.standardOutput),
+        stderr: new TextDecoder().decode(result.standardError),
+      })),
       Effect.mapError(() => failure("a credential provider command could not run")),
     );
+  const sessionBusAddress = () =>
+    environment.find((entry) => entry.name === "DBUS_SESSION_BUS_ADDRESS")?.value;
+  const openBus = Effect.gen(function*() {
+    const address = sessionBusAddress();
+    if (address === undefined) return undefined;
+    const busctl = yield* findExecutable("busctl");
+    if (busctl === undefined) return undefined;
+    return <A>(
+      method: string,
+      args: ReadonlyArray<string>,
+      schema: Schema.Decoder<{ readonly data: A }>,
+      destination = "org.freedesktop.DBus",
+      object = "/org/freedesktop/DBus",
+      interfaceName = "org.freedesktop.DBus",
+    ) => runCommand(busctl, [
+      `--address=${address}`, "--json=short", "call",
+      destination, object, interfaceName, method, ...args,
+    ]).pipe(
+      Effect.map((reply) => reply.exitCode === 0
+        ? Schema.decodeUnknownOption(schema)(reply.stdout).pipe(Option.getOrUndefined)?.data
+        : undefined),
+      Effect.catch(() => Effect.succeed(undefined)),
+    );
+  });
+  const providerIdentity = () => Effect.gen(function*() {
+    const busCall = yield* openBus;
+    if (busCall === undefined) return undefined;
+    // Bind the bus and its unique owner to the OS process birth identity.
+    // A reconnect by the same process is not proof of persistence.
+    const [bus] = (yield* busCall("GetId", [], BusStringReply)) ?? [];
+    const [owner] = (yield* busCall("GetNameOwner", ["s", "org.freedesktop.secrets"], BusStringReply)) ?? [];
+    if (bus === undefined || owner === undefined) return undefined;
+    const [pid] = (yield* busCall("GetConnectionUnixProcessID", ["s", owner], BusPidReply)) ?? [];
+    if (pid === undefined) return undefined;
+    const birth = yield* Effect.promise(() => processIdentity(pid));
+    if (birth === undefined) return undefined;
+    const [currentOwner] = (yield* busCall("GetNameOwner", ["s", "org.freedesktop.secrets"], BusStringReply)) ?? [];
+    const [currentBus] = (yield* busCall("GetId", [], BusStringReply)) ?? [];
+    if (owner !== currentOwner || bus !== currentBus) return undefined;
+    return Option.getOrUndefined(Schema.decodeUnknownOption(SecretServiceIdentity)({
+      bus, owner, process: `${pid}:${birth}`,
+    }));
+  });
   return {
     capability: () => machine.credentialCapability(),
     findExecutable,
-    runCommand,
-    sessionBusAddress: () =>
-      environment.find((entry) => entry.name === "DBUS_SESSION_BUS_ADDRESS")?.value,
+    sessionBusAddress,
+    providerIdentity,
+    keyringIdentity: () => Effect.gen(function*() {
+      const address = sessionBusAddress();
+      const busCall = yield* openBus;
+      if (address === undefined || busCall === undefined) return undefined;
+      // ReadAlias can activate Secret Service without storing anything.
+      const localEndpoint = unixSessionEndpoint(address);
+      const endpoint = localEndpoint ?? (yield* busCall("GetId", [], BusStringReply))?.[0];
+      if (endpoint === undefined) return undefined;
+      const [collection] = (yield* busCall("ReadAlias", ["s", "default"], SecretServiceAliasReply,
+        "org.freedesktop.secrets", "/org/freedesktop/secrets", "org.freedesktop.Secret.Service")) ?? [];
+      if (collection === undefined || collection === "/") return undefined;
+      if (localEndpoint === undefined && endpoint !== (yield* busCall("GetId", [], BusStringReply))?.[0]) return undefined;
+      return linuxCredentialKey(endpoint + "\0" + collection);
+    }),
     storeProbe: (name, value) =>
       machine.storeCredential({ name, value }).pipe(
         Effect.map((reference) => ({
@@ -480,29 +671,38 @@ export const machineStateBootstrapHost = (
       machine.removeCredential(reference).pipe(
         Effect.mapError(() => failure("the bootstrap probe could not be removed")),
       ),
-    recycleProvider: () => {
-      const pid = ownedProviderPid;
-      const provider = ownedProviderExecutable;
-      if (pid === undefined || provider === undefined) {
-        return Effect.succeed({ recycled: false });
-      }
-      return Effect.gen(function*() {
-        const kill = yield* findExecutable("kill");
-        if (kill === undefined) return { recycled: false };
-        const stopped = yield* runCommand(kill, ["-TERM", String(pid)]);
-        if (stopped.exitCode !== 0) {
-          return yield* failure("the credential provider Canonfig started could not be stopped");
-        }
-        yield* Effect.sleep("200 millis");
-        const restarted = yield* runCommand(provider, ["--start", "--components=secrets"]);
-        if (restarted.exitCode !== 0) {
-          return yield* failure("the credential provider Canonfig started could not be restarted");
-        }
-        return { recycled: true };
-      });
-    },
+    probeAbsent: (key) => Effect.gen(function*() {
+      const current = yield* providerIdentity();
+      if (current === undefined) return false;
+      const busCall = yield* openBus;
+      if (busCall === undefined) return false;
+      const reply = yield* busCall("SearchItems", ["a{ss}", "1", "canonfig-key", key], SecretServiceSearchReply,
+        current.owner, "/org/freedesktop/secrets", "org.freedesktop.Secret.Service");
+      if (reply === undefined || reply.some((items) => items.length > 0)) return false;
+      const after = yield* providerIdentity();
+      return after !== undefined && sameProvider(current, after);
+    }),
     sleep: (milliseconds) => Effect.sleep(`${milliseconds} millis`),
     randomProbeId: () =>
       `${Date.now().toString(36)}-${Math.floor(Math.random() * 0xffffffff).toString(36)}`,
   };
 };
+
+// Bind bootstrap and doctor to the same bus MachineState resolves, including
+// the XDG runtime session-socket fallback.
+const sessionBusEnvironment = () => {
+  const bus = resolveLinuxSessionBus();
+  return bus.kind === "missing" ? [] : [{ name: "DBUS_SESSION_BUS_ADDRESS", value: bus.address }];
+};
+
+export const bootstrapMachineCredentialStore = (machine: MachineState["Service"]) =>
+  withPersistenceStore(machine, true, (persistence) =>
+    runLinuxCredentialBootstrap({ ...machineStateBootstrapHost(machine, sessionBusEnvironment()), persistence }),
+  ).pipe(Effect.flatMap((result) => result === undefined
+    ? Effect.fail(failure("the credential persistence marker is unavailable"))
+    : Effect.succeed(result)));
+
+export const resumeMachineCredentialPersistence = (machine: MachineState["Service"]) =>
+  withPersistenceStore(machine, false, (store) =>
+    resumeLinuxCredentialPersistence(machineStateBootstrapHost(machine, sessionBusEnvironment()), store),
+  );

@@ -1600,6 +1600,12 @@ interface SecretServiceItem {
 
 const secretServicePartBytes = 8000;
 
+export const linuxCredentialKey = (name: string): string =>
+  createHash("sha256").update(name).digest("hex");
+
+export const linuxSecretServiceReference = (key: string, parts = 1): CredentialReferenceType =>
+  decode(CredentialReference)(parts === 1 ? `secret-service:${key}` : `secret-service:${key}:${parts}`);
+
 const secretServicePartKey = (key: string, part: number): string =>
   part === 0 ? key : `${key}.${part}`;
 
@@ -2107,7 +2113,7 @@ export const linuxMachineStateLayer = (
               message: "credential name must not be empty",
             });
           }
-          const name = createHash("sha256").update(input.name).digest("hex");
+          const name = linuxCredentialKey(input.name);
           const bytes = new TextEncoder().encode(Redacted.value(input.value));
           if (localCredentialRoot !== undefined) {
             const path = join(localCredentialRoot, `${name}.credential`);
@@ -2117,9 +2123,7 @@ export const linuxMachineStateLayer = (
           }
           const secretTool = yield* requireSecretTool();
           const parts = secretServiceParts(bytes);
-          yield* (input.beforeStore?.(decode(CredentialReference)(
-            parts.length === 1 ? `secret-service:${name}` : `secret-service:${name}:${parts.length}`,
-          )) ?? Effect.void);
+          yield* (input.beforeStore?.(linuxSecretServiceReference(name, parts.length)) ?? Effect.void);
           for (let part = 0; part < parts.length; part += 1) {
             const label = parts.length === 1
               ? "Canonfig credential"
@@ -2145,9 +2149,7 @@ export const linuxMachineStateLayer = (
               });
             }
           }
-          return decode(CredentialReference)(
-            parts.length === 1 ? `secret-service:${name}` : `secret-service:${name}:${parts.length}`,
-          );
+          return linuxSecretServiceReference(name, parts.length);
         },
       );
 
