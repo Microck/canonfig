@@ -6,7 +6,7 @@ import {
   ContentDigest as ContentDigestSchema,
   type ContentDigest,
 } from "../domain/brand.ts";
-import { classifyTextOwnership, planTextWriteTransition, type ActionDetail, type PlannedActionKind, type TextWriteTransition } from "../domain/synchronization.ts";
+import { classifyTextOwnership, planTextWriteTransition, type ActionDetail, type ObservedDirectoryFile, type PlannedActionKind, type TextWriteTransition } from "../domain/synchronization.ts";
 import type { AutomaticRecipeMethod, BuildPolicy } from "../domain/resource.ts";
 import { isNestedCommandLauncher } from "../agent/agent-resolution.service.ts";
 import {
@@ -124,29 +124,8 @@ export const desiredDirectoryEntries = (
 
 const pendingAgentTaskId = Schema.decodeUnknownSync(AgentTaskId)("pending");
 
-const presentObservedFiles = (
-  files: ReadonlyArray<{
-    readonly path: string;
-    readonly state?: "absent" | undefined;
-    readonly digest?: string | undefined;
-    readonly executable?: boolean | undefined;
-    readonly mode?: number | undefined;
-    readonly objectKind?: string | undefined;
-    readonly symlinkTo?: string | undefined;
-  }>,
-): ReadonlyArray<{
-  readonly path: string;
-  readonly digest: string;
-  readonly executable?: boolean | undefined;
-  readonly mode?: number | undefined;
-  readonly objectKind?: string | undefined;
-  readonly symlinkTo?: string | undefined;
-}> =>
-  files.flatMap((file) =>
-    "state" in file || file.digest === undefined
-      ? []
-      : [{ path: file.path, digest: file.digest, executable: file.executable, mode: file.mode, objectKind: file.objectKind, symlinkTo: file.symlinkTo }]
-  );
+const presentObservedFiles = (files: readonly ObservedDirectoryFile[]) =>
+  files.filter((file): file is Extract<typeof file, { digest: string }> => "digest" in file);
 
 const fileSignature = (
   file: {
@@ -193,6 +172,8 @@ const observedDigest = (
   switch (context.observed.state) {
     case "absent":
     case "unverifiable":
+    case "tool":
+    case "credential":
       return undefined;
     case "present":
       return Schema.decodeUnknownSync(ContentDigestSchema)(context.observed.digest);
@@ -248,9 +229,6 @@ const observedMatchesDesired = (
   observed: ResourcePlanningContext["observed"],
 ): boolean => {
   if (observed.state === "absent" || observed.state === "unverifiable") return false;
-  const observedObjectKind = observed.state === "present" || observed.state === "directory"
-    ? observed.objectKind
-    : undefined;
   switch (desired.kind) {
     case "file":
       return observed.state === "present"
@@ -260,26 +238,25 @@ const observedMatchesDesired = (
         && (
           desired.symlinkTo === undefined
             ? observed.symlinkTo === undefined
-              && (observedObjectKind === undefined || observedObjectKind === "regular")
+              && observed.objectKind === "regular"
             : observed.symlinkTo !== undefined
-              && (observedObjectKind === undefined || observedObjectKind === "symlink")
+              && observed.objectKind === "symlink"
         );
     case "config":
       return observed.state === "present"
         && observed.digest === desired.digest
-        && (observedObjectKind === undefined || observedObjectKind === "regular");
+        && observed.objectKind === "regular";
     case "directory":
     case "skill": {
       const desiredEntries = desiredDirectoryEntries(desired);
       return observed.state === "directory"
-        && (observed.objectKind === undefined || observed.objectKind === "directory")
         && observed.mode === desired.mode
         && observed.files.every((file) => !("state" in file))
         && observedDirectoryDigest(observed, desiredEntries) === directoryEntriesDigest(desiredEntries);
     }
     case "tool":
     case "credential":
-      return observed.state === "present";
+      return false;
   }
 };
 
@@ -307,13 +284,13 @@ const observedMatchesApplied = (
   if (currentDigest !== applied.digest) return false;
   if (context.resource.kind === "file" && context.observed.state === "present") {
     if (applied.ownership === "Symlink") {
-      return context.observed.objectKind === undefined || context.observed.objectKind === "symlink";
+      return context.observed.objectKind === "symlink";
     }
     if (applied.ownership === "WholeFile" || applied.ownership === "SourceSection") {
       return context.observed.executable === applied.executable
         && context.observed.mode === applied.mode
         && context.observed.symlinkTo === undefined
-        && (context.observed.objectKind === undefined || context.observed.objectKind === "regular");
+        && context.observed.objectKind === "regular";
     }
     return false;
   }
@@ -432,19 +409,7 @@ const directoryRootConflict = (
   if (context.desired.kind !== "directory" && context.desired.kind !== "skill") {
     return undefined;
   }
-  if (
-    context.observed.state === "directory"
-    && (
-      context.observed.objectKind === undefined
-      || context.observed.objectKind === "directory"
-    )
-  ) {
-    return undefined;
-  }
-  if (context.observed.state === "present" && context.observed.objectKind === undefined) {
-    return undefined;
-  }
-  if (context.observed.state === "absent") return undefined;
+  if (context.observed.state === "directory" || context.observed.state === "absent") return undefined;
   const observedDigest = observedDigestForDirectoryRoot(context);
   return driftConflict(
     context,
@@ -661,8 +626,7 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
       },
     }];
   }
-  if (context.observed.state === "present" && context.observed.objectKind !== undefined
-    && context.observed.objectKind !== "regular") {
+  if (context.observed.state === "present" && context.observed.objectKind !== "regular") {
     return [{ kind: "human-action", detail: {
       kind: "human-action",
       reason: `Cannot merge ${context.resource.id} into ${context.resource.target}: target is a ${context.observed.objectKind}, not a regular file`,
@@ -819,7 +783,7 @@ const planConfigIfUnmodified = (
   if (
     applied !== undefined
     && observed.state === "present"
-    && (observed.objectKind === undefined || observed.objectKind === "regular")
+    && observed.objectKind === "regular"
     && observed.appliedKeysDigest !== undefined
     && observed.appliedKeysDigest !== applied.digest
   ) {
@@ -924,11 +888,9 @@ const planReplaceIfUnmodified = (
     && (
       context.applied.ownership !== "Symlink"
         ? context.observed.symlinkTo !== undefined
-          || context.observed.objectKind !== undefined
-            && context.observed.objectKind !== "regular"
+          || context.observed.objectKind !== "regular"
         : context.observed.symlinkTo === undefined
-          || context.observed.objectKind !== undefined
-            && context.observed.objectKind !== "symlink"
+          || context.observed.objectKind !== "symlink"
     )
   ) {
     return [driftConflict(
@@ -939,12 +901,7 @@ const planReplaceIfUnmodified = (
       context.observed.executable,
     )];
   }
-  const observedStateMatchesDesired = observedMatchesDesired(context.desired, context.observed)
-    || (
-      context.desired.kind === "skill"
-      && context.observed.state === "present"
-      && context.observed.objectKind === undefined
-    );
+  const observedStateMatchesDesired = observedMatchesDesired(context.desired, context.observed);
   const compareFilePermissions = context.desired.kind === "file"
     && context.desired.symlinkTo === undefined;
   const compareSkillRootPermissions = tree !== undefined
@@ -1091,26 +1048,30 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
     return [];
   }
   const recipe = selectToolRecipe(context.desired, context.platform);
-  if (context.observed.state !== "present" && recipe === undefined && context.desired.recipes.some((candidate) => candidate.method === "binary")) {
+  const observed = context.observed;
+  const binaryObservation = observed.state === "present" ? observed : undefined;
+  const toolObservation = observed.state === "tool" ? observed : undefined;
+  const present = recipe?.method === "binary" ? binaryObservation : toolObservation;
+  if (present === undefined && recipe === undefined && context.desired.recipes.some((candidate) => candidate.method === "binary")) {
     return [{ kind: "human-action", detail: { kind: "human-action", reason: `No binary recipe matches ${context.platform}/${process.arch}`, instructions: "Declare a binary recipe for this platform and architecture with an exact version, HTTPS source, and integrity." } }];
   }
   if (recipe?.method === "binary") {
     const problem = binaryRecipeProblem(recipe);
     if (problem !== undefined) return [{ kind: "human-action", detail: { kind: "human-action", reason: problem, instructions: "Declare an exact native binary recipe with platform, architecture, HTTPS source, and sha256 or sha512 integrity." } }];
-    if (context.observed.state === "present" && context.observed.installedVersion !== recipe.version) {
+    if (binaryObservation !== undefined
+      && (binaryObservation.objectKind !== "regular" || binaryObservation.installedVersion !== recipe.version)) {
       return [{ kind: "human-action", detail: { kind: "human-action", reason: "The binary destination does not match the reviewed artifact", instructions: "Move the existing executable aside explicitly, then synchronize. Canonfig will not overwrite an unmanaged executable." } }];
     }
   }
   // The installed version, when the recipe's installer reports one that
   // differs from the pin. A present executable alone left a tool at its old
   // version after the profile pinned a new one.
-  const replaces = context.observed.state === "present"
-      && context.observed.installedVersion !== undefined
+  const replaces = present?.installedVersion !== undefined
       && recipe?.version !== undefined
-      && !installedVersionMatches(recipe.method, context.observed.installedVersion, recipe.version)
-    ? context.observed.installedVersion
+      && !installedVersionMatches(recipe.method, present.installedVersion, recipe.version)
+    ? present.installedVersion
     : undefined;
-  if (qualification === undefined && context.observed.state === "present" && replaces === undefined) {
+  if (qualification === undefined && present !== undefined && replaces === undefined) {
     return [noOp()];
   }
   if (recipe === undefined) {
@@ -1131,7 +1092,7 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
   if (context.desired.qualification?.exclusion !== undefined) {
     return [noOp(provenance)];
   }
-  if (context.observed.state === "present" && replaces === undefined) {
+  if (present !== undefined && replaces === undefined) {
     if (provenance === undefined) return [noOp()];
     if (context.applied?.ownership === "QualifiedTool" && context.applied.installerRecipe.fingerprint === provenance.fingerprint) {
       return [noOp(provenance)];
@@ -1262,7 +1223,7 @@ const planRequireLocal = (context: ResourcePlanningContext): ReadonlyArray<Resou
       observedState: context.observed.state,
     });
   }
-  if (context.observed.state === "present") return [noOp()];
+  if (context.observed.state === "credential") return [noOp()];
   return [{
     kind: "human-action",
     detail: {

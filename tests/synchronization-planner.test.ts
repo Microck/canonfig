@@ -46,6 +46,25 @@ const blobB = decode(BlobId)("e".repeat(64));
 const follower = decode(FollowerId)("follower-1");
 
 describe("observed resource state schema", () => {
+  it("requires final object kind for present paths, including directory members", () => {
+    const isObservation = Schema.is(ObservedResourceStateSchema);
+    const regular = { state: "present", digest: digestA, executable: false };
+    const directory = { state: "directory", mode: 0o700, files: [] };
+    expect(isObservation(regular)).toBe(false);
+    expect(isObservation({ ...regular, objectKind: "regular" })).toBe(true);
+    expect(isObservation(directory)).toBe(false);
+    expect(isObservation({ ...directory, objectKind: "symlink" })).toBe(false);
+    expect(isObservation({
+      ...directory, objectKind: "directory", files: [{ path: "file", digest: digestA }],
+    })).toBe(false);
+    expect(isObservation({
+      ...directory, objectKind: "directory", files: [{ path: "file", digest: digestA, objectKind: "regular" }],
+    })).toBe(true);
+    expect(isObservation({ state: "tool", installedVersion: "1.2.3" })).toBe(true);
+    expect(isObservation({ state: "credential" })).toBe(true);
+    expect(isObservation({ state: "unverifiable", reason: "unreadable target" })).toBe(true);
+  });
+
   it("preserves exact regular-file modes", () => {
     expect(decode(ObservedResourceStateSchema)({
       state: "present",
@@ -292,7 +311,7 @@ describe("resource and Apply Policy coverage", () => {
   it("produces an explicit no-op when desired state is already present", () => {
     const plan = runPlan(plannerInput(
       [resource("file", "file", "replace")],
-      { observed: [{ state: "present", digest: digestA, executable: false }] },
+      { observed: [{ state: "present", objectKind: "regular", digest: digestA, executable: false }] },
     ));
     expect(plan.actions[0]?.detail).toEqual({ kind: "no-op" });
   });
@@ -335,6 +354,7 @@ describe("resource and Apply Policy coverage", () => {
       desired: [desired],
       observed: [{
         state: "directory",
+        objectKind: "directory",
         mode: 0o700,
         files: [{ path: "new.txt", state: "absent" }],
       }],
@@ -355,6 +375,7 @@ describe("resource and Apply Policy coverage", () => {
       desired: [{ kind: "directory", mode: 0o700, directories: [], files: [] }],
       observed: [{
         state: "directory",
+        objectKind: "directory",
         mode: 0o700,
         files: [{ path: "owned.txt", state: "absent" }],
       }],
@@ -404,7 +425,7 @@ describe("resource and Apply Policy coverage", () => {
         desired: [{ kind, mode: 0o700,
           directories: [{ path: "d", mode: 0o700 }],
           files: [{ path: "d/f", digest: digestA }, { path: "e/g", digest: digestA }] }],
-        observed: [{ state: "directory", files: [
+        observed: [{ state: "directory", objectKind: "directory", mode: 0o700, files: [
           { path: "d", digest: digestB, objectKind: "symlink", symlinkTo: "../outside-d" },
           { path: "e", digest: digestB, objectKind: "regular" },
         ] }],
@@ -446,11 +467,14 @@ describe("resource and Apply Policy coverage", () => {
         desired: [{
           kind,
           digest: digestA,
+          mode: 0o700,
           directories: [],
           files: [{ path: "references/nested/keep.md", digest: digestA }],
         }],
         observed: [{
           state: "directory",
+          objectKind: "directory",
+          mode: 0o700,
           files: [
             { path: "references", digest: sha256Hex("canonfig:directory"), objectKind: "directory" },
             { path: "references/nested", digest: sha256Hex("canonfig:directory"), objectKind: "directory" },
@@ -474,6 +498,8 @@ describe("resource and Apply Policy coverage", () => {
             resource: subject.id,
             observed: {
               state: "directory",
+              objectKind: "directory",
+              mode: 0o700,
               files: [
                 { path: "references", digest: sha256Hex("canonfig:directory"), objectKind: "directory" },
                 { path: "references/nested", digest: sha256Hex("canonfig:directory"), objectKind: "directory" },
@@ -505,6 +531,7 @@ describe("resource and Apply Policy coverage", () => {
       desired: [desired],
       observed: [{
         state: "directory",
+        objectKind: "directory",
         mode: 0o700,
         files: [{
           path: "link",
@@ -536,6 +563,7 @@ describe("resource and Apply Policy coverage", () => {
       desired: [desired],
       observed: [{
         state: "directory",
+        objectKind: "directory",
         mode: desired.mode,
         files: [{
           path: "settings.json",
@@ -556,6 +584,7 @@ describe("resource and Apply Policy coverage", () => {
       desired: [desired],
       observed: [{
         state: "directory",
+        objectKind: "directory",
         mode: 0o700,
         files: [{
           path: "settings.json",
@@ -620,6 +649,7 @@ describe("resource and Apply Policy coverage", () => {
       desired: [desired],
       observed: [{
         state: "present",
+        objectKind: "regular",
         digest: digestA,
         executable: observedExecutable,
         mode: observedExecutable ? 0o700 : 0o600,
@@ -911,7 +941,7 @@ describe("resource and Apply Policy coverage", () => {
     };
     const plan = runPlan(plannerInput([subject], {
       desired: [desired],
-      observed: [{ state: "directory", mode: 0o700, files: [] }],
+      observed: [{ state: "directory", objectKind: "directory", mode: 0o700, files: [] }],
       applied: [{
         resource: subject.id,
         revision: "previous",
@@ -975,8 +1005,8 @@ describe("resource and Apply Policy coverage", () => {
       files: [{ path: "kept.txt", digest: digestA, executable: false, mode: 0o600 }],
     };
     const previouslyOwned = [
-      { path: "kept.txt", digest: digestA, executable: false, mode: 0o600 },
-      { path: "removed.txt", digest: digestB, executable: false, mode: 0o600 },
+      { path: "kept.txt", digest: digestA, executable: false, mode: 0o600, objectKind: "regular" as const },
+      { path: "removed.txt", digest: digestB, executable: false, mode: 0o600, objectKind: "regular" as const },
     ];
     const previousDigest = decode(ContentDigest)(sha256Hex(
       previouslyOwned
@@ -985,7 +1015,7 @@ describe("resource and Apply Policy coverage", () => {
     ));
     const input = plannerInput([subject], {
       desired: [desired],
-      observed: [{ state: "directory", mode: 0o700, files: previouslyOwned }],
+      observed: [{ state: "directory", objectKind: "directory", mode: 0o700, files: previouslyOwned }],
       applied: [{
         resource: subject.id,
         revision: "revision-previous",
@@ -1036,17 +1066,19 @@ describe("resource and Apply Policy coverage", () => {
         digest: digestA,
         executable: false,
         mode: 0o600,
+        objectKind: "regular" as const,
       },
       {
         path: "locked/obsolete.txt",
         digest: digestB,
         executable: false,
         mode: 0o600,
+        objectKind: "regular" as const,
       },
     ];
     const input = plannerInput([subject], {
       desired: [desired],
-      observed: [{ state: "directory", mode: 0o700, files: previouslyOwned }],
+      observed: [{ state: "directory", objectKind: "directory", mode: 0o700, files: previouslyOwned }],
       applied: [{
         resource: subject.id,
         revision: "revision-previous",
@@ -1087,7 +1119,7 @@ describe("resource and Apply Policy coverage", () => {
     };
     const input = plannerInput([subject], {
       desired: [desired],
-      observed: [{ state: "directory", mode: 0o700, files: [blockingFile] }],
+      observed: [{ state: "directory", objectKind: "directory", mode: 0o700, files: [blockingFile] }],
       applied: [{
         resource: subject.id,
         revision: "revision-previous",
@@ -1115,14 +1147,14 @@ describe("resource and Apply Policy coverage", () => {
       files: [{ path: "kept.txt", digest: digestA, executable: false, mode: 0o600 }],
     };
     const observed = [
-      { path: "kept.txt", digest: digestA, executable: false, mode: 0o600 },
-      { path: "clean.txt", digest: digestB, executable: false, mode: 0o600 },
-      { path: "modified.txt", digest: digestC, executable: false, mode: 0o600 },
-      { path: "unowned.txt", digest: digestC, executable: false, mode: 0o600 },
+      { path: "kept.txt", digest: digestA, executable: false, mode: 0o600, objectKind: "regular" as const },
+      { path: "clean.txt", digest: digestB, executable: false, mode: 0o600, objectKind: "regular" as const },
+      { path: "modified.txt", digest: digestC, executable: false, mode: 0o600, objectKind: "regular" as const },
+      { path: "unowned.txt", digest: digestC, executable: false, mode: 0o600, objectKind: "regular" as const },
     ];
     const input = plannerInput([subject], {
       desired: [desired],
-      observed: [{ state: "directory", mode: 0o700, files: observed }],
+      observed: [{ state: "directory", objectKind: "directory", mode: 0o700, files: observed }],
       applied: [{
         resource: subject.id,
         revision: "revision-previous",
@@ -1168,6 +1200,7 @@ describe("transfer and apply separation", () => {
       desired: [desired],
       observed: [{
         state: "present",
+        objectKind: "regular",
         digest: digestB,
         executable: false,
       }],
@@ -1245,7 +1278,7 @@ describe("transfer and apply separation", () => {
     const plan = runPlan(plannerInput(
       [subject],
       {
-        observed: [{ state: "present", digest: digestA, executable: false }],
+        observed: [{ state: "present", objectKind: "regular", digest: digestA, executable: false }],
         availableBlobs: [blobA],
       },
     ));
@@ -1257,7 +1290,7 @@ describe("transfer and apply separation", () => {
     const subject = resource("file", "file", "replace", [], [blobA]);
     const plan = runPlan(plannerInput(
       [subject],
-      { observed: [{ state: "present", digest: digestA, executable: false }] },
+      { observed: [{ state: "present", objectKind: "regular", digest: digestA, executable: false }] },
     ));
     expect(plan.actions.map((action) => action.kind)).toEqual([
       "transfer-blob",
@@ -1589,7 +1622,7 @@ describe("stable planning and bounded resolution", () => {
 
     expect(onWindows({ state: "absent" }).actions).toEqual([]);
     // Present tools are still checked, and the recipe platform still installs.
-    expect(onWindows({ state: "present", digest: sha256Hex("unix-only"), executable: true }).actions.map((action) => action.kind)).toEqual(["no-op"]);
+    expect(onWindows({ state: "tool" }).actions.map((action) => action.kind)).toEqual(["no-op"]);
     expect(runPlan(plannerInput([subject], { desired: [desired], observed: [{ state: "absent" }] }))
       .actions.map((action) => action.kind)).toEqual(["install-tool"]);
   });
@@ -1696,7 +1729,7 @@ describe("stable planning and bounded resolution", () => {
     };
     const planFor = (observed: ObservedResourceState) =>
       runPlan(plannerInput([subject], { desired: [desired], observed: [observed] }));
-    expect(planFor({ state: "present", digest: sha256Hex("tool"), executable: true }).actions.map((action) => action.kind)).toEqual(["no-op"]);
+    expect(planFor({ state: "tool" }).actions.map((action) => action.kind)).toEqual(["no-op"]);
     expect(planFor({ state: "absent" }).actions.map((action) => action.kind)).toEqual(["human-action"]);
   });
 
@@ -1708,12 +1741,7 @@ describe("stable planning and bounded resolution", () => {
       recipes: [{ platform: "linux", method: "uv", package: "isort", version: "5.13.2" }],
       loginRequired: false,
     };
-    const present = (installedVersion?: string): ObservedResourceState => ({
-      state: "present",
-      digest: sha256Hex("isort"),
-      executable: true,
-      installedVersion,
-    });
+    const present = (installedVersion?: string): ObservedResourceState => ({ state: "tool", installedVersion });
     const planFor = (observed: ObservedResourceState) =>
       runPlan(plannerInput([subject], { desired: [desired], observed: [observed] }));
 

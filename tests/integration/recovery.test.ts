@@ -392,7 +392,7 @@ describe("interrupted ownership handover", () => {
     const value: Fixture = { ...base, revision, recovery: { ...base.recovery, revision } };
     const plan = Effect.runSync(planSynchronization({ revision, follower: follower.id,
       observedState: { platform: "linux", availableBlobs: [], resources: revision.resources.map((resource) => ({
-        resource: resource.id, observed: { state: "present" as const, digest: oldDigest, executable: false, mode: 0o600 },
+        resource: resource.id, observed: { state: "present" as const, objectKind: "regular", digest: oldDigest, executable: false, mode: 0o600 },
       })) }, appliedResources: [previous],
     }));
     await Effect.runPromise(Effect.gen(function*() {
@@ -1454,6 +1454,7 @@ describe("synchronization crash recovery", () => {
           resource: resource.id,
           observed: {
             state: "present",
+            objectKind: "regular",
             digest: decode(ContentDigest)(value.artifact.digest),
             executable: false,
             mode: 0o600,
@@ -1589,6 +1590,7 @@ describe("synchronization crash recovery", () => {
           resource: resource.id,
           observed: {
             state: "present",
+            objectKind: "regular",
             digest: decode(ContentDigest)(value.artifact.digest),
             executable: false,
             mode: 0o600,

@@ -1,4 +1,4 @@
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import { ContentDigest, CredentialReference } from "../domain/brand.ts";
 import type { ProfileRevision, VerificationInput } from "../domain/profile.ts";
@@ -247,9 +247,11 @@ export const observeFollowerResource = (
         // listed in full: a file the machine adds inside one is drift. The
         // machine's own top-level entries are never read; the planner's
         // append-local view drops them in any case.
+        const desiredPaths = [...desired.files, ...desired.directories].map((entry) => entry.path);
+        const ownedPaths = applied?.ownership === "DirectoryEntries" ? applied.ownedFiles.map((entry) => entry.path) : [];
+        const managedPaths = [...desiredPaths, ...ownedPaths];
         const claimed = decoded.resource.policy === "append-local"
-          ? [...new Set([...desired.files, ...desired.directories, ...(applied?.ownership === "DirectoryEntries" ? applied.ownedFiles : [])]
-            .map((entry) => entry.path.split("/", 1)[0]!))].sort()
+          ? [...new Set(managedPaths.map((path) => path.split("/", 1)[0]!))].sort()
           : [];
         const listed = listsEverything
           ? yield* machine.listDirectory(root)
@@ -264,46 +266,21 @@ export const observeFollowerResource = (
               if (kind?.kind !== "directory") return [];
               return (yield* machine.listDirectory(entry)).map((child) => ({ ...child, path: `${name}/${child.path}` }));
             })).pipe(Effect.map((lists) => lists.flat()));
-        const foreign = listed.map((entry) => {
-          const observed = {
-            path: entry.path,
-            digest: Schema.decodeUnknownSync(ContentDigest)(
-              sha256Hex(`canonfig:observed-object:${entry.kind}`),
-            ),
-            executable: false,
-          };
-          return entry.kind === "directory"
-            ? { ...observed, objectKind: "directory" as const }
-            : observed;
-        });
-        const ancestors = [...relativePathAncestors([
-          ...desired.files.map((entry) => entry.path),
-          ...desired.directories.map((entry) => entry.path),
-          ...(applied?.ownership === "DirectoryEntries" ? applied.ownedFiles : []).map((entry) => entry.path),
-        ])].sort((left, right) => left.split("/").length - right.split("/").length);
-        const candidates = [...new Map([
-          ...ancestors.map((path) => ({ path })),
-          ...foreign,
-          ...(applied?.ownership === "DirectoryEntries" ? applied.ownedFiles : []).map((file) => ({
-            ...file,
-            executable: file.executable ?? false,
-          })),
-          ...desired.files,
-          ...desired.directories.map((directory) => ({
-            path: directory.path,
-            digest: Schema.decodeUnknownSync(ContentDigest)(sha256Hex("canonfig:directory")),
-            executable: (directory.mode & 0o100) !== 0,
-            mode: directory.mode,
-            objectKind: "directory" as const,
-          })),
-        ].map((file) => [file.path, file])).values()];
+        const ancestors = [...relativePathAncestors(managedPaths)]
+          .sort((left, right) => left.split("/").length - right.split("/").length);
+        const candidates = new Set([
+          ...ancestors,
+          ...listed.map((entry) => entry.path),
+          ...ownedPaths,
+          ...desiredPaths,
+        ]);
         const blockedAncestors = new Set<string>();
-        const files = yield* Effect.forEach(candidates, (file) =>
+        const files = yield* Effect.forEach(candidates, (relativePath) =>
           Effect.gen(function*() {
-            if ([...relativePathAncestors([file.path])].some((ancestor) => blockedAncestors.has(ancestor))) {
-              return { path: file.path, state: "absent" } as const;
+            if ([...relativePathAncestors([relativePath])].some((ancestor) => blockedAncestors.has(ancestor))) {
+              return { path: relativePath, state: "absent" } as const;
             }
-            const path = yield* machine.normalizePath({ path: file.path, base: root });
+            const path = yield* machine.normalizePath({ path: relativePath, base: root });
             const kind = yield* machine.inspectPath(path).pipe(
               Effect.catchTag("MachineFilesystemError", (error) =>
                 isNotFoundFilesystemError(error)
@@ -312,14 +289,14 @@ export const observeFollowerResource = (
               ),
             );
             if (kind === undefined) {
-              blockedAncestors.add(file.path);
-              return { path: file.path, state: "absent" } as const;
+              blockedAncestors.add(relativePath);
+              return { path: relativePath, state: "absent" } as const;
             }
-            if (kind.kind !== "directory") blockedAncestors.add(file.path);
+            if (kind.kind !== "directory") blockedAncestors.add(relativePath);
             if (kind.kind === "directory") {
               const permissions = yield* machine.permissions(path);
               return {
-                path: file.path,
+                path: relativePath,
                 digest: sha256Hex("canonfig:directory"),
                 executable: permissions.executableByOwner,
                 mode: permissions.mode,
@@ -329,7 +306,7 @@ export const observeFollowerResource = (
             if (kind.kind === "symlink") {
               const symlinkTo = yield* machine.readSymlink(path);
               return {
-                path: file.path,
+                path: relativePath,
                 digest: sha256Hex(symlinkTo),
                 executable: false,
                 objectKind: "symlink" as const,
@@ -338,7 +315,7 @@ export const observeFollowerResource = (
             }
             if (kind.kind !== "regular") {
               return {
-                path: file.path,
+                path: relativePath,
                 digest: sha256Hex(`canonfig:observed-object:${kind.kind}`),
                 executable: false,
                 objectKind: kind.kind,
@@ -348,7 +325,7 @@ export const observeFollowerResource = (
               Effect.flatMap((digest) =>
                 machine.permissions(path).pipe(
                   Effect.map((permissions) => ({
-                    path: file.path,
+                    path: relativePath,
                     digest: digest.value,
                     executable: permissions.executableByOwner,
                     mode: permissions.mode,
@@ -358,7 +335,7 @@ export const observeFollowerResource = (
               ),
               Effect.catchTag("MachineFilesystemError", (error) =>
                 isNotFoundFilesystemError(error)
-                  ? Effect.succeed({ path: file.path, state: "absent" } as const)
+                  ? Effect.succeed({ path: relativePath, state: "absent" } as const)
                   : Effect.fail(error)
               ),
             );
@@ -391,7 +368,7 @@ export const observeFollowerResource = (
             const bytes = yield* machine.readFile({ path, maximumBytes: 128 * 1024 * 1024 });
             const permissions = yield* machine.permissions(path);
             const integrity = recipeSourceDetails(binary.source).integrity!;
-            return { state: "present", digest: sha256BytesHex(bytes), executable: permissions.executableByOwner,
+            return { state: "present", objectKind: "regular", digest: sha256BytesHex(bytes), executable: permissions.executableByOwner,
               installedVersion: verifyNpmArtifactBytes(bytes, integrity)
                 && binaryFormatProblem(bytes, platform, binary.architecture!) === undefined
                 && (platform === "windows" || permissions.executableByOwner) ? binary.version : undefined } as const;
@@ -430,12 +407,7 @@ export const observeFollowerResource = (
             timeoutMilliseconds: installedVersionTimeoutMilliseconds,
             maximumOutputBytes: defaultSynchronizationExecutionLimits.maximumProcessOutputBytes,
           });
-        return {
-          state: "present",
-          digest: sha256Hex(executable),
-          executable: true,
-          installedVersion,
-        } as const;
+        return { state: "tool", installedVersion } as const;
       }).pipe(
         Effect.catch((error) =>
           Effect.succeed({ state: "unverifiable", reason: String(error) } as const)
@@ -450,14 +422,7 @@ export const observeFollowerResource = (
             : desired.reference,
         );
         return yield* machine.loadCredential({ reference }).pipe(
-          Effect.map((value) => {
-            Redacted.value(value);
-            return {
-              state: "present",
-              digest: sha256Hex(desired.reference),
-              executable: false,
-            } as const;
-          }),
+          Effect.as({ state: "credential" } as const),
           Effect.catch(() => Effect.succeed({ state: "absent" } as const)),
         );
       });
