@@ -300,117 +300,144 @@ export function DitherProgress({
   );
 }
 
-// Soft contour bands rising from the bottom edge. One shader serves every state:
-// each state sets one motion weight (see BAND_MOTION) and the other terms vanish,
-// so a change of state only swaps uniforms and never rebuilds the WebGL context.
-// Rates below are in field seconds, which `speed` scales into real time.
-const HORIZON_FIELD = /* glsl */ `
+// Per-state architectural motifs for StateBand. One unified shader serves every
+// state via the `kind` uniform (0 ok, 1 warn, 2 act, 3 bad, 4 muted, 5 running),
+// so switching states swaps uniforms, matrix, and palette without rebuilding the
+// WebGL context. Each field is right-weighted so the headline on the left stays
+// clear. Rates below are in field seconds, which `speed` scales into real time.
+const STATE_BAND_FIELD = /* glsl */ `
 float field(vec2 uv, vec2 res, float t) {
   float aspect = res.x / res.y;
-  // bad: a failing feed. Its clock holds, then jumps, 6 times a field second
-  // (3.6 a second at speed 0.6), and every glitch below changes only on these
-  // beats. So no spot changes more than 3.6 times a second: under 2 flashes a
-  // second, inside the 3 of WCAG 2.3.1.
-  float beat = floor(t * 6.0);
-  t = mix(t, beat / 6.0, glitch);
-  // bad: tears come in bursts. Each run of 4 beats is torn or clean on a coin
-  // toss, so the failures never settle into a rhythm. In a burst, coarse strips
-  // of rows tear sideways by up to a fifth of the width; only some strips tear
-  // on a beat, so the band never moves as one.
-  float burst = step(0.5, hash21(vec2(floor(beat / 4.0), 0.37)));
-  float strip = floor(uv.y * 5.0);
-  float torn = glitch * burst * step(0.55, hash21(vec2(strip, beat)));
-  uv.x += torn * 0.4 * (hash21(vec2(beat, strip + 9.0)) - 0.5);
   vec2 p = uv * vec2(aspect, 1.0);
-  // Every state: two waves slide past each other on the horizon.
-  float wave = 0.06 * sin(p.x * 3.0 + t * 0.35) + 0.04 * sin(p.x * 7.0 - t * 0.2);
-  // bad: the horizon breaks into blocks at different heights, which jump to new
-  // heights every third beat. Torn strips carry their blocks sideways. Each
-  // height is the difference of two neighbouring random values, so the heights
-  // cancel across the band: the horizon breaks, but the band's ink barely
-  // changes when it jumps.
-  float block = floor(p.x * 2.5);
-  float shuffle = floor(beat / 3.0) + 0.5;
-  wave += glitch * 0.2 * (hash21(vec2(block, shuffle)) - hash21(vec2(block + 1.0, shuffle)));
-  // warn: the band rises, brightens and settles on one slow breath.
-  float breathe = breath * sin(t * 2.5);
-  // bad: a harder edge, so the broken horizon reads as steps, not a blur.
-  float body = smoothstep(0.85 + 0.1 * breathe + 0.15 * sweep - 0.2 * glitch, 0.3 * glitch, uv.y + wave);
-  // bad: signal dropouts. About 1 cell in 16 blanks out for a beat. A cell is
-  // a quarter of the band's height wide and a sixth tall (1/130 of a wide
-  // band), so no large area changes at once.
-  vec2 cell = floor(vec2(p.x * 4.0, uv.y * 6.0));
-  body *= 1.0 - glitch * step(0.94, hash21(cell + vec2(beat * 0.618, beat * 0.271)));
-  float level = 0.9 + 0.12 * breathe;
-  // Texture: a fine diagonal grain, swapped for chevrons marching right
-  // (act: toward the action) or scanlines on the strips that tear (bad).
-  float grain = 0.5 + 0.5 * sin(p.x * 18.0 + p.y * 9.0 + t * 0.15);
-  float chevron = smoothstep(0.3, 0.7, 0.5 + 0.5 * sin((p.x + abs(uv.y - 0.4) * 0.8) * 8.0 - t * 3.0));
-  float scanline = step(0.5, fract(uv.y * res.y * 0.25));
-  grain = mix(grain, chevron, flow);
-  grain = mix(grain, scanline, torn);
-  // running: a lit front sweeps left to right, leaving a fading trail.
-  float behind = fract(t * 0.25) * 2.0 - 0.25 - uv.x;
-  float trail = behind > 0.0 ? exp(-behind * 5.0) : exp(behind * 30.0);
-  level += sweep * (0.1 + 0.5 * trail);
-  // The grain only shades the body; act and bad cut deeper so their texture reads
-  // as motion, and act's level rises to make up for the ink its gaps remove.
-  // Torn strips cut deeper, into scanlines, which drops their mean grain from
-  // 0.8 to 0.7, so their level rises by 8/7: a tear moves ink into lines
-  // instead of dimming a whole strip at once.
-  float depth = 0.25 + 0.35 * flow + 0.15 * glitch + 0.2 * torn;
-  level *= 1.0 + torn / 7.0;
-  return clamp(body * (1.0 - depth + depth * grain) * (level + 0.15 * flow), 0.0, 1.0);
+  float rightWeight = smoothstep(0.18, 0.78, uv.x);
+
+  // 0: ok (orbital iso-contours anchored on the right)
+  if (kind < 0.5) {
+    vec2 d = p - vec2(0.86 * aspect, 0.22);
+    float r = length(d);
+    float ang = atan(d.y, d.x);
+    float warp = 0.08 * sin(ang * 3.0 + t * 0.35) + 0.04 * cos(r * 5.0 - t * 0.25);
+    float rings = abs(fract((r + warp) * 3.1 - t * 0.08) - 0.5) * 2.0;
+    float ridge = smoothstep(0.55, 0.98, rings);
+    float core = exp(-r * 1.15);
+    float strata = 0.32 * smoothstep(0.95, 0.05, uv.y + 0.12 * sin(p.x * 2.2 + t * 0.2));
+    float crest = pow(max(ridge, 0.0), 3.0) * smoothstep(1.9, 0.15, r) * 0.72;
+    return clamp((core * 0.65 + strata * 0.55 + crest) * (0.25 + 0.85 * rightWeight), 0.0, 1.0);
+  }
+
+  // 1: warn (two phase-shifted wave planes colliding along a diagonal fault seam)
+  if (kind < 1.5) {
+    float seam = (uv.x - 0.68) * 1.4 + (uv.y - 0.5) * 0.55 + 0.08 * sin(uv.y * 5.0 + t * 0.8);
+    float side = seam > 0.0 ? 1.0 : -1.0;
+    float wA = 0.5 + 0.5 * sin((p.x * 9.5 + p.y * 4.0) + t * 0.7);
+    float wB = 0.5 + 0.5 * sin((p.x * 9.5 - p.y * 6.5) - t * 0.55 + 1.4);
+    float interference = side > 0.0 ? (wA * 0.65 + wB * 0.35) : (wB * 0.75);
+    float faultGlow = exp(-abs(seam) * 5.2) * (0.65 + 0.35 * sin(t * 2.4));
+    float base = smoothstep(0.28, 0.82, uv.x) * (0.35 + 0.45 * interference);
+    return clamp(base * 0.72 + faultGlow * 0.88 * smoothstep(0.2, 0.55, uv.x), 0.0, 1.0);
+  }
+
+  // 2: act (directional stepped beacon chevrons pointing right toward the action)
+  if (kind < 2.5) {
+    float cy = abs(uv.y - 0.5);
+    float chevPhase = fract((p.x * 1.7 + cy * 1.35) - t * 0.55);
+    float chev = smoothstep(0.18, 0.48, chevPhase) * smoothstep(0.92, 0.58, chevPhase);
+    float tip = pow(max(smoothstep(0.42, 0.54, chevPhase) * smoothstep(0.68, 0.54, chevPhase), 0.0), 1.5);
+    float lane = smoothstep(0.56, 0.06, cy);
+    float rails = smoothstep(0.05, 0.0, abs(cy - 0.34)) * 0.4;
+    return clamp((chev * 0.62 * lane + tip * 0.75 * lane + rails) * (0.2 + 0.9 * rightWeight), 0.0, 1.0);
+  }
+
+  // 3: bad (telemetry shear). Beat clock steps 5 times a field second (3 a second
+  // at speed 0.6): at most 1.5 flashes/sec, inside WCAG 2.3.1's 3-flash limit.
+  if (kind < 3.5) {
+    float beat = floor(t * 5.0);
+    float strip = floor(uv.y * 7.0);
+    float shift = step(0.58, hash21(vec2(strip, beat))) * (hash21(vec2(beat, strip + 3.0)) - 0.5) * 0.32;
+    float sx = uv.x + shift;
+    float col = floor(sx * 18.0);
+    float barH = 0.28 + 0.68 * hash21(vec2(col, floor(beat / 2.0) + 1.3));
+    float inBar = smoothstep(barH + 0.06, barH - 0.04, uv.y);
+    float gap = mix(1.0, 0.12, step(0.82, hash21(vec2(col + 7.0, beat))));
+    float edgeHot = exp(-abs(uv.y - barH) * 14.0) * 0.95;
+    float scan = mix(0.65, 1.0, step(0.45, fract(uv.y * res.y * 0.33)));
+    return clamp((inBar * 0.58 * gap * scan + edgeHot * gap) * smoothstep(0.24, 0.72, sx), 0.0, 1.0);
+  }
+
+  // 4: muted (nearly still low-contrast strata)
+  if (kind < 4.5) {
+    vec2 d = p - vec2(0.88 * aspect, 0.18);
+    float r = length(d);
+    float rings = abs(fract(r * 2.4 - t * 0.04) - 0.5) * 2.0;
+    float ridge = smoothstep(0.68, 0.98, rings) * smoothstep(1.8, 0.2, r) * 0.45;
+    float strata = 0.35 * smoothstep(0.85, 0.0, uv.y + 0.08 * sin(p.x * 2.0 + t * 0.15));
+    return clamp((strata + ridge) * (0.2 + 0.75 * rightWeight), 0.0, 1.0);
+  }
+
+  // 5: running (propagating revision wavefront with trailing packet streaks)
+  float frontX = fract(t * 0.32) * 1.35 - 0.15;
+  float dist = frontX - uv.x;
+  float wake = dist >= 0.0 ? exp(-dist * 4.2) : exp(dist * 24.0);
+  float lane = floor(uv.y * 8.0);
+  float packetPhase = fract(uv.x * 2.5 - t * (0.9 + 0.4 * hash21(vec2(lane, 2.1))) + hash21(vec2(lane, 9.7)));
+  float packet = smoothstep(0.72, 0.98, packetPhase) * smoothstep(0.45, 0.0, abs(fract(uv.y * 8.0) - 0.5));
+  float grid = max(step(0.92, fract(p.x * 4.0)), step(0.92, fract(uv.y * 4.0))) * 0.18;
+  float crest = exp(-abs(dist) * 28.0) * 0.95;
+  return clamp((grid + wake * 0.58 + packet * 0.52 * (0.4 + wake) + crest) * (0.28 + 0.82 * smoothstep(0.12, 0.52, uv.x)), 0.0, 1.0);
 }
 `;
 
-const CALM = { breath: 0, flow: 0, glitch: 0, sweep: 0 } as const;
+const BAND_PALETTE = {
+  ok: ["--dither-paper", "--dither-ok-dim", "green", "--dither-ok-bright"],
+  warn: ["--dither-paper", "--dither-warn-dim", "--warn", "--dither-warn-bright"],
+  act: ["--dither-paper", "--dither-act-dim", "orange", "--dither-act-bright"],
+  bad: ["--dither-paper", "--dither-bad-dim", "red", "--dither-bad-bright"],
+  muted: ["--dither-paper", "--dither-muted-dim", "grey", "--dither-muted-bright"],
+} as const;
 
 /**
- * Each state's motion character, all slow while idle. `stillTime` is the
- * frame reduced motion shows, chosen so the frozen frame still reads as that state.
+ * Each state's motion character, threshold matrix, and reduced-motion still frame.
  * `fps` never exceeds 20; muted barely moves, so 10 is enough.
  */
 const BAND_MOTION = {
-  // Calm drift: the plain horizon.
-  ok: { speed: 0.6, fps: 20, stillTime: 4, uniforms: CALM },
-  // A breath every 5s (2.5 rad per field second at speed 0.5).
-  warn: { speed: 0.5, fps: 20, stillTime: 0.63, uniforms: { ...CALM, breath: 1 } },
-  // Chevrons flowing right at about a fifth of the band's height a second.
-  act: { speed: 0.6, fps: 20, stillTime: 4, uniforms: { ...CALM, flow: 1 } },
-  // A failing feed: stuttered steps, a broken horizon, steady dropouts and tears
-  // in bursts. The still frame is a beat mid-burst, with the lower strips torn.
-  bad: { speed: 0.6, fps: 20, stillTime: 3.08, uniforms: { ...CALM, glitch: 1 } },
-  // Nearly still.
-  muted: { speed: 0.15, fps: 10, stillTime: 4, uniforms: CALM },
+  // Calm orbital iso-contours.
+  ok: { speed: 0.6, fps: 20, stillTime: 4, matrix: "bayer8", uniforms: { kind: 0 } },
+  // Moire fault seam pulsing slowly.
+  warn: { speed: 0.5, fps: 20, stillTime: 0.63, matrix: "bayer4", uniforms: { kind: 1 } },
+  // Directional beacon chevrons marching right.
+  act: { speed: 0.6, fps: 20, stillTime: 4, matrix: "bayer4", uniforms: { kind: 2 } },
+  // Beat-stepped telemetry shear and vertical dropouts.
+  bad: { speed: 0.6, fps: 20, stillTime: 3.08, matrix: "bayer4", uniforms: { kind: 3 } },
+  // Nearly still quiet strata.
+  muted: { speed: 0.15, fps: 10, stillTime: 4, matrix: "bayer8", uniforms: { kind: 4 } },
 } as const;
 
-// A publish or sync in progress, in any tone: a sweep every 2.5s (0.25 cycles
-// per field second at speed 1.6). The front runs on to 175% so its trail has
-// faded before it wraps. The still frame holds the front at 75%.
-const BAND_RUNNING = { speed: 1.6, fps: 20, stillTime: 2, uniforms: { ...CALM, sweep: 1 } } as const;
+// A publish or sync in progress, in any tone: a packet wavefront sweeping left to right.
+const BAND_RUNNING = { speed: 1.4, fps: 20, stillTime: 2, matrix: "bayer8", uniforms: { kind: 5 } } as const;
 
 /**
- * A dithered band behind a machine-state header. Each tone moves in its own
- * way while `idle` (see BAND_MOTION); `running` replaces that with a sweep.
- * Reduced motion shows one still frame per state. One WebGL context.
- * Decoration, so a loading skeleton draws nothing for it (`skullet-ignore`) and shows the header's text.
+ * A dithered band behind a machine-state header. Each tone renders its own
+ * ordered-dither motif while `idle` (see BAND_MOTION); `running` switches to a
+ * propagating wavefront. Reduced motion shows one still frame per state.
+ * One WebGL context. Decoration, so a loading skeleton draws nothing for it
+ * (`skullet-ignore`) and shows the header's text.
  */
 export function StateBand({ tone = "ok", mode = "idle", className }: { tone?: keyof typeof BAND_MOTION; mode?: "idle" | "running"; className?: string }) {
   const band = mode === "running" ? BAND_RUNNING : BAND_MOTION[tone];
   return (
     <div skullet-ignore="" className={cn("pointer-events-none absolute inset-0 overflow-hidden", className)} aria-hidden>
       <DitherShader
-        field={HORIZON_FIELD}
+        field={STATE_BAND_FIELD}
         uniforms={band.uniforms}
-        palette={["--dither-paper", TONE_DITHER[tone]]}
+        matrix={band.matrix}
+        palette={BAND_PALETTE[tone]}
         speed={band.speed}
         fps={band.fps}
         stillTime={band.stillTime}
         cell={2}
-        className="absolute inset-0 opacity-70"
+        className="absolute inset-0 opacity-80"
       />
-      <div className="absolute inset-0 bg-gradient-to-r from-background via-background/85 to-background/10" />
+      <div className="absolute inset-0 bg-gradient-to-r from-background via-background/90 to-transparent" />
     </div>
   );
 }

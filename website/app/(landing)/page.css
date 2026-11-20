@@ -207,6 +207,8 @@
   overflow: hidden;
   pointer-events: none;
   color: var(--sa-accent);
+  --band-dim: var(--sa-ok-dim);
+  --band-bright: var(--sa-ok-bright);
   /* Centred behind the followers and wholly inside the box (58% ± 42%), so
      it reaches nothing at either edge and no straight line shows. */
   mask-image: radial-gradient(ellipse 60% 42% at 50% 58%, #000 30%, transparent 100%);
