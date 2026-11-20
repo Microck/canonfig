@@ -109,8 +109,7 @@ it("freezes a submitted local draft and blocks Discard, close, Escape and naviga
     await input("local-content-0", "submitted text");
     await click("Save");
     await until(() => app.writes.length === 1);
-    // HappyDOM does not inherit :disabled from a fieldset, but browsers disable its controls.
-    for (const control of app.container.querySelectorAll("input, textarea, select")) assert.ok(control.matches(":disabled") || control.closest("fieldset[disabled]"), `${control.id} remains editable during submission`);
+    assert.equal(app.container.querySelector("fieldset")?.disabled, true);
     assert.ok(button("Discard").disabled);
     await click("Discard");
     await act(async () => {
