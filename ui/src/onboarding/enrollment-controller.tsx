@@ -1,6 +1,6 @@
-import { useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useRef, useState, type ReactNode, type Ref } from "react";
 import { flushSync } from "react-dom";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "motion/react";
 import { Schema } from "effect";
 import { toast } from "sonner";
 import { record, text } from "@/workspace/live/follower";
@@ -258,13 +258,23 @@ function SetupHelp({ label, children }: { label: string; children: ReactNode }) 
     </PopoverContent>
   </Popover>;
 }
-/** Widest the name pill grows; narrower rows cap it at their own width. */
-const APPROVAL_PILL_PX = 360;
+/** Keeps a fading face visible while removing its controls from interaction. */
+function ApprovalFace({ children, animate, className, ref }: {
+  children: ReactNode; animate: boolean; className?: string; ref?: Ref<HTMLDivElement>;
+}) {
+  const present = useIsPresent();
+  const fade = {
+    initial: { opacity: 0 },
+    animate: { opacity: 1, transition: { duration: 0.16, delay: 0.04, ease: SNAP } },
+    exit: { opacity: 0, transition: { duration: 0.1, ease: SNAP } },
+  };
+  return <motion.div ref={ref} inert={!present} className={className} {...(animate ? fade : {})}>{children}</motion.div>;
+}
+
 /**
  * Approve setup morphs in place: the gold button widens into a name field on the same
- * 32px line, so the card never changes height. Only the pill's width and colours move; the
- * label and the field crossfade (the leaving one pops out of layout), so the pill is never
- * empty mid-morph and nothing scales. Opening or typing never approves.
+ * 32px line, so the card never changes height. Motion projects the change in
+ * layout while the label and field crossfade. Opening or typing never approves.
  *
  * In the wizard the field sits inside the wizard form, so Continue (or Enter, which
  * submits that form) is the approval; the wizard keeps Continue disabled until a name
@@ -274,25 +284,16 @@ const APPROVAL_PILL_PX = 360;
 export function SetupApproval({ controller: c, confirm: inlineConfirm }: { controller: EnrollmentController; confirm: boolean }) {
   const [editing, setEditing] = useState(false);
   const [tried, setTried] = useState(false);
-  // Measured at the click, so the morph runs between two real pixel widths.
-  const [widths, setWidths] = useState<{ closed: number; open: number } | null>(null);
   const reduced = useReducedMotion();
-  const row = useRef<HTMLDivElement>(null);
-  const pill = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const name = useRef<HTMLInputElement>(null);
   const invalid = tried && !c.approver.trim();
-  const transition = { duration: reduced ? 0 : 0.24, ease: SNAP };
-  // Crossfade for the pill's contents. Reduced motion swaps them at once (no AnimatePresence below).
-  const swap = { initial: { opacity: 0 }, animate: { opacity: 1, transition: { duration: 0.16, delay: 0.04, ease: SNAP } }, exit: { opacity: 0, transition: { duration: 0.1, ease: SNAP } } };
+  const layoutTransition = { duration: 0.24, ease: SNAP };
   const focusApproved = useCallback((node: HTMLParagraphElement | null) => {
     if (node && editing) node.focus();
   }, [editing]);
   const open = () => {
-    const closed = pill.current?.offsetWidth ?? 0;
-    // The help button (40px plus the gap) sits beside the pill on the same line.
-    const available = (row.current?.clientWidth ?? APPROVAL_PILL_PX) - 44;
-    flushSync(() => { setWidths({ closed, open: Math.min(APPROVAL_PILL_PX, available) }); setEditing(true); });
+    flushSync(() => setEditing(true));
     if (!isCoarsePointer()) name.current?.focus();
   };
   // Cancelling discards the name: in the wizard a typed name is what enables Continue,
@@ -311,7 +312,7 @@ export function SetupApproval({ controller: c, confirm: inlineConfirm }: { contr
     }
     void c.approveSetup();
   };
-  const content = editing ? <motion.div key="name" {...(reduced ? {} : swap)} className="flex h-full min-w-0 flex-1 items-center gap-1 pr-0.5">
+  const content = editing ? <ApprovalFace key="name" animate={!reduced} className="flex h-full min-w-0 flex-1 items-center gap-1 pr-0.5">
     <input ref={name} id="setup-approver" name="approver" autoComplete="name" value={c.approver} disabled={c.state.loading}
       aria-label="Your name" placeholder={invalid ? "Enter your name" : "Your name"}
       aria-invalid={invalid || undefined} aria-describedby={invalid ? "setup-approver-error" : undefined}
@@ -325,21 +326,18 @@ export function SetupApproval({ controller: c, confirm: inlineConfirm }: { contr
       className={cn("h-full min-w-0 flex-1 bg-transparent px-2.5 text-sm outline-none max-sm:text-[16px]", invalid ? "placeholder:text-bad" : "placeholder:text-faint")} />
     {inlineConfirm && <Button type="button" size="sm" variant="primary" disabled={c.state.loading} onClick={confirm}>{c.state.loading ? "Approving…" : "Confirm"}</Button>}
     <Button type="button" size="icon-sm" variant="ghost" aria-label="Cancel" disabled={c.state.loading} onClick={close}><X className="size-3.5" aria-hidden="true" /></Button>
-  </motion.div> : <motion.button key="trigger" {...(reduced ? {} : swap)} ref={trigger} type="button" disabled={c.state.loading} onClick={open}
-    className="h-full whitespace-nowrap px-2.5 text-sm font-medium text-gold-foreground outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60">
-    Approve setup
-  </motion.button>;
+  </ApprovalFace> : <ApprovalFace key="trigger" animate={!reduced} className="h-full">
+    <button ref={trigger} type="button" disabled={c.state.loading} onClick={open}
+      className="h-full whitespace-nowrap px-2.5 text-sm font-medium text-gold-foreground outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60">
+      Approve setup
+    </button>
+  </ApprovalFace>;
   // Every state is one h-8 line; the help button's negative margin keeps its larger hit area from growing it.
-  return <div ref={row} className="flex h-8 items-center gap-1">
+  return <div className="flex h-8 items-center gap-1">
     {c.approved ? <p ref={focusApproved} role="status" tabIndex={-1} className="flex items-center gap-2 text-sm text-ok outline-none">
       <Check className="size-4" aria-hidden="true" />Approved
     </p> : <>
-      <motion.div ref={pill} initial={false} transition={transition}
-        // Always defined: Motion skips the first change of an `animate` that started undefined, which froze the
-        // first open. Opening also states its start width, because by the time Motion reads the DOM the wider
-        // field has already mounted.
-        animate={{ width: widths ? editing ? [widths.closed, widths.open] : widths.closed : "auto" }}
-        onAnimationComplete={() => { if (!editing) setWidths(null); }}
+      <motion.div layout={reduced ? false : "size"} transition={{ layout: layoutTransition }}
         onKeyDown={(event) => {
           if (event.key === "Escape" && editing && !event.defaultPrevented) {
             event.preventDefault();
@@ -347,17 +345,20 @@ export function SetupApproval({ controller: c, confirm: inlineConfirm }: { contr
             close();
           }
         }}
-        className={cn("relative flex h-8 max-w-full shrink-0 items-center overflow-hidden rounded-lg border transition-colors duration-200 ease-snap motion-reduce:transition-none",
-          editing ? cn("bg-panel focus-within:border-ring", invalid ? "border-bad" : "border-input") : "border-transparent bg-gold not-has-disabled:hover:bg-gold-hover")}>
-        {reduced ? content : <AnimatePresence mode="popLayout" initial={false}>{content}</AnimatePresence>}
+        className={cn("relative flex h-8 min-w-0 items-center overflow-hidden rounded-lg border transition-colors duration-200 ease-snap motion-reduce:transition-none",
+          editing ? cn("w-[360px] bg-panel focus-within:border-ring", invalid ? "border-bad" : "border-input") : "border-transparent bg-gold not-has-disabled:hover:bg-gold-hover")}>
+        {/* Project the shell's size while its controls keep their own dimensions. */}
+        <motion.div layout={reduced ? false : "position"} transition={{ layout: layoutTransition }} className="relative flex h-full min-w-0 flex-1">
+          {reduced ? content : <AnimatePresence mode="popLayout" initial={false}>{content}</AnimatePresence>}
+        </motion.div>
       </motion.div>
       {invalid && <span id="setup-approver-error" role="alert" className="sr-only">Enter a name to record this approval.</span>}
-      <span className="-my-2 shrink-0">
+      <motion.span layout={reduced ? false : "position"} transition={{ layout: layoutTransition }} className="-my-2 shrink-0">
         <SetupHelp label="this approval">
           <SetupChangeNotes plan={c.plan} />
           <p>Canonfig saves your name with the plan to record who approved it. Approval does not apply anything; the Create step does.</p>
         </SetupHelp>
-      </span>
+      </motion.span>
     </>}
   </div>;
 }
