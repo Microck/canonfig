@@ -1,5 +1,5 @@
 // Machine map nodes: one card per machine, plus the dashed "Add machine" slot.
-import { memo, use, type ComponentProps } from "react";
+import { memo, use, useCallback, type ComponentProps } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Handle, NodeToolbar, Position, type Node, type NodeProps } from "@xyflow/react";
 import { ArrowSquareOut, PaintBrush, Plus } from "@/components/icons";
@@ -82,6 +82,11 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
   const { look } = data;
   const actions = use(MapActionsContext);
   const reduced = usePrefersReducedMotion();
+  const { reveal } = actions;
+  // The toolbar is portalled and mounts after selection. Its ref runs when its bounds can be measured.
+  const revealToolbar = useCallback((element: HTMLDivElement | null) => {
+    if (element) reveal(id);
+  }, [id, reveal]);
   const customizing = actions.customizingId === id;
   // The sheet's machine keeps its ring even when the sheet was opened from outside the map.
   const lit = selected || customizing;
@@ -93,8 +98,15 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
   return (
     <>
       {/* Outside viewport scaling; above the Source, below followers, away from the edges between them. */}
-      <NodeToolbar isVisible={selected} position={data.kind === "source" ? Position.Top : Position.Bottom} offset={8} align="end">
+      <NodeToolbar
+        isVisible={selected}
+        position={data.kind === "source" ? Position.Top : Position.Bottom}
+        offset={8}
+        align="end"
+        data-cf-machine-toolbar={id}
+      >
         <div
+          ref={revealToolbar}
           className={cn(
             "nodrag nopan flex animate-in items-center gap-0.5 rounded-md border border-border-strong bg-popover p-0.5 shadow-md shadow-black/40 duration-150 ease-snap fade-in-0",
             data.kind === "source" ? "slide-in-from-bottom-1" : "slide-in-from-top-1",
