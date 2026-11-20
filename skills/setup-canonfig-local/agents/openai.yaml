@@ -1,0 +1,4 @@
+interface:
+  display_name: "Set Up Canonfig Locally"
+  short_description: "Share skills and MCPs on this computer"
+  default_prompt: "Use $setup-canonfig-local to find my installed harnesses and guide me through sharing their config on this computer."

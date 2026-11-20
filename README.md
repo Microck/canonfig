@@ -247,6 +247,9 @@ see [security and credentials](https://canonfig.micr.dev/docs/reference/security
 
 ## agent skills
 
+to share skills and MCP servers across harnesses on this computer, run
+[`$setup-canonfig-local`](skills/setup-canonfig-local/SKILL.md) in your agent.
+
 let an AI agent install, set up or operate canonfig for you with the
 [install](skills/install-canonfig/SKILL.md), [setup](skills/setup-canonfig/SKILL.md)
 and [operate](skills/operate-canonfig/SKILL.md) skills.

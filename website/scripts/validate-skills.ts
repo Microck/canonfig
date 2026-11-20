@@ -37,6 +37,20 @@ const contracts: ReadonlyArray<SkillContract> = [
     ],
   },
   {
+    name: "setup-canonfig-local",
+    descriptionTerms: ["on this computer", "primary harness", "first local apply"],
+    files: ["SKILL.md", "agents/openai.yaml"],
+    bodyTerms: [
+      "canonfig harnesses --json",
+      "Which harness do you use most?",
+      "What do you want Canonfig to manage?",
+      "Where should the shared config apply?",
+      "Apply the changes shown above?",
+      "canonfig sync --plan --json",
+      "canonfig sync --apply --no-input --json",
+    ],
+  },
+  {
     name: "setup-canonfig",
     descriptionTerms: [
       "Linux",

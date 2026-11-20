@@ -1,5 +1,8 @@
 # Canonfig skills
 
+- [`setup-canonfig-local`](setup-canonfig-local/SKILL.md) guides you through
+  sharing skills, MCP servers, and other config across harnesses on this
+  computer. It shows what each harness would gain or lose before applying.
 - [`setup-canonfig`](setup-canonfig/SKILL.md): guided setup in Simple or Advanced
   (in-depth) mode. It inspects first, offers numbered choices plus custom input,
   explains each question, recommends safe defaults, chooses harnesses and what
@@ -14,7 +17,8 @@
   items, client trust after apply, scheduling, diagnostics, drift handling,
   recovery, and unenrollment.
 
-Start with `Use $setup-canonfig in simple mode to set up this machine` or
+For local sync, start with `Use $setup-canonfig-local on this computer`.
+For Source or Follower setup, use `Use $setup-canonfig in simple mode to set up this machine` or
 `Use $setup-canonfig in advanced mode to review my configuration`.
 Answer with an option number, a label, or custom text. Multi-select accepts
 comma-separated numbers; a batch can use `ROLE=2; NAME=3: studio-laptop`.
