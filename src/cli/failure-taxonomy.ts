@@ -237,6 +237,11 @@ export const failureTaxonomy = {
     "conflict-or-drift",
     () => "this command is already stopping or performing a self-update operation",
   ),
+  // A resident server found its package replaced while idle; it exits to restart on the new release.
+  ResidentReplacedError: declared(
+    "human-action-required",
+    () => "Canonfig was updated while this server was idle; it is restarting on the new release",
+  ),
   UpdateTransitionError: declared(
     "internal",
     () => "the self-update transaction cannot make that state transition",

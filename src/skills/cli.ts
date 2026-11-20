@@ -6,6 +6,7 @@ import { CanonfigError, errorMessage } from "./errors.ts";
 import type { CliIo } from "../cli/cli.ts";
 import { commandFailureExitCode, renderCommandResult, toCliPayload } from "../cli/command-output.ts";
 import { checkSkills, listSkills, trackSkill, updateSkills } from "./manager.ts";
+import { exitForReplacement, type ManagedCommandLease } from "../runtime/self-update/coordination.ts";
 
 export const skillsHelp = `Canonfig upstream skill updates
 
@@ -75,7 +76,7 @@ export function parseSkillsArguments(args: readonly string[]) {
   return { command, location, values, names, apply, once, intervalSeconds: Number(interval) };
 }
 
-export async function runSkillsCli(args: readonly string[], io: CliIo, signal?: AbortSignal): Promise<void> {
+export async function runSkillsCli(args: readonly string[], io: CliIo, signal?: AbortSignal, lease?: ManagedCommandLease): Promise<void> {
   const json = args.includes("--json");
   const filtered = args.filter((arg) => arg !== "--json" && arg !== "--no-input");
   const command = filtered[0] ?? "help";
@@ -96,8 +97,13 @@ export async function runSkillsCli(args: readonly string[], io: CliIo, signal?: 
       renderCommandResult(io, { command: "skills.list", message: "Tracked skills listed", data: toCliPayload(config), exitCode: CliExitCode.success, json, human: config.skills.length ? config.skills.map((skill) => `${skill.name}: ${skill.path} [${skill.ref}]`).join("\n") + "\n" : "No skills tracked. Use canonfig skills track to register an existing skill.\n" }); return;
     }
     if (command === "auto") {
+      // A continuous worker sleeps for hours between passes. It holds the
+      // command lease only during a pass, so updates are not deferred meanwhile.
+      const continuous = apply && !(once ?? false);
+      if (continuous) lease?.becomeResident(exitForReplacement(io.writeStderr));
       const automaticOptions: AutomaticSkillOptions = {
         apply, once: once ?? false, intervalSeconds: intervalSeconds ?? 86400, signal,
+        hold: continuous ? lease?.hold : undefined,
         onPass: (skills, pass) => renderCommandResult(io, {
           command: "skills.auto", message: apply ? "Automatic skill update pass completed" : "Automatic skill update preview",
           data: toCliPayload({ applied: apply, pass, skills }),

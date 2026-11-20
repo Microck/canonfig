@@ -51,7 +51,7 @@ import { helpOrVersion, uiUsage, type HelpOrVersionOutcome } from "./help.ts";
 import { BlobTransferProgress } from "../enrollment/blob-transfer-progress.ts";
 import { humanTransferProgress } from "./transfer-progress.ts";
 import { guiHostProblem, guiOrigin, runGui } from "../gui/server.ts";
-import type { ManagedCommandLease } from "../runtime/self-update/coordination.ts";
+import { exitForReplacement, type ManagedCommandLease } from "../runtime/self-update/coordination.ts";
 import type { GuiQueries } from "../gui/queries.ts";
 import type { StateRepository } from "../state/state-repository.service.ts";
 import { sourceEndpointUrl } from "../enrollment/tailnet.ts";
@@ -1257,6 +1257,15 @@ export const runCli = Effect.fn("runCli")(function*(
   const root = fileURLToPath(new URL("../../", import.meta.url));
   const execution: Effect.Effect<CliPayload, CliCommandFailure, SourceCommands | FollowerCommands | SetupCommands | GuiQueries | MachineState | StateRepository> = Effect.gen(function*() {
     if (outcome.command._tag === "Ui") return yield* runGui(outcome.command, io, lease);
+    if (outcome.command._tag === "SourceServe" && lease !== undefined) {
+      // The server outlives this command. Once it listens, its startup code is
+      // loaded and the lease is held per request, so updates are not deferred
+      // for as long as the supervised Source runs.
+      const source = yield* SourceCommands;
+      const served = yield* source.serve({ hostname: outcome.command.hostname, port: outcome.command.port, hold: lease.hold });
+      lease.becomeResident(exitForReplacement(io.writeStderr));
+      return served;
+    }
     if (outcome.command._tag === "ScheduleRun" && lease !== undefined) {
       // The job this command waits for may activate a Fleet Update, and activation
       // waits for every command lease. Holding ours while waiting would block the

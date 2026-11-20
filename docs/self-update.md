@@ -72,12 +72,19 @@ already established. Automatic mode polls in the foreground (24 hours default;
 scheduler**. It installs eligible patches or newer majors only when idle. Active
 commands defer a pass. An MCP launcher holds its lease through server startup.
 After the child starts, the MCP session can stay open during package activation.
+Commands keep starting while the updater checks the registry, downloads and stages
+the candidate; only the final package swap makes a starting command wait.
 Unfinished synchronization runs, unknown/unreadable state,
 invalid settings and update errors stop the worker. Finish or recover unfinished
 runs using their original build first.
 
-A continuously running Source or watcher deliberately defers self-updates: stop
-it for a maintenance window. Self-update does not kill or restart services.
+Long-running processes hold a lease only while they work: the Source server and
+`canonfig ui` per request or operation, and `skills auto --apply` per pass. An idle
+one never defers an update. When its next request or pass finds that an update
+replaced the package, it exits with status 75 before running any new code, and its
+supervisor (the Source service, launchd or the Windows task) starts it again on the
+new release. A foreground `canonfig ui` or watcher prints why it stopped; run it
+again. Self-update itself does not kill or restart services.
 Use a Fleet Update below to bring followers to the Source's release after that
 maintenance. Stop external package managers too; they do not use Canonfig's locks.
 
@@ -106,15 +113,16 @@ manual same-major selection and recovery rules apply as in the terminal.
    frees its port. It does not restart itself or other services.
 
 You do not need to stop this GUI to enable, disable or apply updates from its
-Version page. It temporarily releases only its own command lease. Another GUI,
-Source, watcher or command still defers apply and prevents disable. Finish or
-stop those processes, then retry. Deferred apply leaves the server running and
-shows the CLI's detail as a successful deferred result, with exit code 0.
+Version page. It temporarily releases only its own command lease. Another command
+that is working at that moment, such as a sync or a Source request, still defers
+apply and prevents disable. Finish it, then retry. Deferred apply leaves the server
+running and shows the CLI's detail as a successful deferred result, with exit code 0.
 
 Disable retains backups and receipts. Failed operations show the CLI's exact
 message and Human Action Required exit code 3. In particular, an unfinished sync
-or pending update still requires recovery; the GUI does not bypass it. Stop the
-GUI before using a separate terminal to apply or disable updates.
+or pending update still requires recovery; the GUI does not bypass it. An idle
+GUI does not block an update applied from a terminal; its next request then makes
+it exit with status 75, and you run `canonfig ui` again.
 
 
 ## Roll out the Source's release
@@ -125,8 +133,9 @@ automatically, with no local enablement step. Fleet activation uses the official
 CLI beside the running Node executable. The standalone `self-update disable` command
 and Version page off switch do not disable Fleet Updates.
 
-Update the Source during its maintenance window and restart its Source service.
-Then select a canary from its enrolled follower IDs:
+Update the Source with `canonfig self-update apply --apply`. An idle Source service
+does not defer it and restarts on the new release at its next request. Then select a
+canary from its enrolled follower IDs:
 
 ```sh
 canonfig source update --canary laptop-dana
