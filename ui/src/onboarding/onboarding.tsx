@@ -549,16 +549,18 @@ function Wizard({
   const body = useHeightTween<HTMLDivElement>(step, STEP_MS);
   const last = step === steps.length - 1;
 
-  // Arrival from the choice: while the shell is still growing (CARD_MORPH), the wizard's parts
-  // rise in top to bottom, 35ms apart from 200ms in, so they land as the card does: the
-  // back link, the header with the stepper, the first step's items, the footer. The header
-  // and footer carry their dividers, so no rule shows before its card.
+  // The opening step rises with the wizard shell. Leaving the wizard or advancing
+  // cancels the remaining entrance and a reversal keeps the content already built.
+  const arrivalStep = useRef<number | null>(step);
   useLayoutEffect(() => {
-    if (reduced) return;
-    riseIn(card.current!.parentElement!.querySelectorAll(`[data-rise], ${STEP_ITEMS}`), { delay: 200, gap: 35, duration: 320, cap: 6 });
-    // Arrival only.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!present || reduced || arrivalStep.current !== step) {
+      arrivalStep.current = null;
+      return;
+    }
+    const scope = card.current?.parentElement;
+    if (!scope) return;
+    return riseIn(scope.querySelectorAll(`[data-rise], ${STEP_ITEMS}`), { delay: 200, gap: 35, duration: 320, cap: 6 });
+  }, [card, present, reduced, step]);
 
   // Commit the new step synchronously, then focus its heading: the control just used may be
   // gone (Back on the second step, or Enter in a field), and focus would fall to <body>.
