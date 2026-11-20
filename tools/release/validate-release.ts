@@ -167,13 +167,14 @@ const validatePackageMetadata = (metadataPath: string): void => {
     fail("package bin must map canonfig to dist/runtime/main.js");
   }
   const runtimeDependencies = Object.keys(metadata.dependencies).sort();
-  // Sigstore dependencies verify npm provenance for Fleet Updates.
+  // Sigstore verifies Fleet Update provenance. Koffi opens native Windows directory handles.
   const expectedRuntimeDependencies = [
     "@canonfig/effect-platform-node-shared",
     "@canonfig/effect-sql-sqlite-node",
     "@sigstore/bundle",
     "effect",
     "jsonc-parser",
+    "koffi",
     "selfsigned",
     "sigstore",
     "smol-toml",

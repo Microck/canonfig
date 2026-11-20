@@ -131,6 +131,7 @@ export const removeTemporaryEntriesAt = async (
   directory: string,
   recursive: boolean,
   path: typeof posix | typeof win32,
+  includeGuards = true,
 ): Promise<ReadonlyArray<string>> => {
   let entries;
   try {
@@ -147,11 +148,11 @@ export const removeTemporaryEntriesAt = async (
     if (kind === "temporary") {
       await rm(entryPath, { recursive: true, force: true });
       removed.push(entryPath);
-    } else if (kind === "guard" && entry.isDirectory()) {
+    } else if (includeGuards && kind === "guard" && entry.isDirectory()) {
       await releaseGuard(entryPath, directory, path);
       removed.push(entryPath);
     } else if (recursive && entry.isDirectory()) {
-      removed.push(...await removeTemporaryEntriesAt(entryPath, true, path));
+      removed.push(...await removeTemporaryEntriesAt(entryPath, true, path, includeGuards));
     }
   }
   return removed;

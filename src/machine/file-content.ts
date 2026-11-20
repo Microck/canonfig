@@ -3,6 +3,8 @@ import { constants } from "node:fs";
 import { lstat, open, type FileHandle } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 
+import { sameIdentity, withAnchoredEntry } from "./anchored-directory.ts";
+import { copyPosixAnchoredFile } from "./posix-anchored-process.ts";
 import type { FileContent } from "./machine-state.types.ts";
 
 /** Moving a managed entry moves any file source beneath it too. */
@@ -36,6 +38,20 @@ export const writeFileContent = async (
   if (!isAbsolute(path) || path.includes("\0")) {
     throw new Error("file source must be an absolute path without NUL bytes");
   }
+  if (content.anchor !== undefined && process.platform === "darwin") {
+    await copyPosixAnchoredFile(content.anchor, content, destination.fd);
+    return;
+  }
+  await withAnchoredEntry(path, content.anchor, (held) =>
+    copyVerifiedFileContent(held, content, async (chunk, offset, length) =>
+      (await destination.write(chunk, offset, length, null)).bytesWritten));
+};
+
+export const copyVerifiedFileContent = async (
+  path: string,
+  content: Exclude<FileContent, Uint8Array>,
+  write: (chunk: Buffer, offset: number, length: number) => number | Promise<number>,
+): Promise<void> => {
   const maximumBytes = content.maximumBytes ?? Number.MAX_SAFE_INTEGER;
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) {
     throw new Error("file source byte limit must be a nonnegative safe integer");
@@ -45,7 +61,7 @@ export const writeFileContent = async (
     const opened = await source.stat();
     const visible = await lstat(path);
     if (!opened.isFile() || !visible.isFile()
-      || opened.dev !== visible.dev || opened.ino !== visible.ino) {
+      || !sameIdentity(opened, visible)) {
       throw new Error(`file source is not a stable regular file: ${path}`);
     }
     if (opened.size > maximumBytes) {
@@ -63,14 +79,14 @@ export const writeFileContent = async (
       // FileHandle.write may complete only part of a chunk.
       let offset = 0;
       while (offset < bytesRead) {
-        const { bytesWritten } = await destination.write(chunk, offset, bytesRead - offset, null);
+        const bytesWritten = await write(chunk, offset, bytesRead - offset);
         if (bytesWritten === 0) throw new Error(`file copy made no write progress: ${path}`);
         offset += bytesWritten;
       }
     }
     const final = await source.stat();
     const current = await lstat(path);
-    if (!current.isFile() || opened.dev !== current.dev || opened.ino !== current.ino
+    if (!current.isFile() || !sameIdentity(opened, current)
       || total !== opened.size || final.size !== opened.size
       || final.mtimeMs !== opened.mtimeMs || final.ctimeMs !== opened.ctimeMs) {
       throw new Error(`file source changed during copy: ${path}`);

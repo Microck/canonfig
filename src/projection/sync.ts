@@ -20,6 +20,7 @@ import {
   defaultSynchronizationExecutionLimits,
   removeRunTemporaryEntries,
 } from "../synchronization/executor.ts";
+import { authoredResourceAnchor } from "../synchronization/resource-executors.ts";
 import { withRunLock } from "../synchronization/run-lock.ts";
 import { synchronizationReviewDigest } from "../synchronization/planner.ts";
 import { SynchronizationPlanChangedError } from "../synchronization/synchronization.errors.ts";
@@ -486,8 +487,9 @@ export const writeAdoptionReviews = (
       const detail = action.detail;
       if (detail.kind !== "write-file" || detail.textTransition.kind !== "adopt-local") continue;
       const target = yield* machine.normalizePath({ path: detail.target });
-      if ((yield* machine.inspectPath(target)).kind !== "regular") return yield* stale(`${detail.target} is no longer a regular file`);
-      const bytes = yield* machine.readFile({ path: target, maximumBytes: defaultSynchronizationExecutionLimits.maximumFileBytes });
+      const anchor = yield* authoredResourceAnchor(action.resource);
+      if ((yield* machine.inspectPath(target, anchor)).kind !== "regular") return yield* stale(`${detail.target} is no longer a regular file`);
+      const bytes = yield* machine.readFile({ path: target, anchor, maximumBytes: defaultSynchronizationExecutionLimits.maximumFileBytes });
       const current = yield* Effect.try({
         try: () => parseTextComposition(bytes),
         catch: () => stale(`${detail.target} is no longer valid text without Canonfig markers`),

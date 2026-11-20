@@ -94,6 +94,12 @@ const requireMacosPath = (
       message: `expected a macOS path, received ${path.platform}`,
     }));
 
+const macosPathWithAnchor = (path: MachinePath, anchor?: MachinePath) =>
+  Effect.all({
+    path: requireMacosPath(path),
+    anchor: anchor === undefined ? Effect.succeed(undefined) : requireMacosPath(anchor),
+  });
+
 const normalizedPath = (
   input: NormalizePathInput,
   home: string,
@@ -612,30 +618,24 @@ export const macosMachineStateLayer = (
             Effect.flatMap((path) => machine.ensureDirectory({ ...input, path })),
           ),
         atomicWrite: (input) =>
-          Effect.all({
-            path: requireMacosPath(input.path),
-            anchor: input.anchor === undefined ? Effect.succeed(undefined) : requireMacosPath(input.anchor),
-          }).pipe(
+          macosPathWithAnchor(input.path, input.anchor).pipe(
             Effect.flatMap(({ path, anchor }) => machine.atomicWrite({ ...input, path, anchor })),
           ),
         readFile: (input) =>
-          Effect.all({
-            path: requireMacosPath(input.path),
-            anchor: input.anchor === undefined ? Effect.succeed(undefined) : requireMacosPath(input.anchor),
-          }).pipe(
+          macosPathWithAnchor(input.path, input.anchor).pipe(
             Effect.flatMap(({ path, anchor }) => machine.readFile({ ...input, path, anchor })),
           ),
         removeFile: (input) =>
-          requireMacosPath(input.path).pipe(
-            Effect.flatMap((path) => machine.removeFile({ ...input, path })),
+          macosPathWithAnchor(input.path, input.anchor).pipe(
+            Effect.flatMap((native) => machine.removeFile({ ...input, ...native })),
           ),
         removeEmptyDirectory: (input: RemoveEmptyDirectoryInput) =>
-          requireMacosPath(input.path).pipe(
-            Effect.flatMap((path) => machine.removeEmptyDirectory({ ...input, path })),
+          macosPathWithAnchor(input.path, input.anchor).pipe(
+            Effect.flatMap((native) => machine.removeEmptyDirectory({ ...input, ...native })),
           ),
         removeTemporaryEntries: (input) =>
-          requireMacosPath(input.directory).pipe(
-            Effect.flatMap((directory) => machine.removeTemporaryEntries({ ...input, directory })),
+          macosPathWithAnchor(input.directory, input.anchor).pipe(
+            Effect.flatMap(({ path: directory, anchor }) => machine.removeTemporaryEntries({ ...input, directory, anchor })),
           ),
         validatePathWithinRoot: (input) =>
           Effect.all({
@@ -645,36 +645,38 @@ export const macosMachineStateLayer = (
         mutateWithinRoot: (input) =>
           Effect.all({
             root: requireMacosPath(input.root),
-            path: requireMacosPath(input.path),
+            target: macosPathWithAnchor(input.path, input.anchor),
           }).pipe(
-            Effect.flatMap(({ root, path }) =>
-              machine.mutateWithinRoot({
-                root,
-                path,
-                mutation: input.mutation,
-              })
-            ),
+            Effect.flatMap(({ root, target }) => machine.mutateWithinRoot({ ...input, root, ...target })),
           ),
         replaceSymlink: (input) =>
           requireMacosPath(input.path).pipe(
             Effect.flatMap((path) => machine.replaceSymlink({ ...input, path })),
           ),
-        readSymlink: (path) =>
-          requireMacosPath(path).pipe(
-            Effect.flatMap(machine.readSymlink),
+        readSymlink: (path, anchor) =>
+          macosPathWithAnchor(path, anchor).pipe(
+            Effect.flatMap((native) => machine.readSymlink(native.path, native.anchor)),
           ),
-        inspectPath: (path) =>
-          requireMacosPath(path).pipe(Effect.flatMap(machine.inspectPath)),
-        listDirectory: (path) =>
-          requireMacosPath(path).pipe(Effect.flatMap(machine.listDirectory)),
+        inspectPath: (path, anchor) =>
+          macosPathWithAnchor(path, anchor).pipe(
+            Effect.flatMap((native) => machine.inspectPath(native.path, native.anchor)),
+          ),
+        listDirectory: (path, anchor) =>
+          macosPathWithAnchor(path, anchor).pipe(
+            Effect.flatMap((native) => machine.listDirectory(native.path, native.anchor)),
+          ),
         setPermissions: (input) =>
-          requireMacosPath(input.path).pipe(
-            Effect.flatMap((path) => machine.setPermissions({ ...input, path })),
+          macosPathWithAnchor(input.path, input.anchor).pipe(
+            Effect.flatMap((native) => machine.setPermissions({ ...input, ...native })),
           ),
-        permissions: (path) =>
-          requireMacosPath(path).pipe(Effect.flatMap(machine.permissions)),
-        snapshotPermissions: (path) =>
-          requireMacosPath(path).pipe(Effect.flatMap(machine.snapshotPermissions)),
+        permissions: (path, anchor) =>
+          macosPathWithAnchor(path, anchor).pipe(
+            Effect.flatMap((native) => machine.permissions(native.path, native.anchor)),
+          ),
+        snapshotPermissions: (path, anchor) =>
+          macosPathWithAnchor(path, anchor).pipe(
+            Effect.flatMap((native) => machine.snapshotPermissions(native.path, native.anchor)),
+          ),
         findExecutable: (query) => {
           // The macOS destinations (Homebrew prefixes, ~/Library/pnpm) are
           // resolved here; the Linux lookup below only walks the result.
@@ -705,8 +707,8 @@ export const macosMachineStateLayer = (
             ),
           ),
         digestFile: (input) =>
-          requireMacosPath(input.path).pipe(
-            Effect.flatMap((path) => machine.digestFile({ ...input, path })),
+          macosPathWithAnchor(input.path, input.anchor).pipe(
+            Effect.flatMap((native) => machine.digestFile({ ...input, ...native })),
           ),
         credentialCapability: (): Effect.Effect<
           CredentialStorageCapability,

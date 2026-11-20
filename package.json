@@ -62,6 +62,7 @@
     "@sigstore/bundle": "5.0.1",
     "effect": "4.0.0-rc.112",
     "jsonc-parser": "3.3.1",
+    "koffi": "3.3.8",
     "selfsigned": "^5.5.0",
     "sigstore": "5.0.1",
     "smol-toml": "1.9.0",
