@@ -617,10 +617,8 @@ export function useDialogReturnFocus(fallback: () => void) {
 }
 
 /**
- * Asks before in-app navigation discards an unsaved draft. While `dirty`, every in-app link, row, sidebar
- * entry, palette command and Demo switcher change goes through the guard in routes.ts and opens `dialog`
- * instead; Discard changes completes the navigation, Keep editing stays. Browser Back/Forward and reloads
- * are not intercepted. Every form with a saveable draft uses this, so they all ask the same way.
+ * Registers a dirty draft with the workspace router. In-app navigation and same-document
+ * Back and Forward open the discard dialog. The browser confirms reloads and document exits.
  *
  * Render `dialog` inside the form. `label` finishes "Your edits to … aren't saved". Exits that settle the
  * draft themselves (save, remove, Cancel on a new record) navigate inside `leaveWithoutAsking`.
