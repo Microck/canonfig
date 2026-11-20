@@ -89,6 +89,7 @@ export function Frame() {
     <div className="flex h-svh flex-col bg-canvas text-foreground">
       <a
         href="#workspace-content"
+        onClick={(event) => followLink(event, (href) => document.getElementById(href.slice(1))?.focus())}
         className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-50 focus:rounded-md focus:bg-panel focus:px-4 focus:py-3 focus:text-sm focus:font-medium focus:text-foreground focus:outline-2 focus:outline-offset-2 focus:outline-ring"
       >
         Skip to content
