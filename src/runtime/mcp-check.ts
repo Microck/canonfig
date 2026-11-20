@@ -1,5 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { open } from "node:fs/promises";
+import { win32 } from "node:path";
 
 import { Effect, Option, Predicate, Schema } from "effect";
 
@@ -29,15 +30,26 @@ import { type ConfigJson, type ConfigObject, isConfigObject } from "../synchroni
 /** Codex's default `startup_timeout_sec`; a slower server fails in Codex anyway. */
 export const MCP_STARTUP_TIMEOUT_MILLISECONDS = 10_000;
 
-/**
- * The variables Codex passes to a stdio server besides its `env` and
- * `env_vars` (codex-rs/rmcp-client/src/utils.rs DEFAULT_ENV_VARS). Other
- * harnesses pass their whole environment. Windows uses a longer core list in
- * Codex, so there the whole environment is passed as an approximation.
- */
-const CODEX_INHERITED_ENV = [
+// Codex rust-v0.171.0 (ccf9be8cc458bd6b8336fe84d68d8893f2691a5e).
+// rmcp-client/src/utils.rs, protocol/src/shell_environment.rs and network-proxy/src/certs.rs.
+const CODEX_UNIX_ENV = [
   "HOME", "LOGNAME", "PATH", "SHELL", "USER", "__CF_USER_TEXT_ENCODING", "LANG", "LC_ALL", "TERM", "TMPDIR", "TZ",
 ] as const;
+const CODEX_WINDOWS_ENV = [
+  "PATH", "PATHEXT", "SHELL", "COMSPEC", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE",
+  "USERNAME", "USERDOMAIN", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+  "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "PROGRAMDATA", "LOCALAPPDATA", "APPDATA",
+  "TEMP", "TMP", "TMPDIR", "POWERSHELL", "PWSH",
+] as const;
+const CODEX_WINDOWS_CA_ENV = [
+  "CODEX_CA_CERTIFICATE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
+  "GIT_SSL_CAINFO", "CARGO_HTTP_CAINFO", "PIP_CERT", "BUNDLE_SSL_CA_CERT", "NPM_CONFIG_CAFILE",
+] as const;
+const CODEX_NON_INHERITABLE_ENV: ReadonlySet<string> = new Set([
+  "CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN", "NODE_REPL_AUTH_TOKEN", "CODEX_GUARDIAN_DECISIONS_API_KEY",
+  "OPENAI_FEDERATION_RULE_ID", "OPENAI_IDENTITY_TOKEN_FILE", "OPENAI_IDENTITY_TOKEN_SOURCE",
+  "OPENAI_SPIFFE_AUDIENCE", "OPENAI_SPIFFE_ID", "OPENAI_WORKLOAD_IDENTITY_CONTEXT",
+]);
 
 const MAX_STDOUT_BYTES = 4 * 1024 * 1024;
 
@@ -48,6 +60,7 @@ type Launch =
     readonly args: ReadonlyArray<string>;
     readonly env: Readonly<Record<string, string>>;
     readonly cwd: string | undefined;
+    readonly codexWindows?: true | undefined;
     /** Values the entry itself declares, redacted from any stderr the check reports. */
     readonly secrets: ReadonlyArray<string>;
     readonly timeoutMilliseconds: number | undefined;
@@ -86,6 +99,42 @@ export interface McpCheckResult {
 
 const stringList = (value: ConfigJson | undefined): ReadonlyArray<string> | undefined =>
   Array.isArray(value) && value.every(Predicate.isString) ? value : undefined;
+
+const CodexLocalEnvVars = Schema.Array(Schema.Union([
+  Schema.String,
+  Schema.Struct({ name: Schema.String, source: Schema.optionalKey(Schema.Literal("local")) }),
+]));
+
+const windowsEnvKey = (name: string) => name.replace(/[a-z]/gu, (letter) => letter.toUpperCase());
+
+const codexWindowsEnvironment = (
+  parent: NodeJS.ProcessEnv,
+  forwarded: ReadonlyArray<string>,
+  declared: Record<string, string>,
+  cwd: string,
+) => {
+  // Fold names before passing them to Node. A child environment with both
+  // Path and PATH would otherwise let Node's key ordering choose the winner.
+  const inherited = new Map<string, string>();
+  for (const [name, value] of Object.entries(parent)) {
+    if (value !== undefined) inherited.set(windowsEnvKey(name), value);
+  }
+
+  const effective = new Map<string, string>();
+  for (const name of [...CODEX_WINDOWS_ENV, ...forwarded]) {
+    const key = windowsEnvKey(name);
+    const value = inherited.get(key);
+    if (value !== undefined) effective.set(key, value);
+  }
+  for (const key of CODEX_WINDOWS_CA_ENV) {
+    const path = inherited.get(key);
+    if (path) effective.set(key, path.startsWith("\\\\?\\") ? path : win32.resolve(cwd, path));
+  }
+  for (const [name, value] of Object.entries(declared)) effective.set(windowsEnvKey(name), value);
+  for (const key of CODEX_NON_INHERITABLE_ENV) effective.delete(key);
+  const sensitive = new Set([...forwarded, ...Object.keys(declared), ...CODEX_WINDOWS_CA_ENV].map(windowsEnvKey));
+  return { env: Object.fromEntries(effective), sensitive: [...effective].filter(([name]) => sensitive.has(name)) };
+};
 
 const stringTable = (...sources: ReadonlyArray<ConfigJson | undefined>) =>
   Object.fromEntries(sources.flatMap((source) => isConfigObject(source)
@@ -160,6 +209,7 @@ const launchOf = (
   entry: ConfigObject,
   environment: NodeJS.ProcessEnv,
   cwd: string,
+  platform: RootContext["platform"],
 ): McpEntry["launch"] => {
   if (entry.enabled === false || entry.disabled === true) return { kind: "disabled" };
   // Codex launches what its config says literally; the other harnesses expand references.
@@ -174,24 +224,37 @@ const launchOf = (
     if (parts?.[0] === undefined || parts[0].trim() === "" || args === undefined) {
       return { kind: "invalid", reason: "its command or arguments are not text" };
     }
-    const declared = resolveTable(stringTable(entry.env, entry.environment));
-    const forwarded = (stringList(entry.env_vars) ?? []).filter((name) => environment[name] !== undefined);
-    const inherited = harness === "codex" && process.platform !== "win32"
-      ? Object.fromEntries([...CODEX_INHERITED_ENV, ...forwarded].flatMap((name) => {
+    const windowsCodex = harness === "codex" && platform === "windows";
+    const declared = resolveTable(stringTable(entry.env, windowsCodex ? undefined : entry.environment));
+    const variables = (() => {
+      if (windowsCodex) {
+        const decoded = Schema.decodeUnknownOption(CodexLocalEnvVars)(entry.env_vars ?? []);
+        if (Option.isNone(decoded)) return undefined;
+        const explicit = decoded.value.map((item) => Predicate.isString(item) ? item : item.name);
+        return codexWindowsEnvironment(environment, explicit, declared, cwd);
+      }
+      const names = stringList(entry.env_vars) ?? [];
+      const definedValues = (keys: ReadonlyArray<string>) => keys.flatMap((name) => {
         const value = environment[name];
         return value === undefined ? [] : [[name, value] as const];
-      }))
-      : Object.fromEntries(Object.entries(environment).filter((pair): pair is [string, string] => pair[1] !== undefined));
+      });
+      const inherited = Object.fromEntries(harness === "codex"
+        ? definedValues([...CODEX_UNIX_ENV, ...names])
+        : definedValues(Object.keys(environment)));
+      return { env: { ...inherited, ...declared }, sensitive: [...Object.entries(declared), ...definedValues(names)] };
+    })();
+    if (variables === undefined) return { kind: "invalid", reason: "its env_vars must name local environment variables" };
     return {
       kind: "stdio",
       command: resolve(parts[0]),
       args: [...parts.slice(1), ...args].map(resolve),
-      env: { ...inherited, ...declared },
+      env: variables.env,
+      codexWindows: windowsCodex || undefined,
       // Harnesses start servers in the session's folder unless one is configured.
       cwd: Predicate.isString(entry.cwd) && entry.cwd.trim() !== "" ? entry.cwd : cwd,
       // Forwarded variables and values substituted into the command or arguments reach the server too.
       secrets: secretValues(
-        [...Object.entries(declared), ...forwarded.flatMap((name) => environment[name] === undefined ? [] : [[name, environment[name]] as const])],
+        variables.sensitive,
         harness === "codex" ? [] : referencedValues([...parts, ...args], environment),
       ),
       timeoutMilliseconds: startupTimeout(harness, entry),
@@ -268,7 +331,7 @@ export const readHarnessMcpEntries = async (input: {
               path,
               name,
               launch: isConfigObject(entry)
-                ? launchOf(harness, entry, input.environment, input.cwd)
+                ? launchOf(harness, entry, input.environment, input.cwd, input.context.platform)
                 : { kind: "invalid", reason: "it is not a table" },
             });
           }
@@ -341,6 +404,29 @@ const rpcError = (reply: RpcReply, secrets: ReadonlyArray<string>): string =>
 /** Starts the server, completes initialize and tools/list, then stops its whole process group. */
 const CANCELLED: ProbeOutcome = { status: "skipped", detail: "not checked: the doctor run was cancelled" };
 
+const startStdioServer = (launch: Extract<Launch, { kind: "stdio" }>) => {
+  const start = () => spawn(launch.command, [...launch.args], {
+    env: launch.env, cwd: launch.cwd, stdio: "pipe", detached: process.platform !== "win32", windowsHide: true,
+  });
+  if (!launch.codexWindows) return start();
+
+  // Node propagates coverage settings and libuv supplies LOGONSERVER even
+  // with an explicit env. Spawn copies the OS environment synchronously.
+  // Keep the omission scoped to that call, with no await before restoration.
+  const withheld: Array<readonly [string, string]> = [];
+  try {
+    for (const name of ["LOGONSERVER", "NODE_V8_COVERAGE"]) {
+      const value = process.env[name];
+      if (Object.hasOwn(launch.env, name) || value === undefined) continue;
+      withheld.push([name, value]);
+      delete process.env[name];
+    }
+    return start();
+  } finally {
+    for (const [name, value] of withheld) process.env[name] = value;
+  }
+};
+
 const probeStdio = (launch: Extract<Launch, { kind: "stdio" }>, timeoutMilliseconds: number, cancel: AbortSignal) =>
   new Promise<ProbeOutcome>((resolve) => {
     let stage: "initialize" | "tools/list" = "initialize";
@@ -348,15 +434,11 @@ const probeStdio = (launch: Extract<Launch, { kind: "stdio" }>, timeoutMilliseco
     let stdoutBytes = 0;
     let stderr = "";
     let settled = false;
-    // A process group lets the check stop wrappers (uv, npx, shell scripts) and their children together.
-    const detached = process.platform !== "win32";
     // The configured command, not its expansion, appears in messages: an expanded reference may be a secret.
     const shownCommand = redactText(launch.command, launch.secrets);
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawn(launch.command, [...launch.args], {
-        env: launch.env, cwd: launch.cwd, stdio: "pipe", detached, windowsHide: true,
-      });
+      child = startStdioServer(launch);
     } catch (error) {
       // Invalid arguments (such as a NUL byte) throw before the child exists.
       return resolve({ status: "fail", detail: `could not start ${shownCommand}: ${error instanceof Error && "code" in error ? String(error.code) : "invalid command"}` });

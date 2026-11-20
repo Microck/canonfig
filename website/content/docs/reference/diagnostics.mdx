@@ -171,6 +171,8 @@ entry sets a startup timeout gets that, up to 120 seconds; any other server gets
 10 seconds, or `--timeout-ms` when that is longer. `details` has
 one line per server with the harnesses that declare it.
 
+On Windows, doctor uses [Codex 0.171.0's stdio environment rules](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/rmcp-client/src/utils.rs#L16-L59). A server receives the core Windows variables and variables named in `env_vars`. Values in `env` override them, with case-insensitive names.
+
 Streamable HTTP and HTTP+SSE checks also verify that the server accepts
 replies to its ping requests. HTTP+SSE uses the stream's advertised message
 endpoint on the same origin. For Streamable HTTP, Canonfig allows up to two
