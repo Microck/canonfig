@@ -15,7 +15,7 @@ import {
   withRollbackOutcome,
 } from "./executor.ts";
 import { recoverSynchronizationPlan } from "./recovery.ts";
-import { RollbackCleanupError } from "./synchronization.errors.ts";
+import { RollbackCleanupError, RunOutcomeFollowUpError } from "./synchronization.errors.ts";
 import { Synchronization } from "./synchronization.service.ts";
 
 const makeSynchronization = Effect.gen(function*() {
@@ -32,10 +32,8 @@ const makeSynchronization = Effect.gen(function*() {
         const revision = yield* executionRevision(input);
         const startedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
 
-        // A run that cannot fit, or that names a path this machine cannot
-        // take, is refused before it exists. Measuring after startRun left an
-        // open run the operator never knowingly started, and every later
-        // apply demanded `canonfig recover` for it.
+        // Measure before applying. A caller that already staged recovery
+        // material under a Preparing run can reconcile it if preflight fails.
         yield* preflightPathLengths(input.plan.actions, input.revision.desired).pipe(
           Effect.provideService(MachineState, machine),
         );
@@ -59,7 +57,7 @@ const makeSynchronization = Effect.gen(function*() {
         // reachable before this succeeds.
         const existing = yield* repository.loadRecovery(follower);
         if (existing?.run.id === input.id && existing.run.lifecycle._tag === "Preparing") {
-          yield* repository.beginRun(input.id);
+          yield* repository.beginRun(input.id, pendingRollbackReferences);
         } else {
           yield* repository.startRun({
             id: input.id,
@@ -91,13 +89,17 @@ const makeSynchronization = Effect.gen(function*() {
           ),
         );
         const completedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+        const archiveRun = "origin" in input.revision && (input.revision.origin === "archive" || input.revision.origin === "snapshot");
+        const preserveFailure = archiveRun && result.outcome.outcome !== "Converged";
         yield* repository.completeRun({
           run: input.id,
           completedAt,
           outcome: result.outcome,
           appliedResources: result.appliedResources,
           removedResources: result.removedResources,
-        });
+        }).pipe(Effect.mapError((error) => preserveFailure
+          ? new RunOutcomeFollowUpError({ executionOutcome: result.outcome, step: "record" })
+          : error));
         if (result.outcome.outcome !== "Interrupted") {
           yield* cleanupRollbackSnapshots(
             input.id, input.plan.actions.map((action) => action.id),
@@ -105,11 +107,9 @@ const makeSynchronization = Effect.gen(function*() {
             [...pendingRollbackReferences.values()],
           ).pipe(
             Effect.provideService(MachineState, machine),
-            Effect.mapError((error) => new RollbackCleanupError({
-              run: input.id,
-              outcome: result.outcome.outcome,
-              message: String(error),
-            })),
+            Effect.mapError((error) => preserveFailure
+              ? new RunOutcomeFollowUpError({ executionOutcome: result.outcome, step: "cleanup" })
+              : new RollbackCleanupError({ run: input.id, outcome: result.outcome.outcome, message: String(error) })),
           );
           if (!("origin" in input.revision) && result.rollback._tag === "Complete") yield* repository.finalizeRun(input.id, new Date(yield* Clock.currentTimeMillis).toISOString());
         }

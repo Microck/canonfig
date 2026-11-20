@@ -232,6 +232,62 @@ describe("canonfig export and import", () => {
     expect(existsSync(join(source, "setup.tar.gz"))).toBe(false);
   }, 60_000);
 
+  it("reports a failed archive journal without changing the export conflict", () => {
+    const home = sourceHome();
+    const first = invoke(home, ["export", "--output", "setup.tar.gz"]);
+    expect(first.status, first.stdout + first.stderr).toBe(0);
+    const archive = join(home, "setup.tar.gz");
+    const original = readFileSync(archive);
+    const database = new DatabaseSync(join(home, ".canonfig", "state.sqlite"));
+    try {
+      database.exec(`CREATE TRIGGER reject_archive_error BEFORE INSERT ON archive_events
+        WHEN NEW.outcome = 'Error' BEGIN SELECT RAISE(ABORT, 'private journal fault'); END;`);
+    } finally {
+      database.close();
+    }
+    const refused = invoke(home, ["export", "--output", "setup.tar.gz"]);
+    expect(refused.status, refused.stdout + refused.stderr).toBe(4);
+    expect(refused.envelope.message).toContain("already exists");
+    expect(refused.envelope.message).toContain("could not record this failure in the archive history");
+    expect(refused.envelope.message).not.toContain("private journal fault");
+    expect(readFileSync(archive)).toEqual(original);
+  }, 60_000);
+
+  it("reconciles only the failed archive run's staging after cleanup was blocked", () => {
+    const home = newHome();
+    const folder = join(home, ".canonfig");
+    const backupRoot = join(folder, ".backups");
+    const config = join(folder, "canonfig.jsonc");
+    write(config, '{ "version": 1, "harnesses": [] }\n');
+    write(join(folder, "AGENTS.md"), "before export\n");
+    expect(invoke(home, ["export", "--output", "setup.tar.gz"]).status).toBe(0);
+    write(join(folder, "AGENTS.md"), "keep current contents\n");
+    write(backupRoot, "blocks snapshot and staging cleanup");
+    const failed = invoke(home, ["import", "setup.tar.gz", "--replace"]);
+    expect(failed.status, failed.stdout + failed.stderr).toBe(7);
+    expect(failed.envelope.message).toContain("cannot take a takeover snapshot");
+    expect(failed.envelope.message).toContain("Run 'canonfig recover'");
+    expect(readFileSync(join(folder, "AGENTS.md"), "utf8")).toBe("keep current contents\n");
+
+    const database = new DatabaseSync(join(folder, "state.sqlite"));
+    try {
+      const run = database.prepare("SELECT id, phase FROM synchronization_runs").get();
+      expect(run).toMatchObject({ phase: "Finalizing", id: expect.any(String) });
+      const ownStage = join(backupRoot, `.tmp-${sha256(Buffer.from(String(run?.id)))}`);
+      const otherStage = join(backupRoot, `.tmp-${sha256(Buffer.from("other-run"))}`);
+      rmSync(backupRoot);
+      write(join(ownStage, "partial"), "discard after preparation failure");
+      write(join(otherStage, "partial"), "another run's backup");
+      invoke(home, ["recover"]);
+      expect(database.prepare("SELECT phase FROM synchronization_runs").get()).toMatchObject({ phase: "Complete" });
+      expect(existsSync(ownStage)).toBe(false);
+      expect(readFileSync(join(otherStage, "partial"), "utf8")).toBe("another run's backup");
+      expect(readFileSync(join(folder, "AGENTS.md"), "utf8")).toBe("keep current contents\n");
+    } finally {
+      database.close();
+    }
+  }, 60_000);
+
   it("refuses an existing output without --force and an output outside home", () => {
     const source = sourceHome();
     write(join(source, "setup.tar.gz"), "keep me");

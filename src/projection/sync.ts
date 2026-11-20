@@ -8,10 +8,11 @@ import { parseSurfaceResourceId, resourcesOwner, RunId, surfaceResourceId } from
 import type { FollowerId, RunId as RunIdType } from "../domain/brand.ts";
 import { checkTextWriteTransition, localProjectionFollower, type SynchronizationOutcome } from "../domain/synchronization.ts";
 import { composeTextFile, parseTextComposition } from "../domain/text-composition.ts";
+import { MachineFilesystemError } from "../machine/machine-state.errors.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { sha256BytesHex } from "../profile/profile-codec.ts";
 import { StateRepository } from "../state/state-repository.service.ts";
-import { ActiveRunExistsError } from "../state/state-repository.errors.ts";
+import { ActiveRunExistsError, InvalidRunTransitionError } from "../state/state-repository.errors.ts";
 import type { RecoveryState } from "../state/state-repository.types.ts";
 import { editConfigText, getConfigPath, parseConfigDocument } from "../synchronization/config-codec.ts";
 import {
@@ -43,11 +44,13 @@ import {
   sharedSkillsOwner,
   takeoverSummary,
   type FolderPlan,
+  type LocalRevisionPlan,
 } from "./plan.ts";
-import { ArchiveConflictError, ArchiveRequestError, FOLDER_FILES, journalError, machineIdentity, planImport } from "./archive.ts";
+import { ArchiveConflictError, ArchiveRequestError, ArchiveSecondaryError, FOLDER_FILES, journalError, machineIdentity, onArchiveError, planImport } from "./archive.ts";
 import {
   canonicalFolderOwner,
   deleteSnapshot,
+  discardSnapshotStaging,
   dropSnapshotEntries,
   pruneSnapshots,
   readSnapshot,
@@ -118,7 +121,12 @@ export const loadRunArtifacts = (run: RunIdType, revision: PlanningLocalRevision
 
 export const discardRunArtifacts = (run: RunIdType) =>
   artifactDirectory(run).pipe(
-    Effect.flatMap((directory) => Effect.promise(() => rm(directory.absolute, { recursive: true, force: true }))),
+    Effect.flatMap((directory) => Effect.tryPromise({
+      try: () => rm(directory.absolute, { recursive: true, force: true }),
+      catch: (cause) => new MachineFilesystemError({
+        operation: "discard projection artifacts", path: directory.absolute, message: String(cause),
+      }),
+    })),
   );
 
 /**
@@ -143,6 +151,7 @@ export const finishProjectionRun = (
     const backups = backupsOf(statePath);
     if (outcome.outcome === "Failed") {
       yield* repository.removeRunTakeovers(run);
+      yield* discardSnapshotStaging(backups, run);
       const snapshot = yield* snapshotOfRun(backups, run);
       if (snapshot !== undefined) yield* deleteSnapshot(backups, snapshot);
       yield* discardRunArtifacts(run);
@@ -298,14 +307,6 @@ const loadFolder = (statePath: string) =>
         : new CanonicalFolderError({ path: folderOf(statePath), message: String(error) }),
   });
 
-/** Whether the engine recorded the run, open or completed. */
-const runRecorded = (follower: FollowerId, run: RunIdType) =>
-  Effect.gen(function*() {
-    const repository = yield* StateRepository;
-    if ((yield* repository.loadDeploymentReceipt(run)) !== undefined) return true;
-    return (yield* repository.loadOpenRunIdentity(follower))?.run === run;
-  });
-
 /**
  * Snapshot the Canonical Folder entries a run is about to replace, under the
  * run's id, so `canonfig restore <id>` writes them back. Canonfig never
@@ -331,19 +332,73 @@ const snapshotFolderEntries = (statePath: string, run: RunIdType, entries: Reado
     );
   });
 
-/**
- * Clean up after a restore or import that failed before or while the engine
- * ran: its stored content, and its folder snapshot when the engine never
- * recorded the run, so nothing the snapshot holds was replaced. A recorded
- * run keeps the snapshot for `finishProjectionRun`, `recover` or `abandon`.
- * Best effort: the run's own failure is what gets reported.
- */
-const discardFailedRun = (statePath: string, follower: FollowerId, run: RunIdType, snapshot: string | undefined) =>
-  Effect.gen(function*() {
-    yield* discardRunArtifacts(run).pipe(Effect.ignore);
-    if (snapshot === undefined || (yield* runRecorded(follower, run))) return;
-    yield* deleteSnapshot(backupsOf(statePath), snapshot);
-  }).pipe(Effect.ignore);
+const startPreparingProjectionRun = Effect.fn("Projection.startPreparingRun")(function*(
+  follower: FollowerId,
+  planned: LocalRevisionPlan,
+) {
+  const repository = yield* StateRepository;
+  const run = newRunId();
+  const startedAt = new Date().toISOString();
+  yield* repository.recordLocalRevision(planned.revision, startedAt);
+  yield* repository.startRun({
+    id: run, follower, revision: planned.revision.id, plan: planned.plan, startedAt, preparing: true,
+  });
+  return { run, startedAt };
+});
+
+const archiveCleanupDiagnostic = (run: RunIdType) =>
+  `Canonfig could not finish cleaning up run ${run}. Run 'canonfig recover' to reconcile its remaining artifacts`;
+
+/** Stage import and restore under a durable Preparing run before writing any backup or artifact. */
+const runArchiveProjection = (
+  statePath: string,
+  follower: FollowerId,
+  planned: LocalRevisionPlan,
+  backupEntries: ReadonlyArray<string>,
+) => Effect.gen(function*() {
+  const repository = yield* StateRepository;
+  const synchronization = yield* Synchronization;
+  const { run } = yield* startPreparingProjectionRun(follower, planned);
+  const reconcile = Effect.gen(function*() {
+    const recovery = yield* repository.loadRecovery(follower);
+    if (recovery?.run.id !== run || recovery.run.lifecycle._tag !== "Preparing") {
+      return yield* new InvalidRunTransitionError({ run, message: "only the preparing run can be cleaned up automatically" });
+    }
+    const outcome = yield* synchronization.recover({ follower, revision: planned.revision, artifacts: [] });
+    yield* finishProjectionRun(statePath, follower, run, outcome, planned.revision);
+  });
+  const { backup, outcome, pending } = yield* Effect.gen(function*() {
+    const backup = yield* snapshotFolderEntries(statePath, run, backupEntries);
+    yield* storeArtifacts(run, planned.artifacts);
+    const result = yield* synchronization.run({
+      id: run,
+      plan: planned.plan,
+      revision: planned.revision,
+      appliedResources: planned.appliedResources,
+      artifacts: planned.artifacts,
+    }).pipe(
+      Effect.map((outcome) => ({ outcome, pending: undefined })),
+      Effect.catchTag("RunOutcomeFollowUpError", (error) => Effect.succeed({
+        outcome: error.executionOutcome,
+        pending: error.step === "record"
+          ? `Canonfig could not record the outcome of run ${run}. Run 'canonfig recover' to finish reconciliation`
+          : archiveCleanupDiagnostic(run),
+      })),
+    );
+    return { backup, ...result };
+  }).pipe(onArchiveError(reconcile, archiveCleanupDiagnostic(run)));
+  // The engine could not make the outcome durable. Leave its recovery files
+  // under the open run for canonfig recover.
+  if (pending !== undefined) return { run, outcome, backup, diagnostics: [pending] };
+  const diagnostics: Array<string> = [];
+  const finished = yield* finishProjectionRun(statePath, follower, run, outcome, planned.revision).pipe(Effect.result);
+  if (finished._tag === "Failure") {
+    if (outcome.outcome === "Converged") return yield* Effect.fail(finished.failure);
+    diagnostics.push(archiveCleanupDiagnostic(run));
+  }
+  const snapshotDeleted = finished._tag === "Success" && finished.success.snapshotDeleted;
+  return { run, outcome, backup: snapshotDeleted ? undefined : backup, diagnostics };
+});
 
 export interface ProjectionRunInput {
   readonly statePath: string;
@@ -369,17 +424,11 @@ export const runProjection = (input: ProjectionRunInput) =>
     const repository = yield* StateRepository;
     const synchronization = yield* Synchronization;
     const planned = input.planned;
-    const run = newRunId();
-    const now = new Date().toISOString();
     const backups = backupsOf(input.statePath);
-    yield* repository.recordLocalRevision(planned.revision, now);
-    yield* repository.startRun({
-      id: run, follower: input.follower, revision: planned.revision.id,
-      plan: planned.plan, startedAt: now, preparing: true,
-    });
+    const { run, startedAt } = yield* startPreparingProjectionRun(input.follower, planned);
     const reservations = planned.takeovers.map((unit) => ({
       _tag: "Reserved" as const, harness: unit.harness, surface: unit.surface,
-      root: unit.root, run, takenOverAt: now,
+      root: unit.root, run, takenOverAt: startedAt,
       backup: input.backup ? { _tag: "Pending" as const } : { _tag: "Disabled" as const },
     }));
     yield* repository.recordHarnessTakeovers(reservations);
@@ -552,7 +601,6 @@ export const restoreLocal = Effect.fn("LocalProjection.restore")(function*(
   follower: FollowerId,
 ) {
   const repository = yield* StateRepository;
-  const synchronization = yield* Synchronization;
   yield* assertUpgradeGate(follower);
   // A retained partial-rollback snapshot is not ready for restore planning.
   if ((yield* repository.loadOpenRunIdentity(follower)) !== undefined) {
@@ -566,32 +614,20 @@ export const restoreLocal = Effect.fn("LocalProjection.restore")(function*(
       message: `snapshot ${snapshot.id} holds Canonical Folder entries, and this enrolled Follower Machine's folder is the Source's mirror, so restore cannot write them; nothing was changed`,
     });
   }
-  const run = newRunId();
   const folder = folderOf(statePath);
   const present = yield* Effect.filter(planned.folderEntries, (entry) =>
     Effect.tryPromise({
       try: () => holdsEntries(join(folder, entry)),
       catch: (error) => new CanonicalFolderError({ path: join(folder, entry), message: String(error) }),
     }));
-  const backup = yield* snapshotFolderEntries(statePath, run, present);
-  const outcome = yield* Effect.gen(function*() {
-    yield* repository.recordLocalRevision(planned.revision, new Date().toISOString());
-    yield* storeArtifacts(run, planned.artifacts);
-    return yield* synchronization.run({
-      id: run,
-      plan: planned.plan,
-      revision: planned.revision,
-      appliedResources: planned.appliedResources,
-      artifacts: planned.artifacts,
-    });
-  }).pipe(Effect.tapError(() => discardFailedRun(statePath, follower, run, backup)));
-  const finished = yield* finishProjectionRun(statePath, follower, run, outcome, planned.revision);
+  const { outcome, backup, diagnostics } = yield* runArchiveProjection(statePath, follower, planned, present);
   const converged = outcome.outcome === "Converged";
   return {
     restored: snapshot.id,
+    archiveDiagnostics: diagnostics.length ? diagnostics : undefined,
     excludedHarnesses: converged ? planned.harnesses : [],
     excludedResources: converged ? planned.resources : [],
-    backup: finished.snapshotDeleted ? undefined : backup,
+    backup,
     plan: planned.plan,
     outcome,
   };
@@ -616,7 +652,6 @@ export const importLocal = Effect.fn("LocalProjection.import")(function*(
   expectKey: string | undefined,
 ) {
   const repository = yield* StateRepository;
-  const synchronization = yield* Synchronization;
   const identity = yield* machineIdentity;
   if (identity.role === "follower") {
     return yield* new ArchiveRequestError({
@@ -653,39 +688,32 @@ export const importLocal = Effect.fn("LocalProjection.import")(function*(
   if (mode === "plan") {
     return { ...base, next: "nothing was written; run the same command without --dry-run to import", outcome: undefined };
   }
-  const run = newRunId();
-  const backup = yield* snapshotFolderEntries(statePath, run, planned.replaced);
-  const outcome = yield* Effect.gen(function*() {
-    yield* repository.recordLocalRevision(planned.revision, new Date().toISOString());
-    yield* storeArtifacts(run, planned.artifacts);
-    return yield* synchronization.run({
-      id: run,
-      plan: planned.plan,
-      revision: planned.revision,
-      appliedResources: planned.appliedResources,
-      artifacts: planned.artifacts,
-    });
-  }).pipe(Effect.tapError(() => discardFailedRun(statePath, localProjectionFollower, run, backup)));
-  const finished = yield* finishProjectionRun(statePath, localProjectionFollower, run, outcome, planned.revision);
+  const { run, outcome, backup, diagnostics } = yield* runArchiveProjection(statePath, localProjectionFollower, planned, planned.replaced);
   // A file appeared at a target after the folder was checked, and the run
   // rolled back rather than overwrite it: the same conflict the check
   // reports, found later. With rollback incomplete the outcome says more.
   // `journalError` journals it like any other error.
   if (outcome.outcome === "Failed" && outcome.occupiedTarget !== undefined && outcome.rollbackIncomplete !== true) {
-    return yield* new ArchiveConflictError({
+    const primary = new ArchiveConflictError({
       path: outcome.occupiedTarget,
       message: `appeared while the import ran, and an import never overwrites a file unasked, so run ${run} rolled back. Move the file out of the way, or pass --replace to replace it, then import again`,
     });
+    const secondary = diagnostics[0];
+    return yield* (secondary === undefined ? primary : new ArchiveSecondaryError({ primary, secondary }));
   }
-  yield* repository.recordArchiveEvent({
+  const journaled = yield* repository.recordArchiveEvent({
     occurredAt: new Date().toISOString(),
     command: "import",
     outcome: outcome.outcome,
     archive,
     sha256: planned.archive.archiveSha256,
     signer,
-  });
-  return { ...base, backup: finished.snapshotDeleted ? undefined : backup, outcome };
+  }).pipe(Effect.result);
+  if (journaled._tag === "Failure") {
+    if (outcome.outcome === "Converged") return yield* Effect.fail(journaled.failure);
+    diagnostics.push("Canonfig could not record this failure in the archive history");
+  }
+  return { ...base, backup, outcome, archiveDiagnostics: diagnostics.length ? diagnostics : undefined };
 }, (effect, statePath, archive, mode) =>
   mode === "plan" ? effect : withRunLock(statePath, "import", effect).pipe(journalError("import", archive)));
 
@@ -778,6 +806,7 @@ export const finishAbandonedProjection = (statePath: string, recovery: RecoveryS
     yield* cleanupRollbackSnapshots(recovery.run.id, recovery.run.plan.actions.map((action) => action.id), [],
       recovery.actions.flatMap((action) => action.rollbackReference === undefined ? [] : [action.rollbackReference]));
     yield* releaseUnappliedTakeovers(statePath, recovery.run.follower, recovery.run.id);
+    yield* discardSnapshotStaging(backupsOf(statePath), recovery.run.id);
     yield* discardRunArtifacts(recovery.run.id);
     yield* repository.finalizeRun(recovery.run.id, new Date().toISOString());
   });

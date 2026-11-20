@@ -93,6 +93,11 @@ it("polls actual journal bytes and retains the CLI failure without invented prog
       let completed = yield* poll();
       while (completed.state === "running") { yield* Effect.yieldNow; completed = yield* poll(); }
       expect(completed).toEqual({ id: ticket.id, state: "failed", journal: { step: "approval-required" }, failure: { category: "human-action-required", exitCode: 3, message: "Approve this setup plan first." } });
+      yield* Effect.promise(() => rm(path));
+      expect(yield* poll()).toEqual({
+        id: ticket.id, state: "failed", journal: null,
+        failure: { category: "human-action-required", exitCode: 3, message: "Approve this setup plan first.\nCanonfig could not read the operation journal" },
+      });
       incoming.destroy();
     }).pipe(Effect.scoped));
   } finally { await rm(directory, { recursive: true, force: true }); }

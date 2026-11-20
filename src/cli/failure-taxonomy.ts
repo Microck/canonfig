@@ -73,6 +73,8 @@ export interface TaggedRuntimeError extends Error {
   readonly snapshot?: string | undefined;
   readonly revision?: string | undefined;
   readonly run?: string | undefined;
+  readonly primary?: Error | undefined;
+  readonly secondary?: string | undefined;
   readonly state?: string | undefined;
   readonly target?: string | undefined;
   readonly task?: string | undefined;
@@ -95,15 +97,12 @@ const list = (value: ReadonlyArray<string> | undefined): string =>
 const declaredMessage = (error: TaggedRuntimeError): string | undefined =>
   error.message.length > 0 ? error.message : undefined;
 
-interface FailureDescriptor {
-  readonly category: (error: TaggedRuntimeError) => CliFailureCategory;
-  readonly message: (error: TaggedRuntimeError) => string;
-}
+type FailureDescriptor = (error: TaggedRuntimeError) => RuntimeFailureDescription;
 
 const describe = (
   category: CliFailureCategory,
   message: (error: TaggedRuntimeError) => string,
-): FailureDescriptor => ({ category: () => category, message });
+): FailureDescriptor => (error) => ({ category, message: message(error) });
 
 /**
  * For an error that carries its own failure class as a field. Its class is data
@@ -113,7 +112,7 @@ const describe = (
 const classified = (
   category: (error: TaggedRuntimeError) => CliFailureCategory,
   message: (error: TaggedRuntimeError) => string,
-): FailureDescriptor => ({ category, message });
+): FailureDescriptor => (error) => ({ category: category(error), message: message(error) });
 
 /**
  * Prefers the error's declared `message` field and falls back to a rendering
@@ -487,6 +486,12 @@ export const failureTaxonomy = {
     (error) => `takeover snapshot ${text(error.snapshot)} does not exist`,
   ),
   // `canonfig export` and `canonfig import`; each message ends with the fix.
+  ArchiveSecondaryError: (error: TaggedRuntimeError): RuntimeFailureDescription => {
+    const secondary = error.secondary ?? "archive error reporting failed";
+    if (error.primary === undefined) return { category: "internal", message: secondary };
+    const primary = describeRuntimeError(error.primary);
+    return { category: primary.category, message: `${primary.message}\n${secondary}` };
+  },
   ArchiveRequestError: describe(
     "usage-or-configuration",
     (error) => `${text(error.path)} ${error.message}; nothing was written`,
@@ -808,6 +813,10 @@ export const failureTaxonomy = {
     "verification-or-apply-failure",
     () => "the native binary artifact could not be installed",
   ),
+  RunOutcomeFollowUpError: describe(
+    "verification-or-apply-failure",
+    () => "an archive run could not record its outcome or clean up its rollback material. Run 'canonfig recover'",
+  ),
   RollbackCleanupError: declared(
     "verification-or-apply-failure",
     (error) =>
@@ -886,9 +895,9 @@ export const describeRuntimeError = (
         ?? `an unexpected ${error._tag ?? "error"} occurred`,
     };
   }
-  const message = descriptor.message(error);
+  const { category, message } = descriptor(error);
   return {
-    category: descriptor.category(error),
+    category,
     message: message.length > 0 ? message : `an unexpected ${error._tag} occurred`,
   };
 };

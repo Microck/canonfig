@@ -69,8 +69,13 @@ export const makeGuiOperations = (hold: () => () => void = () => () => undefined
       if (entry === undefined) return yield* Effect.fail(new CliCommandFailure({
         category: "usage-or-configuration", message: "Unknown operation. Tickets belong to the running GUI session.",
       }));
-      const journal = yield* entry.journal();
-      return { ...entry.snapshot, journal };
+      const journal = yield* entry.journal().pipe(Effect.result);
+      const snapshot = entry.snapshot;
+      if (journal._tag === "Success") return { ...snapshot, journal: journal.success };
+      if (snapshot.state !== "failed") return yield* Effect.fail(journal.failure);
+      // The saved operation failure is still valid when its journal is unreadable.
+      const failure = { ...snapshot.failure, message: `${snapshot.failure.message}\nCanonfig could not read the operation journal` };
+      return { ...snapshot, failure };
     }),
     afterResponse: (body) => {
       if (Schema.is(GuiOperation)(body) && body.state === "succeeded") {
