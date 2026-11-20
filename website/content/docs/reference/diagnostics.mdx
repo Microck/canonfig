@@ -171,6 +171,11 @@ entry sets a startup timeout gets that, up to 120 seconds; any other server gets
 10 seconds, or `--timeout-ms` when that is longer. `details` has
 one line per server with the harnesses that declare it.
 
+Streamable HTTP checks also verify that the server accepts replies to its
+ping requests. Canonfig allows up to two seconds to close an opened session
+and reports cleanup failures in that server's detail. The check result still
+reflects the handshake and tool listing.
+
 | Result | Message |
 | --- | --- |
 | pass | `<n> MCP server(s) started and listed their tools` |
