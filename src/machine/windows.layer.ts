@@ -27,6 +27,7 @@ import {
   type CredentialReference as CredentialReferenceType,
 } from "../domain/brand.ts";
 import {
+  AnchoredMutationUnconfirmedError,
   CredentialStorageError,
   ExecutableNotFoundError,
   HumanActionRequiredError,
@@ -39,7 +40,7 @@ import {
 import { MachineState } from "./machine-state.service.ts";
 import { windowsCredentialScript, windowsCredentialTimeoutMilliseconds, windowsPowerShellExecutable } from "./windows-credentials.ts";
 import { relocateFileContent, writeFileContent } from "./file-content.ts";
-import { openAnchoredDirectory, sameIdentity } from "./anchored-directory.ts";
+import { holdAnchoredWindowsEntry, openAnchoredDirectory, sameIdentity } from "./anchored-directory.ts";
 import { linuxMachineStateLayer } from "./linux.layer.ts";
 import { installDestinationDirectories } from "./install-destinations.ts";
 import {
@@ -200,6 +201,12 @@ const requireWindowsPath = (
         ? "a normalized absolute Windows path without NUL bytes is required"
         : `expected a Windows path, received ${path.platform}`,
     }));
+
+const windowsPathWithAnchor = (path: MachinePath, anchor?: MachinePath) =>
+  Effect.all({
+    path: requireWindowsPath(path),
+    anchor: anchor === undefined ? Effect.succeed(undefined) : requireWindowsPath(anchor),
+  });
 
 export const windowsPrivateAclArguments = (
   path: string,
@@ -864,87 +871,157 @@ export const windowsMachineStateLayer = (
       const secureDirectory = (
         path: string,
         permissionPolicy: FilePermissionPolicy,
-      ): Effect.Effect<void, MachineStateError> =>
+        anchor?: string,
+      ): Effect.Effect<FileIdentity | void, MachineStateError> =>
         Effect.gen(function*() {
-          yield* Effect.tryPromise({
-            try: () => mkdir(path, { recursive: true }).then(() => undefined),
-            catch: (cause) => filesystemFailure("ensure Windows directory", path, cause),
+          const finalizePermissions = Effect.gen(function*() {
+            // Applying a managed ACL during restore could propagate into
+            // children whose snapshots have already been restored.
+            if (permissionPolicy.permissions === undefined) yield* setPrivateAcl(path, true);
+            yield* writeSemanticMode(path, permissionPolicy.permissions?.mode ?? permissionPolicy.mode ?? 0o700);
+            if (permissionPolicy.permissions !== undefined) {
+              yield* restoreNativePermissions(path, permissionPolicy.permissions, true);
+            }
           });
-          // Final rollback permissions must not reapply a managed ACL: that
-          // would propagate into children whose snapshots are already restored.
-          if (permissionPolicy.permissions === undefined) yield* setPrivateAcl(path, true);
-          yield* writeSemanticMode(path, permissionPolicy.permissions?.mode ?? permissionPolicy.mode ?? 0o700);
-          if (permissionPolicy.permissions !== undefined) {
-            yield* restoreNativePermissions(path, permissionPolicy.permissions, true);
+          if (anchor === undefined) {
+            yield* Effect.tryPromise({
+              try: () => mkdir(path, { recursive: true }).then(() => undefined),
+              catch: (cause) => filesystemFailure("ensure Windows directory", path, cause),
+            });
+            yield* finalizePermissions;
+            return;
           }
+          const expected = yield* ensureFileParent(path, anchor);
+          yield* withWindowsAnchor(windowsPath(path), windowsPath(anchor), "entry",
+            () => confirmWindowsEntry(path, expected).pipe(Effect.andThen(finalizePermissions)),
+          ).pipe(Effect.mapError((error) => new AnchoredMutationUnconfirmedError({
+            path, operation: "finalize Windows directory permissions", message: error.message,
+          })));
+          return expected;
         });
       const ensureFileParent = (
         parent: string,
-      ): Effect.Effect<void, MachineStateError> => Effect.gen(function*() {
-        const missing = yield* Effect.tryPromise({
+        anchor?: string,
+      ): Effect.Effect<FileIdentity, MachineStateError> => Effect.gen(function*() {
+        const current = yield* Effect.tryPromise({
           try: async () => {
             try {
-              await stat(parent);
-              return false;
+              return await (anchor === undefined ? stat(parent, { bigint: true }) : lstat(parent, { bigint: true }));
             } catch (cause) {
-              if (errorCode(cause) === "ENOENT" && win32.dirname(parent) !== parent) return true;
+              if (errorCode(cause) === "ENOENT" && win32.dirname(parent) !== parent) return undefined;
               throw cause;
             }
           },
           catch: (cause) => filesystemFailure("inspect Windows file parent", parent, cause),
         });
-        if (!missing) return;
+        if (current !== undefined) return { dev: current.dev, ino: current.ino };
         const ancestor = win32.dirname(parent);
-        yield* ensureFileParent(ancestor);
-        const staging = yield* Effect.tryPromise({
+        if (anchor === undefined) yield* ensureFileParent(ancestor);
+        const { staging, identity } = yield* Effect.tryPromise({
           try: async () => {
             const staging = win32.join(ancestor, temporaryEntryName());
             await mkdir(staging);
-            return staging;
+            const { dev, ino } = await lstat(staging, { bigint: true });
+            return { staging, identity: { dev, ino } };
           },
           catch: (cause) => filesystemFailure("stage Windows directory", parent, cause),
         });
-        // A new parent becomes visible at its final path only after protection.
-        // Concurrent creators may fail at rename, but cannot use an unprotected parent.
-        yield* setPrivateAcl(staging, true).pipe(
+        // Publish the new directory only after its private ACL has been applied.
+        const permissions = setPrivateAcl(staging, true);
+        const protect = anchor === undefined ? permissions
+          : withWindowsAnchor(windowsPath(staging), windowsPath(anchor), "entry",
+            () => confirmWindowsEntry(staging, identity).pipe(Effect.andThen(permissions)));
+        yield* protect.pipe(
+          Effect.andThen(confirmWindowsEntry(staging, identity)),
           Effect.andThen(Effect.tryPromise({
             try: () => rename(staging, parent),
             catch: (cause) => filesystemFailure("publish Windows directory", parent, cause),
           })),
           Effect.ensuring(Effect.promise(() => rmdir(staging).catch(() => undefined))),
         );
+        return identity;
       });
+      const confirmWindowsEntry = (path: string, expected: FileIdentity) =>
+        Effect.tryPromise({
+          try: async () => {
+            const visible = await lstat(path, { bigint: true });
+            if (visible.isSymbolicLink() || !sameIdentity(visible, expected)) {
+              throw new Error("the path no longer names the expected filesystem entry");
+            }
+          },
+          catch: (cause) => filesystemFailure("confirm Windows entry identity", path, cause),
+        });
+      const withWindowsAnchor = <A>(
+        path: MachinePath,
+        anchor: MachinePath | undefined,
+        scope: "entry" | "parent" | "create-parent",
+        operation: (path: MachinePath) => Effect.Effect<A, MachineStateError>,
+      ): Effect.Effect<A, MachineStateError> =>
+        windowsPathWithAnchor(path, anchor).pipe(
+          Effect.flatMap(({ path: native, anchor: root }) => {
+            if (root === undefined) return operation(native);
+            const parent = win32.dirname(native.absolute);
+            return Effect.acquireUseRelease(
+              Effect.tryPromise({
+                try: () => scope === "entry"
+                  ? holdAnchoredWindowsEntry(root.absolute, native.absolute)
+                  : openAnchoredDirectory(root.absolute, parent,
+                    scope === "create-parent" ? (directory) => Effect.runPromise(ensureFileParent(directory, root.absolute).pipe(Effect.asVoid)) : undefined),
+                catch: (cause) => filesystemFailure("open anchored Windows directory", parent, cause),
+              }),
+              (lease) => operation(native).pipe(
+                Effect.tap(() => Effect.tryPromise({
+                  try: () => lease.verify(),
+                  catch: (cause) => filesystemFailure("verify anchored Windows directory", parent, cause),
+                })),
+                Effect.uninterruptible,
+              ),
+              (lease) => Effect.promise(() => lease.close()),
+            );
+          }),
+        );
+
       const secureAtomicWrite = (
         path: string,
         content: FileContent,
         permissionPolicy: FilePermissionPolicy,
-        placement: { readonly anchor?: string | undefined; readonly noReplace?: boolean | undefined } = {},
+        placement: {
+          readonly anchor?: string | undefined;
+          readonly createAnchoredParents?: boolean | undefined;
+          readonly noReplace?: boolean | undefined;
+        } = {},
       ): Effect.Effect<FileIdentity, MachineStateError> => {
         const parent = win32.dirname(path);
         return Effect.gen(function*() {
-          // An anchored write publishes into the existing directory reached
-          // from its anchor without links, and never creates that directory.
+          // Keep the native ancestor handles while creating private parents
+          // or publishing the staged file.
           const anchored = placement.anchor === undefined
             ? undefined
             : yield* Effect.tryPromise({
-              try: () => openAnchoredDirectory(placement.anchor!, parent),
+              try: () => openAnchoredDirectory(
+                placement.anchor!, parent,
+                placement.createAnchoredParents === true
+                  ? (directory) => Effect.runPromise(ensureFileParent(directory, placement.anchor).pipe(Effect.asVoid))
+                  : undefined,
+              ),
               catch: (cause) => filesystemFailure("open anchored Windows directory", parent, cause),
             });
           // A file resource does not own its existing parent or siblings. Restrict
           // an empty staging directory before creating any content inside it.
           if (anchored === undefined) yield* ensureFileParent(parent);
-          const staging = yield* Effect.tryPromise({
+          const { staging, stagingIdentity } = yield* Effect.tryPromise({
             try: async () => {
               const staging = win32.join(parent, temporaryEntryName());
               await mkdir(staging);
-              return staging;
+              const { dev, ino } = await lstat(staging, { bigint: true });
+              return { staging, stagingIdentity: { dev, ino } };
             },
             catch: (cause) => filesystemFailure("stage Windows file", path, cause),
-          });
+          }).pipe(Effect.tapError(() => Effect.promise(async () => { await anchored?.close(); })));
           const temporary = win32.join(staging, "content");
           return yield* Effect.gen(function*() {
-            yield* setPrivateAcl(staging, true);
-            yield* Effect.tryPromise({
+            const anchorPath = placement.anchor === undefined ? undefined : windowsPath(placement.anchor);
+            const writeStaged = setPrivateAcl(staging, true).pipe(Effect.andThen(Effect.tryPromise({
               try: async () => {
                 let handle: Awaited<ReturnType<typeof open>> | undefined;
                 try {
@@ -953,8 +1030,10 @@ export const windowsMachineStateLayer = (
                   await handle.sync().catch((cause: NodeJS.ErrnoException) => {
                     if (cause.code !== "EPERM" && cause.code !== "EINVAL") throw cause;
                   });
+                  const { dev, ino } = await handle.stat({ bigint: true });
                   await handle.close();
                   handle = undefined;
+                  return { dev, ino };
                 } finally {
                   if (handle !== undefined) {
                     await handle.close().catch(() => undefined);
@@ -963,8 +1042,14 @@ export const windowsMachineStateLayer = (
               },
               catch: (cause) =>
                 filesystemFailure("atomically write Windows file", path, cause),
-            });
-            yield* setPrivateAcl(temporary, false);
+            })));
+            const written = yield* anchorPath === undefined ? writeStaged
+              : withWindowsAnchor(windowsPath(staging), anchorPath, "entry",
+                () => confirmWindowsEntry(staging, stagingIdentity).pipe(Effect.andThen(writeStaged)));
+            const secureStagedFile = setPrivateAcl(temporary, false);
+            yield* anchorPath === undefined ? secureStagedFile
+              : withWindowsAnchor(windowsPath(temporary), anchorPath, "entry",
+                () => confirmWindowsEntry(temporary, written).pipe(Effect.andThen(secureStagedFile)));
             if (placement.noReplace !== true) {
               yield* Effect.tryPromise({
                 try: () => prepareWindowsManagedLeafKind(path, "non-directory"),
@@ -974,7 +1059,9 @@ export const windowsMachineStateLayer = (
             }
             const published = yield* Effect.tryPromise({
               try: async () => {
-                const written = await lstat(temporary, { bigint: true });
+                if (anchored !== undefined && !sameIdentity(await lstat(temporary, { bigint: true }), written)) {
+                  throw new Error("the staged file changed before publication");
+                }
                 await anchored?.verify();
                 // A hard link fails with EEXIST when the name exists, even
                 // when another process created it after an earlier check.
@@ -1008,7 +1095,7 @@ export const windowsMachineStateLayer = (
             });
             // The staged file already carries the private ACL, so a failure
             // here leaves the complete file in place with that ACL.
-            yield* Effect.gen(function*() {
+            const finishPermissions = Effect.gen(function*() {
               yield* writeSemanticMode(path, permissionPolicy.permissions?.mode ?? permissionPolicy.mode ?? 0o600);
               if (permissionPolicy.permissions !== undefined) {
                 // Restore native permissions before releasing the guarded mutation.
@@ -1027,6 +1114,11 @@ export const windowsMachineStateLayer = (
                 })
               ),
             );
+            yield* anchorPath === undefined ? finishPermissions
+              : withWindowsAnchor(windowsPath(path), anchorPath, "entry",
+                () => confirmWindowsEntry(path, published).pipe(Effect.andThen(finishPermissions)),
+              ).pipe(Effect.mapError((error) => error instanceof UnconfirmedPublicationError ? error
+                : new UnconfirmedPublicationError({ path, state: "replaced", published, message: error.message })));
             return published;
           }).pipe(
             Effect.ensuring(Effect.promise(() =>
@@ -1114,6 +1206,7 @@ export const windowsMachineStateLayer = (
         path: string,
         guardedTarget: string,
         nested: boolean,
+        anchor?: string,
       ): Effect.Effect<boolean, MachineStateError> => {
         if (mutation.kind === "remove") {
           return mutationStep(path, () => removeWindowsManagedLeaf(guardedTarget)).pipe(
@@ -1122,7 +1215,7 @@ export const windowsMachineStateLayer = (
         }
         if (mutation.kind === "directory") {
           return mutationStep(path, () => prepareWindowsManagedLeafKind(guardedTarget, "directory")).pipe(
-            Effect.andThen(secureDirectory(guardedTarget, mutation)),
+            Effect.andThen(secureDirectory(guardedTarget, mutation, anchor)),
             Effect.as(true),
           );
         }
@@ -1146,7 +1239,7 @@ export const windowsMachineStateLayer = (
       };
       const mutateWithinRoot = (
         input: SafeRootMutationInput,
-      ): Effect.Effect<void, MachineStateError> =>
+      ): Effect.Effect<FileIdentity | void, MachineStateError> =>
         Effect.gen(function*() {
           const rootPath = yield* requireWindowsPath(input.root);
           const targetPath = yield* requireWindowsPath(input.path);
@@ -1170,6 +1263,30 @@ export const windowsMachineStateLayer = (
               path,
               message: `path is not a descendant of managed root ${root}`,
             });
+          }
+          if (input.anchor !== undefined) {
+            const anchor = yield* requireWindowsPath(input.anchor);
+            if (input.mutation.kind === "write") {
+              yield* secureAtomicWrite(path, input.mutation.content, input.mutation, {
+                anchor: anchor.absolute, createAnchoredParents: true,
+              });
+              return;
+            }
+            if (input.mutation.kind === "directory") {
+              const mutation = input.mutation;
+              return yield* withWindowsAnchor(input.path, input.anchor, "create-parent", () =>
+                mutationStep(path, () => prepareWindowsManagedLeafKind(path, "directory")).pipe(
+                  Effect.andThen(secureDirectory(path, mutation, anchor.absolute)),
+                ));
+            }
+            const createParents = input.mutation.kind !== "remove";
+            yield* withWindowsAnchor(input.path, input.anchor, createParents ? "create-parent" : "parent", () =>
+              applyGuardedMutation(input.mutation, path, path, false, anchor.absolute).pipe(Effect.asVoid),
+            ).pipe(
+              Effect.catchTag("MachineFilesystemError", (error) =>
+                !createParents && /\bENOENT\b/u.test(error.message) ? Effect.void : Effect.fail(error)),
+            );
+            return;
           }
           const step = <A>(run: () => Promise<A>) => mutationStep(path, run);
           const rootBefore = yield* step(async () => {
@@ -1701,46 +1818,54 @@ export const windowsMachineStateLayer = (
         ensureDirectory: (input) =>
           requireWindowsPath(input.path).pipe(
             Effect.flatMap((path) =>
-              secureDirectory(path.absolute, input)
+              secureDirectory(path.absolute, input).pipe(Effect.asVoid)
             ),
           ),
         atomicWrite: (input) =>
-          Effect.all({
-            path: requireWindowsPath(input.path),
-            anchor: input.anchor === undefined ? Effect.succeed(undefined) : requireWindowsPath(input.anchor),
-          }).pipe(
+          windowsPathWithAnchor(input.path, input.anchor).pipe(
             Effect.flatMap(({ path, anchor }) =>
               secureAtomicWrite(
                 path.absolute,
                 input.content,
                 input,
-                { anchor: anchor?.absolute, noReplace: input.noReplace },
+                {
+                  anchor: anchor?.absolute,
+                  createAnchoredParents: input.createAnchoredParents,
+                  noReplace: input.noReplace,
+                },
               )
             ),
           ),
         readFile: (input) =>
-          Effect.all({
-            path: requireWindowsPath(input.path),
-            anchor: input.anchor === undefined ? Effect.succeed(undefined) : requireWindowsPath(input.anchor),
-          }).pipe(
+          windowsPathWithAnchor(input.path, input.anchor).pipe(
             Effect.flatMap(({ path, anchor }) => machine.readFile({ ...input, path, anchor })),
           ),
         removeFile: (input) =>
-          requireWindowsPath(input.path).pipe(
-            Effect.flatMap((path) => machine.removeFile({ ...input, path })),
+          windowsPathWithAnchor(input.path, input.anchor).pipe(
+            Effect.flatMap((native) => machine.removeFile({ ...input, ...native })),
           ),
         removeEmptyDirectory: (input: RemoveEmptyDirectoryInput) =>
-          requireWindowsPath(input.path).pipe(
-            Effect.flatMap((path) => machine.removeEmptyDirectory({ ...input, path })),
+          windowsPathWithAnchor(input.path, input.anchor).pipe(
+            Effect.flatMap((native) => machine.removeEmptyDirectory({ ...input, ...native })),
           ),
         removeTemporaryEntries: (input: RemoveTemporaryEntriesInput) =>
-          requireWindowsPath(input.directory).pipe(
-            Effect.flatMap((directory) =>
+          windowsPathWithAnchor(input.directory, input.anchor).pipe(
+            Effect.flatMap(({ path, anchor }) =>
               Effect.tryPromise({
-                try: () => removeTemporaryEntriesAt(directory.absolute, input.recursive, win32),
+                try: async () => {
+                  if (anchor === undefined) return removeTemporaryEntriesAt(path.absolute, input.recursive, win32);
+                  const lease = await openAnchoredDirectory(anchor.absolute, path.absolute);
+                  try {
+                    const removed = await removeTemporaryEntriesAt(lease.base, input.recursive, win32, false);
+                    await lease.verify();
+                    return removed;
+                  } finally {
+                    await lease.close();
+                  }
+                },
                 catch: (cause) =>
-                  filesystemFailure("remove temporary entries", directory.absolute, cause),
-              })
+                  filesystemFailure("remove temporary entries", path.absolute, cause),
+              }).pipe(Effect.uninterruptible)
             ),
           ),
         validatePathWithinRoot: (input) =>
@@ -1758,18 +1883,22 @@ export const windowsMachineStateLayer = (
             Effect.flatMap((path) => machine.replaceSymlink({ ...input, path })),
             Effect.mapError(withSymlinkPrerequisite),
           ),
-        readSymlink: (path) =>
-          requireWindowsPath(path).pipe(
-            Effect.flatMap(machine.readSymlink),
+        readSymlink: (path, anchor) =>
+          windowsPathWithAnchor(path, anchor).pipe(
+            Effect.flatMap((native) => machine.readSymlink(native.path, native.anchor)),
           ),
-        inspectPath: (path) =>
-          requireWindowsPath(path).pipe(Effect.flatMap(machine.inspectPath)),
-        listDirectory: (path) =>
-          requireWindowsPath(path).pipe(Effect.flatMap(machine.listDirectory)),
+        inspectPath: (path, anchor) =>
+          windowsPathWithAnchor(path, anchor).pipe(
+            Effect.flatMap((native) => machine.inspectPath(native.path, native.anchor)),
+          ),
+        listDirectory: (path, anchor) =>
+          windowsPathWithAnchor(path, anchor).pipe(
+            Effect.flatMap((native) => machine.listDirectory(native.path, native.anchor)),
+          ),
         setPermissions: (input) =>
-          requireWindowsPath(input.path).pipe(
-            Effect.flatMap((path) =>
-              Effect.tryPromise({
+          withWindowsAnchor(input.path, input.anchor, "entry", (path) => {
+            const expected = input.identity === undefined ? Effect.void : confirmWindowsEntry(path.absolute, input.identity);
+            return expected.pipe(Effect.andThen(Effect.tryPromise({
                 try: () => stat(path.absolute),
                 catch: (cause) =>
                   filesystemFailure("inspect Windows file type", path.absolute, cause),
@@ -1783,12 +1912,12 @@ export const windowsMachineStateLayer = (
                       Effect.andThen(restoreNativePermissions(path.absolute, input.permissions, metadata.isDirectory())),
                     )
                 ),
-              )
-            ),
-          ),
-        permissions: (path) =>
-          requireWindowsPath(path).pipe(
-            Effect.flatMap((nativePath) =>
+              )));
+          }).pipe(Effect.mapError((error) => input.identity === undefined ? error : new AnchoredMutationUnconfirmedError({
+            path: input.path.absolute, operation: "set Windows permissions", message: error.message,
+          }))),
+        permissions: (path, anchor) =>
+          withWindowsAnchor(path, anchor, "entry", (nativePath) =>
               Effect.tryPromise({
                 try: () => lstat(nativePath.absolute),
                 catch: (cause) =>
@@ -1808,32 +1937,31 @@ export const windowsMachineStateLayer = (
                   mode,
                   executableByOwner: (mode & 0o100) !== 0,
                 })),
-              )
-            ),
+              ),
           ),
-        snapshotPermissions: Effect.fn("MachineState.snapshotPermissions")(function*(path: MachinePath) {
-          const nativePath = yield* requireWindowsPath(path);
-          const metadata = yield* Effect.tryPromise({
-            try: () => lstat(nativePath.absolute),
-            catch: (cause) => filesystemFailure("inspect Windows permissions", nativePath.absolute, cause),
-          });
-          const mode = yield* readSemanticMode(nativePath.absolute, metadata.isDirectory() ? 0o700 : 0o600);
-          const captured = yield* runPowerShell([
-            "$ErrorActionPreference='Stop'",
-            `$sections=${permissionSections}`,
-            `$path=${powershellLiteral(nativePath.absolute)}`,
-            ...readWindowsAcl(metadata.isDirectory() ? "Directory" : "File"),
-            "$acl.GetSecurityDescriptorSddlForm($sections)",
-          ].join(";"), nativePermissionTimeoutMilliseconds);
-          const securityDescriptor = new TextDecoder().decode(captured.standardOutput).trim();
-          if (captured.exitCode !== 0 || securityDescriptor.length === 0) {
-            return yield* filesystemFailure(
-              "capture Windows permissions", nativePath.absolute,
-              new TextDecoder().decode(captured.standardError).trim() || "Windows did not return a permission snapshot",
-            );
-          }
-          return { platform: "windows" as const, mode, securityDescriptor };
-        }),
+        snapshotPermissions: (path, anchor) =>
+          withWindowsAnchor(path, anchor, "entry", Effect.fn("MachineState.snapshotPermissions")(function*(nativePath) {
+            const metadata = yield* Effect.tryPromise({
+              try: () => lstat(nativePath.absolute),
+              catch: (cause) => filesystemFailure("inspect Windows permissions", nativePath.absolute, cause),
+            });
+            const mode = yield* readSemanticMode(nativePath.absolute, metadata.isDirectory() ? 0o700 : 0o600);
+            const captured = yield* runPowerShell([
+              "$ErrorActionPreference='Stop'",
+              `$sections=${permissionSections}`,
+              `$path=${powershellLiteral(nativePath.absolute)}`,
+              ...readWindowsAcl(metadata.isDirectory() ? "Directory" : "File"),
+              "$acl.GetSecurityDescriptorSddlForm($sections)",
+            ].join(";"), nativePermissionTimeoutMilliseconds);
+            const securityDescriptor = new TextDecoder().decode(captured.standardOutput).trim();
+            if (captured.exitCode !== 0 || securityDescriptor.length === 0) {
+              return yield* filesystemFailure(
+                "capture Windows permissions", nativePath.absolute,
+                new TextDecoder().decode(captured.standardError).trim() || "Windows did not return a permission snapshot",
+              );
+            }
+            return { platform: "windows" as const, mode, securityDescriptor };
+          })),
         findExecutable: (query) => {
           if (
             query.name.length === 0
@@ -1911,8 +2039,8 @@ export const windowsMachineStateLayer = (
             ),
           ),
         digestFile: (input) =>
-          requireWindowsPath(input.path).pipe(
-            Effect.flatMap((path) => machine.digestFile({ ...input, path })),
+          windowsPathWithAnchor(input.path, input.anchor).pipe(
+            Effect.flatMap((native) => machine.digestFile({ ...input, ...native })),
           ),
         credentialCapability: (): Effect.Effect<
           CredentialStorageCapability,

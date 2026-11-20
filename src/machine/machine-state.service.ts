@@ -84,16 +84,18 @@ export class MachineState extends Context.Service<MachineState, {
   ) => Effect.Effect<void, MachineStateError>;
   readonly mutateWithinRoot: (
     input: SafeRootMutationInput,
-  ) => Effect.Effect<void, MachineStateError>;
+  ) => Effect.Effect<FileIdentity | void, MachineStateError>;
   readonly replaceSymlink: (
     input: SymlinkInput,
   ) => Effect.Effect<void, MachineStateError>;
   readonly readSymlink: (
     path: MachinePath,
+    anchor?: MachinePath,
   ) => Effect.Effect<string, MachineStateError>;
   /** Inspect the final path component without following symlinks or reparse points. */
   readonly inspectPath: (
     path: MachinePath,
+    anchor?: MachinePath,
   ) => Effect.Effect<MachineObject, MachineStateError>;
   /**
    * Every entry beneath a managed directory, deepest last, without following
@@ -105,16 +107,19 @@ export class MachineState extends Context.Service<MachineState, {
    */
   readonly listDirectory: (
     path: MachinePath,
+    anchor?: MachinePath,
   ) => Effect.Effect<ReadonlyArray<MachineDirectoryEntry>, MachineStateError>;
   readonly setPermissions: (
     input: SetPermissionsInput,
   ) => Effect.Effect<void, MachineStateError>;
   readonly permissions: (
     path: MachinePath,
+    anchor?: MachinePath,
   ) => Effect.Effect<FilePermissions, MachineStateError>;
   /** Capture rollback permissions without paying native ACL inspection costs during planning. */
   readonly snapshotPermissions: (
     path: MachinePath,
+    anchor?: MachinePath,
   ) => Effect.Effect<FilePermissionSnapshot, MachineStateError>;
   readonly findExecutable: (
     query: ExecutableQuery,

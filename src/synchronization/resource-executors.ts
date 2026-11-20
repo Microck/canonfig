@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect";
 import { dirname, isAbsolute, join, posix, relative, resolve, win32 } from "node:path";
 
-import { classifyAuthoredResourceId, ContentDigest, CredentialReference, type RunId } from "../domain/brand.ts";
+import { classifyAuthoredResourceId, ContentDigest, CredentialReference, type ResourceId, type RunId } from "../domain/brand.ts";
 import {
   type PublishedResource,
   type VerificationInput,
@@ -194,10 +194,11 @@ const artifact = (
 const readIfPresent = (
   path: MachinePath,
   maximumBytes: number,
+  anchor?: MachinePath,
 ): Effect.Effect<Uint8Array | undefined, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
-    return yield* machine.readFile({ path, maximumBytes }).pipe(
+    return yield* machine.readFile({ path, anchor, maximumBytes }).pipe(
       Effect.catchTag("MachineFilesystemError", (error) =>
         error.message.includes("ENOENT")
           ? Effect.succeed(undefined)
@@ -206,13 +207,22 @@ const readIfPresent = (
     );
   });
 
+export const authoredResourceAnchor = (resourceId?: ResourceId) =>
+  resourceId !== undefined && classifyAuthoredResourceId(resourceId) === "authored"
+    ? Effect.gen(function*() {
+      const machine = yield* MachineState;
+      return (yield* machine.userDirectories()).home;
+    })
+    : Effect.succeed(undefined);
+
 const captureStoredFile = (
   path: MachinePath,
   maximumBytes?: number | undefined,
+  anchor?: MachinePath,
 ): Effect.Effect<StoredFile, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
-    const kind = yield* machine.inspectPath(path).pipe(
+    const kind = yield* machine.inspectPath(path, anchor).pipe(
       Effect.catchTag("MachineFilesystemError", (error) =>
         error.message.includes("ENOENT") || error.message.includes("ENOTDIR")
           ? Effect.succeed(undefined)
@@ -221,17 +231,15 @@ const captureStoredFile = (
     );
     if (kind === undefined) return { path: path.absolute, state: "absent" };
     if (kind.kind === "directory") {
-      const permissions = yield* machine.snapshotPermissions(path);
+      const permissions = yield* machine.snapshotPermissions(path, anchor);
       return { path: path.absolute, state: "directory", permissions };
     }
-    const symlink = yield* machine.readSymlink(path).pipe(
-      Effect.catchTag("MachineFilesystemError", () => Effect.succeed(undefined)),
-    );
-    if (symlink !== undefined) {
-      return { path: path.absolute, state: "symlink", target: symlink };
+    if (kind.kind === "symlink") {
+      const target = yield* machine.readSymlink(path, anchor);
+      return { path: path.absolute, state: "symlink", target };
     }
-    const digest = yield* machine.digestFile({ path, maximumBytes });
-    const permissions = yield* machine.snapshotPermissions(path);
+    const digest = yield* machine.digestFile({ path, anchor, maximumBytes });
+    const permissions = yield* machine.snapshotPermissions(path, anchor);
     return {
       path: path.absolute,
       state: "regular",
@@ -243,10 +251,15 @@ const captureStoredFile = (
 const restoreStoredFile = (
   entry: StoredFile,
   reference: string,
-  root?: MachinePath | undefined,
-  directoryPermissions: "restore" | "writable" = "restore",
-  maximumBytes?: number | undefined,
-): Effect.Effect<void, MachineStateError, MachineState> =>
+  {
+    root, anchor, directoryPermissions = "restore", maximumBytes,
+  }: {
+    readonly root?: MachinePath | undefined;
+    readonly anchor?: MachinePath | undefined;
+    readonly directoryPermissions?: "restore" | "writable";
+    readonly maximumBytes?: number;
+  } = {},
+): Effect.Effect<FileIdentity | void, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const path = yield* machine.normalizePath({ path: entry.path });
@@ -258,10 +271,11 @@ const restoreStoredFile = (
         message: "permission snapshot belongs to a different platform",
       });
     }
+    const mutationRoot = root ?? anchor;
     switch (entry.state) {
       case "absent":
         if (root === undefined) {
-          yield* machine.removeFile({ path });
+          yield* machine.removeFile({ path, anchor });
         } else {
           // An absent child behind a missing/non-directory ancestor already
           // has no managed object to remove. Inspect ancestors from the root
@@ -269,7 +283,7 @@ const restoreStoredFile = (
           for (const ancestor of ancestorsOf(path).filter((absolute) =>
             pathWithinMachineRoot(root, { platform: path.platform, absolute })
           ).reverse()) {
-            const kind = yield* machine.inspectPath({ platform: path.platform, absolute: ancestor }).pipe(
+            const kind = yield* machine.inspectPath({ platform: path.platform, absolute: ancestor }, anchor).pipe(
               Effect.catchTag("MachineFilesystemError", (error) =>
                 /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message)
                   ? Effect.succeed(undefined) : Effect.fail(error)),
@@ -278,14 +292,14 @@ const restoreStoredFile = (
           }
           // The guarded remove handles both files and empty directories and
           // revalidates ancestry during mutation instead of following links.
-          yield* machine.mutateWithinRoot({ root, path, mutation: { kind: "remove" } });
+          yield* machine.mutateWithinRoot({ root, anchor, path, mutation: { kind: "remove" } });
         }
         return;
       case "directory": {
         const policy = directoryPermissions === "writable"
           ? { mode: entry.permissions.mode | 0o700 }
           : { permissions: entry.permissions };
-        if (root === undefined) {
+        if (mutationRoot === undefined) {
           const currentKind = yield* machine.inspectPath(path).pipe(
             Effect.catchTag("MachineFilesystemError", (error) =>
               error.message.includes("ENOENT")
@@ -294,13 +308,14 @@ const restoreStoredFile = (
             ),
           );
           if (currentKind !== undefined && currentKind.kind !== "directory") {
-            yield* machine.removeFile({ path });
+            yield* machine.removeFile({ path, anchor });
           }
           yield* machine.ensureDirectory({ path, mode: entry.permissions.mode | 0o700 });
           yield* machine.setPermissions({ path, ...policy });
         } else {
-          yield* machine.mutateWithinRoot({
-            root,
+          return yield* machine.mutateWithinRoot({
+            root: mutationRoot,
+            anchor,
             path,
             mutation: { kind: "directory", ...policy },
           });
@@ -310,10 +325,11 @@ const restoreStoredFile = (
       case "regular": {
         const content = { file: backupFile(reference, entry.path), digest: entry.digest, maximumBytes };
         if (root === undefined) {
-          yield* machine.atomicWrite({ path, content, permissions: entry.permissions });
+          yield* machine.atomicWrite({ path, content, anchor, createAnchoredParents: anchor !== undefined, permissions: entry.permissions });
         } else {
           yield* machine.mutateWithinRoot({
             root,
+            anchor,
             path,
             mutation: { kind: "write", content, permissions: entry.permissions },
           });
@@ -321,11 +337,12 @@ const restoreStoredFile = (
         return;
       }
       case "symlink": {
-        if (root === undefined) {
+        if (mutationRoot === undefined) {
           yield* machine.replaceSymlink({ path, target: entry.target });
         } else {
           yield* machine.mutateWithinRoot({
-            root,
+            root: mutationRoot,
+            anchor,
             path,
             mutation: { kind: "symlink", target: entry.target },
           });
@@ -509,14 +526,16 @@ const outermostTargets = (
  */
 const missingAncestors = (
   targets: ReadonlyArray<MachinePath>,
+  anchor?: MachinePath,
 ): Effect.Effect<ReadonlyArray<CreatedParent>, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const missing = new Map<string, CreatedParent>();
     for (const target of targets) {
       for (let ancestor = parentOf(target); ; ancestor = parentOf(ancestor)) {
+        if (anchor !== undefined && sameMachinePath(ancestor, anchor)) break;
         if (missing.has(machinePathKey(ancestor))) break;
-        const present = yield* machine.inspectPath(ancestor).pipe(
+        const present = yield* machine.inspectPath(ancestor, anchor).pipe(
           Effect.as(true),
           Effect.catchTag("MachineFilesystemError", (error) =>
             error.message.includes("ENOENT")
@@ -546,6 +565,7 @@ const missingAncestors = (
 const removeCreatedParents = (
   parents: ReadonlyArray<CreatedParent>,
   afterCrash: boolean,
+  anchor?: MachinePath,
 ): Effect.Effect<void, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     if (parents.length === 0) return;
@@ -553,7 +573,7 @@ const removeCreatedParents = (
     const deepest = deepestPathFirst(parents, (parent) => parent.path);
     for (const parent of deepest) {
       const path = yield* machine.normalizePath({ path: parent.path });
-      const kind = yield* machine.inspectPath(path).pipe(
+      const kind = yield* machine.inspectPath(path, anchor).pipe(
         Effect.map((object) => object.kind),
         Effect.catchTag("MachineFilesystemError", (error) =>
           /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message) ? Effect.succeed(undefined) : Effect.fail(error)
@@ -561,8 +581,8 @@ const removeCreatedParents = (
       );
       if (kind === undefined) continue;
       if (kind !== "directory") return;
-      yield* machine.removeTemporaryEntries({ directory: path, recursive: false });
-      const removed = yield* machine.removeEmptyDirectory({ path }).pipe(
+      yield* machine.removeTemporaryEntries({ directory: path, anchor, recursive: false });
+      const removed = yield* machine.removeEmptyDirectory({ path, anchor }).pipe(
         Effect.as(true),
         Effect.catchTag("MachineFilesystemError", (error) =>
           /\b(?:ENOTEMPTY|EEXIST)\b/u.test(error.message)
@@ -576,7 +596,7 @@ const removeCreatedParents = (
     }
     if (afterCrash) {
       const outermost = yield* machine.normalizePath({ path: deepest.at(-1)!.path });
-      yield* machine.removeTemporaryEntries({ directory: parentOf(outermost), recursive: false });
+      yield* machine.removeTemporaryEntries({ directory: parentOf(outermost), anchor, recursive: false });
     }
   });
 
@@ -591,12 +611,13 @@ const restoreStoredFiles = (
   stored: ReadonlyArray<StoredFile>,
   reference: string,
   root?: MachinePath | undefined,
+  anchor?: MachinePath,
 ): Effect.Effect<void, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const deepestEntries = deepestPathFirst(stored, (file) => file.path);
     if (root === undefined) {
       for (const entry of deepestEntries) {
-        yield* restoreStoredFile(entry, reference);
+        yield* restoreStoredFile(entry, reference, { anchor });
       }
       return;
     }
@@ -612,16 +633,18 @@ const restoreStoredFiles = (
     if (rootEntry !== undefined && rootState !== "absent" && rootState !== "directory") {
       for (const entry of deepestEntries) {
         if (entry === rootEntry) continue;
-        yield* restoreStoredFile(entry, reference, root);
+        yield* restoreStoredFile(entry, reference, { root, anchor });
       }
-      yield* restoreStoredFile(rootEntry, reference);
+      yield* restoreStoredFile(rootEntry, reference, { anchor });
       return;
     }
 
+    let rootIdentity: FileIdentity | undefined;
     if (rootDirectory !== undefined) {
-      yield* restoreStoredFile(rootDirectory, reference, undefined, "writable");
+      const prepared = yield* restoreStoredFile(rootDirectory, reference, { anchor, directoryPermissions: "writable" });
+      if (prepared) rootIdentity = prepared;
     } else {
-      const currentKind = yield* machine.inspectPath(root).pipe(
+      const currentKind = yield* machine.inspectPath(root, anchor).pipe(
         Effect.catchTag("MachineFilesystemError", (error) =>
           error.message.includes("ENOENT")
             ? Effect.succeed(undefined)
@@ -636,28 +659,41 @@ const restoreStoredFiles = (
       // operator created the directory by hand.
       if (currentKind === undefined && rootState === "absent") return;
       if (currentKind?.kind === "directory") {
-        yield* machine.setPermissions({ path: root, mode: 0o700 });
+        yield* machine.setPermissions({ path: root, anchor, identity: currentKind.identity, mode: 0o700 });
       }
     }
 
+    const nestedIdentities = new Map<string, FileIdentity>();
     for (const directory of [...deepestDirectories].reverse()) {
       if (directory === rootEntry) continue;
-      yield* restoreStoredFile(directory, reference, root, "writable");
+      const identity = yield* restoreStoredFile(directory, reference, { root, anchor, directoryPermissions: "writable" });
+      if (identity) nestedIdentities.set(directory.path, identity);
     }
 
     for (const entry of deepestEntries) {
       if (entry === rootEntry || entry.state === "directory") continue;
-      yield* restoreStoredFile(entry, reference, root);
+      yield* restoreStoredFile(entry, reference, { root, anchor });
     }
 
     for (const directory of deepestDirectories) {
       if (directory === rootEntry) continue;
-      yield* restoreStoredFile(directory, reference, root);
+      if (anchor === undefined) {
+        yield* restoreStoredFile(directory, reference, { root });
+      } else {
+        const path = yield* machine.normalizePath({ path: directory.path });
+        const identity = nestedIdentities.get(directory.path);
+        if (identity === undefined) {
+          return yield* new MachineFilesystemError({
+            path: directory.path, operation: "restore permissions", message: "the prepared directory has no confirmed identity",
+          });
+        }
+        yield* machine.setPermissions({ path, anchor, identity, permissions: directory.permissions });
+      }
     }
     if (rootDirectory !== undefined) {
-      yield* machine.setPermissions({ path: root, permissions: rootDirectory.permissions });
+      yield* machine.setPermissions({ path: root, anchor, identity: rootIdentity, permissions: rootDirectory.permissions });
     } else if (rootEntry !== undefined && rootState === "absent") {
-      yield* machine.removeEmptyDirectory({ path: root }).pipe(
+      yield* machine.removeEmptyDirectory({ path: root, anchor }).pipe(
         Effect.catchTag("MachineFilesystemError", (error) =>
           error.message.includes("ENOENT") ? Effect.void : Effect.fail(error)
         ),
@@ -687,6 +723,7 @@ const captureRollback = (
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const directories = yield* machine.userDirectories();
+    const anchor = classifyAuthoredResourceId(context.resource.id) === "authored" ? directories.home : undefined;
     const rollbackDirectory = yield* machine.normalizePath({
       path: `canonfig/rollback/${context.run}`,
       base: directories.cache,
@@ -699,7 +736,7 @@ const captureRollback = (
     const pathsWithAncestors = yield* rollbackPathSet(paths, root);
     const rootKind = root === undefined
       ? undefined
-      : yield* machine.inspectPath(root).pipe(
+      : yield* machine.inspectPath(root, anchor).pipe(
         Effect.catchTag("MachineFilesystemError", (error) =>
           error.message.includes("ENOENT")
             ? Effect.succeed(undefined)
@@ -718,7 +755,7 @@ const captureRollback = (
             const appendLocalTarget = composesText(context)
               && paths.some((target) => sameMachinePath(target, path));
             const maximumBytes = appendLocalTarget ? context.limits.maximumFileBytes : undefined;
-            const entry = yield* captureStoredFile(path, maximumBytes);
+            const entry = yield* captureStoredFile(path, maximumBytes, anchor);
             const detail = context.action.detail;
             if (appendLocalTarget && detail.kind === "write-file" && detail.textTransition.kind === "adopt-local"
               && (entry.state !== "regular" || entry.digest !== detail.textTransition.retainedDigest)) {
@@ -730,22 +767,22 @@ const captureRollback = (
               const backup = yield* machine.normalizePath({ path: backupFile(rollbackPath.absolute, entry.path) });
               yield* machine.atomicWrite({
                 path: backup,
-                content: { file: entry.path, digest: entry.digest, maximumBytes },
+                content: { file: entry.path, anchor: anchor?.absolute, digest: entry.digest, maximumBytes },
                 mode: 0o600,
               });
             }
             return entry;
           }),
     );
-    const createdParents = yield* missingAncestors(outermostTargets(paths, root));
+    const createdParents = yield* missingAncestors(outermostTargets(paths, root), anchor);
     yield* machine.atomicWrite({
       path: rollbackPath,
       content: encoder.encode(JSON.stringify([...stored, ...createdParents])),
     });
-    const removeParents = removeCreatedParents(createdParents, false);
+    const removeParents = removeCreatedParents(createdParents, false, anchor);
     const restore = (composesText(context)
       ? restoreAppendLocal(context, stored, rollbackPath.absolute)
-      : restoreStoredFiles(stored, rollbackPath.absolute, root)
+      : restoreStoredFiles(stored, rollbackPath.absolute, root, anchor)
     ).pipe(Effect.andThen(removeParents));
     return {
       reference: rollbackPath.absolute,
@@ -897,13 +934,14 @@ export const restoreRollbackReference = (
   MachineState
 > => {
   const restore = Effect.gen(function*() {
+    const anchor = yield* authoredResourceAnchor(context.resource.id);
     const { stored, createdParents, root } = yield* loadRollbackMaterial(context, reference);
     if (composesText(context)) {
       yield* restoreAppendLocal(context, stored, reference);
     } else {
-      yield* restoreStoredFiles(stored, reference, root);
+      yield* restoreStoredFiles(stored, reference, root, anchor);
     }
-    yield* removeCreatedParents(createdParents, true);
+    yield* removeCreatedParents(createdParents, true, anchor);
   });
   const guard = authoredTargetGuard(context);
   return guard === undefined ? restore : guard.pipe(Effect.andThen(restore));
@@ -1085,6 +1123,9 @@ export const inspectRollbackTargets = (
   SynchronizationExecutionInputError | MachineStateError,
   MachineState
 > => Effect.gen(function*() {
+  const guard = authoredTargetGuard(context);
+  if (guard !== undefined) yield* guard;
+  const anchor = yield* authoredResourceAnchor(context.resource.id);
   const { stored, root } = yield* loadRollbackMaterial(context, reference);
   const intended = yield* intendedStates(context, stored, root, reference);
   const edited: Array<string> = [];
@@ -1095,7 +1136,7 @@ export const inspectRollbackTargets = (
     const path = yield* targetPath(entry.path);
     const key = machinePathKey(path);
     preimages.set(key, entry);
-    const current = yield* captureStoredFile(path);
+    const current = yield* captureStoredFile(path, undefined, anchor);
     const after = intended.get(entry.path);
     // Only retired removals can be followed by an overlapping active resource.
     // Validate successors first, then inspect the removal as if those writes
@@ -1220,9 +1261,9 @@ const sameTextSnapshot = (left: StoredFile, right: StoredTextFile): boolean =>
           && left.permissions.securityDescriptor === right.permissions.securityDescriptor);
 
 /** Refuse links and special objects before any file read, including recovery. */
-const inspectTextTarget = (path: MachinePath) => Effect.gen(function*() {
+const inspectTextTarget = (path: MachinePath, anchor?: MachinePath) => Effect.gen(function*() {
   const machine = yield* MachineState;
-  const kind = yield* machine.inspectPath(path).pipe(
+  const kind = yield* machine.inspectPath(path, anchor).pipe(
     Effect.catchTag("MachineFilesystemError", (error) => error.message.includes("ENOENT")
       ? Effect.succeed(undefined) : Effect.fail(error)),
   );
@@ -1239,8 +1280,9 @@ const restoreAppendLocal = (context: ResourceExecutionContext, stored: ReadonlyA
   Effect.gen(function*() {
     const before = yield* textSnapshot(stored);
     const path = yield* targetPath(before.path);
-    yield* inspectTextTarget(path);
-    const current = yield* captureStoredFile(path, context.limits.maximumFileBytes);
+    const anchor = yield* authoredResourceAnchor(context.resource.id);
+    yield* inspectTextTarget(path, anchor);
+    const current = yield* captureStoredFile(path, context.limits.maximumFileBytes, anchor);
     if (sameTextSnapshot(current, before)) return;
     const { content, mode } = yield* appendLocalOutput(context, before, reference);
     // The intended write has a portable mode, not the preimage's native ACL.
@@ -1250,28 +1292,29 @@ const restoreAppendLocal = (context: ResourceExecutionContext, stored: ReadonlyA
     if (!matchesAfter) {
       return yield* new InvalidExecutionPlanError({ message: `append-local target changed after the action: ${before.path}. Inspect the retained rollback backup before recovering.` });
     }
-    yield* restoreStoredFile(before, reference, undefined, "restore", context.limits.maximumFileBytes);
+    yield* restoreStoredFile(before, reference, { anchor, maximumBytes: context.limits.maximumFileBytes });
   });
 
 const prepareAppendLocal = (context: ResourceExecutionContext, target: string) =>
   Effect.gen(function*() {
     const path = yield* targetPath(target);
-    yield* inspectTextTarget(path);
+    const anchor = yield* authoredResourceAnchor(context.resource.id);
+    yield* inspectTextTarget(path, anchor);
     const rollback = yield* captureRollback(context, [path]);
     const before = yield* textSnapshot(rollback.stored);
     const { content, mode } = yield* appendLocalOutput(context, before, rollback.reference);
     const execute = Effect.gen(function*() {
-      yield* inspectTextTarget(path);
-      const current = yield* captureStoredFile(path, context.limits.maximumFileBytes);
+      yield* inspectTextTarget(path, anchor);
+      const current = yield* captureStoredFile(path, context.limits.maximumFileBytes, anchor);
       if (!sameTextSnapshot(current, before)) {
         return yield* new InvalidExecutionPlanError({ message: `append-local target changed while preparing: ${target}. Replan synchronization.` });
       }
       const machine = yield* MachineState;
       if (content === undefined) {
-        if (current.state !== "absent") yield* machine.removeFile({ path });
+        if (current.state !== "absent") yield* machine.removeFile({ path, anchor });
         return;
       }
-      yield* machine.atomicWrite({ path, content, mode });
+      yield* machine.atomicWrite({ path, content, mode, anchor, createAnchoredParents: anchor !== undefined });
     });
     return { rollbackReference: rollback.reference, execute, rollback: rollback.restore };
   });
@@ -1298,6 +1341,7 @@ const prepareWrite = (
     }
     if (transition.kind !== "whole-file") return yield* prepareAppendLocal(context, detail.target);
     const path = yield* targetPath(detail.target);
+    const anchor = yield* authoredResourceAnchor(context.resource.id);
     const rollback = yield* captureRollback(context, [path]);
     const symlinkTo = context.desired.kind === "file" ? context.desired.symlinkTo : undefined;
     // The file this write put at `path`: atomicWrite's result, or the file
@@ -1307,13 +1351,17 @@ const prepareWrite = (
     const execute = Effect.gen(function*() {
       const machine = yield* MachineState;
       if (symlinkTo !== undefined) {
-        yield* machine.replaceSymlink({ path, target: symlinkTo });
+        yield* anchor === undefined
+          ? machine.replaceSymlink({ path, target: symlinkTo })
+          : machine.mutateWithinRoot({ root: anchor, anchor, path, mutation: { kind: "symlink", target: symlinkTo } });
         return;
       }
       const content = yield* artifact(context.artifacts, detail.digest);
       published = yield* machine.atomicWrite({
         path,
         content,
+        anchor,
+        createAnchoredParents: anchor !== undefined,
         mode: context.desired.kind === "file"
           ? context.desired.mode ?? (context.desired.executable ? 0o700 : 0o600)
           : undefined,
@@ -1335,7 +1383,7 @@ const prepareWrite = (
           ? Effect.void
           : Effect.gen(function*() {
             const machine = yield* MachineState;
-            yield* machine.removeFile({ path, identity: written });
+            yield* machine.removeFile({ path, anchor, identity: written });
           });
         return removeWritten.pipe(Effect.andThen(rollback.removeCreatedParents));
       }
@@ -1446,12 +1494,13 @@ const prepareConfig = (
       });
     }
     const path = yield* targetPath(target);
-    const currentBytes = yield* readIfPresent(path, context.limits.maximumFileBytes);
+    const anchor = yield* authoredResourceAnchor(context.resource.id);
+    const currentBytes = yield* readIfPresent(path, context.limits.maximumFileBytes, anchor);
     const content = yield* configMergeContent(context, context.desired, target, keys, removes, currentBytes);
     const rollback = yield* captureRollback(context, [path]);
     const execute = Effect.gen(function*() {
       const machine = yield* MachineState;
-      yield* machine.atomicWrite({ path, content });
+      yield* machine.atomicWrite({ path, content, anchor, createAnchoredParents: anchor !== undefined });
     });
     return {
       rollbackReference: rollback.reference,
@@ -1474,6 +1523,7 @@ const prepareMirror = (
       });
     }
     const root = yield* targetPath(target);
+    const anchor = yield* authoredResourceAnchor(context.resource.id);
     const desiredByPath = new Map(desired.files.map((file) => [
       file.path,
       file,
@@ -1513,19 +1563,24 @@ const prepareMirror = (
     const execute = Effect.gen(function*() {
       const activeMachine = yield* MachineState;
       const rootMode = desired.mode ?? 0o700;
-      const rootKind = yield* activeMachine.inspectPath(root).pipe(
-        Effect.catchTag("MachineFilesystemError", (error) =>
-          error.message.includes("ENOENT")
-            ? Effect.succeed(undefined)
-            : Effect.fail(error)
-        ),
-      );
-      if (rootKind !== undefined && rootKind.kind !== "directory") {
-        yield* activeMachine.removeFile({ path: root });
-      }
       const traversableRootMode = rootMode | 0o700;
-      yield* activeMachine.ensureDirectory({ path: root, mode: traversableRootMode });
-      yield* activeMachine.setPermissions({ path: root, mode: traversableRootMode });
+      let rootIdentity: FileIdentity | undefined;
+      if (anchor !== undefined) {
+        const prepared = yield* activeMachine.mutateWithinRoot({
+          root: anchor, anchor, path: root, mutation: { kind: "directory", mode: traversableRootMode },
+        });
+        if (prepared) rootIdentity = prepared;
+      } else {
+        const rootKind = yield* activeMachine.inspectPath(root).pipe(
+          Effect.catchTag("MachineFilesystemError", (error) =>
+            error.message.includes("ENOENT") ? Effect.succeed(undefined) : Effect.fail(error)),
+        );
+        if (rootKind !== undefined && rootKind.kind !== "directory") {
+          yield* activeMachine.removeFile({ path: root });
+        }
+        yield* activeMachine.ensureDirectory({ path: root, mode: traversableRootMode });
+        yield* activeMachine.setPermissions({ path: root, mode: traversableRootMode });
+      }
       const orderedDirectories = [...desiredDirectories.values()].sort((left, right) =>
         left.path.split("/").length - right.path.split("/").length
         || left.path.localeCompare(right.path)
@@ -1535,10 +1590,11 @@ const prepareMirror = (
         || left.localeCompare(right)
       );
       const preservedAncestorModes = new Map<string, number>();
+      const directoryIdentities = new Map<string, FileIdentity>();
       // Widen before child mutations, then restore surviving modes below.
       for (const relative of orderedMutationAncestors) {
         const path = byRelative.get(relative)!;
-        const current = yield* activeMachine.inspectPath(path).pipe(
+        const current = yield* activeMachine.inspectPath(path, anchor).pipe(
           Effect.catchTag("MachineFilesystemError", (error) =>
             error.message.includes("ENOENT")
               ? Effect.succeed(undefined)
@@ -1546,7 +1602,8 @@ const prepareMirror = (
           ),
         );
         if (current?.kind === "directory") {
-          const permissions = yield* activeMachine.permissions(path);
+          if (current.identity !== undefined) directoryIdentities.set(relative, current.identity);
+          const permissions = yield* activeMachine.permissions(path, anchor);
           // Only surviving implicit directories keep their previous mode. A
           // desired file or symlink at this path replaces the directory below;
           // chmod after replacement would overwrite file intent or follow a link.
@@ -1556,7 +1613,7 @@ const prepareMirror = (
           }
           const writableMode = permissions.mode | 0o700;
           if (writableMode !== permissions.mode) {
-            yield* activeMachine.setPermissions({ path, mode: writableMode });
+            yield* activeMachine.setPermissions({ path, anchor, identity: current.identity, mode: writableMode });
           }
         }
       }
@@ -1566,16 +1623,19 @@ const prepareMirror = (
       for (const relative of orderedRemoves) {
         yield* activeMachine.mutateWithinRoot({
           root,
+          anchor,
           path: byRelative.get(relative)!,
           mutation: { kind: "remove" },
         });
       }
       for (const directory of orderedDirectories) {
-        yield* activeMachine.mutateWithinRoot({
+        const prepared = yield* activeMachine.mutateWithinRoot({
           root,
+          anchor,
           path: byRelative.get(directory.path)!,
           mutation: { kind: "directory", mode: directory.mode | 0o700 },
         });
+        if (prepared && anchor !== undefined) directoryIdentities.set(directory.path, prepared);
       }
       const orderedAdds = adds
         .filter((relative) => !desiredDirectories.has(relative))
@@ -1587,6 +1647,7 @@ const prepareMirror = (
         const desiredFile = desiredByPath.get(relative)!;
         yield* activeMachine.mutateWithinRoot({
           root,
+          anchor,
           path: byRelative.get(relative)!,
           mutation: desiredFile.symlinkTo === undefined
             ? {
@@ -1607,10 +1668,12 @@ const prepareMirror = (
       for (const directory of finalDirectoryModes) {
         yield* activeMachine.setPermissions({
           path: byRelative.get(directory.path)!,
+          anchor,
+          identity: directoryIdentities.get(directory.path),
           mode: directory.mode,
         });
       }
-      yield* activeMachine.setPermissions({ path: root, mode: rootMode });
+      yield* activeMachine.setPermissions({ path: root, anchor, identity: rootIdentity, mode: rootMode });
     });
     return {
       rollbackReference: rollback.reference,
@@ -1624,6 +1687,7 @@ const prepareRemoval = (
   detail: Extract<PlannedAction["detail"], { readonly kind: "remove-resource" }>,
 ): Effect.Effect<PreparedResourceAction, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
   Effect.gen(function*() {
+    const anchor = yield* authoredResourceAnchor(context.resource.id);
     switch (context.resource.kind) {
       case "file": {
         if (context.resource.policy === "append-local") return yield* prepareAppendLocal(context, detail.target);
@@ -1631,7 +1695,7 @@ const prepareRemoval = (
         const rollback = yield* captureRollback(context, [path]);
         const execute = Effect.gen(function*() {
           const machine = yield* MachineState;
-          yield* machine.removeFile({ path }).pipe(
+          yield* machine.removeFile({ path, anchor }).pipe(
             Effect.catchTag("MachineFilesystemError", (error) =>
               error.message.includes("ENOENT") ? Effect.void : Effect.fail(error)
             ),
@@ -1645,7 +1709,7 @@ const prepareRemoval = (
           const rollback = yield* captureRollback(context, [path]);
           const execute = Effect.gen(function*() {
             const machine = yield* MachineState;
-            yield* machine.removeFile({ path }).pipe(
+            yield* machine.removeFile({ path, anchor }).pipe(
               Effect.catchTag("MachineFilesystemError", (error) =>
                 error.message.includes("ENOENT") ? Effect.void : Effect.fail(error)
               ),
@@ -1669,11 +1733,12 @@ const prepareRemoval = (
           const currentBytes = yield* readIfPresent(
             path,
             context.limits.maximumFileBytes,
+            anchor,
           );
           if (currentBytes === undefined) return;
           const content = yield* configRemovalContent(config, detail.target, detail.keys, currentBytes);
           const machine = yield* MachineState;
-          yield* machine.atomicWrite({ path, content });
+          yield* machine.atomicWrite({ path, content, anchor, createAnchoredParents: anchor !== undefined });
         });
         return { rollbackReference: rollback.reference, execute, rollback: rollback.restore };
       }
@@ -1704,11 +1769,11 @@ const prepareRemoval = (
           const originalModes = (yield* Effect.forEach(
             parentPaths,
             (path) =>
-              machine.inspectPath(path).pipe(
+              machine.inspectPath(path, anchor).pipe(
                 Effect.flatMap((kind) =>
                   kind.kind === "directory"
-                    ? machine.permissions(path).pipe(
-                      Effect.map((permissions) => ({ path, mode: permissions.mode })),
+                    ? machine.permissions(path, anchor).pipe(
+                      Effect.map((permissions) => ({ path, identity: kind.identity, mode: permissions.mode })),
                     )
                     : Effect.succeed(undefined)
                 ),
@@ -1718,20 +1783,22 @@ const prepareRemoval = (
                     : Effect.fail(error)
                 ),
               ),
-          )).filter((entry): entry is { readonly path: MachinePath; readonly mode: number } =>
+          )).filter((entry): entry is { readonly path: MachinePath; readonly identity: FileIdentity | undefined; readonly mode: number } =>
             entry !== undefined
           );
-          const changedModes: Array<{ readonly path: MachinePath; readonly mode: number }> = [];
+          const changedModes: Array<{ readonly path: MachinePath; readonly identity: FileIdentity | undefined; readonly mode: number }> = [];
+          const removedPaths = new Set<string>();
           const removal = Effect.gen(function*() {
             for (const entry of [...deepestPathFirst(originalModes, (value) => value.path.absolute)].reverse()) {
               const writableMode = entry.mode | 0o700;
               if (writableMode === entry.mode) continue;
-              yield* machine.setPermissions({ path: entry.path, mode: writableMode });
+              yield* machine.setPermissions({ path: entry.path, anchor, identity: entry.identity, mode: writableMode });
               changedModes.push(entry);
             }
             for (const path of deepestPathFirst(paths, (value) => value.absolute)) {
               yield* machine.mutateWithinRoot({
                 root,
+                anchor,
                 path,
                 mutation: { kind: "remove" },
               }).pipe(
@@ -1739,19 +1806,23 @@ const prepareRemoval = (
                   error.message.includes("ENOENT") ? Effect.void : Effect.fail(error)
                 ),
               );
+              removedPaths.add(machinePathKey(path));
             }
           });
           const removalResult = yield* Effect.result(removal);
           const restorationResult = yield* Effect.result(Effect.forEach(
             deepestPathFirst(changedModes, (entry) => entry.path.absolute),
-            (entry) =>
-              machine.setPermissions({ path: entry.path, mode: entry.mode }).pipe(
-                Effect.catchTag("MachineFilesystemError", (error) =>
-                  /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message)
-                    ? Effect.void
-                    : Effect.fail(error)
-                ),
-              ),
+            (entry) => Effect.gen(function*() {
+              if (removedPaths.has(machinePathKey(entry.path))) {
+                const stillPresent = yield* machine.inspectPath(entry.path, anchor).pipe(
+                  Effect.as(true),
+                  Effect.catchTag("MachineFilesystemError", (error) =>
+                    /\bENOENT\b/u.test(error.message) ? Effect.succeed(false) : Effect.fail(error)),
+                );
+                if (!stillPresent) return;
+              }
+              yield* machine.setPermissions({ path: entry.path, anchor, identity: entry.identity, mode: entry.mode });
+            }),
             { discard: true },
           ));
           if (removalResult._tag === "Failure") {
@@ -1766,7 +1837,7 @@ const prepareRemoval = (
           // record of, which planned as Follower Drift. A root that still
           // holds entries holds someone else's files and stays. Rollback
           // captured the root, so it recreates it.
-          yield* machine.removeEmptyDirectory({ path: root }).pipe(
+          yield* machine.removeEmptyDirectory({ path: root, anchor }).pipe(
             Effect.catchTag("MachineFilesystemError", (error) =>
               /\b(?:ENOTEMPTY|EEXIST|ENOENT)\b/u.test(error.message) ? Effect.void : Effect.fail(error)
             ),
@@ -2301,11 +2372,9 @@ const confirmInstalledVersion = (
  * before each preparation, mutation and rollback, and recovery before it
  * restores a rollback snapshot.
  *
- * This is a check, not an anchored write. The mutation that follows is a
- * separate path-based call, so a parent replaced by a link between the two
- * is still followed. `mutateWithinRoot` would close that window, but it
- * anchors on its root and its macOS strategy renames the root aside while it
- * works, which cannot be done to the home directory.
+ * Report a linked ancestor with its visible name and recovery guidance.
+ * The platform filesystem operations hold the directories they actually
+ * use because the path can change after this check.
  */
 export const assertAuthoredTargetPath = (target: string) =>
   Effect.gen(function*() {
@@ -2353,11 +2422,26 @@ export const prepareResourceAction = (
   if (guard === undefined) return prepareAction(context);
   return guard.pipe(
     Effect.flatMap(() => prepareAction(context)),
-    Effect.map((prepared) => ({
-      ...prepared,
-      execute: guard.pipe(Effect.andThen(prepared.execute)),
-      rollback: prepared.rollback === undefined ? undefined : guard.pipe(Effect.andThen(prepared.rollback)),
-    })),
+    Effect.map((prepared) => {
+      let changedTarget: string | undefined;
+      const execute = guard.pipe(
+        Effect.andThen(prepared.execute),
+        Effect.tapError((error) => Effect.sync(() => {
+          if (error._tag === "AnchoredMutationUnconfirmedError"
+            || error._tag === "UnconfirmedPublicationError" && error.state === "replaced") {
+            changedTarget = error.path;
+          }
+        })),
+      );
+      const undo = prepared.rollback;
+      const rollback = undo === undefined ? undefined : Effect.suspend(() =>
+        changedTarget === undefined
+          ? guard.pipe(Effect.andThen(undo))
+          : Effect.fail(new InvalidExecutionPlanError({
+            message: `Refused to overwrite a replacement at ${changedTarget}. Inspect the retained rollback snapshot before recovering.`,
+          })));
+      return { ...prepared, execute, rollback };
+    }),
   );
 };
 
@@ -2426,11 +2510,12 @@ const prepareAction = (
 const verifyDigest = (
   target: string,
   desiredDigest: string,
+  anchor?: MachinePath,
 ): Effect.Effect<ResourceVerification, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
     const path = yield* machine.normalizePath({ path: target });
-    const kind = yield* machine.inspectPath(path).pipe(
+    const kind = yield* machine.inspectPath(path, anchor).pipe(
       Effect.catchTag("MachineFilesystemError", (error) =>
         /\b(?:ENOENT|ENOTDIR)\b/u.test(error.message) ? Effect.succeed(undefined) : Effect.fail(error)),
     );
@@ -2440,7 +2525,7 @@ const verifyDigest = (
         method: `sha256:non-${kind?.kind ?? "absent"}`,
       };
     }
-    const observed = yield* machine.digestFile({ path });
+    const observed = yield* machine.digestFile({ path, anchor });
     return {
       passed: observed.value === desiredDigest,
       method: "sha256",
@@ -2477,16 +2562,17 @@ export const verifyResource = (
   switch (desired.kind) {
     case "file":
       return Effect.gen(function*() {
+        const anchor = yield* authoredResourceAnchor(context.resource.id);
         const digest = yield* (context.resource.policy === "append-local"
           ? verifyAppendLocal(context, declaredDigest)
-          : verifyDigest(context.resource.target, declaredDigest));
+          : verifyDigest(context.resource.target, declaredDigest, anchor));
         if (!digest.passed) return digest;
         const machine = yield* MachineState;
         const path = yield* machine.normalizePath({
           path: context.resource.target,
         });
-        const permissions = yield* machine.permissions(path);
-        const kind = yield* machine.inspectPath(path);
+        const permissions = yield* machine.permissions(path, anchor);
+        const kind = yield* machine.inspectPath(path, anchor);
         if (kind.kind !== "regular") {
           return {
             ...digest,
@@ -2535,9 +2621,10 @@ export const verifyResource = (
 const verifyAppendLocal = (context: ResourceExecutionContext, declaredDigest: string) =>
   Effect.gen(function*() {
     const path = yield* targetPath(context.resource.target);
-    yield* inspectTextTarget(path);
+    const anchor = yield* authoredResourceAnchor(context.resource.id);
+    yield* inspectTextTarget(path, anchor);
     const machine = yield* MachineState;
-    const bytes = yield* machine.readFile({ path, maximumBytes: context.limits.maximumFileBytes });
+    const bytes = yield* machine.readFile({ path, anchor, maximumBytes: context.limits.maximumFileBytes });
     const composition = yield* Effect.try({
       try: () => parseTextComposition(bytes),
       catch: (error) => new InvalidExecutionPlanError({ message: `cannot verify Source text: ${String(error)}` }),
@@ -2966,9 +3053,10 @@ const verifySymlink = (
   target: string,
 ): Effect.Effect<ResourceVerification, MachineStateError, MachineState> =>
   Effect.gen(function*() {
+    const anchor = yield* authoredResourceAnchor(context.resource.id);
     const machine = yield* MachineState;
     const path = yield* machine.normalizePath({ path: context.resource.target });
-    return yield* machine.readSymlink(path).pipe(
+    return yield* machine.readSymlink(path, anchor).pipe(
       Effect.map((observed) => ({
         passed: observed === target,
         method: "symlink-target",
@@ -2990,9 +3078,10 @@ const verifyDirectory = (
   }>,
 ): Effect.Effect<ResourceVerification, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
   Effect.gen(function*() {
+    const anchor = yield* authoredResourceAnchor(context.resource.id);
     const root = yield* targetPath(context.resource.target);
     const machine = yield* MachineState;
-    const rootKind = yield* machine.inspectPath(root).pipe(
+    const rootKind = yield* machine.inspectPath(root, anchor).pipe(
       Effect.catchTag("MachineFilesystemError", (error) =>
         error.message.includes("ENOENT")
           ? Effect.succeed(undefined)
@@ -3009,7 +3098,7 @@ const verifyDirectory = (
       };
     }
     if (context.desired.kind === "directory" || context.desired.kind === "skill") {
-      const rootPermissions = yield* machine.permissions(root);
+      const rootPermissions = yield* machine.permissions(root, anchor);
       if (rootPermissions.mode !== (context.desired.mode ?? 0o700)) {
         return { passed: false, method: "directory-root-permissions" };
       }
@@ -3017,17 +3106,17 @@ const verifyDirectory = (
     const observations = yield* Effect.forEach(files, (file) =>
       Effect.gen(function*() {
       const path = yield* normalizeRelative(root, file.path);
-      const kind = yield* machine.inspectPath(path);
+      const kind = yield* machine.inspectPath(path, anchor);
       if (file.objectKind === "directory") {
         if (kind.kind !== "directory") {
           return { expected: file.digest, observed: undefined, mode: -1, expectedMode: file.mode };
         }
-        const permissions = yield* machine.permissions(path);
+        const permissions = yield* machine.permissions(path, anchor);
         return { expected: file.digest, observed: file.digest, mode: permissions.mode, expectedMode: file.mode };
       }
       if (file.symlinkTo !== undefined) {
         const target = kind.kind === "symlink"
-          ? yield* machine.readSymlink(path)
+          ? yield* machine.readSymlink(path, anchor)
           : undefined;
         return {
           expected: file.digest,
@@ -3044,9 +3133,9 @@ const verifyDirectory = (
           expectedMode: file.mode,
         };
       }
-      const observed = yield* machine.digestFile({ path });
-      const permissions = yield* machine.permissions(path);
-      const finalKind = yield* machine.inspectPath(path);
+      const observed = yield* machine.digestFile({ path, anchor });
+      const permissions = yield* machine.permissions(path, anchor);
+      const finalKind = yield* machine.inspectPath(path, anchor);
         return {
           expected: file.digest,
           observed: finalKind.kind === "regular" ? observed.value : undefined,
@@ -3076,6 +3165,7 @@ const verifyConfig = (
   keys: ReadonlyArray<string>,
 ): Effect.Effect<ResourceVerification, SynchronizationExecutionInputError | MachineStateError, MachineState> =>
   Effect.gen(function*() {
+    const anchor = yield* authoredResourceAnchor(context.resource.id);
     const desiredBytes = yield* artifact(context.artifacts, digest);
     if (context.desired.kind !== "config") {
       return yield* new InvalidExecutionPlanError({
@@ -3095,6 +3185,7 @@ const verifyConfig = (
     const path = yield* machine.normalizePath({ path: context.resource.target });
     const observedBytes = yield* machine.readFile({
       path,
+      anchor,
       maximumBytes: context.limits.maximumFileBytes,
     });
     const observed = yield* Effect.try({

@@ -798,6 +798,10 @@ export const failureTaxonomy = {
     (error) =>
       `${text(error.operation)} failed on ${text(error.path)}`,
   ),
+  AnchoredMutationUnconfirmedError: describe(
+    "verification-or-apply-failure",
+    (error) => `${text(error.operation)} could not be confirmed at ${text(error.path)}: ${error.message}`,
+  ),
   UnconfirmedPublicationError: describe(
     "verification-or-apply-failure",
     (error) =>
