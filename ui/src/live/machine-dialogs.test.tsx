@@ -41,7 +41,7 @@ type Handler = (path: string, body: unknown, outgoing: ServerResponse) => boolea
 async function fixture(handler: Handler) {
   const responses: Record<string, unknown> = {
     "/api/status": { machineRole: { role: "source" }, lifecycle: {}, tunnel: null },
-    "/api/profile/items": { items: [], config: { profile: { id: "dialog", name: "Dialog" }, groups: { work: [] } }, supportedSurfaces: {} },
+    "/api/profile/items": { items: [], config: { profile: { id: "dialog", name: "Dialog" }, groups: { work: [] } }, reservedPaths: [], caseSensitive: true, supportedSurfaces: {} },
     "/api/source-service": { report: { ...serviceNetwork, state: "not-installed", platform: "linux", mechanism: "systemd-user-service", serviceName: "dialog-fixture", endpoint: "", manager: { installed: false, matches: false, enabled: false, active: false, state: "not-installed" }, serving: false, supportedModes: "", logs: "", detail: "" }, error: null },
     "/api/revisions": { revisions: [] },
     "/api/machines": { followers: [follower], invitations: [], health: {} },

@@ -224,8 +224,8 @@ it("reads fresh enrolled Follower settings, saves them, and preserves malformed 
   expect(await api("/api/local/overlays")).toEqual({
     status: 200, body: { configured: false, overlays: [], pending: [] },
   });
-  expect(await api("/api/local/items")).toEqual({
-    status: 200, body: { items: [], config: {}, canonicalConfig: {} },
+  expect(await api("/api/local/items")).toMatchObject({
+    status: 200, body: { items: [], config: {}, canonicalConfig: {}, settingsFiles: { codex: { owned: ["mcp_servers"] } } },
   });
   const localDirectory = join(follower.home, ".canonfig", "local");
   mkdirSync(localDirectory, { recursive: true });

@@ -23,7 +23,6 @@ import {
   HARNESS_NAMES,
   LOCAL_CATEGORIES,
   PLAIN,
-  RESERVED_PATHS,
   SECRETS_GROUP,
   itemPath,
   type AppendLocalCategory,
@@ -654,10 +653,13 @@ const RESOURCE_SOURCE = /^files\/(?:[^/\\\0]+\/)*[^/\\\0]+$/;
 /**
  * The checks Canonfig runs on `resources.<id>.target` and `.source`, with its own messages: the loader's shape,
  * `.`/`..` and overlap rules (loadResources in src/projection/folder.ts) and projection's refusal of any place the
- * Canonfig folder, ~/.agents or a harness owns (projectResources in src/projection/plan.ts). Overlap ignores case,
- * as the loader does, because a folder reaches machines whose file systems do.
+ * Canonfig folder, ~/.agents or a harness owns. Authored sibling targets fold case across machines.
+ * Adapter paths use the local machine’s case rules.
  */
-function resourcePathError(field: "Target" | "Source", value: string, name: string, others: Resource[]): string | null {
+function resourcePathError(
+  field: "Target" | "Source", value: string, name: string, others: Resource[],
+  layout?: Pick<GuiProfileSnapshot, "reservedPaths" | "caseSensitive">,
+): string | null {
   const label = `resources.${name || "new"}`;
   const dotted = (segments: string[]) => segments.some((s) => s === "." || s === "..");
   if (field === "Source") {
@@ -666,16 +668,16 @@ function resourcePathError(field: "Target" | "Source", value: string, name: stri
   }
   if (!RESOURCE_TARGET.test(value)) return "Write a path in the home folder, starting with ~/, for example ~/.gitconfig.";
   if (dotted(value.slice(2).split("/"))) return `Remove the . or .. part: “${label}.target ${value} has a . or .. segment”.`;
-  const fold = value.toLowerCase();
-  const overlaps = (path: string) => {
-    const other = path.toLowerCase();
-    return fold === other || fold.startsWith(`${other}/`) || other.startsWith(`${fold}/`);
-  };
-  const sibling = others.find((r) => r.category === "resources" && r.change !== "removed" && overlaps(r.detail.Target ?? ""));
+  const overlaps = (left: string, right: string) =>
+    left === right || left.startsWith(right + "/") || right.startsWith(left + "/");
+  const foldedTarget = value.toLowerCase();
+  const sibling = others.find((r) => r.category === "resources" && r.change !== "removed"
+    && overlaps(foldedTarget, (r.detail.Target ?? "").toLowerCase()));
   if (sibling) return `${sibling.id} already writes there: “${label}.target ${value} overlaps ${sibling.id.replace("/", ".")}.target ${sibling.detail.Target}”.`;
-  const reserved = RESERVED_PATHS.find(([path]) => overlaps(path));
+  const target = layout?.caseSensitive ? value : foldedTarget;
+  const reserved = layout?.reservedPaths.find(({ path }) => overlaps(target, path));
   return reserved
-    ? `That place belongs to ${reserved[1]}: “${label}.target ${value} overlaps ${reserved[0]}, which belongs to ${reserved[1]}; author harness configuration through the folder instead”.`
+    ? `That place belongs to ${reserved.owner}: “${label}.target ${value} overlaps ${reserved.path}, which belongs to ${reserved.owner}; author harness configuration through the folder instead”.`
     : null;
 }
 
@@ -766,7 +768,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
   const fieldError = (f: FieldSpec) => {
     const value = draft.detail[f.label]?.trim() ?? "";
     if (f.required && !value) return `Enter ${f.label === "URL" ? "the URL" : `a ${f.label.toLowerCase()}`}.`;
-    return category === "resources" && (f.label === "Target" || f.label === "Source") ? resourcePathError(f.label, value, trimmed, others) : null;
+    return category === "resources" && (f.label === "Target" || f.label === "Source") ? resourcePathError(f.label, value, trimmed, others, ws.profileLive?.snapshot ?? ws.demoProjection) : null;
   };
   const asWritten: Resource = { ...draft, id, path: itemPath(category, trimmed) };
 

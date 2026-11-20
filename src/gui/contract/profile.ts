@@ -22,7 +22,13 @@ export const GuiProfileFile = Schema.Struct({
 });
 export const GuiProfileItem = Schema.Struct({ path: Schema.String, digest: Schema.NullOr(Schema.String), files: Schema.Array(GuiProfileFile) });
 export interface GuiProfileItem extends Schema.Schema.Type<typeof GuiProfileItem> {}
-export const GuiProfileSnapshot = Schema.Struct({ items: Schema.Array(GuiProfileItem), config: Schema.Record(Schema.String, Schema.Json), supportedSurfaces: Schema.Record(Schema.String, Schema.Array(Schema.String)) });
+export const GuiProfileSnapshot = Schema.Struct({
+  items: Schema.Array(GuiProfileItem),
+  config: Schema.Record(Schema.String, Schema.Json),
+  supportedSurfaces: Schema.Record(Schema.String, Schema.Array(Schema.String)),
+  reservedPaths: Schema.Array(Schema.Struct({ path: Schema.String, owner: Schema.String })),
+  caseSensitive: Schema.Boolean,
+});
 export interface GuiProfileSnapshot extends Schema.Schema.Type<typeof GuiProfileSnapshot> {}
 export const GuiProfileChange = Schema.Struct({ path: Schema.NonEmptyString, expectedDigest: Schema.NullOr(Schema.String), files: Schema.Array(GuiProfileFile) });
 export const GuiProfileWrite = Schema.Struct({ changes: Schema.Array(GuiProfileChange) });

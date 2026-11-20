@@ -13,6 +13,9 @@ import { sha256BytesHex } from "../../profile/profile-codec.ts";
 import { MAXIMUM_ARCHIVE_BYTES } from "../../projection/archive.ts";
 import { maximumAuthoringBytes, readAuthoringItem, readAuthoringItems, writeAuthoringItems, editAuthoringConfig, type AuthoringItem } from "../../projection/authoring.ts";
 import { decodeFolderConfig, decodeLocalConfig, parseOverlay } from "../../projection/folder.ts";
+import { emptyModel } from "../../projection/detect.ts";
+import { projectionSettingsFiles } from "../../projection/layout-metadata.ts";
+import { rootContext } from "../../projection/plan.ts";
 import { listSnapshots } from "../../projection/takeover.ts";
 import { synchronizeSharedSecrets } from "../../secrets/secret-client.ts";
 import { listSecrets, storeSecret, removeSecret, type SecretTransferError } from "../../secrets/secret-store.ts";
@@ -79,7 +82,9 @@ export const synchronizationRoutes = Effect.gen(function*() {
         try: () => ({ config: config(items.find((item) => item.path === "local.jsonc")), canonicalConfig: config(canonical) }),
         catch: (cause) => invalid(String(cause)),
       });
-      return { items: items.map(itemResponse), ...decoded };
+      const context = yield* rootContext((name) => process.env[name]);
+      const settingsFiles = projectionSettingsFiles(context, emptyModel(target.folder));
+      return { items: items.map(itemResponse), ...decoded, settingsFiles };
     })),
     Effect.provideService(MachineState, machine),
     Effect.mapError(commandFailure),
