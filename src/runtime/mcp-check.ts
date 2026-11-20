@@ -440,7 +440,7 @@ const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
  * after the reply, so it is read event by event until the reply arrives, then
  * cancelled. Either way at most MAX_RESPONSE_BYTES are read.
  */
-const responseMessage = async (response: Response, id: number, answer: (body: string) => void): Promise<RpcReply | undefined> => {
+const responseMessage = async (response: Response, id: number, answer: (body: string) => Promise<void>): Promise<RpcReply | undefined> => {
   if (response.body === null) return undefined;
   const sse = (response.headers.get("content-type") ?? "").includes("text/event-stream");
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
@@ -448,6 +448,7 @@ const responseMessage = async (response: Response, id: number, answer: (body: st
   let buffered = "";
   // An event's data may span several `data:` lines; it is complete at the blank line that ends the event.
   let eventData: Array<string> = [];
+  let failed = false;
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -472,14 +473,24 @@ const responseMessage = async (response: Response, id: number, answer: (body: st
         eventData = [];
         if (Option.isNone(reply)) continue;
         const pong = pingAnswer(reply.value);
-        if (pong !== undefined) answer(pong);
+        if (pong !== undefined) await answer(pong);
         if (isReplyTo(reply.value, id)) return reply.value;
       }
     }
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
-    await reader.cancel();
+    // A stream already errored by the request deadline can also reject cancellation.
+    try {
+      await reader.cancel();
+    } catch (error) {
+      if (!failed) throw error;
+    }
   }
 };
+
+class ServerReplyFailure extends Error {}
 
 const probeHttp = async (launch: Extract<Launch, { kind: "http" }>, timeoutMilliseconds: number, cancel: AbortSignal): Promise<ProbeOutcome> => {
   const signal = AbortSignal.any([AbortSignal.timeout(timeoutMilliseconds), cancel]);
@@ -495,71 +506,94 @@ const probeHttp = async (launch: Extract<Launch, { kind: "http" }>, timeoutMilli
     return headers;
   };
   // Every POST, including answers to server requests, carries the headers the transport requires.
-  const send = (body: string) => {
+  const send = (body: string, redirect: RequestInit["redirect"] = "follow") => {
     const headers = requestHeaders();
     headers.set("Content-Type", "application/json");
     headers.set("Accept", "application/json, text/event-stream");
-    return fetch(launch.url, { method: "POST", headers, body, signal });
+    return fetch(launch.url, { method: "POST", headers, body, signal, redirect });
   };
   const post = (body: RpcMessage) => send(JSON.stringify(body));
-  // A server request that arrives on a response stream is answered with its own POST, without waiting.
-  const answer = (body: string) => {
-    void send(body).then((sent) => sent.body?.cancel(), () => undefined);
+  const answer = async (body: string) => {
+    try {
+      // A redirect to a login page is not an acknowledgement of the reply.
+      const sent = await send(body, "manual");
+      await sent.body?.cancel();
+      if (!sent.ok) throw new ServerReplyFailure(`reply to server ping returned HTTP ${sent.status}`);
+    } catch (error) {
+      if (error instanceof ServerReplyFailure) throw error;
+      throw new ServerReplyFailure(signal.aborted
+        ? `no acknowledgement for the reply to server ping within ${timeoutMilliseconds} ms`
+        : "could not send the reply to server ping");
+    }
   };
-  // Best effort, on every exit once a session exists: end it instead of leaving it to expire on the
-  // server. The close has its own short deadline, independent of the probe's, so it still runs after
-  // a timeout or cancellation, and a server that ignores DELETE cannot hold the result.
-  const close = async () => {
-    if (session === undefined) return;
-    const closing = AbortSignal.timeout(2_000);
-    await fetch(launch.url, { method: "DELETE", headers: requestHeaders(), signal: closing }).then((closed) => closed.body?.cancel(), () => undefined);
+  // Close has its own deadline so it still runs after the probe times out.
+  // The protocol also allows a server to decline client-initiated termination with HTTP 405.
+  const close = async (): Promise<string | undefined> => {
+    if (session === undefined) return undefined;
+    const closeMilliseconds = 2_000;
+    const closing = AbortSignal.timeout(closeMilliseconds);
+    try {
+      const closed = await fetch(launch.url, { method: "DELETE", headers: requestHeaders(), signal: closing, redirect: "manual" });
+      await closed.body?.cancel();
+      if (!closed.ok && closed.status !== 405) return `session cleanup failed: DELETE returned HTTP ${closed.status}`;
+    } catch {
+      return closing.aborted
+        ? `session cleanup timed out after ${closeMilliseconds} ms`
+        : "session cleanup failed: could not complete DELETE";
+    }
+    return undefined;
   };
-  try {
-    if (launch.sse) {
-      // The legacy SSE transport answers on a second channel; reaching the stream is checked, the handshake is not.
-      const response = await fetch(launch.url, { headers: { ...launch.headers, Accept: "text/event-stream" }, signal });
-      await response.body?.cancel();
-      if (response.ok) return { status: "skipped", detail: "SSE stream reachable; handshake not verified for the legacy SSE transport" };
-      return { status: "fail", detail: `HTTP ${response.status} opening the SSE stream` };
+  const run = async (): Promise<ProbeOutcome> => {
+    try {
+      if (launch.sse) {
+        // The legacy SSE transport answers on a second channel; reaching the stream is checked, the handshake is not.
+        const response = await fetch(launch.url, { headers: { ...launch.headers, Accept: "text/event-stream" }, signal });
+        await response.body?.cancel();
+        if (response.ok) return { status: "skipped", detail: "SSE stream reachable; handshake not verified for the legacy SSE transport" };
+        return { status: "fail", detail: `HTTP ${response.status} opening the SSE stream` };
+      }
+      const initialized = await post(initializeRequest);
+      if (initialized.status === 401 && !authorized) {
+        await initialized.body?.cancel();
+        return { status: "skipped", detail: "the server asks for OAuth sign-in, which only the harness holds; not checked" };
+      }
+      if (!initialized.ok) {
+        await initialized.body?.cancel();
+        return { status: "fail", detail: `initialize returned HTTP ${initialized.status}` };
+      }
+      // Recorded before the body is read, so the session is closed even if the body stalls or is invalid.
+      session = initialized.headers.get("mcp-session-id") ?? undefined;
+      const reply = await responseMessage(initialized, 1, answer);
+      if (reply?.result === undefined) return { status: "fail", detail: `initialize failed: ${reply === undefined ? "no JSON-RPC reply" : rpcError(reply, launch.secrets)}` };
+      if (reply.result.protocolVersion === undefined) return { status: "fail", detail: "initialize reply has no protocolVersion" };
+      protocolVersion = reply.result.protocolVersion;
+      const acknowledged = await post(initializedNotification);
+      await acknowledged.body?.cancel();
+      if (!acknowledged.ok) return { status: "fail", detail: `notifications/initialized returned HTTP ${acknowledged.status}` };
+      if (reply.result.capabilities?.tools === undefined) return NO_TOOLS;
+      const listed = await post(toolsRequest);
+      if (!listed.ok) {
+        await listed.body?.cancel();
+        return { status: "fail", detail: `tools/list returned HTTP ${listed.status}` };
+      }
+      const tools = await responseMessage(listed, 2, answer);
+      if (tools?.result === undefined) return { status: "fail", detail: `tools/list failed: ${tools === undefined ? "no JSON-RPC reply" : rpcError(tools, launch.secrets)}` };
+      if (tools.result.tools === undefined) return { status: "fail", detail: "tools/list reply has no tools list" };
+      const count = tools.result.tools.length;
+      return { status: "pass", detail: `${count} tools`, tools: count };
+    } catch (error) {
+      if (cancel.aborted) return CANCELLED;
+      if (error instanceof ServerReplyFailure) return { status: "fail", detail: error.message };
+      return {
+        status: "fail",
+        detail: signal.aborted ? `no reply within ${timeoutMilliseconds} ms` : `request failed: ${error instanceof Error && error.cause instanceof Error ? error.cause.message : "network error"}`,
+      };
     }
-    const initialized = await post(initializeRequest);
-    if (initialized.status === 401 && !authorized) {
-      await initialized.body?.cancel();
-      return { status: "skipped", detail: "the server asks for OAuth sign-in, which only the harness holds; not checked" };
-    }
-    if (!initialized.ok) {
-      await initialized.body?.cancel();
-      return { status: "fail", detail: `initialize returned HTTP ${initialized.status}` };
-    }
-    // Recorded before the body is read, so the session is closed even if the body stalls or is invalid.
-    session = initialized.headers.get("mcp-session-id") ?? undefined;
-    const reply = await responseMessage(initialized, 1, answer);
-    if (reply?.result === undefined) return { status: "fail", detail: `initialize failed: ${reply === undefined ? "no JSON-RPC reply" : rpcError(reply, launch.secrets)}` };
-    if (reply.result.protocolVersion === undefined) return { status: "fail", detail: "initialize reply has no protocolVersion" };
-    protocolVersion = reply.result.protocolVersion;
-    const acknowledged = await post(initializedNotification);
-    await acknowledged.body?.cancel();
-    if (!acknowledged.ok) return { status: "fail", detail: `notifications/initialized returned HTTP ${acknowledged.status}` };
-    if (reply.result.capabilities?.tools === undefined) return NO_TOOLS;
-    const listed = await post(toolsRequest);
-    if (!listed.ok) {
-      await listed.body?.cancel();
-      return { status: "fail", detail: `tools/list returned HTTP ${listed.status}` };
-    }
-    const tools = await responseMessage(listed, 2, answer);
-    if (tools?.result === undefined) return { status: "fail", detail: `tools/list failed: ${tools === undefined ? "no JSON-RPC reply" : rpcError(tools, launch.secrets)}` };
-    if (tools.result.tools === undefined) return { status: "fail", detail: "tools/list reply has no tools list" };
-    const count = tools.result.tools.length;
-    return { status: "pass", detail: `${count} tools`, tools: count };
-  } catch (error) {
-    if (cancel.aborted) return CANCELLED;
-    return {
-      status: "fail",
-      detail: signal.aborted ? `no reply within ${timeoutMilliseconds} ms` : `request failed: ${error instanceof Error && error.cause instanceof Error ? error.cause.message : "network error"}`,
-    };
-  } finally {
-    await close();
-  }
+  };
+
+  const result = await run();
+  const cleanup = await close();
+  return cleanup === undefined ? result : { ...result, detail: `${result.detail}; ${cleanup}` };
 };
 
 /**

@@ -225,14 +225,21 @@ describe.skipIf(process.platform === "win32")("MCP server check", () => {
       request.on("data", (chunk) => { body += chunk; });
       request.on("end", () => {
         if (request.url === "/oauth") return void response.writeHead(401).end();
+        if (request.url === "/login") return void response.writeHead(200).end("Sign in");
         if (request.method === "DELETE") {
           closedSessions.push(`${request.url} ${request.headers["mcp-session-id"]}`);
+          if (request.url === "/stalled-close") return;
+          if (request.url === "/failed-close") return void response.writeHead(503).end();
+          if (request.url === "/redirected-close") return void response.writeHead(303, { location: "/login" }).end();
+          if (request.url === "/unsupported-close") return void response.writeHead(405).end();
           return void response.writeHead(204).end();
         }
         if (request.headers.authorization !== "Bearer fixture") return void response.writeHead(403).end();
         const message = Schema.decodeUnknownSync(Schema.fromJsonString(FixtureRequest))(body);
         // The check's answer to the fixture's ping is a response, not a request.
         if (message.method === undefined) {
+          if (request.url === "/failed-reply") return void response.writeHead(502).end();
+          if (request.url === "/redirected-reply") return void response.writeHead(302, { location: "/login" }).end();
           // The answer is a POST like any other, so it must accept both reply formats.
           if (request.headers.accept === "application/json, text/event-stream") pingAnswered.resolve();
           return void response.writeHead(202).end();
@@ -240,7 +247,7 @@ describe.skipIf(process.platform === "win32")("MCP server check", () => {
         // Every request after initialize must carry the negotiated protocol version.
         if (message.method !== "initialize" && request.headers["mcp-protocol-version"] !== "2025-06-18") return void response.writeHead(400).end();
         if (message.id === undefined) return void response.writeHead(202).end();
-        if (request.url === "/broken-list" && message.method === "tools/list") return void response.writeHead(500).end();
+        if ((request.url === "/broken-list" || request.url === "/stalled-close") && message.method === "tools/list") return void response.writeHead(500).end();
         const result = message.method === "initialize" ? { protocolVersion: "2025-06-18", capabilities: { tools: {} } } : { tools: [{ name: "x" }] };
         response.writeHead(200, { "content-type": "text/event-stream", "mcp-session-id": "s1" });
         // A server request with the same id comes first; only the reply to the check's request counts.
@@ -261,6 +268,12 @@ describe.skipIf(process.platform === "win32")("MCP server check", () => {
         openCodeStyle: { type: "http", url: `${base}/mcp`, headers: { Authorization: "Bearer {env:FIXTURE_TOKEN}" } },
         kimiStyle: { type: "http", url: `${base}/mcp`, bearerTokenEnvVar: "FIXTURE_TOKEN" },
         brokenList: { type: "http", url: `${base}/broken-list`, headers: { Authorization: "Bearer ${FIXTURE_TOKEN}" } },
+        failedReply: { type: "http", url: `${base}/failed-reply`, headers: { Authorization: "Bearer ${FIXTURE_TOKEN}" } },
+        failedClose: { type: "http", url: `${base}/failed-close`, headers: { Authorization: "Bearer ${FIXTURE_TOKEN}" } },
+        redirectedClose: { type: "http", url: `${base}/redirected-close`, headers: { Authorization: "Bearer ${FIXTURE_TOKEN}" } },
+        redirectedReply: { type: "http", url: `${base}/redirected-reply`, headers: { Authorization: "Bearer ${FIXTURE_TOKEN}" } },
+        stalledClose: { type: "http", url: `${base}/stalled-close`, headers: { Authorization: "Bearer ${FIXTURE_TOKEN}" } },
+        unsupportedClose: { type: "http", url: `${base}/unsupported-close`, headers: { Authorization: "Bearer ${FIXTURE_TOKEN}" } },
         rejected: { type: "http", url: `${base}/mcp`, headers: { Authorization: "Bearer wrong" } },
         oauth: { type: "http", url: `${base}/oauth` },
       },
@@ -279,6 +292,14 @@ describe.skipIf(process.platform === "win32")("MCP server check", () => {
     // A probe that fails after initialize still ends the session it opened.
     expect(byName.brokenList).toMatchObject({ status: "fail", detail: "tools/list returned HTTP 500" });
     expect(closedSessions).toContain("/broken-list s1");
+    expect(byName.failedReply).toMatchObject({ status: "fail", detail: "reply to server ping returned HTTP 502" });
+    expect(closedSessions).toContain("/failed-reply s1");
+    expect(byName.redirectedReply).toMatchObject({ status: "fail", detail: "reply to server ping returned HTTP 302" });
+    expect(closedSessions).toContain("/redirected-reply s1");
+    expect(byName.redirectedClose).toMatchObject({ status: "pass", tools: 1, detail: "1 tools; session cleanup failed: DELETE returned HTTP 303" });
+    expect(byName.failedClose).toMatchObject({ status: "pass", tools: 1, detail: "1 tools; session cleanup failed: DELETE returned HTTP 503" });
+    expect(byName.stalledClose).toMatchObject({ status: "fail", detail: "tools/list returned HTTP 500; session cleanup timed out after 2000 ms" });
+    expect(byName.unsupportedClose).toMatchObject({ status: "pass", tools: 1, detail: "1 tools" });
     // The fixture pings before every reply, and the check answers each ping.
     await pingAnswered.promise;
   });
