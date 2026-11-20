@@ -4,6 +4,16 @@ import { Question } from "@/components/icons";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { cn, SNAP } from "@/lib/utils";
 import { DitherShader, ditherMask, fillStyle } from "@/lib/dither";
+import {
+  glslFloat,
+  HORIZON_CELL,
+  HORIZON_GRAIN_DEPTH,
+  HORIZON_GRAIN_GLSL,
+  HORIZON_HEIGHT,
+  HORIZON_LEVEL,
+  HORIZON_STILL_TIME,
+  HORIZON_WAVES_GLSL,
+} from "@/lib/dither/horizon";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { STATE_META, type FollowerState } from "./metadata";
 
@@ -323,7 +333,7 @@ float field(vec2 uv, vec2 res, float t) {
   uv.x += torn * 0.4 * (hash21(vec2(beat, strip + 9.0)) - 0.5);
   vec2 p = uv * vec2(aspect, 1.0);
   // Every state: two waves slide past each other on the horizon.
-  float wave = 0.06 * sin(p.x * 3.0 + t * 0.35) + 0.04 * sin(p.x * 7.0 - t * 0.2);
+  float wave = ${HORIZON_WAVES_GLSL};
   // bad: the horizon breaks into blocks at different heights, which jump to new
   // heights every third beat. Torn strips carry their blocks sideways. Each
   // height is the difference of two neighbouring random values, so the heights
@@ -335,16 +345,18 @@ float field(vec2 uv, vec2 res, float t) {
   // warn: the band rises, brightens and settles on one slow breath.
   float breathe = breath * sin(t * 2.5);
   // bad: a harder edge, so the broken horizon reads as steps, not a blur.
-  float body = smoothstep(0.85 + 0.1 * breathe + 0.15 * sweep - 0.2 * glitch, 0.3 * glitch, uv.y + wave);
+  float upperEdge = ${glslFloat(HORIZON_HEIGHT)} + 0.1 * breathe + 0.15 * sweep - 0.2 * glitch;
+  float lowerEdge = 0.3 * glitch;
+  float body = 1.0 - smoothstep(lowerEdge, upperEdge, uv.y + wave);
   // bad: signal dropouts. About 1 cell in 16 blanks out for a beat. A cell is
   // a quarter of the band's height wide and a sixth tall (1/130 of a wide
   // band), so no large area changes at once.
   vec2 cell = floor(vec2(p.x * 4.0, uv.y * 6.0));
   body *= 1.0 - glitch * step(0.94, hash21(cell + vec2(beat * 0.618, beat * 0.271)));
-  float level = 0.9 + 0.12 * breathe;
+  float level = ${glslFloat(HORIZON_LEVEL)} + 0.12 * breathe;
   // Texture: a fine diagonal grain, swapped for chevrons marching right
   // (act: toward the action) or scanlines on the strips that tear (bad).
-  float grain = 0.5 + 0.5 * sin(p.x * 18.0 + p.y * 9.0 + t * 0.15);
+  float grain = ${HORIZON_GRAIN_GLSL};
   float chevron = smoothstep(0.3, 0.7, 0.5 + 0.5 * sin((p.x + abs(uv.y - 0.4) * 0.8) * 8.0 - t * 3.0));
   float scanline = step(0.5, fract(uv.y * res.y * 0.25));
   grain = mix(grain, chevron, flow);
@@ -358,7 +370,7 @@ float field(vec2 uv, vec2 res, float t) {
   // Torn strips cut deeper, into scanlines, which drops their mean grain from
   // 0.8 to 0.7, so their level rises by 8/7: a tear moves ink into lines
   // instead of dimming a whole strip at once.
-  float depth = 0.25 + 0.35 * flow + 0.15 * glitch + 0.2 * torn;
+  float depth = ${glslFloat(HORIZON_GRAIN_DEPTH)} + 0.35 * flow + 0.15 * glitch + 0.2 * torn;
   level *= 1.0 + torn / 7.0;
   return clamp(body * (1.0 - depth + depth * grain) * (level + 0.15 * flow), 0.0, 1.0);
 }
@@ -373,7 +385,7 @@ const CALM = { breath: 0, flow: 0, glitch: 0, sweep: 0 } as const;
  */
 const BAND_MOTION = {
   // Calm drift: the plain horizon.
-  ok: { speed: 0.6, fps: 20, stillTime: 4, uniforms: CALM },
+  ok: { speed: 0.6, fps: 20, stillTime: HORIZON_STILL_TIME, uniforms: CALM },
   // A breath every 5s (2.5 rad per field second at speed 0.5).
   warn: { speed: 0.5, fps: 20, stillTime: 0.63, uniforms: { ...CALM, breath: 1 } },
   // Chevrons flowing right at about a fifth of the band's height a second.
@@ -407,7 +419,8 @@ export function StateBand({ tone = "ok", mode = "idle", className }: { tone?: ke
         speed={band.speed}
         fps={band.fps}
         stillTime={band.stillTime}
-        cell={2}
+        matrix="bayer4"
+        cell={HORIZON_CELL}
         className="absolute inset-0 opacity-70"
       />
       <div className="absolute inset-0 bg-gradient-to-r from-background via-background/85 to-background/10" />
