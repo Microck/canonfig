@@ -131,20 +131,68 @@ describe("local installer binding contract", () => {
     else symlinkSync(rustup, cargo);
     const rustupHome = join(f.home, ".rustup");
     vi.stubEnv("RUSTUP_HOME", rustupHome);
+    vi.stubEnv("RUSTUP_TOOLCHAIN", undefined);
     await expect(Effect.runPromise(saveInstallerBinding("cargo", cargo, []).pipe(Effect.provide(f.layer))))
-      .rejects.toThrow("no existing rustup settings");
+      .rejects.toThrow("no selected toolchain");
     expect(() => statSync(rustupHome)).toThrow();
     mkdirSync(rustupHome);
-    writeFileSync(join(rustupHome, "settings.toml"), "version = '12'\n");
+    writeFileSync(join(rustupHome, "settings.toml"), "version = '12'\ndefault_toolchain = 'canonfig+stage'\n");
+    const backend = join(rustupHome, "toolchains", "canonfig+stage", "bin", "cargo");
+    mkdirSync(dirname(backend), { recursive: true });
+    const libraryCheck = process.platform === "linux"
+      ? 'case "$LD_LIBRARY_PATH" in */canonfig+stage/lib:/inherited/cargo/lib) ;; *) exit 17 ;; esac\n'
+      : "";
+    if (process.platform === "linux") vi.stubEnv("LD_LIBRARY_PATH", "/inherited/cargo/lib");
+    writeFileSync(backend, "#!/bin/sh\n" + libraryCheck + "echo 'cargo 1.0.0-backend'\n", { mode: 0o755 });
+    vi.stubEnv("RUSTUP_TOOLCHAIN", "");
     const binding = await Effect.runPromise(saveInstallerBinding("cargo", cargo, []).pipe(Effect.provide(f.layer)));
     expect(binding.executable).toBe(join(await realpath(f.home), "cargo"));
+    expect(binding.rustupProxy).toBe(true);
     expect(await Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).toMatchObject({ verified: true });
     const invocation = await Effect.runPromise(resolveInstallerInvocation("cargo").pipe(Effect.provide(f.layer)));
     expect(invocation.executable.absolute).toBe(binding.executable);
+
+    const legacyCargo = join(rustupHome, "toolchains", "1.8.0-aarch64-unknown-freebsd", "bin", "cargo");
+    mkdirSync(dirname(legacyCargo), { recursive: true });
+    writeFileSync(legacyCargo, "#!/bin/sh\necho 'cargo 1.8.0-backend'\n", { mode: 0o755 });
+    writeFileSync(join(rustupHome, "settings.toml"), "version = '12'\ndefault_host_triple = 'aarch64-unknown-linux-gnu'\n");
+    vi.stubEnv("RUSTUP_TOOLCHAIN", "1.8-unknown-freebsd");
+    expect(await Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).toMatchObject({ verified: true });
+
+    const releaseCargo = join(rustupHome, "toolchains", "stable-aarch64-unknown-linux-gnu", "bin", "cargo");
+    mkdirSync(dirname(releaseCargo), { recursive: true });
+    writeFileSync(releaseCargo, "#!/bin/sh\necho 'cargo 1.99.0-backend'\n", { mode: 0o755 });
+    rmSync(backend);
+    vi.stubEnv("RUSTUP_TOOLCHAIN", "canonfig+stage");
+    expect(await Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).toMatchObject({ verified: true });
+    // Rustup selects the first installed channel even when its Cargo component is absent.
+    writeFileSync(join(rustupHome, "toolchains", "nightly-aarch64-unknown-linux-gnu"), "invalid toolchain");
+    await expect(Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer))))
+      .rejects.toThrow("nightly-aarch64-unknown-linux-gnu");
+
     rmSync(rustup);
-    if (kind === "symlink") await expect(Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).rejects.toThrow();
-    else expect(await Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).toMatchObject({ verified: true });
-    rmSync(cargo); symlinkSync(process.execPath, cargo);
+    if (kind === "hard link") {
+      symlinkSync("rustup", rustup);
+      for (const operation of [
+        checkInstallerBinding(binding),
+        saveInstallerBinding("cargo", cargo, []),
+        resolveInstallerInvocation("cargo"),
+      ]) {
+        await expect(Effect.runPromise(operation.pipe(Effect.provide(f.layer))))
+          .rejects.toMatchObject({ _tag: "HumanActionRequiredError", recovery: expect.stringContaining("loops back") });
+      }
+      rmSync(rustup);
+    }
+    await expect(Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer))))
+      .rejects.toMatchObject({ _tag: "HumanActionRequiredError", recovery: expect.stringContaining("configure the binding again") });
+    rmSync(cargo);
+    symlinkSync("cargo", cargo);
+    await expect(Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer))))
+      .rejects.toMatchObject({ _tag: "HumanActionRequiredError", recovery: expect.stringContaining("configure the binding again") });
+    await expect(Effect.runPromise(saveInstallerBinding("cargo", cargo, []).pipe(Effect.provide(f.layer))))
+      .rejects.toMatchObject({ _tag: "HumanActionRequiredError" });
+    rmSync(cargo);
+    symlinkSync(process.execPath, cargo);
     await expect(Effect.runPromise(checkInstallerBinding(binding).pipe(Effect.provide(f.layer)))).rejects.toThrow();
   });
 
