@@ -172,6 +172,7 @@ const fileFixture = (
           ? { state: "absent" }
           : {
             state: "present",
+            objectKind: "regular",
             digest: decode(ContentDigest)(observedDigest),
             executable: false,
             mode: 0o600,
@@ -2490,6 +2491,7 @@ process.exit(1);
           resource: fixture.revision.resources[0]!.id,
           observed: {
             state: "present",
+            objectKind: "regular",
             digest: fixture.artifact.digest,
             executable: false,
             mode: 0o600,
@@ -2800,6 +2802,7 @@ process.exit(1);
             resource: resource.id,
             observed: {
               state: "present",
+              objectKind: "regular",
               digest: decode(ContentDigest)(base.artifact.digest),
               executable: fromExecutable,
               mode: fromExecutable ? 0o700 : 0o600,
@@ -2832,6 +2835,7 @@ process.exit(1);
             resource: resource.id,
             observed: {
               state: "present",
+              objectKind: "regular",
               digest: decode(ContentDigest)(base.artifact.digest),
               executable: toExecutable,
               mode: toExecutable ? 0o700 : 0o600,
@@ -3049,11 +3053,7 @@ process.exit(1);
         platform: "linux",
         resources: [{
           resource: tool.id,
-          observed: {
-            state: "present",
-            digest: decode(ContentDigest)(sha256Hex(process.execPath)),
-            executable: true,
-          },
+          observed: { state: "tool" },
         }],
         availableBlobs: [],
       },
@@ -3116,6 +3116,7 @@ process.exit(1);
           resource: resource.id,
           observed: {
             state: "present",
+            objectKind: "regular",
             digest: sha256BytesHex(new TextEncoder().encode(current)),
             executable: false,
           },
@@ -3193,6 +3194,7 @@ process.exit(1);
             resource: resource.id,
             observed: {
               state: "present",
+              objectKind: "regular",
               digest: sha256BytesHex(new TextEncoder().encode(current)),
               executable: false,
             },
@@ -3271,6 +3273,7 @@ process.exit(1);
           resource: resource.id,
           observed: {
             state: "present",
+            objectKind: "regular",
             digest: sha256BytesHex(new TextEncoder().encode(current)),
             executable: false,
           },

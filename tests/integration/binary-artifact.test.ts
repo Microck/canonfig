@@ -75,7 +75,7 @@ describe("native binary artifacts", () => {
           { kind: "tool", toolId: recipe.package, recipes: [recipe], loginRequired: false },
           { method: "executable-present", executable: recipe.package },
         ).pipe(Effect.provide(linuxMachineStateLayer({ environment: [{ name: "HOME", value: home }] }))));
-        expect(observed).toMatchObject({ state: "present", executable: true, installedVersion: undefined });
+        expect(observed).toMatchObject({ state: "present", objectKind: "regular", executable: true, installedVersion: undefined });
       } finally { rmSync(home, { recursive: true, force: true }); }
     },
   );
@@ -128,7 +128,7 @@ describe("native binary artifacts", () => {
       expect(checked.result.exitCode).toBe(0);
       expect(checked.discovered.path).toEqual(checked.installed.path);
       expect(checked.repeated.digest).toBe(checked.installed.digest);
-      expect(checked.observed).toMatchObject({ state: "present", installedVersion: "1.0.0", digest: checked.installed.digest });
+      expect(checked.observed).toMatchObject({ state: "present", objectKind: "regular", installedVersion: "1.0.0", digest: checked.installed.digest });
       expect(readFileSync(checked.installed.path.absolute)).toEqual(bytes);
       expect(checked.commandVerification.passed).toBe(true);
       expect(checked.presenceVerification.passed).toBe(true);

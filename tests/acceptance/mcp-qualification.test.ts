@@ -73,11 +73,7 @@ const context = (applied: ResourcePlanningContext["applied"]): ResourcePlanningC
     loginRequired: false,
     qualification,
   },
-  observed: {
-    state: "present",
-    digest: "a".repeat(64),
-    executable: true,
-  },
+  observed: { state: "tool" },
   applied,
   platform: "linux",
 });
@@ -178,7 +174,7 @@ it.skipIf(process.platform === "win32").each([false, true])("observes the same q
     const base = context(undefined);
     const observe = () => Effect.runPromise(observeFollowerResource({ resource: base.resource }, desired, qualification).pipe(Effect.provide(machine)));
     const observed = await observe();
-    expect(observed.state).toBe("present");
+    expect(observed.state).toBe("tool");
     const installed = installerRecipeProvenance({ ...npmRecipe, compatibility: qualification.compatibility, target: qualification.target });
     const applied = { resource: base.resource.id, revision: Schema.decodeUnknownSync(ProfileRevisionId)("revision-1"),
       digest: installed.fingerprint, appliedAt: "2026-09-12T00:00:00Z", kind: "tool" as const,

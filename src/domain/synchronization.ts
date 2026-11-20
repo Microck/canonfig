@@ -336,7 +336,7 @@ export type ObservedDirectoryFile =
     readonly digest: string;
     readonly executable?: boolean | undefined;
     readonly mode?: number | undefined;
-    readonly objectKind?: ObservedObjectKind | undefined;
+    readonly objectKind: ObservedObjectKind;
     readonly symlinkTo?: string | undefined;
   };
 
@@ -349,16 +349,9 @@ export type ObservedResourceState =
     readonly textComposition?: ObservedTextComposition | undefined;
     readonly executable: boolean;
     readonly mode?: number | undefined;
-    /**
-     * Actual final path kind. Optional for compatibility with observations
-     * produced before no-follow object inspection was introduced.
-     */
-    readonly objectKind?: ObservedObjectKind | undefined;
+    readonly objectKind: ObservedObjectKind;
     readonly symlinkTo?: string | undefined;
-    /**
-     * Tools: the version the selected recipe's installer reports as
-     * installed, when it lists the package. Undefined when it cannot say.
-     */
+    /** Version verified at the destination of an artifact-backed tool. */
     readonly installedVersion?: string | undefined;
     /**
      * Configs: the current values at the Applied Resource Record's keys,
@@ -370,10 +363,12 @@ export type ObservedResourceState =
   }
   | {
     readonly state: "directory";
-    readonly objectKind?: ObservedObjectKind | undefined;
+    readonly objectKind: "directory";
     readonly mode: number;
     readonly files: ReadonlyArray<ObservedDirectoryFile>;
   }
+  | { readonly state: "tool"; readonly installedVersion?: string | undefined }
+  | { readonly state: "credential" }
   | { readonly state: "unverifiable"; readonly reason: string };
 
 /** Applied Resource Records have exactly one ownership interpretation. */
@@ -614,14 +609,16 @@ export const ObservedResourceStateSchema = Schema.Union([
     managedLocalText: Schema.optionalKey(Schema.Never),
     executable: Schema.Boolean,
     mode: Schema.optional(Schema.Int),
-    objectKind: Schema.optional(ObservedObjectKind),
+    objectKind: ObservedObjectKind,
     symlinkTo: Schema.optional(Schema.NonEmptyString),
+    // An artifact-backed tool records the version verified at its destination.
     installedVersion: Schema.optional(Schema.NonEmptyString),
+    // The keys from the Applied Resource Record may differ from the desired keys.
     appliedKeysDigest: Schema.optional(ContentDigest),
   }),
   Schema.Struct({
     state: Schema.Literal("directory"),
-    objectKind: Schema.optional(ObservedObjectKind),
+    objectKind: Schema.Literal("directory"),
     mode: Schema.Int,
     files: Schema.Array(Schema.Union([
       Schema.Struct({
@@ -633,11 +630,16 @@ export const ObservedResourceStateSchema = Schema.Union([
         digest: ContentDigest,
         executable: Schema.optional(Schema.Boolean),
         mode: Schema.optional(Schema.Int),
-        objectKind: Schema.optional(ObservedObjectKind),
+        objectKind: ObservedObjectKind,
         symlinkTo: Schema.optional(Schema.NonEmptyString),
       }),
     ])),
   }),
+  Schema.Struct({
+    state: Schema.Literal("tool"),
+    installedVersion: Schema.optional(Schema.NonEmptyString),
+  }),
+  Schema.Struct({ state: Schema.Literal("credential") }),
   Schema.Struct({
     state: Schema.Literal("unverifiable"),
     reason: Schema.NonEmptyString,
