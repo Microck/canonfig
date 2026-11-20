@@ -2,7 +2,6 @@ import { spawn } from "node:child_process";
 import { createHash, X509Certificate } from "node:crypto";
 import { access, chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer as createHttpsServer, type Server } from "node:https";
-import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -11,6 +10,7 @@ import { Effect, Schema } from "effect";
 import { generate } from "selfsigned";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { fakeSsh, freePort } from "../fixtures/tunnel-forwarder.ts";
 import { CliCommandFailure } from "../../src/cli/source-commands.ts";
 import {
   CertificateFingerprint,
@@ -24,7 +24,7 @@ import {
   readInvitationEnvelope,
 } from "../../src/enrollment/invitation-envelope.ts";
 import { invitationEnvelopeEof } from "../../src/enrollment/invitation-envelope-format.ts";
-import { withManagedTunnel } from "../../src/enrollment/tunnel-supervision.ts";
+import { prepareManagedTunnel } from "../../src/enrollment/tunnel-supervision.ts";
 import { TunnelLive } from "../../src/enrollment/tunnel.layer.ts";
 import { Tunnel } from "../../src/enrollment/tunnel.service.ts";
 import type { EnrollmentInvitationGrant } from
@@ -65,45 +65,6 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   vi.unstubAllEnvs();
 });
-
-const freePort = (): Promise<number> =>
-  new Promise((resolvePort, rejectPort) => {
-    const server = createNetServer();
-    server.once("error", rejectPort);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = address !== null && !Schema.is(Schema.String)(address) ? address.port : 0;
-      server.close(() => resolvePort(port));
-    });
-  });
-
-/**
- * A stand-in for OpenSSH that does what the tunnel relies on: it parses the
- * approved `-L bind:port:host:port`, listens on the local end, and forwards
- * each connection to the remote end, exactly like an authenticated `ssh -N`.
- */
-const fakeSsh = async (root: string): Promise<string> => {
-  const path = join(root, "fake-ssh");
-  await writeFile(
-    path,
-    `#!${process.execPath}
-const net = require("node:net");
-require("node:fs").writeFileSync(${JSON.stringify(join(root, "ssh.pid"))}, String(process.pid));
-const args = process.argv.slice(2);
-const [bind, localPort, remoteHost, remotePort] = args[args.indexOf("-L") + 1].split(":");
-const server = net.createServer((client) => {
-  const upstream = net.connect(Number(remotePort), remoteHost);
-  client.pipe(upstream).pipe(client);
-  upstream.on("error", () => client.destroy());
-  client.on("error", () => upstream.destroy());
-});
-server.listen(Number(localPort), bind);
-process.on("SIGTERM", () => process.exit(0));
-`,
-  );
-  await chmod(path, 0o700);
-  return path;
-};
 
 /** A loopback Source that answers the unauthenticated descriptor probe. */
 const fakeSource = async (gate: Promise<void> = Promise.resolve()): Promise<{
@@ -507,10 +468,8 @@ describe("managed enrollment tunnel", () => {
         message: "the source TLS certificate could not be inspected",
       });
       const guard = (restart: boolean, operation: Effect.Effect<string, CliCommandFailure>) =>
-        withManagedTunnel(
-          { stateDirectory: root, sourceEndpoint: running.endpoint, restart },
-          (failure: CliCommandFailure) => failure.category === "transport",
-          operation,
+        prepareManagedTunnel({ stateDirectory: root, sourceEndpoint: running.endpoint, restart }).pipe(
+          Effect.flatMap((guard) => guard((failure) => failure.category === "transport", operation)),
         );
 
       const reported = await runTunnel(Effect.flip(guard(false, Effect.fail(transportFailure))));

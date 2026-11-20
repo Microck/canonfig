@@ -43,7 +43,7 @@ import { TunnelLive } from "../enrollment/tunnel.layer.ts";
 import { Tunnel } from "../enrollment/tunnel.service.ts";
 import {
   tunnelCarriesSource,
-  withManagedTunnel,
+  prepareManagedTunnel,
 } from "../enrollment/tunnel-supervision.ts";
 import { startSourceServer } from "../enrollment/source-server.ts";
 import { sourceServiceLayer } from "../source-service/source-service.layer.ts";
@@ -230,6 +230,7 @@ const readScheduleFires = (repository: StateRepository["Service"]) =>
       at: invocation._tag === "Running" ? invocation.startedAt : invocation.at,
       outcome: invocation._tag === "Running" ? "started" : invocation._tag === "Completed" ? "completed" : "failed",
       reason: invocation._tag === "Failed" ? invocation.reason : undefined,
+      deferredFleetCheck: invocation._tag === "Running" ? undefined : invocation.deferredFleetCheck,
     }));
   });
 
@@ -1235,48 +1236,47 @@ const followerCommandsLayer = (
           Effect.provideService(MachineState, machine),
           Effect.provideService(Synchronization, synchronization),
         )).pipe(Effect.flatMap(outcomePayload));
-        const run: Effect.Effect<CliPayload, CliCommandFailure> = mapFailure(
-          repository.getFollowerSynchronizationConfiguration(),
-        ).pipe(Effect.flatMap((configuration) => configuration === undefined ? local : follower));
         return installedGeneration.pipe(Effect.flatMap((generation) => {
           const identity = { ...invocation, generation };
           const start = scheduled
             ? mapFailure(repository.transitionScheduledInvocation({ ...identity, _tag: "Running" }))
             : Effect.void;
           return start.pipe(Effect.andThen(Effect.gen(function*() {
-            // A scheduled run restarts a down managed tunnel once, and a
-            // transport failure while the tunnel is down reports the tunnel.
-            const synchronize = repository.getFollowerSynchronizationConfiguration().pipe(
-              Effect.catch(() => Effect.succeed(undefined)),
-              Effect.flatMap((configuration) =>
-                withManagedTunnel(
-                  {
-                    stateDirectory: join(dirname(statePath), "tunnel"),
-                    sourceEndpoint: configuration?.source.endpoint,
-                    restart: scheduled,
-                  },
-                  (failure: CliCommandFailure) => failure.category === "transport",
-                  run,
-                )
-              ),
-              Effect.provideService(Tunnel, tunnel),
-              Effect.catchTag("TunnelDownError", (error) => Effect.fail(commandFailure(error))),
-              // Retain completed file-run evidence if shared-secret refresh fails.
-              Effect.tap((result) => input.mode === "apply" ? synchronizeSharedSecrets().pipe(
-                Effect.provideService(MachineState, machine),
-                Effect.provideService(StateRepository, repository),
-                Effect.mapError((error) => new CliCommandFailure({
-                  category: secretFailureCategory(error),
-                  message: `File synchronization completed, but shared-secret synchronization failed: ${error.message}`,
-                  details: result,
-                })),
-              ) : Effect.void),
-            );
-            const result = yield* (execute === undefined ? synchronize : execute(synchronize)).pipe(Effect.catch((error) => {
+            const prepared = Effect.gen(function*() {
+              const configuration = yield* mapFailure(repository.getFollowerSynchronizationConfiguration());
+              // The Fleet Update poll and synchronization both need the Source connection.
+              const guard = yield* mapFailure(prepareManagedTunnel({
+                stateDirectory: join(dirname(statePath), "tunnel"),
+                sourceEndpoint: configuration?.source.endpoint,
+                restart: scheduled,
+              }).pipe(Effect.provideService(Tunnel, tunnel)));
+              // Dispatch from the role at execution time, after the fleet preflight.
+              const run = mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
+                Effect.flatMap((current) => current === undefined ? local : follower),
+              );
+              const synchronize = guard((failure) => failure.category === "transport", run).pipe(
+                Effect.catchTag("TunnelDownError", (error) => Effect.fail(commandFailure(error))),
+                // Retain completed file-run evidence if shared-secret refresh fails.
+                Effect.tap((result) => input.mode === "apply" ? synchronizeSharedSecrets().pipe(
+                  Effect.provideService(MachineState, machine),
+                  Effect.provideService(StateRepository, repository),
+                  Effect.mapError((error) => new CliCommandFailure({
+                    category: secretFailureCategory(error),
+                    message: `File synchronization completed, but shared-secret synchronization failed: ${error.message}`,
+                    details: result,
+                  })),
+                ) : Effect.void),
+              );
+              return yield* execute === undefined
+                ? synchronize.pipe(Effect.map((data) => ({ payload: data, deferredFleetCheck: undefined })))
+                : execute(synchronize);
+            });
+            const { payload: result, deferredFleetCheck } = yield* prepared.pipe(Effect.catch((error) => {
               const failed = scheduled ? mapFailure(repository.transitionScheduledInvocation({
                 ...identity, _tag: "Failed", at: new Date().toISOString(), reason: fireFailureReason(error),
                 outcome: scheduledOutcome(error.details),
                 failureCategory: error.category,
+                deferredFleetCheck: error.deferredFleetCheck,
               })) : Effect.void;
               return failed.pipe(Effect.andThen(Effect.fail(error)));
             }));
@@ -1284,7 +1284,7 @@ const followerCommandsLayer = (
             // replacement process; mark the handoff so `schedule run` follows that process.
             if (scheduled) yield* mapFailure(repository.transitionScheduledInvocation({
               ...identity, _tag: "Completed", at: new Date().toISOString(),
-              ...(result === null ? { restarted: true as const } : { outcome: scheduledOutcome(result) }),
+              ...(result === null ? { restarted: true as const } : { outcome: scheduledOutcome(result), deferredFleetCheck }),
             }));
             return result;
           })));
@@ -1640,6 +1640,7 @@ const followerCommandsLayer = (
         if (invocation._tag === "Failed" && invocation.failureCategory !== undefined) {
           return yield* new CliCommandFailure({
             category: invocation.failureCategory, message: invocation.reason, details: payload(result),
+            deferredFleetCheck: invocation.deferredFleetCheck,
           });
         }
         if (invocation.outcome !== undefined && invocation.outcome.outcome !== "Converged") {

@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { prepareFleetSync, finishFleetSync, restartFleetSync } from "../runtime/follower-fleet-update.ts";
+import { prepareFleetSync, finishFleetSync, restartFleetSync, type FleetSyncStart } from "../runtime/follower-fleet-update.ts";
 import { Effect, Option, Schema } from "effect";
 import type { MachineState } from "../machine/machine-state.service.ts";
 
@@ -1253,7 +1253,10 @@ export const runCli = Effect.fn("runCli")(function*(
   const showsTransferProgress = outcome.format === "human"
     && (outcome.command._tag === "Recover"
       || (outcome.command._tag === "Synchronize" && outcome.command.scheduled !== true));
-  let restart = false;
+  let fleetSync: FleetSyncStart | undefined;
+  const withFleetCheck = (message: string, deferredFleetCheck?: string) => deferredFleetCheck === undefined
+    ? message
+    : `${message}\nFleet Update check deferred: ${deferredFleetCheck}`;
   const root = fileURLToPath(new URL("../../", import.meta.url));
   const execution: Effect.Effect<CliPayload, CliCommandFailure, SourceCommands | FollowerCommands | SetupCommands | GuiQueries | MachineState | StateRepository> = Effect.gen(function*() {
     if (outcome.command._tag === "Ui") return yield* runGui(outcome.command, io, lease);
@@ -1284,11 +1287,17 @@ export const runCli = Effect.fn("runCli")(function*(
     // Scheduled invocation bookkeeping must include failed checks, not just the file run.
     return yield* executeCommand(outcome.command, (synchronize) => Effect.gen(function*() {
       const started = yield* prepareFleetSync(root, lease);
-      restart = started.restart;
-      if (restart) return null;
+      fleetSync = started;
+      if (started.restart) return { payload: null };
       return yield* synchronize.pipe(Effect.matchEffect({
-        onSuccess: (data) => finishFleetSync(true, started.startedAt).pipe(Effect.as(data)),
-        onFailure: (error) => finishFleetSync(false, started.startedAt).pipe(Effect.andThen(Effect.fail(error))),
+        onSuccess: (data) => finishFleetSync(true, started.startedAt).pipe(
+          Effect.as({ payload: data, deferredFleetCheck: started.deferredCheck }),
+        ),
+        onFailure: (error) => finishFleetSync(false, started.startedAt).pipe(Effect.andThen(Effect.fail(
+          started.deferredCheck === undefined ? error : new CliCommandFailure({
+            category: error.category, message: error.message, details: error.details, deferredFleetCheck: started.deferredCheck,
+          }),
+        ))),
       }));
     }));
   });
@@ -1300,19 +1309,19 @@ export const runCli = Effect.fn("runCli")(function*(
     Effect.match({
       onFailure: (failure) => ({
         command: name,
-        message: failure.message,
+        message: withFleetCheck(failure.message, failure.deferredFleetCheck),
         data: failure.details,
         exitCode: exitCodeForFailure(failure.category),
       }),
       onSuccess: (data) => ({
         command: name,
-        message: `${name} completed`,
+        message: withFleetCheck(`${name} completed`, fleetSync?.deferredCheck),
         data,
         exitCode: CliExitCode.success,
       }),
     }),
   );
-  if (restart && result.exitCode === CliExitCode.success) {
+  if (fleetSync?.restart && result.exitCode === CliExitCode.success) {
     const exitCode = yield* restartFleetSync(root, arguments_).pipe(Effect.catch((error) => Effect.sync(() => {
       io.writeStderr(renderCliResult({ command: name, message: error.message, exitCode: CliExitCode.humanActionRequired }, outcome.format));
       return CliExitCode.humanActionRequired;
@@ -1321,16 +1330,17 @@ export const runCli = Effect.fn("runCli")(function*(
     return exitCode;
   }
   yield* Effect.sync(() => {
-    const rendered = renderCliResult(result, outcome.format);
     const quietScheduledSuccess = result.exitCode === CliExitCode.success
+      && fleetSync?.deferredCheck === undefined
       && outcome.format === "human"
       && outcome.command._tag === "Synchronize"
       && outcome.command.mode === "apply"
       && outcome.command.noInput;
-    if (quietScheduledSuccess) {
-      // Native schedulers need no success chatter; failures remain visible.
-    } else if (result.exitCode === CliExitCode.success) io.writeStdout(rendered);
-    else io.writeStderr(rendered);
+    if (!quietScheduledSuccess) {
+      const rendered = renderCliResult(result, outcome.format);
+      if (result.exitCode === CliExitCode.success) io.writeStdout(rendered);
+      else io.writeStderr(rendered);
+    }
     io.setExitCode(result.exitCode);
   });
   return result.exitCode;

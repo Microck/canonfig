@@ -1,22 +1,27 @@
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect, Layer, ManagedRuntime, Schema } from "effect";
 import { expect, it } from "vitest";
+import { fakeSsh, freePort } from "../fixtures/tunnel-forwarder.ts";
+import { runCli } from "../../src/cli/cli.ts";
 import { SourceCommands } from "../../src/cli/source-commands.ts";
 import { FollowerCommands } from "../../src/cli/follower-commands.ts";
 import { startSourceServer } from "../../src/enrollment/source-server.ts";
 import { requestFleetUpdate } from "../../src/enrollment/follower-client.ts";
-import { writeFleetRecord } from "../../src/enrollment/fleet-update.ts";
+import { fleetPath, writeFleetRecord } from "../../src/enrollment/fleet-update.ts";
 import { finishFleetSync, followerFleetPath, prepareFleetSync } from "../../src/runtime/follower-fleet-update.ts";
 import { SignedFleetDirective, type FleetReport } from "../../src/domain/fleet-update.ts";
 import { EnrollmentLive } from "../../src/enrollment/enrollment.layer.ts";
+import { Tunnel } from "../../src/enrollment/tunnel.service.ts";
+import { TunnelLive } from "../../src/enrollment/tunnel.layer.ts";
 import { Enrollment } from "../../src/enrollment/enrollment.service.ts";
 import { fleetSource, verifyFleetDirective } from "../../src/enrollment/fleet-update.ts";
 import { linuxMachineStateLayer } from "../../src/machine/linux.layer.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
 import { runtimeLayer } from "../../src/runtime/layers.ts";
 import { buildIdentity } from "../../src/runtime/build-identity.ts";
+import { managedCommandLease } from "../../src/runtime/self-update/coordination.ts";
 
 it("binds admissions to the enrolled identity, advances only on fresh target-version health, and halts at the first failure", async () => {
   const home = mkdtempSync(join(tmpdir(), "canonfig-fleet-control-"));
@@ -102,7 +107,19 @@ it("reports the published Source revision after a real follower projection conve
   };
   const source = machineRuntime("source");
   const follower = machineRuntime("follower");
+  mkdirSync(follower.directory);
   let close: (() => Promise<void>) | undefined;
+  const tunnelDirectory = join(follower.directory, ".canonfig", "tunnel");
+  const lease = managedCommandLease(follower.directory, home);
+  const syncFromCli = async (scheduled = false) => {
+    let output = "";
+    const exitCode = await follower.runtime.runPromise(runCli(["sync", "--apply", "--no-input", "--json", ...(scheduled ? ["--scheduled"] : [])], {
+      writeStdout: (text) => { output += text; },
+      writeStderr: (text) => { output += text; },
+      setExitCode: () => undefined,
+    }, lease));
+    return { exitCode, output };
+  };
   try {
     await source.runtime.runPromise(Effect.flatMap(SourceCommands, (commands) => commands.initialize()));
     writeFileSync(join(source.directory, ".canonfig", "canonfig.jsonc"), JSON.stringify({ version: 1, profile: { id: "fleet-health", name: "Fleet health" }, harnesses: [] }));
@@ -114,13 +131,49 @@ it("reports the published Source revision after a real follower projection conve
       const controller = fleetSource({ repository, credentials: enrollment.sourceCredentials, authenticate: enrollment.authenticate,
         release: async (version) => ({ version, integrity: `sha512-${Buffer.alloc(64, 1).toString("base64")}`, tarball: "fixture-only" }) });
       const server = yield* startSourceServer({ hostname: "127.0.0.1" }).pipe(Effect.provideService(Enrollment, { ...enrollment, ...controller }));
-      const invitation = yield* enrollment.createInvitation({ endpoint: server.endpoint, expiresInMilliseconds: 60_000 });
+      close = server.close;
+      const credentials = yield* enrollment.sourceCredentials();
+      const endpoint = process.platform === "win32" ? server.endpoint : yield* Effect.gen(function*() {
+        const tunnel = yield* Tunnel;
+        const localPort = yield* Effect.promise(freePort);
+        const sshExecutable = yield* Effect.promise(() => fakeSsh(follower.directory));
+        const running = yield* tunnel.startTunnel({
+          sshHost: "source.example", sshPort: 22, sshUser: "operator",
+          sshHostKey: `ssh-ed25519 ${Buffer.alloc(32, 1).toString("base64")}`,
+          localHost: "127.0.0.1", localPort, remoteHost: "127.0.0.1", remotePort: Number(new URL(server.endpoint).port),
+          tlsFingerprint: credentials.material.tlsFingerprint,
+          sourceFingerprint: credentials.material.source.publicKeyFingerprint,
+          stateDirectory: tunnelDirectory, sshExecutable,
+        });
+        return running.endpoint!;
+      }).pipe(Effect.provide(TunnelLive));
+      const invitation = yield* enrollment.createInvitation({ endpoint, expiresInMilliseconds: 60_000 });
       return { controller, server, invitation, revision: (yield* repository.listRevisions())[0]! };
     }));
-    close = control.server.close;
     await follower.runtime.runPromise(Effect.flatMap(FollowerCommands, (commands) => commands.enroll({ invitation: control.invitation, followerName: "health", replace: false })));
     const configuration = await follower.runtime.runPromise(Effect.flatMap(StateRepository, (repository) => repository.getFollowerSynchronizationConfiguration()));
     if (configuration === undefined) throw new Error("Follower enrollment missing");
+    // A broken Fleet Update record makes just the fleet endpoint fail.
+    const rolloutPath = fleetPath(source.state);
+    const sourceErrorText = "source-supplied-error-text";
+    writeFileSync(rolloutPath, JSON.stringify(sourceErrorText));
+    const deferred = await syncFromCli(true);
+    expect(deferred.exitCode).toBe(0);
+    expect(deferred.output).not.toContain(sourceErrorText);
+    expect(JSON.parse(deferred.output)).toMatchObject({
+      status: "success", message: expect.stringContaining("Fleet Update check deferred"),
+      data: { outcome: { outcome: "Converged" } },
+    });
+    const invocations = await follower.runtime.runPromise(Effect.flatMap(StateRepository, (repository) => repository.listScheduledInvocations()));
+    expect(JSON.stringify(invocations)).not.toContain(sourceErrorText);
+    expect(invocations).toMatchObject([{
+      _tag: "Completed", outcome: { outcome: "Converged" }, deferredFleetCheck: "The Source could not complete the Fleet Update request",
+    }]);
+    unlinkSync(rolloutPath);
+    const noDirective = await syncFromCli();
+    expect(noDirective.exitCode).toBe(0);
+    expect(noDirective.output).not.toContain("Fleet Update check deferred");
+
     await source.runtime.runPromise(control.controller.startFleetUpdate({ canary: configuration.follower.id, apply: true }));
     const { directive } = await follower.runtime.runPromise(requestFleetUpdate({
       endpoint: configuration.source.endpoint, tlsFingerprint: configuration.source.tlsFingerprint,
@@ -143,12 +196,28 @@ it("reports the published Source revision after a real follower projection conve
     await follower.runtime.runPromise(finishFleetSync(true, second));
     const rollout = await source.runtime.runPromise(control.controller.fleetStatus());
     expect(rollout).toMatchObject({ status: "complete", followers: [{ status: "healthy", health: { revision: control.revision.id, run: receipt?.run } }] });
-    // An unreachable Source must not block the sync that would restart its tunnel: the poll is skipped, not fatal.
+    if (process.platform !== "win32") {
+      const oldPid = Number(readFileSync(join(follower.directory, "ssh.pid"), "utf8"));
+      process.kill(oldPid, "SIGKILL");
+      await source.runtime.runPromise(control.controller.startFleetUpdate({ canary: configuration.follower.id, apply: true }));
+      const restarted = await syncFromCli(true);
+      expect(restarted.exitCode).toBe(0);
+      expect(restarted.output).not.toContain("Fleet Update check deferred");
+      expect(Number(readFileSync(join(follower.directory, "ssh.pid"), "utf8"))).not.toBe(oldPid);
+      expect(await source.runtime.runPromise(control.controller.fleetStatus())).toMatchObject({
+        status: "complete", followers: [{ status: "healthy" }],
+      });
+    }
+    // An unreachable Source defers the fleet check and retains the transport diagnostic.
     await control.server.close();
     close = undefined;
-    const lease = { suspended: false, close: () => {}, selfUpdate: <A>(operation: () => Promise<A>) => operation() };
-    expect(await follower.runtime.runPromise(prepareFleetSync(follower.directory, lease))).toEqual({ restart: false, startedAt: null });
+    expect(await follower.runtime.runPromise(prepareFleetSync(follower.directory, lease))).toEqual({
+      restart: false, startedAt: null, deferredCheck: "The Source could not complete the Fleet Update request",
+    });
   } finally {
+    lease.close();
+    if (process.platform !== "win32") await Effect.runPromise(Effect.flatMap(Tunnel, (tunnel) =>
+      tunnel.stopTunnel({ stateDirectory: tunnelDirectory })).pipe(Effect.provide(TunnelLive), Effect.ignore));
     await close?.();
     await follower.runtime.dispose();
     await source.runtime.dispose();

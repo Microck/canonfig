@@ -156,12 +156,16 @@ authorize another package, publisher or registry. Missing provenance stops the
 rollout. Prereleases, downgrades and state-format changes require manual work.
 
 The canary checks at its next `canonfig sync --apply`, including native schedules.
-There is no immediate push or follower daemon. Plan-only syncs and browser syncs
-do not install packages. Keep the Source reachable and allow scheduled followers
-to run. An offline canary leaves the rest queued.
+A scheduled run repairs a restartable managed tunnel before it checks for a Fleet
+Update. A tunnel stopped by the operator stays stopped until they start it again.
+Plan-only syncs and browser syncs do not install packages. An offline canary leaves
+the rest queued.
 
-Fleet checks and health reports retain the normal CLI failure categories: invalid
-or revoked credentials exit with code `5`, and transport failures with code `6`.
+If the Source cannot answer the fleet check, the sync reports that the check was
+deferred and continues with configuration synchronization. If that sync or a
+required fleet health report fails, the command reports its normal failure category.
+For unattended runs, `canonfig schedule status` shows a deferred check on the most recent
+invocation.
 
 Active commands defer installation. Active or unfinished Synchronization Runs
 also defer it: finish, recover or abandon the run before retrying. After activation,

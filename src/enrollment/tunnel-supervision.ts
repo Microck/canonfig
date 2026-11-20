@@ -39,7 +39,7 @@ const recoveryOf = (report: TunnelStatusReport): string =>
   report.recovery ?? "canonfig tunnel start";
 
 /**
- * Runs Source traffic that may travel through the managed SSH tunnel.
+ * Prepares the tunnel before Source traffic and returns a guard for transport errors.
  *
  * A dead tunnel used to surface as "the source TLS certificate could not be
  * inspected", and nothing restarted it, so an unattended follower failed
@@ -49,22 +49,19 @@ const recoveryOf = (report: TunnelStatusReport): string =>
  * is, naming the command that fixes it. A deliberately stopped tunnel is never
  * restarted.
  */
-export const withManagedTunnel = <Success, Failure, Requirements>(
-  input: ManagedTunnelGuardInput,
-  isTransportFailure: (failure: Failure) => boolean,
-  operation: Effect.Effect<Success, Failure, Requirements>,
-): Effect.Effect<Success, Failure | TunnelDownError, Requirements | Tunnel> =>
+export const prepareManagedTunnel = (input: ManagedTunnelGuardInput) =>
   Effect.gen(function*() {
     const tunnel = yield* Tunnel;
-    const status: Effect.Effect<TunnelStatusReport | undefined> = tunnel
+    const status: Effect.Effect<TunnelStatusReport | undefined> = input.sourceEndpoint === undefined
+      ? Effect.succeed(undefined)
+      : tunnel
       .tunnelStatus({ stateDirectory: input.stateDirectory })
       .pipe(
         Effect.map((report) => tunnelCarriesSource(report, input.sourceEndpoint) ? report : undefined),
         Effect.catch(() => Effect.succeed(undefined)),
       );
     const before = yield* status;
-    if (before === undefined) return yield* operation;
-    if (before.lifecycle === "down" && before.restartable && input.restart) {
+    if (before?.lifecycle === "down" && before.restartable && input.restart) {
       yield* tunnel.restartTunnel({ stateDirectory: input.stateDirectory, onlyIfDown: true }).pipe(
         Effect.mapError((error) =>
           new TunnelDownError({
@@ -76,7 +73,10 @@ export const withManagedTunnel = <Success, Failure, Requirements>(
         ),
       );
     }
-    return yield* operation.pipe(
+    return <Success, Failure, Requirements>(
+      isTransportFailure: (failure: Failure) => boolean,
+      operation: Effect.Effect<Success, Failure, Requirements>,
+    ): Effect.Effect<Success, Failure | TunnelDownError, Requirements> => before === undefined ? operation : operation.pipe(
       Effect.catch((failure): Effect.Effect<never, Failure | TunnelDownError> =>
         isTransportFailure(failure)
           ? status.pipe(

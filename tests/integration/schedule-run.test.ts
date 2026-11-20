@@ -282,14 +282,18 @@ describe("schedule run CLI through the real runtime and SQLite", () => {
     return Effect.gen(function*() {
       const commands = yield* FollowerCommands;
       const repository = yield* StateRepository;
-      yield* commands.synchronize({ mode: "apply", noInput: true, scheduled: true }, () => Effect.succeed({ outcome: converged }));
+      yield* commands.synchronize({ mode: "apply", noInput: true, scheduled: true }, () => Effect.succeed({ payload: { outcome: converged } }));
       yield* Effect.flip(commands.synchronize({ mode: "apply", noInput: true, scheduled: true }, () => Effect.fail(new CliCommandFailure({
-        category: "human-action-required", message: "approval required", details: { outcome: { outcome: "HumanActionRequired", run, actions: [] } },
+        category: "human-action-required", message: "approval required".repeat(200),
+        details: { outcome: { outcome: "HumanActionRequired", run, actions: [] } },
+        deferredFleetCheck: "The Source could not complete the Fleet Update request",
       }))));
       const invocations: ReadonlyArray<ScheduledInvocation> = yield* repository.listScheduledInvocations();
       expect(invocations).toMatchObject([
         { _tag: "Completed", outcome: converged },
-        { _tag: "Failed", outcome: { outcome: "HumanActionRequired", run } },
+        { _tag: "Failed", outcome: { outcome: "HumanActionRequired", run },
+          reason: expect.stringMatching(/^human-action-required: approval required/u),
+          failureCategory: "human-action-required", deferredFleetCheck: "The Source could not complete the Fleet Update request" },
       ]);
     }).pipe(Effect.provide(runtimeLayer({ statePath: host.statePath }, host.machine)));
   });
@@ -299,7 +303,7 @@ describe("schedule run CLI through the real runtime and SQLite", () => {
     return Effect.gen(function*() {
       const commands = yield* FollowerCommands;
       const repository = yield* StateRepository;
-      yield* commands.synchronize({ mode: "apply", noInput: true, scheduled: true }, () => Effect.succeed(null));
+      yield* commands.synchronize({ mode: "apply", noInput: true, scheduled: true }, () => Effect.succeed({ payload: null }));
       const invocations: ReadonlyArray<ScheduledInvocation> = yield* repository.listScheduledInvocations();
       expect(invocations).toHaveLength(1);
       expect(invocations[0]).toMatchObject({ _tag: "Completed", restarted: true });
