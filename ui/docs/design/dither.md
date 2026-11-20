@@ -27,12 +27,12 @@ The tone follows the colour rules: state tones report state, `purple` is guidanc
 
 ## DitherBlock
 
-Empty-state art: a dotted block that thins away from one `edge` (`top`, `bottom`, `left`, `right`; default `bottom`), revealed once on mount in 600ms. Give it a height (`h-24`) or an absolutely placed box. It is `aria-hidden` and carries `skullet-ignore`.
+Empty-state and guidance art revealed once on mount in 600ms. Pass `motif` for a static three-stop Bayer 8x8 composition: `route` (constellation waypoints for `TourOffer`), `strata` (calm layered ridges for `EmptyState` `tone="ok"`), `radar` (listening range arcs for `EmptyState` `tone="muted"`), or omit it for the plain edge `fade` (`edge`: `top`, `bottom`, `left`, `right`; default `bottom`). Give it a height (`h-24`) or an absolutely placed box. It is static SVG, `aria-hidden`, and carries `skullet-ignore`.
 
 ```tsx
 // Correct (guide.tsx TourOffer): guidance art fills its box behind the dismiss button
 <div className="relative h-20 border-b border-border bg-panel">
-  <DitherBlock tone="purple" edge="bottom" className="absolute inset-0" />
+  <DitherBlock tone="purple" edge="bottom" motif="route" className="absolute inset-0" />
 </div>
 
 // Incorrect: an empty state drawn with a gradient image
