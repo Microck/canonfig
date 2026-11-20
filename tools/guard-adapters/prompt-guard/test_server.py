@@ -2,6 +2,7 @@ import http.client
 import json
 import re
 import unittest
+from pathlib import Path
 from threading import Thread
 
 from .server import (
@@ -12,6 +13,7 @@ from .server import (
     SCHEMA,
     GuardServer,
     TextFile,
+    checker_line_at,
     encode_verdict,
     loopback_host,
     parse_request,
@@ -84,6 +86,13 @@ class ServerTests(unittest.TestCase):
             score_file("one\nblock\nthree\nfour\nblock", WordScorer()), (0.9, 1)
         )
         self.assertEqual(score_file("", WordScorer()), (0.02, 1))
+
+    def test_contract_locations(self):
+        fixtures = Path(__file__).resolve().parents[3] / "tests/fixtures/guard/checker-locations.json"
+        for case in json.loads(fixtures.read_text(encoding="utf-8")):
+            with self.subTest(name=case["name"]):
+                text = case["text"]
+                self.assertEqual(checker_line_at(text, len(text)), case["line"])
 
     def test_thresholds_are_inclusive_and_findings_match_the_item_verdict(self):
         self.assertEqual(

@@ -77,8 +77,12 @@ export const createBuildReceipt = (root: string): BuildReceipt => {
   // An absent or empty `dist` means the same thing, and says so more usefully
   // than a missing-input rejection would.
   const compiled = existsSync(join(root, "dist")) ? filesUnder(root, "dist") : [];
-  const compiledFiles = describeFiles(root, compiled.filter((path) => path.endsWith(".js") || path.startsWith(`dist${sep}ui${sep}`)));
-  if (compiledFiles.length === 0) throw new Error("Cannot create a build receipt before compiling the CLI");
+  if (!compiled.some((path) => path.endsWith(".js"))) {
+    throw new Error("Cannot create a build receipt before compiling the CLI");
+  }
+  const compiledFiles = describeFiles(root, compiled.filter((path) =>
+    path.endsWith(".js") || path.endsWith(".json") || path.startsWith(`dist${sep}ui${sep}`)
+  ));
   return {
     schema: "canonfig.build/v1",
     packageVersion: manifest.version,

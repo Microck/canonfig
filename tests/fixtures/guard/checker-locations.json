@@ -1,0 +1,9 @@
+[
+  {"name": "empty", "text": "", "line": 1},
+  {"name": "LF", "text": "one\ntwo", "line": 2},
+  {"name": "CRLF", "text": "one\r\ntwo", "line": 2},
+  {"name": "CR", "text": "one\rtwo", "line": 2},
+  {"name": "mixed", "text": "🐕\none\r\ntwo\rthree", "line": 4},
+  {"name": "trailing delimiter", "text": "one\n\r\n", "line": 3},
+  {"name": "Unicode separators within a line", "text": "one\u0085two\u2028three\u2029four", "line": 1}
+]

@@ -60,6 +60,21 @@ describe("build receipts", () => {
     expect(after.compiledFiles.map((file) => file.path)).toEqual(["dist/main.js", "dist/other.js"]);
   });
 
+  it("covers a shipped JSON contract and records any byte change", () => {
+    const root = fixture();
+    const before = createBuildReceipt(root);
+    mkdirSync(join(root, "dist", "guard"));
+    const contract = join(root, "dist", "guard", "checker-wire.json");
+    writeFileSync(contract, '{"maximumFindings":20}');
+    const withContract = createBuildReceipt(root);
+    expect(withContract.compiledFiles.map((file) => file.path)).toContain("dist/guard/checker-wire.json");
+    expect(withContract.compiledDigest).not.toBe(before.compiledDigest);
+    writeFileSync(contract, '{"maximumFindings":21}');
+    expect(createBuildReceipt(root).compiledDigest).not.toBe(withContract.compiledDigest);
+    rmSync(contract);
+    expect(createBuildReceipt(root).compiledDigest).toBe(before.compiledDigest);
+  });
+
   it("includes the shipped browser sources and non-JavaScript assets", () => {
     const root = fixture();
     const before = createBuildReceipt(root);
@@ -80,7 +95,8 @@ describe("build receipts", () => {
 
   it("requires a compiled CLI", () => {
     const root = fixture();
-    rmSync(join(root, "dist"), { recursive: true });
+    rmSync(join(root, "dist", "main.js"));
+    writeFileSync(join(root, "dist", "checker-wire.json"), "{}");
     expect(() => createBuildReceipt(root)).toThrow("before compiling");
   });
 
