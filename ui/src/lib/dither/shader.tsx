@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import type { ComponentProps, ReactNode, RefObject } from "react";
 
 import {
@@ -121,6 +121,19 @@ void main() {
 interface UniformSpec {
   readonly name: string;
   readonly size: 1 | 2 | 3 | 4;
+}
+
+interface ShaderProgramConfig {
+  readonly field: string;
+  readonly colorField: string | undefined;
+  readonly specs: readonly UniformSpec[];
+}
+
+function sameProgramConfig(left: ShaderProgramConfig, right: ShaderProgramConfig): boolean {
+  return left.field === right.field && left.colorField === right.colorField
+    && left.specs.length === right.specs.length
+    && left.specs.every((spec, index) =>
+      spec.name === right.specs[index]?.name && spec.size === right.specs[index]?.size);
 }
 
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_]*$/;
@@ -255,15 +268,7 @@ const createTexture = (gl: WebGLRenderingContext) => {
 
 const createRenderer = (
   gl: WebGLRenderingContext,
-  {
-    field,
-    colorField,
-    specs,
-  }: {
-    field: string;
-    colorField: string | undefined;
-    specs: readonly UniformSpec[];
-  }
+  { field, colorField, specs }: ShaderProgramConfig
 ): Renderer | null => {
   const vertex = compile(gl, gl.VERTEX_SHADER, VERTEX_SHADER);
   const fragment = compile(
@@ -622,15 +627,18 @@ export const DitherShader = ({
   const map = getThresholdMap(matrix);
   const resolvedLevels = clampLevels(levels ?? map.steps + 1);
   const paletteKey = palette.join("|");
-  const specs = uniformSpecs(uniforms);
-  const specKey = specs.map(({ name, size }) => `${name}:${size}`).join(",");
+  const nextProgramConfig: ShaderProgramConfig = { field, colorField, specs: uniformSpecs(uniforms) };
+  const [programConfig, setProgramConfig] = useState(nextProgramConfig);
+  // Uniform values change in place. The renderer needs a new program only
+  // when the source or a uniform declaration changes.
+  if (!sameProgramConfig(programConfig, nextProgramConfig)) setProgramConfig(nextProgramConfig);
 
-  const markFrame = (drawn: boolean) => {
+  const markFrame = useCallback((drawn: boolean) => {
     if (hasFrameRef.current !== drawn) {
       hasFrameRef.current = drawn;
       setHasFrame(drawn);
     }
-  };
+  }, []);
 
   // Everything a draw reads, kept current without restarting effects.
   const live = useRef({
@@ -683,8 +691,11 @@ export const DitherShader = ({
     { enabled: animate, fps, stillTime, target: rootRef }
   );
 
-  // Context, program, size and theme. A fresh canvas per context, so a
-  // released context never has to be restored.
+  const currentCell = useEffectEvent(() => cell);
+  const resizeRef = useRef<(() => void) | null>(null);
+
+  // A fresh canvas for each program or context slot. Draw inputs, including
+  // cell size, can update the live renderer without recreating it.
   useEffect(() => {
     const root = rootRef.current;
     if (!root || !hasContext) {
@@ -712,7 +723,7 @@ export const DitherShader = ({
 
     const build = () => {
       rendererRef.current?.dispose();
-      const renderer = createRenderer(gl, { colorField, field, specs });
+      const renderer = createRenderer(gl, programConfig);
       rendererRef.current = renderer;
       renderer?.setMatrix(live.current.map);
       renderer?.setPalette(resolvePalette());
@@ -720,7 +731,7 @@ export const DitherShader = ({
 
     const resize = () => {
       const dpr = window.devicePixelRatio || 1;
-      const cssCell = cell ?? readDitherCell(root);
+      const cssCell = currentCell() ?? readDitherCell(root);
       // Whole device pixels per cell, so every cell is the same size.
       const deviceCell = Math.max(1, Math.round(cssCell * dpr));
       const snapped = deviceCell / dpr;
@@ -734,8 +745,8 @@ export const DitherShader = ({
       const columns = Math.max(1, Math.ceil(width / snapped));
       const rows = Math.max(1, Math.ceil(height / snapped));
       sizeRef.current = { columns, rows };
-      canvas.width = columns;
-      canvas.height = rows;
+      if (canvas.width !== columns) canvas.width = columns;
+      if (canvas.height !== rows) canvas.height = rows;
       canvas.style.width = `${columns * snapped}px`;
       canvas.style.height = `${rows * snapped}px`;
       drawRef.current?.();
@@ -756,7 +767,7 @@ export const DitherShader = ({
     };
 
     build();
-    resize();
+    resizeRef.current = resize;
     const resizeObserver = new ResizeObserver(resize);
     resizeObserver.observe(root);
     const unsubscribe = subscribeToTheme(onThemeChange);
@@ -765,6 +776,7 @@ export const DitherShader = ({
 
     return () => {
       resizeObserver.disconnect();
+      resizeRef.current = null;
       unsubscribe();
       canvas.removeEventListener("webglcontextlost", onContextLost);
       canvas.removeEventListener("webglcontextrestored", onContextRestored);
@@ -774,9 +786,7 @@ export const DitherShader = ({
       canvas.remove();
       markFrame(false);
     };
-    // `specs` is described by `specKey`; a new `cell` re-measures.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [field, colorField, specKey, cell, hasContext]);
+  }, [programConfig, hasContext, markFrame]);
 
   useEffect(() => {
     rendererRef.current?.setMatrix(map);
@@ -790,6 +800,11 @@ export const DitherShader = ({
       );
     }
   }, [paletteKey]);
+
+  // Load the current textures before resizing draws the first frame at the new size.
+  useEffect(() => {
+    resizeRef.current?.();
+  }, [cell, programConfig, hasContext]);
 
   // Props changed while nothing is animating: redraw the held frame.
   useEffect(() => {
