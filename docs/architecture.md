@@ -105,6 +105,12 @@ certificate validity and revision signatures remain independently checked.
 Canonfig never changes Serve, Funnel, network policy or login state. See
 [ADR 0004](adr/0004-tailnet-transport.md).
 
+The follower cache keeps one unfinished blob transfer. It records complete
+HTTPS ranges against the authenticated Source, signed revision, blob digest,
+and length. A later fetch checks the saved prefix before requesting the
+remaining bytes. The verified cache receives the blob only after its full
+length and digest match the signed revision.
+
 ### MachineState
 
 `MachineState` is an internal seam with three real platform adapters: Linux, macOS, and Windows. It owns filesystem operations, executable discovery, process execution, credential storage, package-manager probes, user directories, and native scheduler integration.

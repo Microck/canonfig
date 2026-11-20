@@ -6,6 +6,8 @@ import {
   verify,
   X509Certificate,
 } from "node:crypto";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -150,6 +152,7 @@ const publishFixtureRevision = (
   includeCrossGroupDependent = false,
   includeShared = true,
   revisionSequence = 1,
+  sharedContents = "shared\n",
 ): Promise<{
   readonly revision: ProfileRevision;
   readonly blobs: ReadonlyArray<typeof BlobId.Type>;
@@ -167,7 +170,7 @@ const publishFixtureRevision = (
     const publicKey = createPublicKey(privateKey);
     // Each file item reads its bytes from a source file, as publication does.
     const contents = [
-      "shared\n",
+      sharedContents,
       `alpha-${revisionSequence}\n`,
       `beta-${revisionSequence}\n`,
       `cross-group-${revisionSequence}\n`,
@@ -563,6 +566,124 @@ describe("authenticated content-addressed transport", () => {
     const resumed = await runFollower(setup, fetchRevision(request));
     expect(resumed).toMatchObject({ downloadedBlobs: 1, reusedBlobs: 1 });
     expect(server.blobRequests()).toBe(2);
+  });
+
+  it.each(["valid", "corrupt", "foreign"] as const)(
+    "resumes or discards a %s interrupted blob prefix",
+    async (checkpoint) => {
+      const setup = fixture();
+      const published = await publishFixtureRevision(setup);
+      const server = await start(setup);
+      const enrolled = await enroll(setup, server);
+      const cacheDirectory = join(setup.root, "cache");
+      const request = {
+        ...transportInput(server, enrolled),
+        revisionId: published.revision.id,
+        cacheDirectory,
+        maximumBlobBytes: 3,
+      };
+      const controller = new AbortController();
+      const interrupted = await Effect.runPromise(Effect.flip(
+        fetchRevision({ ...request, signal: controller.signal }).pipe(
+          Effect.provideService(BlobTransferProgress, (event) => {
+            if (event.blobIndex === 2 && event.blobReceived === 3) controller.abort();
+          }),
+          Effect.provide(setup.followerMachine),
+        ),
+      ));
+      expect(interrupted).toBeInstanceOf(TransportInterruptedError);
+      const dataPath = join(cacheDirectory, "transfer.part");
+      const recordPath = join(cacheDirectory, "transfer.json");
+      expect(readFileSync(dataPath, "utf8")).toBe("alp");
+      expect(await readdir(join(cacheDirectory, "blobs"))).toEqual([published.blobs[0]]);
+      if (checkpoint === "valid") {
+        // The marker is durable before the process can accept a subsequent range.
+        // Simulate a crash after writing that range, before committing its marker.
+        writeFileSync(dataPath, "alpXXX");
+      }
+      if (checkpoint === "corrupt") writeFileSync(dataPath, "XXX");
+      if (checkpoint === "foreign") {
+        const record = JSON.parse(readFileSync(recordPath, "utf8"));
+        writeFileSync(recordPath, JSON.stringify({ ...record, transfer: "0".repeat(64) }));
+      }
+      const before = server.blobRequests();
+      const finished = await runFollower(setup, fetchRevision(request));
+      expect(finished).toMatchObject({ downloadedBlobs: 1, reusedBlobs: 1 });
+      expect(server.blobRequests() - before).toBe(checkpoint === "valid" ? 2 : 3);
+      expect(readFileSync(join(cacheDirectory, "blobs", published.blobs[1]!), "utf8")).toBe("alpha-1\n");
+      expect(await readdir(cacheDirectory)).toEqual(["blobs", "revisions", "transfer-lock.sqlite"]);
+    },
+  );
+
+  it("publishes and reuses an empty verified blob", async () => {
+    const setup = fixture();
+    const published = await publishFixtureRevision(setup, false, true, 1, "");
+    const server = await start(setup);
+    const enrolled = await enroll(setup, server);
+    const cacheDirectory = join(setup.root, "cache");
+    const request = { ...transportInput(server, enrolled), revisionId: published.revision.id, cacheDirectory };
+    const first = await runFollower(setup, fetchRevision(request));
+    expect(readFileSync(join(cacheDirectory, "blobs", published.blobs[0]!))).toHaveLength(0);
+    expect(first.downloadedBlobs).toBe(2);
+    const second = await runFollower(setup, fetchRevision(request));
+    expect(second.reusedBlobs).toBe(2);
+    expect(server.blobRequests()).toBe(2);
+  });
+
+  it("refuses to publish staged data changed after the last range", async () => {
+    const setup = fixture();
+    const published = await publishFixtureRevision(setup);
+    const server = await start(setup);
+    const enrolled = await enroll(setup, server);
+    const cacheDirectory = join(setup.root, "cache");
+    const result = await Effect.runPromise(Effect.flip(fetchRevision({
+      ...transportInput(server, enrolled), revisionId: published.revision.id, cacheDirectory,
+    }).pipe(
+      Effect.provideService(BlobTransferProgress, (event) => {
+        if (event.blobReceived === event.blobBytes) {
+          writeFileSync(join(cacheDirectory, "transfer.part"), Buffer.alloc(event.blobBytes, 7));
+        }
+      }),
+      Effect.provide(setup.followerMachine),
+    )));
+    expect(result).toBeInstanceOf(TransportIntegrityError);
+    expect(await readdir(join(cacheDirectory, "blobs"))).toEqual([]);
+    expect(await readdir(cacheDirectory)).toEqual(["blobs", "revisions", "transfer-lock.sqlite"]);
+  });
+
+  it("excludes live cache writers and resumes after a terminated owner", async () => {
+    const setup = fixture();
+    const published = await publishFixtureRevision(setup);
+    const server = await start(setup);
+    const enrolled = await enroll(setup, server);
+    const cacheDirectory = join(setup.root, "cache");
+    await mkdir(cacheDirectory);
+    const request = {
+      ...transportInput(server, enrolled), revisionId: published.revision.id, cacheDirectory,
+    };
+    const fetch = () => runFollower(setup, fetchRevision(request));
+    const owner = spawn(process.execPath, ["--input-type=module", "-e", `
+      import { DatabaseSync } from "node:sqlite";
+      const lock = new DatabaseSync(process.argv[1]);
+      lock.exec("BEGIN IMMEDIATE");
+      process.stdout.write("locked");
+      process.stdin.resume();
+    `, join(cacheDirectory, "transfer-lock.sqlite")], { stdio: "pipe" });
+    const stopped = once(owner, "close");
+    try {
+      const ready = once(owner.stdout, "data", { signal: AbortSignal.timeout(5_000) });
+      await expect(ready.then(([chunk]) => String(chunk))).resolves.toBe("locked");
+      const blocked = await Promise.allSettled([fetch(), fetch(), fetch()]);
+      expect(blocked.every((attempt) => attempt.status === "rejected")).toBe(true);
+      expect(server.blobRequests()).toBe(0);
+    } finally {
+      owner.kill("SIGKILL");
+      await stopped;
+    }
+    const competing = await Promise.allSettled([fetch(), fetch(), fetch()]);
+    expect(competing.some((attempt) => attempt.status === "fulfilled")).toBe(true);
+    expect(server.blobRequests()).toBe(2);
+    expect(readFileSync(join(cacheDirectory, "blobs", published.blobs[1]!), "utf8")).toBe("alpha-1\n");
   });
 
   it("uses the persisted blob index across historical revisions and invalidates cached validation", async () => {
