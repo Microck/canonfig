@@ -323,6 +323,7 @@ export const checkInstallerBinding = (binding: InstallerBinding) => Effect.gen(f
       { name: "COREPACK_ENABLE_DOWNLOAD_PROMPT", value: "0" },
       { name: "RUSTUP_AUTO_INSTALL", value: "0" },
       { name: "RUSTUP_HOME", value: rustupHomePath(home) },
+      ...(probe.environment ?? []),
     ],
     timeoutMilliseconds: 300_000, maximumOutputBytes: 16 * 1024,
   });

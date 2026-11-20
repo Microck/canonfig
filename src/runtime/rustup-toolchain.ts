@@ -1,13 +1,13 @@
 import { constants } from "node:fs";
 import { access, realpath, stat } from "node:fs/promises";
 import { machine } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { Effect, Schema } from "effect";
 import { parse } from "smol-toml";
 import { sameIdentity } from "../machine/anchored-directory.ts";
 import { HumanActionRequiredError, MachineFilesystemError, type MachineStateError } from "../machine/machine-state.errors.ts";
 import type { MachineState } from "../machine/machine-state.service.ts";
-import type { MachinePath } from "../machine/machine-state.types.ts";
+import type { MachinePath, ProcessEnvironmentEntry } from "../machine/machine-state.types.ts";
 
 const missingAsUndefined = (cause: unknown): undefined => {
   if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") return undefined;
@@ -219,11 +219,30 @@ export function rustupHomePath(home: MachinePath): string {
   return process.env["RUSTUP_HOME"] ?? join(home.absolute, ".rustup");
 }
 
+/** Rustup sets the active toolchain's loader path, even when Cargo comes from a fallback. */
+function toolchainLibraryEnvironment(directory: string, platform: MachinePath["platform"]): readonly ProcessEnvironmentEntry[] {
+  if (platform === "windows") return [];
+  const name = platform === "macos" ? "DYLD_FALLBACK_LIBRARY_PATH" : "LD_LIBRARY_PATH";
+  const inherited = process.env[name];
+  const paths = [join(directory, "lib")];
+  if (inherited) paths.push(inherited);
+  else if (platform === "macos") {
+    if (process.env["HOME"]) paths.push(join(process.env["HOME"], "lib"));
+    paths.push("/usr/local/lib", "/usr/lib");
+  }
+  return [{ name, value: paths.join(delimiter) }];
+}
+
+type CargoVersionProbe = {
+  readonly executable: MachinePath;
+  readonly environment?: readonly ProcessEnvironmentEntry[];
+};
+
 /** Read the active Cargo selection without starting rustup or touching its cache. */
 function installedRustupCargo(
   machine: MachineState["Service"],
   home: MachinePath,
-): Effect.Effect<{ executable: string } | { reason: string }> {
+): Effect.Effect<{ executable: string; environment: readonly ProcessEnvironmentEntry[] } | { reason: string }> {
   const rustupHome = resolve(rustupHomePath(home));
   const recovery = "Configure the toolchain explicitly with `rustup default stable`, or install Cargo in the selected toolchain, then retry.";
   return Effect.gen(function*() {
@@ -265,7 +284,7 @@ function installedRustupCargo(
           return { reason: `Rustup did not find a real Cargo executable at ${cargo}. ${recovery}` } as const;
         }
         if (home.platform !== "windows") await access(cargo, constants.X_OK);
-        return { executable: cargo } as const;
+        return { executable: cargo, environment: toolchainLibraryEnvironment(directory, home.platform) } as const;
       },
       catch: String,
     });
@@ -278,7 +297,7 @@ export const resolveCargoVersionProbe = (
   machine: MachineState["Service"],
   executable: MachinePath,
   home: MachinePath,
-): Effect.Effect<{ executable: MachinePath } | { reason: string }, MachineStateError> => Effect.gen(function*() {
+): Effect.Effect<CargoVersionProbe | { reason: string }, MachineStateError> => Effect.gen(function*() {
   if (!/^cargo(?:\.exe)?$/iu.test(basename(executable.absolute))) return { executable };
   const proxy = yield* inspectCargoProxy(executable.absolute);
   if (proxy !== undefined) return yield* resolveRustupVersionProbe(machine, home);
@@ -307,8 +326,8 @@ export const resolveCargoVersionProbe = (
 export const resolveRustupVersionProbe = (
   machine: MachineState["Service"],
   home: MachinePath,
-): Effect.Effect<{ executable: MachinePath } | { reason: string }, MachineStateError> => Effect.gen(function*() {
+): Effect.Effect<CargoVersionProbe | { reason: string }, MachineStateError> => Effect.gen(function*() {
   const cargo = yield* installedRustupCargo(machine, home);
   if ("reason" in cargo) return cargo;
-  return { executable: yield* machine.normalizePath({ path: cargo.executable }) };
+  return { executable: yield* machine.normalizePath({ path: cargo.executable }), environment: cargo.environment };
 });

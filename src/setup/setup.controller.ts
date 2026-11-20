@@ -338,6 +338,7 @@ const probeVersion = (
         { name: "COREPACK_ENABLE_DOWNLOAD_PROMPT", value: "0" },
         { name: "RUSTUP_AUTO_INSTALL", value: "0" },
         { name: "RUSTUP_HOME", value: rustupHomePath(home) },
+        ...(probe.environment ?? []),
       ],
       timeoutMilliseconds: setupProcessTimeoutMilliseconds,
       maximumOutputBytes: maxSetupProcessBytes,

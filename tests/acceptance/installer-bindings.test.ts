@@ -139,7 +139,11 @@ describe("local installer binding contract", () => {
     writeFileSync(join(rustupHome, "settings.toml"), "version = '12'\ndefault_toolchain = 'canonfig+stage'\n");
     const backend = join(rustupHome, "toolchains", "canonfig+stage", "bin", "cargo");
     mkdirSync(dirname(backend), { recursive: true });
-    writeFileSync(backend, "#!/bin/sh\necho 'cargo 1.0.0-backend'\n", { mode: 0o755 });
+    const libraryCheck = process.platform === "linux"
+      ? 'case "$LD_LIBRARY_PATH" in */canonfig+stage/lib:/inherited/cargo/lib) ;; *) exit 17 ;; esac\n'
+      : "";
+    if (process.platform === "linux") vi.stubEnv("LD_LIBRARY_PATH", "/inherited/cargo/lib");
+    writeFileSync(backend, "#!/bin/sh\n" + libraryCheck + "echo 'cargo 1.0.0-backend'\n", { mode: 0o755 });
     vi.stubEnv("RUSTUP_TOOLCHAIN", "");
     const binding = await Effect.runPromise(saveInstallerBinding("cargo", cargo, []).pipe(Effect.provide(f.layer)));
     expect(binding.executable).toBe(join(await realpath(f.home), "cargo"));
