@@ -41,8 +41,13 @@ const fleetFailure = (cause: unknown): CliCommandFailure => {
  * What a sync's Fleet Update preflight did: `restart` when it activated a new release, and the `startedAt` of the
  * record it wrote (null when it wrote none). finishFleetSync reports health only for that record, so an overlapping
  * sync that writes its own record never has its start time judged against another sync's receipt.
+ * A deferred check keeps the Source's failure separate from a successful poll with no directive.
  */
-export interface FleetSyncStart { readonly restart: boolean; readonly startedAt: string | null }
+export interface FleetSyncStart {
+  readonly restart: boolean;
+  readonly startedAt: string | null;
+  readonly deferredCheck?: string;
+}
 const noFleetRecord: FleetSyncStart = { restart: false, startedAt: null };
 
 /** Runs only at a mutating CLI sync boundary, never in a resident follower worker. */
@@ -62,19 +67,20 @@ export const prepareFleetSync = Effect.fn("Fleet.prepareSync")(function*(
     sourceFingerprint: configuration.source.signingFingerprint, credentialReference: configuration.credentialReference,
     timeoutMilliseconds: configuration.scheduledInvocation.timeoutMilliseconds,
   };
-  // Classify enrollment errors before crossing the updater's Promise boundary.
-  const request = (report?: FleetReport) => Effect.runPromise(requestFleetUpdate(transport, report).pipe(
-    Effect.mapError((cause) => new CliCommandFailure(describeRuntimeError(cause))), Effect.provideService(MachineState, machine),
-  ));
-  // The poll runs before synchronize, and synchronize is what restarts a stopped managed tunnel and reports transport
-  // or version-skew failures. So a failed poll (Source not reachable yet, or a Source without the fleet protocol)
-  // skips Fleet Update for this run and lets the sync proceed; the next sync polls again. A directive that arrives
-  // still has to pass signature verification below.
-  const polled = yield* Effect.tryPromise({ try: () => request(), catch: fleetFailure }).pipe(
-    Effect.catch(() => Effect.succeed({ directive: null })),
+  const fleetRequest = (report?: FleetReport) => requestFleetUpdate(transport, report).pipe(
+    Effect.mapError((cause) => new CliCommandFailure(describeRuntimeError(cause))),
+    Effect.provideService(MachineState, machine),
   );
-  if (polled.directive === null) return noFleetRecord;
-  const signed = polled.directive;
+  const request = (report?: FleetReport) => Effect.runPromise(fleetRequest(report));
+  const polled = yield* fleetRequest().pipe(Effect.result);
+  if (polled._tag === "Failure") {
+    const deferredCheck = polled.failure.category === "authentication-or-revocation"
+      ? "The Source did not authorize this follower's Fleet Update request"
+      : "The Source could not complete the Fleet Update request";
+    return { ...noFleetRecord, deferredCheck };
+  }
+  if (polled.success.directive === null) return noFleetRecord;
+  const signed = polled.success.directive;
   const directive = yield* Effect.try({
     try: () => verifyFleetDirective(signed, configuration.follower.id, configuration.source.signingFingerprint), catch: fleetFailure,
   });

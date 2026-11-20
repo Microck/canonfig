@@ -37,7 +37,10 @@ export interface SynchronizeInput {
 /** CLI-specific work runs inside the same invocation boundary as synchronization. */
 export type SynchronizationExecution<Requirements = never> = (
   synchronize: Effect.Effect<CliPayload, CliCommandFailure>,
-) => Effect.Effect<CliPayload, CliCommandFailure, Requirements>;
+) => Effect.Effect<{
+  readonly payload: CliPayload;
+  readonly deferredFleetCheck?: string | undefined;
+}, CliCommandFailure, Requirements>;
 
 export interface RestoreInput {
   /** Snapshot id under `~/.canonfig/.backups/`; the latest when absent. */

@@ -22,6 +22,7 @@ export class CliCommandFailure extends Data.TaggedError(
   readonly category: CliFailureCategory;
   readonly message: string;
   readonly details?: CliPayload | undefined;
+  readonly deferredFleetCheck?: string | undefined;
 }> {}
 
 export interface SourceScanInput {
