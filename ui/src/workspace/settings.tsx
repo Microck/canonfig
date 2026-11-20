@@ -1,5 +1,5 @@
 // Settings shared by both machine roles where the feature exists on both.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, Circle, HourglassMedium, Warning, WarningCircle, X } from "@/components/icons";
 import { cn, removeKeepingFocus } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,7 @@ import { CliText, DitherProgress, Hint, Mono, StatusMark, Term } from "@/shared/
 import { shq } from "@/shared/shell";
 import { ErrorNotice } from "@/live/session";
 import { SetupJournal } from "@/onboarding/enrollment-controller";
-import { useWorkspace, type Workspace } from "./store";
+import { sharedKey, useSharedState, useWorkspace, type Workspace } from "./store";
 import { CHECK_LABEL, type InstallerChoice, type SavedPolicy } from "./administration-types";
 export type { SavedPolicy } from "./administration-types";
 import { Body, CommandBox, EmptyState, Field, ListHead, ListRow, PageHeader, SectionLabel, SettingRow, settingsGroup, useDialogReturnFocus, useLeaveGuard } from "./kit";
@@ -770,29 +770,35 @@ export function useChecks() {
   return useWorkspace().admin.doctor.data ?? [];
 }
 
+const doctorTimeoutKey = sharedKey("5000");
+
 export function DoctorView() {
   const ws = useWorkspace();
   const doctor = ws.admin.doctor;
   const running = doctor.busy;
-  const [timeout, setTimeout] = useState("5000");
+  const [timeout, setTimeout] = useSharedState(doctorTimeoutKey);
+  const checkForm = useRef<HTMLFormElement>(null);
   const progress = doctor.progress;
   // A skipped check does not apply to this machine (a Source has no tunnel or schedule), so it is not shown.
   const relevant = (doctor.data ?? []).filter((check) => check.result !== "off");
   const issues = relevant.filter((check) => check.result === "warn" || check.result === "bad").length;
-  const run = () => doctor.run(Number(timeout));
-  // Opened from ⌘K "Run doctor" or the guide: start immediately, even if this page is already open.
   const { focus, go } = ws;
+  const requested = focus === "run";
+  const needsFirstReport = doctor.data === null && doctor.error === null;
   useEffect(() => {
-    if (focus !== "run") return;
-    go("doctor", undefined, { replace: true });
-    run();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focus]);
-  // A fresh page has no result to show, so check once on open instead of showing an empty page.
-  useEffect(() => {
-    if (!doctor.data && !doctor.error && !running && focus !== "run") run();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (running) {
+      // Settle the intent now so a check finishing before the next frame cannot run it again.
+      if (requested) go("doctor", undefined, { replace: true });
+      return;
+    }
+    if (!requested && !needsFirstReport) return;
+    // Start after the page commits. Leaving the page or replaying its effects cancels the pending launch.
+    const frame = requestAnimationFrame(() => {
+      if (requested) go("doctor", undefined, { replace: true });
+      checkForm.current?.requestSubmit();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [requested, needsFirstReport, running, go]);
   return (
     <>
       <PageHeader
@@ -848,8 +854,8 @@ export function DoctorView() {
               );
             })}
           </div>
-          <form id="doctor-check" className="mt-5" onSubmit={(event) => { event.preventDefault(); run(); }}>
-            <details>
+          <form ref={checkForm} id="doctor-check" className="mt-5" onSubmit={(event) => { event.preventDefault(); doctor.run(Number(timeout)); }}>
+            <details onInvalid={(event) => { event.currentTarget.open = true; }}>
               <summary className="cursor-pointer text-sm text-muted-foreground">Advanced checks</summary>
               <div className="mt-3 grid max-w-sm gap-2">
                 <Label htmlFor="doctor-timeout">Timeout per probe (ms)</Label>
