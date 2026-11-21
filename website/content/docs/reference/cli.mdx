@@ -1118,9 +1118,11 @@ A credential-store failure exits 3 with the store's recovery text. See
 
 ### Headless Linux storage
 
-`secrets bootstrap` runs as you, never uses `sudo`, and stores only test items
-it removes again. Install `libsecret-tools` and a Secret Service provider such
-as `gnome-keyring` first. From a background shell, point it at your session bus:
+`secrets bootstrap` runs as you, never uses `sudo`, and stores only disposable
+test items. One may stay until doctor verifies persistence. Secret Service
+bootstrap requires `secret-tool`, `busctl`, and a provider such as
+`gnome-keyring` with a default collection. From a background shell, point it at
+your session bus:
 
 ```bash
 env -i HOME=$HOME PATH=$PATH XDG_RUNTIME_DIR=/run/user/$(id -u) canonfig secrets bootstrap
@@ -1128,8 +1130,11 @@ env -i HOME=$HOME PATH=$PATH XDG_RUNTIME_DIR=/run/user/$(id -u) canonfig secrets
 
 If `/run/user/<uid>/bus` does not exist, run `sudo loginctl enable-linger
 <user>`. The login keyring must be unlocked, which a password login does. When
-it cannot prove storage survives a logout without disturbing your session, the
-result says `manual`: restart, then run the same command.
+a provider is available, bootstrap records the session and default
+collection, then saves a test credential. Run `canonfig doctor` from the same
+session bus and collection after the provider naturally restarts or after your
+next login. Doctor verifies the saved credential once it observes a new
+provider process.
 
 On a machine without Secret Service, you can choose unencrypted files with
 mode `0600` instead. Shared secrets still require a secure store.

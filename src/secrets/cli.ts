@@ -10,7 +10,6 @@ import {
   type CliFailureCategory,
   type CliExitCode as CliExitCodeValue,
 } from "../cli/exit-codes.ts";
-import { resolveLinuxSessionBus } from "../machine/linux.layer.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import type { StateRepository } from "../state/state-repository.service.ts";
 import {
@@ -25,8 +24,7 @@ import {
 } from "./secret-store.ts";
 import {
   type LinuxCredentialBootstrapResult,
-  machineStateBootstrapHost,
-  runLinuxCredentialBootstrap,
+  bootstrapMachineCredentialStore,
 } from "./linux-credential-bootstrap.ts";
 import {
   synchronizeSharedSecrets,
@@ -52,8 +50,9 @@ values are stored byte for byte, trailing newlines included. At a terminal,
 entry is hidden and the Enter that ends it is not stored. Values hold at most
 ${maximumSecretBytes} bytes of UTF-8 and no NUL bytes.
 Followers must be enrolled with the ${SECRET_SHARE_GROUP} group to receive them.
-Bootstrap stores only disposable probes, removes them, and reports the
-selected credential policy with backup-encryption and persistence evidence.
+Bootstrap reports the credential policy, backup encryption, and persistence
+evidence. If the provider is already running, it can leave one disposable test
+credential for doctor to verify and remove after a restart.
 `;
 
 export const secretFailureCategory = (error: SecretTransferError): CliFailureCategory => {
@@ -487,16 +486,7 @@ export const runSecretsCli = (
     if (command === "bootstrap") {
       if (rest.length !== 0) return yield* usageError("usage: canonfig secrets bootstrap");
       const machine = yield* MachineState;
-      // The same bus the machine layer resolved, including the
-      // $XDG_RUNTIME_DIR/bus fallback, so bootstrap probes what runs use.
-      const sessionBus = resolveLinuxSessionBus();
-      const host = machineStateBootstrapHost(
-        machine,
-        sessionBus.kind === "missing"
-          ? []
-          : [{ name: "DBUS_SESSION_BUS_ADDRESS", value: sessionBus.address }],
-      );
-      const result = yield* runLinuxCredentialBootstrap(host);
+      const result = yield* bootstrapMachineCredentialStore(machine);
       const provider = result.provider === "secret-service"
         ? `Secret Service (${result.secretTool ?? "secret-tool"})`
         : "local file";
