@@ -177,7 +177,7 @@
   color: var(--sa-10);
 }
 
-/* The GUI's DitherProgress: a 6px track whose fill is a dither ramp. */
+/* The GUI's DitherProgress: a 6px dotted track with a two-tone dither wake and bright leading edge. */
 .pub-progress {
   margin-inline-start: auto;
   width: clamp(3rem, 18%, 8rem);

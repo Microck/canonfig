@@ -274,6 +274,26 @@ export function StateCell({ state }: { state: FollowerState | "excluded" }) {
   );
 }
 
+const TONE_DITHER_DIM = {
+  ok: "--dither-ok-dim",
+  warn: "--dither-warn-dim",
+  act: "--dither-act-dim",
+  bad: "--dither-bad-dim",
+  muted: "--dither-muted-dim",
+  purple: "--dither-purple-dim",
+} as const;
+
+const TONE_DITHER_BRIGHT = {
+  ok: "--dither-ok-bright",
+  warn: "--dither-warn-bright",
+  act: "--dither-act-bright",
+  bad: "--dither-bad-bright",
+  muted: "--dither-muted-bright",
+  purple: "--dither-purple-bright",
+} as const;
+
+const TRACK_DOT_STYLE = fillStyle("dotted", { color: "--dither-track-dot", cell: 1.5 });
+
 // Half the cells of a 4×4 Bayer tile at 1.5px cells: the grain of the shimmer.
 const SHIMMER_STYLE = {
   "--shimmer-dots": ditherMask(0.5),
@@ -281,10 +301,10 @@ const SHIMMER_STYLE = {
 } as CSSProperties;
 
 /**
- * Dithered progress. The fill is a dither ramp, densest at its leading edge,
- * so progress reads as texture rather than a flat bar. While `running` and
- * unfinished, a dotted highlight sweeps toward the edge (CSS mask-position
- * only; held still under reduced motion).
+ * Dithered progress over a dotted telemetry track. The fill layers a deep
+ * midtone wake under the primary dither ramp and finishes with a crisp bright
+ * leading edge. While `running` and unfinished, a dotted highlight sweeps
+ * toward the edge (CSS mask-position only; held still under reduced motion).
  */
 export function DitherProgress({
   value,
@@ -300,11 +320,20 @@ export function DitherProgress({
   running?: boolean;
   className?: string;
 }) {
+  const clamped = Math.min(100, Math.max(0, value));
   return (
-    <div className={cn("relative h-1.5 overflow-hidden rounded-full bg-muted", className)} role="progressbar" aria-label={label} aria-valuenow={Math.round(value)} aria-valuemin={0} aria-valuemax={100}>
-      <div className="absolute inset-y-0 left-0" style={{ width: `${value}%` }}>
-        <div className="absolute inset-0" style={fillStyle("gradient", { color: TONE_DITHER[tone], edge: "right", length: 18, to: 0.25, cell: 1.5 })} />
-        {running && value < 100 && <div aria-hidden className="dither-shimmer absolute inset-0" style={SHIMMER_STYLE} />}
+    <div className={cn("relative h-1.5 overflow-hidden rounded-full bg-muted", className)} role="progressbar" aria-label={label} aria-valuenow={Math.round(clamped)} aria-valuemin={0} aria-valuemax={100}>
+      <div aria-hidden className="absolute inset-0" style={TRACK_DOT_STYLE} />
+      <div className="absolute inset-y-0 left-0 overflow-hidden" style={{ width: `${clamped}%` }}>
+        <div className="absolute inset-0" style={fillStyle("gradient", { color: TONE_DITHER_DIM[tone], edge: "right", length: 32, from: 0.95, to: 0.45, cell: 1.5 })} />
+        <div className="absolute inset-0" style={fillStyle("gradient", { color: TONE_DITHER[tone], edge: "right", length: 22, from: 1, to: 0.12, cell: 1.5 })} />
+        {clamped > 0 && (
+          <>
+            <div aria-hidden className="absolute inset-0" style={fillStyle("gradient", { color: TONE_DITHER_BRIGHT[tone], edge: "right", length: 8, from: 0.9, to: 0, cell: 1.5 })} />
+            <div aria-hidden className="absolute inset-y-0 right-0 w-[3px]" style={{ backgroundColor: `var(${TONE_DITHER_BRIGHT[tone]})` }} />
+          </>
+        )}
+        {running && clamped < 100 && <div aria-hidden className="dither-shimmer absolute inset-0" style={SHIMMER_STYLE} />}
       </div>
     </div>
   );

@@ -66,6 +66,9 @@
 
   /* Machine state, the GUI's values: up to date, and Follower Drift. */
   --sa-ok: oklch(0.74 0.093 144.5);
+  --sa-ok-dim: #284730;
+  --sa-ok-bright: #d5fad0;
+  --sa-track-dot: #263a3b;
   --sa-warn: #f1c332;
 
   --font-sans: var(--cf-font-sans), ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;

@@ -213,6 +213,19 @@
   --dither-color-red: #ef6b6b;
   --dither-color-grey: #4d6460;
   --dither-color-gold: #f1c332;
+  --dither-track-dot: #263a3b;
+  --dither-ok-dim: #284730;
+  --dither-ok-bright: #d5fad0;
+  --dither-warn-dim: #4d3c11;
+  --dither-warn-bright: #fff0a8;
+  --dither-act-dim: #4d2b16;
+  --dither-act-bright: #ffd1ab;
+  --dither-bad-dim: #45181b;
+  --dither-bad-bright: #ffb0b0;
+  --dither-muted-dim: #1d2e2d;
+  --dither-muted-bright: #9ec0ba;
+  --dither-purple-dim: #362759;
+  --dither-purple-bright: #e4d9ff;
 
   color-scheme: dark;
 }
