@@ -1,16 +1,17 @@
 import { installedSystemdCommand } from "./installed-scheduler-command.ts";
 import { fileSchedulerIdentity } from "./scheduler-identity.ts";
-import { openAnchoredDirectory, sameIdentity } from "./anchored-directory.ts";
+import { openAnchoredDirectory, openDescriptorDirectory, sameIdentity, verifyAnchoredMutation, withAnchoredEntry } from "./anchored-directory.ts";
+import { atomicWriteLeaf, mutatePosixLeaf, prepareManagedLeafKind, removeMatchingFile, setPosixLeafMode, removeManagedLeaf, syncHandle } from "./atomic-file.ts";
+import { directoryEntries, pathEntryMetadata, regularFileBytes, regularFileDigest } from "./regular-file.ts";
+import { changePosixAnchoredEntry, cleanPosixAnchoredDirectory, listPosixAnchoredDirectory, mutatePosixAnchoredEntry, readPosixAnchoredFile, readPosixAnchoredString, statPosixAnchoredFile, writePosixAnchoredFile } from "./posix-anchored-process.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   access,
   chmod,
-  link,
   lstat,
   mkdir,
   open,
-  readdir,
   readFile,
   readlink,
   realpath,
@@ -21,7 +22,6 @@ import {
   unlink,
   utimes,
   writeFile,
-  type FileHandle,
 } from "node:fs/promises";
 import { constants as filesystemConstants, existsSync, readFileSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
@@ -45,6 +45,7 @@ import {
   type CredentialReference as CredentialReferenceType,
 } from "../domain/brand.ts";
 import {
+  AnchoredMutationUnconfirmedError,
   CredentialStorageError,
   ExecutableNotFoundError,
   FileSizeLimitError,
@@ -193,114 +194,14 @@ const promiseEffect = <Value>(
     catch: filesystemError(operation, path),
   });
 
-const objectKind = (
-  metadata: Awaited<ReturnType<typeof lstat>>,
-): MachineObject["kind"] => {
-  if (metadata.isSymbolicLink()) return "symlink";
-  if (metadata.isFile()) return "regular";
-  if (metadata.isDirectory()) return "directory";
-  return "special";
-};
-
-const sameFileIdentity = (
-  left: { readonly dev: number | bigint; readonly ino: number | bigint },
-  right: { readonly dev: number | bigint; readonly ino: number | bigint },
-): boolean => left.dev === right.dev && left.ino === right.ino;
-
-const assertStableRegularHandle = async (
-  path: string,
-  handle: FileHandle,
-  opened: Awaited<ReturnType<FileHandle["stat"]>>,
-): Promise<void> => {
-  if (!opened.isFile()) {
-    throw new Error(`path is not a regular file: ${path}`);
-  }
-  const visible = await lstat(path);
-  if (!visible.isFile() || !sameFileIdentity(opened, visible)) {
-    throw new Error(`regular file target changed during read: ${path}`);
-  }
-};
-
-const regularFileBytes = async (
-  path: string,
-  maximumBytes: number,
-  prefixBytes?: number,
-): Promise<Buffer> => {
-  const handle = await open(
-    path,
-    filesystemConstants.O_RDONLY
-      | filesystemConstants.O_NOFOLLOW
-      | filesystemConstants.O_NONBLOCK,
-  );
-  try {
-    const metadata = await handle.stat();
-    await assertStableRegularHandle(path, handle, metadata);
-    if (metadata.size > maximumBytes) {
-      throw new FileSizeLimitError({ path, maximumBytes });
-    }
-    if (prefixBytes !== undefined) {
-      const bytes = Buffer.allocUnsafe(Math.min(metadata.size, prefixBytes));
-      let total = 0;
-      while (total < bytes.byteLength) {
-        const result = await handle.read(bytes, total, bytes.byteLength - total, null);
-        if (result.bytesRead === 0) break;
-        total += result.bytesRead;
-      }
-      await assertStableRegularHandle(path, handle, metadata);
-      return bytes.subarray(0, total);
-    }
-    const chunks: Array<Buffer> = [];
-    let total = 0;
-    const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, Math.max(1, maximumBytes)));
-    while (true) {
-      const result = await handle.read(chunk, 0, chunk.byteLength, null);
-      if (result.bytesRead === 0) break;
-      const bytes = Buffer.from(chunk.subarray(0, result.bytesRead));
-      total += bytes.byteLength;
-      if (total > maximumBytes) {
-        throw new FileSizeLimitError({ path, maximumBytes });
-      }
-      chunks.push(bytes);
-    }
-    await assertStableRegularHandle(path, handle, metadata);
-    return Buffer.concat(chunks, total);
-  } finally {
-    await handle.close();
-  }
-};
-
-const regularFileDigest = async (
-  path: string,
-  maximumBytes: number,
-): Promise<string> => {
-  const handle = await open(
-    path,
-    filesystemConstants.O_RDONLY
-      | filesystemConstants.O_NOFOLLOW
-      | filesystemConstants.O_NONBLOCK,
-  );
-  try {
-    const metadata = await handle.stat();
-    await assertStableRegularHandle(path, handle, metadata);
-    const hash = createHash("sha256");
-    const chunk = Buffer.allocUnsafe(64 * 1024);
-    let total = 0;
-    while (true) {
-      const result = await handle.read(chunk, 0, chunk.byteLength, null);
-      if (result.bytesRead === 0) break;
-      const bytes = Buffer.from(chunk.subarray(0, result.bytesRead));
-      total += bytes.byteLength;
-      if (total > maximumBytes) {
-        throw new FileSizeLimitError({ path, maximumBytes });
-      }
-      hash.update(bytes);
-    }
-    await assertStableRegularHandle(path, handle, metadata);
-    return hash.digest("hex");
-  } finally {
-    await handle.close();
-  }
-};
+const anchoredMutationEffect = <Value>(
+  operation: string, path: string, run: () => Promise<Value>,
+) => Effect.tryPromise({
+  try: run,
+  catch: (cause) => cause instanceof AnchoredMutationUnconfirmedError || cause instanceof UnconfirmedPublicationError
+    ? cause
+    : filesystemError(operation, path)(cause),
+});
 
 const checkLinuxPath = (
   path: MachinePath,
@@ -324,11 +225,6 @@ const linuxPath = (absolute: string): MachinePath => ({
   platform: "linux",
   absolute: normalize(absolute),
 });
-
-const sameFilesystemIdentity = (
-  before: Awaited<ReturnType<typeof lstat>>,
-  after: Awaited<ReturnType<typeof lstat>>,
-): boolean => before.dev === after.dev && before.ino === after.ino;
 
 const isWithin = (root: string, candidate: string): boolean => {
   const remainder = relative(root, candidate);
@@ -471,55 +367,10 @@ const runCredentialCommand = (
 const makeTemporarySibling = (path: string): string =>
   join(dirname(path), temporaryEntryName());
 
-const removeManagedLeaf = async (path: string): Promise<void> => {
-  try {
-    const metadata = await lstat(path);
-    if (metadata.isDirectory() && !metadata.isSymbolicLink()) {
-      await rmdir(path);
-    } else {
-      await unlink(path);
-    }
-  } catch (cause) {
-    if (errorCode(cause) !== "ENOENT") throw cause;
-  }
-};
-
-const prepareManagedLeafKind = async (
-  path: string,
-  kind: "directory" | "non-directory",
-): Promise<void> => {
-  try {
-    const metadata = await lstat(path);
-    const directory = metadata.isDirectory() && !metadata.isSymbolicLink();
-    if (kind === "directory" ? !directory : directory) {
-      await removeManagedLeaf(path);
-    }
-  } catch (cause) {
-    if (errorCode(cause) !== "ENOENT") throw cause;
-  }
-};
-
-const syncHandle = (
-  handle: Awaited<ReturnType<typeof open>>,
-): Promise<void> =>
-  handle.sync().then(
-    () => undefined,
-    // Windows raises EPERM for fsync on some filesystems and directory
-    // handles; durability there relies on the rename, not the flush.
-    (cause: NodeJS.ErrnoException) => {
-      if (
-        process.platform === "win32"
-        && (cause.code === "EPERM" || cause.code === "EINVAL")
-      ) {
-        return undefined;
-      }
-      throw cause;
-    },
-  );
-
 /** Where an atomic write may publish: below `anchor` only, and without replacing when `noReplace`. */
 interface WritePlacement {
   readonly anchor?: string | undefined;
+  readonly createAnchoredParents?: boolean | undefined;
   readonly noReplace?: boolean | undefined;
 }
 
@@ -531,70 +382,28 @@ const atomicWriteFile = (
 ): Effect.Effect<FileIdentity, MachineFilesystemError | UnconfirmedPublicationError> =>
   Effect.tryPromise({
     try: async () => {
-      // An anchored write publishes into the existing directory it opened; it
-      // never creates parents, which would follow whatever the path names now.
-      const anchored = placement.anchor === undefined
-        ? undefined
-        : await openAnchoredDirectory(placement.anchor, dirname(path));
+      if (placement.anchor !== undefined && process.platform === "darwin") {
+        return writePosixAnchoredFile(placement.anchor, path, {
+          content, mode,
+          createParents: placement.createAnchoredParents === true,
+          noReplace: placement.noReplace,
+        });
+      }
+      const anchored = placement.anchor === undefined ? undefined
+        : placement.createAnchoredParents === true
+          ? await openDescriptorDirectory(placement.anchor, dirname(path), { createMode: defaultDirectoryMode })
+          : await openAnchoredDirectory(placement.anchor, dirname(path));
       if (anchored === undefined) await mkdir(dirname(path), { recursive: true, mode: defaultDirectoryMode });
-      const parent = anchored?.base ?? dirname(path);
-      const target = join(parent, basename(path));
-      const temporary = join(parent, temporaryEntryName());
-      let handle: Awaited<ReturnType<typeof open>> | undefined;
       try {
-        handle = await open(temporary, "wx", mode);
-        await writeFileContent(handle, content);
-        await syncHandle(handle);
-        await handle.chmod(mode);
-        const written = await handle.stat({ bigint: true });
-        await handle.close();
-        handle = undefined;
-        if (placement.noReplace === true) {
-          // A hard link fails with EEXIST when the name exists, even when
-          // another process created it after any earlier check.
-          await link(temporary, target);
-        } else {
-          await prepareManagedLeafKind(target, "non-directory");
-          await rename(temporary, target);
-        }
-        // From here the file is visible at `path`, so a failure must say
-        // what the name holds now instead of reading as nothing written.
-        const published: FileIdentity = { dev: written.dev, ino: written.ino };
-        const unconfirmed = (state: "in-place" | "replaced", cause: unknown) =>
-          new UnconfirmedPublicationError({ path, state, published, message: messageOf(cause) });
-        if (anchored !== undefined) {
-          try {
-            await anchored.verify();
-            if (!sameIdentity(await lstat(target, { bigint: true }), written)) {
-              throw new Error(`${path} no longer names the file Canonfig published`);
-            }
-          } catch (cause) {
-            throw unconfirmed("replaced", cause);
-          }
-        }
-        try {
-          const directory = await open(parent, "r");
-          try {
-            await syncHandle(directory);
-          } finally {
-            await directory.close();
-          }
-        } catch (cause) {
-          throw unconfirmed("in-place", `the directory entry could not be flushed to disk: ${messageOf(cause)}`);
-        }
-        return published;
+        return await atomicWriteLeaf(anchored?.base ?? dirname(path), path, content, mode,
+          { noReplace: placement.noReplace, verify: anchored?.verify });
       } finally {
-        if (handle !== undefined) await handle.close().catch(() => undefined);
-        await rm(temporary, { force: true }).catch(() => undefined);
         await anchored?.close();
       }
     },
     catch: (cause) =>
       cause instanceof UnconfirmedPublicationError ? cause : filesystemError("atomically write file", path)(cause),
   }).pipe(Effect.uninterruptible);
-
-const descriptorPath = (handle: FileHandle): string =>
-  `/proc/self/fd/${handle.fd}`;
 
 const portableSafeRootMutation = async (
   root: string,
@@ -618,7 +427,7 @@ const portableSafeRootMutation = async (
     const visibleRoot = await lstat(root);
     if (
       visibleRoot.isSymbolicLink()
-      || !sameFilesystemIdentity(rootIdentity, visibleRoot)
+      || !sameIdentity(rootIdentity, visibleRoot)
     ) {
       throw new Error("managed root identity changed before mutation");
     }
@@ -629,7 +438,7 @@ const portableSafeRootMutation = async (
     const isolatedRoot = await lstat(heldRoot);
     if (
       isolatedRoot.isSymbolicLink()
-      || !sameFilesystemIdentity(rootIdentity, isolatedRoot)
+      || !sameIdentity(rootIdentity, isolatedRoot)
     ) {
       throw new Error("managed root identity changed while isolating mutation");
     }
@@ -719,10 +528,11 @@ const safeRootMutation = (
   strategy: "descriptor" | "portable" = process.platform === "darwin"
     ? "portable"
     : "descriptor",
-): Effect.Effect<void, MachineStateError> =>
+): Effect.Effect<FileIdentity | void, MachineStateError> =>
   Effect.gen(function*() {
     const root = yield* checkLinuxPath(input.root);
     const path = yield* checkLinuxPath(input.path);
+    const anchor = input.anchor === undefined ? undefined : yield* checkLinuxPath(input.anchor);
     if (!isWithin(root, path) || path === root) {
       return yield* new MachineFilesystemError({
         operation: "mutate managed path",
@@ -739,10 +549,17 @@ const safeRootMutation = (
         message: "symlink target must not be empty or contain NUL bytes",
       });
     }
-    const remainder = relative(root, path);
-    const parts = remainder.split(sep);
-    yield* promiseEffect("mutate managed path", path, async () => {
-      if (strategy === "portable") {
+    return yield* anchoredMutationEffect("mutate managed path", path, async () => {
+      if (anchor !== undefined && process.platform === "darwin") {
+        try {
+          return await mutatePosixAnchoredEntry(anchor, path, input.mutation, defaultDirectoryMode, defaultFileMode);
+        } catch (cause) {
+          if (input.mutation.kind !== "remove" || cause instanceof AnchoredMutationUnconfirmedError
+            || !(cause instanceof Error && /\bENOENT:/u.test(cause.message))) throw cause;
+        }
+        return;
+      }
+      if (strategy === "portable" && anchor === undefined) {
         await portableSafeRootMutation(
           root,
           path,
@@ -752,97 +569,19 @@ const safeRootMutation = (
         );
         return;
       }
-      const handles: Array<FileHandle> = [];
+      // A missing root still fails, even for removal. Only missing
+      // descendants are allowed when nothing needs to be removed.
+      const scoped = await openDescriptorDirectory(anchor ?? root, dirname(path), {
+        createMode: input.mutation.kind === "remove" ? undefined : defaultDirectoryMode,
+        beforeWalk: beforeMutation ?? (() => Promise.resolve()),
+        ignoreMissingDescendant: input.mutation.kind === "remove",
+      });
+      if (scoped === undefined) return;
       try {
-        const rootHandle = await open(
-          root,
-          filesystemConstants.O_RDONLY
-            | filesystemConstants.O_DIRECTORY
-            | filesystemConstants.O_NOFOLLOW,
-        );
-        handles.push(rootHandle);
-        const rootIdentity = await rootHandle.stat();
-        await beforeMutation?.();
-        const visibleRoot = await lstat(root);
-        if (
-          visibleRoot.isSymbolicLink()
-          || !sameFilesystemIdentity(rootIdentity, visibleRoot)
-        ) {
-          throw new Error("managed root identity changed before mutation");
-        }
-
-        let parent = rootHandle;
-        for (const part of parts.slice(0, -1)) {
-          const candidate = join(descriptorPath(parent), part);
-          let child: FileHandle;
-          try {
-            child = await open(
-              candidate,
-              filesystemConstants.O_RDONLY
-                | filesystemConstants.O_DIRECTORY
-                | filesystemConstants.O_NOFOLLOW,
-            );
-          } catch (cause) {
-            if (errorCode(cause) !== "ENOENT" || input.mutation.kind === "remove") {
-              if (errorCode(cause) === "ENOENT" && input.mutation.kind === "remove") {
-                return;
-              }
-              throw cause;
-            }
-            await mkdir(candidate, { mode: defaultDirectoryMode });
-            child = await open(
-              candidate,
-              filesystemConstants.O_RDONLY
-                | filesystemConstants.O_DIRECTORY
-                | filesystemConstants.O_NOFOLLOW,
-            );
-          }
-          handles.push(child);
-          parent = child;
-        }
-
-        const name = parts.at(-1)!;
-        const target = join(descriptorPath(parent), name);
-        if (input.mutation.kind === "remove") {
-          await removeManagedLeaf(target);
-          await syncHandle(parent);
-          return;
-        }
-
-        if (input.mutation.kind === "directory") {
-          await prepareManagedLeafKind(target, "directory");
-          const mode = input.mutation.permissions === undefined ? input.mutation.mode : input.mutation.permissions.mode;
-          await mkdir(target, { recursive: true, mode });
-          await chmod(target, mode);
-          await syncHandle(parent);
-          return;
-        }
-
-        const temporary = join(descriptorPath(parent), temporaryEntryName());
-        try {
-          if (input.mutation.kind === "symlink") {
-            await symlink(symlinkTarget!, temporary);
-          } else {
-            const mode = input.mutation.permissions?.mode ?? input.mutation.mode ?? defaultFileMode;
-            const temporaryHandle = await open(temporary, "wx", mode);
-            try {
-              await writeFileContent(temporaryHandle, input.mutation.content);
-              await syncHandle(temporaryHandle);
-              await temporaryHandle.chmod(mode);
-            } finally {
-              await temporaryHandle.close();
-            }
-          }
-          await prepareManagedLeafKind(target, "non-directory");
-          await rename(temporary, target);
-          await syncHandle(parent);
-        } finally {
-          await unlink(temporary).catch(() => undefined);
-        }
+        const identity = await mutatePosixLeaf(scoped.base, path, input.mutation, defaultFileMode, scoped.verify);
+        return anchor === undefined ? undefined : identity;
       } finally {
-        for (const handle of handles.reverse()) {
-          await handle.close().catch(() => undefined);
-        }
+        await scoped.close();
       }
     });
   }).pipe(Effect.uninterruptible);
@@ -894,14 +633,10 @@ const readBounded = (
     return yield* Effect.tryPromise({
       try: async () => {
         if (anchor === undefined) return regularFileBytes(path, input.maximumBytes, input.prefixBytes);
-        const directory = await openAnchoredDirectory(anchor, dirname(path));
-        try {
-          const bytes = await regularFileBytes(join(directory.base, basename(path)), input.maximumBytes, input.prefixBytes);
-          await directory.verify();
-          return bytes;
-        } finally {
-          await directory.close();
+        if (process.platform === "darwin") {
+          return readPosixAnchoredFile(anchor, path, input.maximumBytes, input.prefixBytes);
         }
+        return withAnchoredEntry(path, anchor, (held) => regularFileBytes(held, input.maximumBytes, input.prefixBytes));
       },
       // The size error names the requested path, not the anchored descriptor path.
       catch: (cause) =>
@@ -917,8 +652,11 @@ const digest = (
   Effect.gen(function*() {
     const path = yield* checkLinuxPath(input.path);
     const maximumBytes = input.maximumBytes ?? Number.MAX_SAFE_INTEGER;
+    const anchor = input.anchor === undefined ? undefined : yield* checkLinuxPath(input.anchor);
     const value = yield* Effect.tryPromise({
-      try: () => regularFileDigest(path, maximumBytes),
+      try: () => anchor !== undefined && process.platform === "darwin"
+        ? readPosixAnchoredString(anchor, path, { kind: "digest", maximumBytes })
+        : withAnchoredEntry(path, anchor, (held) => regularFileDigest(held, maximumBytes)),
       catch: (cause) =>
         cause instanceof FileSizeLimitError
           ? cause
@@ -1779,6 +1517,7 @@ export const linuxMachineStateLayer = (
           const path = yield* checkLinuxPath(input.path);
           return yield* atomicWriteFile(path, input.content, input.permissions?.mode ?? input.mode ?? defaultFileMode, {
             anchor: input.anchor === undefined ? undefined : yield* checkLinuxPath(input.anchor),
+            createAnchoredParents: input.createAnchoredParents,
             noReplace: input.noReplace,
           });
         },
@@ -1810,39 +1549,47 @@ export const linuxMachineStateLayer = (
       const removeFile = Effect.fn("MachineState.removeFile")(
         function*(input: RemoveFileInput): Effect.fn.Return<void, MachineStateError> {
           const path = yield* checkLinuxPath(input.path);
-          const identity = input.identity;
-          yield* promiseEffect("remove file", path, async () => {
-            if (identity !== undefined) {
-              // Narrows, not closes, the window: another process can still
-              // swap the name between this check and the unlink.
-              const current = await lstat(path, { bigint: true }).catch((cause: unknown) => {
-                if (errorCode(cause) === "ENOENT" || errorCode(cause) === "ENOTDIR") return undefined;
-                throw cause;
-              });
-              if (current === undefined || !sameIdentity(current, identity)) return;
-            }
-            await rm(path, { force: true });
-          });
+          const anchor = input.anchor === undefined ? undefined : yield* checkLinuxPath(input.anchor);
+          yield* anchoredMutationEffect("remove file", path, () =>
+            anchor !== undefined && process.platform === "darwin"
+              ? changePosixAnchoredEntry(anchor, path, { kind: "remove-file", identity: input.identity })
+              : withAnchoredEntry(path, anchor, (held) => removeMatchingFile(held, input.identity), "remove file")
+          ).pipe(
+            Effect.catchTag("MachineFilesystemError", (error) =>
+              anchor !== undefined && /\bENOENT\b/u.test(error.message) ? Effect.void : Effect.fail(error)),
+            Effect.uninterruptible,
+          );
         },
       );
 
       const removeEmptyDirectory = Effect.fn("MachineState.removeEmptyDirectory")(
         function*(input: RemoveEmptyDirectoryInput): Effect.fn.Return<void, MachineStateError> {
           const path = yield* checkLinuxPath(input.path);
-          yield* promiseEffect("remove empty directory", path, () => rmdir(path));
+          const anchor = input.anchor === undefined ? undefined : yield* checkLinuxPath(input.anchor);
+          yield* anchoredMutationEffect("remove empty directory", path, () =>
+            anchor !== undefined && process.platform === "darwin"
+              ? changePosixAnchoredEntry(anchor, path, { kind: "remove-directory" })
+              : withAnchoredEntry(path, anchor, (held) => rmdir(held), "remove empty directory")
+          ).pipe(Effect.uninterruptible);
         },
       );
 
       const removeTemporaryEntries = Effect.fn("MachineState.removeTemporaryEntries")(
-        function*(
-          input: RemoveTemporaryEntriesInput,
-        ): Effect.fn.Return<ReadonlyArray<string>, MachineStateError> {
+        function*(input: RemoveTemporaryEntriesInput): Effect.fn.Return<ReadonlyArray<string>, MachineStateError> {
           const directory = yield* checkLinuxPath(input.directory);
-          return yield* promiseEffect(
-            "remove temporary entries",
-            directory,
-            () => removeTemporaryEntriesAt(directory, input.recursive, posix),
-          );
+          const anchor = input.anchor === undefined ? undefined : yield* checkLinuxPath(input.anchor);
+          return yield* anchoredMutationEffect("remove temporary entries", directory, async () => {
+            if (anchor === undefined) return removeTemporaryEntriesAt(directory, input.recursive, posix);
+            if (process.platform === "darwin") return cleanPosixAnchoredDirectory(anchor, directory, input.recursive);
+            const held = await openAnchoredDirectory(anchor, directory);
+            try {
+              const entries = await removeTemporaryEntriesAt(held.base, input.recursive, posix, false);
+              await verifyAnchoredMutation(held.verify, directory, "remove temporary entries");
+              return entries.map((entry) => join(directory, relative(held.base, entry)));
+            } finally {
+              await held.close();
+            }
+          }).pipe(Effect.uninterruptible);
         },
       );
 
@@ -1863,7 +1610,7 @@ export const linuxMachineStateLayer = (
             const rootBefore = await lstat(root);
             const actualRoot = await realpath(root);
             const rootAfter = await lstat(root);
-            if (!sameFilesystemIdentity(rootBefore, rootAfter)) {
+            if (!sameIdentity(rootBefore, rootAfter)) {
               throw new Error("managed root identity changed during validation");
             }
 
@@ -1886,7 +1633,7 @@ export const linuxMachineStateLayer = (
               }
               const actualAncestor = await realpath(ancestor);
               const after = await lstat(ancestor);
-              if (!sameFilesystemIdentity(before, after)) {
+              if (!sameIdentity(before, after)) {
                 throw new Error(`ancestor identity changed during validation: ${ancestor}`);
               }
               if (!isWithin(actualRoot, actualAncestor)) {
@@ -1902,8 +1649,8 @@ export const linuxMachineStateLayer = (
       const mutateWithinRoot = Effect.fn("MachineState.mutateWithinRoot")(
         function*(
           input: SafeRootMutationInput,
-        ): Effect.fn.Return<void, MachineStateError> {
-          yield* safeRootMutation(
+        ): Effect.fn.Return<FileIdentity | void, MachineStateError> {
+          return yield* safeRootMutation(
             input,
             options.beforeSafeRootMutation,
             options.safeRootMutationStrategy,
@@ -1912,17 +1659,27 @@ export const linuxMachineStateLayer = (
       );
 
       const readSymlink = Effect.fn("MachineState.readSymlink")(
-        function*(machinePath: MachinePath): Effect.fn.Return<string, MachineStateError> {
+        function*(machinePath: MachinePath, anchor?: MachinePath): Effect.fn.Return<string, MachineStateError> {
           const path = yield* checkLinuxPath(machinePath);
-          return yield* promiseEffect("read symlink", path, () => readlink(path));
+          const root = anchor === undefined ? undefined : yield* checkLinuxPath(anchor);
+          return yield* promiseEffect("read symlink", path, () =>
+            root !== undefined && process.platform === "darwin"
+              ? readPosixAnchoredString(root, path, { kind: "readlink" })
+              : withAnchoredEntry(path, root, (held) => readlink(held)));
         },
       );
 
+      const pathMetadata = (path: string, root: string | undefined) =>
+        root !== undefined && process.platform === "darwin"
+          ? statPosixAnchoredFile(root, path)
+          : withAnchoredEntry(path, root, pathEntryMetadata);
+
       const inspectPath = Effect.fn("MachineState.inspectPath")(
-        function*(machinePath: MachinePath): Effect.fn.Return<MachineObject, MachineStateError> {
+        function*(machinePath: MachinePath, anchor?: MachinePath): Effect.fn.Return<MachineObject, MachineStateError> {
           const path = yield* checkLinuxPath(machinePath);
-          const metadata = yield* promiseEffect("inspect path", path, () => lstat(path));
-          return { kind: objectKind(metadata) };
+          const root = anchor === undefined ? undefined : yield* checkLinuxPath(anchor);
+          const metadata = yield* promiseEffect("inspect path", path, () => pathMetadata(path, root));
+          return root === undefined ? { kind: metadata.objectKind } : { kind: metadata.objectKind, identity: metadata.identity };
         },
       );
 
@@ -1935,48 +1692,36 @@ export const linuxMachineStateLayer = (
        * lists nothing rather than failing, because a caller asking what is
        * inside a directory that does not exist wants "nothing", not an error.
        */
+      const listDirectoryAt = async (absolute: string, anchor: string | undefined) => {
+        if (anchor === undefined) return directoryEntries(absolute);
+        if (process.platform === "darwin") return listPosixAnchoredDirectory(anchor, absolute);
+        const held = await openAnchoredDirectory(anchor, absolute).catch((cause: unknown) => {
+          if (errorCode(cause) === "ENOENT" || cause instanceof Error && /\bENOENT:/u.test(cause.message)) return undefined;
+          throw cause;
+        });
+        if (held === undefined) return [];
+        try {
+          const entries = await directoryEntries(held.base);
+          await held.verify();
+          return entries;
+        } finally {
+          await held.close();
+        }
+      };
+
       const listDirectory = Effect.fn("MachineState.listDirectory")(
-        function*(
-          machinePath: MachinePath,
-        ): Effect.fn.Return<ReadonlyArray<MachineDirectoryEntry>, MachineStateError> {
+        function*(machinePath: MachinePath, anchor?: MachinePath):
+          Effect.fn.Return<ReadonlyArray<MachineDirectoryEntry>, MachineStateError> {
           const root = yield* checkLinuxPath(machinePath);
+          const heldRoot = anchor === undefined ? undefined : yield* checkLinuxPath(anchor);
           const entries: Array<MachineDirectoryEntry> = [];
           const walk = Effect.fn("MachineState.listDirectory.walk")(
-            function*(
-              absolute: string,
-              relative: string,
-            ): Effect.fn.Return<void, MachineStateError> {
-              const found = yield* promiseEffect(
-                "list directory",
-                absolute,
-                () => readdir(absolute, { withFileTypes: true }),
-              ).pipe(
-                Effect.catchTag("MachineFilesystemError", (error) =>
-                  error.message.includes("ENOENT")
-                    ? Effect.succeed([])
-                    : Effect.fail(error)
-                ),
-              );
-              const ordered = [...found].sort((left, right) =>
-                left.name.localeCompare(right.name)
-              );
-              for (const entry of ordered) {
-                const childRelative = relative === ""
-                  ? entry.name
-                  : `${relative}/${entry.name}`;
-                const childAbsolute = join(absolute, entry.name);
-                const metadata = yield* promiseEffect(
-                  "inspect path",
-                  childAbsolute,
-                  () => lstat(childAbsolute),
-                );
-                const kind = objectKind(metadata);
-                entries.push({ path: childRelative, kind });
-                // Descending into a symlinked directory would leave the
-                // managed root, so a link is reported and left alone.
-                if (kind === "directory") {
-                  yield* walk(childAbsolute, childRelative);
-                }
+            function*(absolute: string, relative: string): Effect.fn.Return<void, MachineStateError> {
+              const found = yield* promiseEffect("list directory", absolute, () => listDirectoryAt(absolute, heldRoot));
+              for (const entry of found) {
+                const path = relative === "" ? entry.path : `${relative}/${entry.path}`;
+                entries.push({ path, kind: entry.kind });
+                if (entry.kind === "directory") yield* walk(join(absolute, entry.path), path);
               }
             },
           );
@@ -1989,15 +1734,25 @@ export const linuxMachineStateLayer = (
         function*(input: SetPermissionsInput): Effect.fn.Return<void, MachineStateError> {
           const path = yield* checkLinuxPath(input.path);
           const mode = input.permissions === undefined ? input.mode : input.permissions.mode;
-          yield* promiseEffect("set permissions", path, () => chmod(path, mode));
+          const anchor = input.anchor === undefined ? undefined : yield* checkLinuxPath(input.anchor);
+          yield* anchoredMutationEffect("set permissions", path, () => {
+            if (anchor === undefined) return chmod(path, mode);
+            if (process.platform === "darwin") return changePosixAnchoredEntry(anchor, path, { kind: "permissions", mode, identity: input.identity });
+            return withAnchoredEntry(path, anchor, (held) => setPosixLeafMode(held, mode, input.identity), "set permissions");
+          }).pipe(
+            Effect.mapError((error) =>
+              input.identity === undefined || error instanceof AnchoredMutationUnconfirmedError ? error
+                : new AnchoredMutationUnconfirmedError({ path, operation: "set POSIX permissions", message: error.message })),
+            Effect.uninterruptible,
+          );
         },
       );
 
       const permissions = Effect.fn("MachineState.permissions")(
-        function*(machinePath: MachinePath): Effect.fn.Return<FilePermissions, MachineStateError> {
+        function*(machinePath: MachinePath, anchor?: MachinePath): Effect.fn.Return<FilePermissions, MachineStateError> {
           const path = yield* checkLinuxPath(machinePath);
-          const metadata = yield* promiseEffect("read permissions", path, () => lstat(path));
-          const mode = metadata.mode & 0o7777;
+          const root = anchor === undefined ? undefined : yield* checkLinuxPath(anchor);
+          const { mode } = yield* promiseEffect("read permissions", path, () => pathMetadata(path, root));
           return { mode, executableByOwner: (mode & 0o100) !== 0 };
         },
       );
@@ -2232,8 +1987,8 @@ export const linuxMachineStateLayer = (
         listDirectory,
         setPermissions,
         permissions,
-        snapshotPermissions: Effect.fn("MachineState.snapshotPermissions")((path: MachinePath) =>
-          permissions(path).pipe(Effect.map(({ mode }) => ({ platform: "posix" as const, mode })))
+        snapshotPermissions: Effect.fn("MachineState.snapshotPermissions")((path: MachinePath, anchor?: MachinePath) =>
+          permissions(path, anchor).pipe(Effect.map(({ mode }) => ({ platform: "posix" as const, mode })))
         ),
         findExecutable,
         runProcess: Effect.fn("MachineState.runProcess")(
