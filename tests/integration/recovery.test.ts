@@ -1431,6 +1431,8 @@ describe("synchronization crash recovery", () => {
 
     await expect(recover(value)).rejects.toThrow("ancestor resolves outside managed root");
     expect(readFileSync(join(outside, "TEAM.md"), "utf8")).toBe("canonical content");
+    expect(existsSync(reference)).toBe(true);
+    expect(readFileSync(`${reference}.${sha256Hex(target)}.bin`, "utf8")).toBe("previous");
   });
 
   it("does not resurrect a removed resource after restart recovery", async () => {

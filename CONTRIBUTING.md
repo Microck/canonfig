@@ -27,7 +27,8 @@ not in a public issue.
 
 ## Local setup
 
-You need Node.js 24 or newer and an npm that reads lockfile version 3.
+Use Node.js 24.15.0 or newer in the 24.x line, or Node.js 26 or newer.
+Use an npm version that reads lockfile version 3.
 
 ```sh
 npm ci
@@ -61,8 +62,9 @@ node --import tsx --test "ui/src/**/*.test.ts" "ui/src/**/*.test.tsx"
 ```
 
 The full suite is slow. While you work, run the focused test files, then run
-the full suite once before you open the pull request. CI runs everything on
-Linux, macOS, Windows and Windows ARM.
+the full suite once before you open the pull request. CI runs cross-platform
+acceptance checks on Linux, macOS and Windows for pull requests and pushes to
+`main`. Windows ARM64 acceptance runs weekly and on demand.
 
 ## Tests
 

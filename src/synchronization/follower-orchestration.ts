@@ -13,6 +13,7 @@ import {
 import type { AgentResolutionOutcome } from "../agent/agent-resolution.types.ts";
 import {
   ContentDigest,
+  type FollowerId,
   parseSurfaceResourceId,
   ProfileId,
   ProfileRevisionId,
@@ -1095,15 +1096,12 @@ export const synchronizeFollower = Effect.fn(
  * follower state. Abandoning only stops the open run from blocking that, and
  * releases takeovers of surfaces the run never applied, as after an early stop.
  */
-export const abandonFollowerRun = Effect.fn(
+export const abandonFollowerRunUnderLock = Effect.fn(
   "FollowerOrchestration.abandon",
-)(function*(stateLocation: string) {
+)(function*(stateLocation: string, follower: FollowerId) {
   const repository = yield* StateRepository;
-  const configuration = yield* loadFollowerSynchronizationConfiguration(
-    stateLocation,
-  );
-  yield* assertUpgradeGate(configuration.follower.id);
-  const recovery = yield* repository.loadRecovery(configuration.follower.id);
+  yield* assertUpgradeGate(follower);
+  const recovery = yield* repository.loadRecovery(follower);
   if (recovery === undefined) {
     return yield* configurationError(
       "stale",
@@ -1116,26 +1114,29 @@ export const abandonFollowerRun = Effect.fn(
     revision: recovery.run.revision,
     abandoned: true as const,
   };
-}, (effect, ...args) => withRunLock(args[0], "abandon", effect));
+});
+
+export const abandonFollowerRun = (stateLocation: string) =>
+  withRunLock(stateLocation, "abandon", Effect.gen(function*() {
+    const configuration = yield* loadFollowerSynchronizationConfiguration(stateLocation);
+    return yield* abandonFollowerRunUnderLock(stateLocation, configuration.follower.id);
+  }));
 
 /**
  * `canonfig recover` on a follower: resume the interrupted run from the
  * revision and content it stored when it started, so recovery needs neither
  * the Source nor the run's original environment.
  */
-export const recoverFollower = Effect.fn(
+export const recoverFollowerUnderLock = Effect.fn(
   "FollowerOrchestration.recover",
-)(function*(stateLocation: string, signal?: AbortSignal) {
+)(function*(stateLocation: string, follower: FollowerId, signal?: AbortSignal) {
   const repository = yield* StateRepository;
   const synchronization = yield* Synchronization;
   const agentResolution = Option.getOrUndefined(
     yield* Effect.serviceOption(AgentResolution),
   );
-  const configuration = yield* loadFollowerSynchronizationConfiguration(
-    stateLocation,
-  );
-  yield* assertUpgradeGate(configuration.follower.id);
-  const recovery = yield* repository.loadRecovery(configuration.follower.id);
+  yield* assertUpgradeGate(follower);
+  const recovery = yield* repository.loadRecovery(follower);
   if (recovery === undefined) {
     return yield* configurationError(
       "stale",
@@ -1146,6 +1147,10 @@ export const recoverFollower = Effect.fn(
     yield* finishAbandonedProjection(stateLocation, recovery);
     return { revision: recovery.run.revision, outcome: recovery.run.lifecycle.outcome };
   }
+  const configuration = yield* loadFollowerSynchronizationConfiguration(stateLocation).pipe(
+    Effect.filterOrFail((value) => value.follower.id === follower, () => configurationError("stale", "the open run belongs to a different Follower")),
+    Effect.mapError((error) => configurationError("stale", `run ${recovery.run.id} cannot be resumed: ${error.message}. Run 'canonfig abandon' to close it without rollback.`)),
+  );
   // A run whose revision cannot be read back can only be closed. Saying so
   // ends the loop where recover failed and sync --apply sent the operator
   // back to recover.
@@ -1172,4 +1177,10 @@ export const recoverFollower = Effect.fn(
     yield* persistProfileScheduleDefault(configuration, published?.scheduleDefault);
   }
   return { revision: recovery.run.revision, outcome };
-}, (effect, ...args) => withRunLock(args[0], "recover", effect));
+});
+
+export const recoverFollower = (stateLocation: string, signal?: AbortSignal) =>
+  withRunLock(stateLocation, "recover", Effect.gen(function*() {
+    const configuration = yield* loadFollowerSynchronizationConfiguration(stateLocation);
+    return yield* recoverFollowerUnderLock(stateLocation, configuration.follower.id, signal);
+  }));

@@ -1275,7 +1275,7 @@ function GroupsTab() {
           >
             <DialogHeader>
               <DialogTitle>New group</DialogTitle>
-              <DialogDescription className="text-base text-pretty">Machines join a group through their invitation. After you add it, open the group to add machines.</DialogDescription>
+              <DialogDescription className="text-base text-pretty">To add a machine to this group, open Machines and select the group when you create an invitation.</DialogDescription>
             </DialogHeader>
             <div className="grid gap-3">
               <Field label="Name" htmlFor="g-name" error={nameError}>

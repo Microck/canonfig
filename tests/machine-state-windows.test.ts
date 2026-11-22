@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
@@ -13,14 +13,15 @@ import { createRequire } from "node:module";
 
 import { describe, expect, it } from "vitest";
 import { Cause, Effect, Layer, Redacted } from "effect";
+import { openAnchoredDirectory } from "../src/machine/anchored-directory.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
 import { windowsCredentialAssemblyScript, windowsCredentialNativeSource, windowsPowerShellExecutable } from "../src/machine/windows-credentials.ts";
-import { ActionId, ResourceId, RunId } from "../src/domain/brand.ts";
+import { ActionId, ResourceId, RunId, resourcesOwner, surfaceResourceId } from "../src/domain/brand.ts";
 import { CredentialStorageError } from "../src/machine/machine-state.errors.ts";
 import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
 import { StateRepository } from "../src/state/state-repository.service.ts";
 import { sha256BytesHex } from "../src/profile/profile-codec.ts";
-import { defaultSynchronizationExecutionLimits } from "../src/synchronization/executor.ts";
+import { defaultSynchronizationExecutionLimits, removeRunTemporaryEntries } from "../src/synchronization/executor.ts";
 import {
   prepareResourceAction,
   type ResourceExecutionContext,
@@ -87,6 +88,78 @@ const environment = (root: string) => {
     { name: "SystemRoot", value: process.env.SystemRoot ?? "C:\\Windows" },
   ];
 };
+
+it.skipIf(process.platform !== "win32")("pins Windows ancestors without moving the home directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "canonfig-directory-lease-"));
+  const inside = join(root, "inside");
+  const renamed = join(root, "renamed");
+  try {
+    await mkdir(inside);
+    const held = await openAnchoredDirectory(root, inside);
+    try {
+      await expect(rename(inside, renamed)).rejects.toThrow();
+      await writeFile(join(held.base, "probe.txt"), "inside");
+      expect(await readFile(join(inside, "probe.txt"), "utf8")).toBe("inside");
+      await held.verify();
+    } finally {
+      await held.close();
+    }
+    await rename(inside, renamed);
+    await symlink(renamed, inside, "junction");
+    await expect(openAnchoredDirectory(root, inside)).rejects.toThrow(/real directory/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it.skipIf(process.platform !== "win32")("opens a Windows directory lease with only the unattended environment", async () => {
+  const root = await mkdtemp(join(tmpdir(), "canonfig-unattended-lease-"));
+  try {
+    const module = new URL("../src/machine/anchored-directory.ts", import.meta.url).href;
+    const script = `
+      import { openAnchoredDirectory } from ${JSON.stringify(module)};
+      const lease = await openAnchoredDirectory(process.env.USERPROFILE, process.env.USERPROFILE);
+      await lease.verify();
+      await lease.close();
+    `;
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-"], {
+      env: { USERPROFILE: root, HOME: root, TMPDIR: root, PATH: root },
+      input: script,
+      encoding: "utf8",
+      timeout: 45_000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}, 60_000);
+
+it.skipIf(process.platform !== "win32")("skips missing Windows ancestors while cleaning an interrupted authored write", async () => {
+  const root = await mkdtemp(join(tmpdir(), "canonfig-recovery-lease-"));
+  const localEnvironment = environment(root);
+  const home = win32.join(windowsRoot(root), "home");
+  try {
+    await mkdir(home, { recursive: true });
+    const removed = await Effect.runPromise(removeRunTemporaryEntries([{
+      id: ActionId.make("action:recovery-lease:0:write"),
+      kind: "write-file",
+      resource: surfaceResourceId(resourcesOwner, "recovery-lease"),
+      detail: {
+        kind: "write-file", target: win32.join(home, "new", "nested", "profile"),
+        digest: sha256BytesHex(Buffer.from("pending")), executable: false,
+        mode: 0o600, textTransition: { kind: "whole-file" },
+      },
+      before: [],
+    }], RunId.make("run-recovery-lease")).pipe(
+      Effect.provide(windowsMachineStateLayer({ environment: localEnvironment })),
+    ));
+    expect(removed).toEqual([]);
+    expect(await readdir(home)).toEqual([]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 describe.skipIf(process.platform !== "win32")("Windows executable lookup", () => {
   it("finds a tool an installer added to the saved PATH after this process started", async () => {

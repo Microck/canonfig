@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { after, it } from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { request, type WorkspaceBackend } from "../gui-client";
@@ -18,10 +17,13 @@ const { TooltipProvider } = await import("../components/ui/tooltip");
 after(async () => { await GlobalRegistrator.unregister(); });
 
 type ApplyResponse = "disconnect" | "unreadable" | "invalid-ticket" | "rejected" | "poll-failure";
+type PreviewResponse = "ok" | "disconnect" | "unreadable" | "invalid-result";
 const result = { sha256: "a".repeat(64), manifestSha256: "b".repeat(64), signer: "unsigned", folderFiles: 1, replaced: [], plan: {} };
-async function fixture(applyResponse: ApplyResponse) {
+async function fixture(applyResponse: ApplyResponse, previewResponse: PreviewResponse = "ok") {
+  let previewSubmissions = 0;
   let submissions = 0;
   let observations = 0;
+  let failPreviewOnce = previewResponse !== "ok";
   const server = createServer((incoming, outgoing) => {
     outgoing.setHeader("Content-Type", "application/json");
     outgoing.setHeader("Access-Control-Allow-Origin", "http://localhost");
@@ -30,9 +32,19 @@ async function fixture(applyResponse: ApplyResponse) {
     if (incoming.method === "OPTIONS") { outgoing.end(); return; }
     incoming.resume();
     incoming.on("end", () => {
-      if (incoming.url === "/api/imports/preview") { outgoing.statusCode = 202; outgoing.end(JSON.stringify({ id: "preview" })); }
-      else if (incoming.url === "/api/operations/preview") outgoing.end(JSON.stringify({ id: "preview", state: "succeeded", journal: null, result }));
-      else if (incoming.url === "/api/imports") {
+      if (incoming.url === "/api/imports/preview") {
+        previewSubmissions++;
+        if (failPreviewOnce) {
+          failPreviewOnce = false;
+          switch (previewResponse) {
+            case "disconnect": outgoing.destroy(); break;
+            case "unreadable": outgoing.end("not JSON"); break;
+            case "invalid-result": outgoing.end(JSON.stringify({ wrong: "result" })); break;
+          }
+          return;
+        }
+        outgoing.end(JSON.stringify(result));
+      } else if (incoming.url === "/api/imports") {
         submissions++;
         outgoing.statusCode = 202;
         switch (applyResponse) {
@@ -65,8 +77,10 @@ async function fixture(applyResponse: ApplyResponse) {
   const root = createRoot(container);
   await act(async () => root.render(<TooltipProvider><ArchiveImportButton backend={backend} /></TooltipProvider>));
   return {
+    get previewSubmissions() { return previewSubmissions; },
     get submissions() { return submissions; },
     get observations() { return observations; },
+    failNextPreview() { failPreviewOnce = true; },
     async close() {
       await act(async () => root.unmount()); container.remove();
       server.closeAllConnections(); const closed = once(server, "close"); server.close(); await closed;
@@ -79,31 +93,80 @@ function button(text: string) {
   return found;
 }
 async function click(text: string) { await act(async () => button(text).click()); }
-async function until(check: () => boolean) {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    if (check()) return;
-    await act(async () => { await delay(10); });
+async function waitForRender(check: () => boolean, expected: string) {
+  if (check()) return;
+  // DOM changes signal completion. The timer only bounds how long failure can take.
+  const ready = Promise.withResolvers<void>();
+  const observer = new MutationObserver(() => { if (check()) ready.resolve(); });
+  observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+  const deadline = setTimeout(() => ready.reject(new Error(`Archive dialog never rendered "${expected}".`)), 5_000);
+  try {
+    await ready.promise;
+  } finally {
+    clearTimeout(deadline);
+    observer.disconnect();
   }
-  assert.fail("Archive flow did not reach the expected state");
 }
-async function preview() {
+async function selectArchive() {
   await click("Import archive");
   const input = document.getElementById("archive-file"); assert.ok(input instanceof HTMLInputElement);
   Object.defineProperty(input, "files", { configurable: true, value: [new File(["archive fixture"], "setup.tar.gz", { type: "application/gzip" })] });
   await act(async () => input.dispatchEvent(new Event("change", { bubbles: true })));
+}
+async function preview() {
+  await selectArchive();
   await click("Verify and preview");
-  await until(() => !!document.querySelector('[role="status"]')?.textContent?.includes("Ready to import"));
+  await waitForRender(() => !!document.querySelector('[role="status"]')?.textContent?.includes("Ready to import"), "Ready to import");
   const consent = [...document.querySelectorAll<HTMLButtonElement>('[role="checkbox"]')].find((entry) => entry.closest("label")?.textContent === "I have reviewed the plan."); assert.ok(consent);
   await act(async () => consent.click());
 }
 
+for (const response of ["disconnect", "unreadable", "invalid-result"] as const) {
+  it(`keeps read-only preview recoverable when the preview response is ${response}`, async () => {
+    const app = await fixture("rejected", response);
+    try {
+      await selectArchive();
+      await click("Verify and preview");
+      await waitForRender(() => !!document.body.textContent?.includes("Archive import failed"), "Archive import failed");
+      assert.equal(app.previewSubmissions, 1);
+      assert.equal(app.submissions, 0);
+      assert.equal(document.body.textContent?.includes("Operation observation lost"), false);
+      assert.equal(document.body.textContent?.includes("canonfig recover"), false);
+      assert.equal(button("Cancel").disabled, false);
+      assert.equal(button("Verify and preview").disabled, false);
+      assert.equal(document.getElementById("archive-file")?.closest("fieldset[disabled]"), null);
+      await click("Verify and preview");
+      await waitForRender(() => !!document.querySelector('[role="status"]')?.textContent?.includes("Ready to import"), "Ready to import");
+      assert.equal(app.previewSubmissions, 2);
+      assert.equal(app.submissions, 0);
+    } finally { await app.close(); }
+  });
+}
+it("allows dismissing the dialog after a lost preview response without a ticket", async () => {
+  const app = await fixture("rejected", "disconnect");
+  try {
+    await selectArchive();
+    await click("Verify and preview");
+    await waitForRender(() => !!document.body.textContent?.includes("Archive import failed"), "Archive import failed");
+    await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+    app.failNextPreview();
+    await selectArchive();
+    await click("Verify and preview");
+    await waitForRender(() => !!document.body.textContent?.includes("Archive import failed"), "Archive import failed");
+    await click("Cancel");
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+    assert.equal(app.previewSubmissions, 2);
+    assert.equal(app.submissions, 0);
+  } finally { await app.close(); }
+});
 for (const response of ["disconnect", "unreadable", "invalid-ticket"] as const) {
   it(`keeps import locked when the apply response is ${response}`, async () => {
     const app = await fixture(response);
     try {
       await preview();
       await click("Import verified archive");
-      await until(() => !!document.body.textContent?.includes("Operation observation lost"));
+      await waitForRender(() => !!document.body.textContent?.includes("Operation observation lost"), "Operation observation lost");
       assert.equal(app.submissions, 1);
       assert.ok(button("Cancel").disabled);
       assert.equal([...document.querySelectorAll("button")].some((entry) => entry.textContent === "Verify and preview" || entry.textContent === "Import verified archive"), false);
@@ -118,7 +181,7 @@ it("unlocks editing only when the server rejects the apply request", async () =>
   const app = await fixture("rejected");
   try {
     await preview(); await click("Import verified archive");
-    await until(() => !!document.body.textContent?.includes("Archive import failed"));
+    await waitForRender(() => !!document.body.textContent?.includes("Archive import failed"), "Archive import failed");
     assert.equal(app.submissions, 1);
     assert.equal(button("Cancel").disabled, false);
     assert.equal(button("Verify and preview").disabled, false);
@@ -128,10 +191,10 @@ it("resumes a known import ticket without submitting another apply", async () =>
   const app = await fixture("poll-failure");
   try {
     await preview(); await click("Import verified archive");
-    await until(() => !!document.body.textContent?.includes("Operation observation lost"));
+    await waitForRender(() => !!document.body.textContent?.includes("Operation observation lost"), "Operation observation lost");
     assert.ok(document.body.textContent?.includes("apply"));
     await click("Resume observation");
-    await until(() => !!document.querySelector('[role="status"]')?.textContent?.includes("Import complete"));
+    await waitForRender(() => !!document.querySelector('[role="status"]')?.textContent?.includes("Import complete"), "Import complete");
     assert.equal(app.submissions, 1);
     assert.equal(app.observations, 2);
   } finally { await app.close(); }

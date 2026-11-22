@@ -1,4 +1,5 @@
 /// <reference types="node" />
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer, type ServerResponse } from "node:http";
@@ -20,7 +21,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const { LiveWorkspaceProvider } = await import("../workspace/live-provider");
 const { createRoot } = await import("react-dom/client");
 const { ProfileView } = await import("../workspace/profile");
-const { LocalView } = await import("../workspace/follower");
+const { LocalView, SyncView } = await import("../workspace/follower");
 const { RevisionsView, SecretsView } = await import("../workspace/source");
 const { FollowerOperationEvidence } = await import("../workspace/follower-evidence");
 const { SetupJournal } = await import("../onboarding/enrollment-controller");
@@ -38,6 +39,7 @@ function Probe() {
     {ws.revisions.map((revision) => <button key={revision.id} onClick={() => ws.profileLive?.inspectRevision(revision.id)}>Inspect {revision.sequence}</button>)}
     <p data-testid="revision">{JSON.stringify(ws.profileLive?.revisionDetail)}</p>
     <button onClick={() => { void ws.profileLive?.validate(); }}>Validate</button>
+    <button onClick={() => ws.publish("Alice", () => {})}>Publish</button>
     <button onClick={ws.followerLive?.check}>Check follower</button>
     <button onClick={ws.followerLive?.resumeObservation}>Resume follower</button>
     <button onClick={ws.applyPlan}>Apply follower</button>
@@ -71,7 +73,7 @@ function Fixture({ backend, session }: { backend: WorkspaceBackend; session: Gui
     {route.view === "agent" && <AgentPolicyView />}
     {route.view === "installers" && <InstallersView />}
     {route.view === "version" && <VersionView />}
-    {route.role === "follower" && <FollowerOperationEvidence />}
+    {route.view === "sync" ? <SyncView /> : route.role === "follower" && <FollowerOperationEvidence />}
   </LiveWorkspaceProvider></TooltipProvider>;
 }
 
@@ -331,7 +333,7 @@ it("revision inspection cancels superseded reads and does not share the mutation
     await until(() => pending.has("revision-3"), "Mutation blocked revision inspection");
     await act(async () => { pending.get("revision-3")?.end(JSON.stringify({ signature: "third revision" })); });
     await until(() => app.container.textContent?.includes("third revision") === true, "Third revision not displayed");
-    await act(async () => { validation?.end(JSON.stringify({ valid: true, errors: [], profile: {} })); });
+    await act(async () => { validation?.end(JSON.stringify({ valid: true, errors: [], reviewDigest: "reviewed-digest", profile: {} })); });
   } finally { await app.close(); }
 });
 
@@ -528,6 +530,45 @@ it("offers ticket recovery even when the first operation observation fails", asy
   } finally { await app.close(); }
 });
 
+it("labels the running sync command without suggesting a plan applies changes", async () => {
+  const planReply = Promise.withResolvers<ServerResponse>();
+  const applyReply = Promise.withResolvers<ServerResponse>();
+  const app = await fixture("/follower/sync", {
+    ...sourceResponses(), "/api/tunnel": { lifecycle: "not-configured" },
+    "/api/sync/plan": { id: "plan" }, "/api/sync/apply": { id: "apply" },
+  }, (path, _method, _body, outgoing) => {
+    if (path === "/api/operations/plan") planReply.resolve(outgoing);
+    else if (path === "/api/operations/apply") applyReply.resolve(outgoing);
+    else return false;
+    return true;
+  });
+  const check = () => app.container.querySelector<HTMLButtonElement>('[data-tour="sync-check"]');
+  const apply = () => app.container.querySelector<HTMLButtonElement>('[data-tour="sync-apply"]');
+  try {
+    assert.equal(check()?.disabled, false);
+    await act(async () => {
+      check()?.click();
+      await planReply.promise;
+    });
+    const planned = await planReply.promise;
+    assert.equal(check()?.textContent?.trim(), "Checking…");
+    assert.equal(apply()?.textContent?.trim(), "Apply changes");
+    assert.equal(apply()?.disabled, true);
+    await act(async () => { planned.end(JSON.stringify({ id: "plan", state: "succeeded", journal: null, result: { planDigest: "a".repeat(64) } })); });
+    await until(() => apply()?.disabled === false, "Plan did not enable Apply");
+
+    await act(async () => {
+      apply()?.click();
+      await applyReply.promise;
+    });
+    const applied = await applyReply.promise;
+    assert.equal(check()?.textContent?.trim(), "Check for updates");
+    assert.equal(apply()?.textContent?.trim(), "Applying…");
+    await act(async () => { applied.end(JSON.stringify({ id: "apply", state: "succeeded", journal: null, result: {} })); });
+    await until(() => apply() === null, "Finished apply still showed its button");
+  } finally { await app.close(); }
+});
+
 it("only a successful plan enables Apply and successful Apply reaches done", async () => {
   const responses = {
     ...sourceResponses(), "/api/sync/plan": { id: "plan" }, "/api/backups/restore": { id: "restore" }, "/api/sync/apply": { id: "apply" },
@@ -653,7 +694,7 @@ it("counts and labels additions from each reviewed scan instead of cached Profil
 
 
 it("a changed folder snapshot invalidates publication review evidence", async () => {
-  const responses: Record<string, unknown> = { ...sourceResponses(), "/api/profile/validate": { valid: true, errors: [], profile: {} } };
+  const responses: Record<string, unknown> = { ...sourceResponses(), "/api/profile/validate": { valid: true, errors: [], reviewDigest: "reviewed-digest", profile: {} } };
   const app = await fixture("/source/profile", responses);
   try {
     await until(() => !app.container.querySelector('[aria-busy="true"]'), "Profile did not load");
@@ -663,6 +704,20 @@ it("a changed folder snapshot invalidates publication review evidence", async ()
     await click("Reload page");
     await until(() => app.container.querySelector('[data-testid="profile-name"]')?.textContent === "Changed", "Folder did not refresh");
     assert.equal(app.container.querySelector('[data-testid="validation"]')?.textContent, "undefined");
+  } finally { await app.close(); }
+});
+
+it("publication names the digest its validation reviewed", async () => {
+  const reviewDigest = randomUUID();
+  const responses: Record<string, unknown> = { ...sourceResponses(), "/api/profile/validate": { valid: true, errors: [], reviewDigest, profile: {} } };
+  const app = await fixture("/source/profile", responses);
+  try {
+    await until(() => !app.container.querySelector('[aria-busy="true"]'), "Profile did not load");
+    await click("Validate");
+    await until(() => app.container.querySelector('[data-testid="validation"]')?.textContent === "true", "Validation did not finish");
+    await click("Publish");
+    await until(() => app.mutations.some(({ path }) => path === "/api/publications"), "Publication did not start");
+    assert.deepEqual(app.mutations.find(({ path }) => path === "/api/publications")?.body, { reviewer: "Alice", reviewDigest });
   } finally { await app.close(); }
 });
 

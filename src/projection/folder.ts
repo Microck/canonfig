@@ -880,8 +880,8 @@ export const decodeFolderConfig = (path: string, text: string): FolderConfig => 
 export const decodeLocalConfig = (path: string, text: string): typeof LocalJsonc.Type => decodeJsonc(path, text, LocalJsonc);
 
 /** Every regular file under one of the folder's directories, relative to it, `/`-separated, unread. */
-export const listFolderFiles = (folder: string, directory: string): Promise<ReadonlyArray<ListedFile>> =>
-  listFiles(diskSource(folder), join(folder, directory));
+export const listFolderFiles = (folder: string, directory: string, files?: ReadonlyMap<string, FolderFile>): Promise<ReadonlyArray<ListedFile>> =>
+  listFiles(files === undefined ? diskSource(folder) : mirrorSource(folder, files, true), join(folder, directory));
 
 /** The authoring allowlist: the only top-level entries of `~/.canonfig/` that are published or mirrored. */
 export const AUTHORING_ENTRIES = ["canonfig.jsonc", "AGENTS.md", "rules", "skills", "agents", "commands", "hooks", "files"] as const;
@@ -1035,8 +1035,8 @@ const loadAuthored = async <File extends { readonly executable: boolean }>(
 };
 
 /** Load and check the folder's authored items, ignoring `local/`, with skill and resource files listed but unread. */
-export const loadAuthoredFolder = (folder: string): Promise<AuthoredFolder<ListedFile>> =>
-  loadAuthored(diskSource(folder), listing);
+export const loadAuthoredFolder = (folder: string, files?: ReadonlyMap<string, FolderFile>): Promise<AuthoredFolder<ListedFile>> =>
+  loadAuthored(files === undefined ? diskSource(folder) : mirrorSource(folder, files, true), listing);
 
 /** Instructions followed by this machine's own: `local/AGENTS.md` after the published text. */
 const withLocalInstructions = (published: string | undefined, local: string | undefined): string | undefined => {

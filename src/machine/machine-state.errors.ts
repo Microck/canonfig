@@ -142,7 +142,18 @@ export class UnconfirmedPublicationError extends TaggedError<UnconfirmedPublicat
   },
 ) {}
 
+/** A mutation ran, but its anchored directory changed before it could be confirmed. */
+export class AnchoredMutationUnconfirmedError extends TaggedError<AnchoredMutationUnconfirmedError>()(
+  "AnchoredMutationUnconfirmedError",
+  {
+    path: Schema.String,
+    operation: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
 export type MachineStateError =
+  | AnchoredMutationUnconfirmedError
   | InvalidMachinePathError
   | MachineFilesystemError
   | UnconfirmedPublicationError
