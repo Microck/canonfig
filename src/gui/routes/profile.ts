@@ -4,14 +4,12 @@ import { CliCommandFailure, SourceCommands } from "../../cli/source-commands.ts"
 import { commandFailureExitCode } from "../../cli/command-output.ts";
 import type { CliFailureCategory } from "../../cli/exit-codes.ts";
 import { ProfileRevisionId } from "../../domain/brand.ts";
-import { validateMachineProfile } from "../../domain/profile.ts";
 import type { ProfileRevision } from "../../domain/profile.ts";
 import { StateRepository } from "../../state/state-repository.service.ts";
 import { MachineState } from "../../machine/machine-state.service.ts";
 import { asJson } from "../../profile/profile-codec.ts";
-import { folderProfile } from "../../profile/publication.ts";
-import { publicationCredentialIssue } from "../../profile/publication-credentials.ts";
-import { InvalidPublicationInputError } from "../../profile/profile-catalog.errors.ts";
+import { compileFolder } from "../../profile/publication.ts";
+import { InvalidPublicationResourcesError } from "../../profile/profile-catalog.errors.ts";
 import { decodeFolderConfig } from "../../projection/folder.ts";
 import { readAuthoringItems, writeAuthoringItems, editAuthoringConfig, type AuthoringChange } from "../../projection/authoring.ts";
 import { emptyModel } from "../../projection/detect.ts";
@@ -93,19 +91,25 @@ export const profileRoutes = Effect.gen(function*() {
     mutationRoute("PUT", profileEndpoints.config, GuiProfileConfigWrite, (input) => target.pipe(Effect.flatMap((location) => editAuthoringConfig(location, input.expectedDigest, input.edits.map((edit) => ({ path: edit.path, value: edit.value })), changesFrom(input.changes)).pipe(Effect.provideService(MachineState, machine), Effect.mapError(commandFailure))), Effect.as({ saved: true })), 200, { maximumBodyBytes: maximumAuthoringBodyBytes }),
     mutationRoute("POST", profileEndpoints.scan, EmptyBody, () => target.pipe(Effect.andThen(source.scan({ write: false })), Effect.map(asJson))),
     mutationRoute("POST", profileEndpoints.acceptScan, GuiScanAcceptance, (input) => target.pipe(Effect.andThen(source.scan({ write: true, reviewDigest: input.reviewDigest })), Effect.map(asJson))),
-    mutationRoute("POST", profileEndpoints.validate, EmptyBody, () => Effect.gen(function*() {
-      const location = yield* target;
-      const profile = yield* Effect.tryPromise({ try: () => folderProfile(location.folder), catch: (error) => commandFailure(new InvalidPublicationInputError({ reason: String(error) })) });
-      const errors = validateMachineProfile(profile).map((error) => JSON.stringify(error));
-      const credentialIssue = publicationCredentialIssue(profile.resources);
-      if (credentialIssue !== undefined) errors.push(credentialIssue);
-      return { valid: errors.length === 0, errors, profile: asJson(profile) };
-    })),
+    // Validation compiles the folder exactly as publication does. Any refusal
+    // is a finding; a valid folder returns the digest a publication must name.
+    mutationRoute("POST", profileEndpoints.validate, EmptyBody, () => target.pipe(
+      Effect.flatMap((location) => compileFolder(location.folder)),
+      Effect.map(({ profile, encoded }) => ({ valid: true, errors: [], reviewDigest: encoded.digest, profile: asJson(profile) })),
+      Effect.catch((error) => error instanceof CliCommandFailure
+        ? Effect.fail(error)
+        : Effect.succeed({
+          valid: false,
+          errors: error instanceof InvalidPublicationResourcesError ? error.errors.map((finding) => JSON.stringify(finding)) : [commandFailure(error).message],
+          reviewDigest: null,
+          profile: null,
+        })),
+    )),
     mutationRoute("POST", profileEndpoints.publications, GuiPublicationRequest, (input) => Effect.gen(function*() {
       yield* target;
       // There is no in-progress publication journal. After commit, read this ticket's exact persisted revision.
       let revisionId: typeof ProfileRevisionId.Type | undefined;
-      const publish = source.publish(input).pipe(
+      const publish = source.publish({ reviewer: input.reviewer, reviewedDigest: input.reviewDigest }).pipe(
         Effect.map(asJson),
         Effect.tap((revision) => Schema.decodeUnknownEffect(Schema.Struct({ id: ProfileRevisionId }))(revision).pipe(
           Effect.mapError((error) => new CliCommandFailure({ category: "internal", message: error.message })),

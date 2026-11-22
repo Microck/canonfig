@@ -67,6 +67,13 @@ export interface PublishFolderInput {
   readonly folder: string;
   /** Who reviewed the folder content being published. */
   readonly reviewer: string;
+  /**
+   * The compiled content digest the reviewer approved, from `compileFolder`.
+   * When set, publication refuses any other content, so an edit made after
+   * the review needs a new review. The CLI leaves it unset: its reviewer
+   * vouches for the folder as it is when the command runs.
+   */
+  readonly reviewedDigest?: string | undefined;
   readonly publishedAt: string;
 }
 
@@ -449,6 +456,43 @@ const resolveResourceSources = (
         }),
   });
 
+/**
+ * Compile the Canonical Folder exactly as publication would, without signing
+ * or storing anything. Its `encoded.digest` is the revision digest the same
+ * content publishes under, so a review can name it and `publish` can refuse
+ * anything else.
+ */
+export const compileFolder = (folder: string) =>
+  Effect.gen(function*() {
+    const profile = yield* Effect.tryPromise({
+      try: () => folderProfile(folder),
+      catch: (cause) => new InvalidPublicationInputError({
+        reason: cause instanceof CanonicalFolderError
+          ? `${cause.path} ${cause.message}`
+          : `the Canonical Folder could not be read: ${String(cause)}`,
+      }),
+    });
+    const sources = yield* resolveResourceSources(profile.resources, folder);
+    const errors = validateMachineProfile(profile);
+    if (errors.length > 0) {
+      return yield* Effect.fail(new InvalidPublicationResourcesError(errors));
+    }
+    const credentialIssue = publicationCredentialIssue(profile.resources);
+    if (credentialIssue !== undefined) {
+      return yield* new InvalidPublicationInputError({ reason: credentialIssue });
+    }
+    const encoded = yield* Effect.try({
+      try: () => compileProfileCandidate(profile, sources),
+      catch: (cause) =>
+        cause instanceof ProfileContractError
+          ? new InvalidPublicationResourcesError(cause.errors)
+          : new InvalidPublicationInputError({
+            reason: cause instanceof Error ? cause.message : `resource bytes could not be encoded: ${String(cause)}`,
+          }),
+    });
+    return { profile, encoded };
+  });
+
 interface UnsignedRevision {
   readonly id: ProfileRevision["id"];
   readonly profileId: ProfileRevision["profileId"];
@@ -486,14 +530,7 @@ export const makePublication = (
         try: () => Schema.decodeUnknownSync(Timestamp)(input.publishedAt),
         catch: (cause) => new InvalidPublicationInputError({ reason: `invalid publication timestamp: ${String(cause)}` }),
       });
-      const profile = yield* Effect.tryPromise({
-        try: () => folderProfile(input.folder),
-        catch: (cause) => new InvalidPublicationInputError({
-          reason: cause instanceof CanonicalFolderError
-            ? `${cause.path} ${cause.message}`
-            : `the Canonical Folder could not be read: ${String(cause)}`,
-        }),
-      });
+      const { profile, encoded } = yield* compileFolder(input.folder);
       // One Source publishes one Machine Profile. Followers select it by id,
       // so a second id would leave them on the first.
       const published = (yield* repository.listRevisions()).find((revision) => revision.profileId !== profile.id);
@@ -502,25 +539,14 @@ export const makePublication = (
           reason: `this Source publishes profile ${published.profileId}; set "profile.id" in canonfig.jsonc back to ${published.profileId}`,
         });
       }
-      const sources = yield* resolveResourceSources(profile.resources, input.folder);
-      const errors = validateMachineProfile(profile);
-      if (errors.length > 0) {
-        return yield* Effect.fail(new InvalidPublicationResourcesError(errors));
+      // The approval below names this digest, and storing the blobs rejects a
+      // file that no longer matches it, so checking it here binds the review
+      // to exactly the content the revision carries.
+      if (input.reviewedDigest !== undefined && input.reviewedDigest !== encoded.digest) {
+        return yield* new InvalidPublicationInputError({
+          reason: "the Canonical Folder changed after it was validated. Validate it again and review the changes before publishing",
+        });
       }
-      const credentialIssue = publicationCredentialIssue(profile.resources);
-      if (credentialIssue !== undefined) {
-        return yield* new InvalidPublicationInputError({ reason: credentialIssue });
-      }
-
-      const encoded = yield* Effect.try({
-        try: () => compileProfileCandidate(profile, sources),
-        catch: (cause) =>
-          cause instanceof ProfileContractError
-            ? new InvalidPublicationResourcesError(cause.errors)
-            : new InvalidPublicationInputError({
-              reason: cause instanceof Error ? cause.message : `resource bytes could not be encoded: ${String(cause)}`,
-            }),
-      });
       const canonicalBytes = encoded.canonicalBytes;
       const digest = encoded.digest;
       const approval = {

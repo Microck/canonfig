@@ -26,7 +26,7 @@ import { sourceTextEnd } from "../src/domain/text-composition.ts";
 import { InvalidPublicationInputError, PublicationSourceError } from "../src/profile/profile-catalog.errors.ts";
 import { profileCatalogLayer } from "../src/profile/profile-catalog.layer.ts";
 import { ProfileCatalog } from "../src/profile/profile-catalog.service.ts";
-import type { ProfileRevisionSigner } from "../src/profile/publication.ts";
+import { compileFolder, type ProfileRevisionSigner } from "../src/profile/publication.ts";
 import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
 
 /**
@@ -359,6 +359,32 @@ describe("publishing the Canonical Folder", () => {
     expect(restored.sequence).toBe(3);
     expect(restored.digest).toBe(first.digest);
     expect(restored.id).toBe(`${first.id}:3`);
+  });
+
+  it("publishes only the content a review named", async () => {
+    const fixture = workspace();
+    const signing = makeSigner();
+    const review = () => Effect.runPromise(compileFolder(fixture.folder)).then(({ encoded }) => encoded.digest);
+    const publishReviewed = (reviewedDigest: string) => Effect.runPromise(Effect.gen(function*() {
+      const catalog = yield* ProfileCatalog;
+      return yield* Effect.result(catalog.publish({ folder: fixture.folder, reviewer: "reviewer@example.test", reviewedDigest, publishedAt: "2026-11-03T12:00:00Z" }));
+    }).pipe(Effect.provide(profileCatalogLayer(signing.signer)), Effect.provide(stateRepositoryLayer(fixture.database))));
+
+    const reviewed = await review();
+    write(join(fixture.folder, "AGENTS.md"), "# Edited after review\n");
+    const stale = await publishReviewed(reviewed);
+    expect(stale._tag).toBe("Failure");
+    expect(String(stale._tag === "Failure" && stale.failure.message)).toContain("changed after it was validated");
+    expect(persisted(fixture.database)).toEqual({ revisions: 0, blobs: 0, approvals: 0 });
+
+    const current = await review();
+    const published = await publishReviewed(current);
+    expect(published._tag).toBe("Success");
+    const revision = published._tag === "Success" ? published.success : undefined;
+    expect(revision?.digest).toBe(current);
+    expect(revision?.canonicalBytes).toContain(createHash("sha256").update("# Edited after review\n").digest("hex"));
+    const approval = new DatabaseSync(fixture.database).prepare("SELECT proposal_digest AS digest FROM revision_approvals").get();
+    expect(approval).toEqual({ digest: current });
   });
 
   it("keeps one profile per Source", async () => {
