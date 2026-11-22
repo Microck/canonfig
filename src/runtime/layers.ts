@@ -98,17 +98,16 @@ import {
   clientReviewSteps,
 } from "../synchronization/client-review.ts";
 import {
-  abandonFollowerRun,
-  recoverFollower,
+  abandonFollowerRunUnderLock,
+  recoverFollowerUnderLock,
   synchronizeFollower,
 } from "../synchronization/follower-orchestration.ts";
 import {
-  abandonLocal,
+  abandonLocalUnderLock,
   harnessesLocal,
-  hasOpenLocalRun,
   importLocal,
   overlaysLocal,
-  recoverLocal,
+  recoverLocalUnderLock,
   restoreLocal,
   synchronizeLocal,
 } from "../projection/sync.ts";
@@ -874,11 +873,28 @@ const followerCommandsLayer = (
         };
       });
 
-    // Give unfinished local runs priority over follower recovery.
-    const useLocalRecovery = Effect.gen(function*() {
-      if (yield* hasOpenLocalRun) return true;
-      return (yield* repository.getFollowerSynchronizationConfiguration()) === undefined;
+    // Select the journal owner under the same lock as the recovery operation.
+    const recoveryFollower = Effect.gen(function*() {
+      const open = yield* repository.listOpenRunFollowers();
+      if (open.includes(localProjectionFollower)) return localProjectionFollower;
+      const configuration = yield* repository.getFollowerSynchronizationConfiguration();
+      const current = configuration?.follower.id;
+      if (current !== undefined && open.includes(current)) return current;
+      if (open.length > 1) return yield* new CliCommandFailure({
+        category: "conflict-or-drift", message: "multiple interrupted Follower runs exist and none belongs to this enrollment",
+      });
+      return open[0] ?? current ?? localProjectionFollower;
     });
+
+    const requireNoFollowerRun = (follower: FollowerSynchronizationConfiguration["follower"]["id"]) =>
+      Effect.gen(function*() {
+        if ((yield* mapFailure(repository.loadOpenRunIdentity(follower))) !== undefined) {
+          return yield* new CliCommandFailure({
+            category: "conflict-or-drift",
+            message: "this Follower has an interrupted sync; run 'canonfig recover' or 'canonfig abandon' before changing enrollment",
+          });
+        }
+      });
 
     const service: FollowerCommandsService = {
       enroll: (input) =>
@@ -899,6 +915,7 @@ const followerCommandsLayer = (
             let existing = yield* mapFailure(
               repository.getFollowerSynchronizationConfiguration(),
             );
+            if (existing !== undefined) yield* requireNoFollowerRun(existing.follower.id);
             yield* recoverStagedCredentials;
             if (existing !== undefined && existing.lifecycle._tag !== "Active") {
               const finished = yield* finishEnrollment(existing);
@@ -1141,6 +1158,7 @@ const followerCommandsLayer = (
               detail: "this machine is not enrolled; nothing was removed",
             });
           }
+          yield* requireNoFollowerRun(configuration.follower.id);
           yield* recoverStagedCredentials;
           if (configuration.lifecycle._tag !== "Unenrolling") {
             const state = yield* mapFailure(repository.loadState(configuration.follower.id));
@@ -1299,25 +1317,27 @@ const followerCommandsLayer = (
         }));
       },
       abandon: () =>
-        mapFailure(Effect.gen(function*() {
-          return (yield* useLocalRecovery)
-            ? yield* abandonLocal(statePath)
-            : yield* abandonFollowerRun(statePath);
+        mapFailure(withRunLock(statePath, "abandon", Effect.gen(function*() {
+          const follower = yield* recoveryFollower;
+          return follower === localProjectionFollower
+            ? yield* abandonLocalUnderLock(statePath)
+            : yield* abandonFollowerRunUnderLock(statePath, follower);
         }).pipe(
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),
-        )).pipe(Effect.map(payload)),
+        ))).pipe(Effect.map(payload)),
       recover: () =>
-        mapFailure(Effect.gen(function*() {
-          return (yield* useLocalRecovery)
-            ? yield* recoverLocal(statePath)
-            : yield* recoverFollower(statePath);
+        mapFailure(withRunLock(statePath, "recover", Effect.gen(function*() {
+          const follower = yield* recoveryFollower;
+          return follower === localProjectionFollower
+            ? yield* recoverLocalUnderLock(statePath)
+            : yield* recoverFollowerUnderLock(statePath, follower);
         }).pipe(
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),
           Effect.provideService(Synchronization, synchronization),
           Effect.provideService(ScheduleManager, schedules),
-        )).pipe(Effect.flatMap(outcomePayload)),
+        ))).pipe(Effect.flatMap(outcomePayload)),
       // A restore belongs to whoever projected the surfaces: the follower
       // identity once enrolled (enrollment re-keys local records), else this
       // machine's local projection.

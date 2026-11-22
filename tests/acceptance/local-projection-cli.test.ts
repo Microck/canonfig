@@ -87,6 +87,32 @@ describe("local projection CLI", () => {
     }
   }, 120_000);
 
+  it("finds an interrupted Follower run after enrollment is gone", () => {
+    const home = folderHome();
+    const applied = invoke(home, ["--json", "sync", "--apply"]);
+    expect(applied.status, applied.stdout + applied.stderr).toBe(0);
+
+    const database = new DatabaseSync(join(home, ".canonfig", "state.sqlite"));
+    try {
+      database.prepare("DELETE FROM deployment_receipts").run();
+      database.prepare(`
+        UPDATE synchronization_runs
+        SET follower_id = 'retired-follower', phase = 'Applying', outcome_json = NULL, completed_at = NULL
+      `).run();
+      const recover = invoke(home, ["--json", "recover"]);
+      expect(recover.status).not.toBe(0);
+      expect(json(recover).message).toContain("cannot be resumed");
+      expect(json(recover).message).toContain("Run 'canonfig abandon'");
+      expect(database.prepare("SELECT phase FROM synchronization_runs").get()).toMatchObject({ phase: "Applying" });
+
+      const abandon = invoke(home, ["--json", "abandon"]);
+      expect(abandon.status, abandon.stdout + abandon.stderr).toBe(0);
+      expect(database.prepare("SELECT phase FROM synchronization_runs").get()).toMatchObject({ phase: "Complete" });
+    } finally {
+      database.close();
+    }
+  });
+
   it("reports the creating build before decoding a foreign local run", () => {
     const home = folderHome();
     const applied = invoke(home, ["--json", "sync", "--apply"]);

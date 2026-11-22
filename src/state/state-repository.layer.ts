@@ -2814,6 +2814,14 @@ const makeRepository = Effect.gen(function*() {
     },
   );
 
+  const listOpenRunFollowers = Effect.fn("StateRepository.listOpenRunFollowers")(function*() {
+    const rows = yield* sql`
+      SELECT follower_id FROM synchronization_runs WHERE phase != 'Complete'
+    `.pipe(Effect.mapError(sqlError("list open run followers")));
+    const decoded = yield* decodeRows(Schema.Struct({ follower_id: FollowerId }), rows, "open run followers", "all");
+    return decoded.map(({ follower_id }) => follower_id);
+  });
+
   /**
    * What the still-open run of this follower knows about the build that
    * created it. An undefined answer means no open run: nothing blocks an
@@ -3016,6 +3024,7 @@ const makeRepository = Effect.gen(function*() {
     loadRevisionApproval,
     loadRunEvidence,
     loadRecovery,
+    listOpenRunFollowers,
     loadOpenRunIdentity,
     loadState,
   });
