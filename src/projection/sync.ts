@@ -814,7 +814,7 @@ export const finishAbandonedProjection = (statePath: string, recovery: RecoveryS
   });
 
 /** `canonfig recover` for an interrupted local run. */
-export const recoverLocal = Effect.fn("LocalProjection.recover")(function*(statePath: string) {
+export const recoverLocalUnderLock = Effect.fn("LocalProjection.recover")(function*(statePath: string) {
   const repository = yield* StateRepository;
   const synchronization = yield* Synchronization;
   yield* assertUpgradeGate(localProjectionFollower);
@@ -833,14 +833,17 @@ export const recoverLocal = Effect.fn("LocalProjection.recover")(function*(state
   const outcome = yield* synchronization.recover({ follower: localProjectionFollower, revision, artifacts });
   yield* finishProjectionRun(statePath, localProjectionFollower, recovery.run.id, outcome, revision);
   return { run: recovery.run.id, origin: revision.origin, outcome };
-}, (effect, statePath) => withRunLock(statePath, "recover", effect));
+});
+
+export const recoverLocal = (statePath: string) =>
+  withRunLock(statePath, "recover", recoverLocalUnderLock(statePath));
 
 /**
  * `canonfig abandon` for an interrupted local run: close it without rollback.
  * What it applied stays applied, with its takeovers and snapshot; takeovers
  * of surfaces it never applied are released, as after an early stop.
  */
-export const abandonLocal = Effect.fn("LocalProjection.abandon")(function*(statePath: string) {
+export const abandonLocalUnderLock = Effect.fn("LocalProjection.abandon")(function*(statePath: string) {
   const repository = yield* StateRepository;
   yield* assertUpgradeGate(localProjectionFollower);
   const recovery = yield* repository.loadRecovery(localProjectionFollower);
@@ -849,4 +852,7 @@ export const abandonLocal = Effect.fn("LocalProjection.abandon")(function*(state
   }
   yield* finishAbandonedProjection(statePath, recovery);
   return { run: recovery.run.id, revision: recovery.run.revision, abandoned: true as const };
-}, (effect, statePath) => withRunLock(statePath, "abandon", effect));
+});
+
+export const abandonLocal = (statePath: string) =>
+  withRunLock(statePath, "abandon", abandonLocalUnderLock(statePath));

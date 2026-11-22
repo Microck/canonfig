@@ -52,7 +52,7 @@ const folderHome = (): string => {
 };
 
 describe("local projection CLI", () => {
-  it("plans, applies, and restores a takeover", () => {
+  it("plans, applies, and restores a takeover with no recovery needed afterward", () => {
     const home = folderHome();
     const plan = invoke(home, ["--json", "sync", "--plan"]);
     expect(plan.status, plan.stdout + plan.stderr).toBe(0);
@@ -76,7 +76,42 @@ describe("local projection CLI", () => {
     expect(readFileSync(join(home, ".codex", "AGENTS.md"), "utf8")).toBe("my old codex instructions\n");
     expect(readFileSync(join(home, ".codex", "auth.json"), "utf8")).toBe("{\"token\":\"never touch\"}\n");
     expect(readFileSync(join(home, ".canonfig", "local", "local.jsonc"), "utf8")).toContain("codex");
+
+    for (const [command, message] of [
+      ["recover", "no interrupted local run is waiting for recovery"],
+      ["abandon", "no interrupted local run is open"],
+    ] as const) {
+      const result = invoke(home, ["--json", command]);
+      expect(result.status, result.stdout + result.stderr).toBe(2);
+      expect(json(result).message).toContain(message);
+    }
   }, 120_000);
+
+  it("finds an interrupted Follower run after enrollment is gone", () => {
+    const home = folderHome();
+    const applied = invoke(home, ["--json", "sync", "--apply"]);
+    expect(applied.status, applied.stdout + applied.stderr).toBe(0);
+
+    const database = new DatabaseSync(join(home, ".canonfig", "state.sqlite"));
+    try {
+      database.prepare("DELETE FROM deployment_receipts").run();
+      database.prepare(`
+        UPDATE synchronization_runs
+        SET follower_id = 'retired-follower', phase = 'Applying', outcome_json = NULL, completed_at = NULL
+      `).run();
+      const recover = invoke(home, ["--json", "recover"]);
+      expect(recover.status).not.toBe(0);
+      expect(json(recover).message).toContain("cannot be resumed");
+      expect(json(recover).message).toContain("Run 'canonfig abandon'");
+      expect(database.prepare("SELECT phase FROM synchronization_runs").get()).toMatchObject({ phase: "Applying" });
+
+      const abandon = invoke(home, ["--json", "abandon"]);
+      expect(abandon.status, abandon.stdout + abandon.stderr).toBe(0);
+      expect(database.prepare("SELECT phase FROM synchronization_runs").get()).toMatchObject({ phase: "Complete" });
+    } finally {
+      database.close();
+    }
+  });
 
   it("reports the creating build before decoding a foreign local run", () => {
     const home = folderHome();

@@ -226,6 +226,7 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly loadRecovery: (
     follower: FollowerId,
   ) => Effect.Effect<RecoveryState | undefined, StateRepositoryError>;
+  readonly listOpenRunFollowers: () => Effect.Effect<ReadonlyArray<FollowerId>, StateRepositoryError>;
   readonly loadOpenRunIdentity: (
     follower: FollowerId,
   ) => Effect.Effect<{
