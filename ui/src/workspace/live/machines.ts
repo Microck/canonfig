@@ -49,6 +49,7 @@ export function useLiveMachines(backend: WorkspaceBackend, session: GuiSession, 
     groups: [...enrollment.data.follower.groups],
     note: enrollment.data.follower.revoked ? "Revoked" : enrollment.data.pending ? "Enrollment pending" : "Enrolled",
   } : undefined;
+  const now = Date.now();
   return {
     enrollmentBackend: backend,
     ...(enrollment.data ? { enrollment: enrollment.data } : {}),
@@ -77,10 +78,12 @@ export function useLiveMachines(backend: WorkspaceBackend, session: GuiSession, 
       reload();
       return invitation;
     },
-    invitations: (inventory.data?.invitations ?? []).filter((invitation) => !invitation.consumed).map((invitation, index) => ({
-      id: `${invitation.endpoint}:${invitation.expiresAt}:${index}`,
-      file: invitation.endpoint, name: "Single-use invitation", groups: [...invitation.groups], expires: invitation.expiresAt,
-    })),
+    invitations: (inventory.data?.invitations ?? [])
+      .filter((invitation) => !invitation.consumed && Date.parse(invitation.expiresAt) > now)
+      .map((invitation, index) => ({
+        id: `${invitation.endpoint}:${invitation.expiresAt}:${index}`,
+        file: invitation.endpoint, name: "Single-use invitation", groups: [...invitation.groups], expires: invitation.expiresAt,
+      })),
     syncing: [], changeGroups, setChangeGroups,
   };
 }

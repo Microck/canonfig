@@ -136,6 +136,39 @@ it("shows stored enrollment evidence without remote convergence claims", async (
   } finally { await app.close(); }
 });
 
+it("Machines shows only unexpired, unused invitations as waiting", async () => {
+  const valid = {
+    endpoint: "https://valid.example",
+    groups: ["work"],
+    expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    consumed: false,
+  };
+  const app = await fixture((path, _body, outgoing) => {
+    if (path !== "/api/machines") return false;
+    outgoing.end(JSON.stringify({
+      followers: [follower],
+      invitations: [
+        { ...valid, endpoint: "https://expired.example", expiresAt: "2000-01-01T00:00:00Z" },
+        { ...valid, endpoint: "https://consumed.example", consumed: true },
+        valid,
+      ],
+      health: {},
+    }));
+    return true;
+  });
+  try {
+    const heading = [...document.querySelectorAll("section")].find(
+      (section) => section.textContent?.includes("Invitations waiting to be used"),
+    );
+    assert.ok(heading);
+    const waiting = heading.textContent ?? "";
+    assert.ok(waiting.includes(valid.endpoint));
+    assert.ok(waiting.includes(`Expires ${valid.expiresAt}`));
+    assert.ok(!waiting.includes("https://expired.example"));
+    assert.ok(!waiting.includes("https://consumed.example"));
+  } finally { await app.close(); }
+});
+
 it("group invitation retains its submitted follower after failure, retry and inventory removal", async () => {
   let attempts = 0;
   const submitted: unknown[] = [];
