@@ -165,19 +165,29 @@ it("refreshes the canary inventory and excludes pending and revoked followers", 
   };
   const app = await fixture("/source/settings/version", responses);
   const options = () => Array.from(app.container.querySelectorAll("#fleet-canary ~ select option"), (option) => option.textContent).filter(Boolean);
+  const initial = Promise.withResolvers<void>();
+  const refreshed = Promise.withResolvers<void>();
+  const updateInventory = () => {
+    const names = options();
+    if (names.includes(follower.name)) initial.resolve();
+    if (names.includes("New laptop")) refreshed.resolve();
+  };
+  const inventoryObserver = new MutationObserver(updateInventory);
+  inventoryObserver.observe(app.container, { subtree: true, childList: true });
+  updateInventory();
   try {
-    await until(() => options().includes(follower.name), "Initial canary was not offered");
+    await initial.promise;
     assert.deepEqual(options(), [follower.name]);
     responses["/api/machines"].followers = [
       { ...follower, revoked: true },
       { ...follower, id: "fresh-follower", name: "New laptop" },
     ];
     await click("Refresh followers");
-    await until(() => options().includes("New laptop"), "Refresh did not load fresh canary choices");
+    await refreshed.promise;
     assert.deepEqual(options(), ["New laptop"]);
     assert.equal(app.requests.filter((entry) => entry === "GET /api/machines").length, 2);
     assert.deepEqual(app.mutations, []);
-  } finally { await app.close(); }
+  } finally { inventoryObserver.disconnect(); await app.close(); }
 });
 
 for (const path of ["/source/secrets", "/source/profile/groups"]) {

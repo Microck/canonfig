@@ -37,12 +37,18 @@ it("binds admissions to the enrolled identity, advances only on fresh target-ver
     await runtime.runPromise(Effect.flatMap(SourceCommands, (commands) => commands.initialize()));
     writeFileSync(join(folder, "canonfig.jsonc"), JSON.stringify({ version: 1, profile: { id: "fleet", name: "Fleet" }, harnesses: [] }));
     await runtime.runPromise(Effect.flatMap(SourceCommands, (commands) => commands.publish({ reviewer: "fleet-test" })));
+    let releaseGate: { readonly entered: () => void; readonly done: Promise<void> } | undefined;
     const { enrollment, controller, revision } = await runtime.runPromise(Effect.gen(function*() {
       const enrollment = yield* Enrollment;
       const repository = yield* StateRepository;
       return { enrollment, revision: (yield* repository.listRevisions())[0]!, controller: fleetSource({
         repository, credentials: enrollment.sourceCredentials, authenticate: enrollment.authenticate,
-        release: async (version) => ({ version, integrity: `sha512-${Buffer.alloc(64, 1).toString("base64")}`, tarball: "fixture-only" }),
+        release: async (version) => {
+          const gate = releaseGate;
+          gate?.entered();
+          await gate?.done;
+          return { version, integrity: `sha512-${Buffer.alloc(64, 1).toString("base64")}`, tarball: "fixture-only" };
+        },
       }) };
     }));
     const enroll = async (name: string) => {
@@ -51,6 +57,23 @@ it("binds admissions to the enrolled identity, advances only on fresh target-ver
       await runtime.runPromise(enrollment.finalizeFollower(follower.credential));
       return follower;
     };
+    const revoked = await enroll("revoked before rollout");
+    const verifying = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    releaseGate = { entered: verifying.resolve, done: release.promise };
+    const startWhileVerifying = runtime.runPromise(Effect.result(controller.startFleetUpdate({ canary: revoked.follower.id, apply: true })));
+    try {
+      await verifying.promise;
+      await runtime.runPromise(enrollment.revokeFollower(revoked.follower.id));
+    } finally {
+      release.resolve();
+      releaseGate = undefined;
+    }
+    expect(await startWhileVerifying).toMatchObject({
+      _tag: "Failure", failure: { message: "Choose an active enrolled follower as the canary" },
+    });
+    expect(await runtime.runPromise(controller.fleetStatus())).toBeNull();
+
     const canary = await enroll("canary");
     const second = await enroll("second");
     await runtime.runPromise(controller.startFleetUpdate({ canary: canary.follower.id, apply: false }));

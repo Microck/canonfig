@@ -1065,7 +1065,7 @@ function FleetUpdates() {
           <SelectContent>{eligibleCanaries.map((follower) => <SelectItem key={follower.id} value={follower.id}>{follower.name}</SelectItem>)}</SelectContent>
         </Select>
       </Field>
-      <Button type="submit" variant="primary" disabled={!selected || !canChoose}>Start Fleet Update…</Button>
+      <Button type="submit" variant="outline" disabled={!selected || !canChoose}>Start Fleet Update…</Button>
       <Button type="button" variant="outline" disabled={busy} onClick={fleet.reload}>Refresh followers</Button>
       {running && <Button type="button" variant="destructive" disabled={fleet.busy} onClick={() => setConfirmation({ kind: "stop" })}>Stop rollout…</Button>}
     </form>

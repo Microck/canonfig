@@ -131,9 +131,6 @@ export function fleetSource(dependencies: FleetSourceDependencies): FleetSource 
     fleetStatus,
     startFleetUpdate: (input) => operation(Effect.gen(function*() {
       const keys = yield* credentials();
-      const roster = (yield* repository.listEnrollmentFollowers()).filter((follower) => !follower.revoked && !follower.pending);
-      const canary = roster.find((follower) => follower.id === input.canary);
-      if (canary === undefined) return yield* failure({ message: "Choose an active enrolled follower as the canary" });
       const state = yield* repository.databaseFile();
       const cache = join(dirname(state), ".fleet-provenance");
       const release = yield* Effect.tryPromise({
@@ -145,6 +142,9 @@ export function fleetSource(dependencies: FleetSourceDependencies): FleetSource 
       return yield* mutate((path) => Effect.gen(function*() {
         const previous = yield* read(path);
         if (previous?.status === "running") return yield* failure({ message: "A Fleet Update is running. Stop it before starting another." });
+        const roster = (yield* repository.listEnrollmentFollowers()).filter((follower) => !follower.revoked && !follower.pending);
+        const canary = roster.find((follower) => follower.id === input.canary);
+        if (canary === undefined) return yield* failure({ message: "Choose an active enrolled follower as the canary" });
         const ordered = [canary, ...roster.filter((follower) => follower.id !== canary.id).sort((a, b) => a.id.localeCompare(b.id))];
         const rollout: FleetUpdate = {
           schema: "canonfig.fleet-update/v1", id: randomUUID(), sequence: (previous?.sequence ?? 0) + 1,
