@@ -1,4 +1,5 @@
 /// <reference types="node" />
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer, type ServerResponse } from "node:http";
@@ -625,7 +626,8 @@ it("a changed folder snapshot invalidates publication review evidence", async ()
 });
 
 it("publication names the digest its validation reviewed", async () => {
-  const responses: Record<string, unknown> = { ...sourceResponses(), "/api/profile/validate": { valid: true, errors: [], reviewDigest: "reviewed-digest", profile: {} } };
+  const reviewDigest = randomUUID();
+  const responses: Record<string, unknown> = { ...sourceResponses(), "/api/profile/validate": { valid: true, errors: [], reviewDigest, profile: {} } };
   const app = await fixture("/source/profile", responses);
   try {
     await until(() => !app.container.querySelector('[aria-busy="true"]'), "Profile did not load");
@@ -633,7 +635,7 @@ it("publication names the digest its validation reviewed", async () => {
     await until(() => app.container.querySelector('[data-testid="validation"]')?.textContent === "true", "Validation did not finish");
     await click("Publish");
     await until(() => app.mutations.some(({ path }) => path === "/api/publications"), "Publication did not start");
-    assert.deepEqual(app.mutations.find(({ path }) => path === "/api/publications")?.body, { reviewer: "Alice", reviewDigest: "reviewed-digest" });
+    assert.deepEqual(app.mutations.find(({ path }) => path === "/api/publications")?.body, { reviewer: "Alice", reviewDigest });
   } finally { await app.close(); }
 });
 

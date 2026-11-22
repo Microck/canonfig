@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { join } from "node:path";
 import { Effect, Schema } from "effect";
 import { CliCommandFailure, SourceCommands } from "../../cli/source-commands.ts";
@@ -17,7 +18,7 @@ import { rootContext } from "../../projection/plan.ts";
 import { projectionProfileMetadata } from "../../projection/layout-metadata.ts";
 import { CanonfigError } from "../../skills/errors.ts";
 import { listSkills, trackSkill, checkSkills, updateSkills, skillUpdateOperations } from "../../skills/manager.ts";
-import { GuiProfileConfigWrite, GuiProfileWrite, GuiPublicationRequest, GuiRevisionSelection, GuiScanAcceptance, GuiSkillSelection, GuiSkillTrack, GuiSkillUpdate, profileEndpoints } from "../contract/profile.ts";
+import { GuiProfileConfigWrite, GuiProfileValidationRequest, GuiProfileWrite, GuiPublicationRequest, GuiRevisionSelection, GuiScanAcceptance, GuiSkillSelection, GuiSkillTrack, GuiSkillUpdate, profileEndpoints } from "../contract/profile.ts";
 import { GuiOperations } from "../operations.ts";
 import { GuiQueries } from "../queries.ts";
 import { EmptyBody, commandFailure, maximumAuthoringBodyBytes, mutationRoute, queryRoute, type GuiRoute } from "../routing.ts";
@@ -93,9 +94,20 @@ export const profileRoutes = Effect.gen(function*() {
     mutationRoute("POST", profileEndpoints.acceptScan, GuiScanAcceptance, (input) => target.pipe(Effect.andThen(source.scan({ write: true, reviewDigest: input.reviewDigest })), Effect.map(asJson))),
     // Validation compiles the folder exactly as publication does. Any refusal
     // is a finding; a valid folder returns the digest a publication must name.
-    mutationRoute("POST", profileEndpoints.validate, EmptyBody, () => target.pipe(
-      Effect.flatMap((location) => compileFolder(location.folder)),
-      Effect.map(({ profile, encoded }) => ({ valid: true, errors: [], reviewDigest: encoded.digest, profile: asJson(profile) })),
+    mutationRoute("POST", profileEndpoints.validate, GuiProfileValidationRequest, ({ items }) => target.pipe(
+      Effect.flatMap((location) => Effect.gen(function*() {
+        const checkObservation = readAuthoringItems(location).pipe(
+          Effect.provideService(MachineState, machine),
+          Effect.mapError(commandFailure),
+          Effect.flatMap((observed) => isDeepStrictEqual(items, observed.map(({ path, digest }) => ({ path, digest })))
+            ? Effect.void
+            : Effect.fail(new CliCommandFailure({ category: "conflict-or-drift", message: "The Canonical Folder changed. Review the refreshed Profile items and validate again." }))),
+        );
+        yield* checkObservation;
+        const { profile, encoded } = yield* compileFolder(location.folder);
+        yield* checkObservation;
+        return { valid: true, errors: [], reviewDigest: encoded.digest, profile: asJson(profile) };
+      })),
       Effect.catch((error) => error instanceof CliCommandFailure
         ? Effect.fail(error)
         : Effect.succeed({
@@ -104,16 +116,25 @@ export const profileRoutes = Effect.gen(function*() {
           reviewDigest: null,
           profile: null,
         })),
-    )),
+      Effect.timeoutOrElse({ duration: "30 seconds", orElse: () => Effect.fail(new CliCommandFailure({
+        category: "transport", message: "Folder validation timed out. Retry once the files are available.",
+      })) }),
+    ), 200, { maximumBodyBytes: maximumAuthoringBodyBytes }),
     mutationRoute("POST", profileEndpoints.publications, GuiPublicationRequest, (input) => Effect.gen(function*() {
       yield* target;
       // There is no in-progress publication journal. After commit, read this ticket's exact persisted revision.
       let revisionId: typeof ProfileRevisionId.Type | undefined;
       const publish = source.publish({ reviewer: input.reviewer, reviewedDigest: input.reviewDigest }).pipe(
         Effect.map(asJson),
-        Effect.tap((revision) => Schema.decodeUnknownEffect(Schema.Struct({ id: ProfileRevisionId }))(revision).pipe(
+        Effect.flatMap((revision) => Schema.decodeUnknownEffect(Schema.Struct({ id: ProfileRevisionId }))(revision).pipe(
           Effect.mapError((error) => new CliCommandFailure({ category: "internal", message: error.message })),
-          Effect.tap(({ id }) => Effect.sync(() => { revisionId = id; })),
+          Effect.flatMap(({ id }) => {
+            revisionId = id;
+            return repository.loadRevisionApproval(id).pipe(
+              Effect.mapError(commandFailure),
+              Effect.map((approval) => asJson({ ...(revision as Record<string, Schema.Json>), retainedReviewer: approval && approval.reviewer !== input.reviewer ? approval.reviewer : null })),
+            );
+          }),
         )),
       );
       return yield* operations.start(publish, () => revisionId === undefined ? Effect.succeed(null) : source.inspectProfile(revisionId).pipe(Effect.map(asJson)));

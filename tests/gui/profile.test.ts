@@ -192,7 +192,8 @@ describe("profile GUI endpoints", () => {
     });
     expect(moreCategories.status, JSON.stringify(moreCategories.value)).toBe(200);
     expect((await gui.request("/api/profile/scan", "POST", {})).status).toBe(200);
-    const validate = async () => Schema.decodeUnknownSync(Schema.Struct({ valid: Schema.Literal(true), reviewDigest: Schema.String }))((await gui.request("/api/profile/validate", "POST", {})).value).reviewDigest;
+    const validationInput = async () => ({ items: (await gui.snapshot()).items.map(({ path, digest }) => ({ path, digest })) });
+    const validate = async () => Schema.decodeUnknownSync(Schema.Struct({ valid: Schema.Literal(true), reviewDigest: Schema.String }))((await gui.request("/api/profile/validate", "POST", await validationInput())).value).reviewDigest;
     const reviewDigest = await validate();
     expect((await gui.request("/api/publications", "POST", { reviewer: "GUI test" })).value).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
     const started = await gui.request("/api/publications", "POST", { reviewer: "GUI test", reviewDigest }); expect(started.status).toBe(202);
@@ -209,10 +210,15 @@ describe("profile GUI endpoints", () => {
     const inspected = await gui.request("/api/revisions/inspect", "POST", { revision: first.id });
     expect(inspected.status).toBe(200);
     expect(inspected.value).toMatchObject({ id: first.id, profileId: first.profileId, canonicalBytes: expect.any(String), signature: expect.any(String), resources: expect.any(Array), groups: expect.any(Array), approval: first.approval });
+    expect(await gui.operation("/api/publications", { reviewer: "Other reviewer", reviewDigest })).toMatchObject({
+      state: "succeeded", result: { id: first.id, retainedReviewer: "GUI test" },
+    });
+    const previousObservation = await validationInput();
     const instructions = (await gui.snapshot()).items.find((item) => item.path === "AGENTS.md")!;
     // An edit after validation needs a new review: the old digest is refused and nothing is published.
     const reviewedBeforeEdit = await validate();
     expect((await put("AGENTS.md", "# Instructions\nReview exact revision IDs.\n", instructions.digest)).status).toBe(200);
+    expect((await gui.request("/api/profile/validate", "POST", previousObservation)).value).toMatchObject({ category: "conflict-or-drift" });
     const stalePublication = await gui.operation("/api/publications", { reviewer: "Second reviewer", reviewDigest: reviewedBeforeEdit });
     expect(stalePublication).toMatchObject({ state: "failed", failure: { category: "usage-or-configuration", message: expect.stringContaining("changed after it was validated") } });
     expect(Schema.decodeUnknownSync(GuiRevisions)((await gui.request("/api/revisions")).value).revisions).toHaveLength(1);
@@ -441,7 +447,7 @@ if (args.includes("fetch")) {
     for (const path of ["/api/profile/items", "/api/revisions", "/api/skills"]) expect((await gui.request(path)).value).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
     expect((await gui.request("/api/profile/scan/accept", "POST", { reviewDigest: "reviewed", confirmAll: true })).value).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
     for (const [path, method, body] of [
-      ["/api/profile/items", "PUT", { changes: [] }], ["/api/profile/config", "PUT", { expectedDigest: null, edits: [], changes: [] }], ["/api/profile/scan", "POST", {}], ["/api/profile/validate", "POST", {}], ["/api/publications", "POST", { reviewer: "reviewer", reviewDigest: "reviewed" }], ["/api/revisions/inspect", "POST", { revision: "missing" }], ["/api/skills/track", "POST", { name: "review", source: "/missing", ref: "main", subdir: "." }], ["/api/skills/check", "POST", { names: [] }], ["/api/skills/update", "POST", { expected: [{ name: "review", path: "skills/review", previousCommit: "a", nextCommit: "b", previousDigest: "c", nextDigest: "d" }] }],
+      ["/api/profile/items", "PUT", { changes: [] }], ["/api/profile/config", "PUT", { expectedDigest: null, edits: [], changes: [] }], ["/api/profile/scan", "POST", {}], ["/api/profile/validate", "POST", { items: [] }], ["/api/publications", "POST", { reviewer: "reviewer", reviewDigest: "reviewed" }], ["/api/revisions/inspect", "POST", { revision: "missing" }], ["/api/skills/track", "POST", { name: "review", source: "/missing", ref: "main", subdir: "." }], ["/api/skills/check", "POST", { names: [] }], ["/api/skills/update", "POST", { expected: [{ name: "review", path: "skills/review", previousCommit: "a", nextCommit: "b", previousDigest: "c", nextDigest: "d" }] }],
     ] as const) expect((await gui.request(path, method, body)).value).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   }, 60_000);
 });

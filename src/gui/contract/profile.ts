@@ -56,8 +56,14 @@ export const GuiRevisions = Schema.Struct({ revisions: Schema.Array(Schema.Struc
 })) });
 export interface GuiRevisions extends Schema.Schema.Type<typeof GuiRevisions> {}
 /** A valid folder carries the digest of its compiled content, which a publication must name; an invalid one carries null. */
-export const GuiProfileValidation = Schema.Struct({ valid: Schema.Boolean, errors: Schema.Array(Schema.String), reviewDigest: Schema.NullOr(Schema.NonEmptyString), profile: Schema.Json });
-export interface GuiProfileValidation extends Schema.Schema.Type<typeof GuiProfileValidation> {}
+export const GuiProfileValidationRequest = Schema.Struct({ items: Schema.Array(Schema.Struct({
+  path: Schema.String, digest: Schema.NullOr(Schema.String),
+})) });
+export const GuiProfileValidation = Schema.Union([
+  Schema.Struct({ valid: Schema.Literal(true), errors: Schema.Array(Schema.String), reviewDigest: Schema.NonEmptyString, profile: Schema.Json }),
+  Schema.Struct({ valid: Schema.Literal(false), errors: Schema.Array(Schema.String), reviewDigest: Schema.Null, profile: Schema.Null }),
+]);
+export type GuiProfileValidation = Schema.Schema.Type<typeof GuiProfileValidation>;
 export const GuiSkillTrack = Schema.Struct({ name: Schema.NonEmptyString, source: Schema.NonEmptyString, ref: Schema.NonEmptyString, subdir: Schema.NonEmptyString });
 /** An empty check selection reads every tracked skill, matching the CLI. */
 export const GuiSkillSelection = Schema.Struct({ names: Schema.Array(Schema.NonEmptyString) });
