@@ -28,12 +28,15 @@ export function ArchiveExportButton({ onExport, disabled }: { onExport: (include
   </>;
 }
 
-type Submission = { input: typeof GuiArchiveImportInput.Type } & ({ kind: "preview" } | { kind: "apply"; sha256: string });
+type PreviewSubmission = { kind: "preview"; input: typeof GuiArchiveImportInput.Type };
+type ApplySubmission = { kind: "apply"; input: typeof GuiArchiveImportInput.Type; sha256: string };
+type Submission = PreviewSubmission | ApplySubmission;
 type ImportState =
   | { kind: "editing"; error?: GuiRequestError }
   | { kind: "reading" }
   | { kind: "running"; submission: Submission; ticket?: string }
-  | { kind: "lost"; submission: Submission; ticket?: string; error: GuiRequestError }
+  | { kind: "lost"; submission: Submission; ticket: string; error: GuiRequestError }
+  | { kind: "lost"; submission: ApplySubmission; ticket?: undefined; error: GuiRequestError }
   | { kind: "review"; submission: Submission; result: GuiArchiveImportResult }
   | { kind: "complete"; submission: Submission; result: GuiArchiveImportResult };
 
@@ -94,9 +97,16 @@ function ArchiveImportDialog({ backend, onClose, onImported }: { backend: Worksp
       setState(submission.kind === "preview" ? { kind: "review", submission, result: completed } : { kind: "complete", submission, result: completed });
     } catch (cause) {
       if (controller.signal.aborted) return;
-      // Only a non-2xx response confirms rejection. Transport or success-decoding failures may hide a started run.
-      if (!operationId && cause instanceof GuiRequestError && cause.httpStatus !== undefined && (cause.httpStatus < 200 || cause.httpStatus >= 300)) setState({ kind: "editing", error: cause });
-      else setState({ kind: "lost", submission, ...(operationId ? { ticket: operationId } : {}), error: requestError(cause) });
+      const failure = requestError(cause);
+      if (operationId) {
+        setState({ kind: "lost", submission, ticket: operationId, error: failure });
+        return;
+      }
+      // Preview is read-only and cannot write the archive, so a lost start response returns to editing.
+      // For apply, only a non-2xx response confirms rejection; transport or success-decoding failures may hide a started run.
+      const rejected = cause instanceof GuiRequestError && cause.httpStatus !== undefined && (cause.httpStatus < 200 || cause.httpStatus >= 300);
+      if (submission.kind === "preview" || rejected) setState({ kind: "editing", error: failure });
+      else setState({ kind: "lost", submission, error: failure });
     } finally { active.current = null; }
   };
   const preview = async () => {
