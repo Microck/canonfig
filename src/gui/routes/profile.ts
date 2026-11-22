@@ -126,13 +126,13 @@ export const profileRoutes = Effect.gen(function*() {
       let revisionId: typeof ProfileRevisionId.Type | undefined;
       const publish = source.publish({ reviewer: input.reviewer, reviewedDigest: input.reviewDigest }).pipe(
         Effect.map(asJson),
-        Effect.flatMap((revision) => Schema.decodeUnknownEffect(Schema.Struct({ id: ProfileRevisionId }))(revision).pipe(
+        Effect.flatMap((revision) => Schema.decodeUnknownEffect(Schema.StructWithRest(Schema.Struct({ id: ProfileRevisionId }), [Schema.Record(Schema.String, Schema.Json)]))(revision).pipe(
           Effect.mapError((error) => new CliCommandFailure({ category: "internal", message: error.message })),
-          Effect.flatMap(({ id }) => {
-            revisionId = id;
-            return repository.loadRevisionApproval(id).pipe(
+          Effect.flatMap((published) => {
+            revisionId = published.id;
+            return repository.loadRevisionApproval(published.id).pipe(
               Effect.mapError(commandFailure),
-              Effect.map((approval) => asJson({ ...(revision as Record<string, Schema.Json>), retainedReviewer: approval && approval.reviewer !== input.reviewer ? approval.reviewer : null })),
+              Effect.map((approval) => asJson({ ...published, retainedReviewer: approval && approval.reviewer !== input.reviewer ? approval.reviewer : null })),
             );
           }),
         )),
