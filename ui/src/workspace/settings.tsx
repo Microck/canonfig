@@ -1022,36 +1022,65 @@ function FleetUpdates() {
   const ws = useWorkspace();
   const fleet = ws.admin.fleet;
   const [canary, setCanary] = useState("");
-  const [confirmation, setConfirmation] = useState<"start" | "stop" | null>(null);
+  const [confirmation, setConfirmation] = useState<{ kind: "start"; canaryId: string } | { kind: "stop" } | null>(null);
   if (fleet === null) return null;
+  const inventory = ws.machineStates.inventory;
+  const inventoryLoaded = ws.enrollmentFollowers !== undefined;
+  const enrollmentFollowers = ws.enrollmentFollowers ?? [];
+  // Match the Source's Fleet Update admission roster: only active enrolled followers can run as canary.
+  const eligibleCanaries = enrollmentFollowers.filter((follower) => !follower.revoked && !follower.pending);
   const running = fleet.data?.status === "running";
-  const selected = ws.followers.find((follower) => follower.id === canary);
+  const busy = fleet.busy || fleet.loading || inventory.loading;
+  const canChoose = !running && !busy && inventory.error === null;
+  const selected = eligibleCanaries.find((follower) => follower.id === canary);
+  // Drop a chosen canary as soon as refreshed inventory marks it pending, revoked, or absent.
+  if (inventoryLoaded && canary !== "" && selected === undefined) {
+    setCanary("");
+  }
+  const confirmStart = confirmation?.kind === "start" && !running
+    ? eligibleCanaries.find((follower) => follower.id === confirmation.canaryId)
+    : undefined;
+  if (inventoryLoaded && confirmation?.kind === "start" && confirmStart === undefined) {
+    setConfirmation(null);
+  }
+  const selectedId = selected?.id ?? "";
   return <section className="mt-10" aria-label="Fleet Update">
     <SectionLabel>Follower releases</SectionLabel>
     {fleet.error && <ErrorNotice error={fleet.error} />}
+    {inventory.error && <ErrorNotice error={inventory.error} />}
     <p className="mt-2 text-sm">Roll out this Source's {ws.admin.version.current} release. Followers update on their next sync, one at a time, after the canary proves Convergence.</p>
-    <form className="mt-4 flex flex-wrap items-end gap-3" onSubmit={(event) => { event.preventDefault(); if (selected) setConfirmation("start"); }}>
+    <form className="mt-4 flex flex-wrap items-end gap-3" onSubmit={(event) => { event.preventDefault(); if (selected && canChoose) setConfirmation({ kind: "start", canaryId: selected.id }); }}>
       <Field label="Canary follower" htmlFor="fleet-canary">
-        <Select value={canary} onValueChange={setCanary} disabled={running || fleet.busy || fleet.loading}>
+        <Select
+          value={selectedId}
+          onValueChange={(value) => {
+            if (value === "" || eligibleCanaries.some((follower) => follower.id === value)) {
+              setCanary(value);
+              setConfirmation((current) => current?.kind === "start" ? null : current);
+            }
+          }}
+          disabled={!canChoose || eligibleCanaries.length === 0}
+        >
           <SelectTrigger id="fleet-canary" className="min-w-52"><SelectValue placeholder="Choose a follower" /></SelectTrigger>
-          <SelectContent>{ws.followers.map((follower) => <SelectItem key={follower.id} value={follower.id}>{follower.name}</SelectItem>)}</SelectContent>
+          <SelectContent>{eligibleCanaries.map((follower) => <SelectItem key={follower.id} value={follower.id}>{follower.name}</SelectItem>)}</SelectContent>
         </Select>
       </Field>
-      <Button type="submit" variant="primary" disabled={!selected || running || fleet.busy || fleet.loading}>Start Fleet Update…</Button>
-      <Button type="button" variant="outline" disabled={fleet.busy} onClick={fleet.reload}>Refresh followers</Button>
-      {running && <Button type="button" variant="destructive" disabled={fleet.busy} onClick={() => setConfirmation("stop")}>Stop rollout…</Button>}
+      <Button type="submit" variant="primary" disabled={!selected || !canChoose}>Start Fleet Update…</Button>
+      <Button type="button" variant="outline" disabled={busy} onClick={fleet.reload}>Refresh followers</Button>
+      {running && <Button type="button" variant="destructive" disabled={fleet.busy} onClick={() => setConfirmation({ kind: "stop" })}>Stop rollout…</Button>}
     </form>
-    {ws.followers.length === 0 && <p className="mt-3 text-sm">Enroll a follower before starting a Fleet Update.</p>}
+    {inventoryLoaded && enrollmentFollowers.length === 0 && <p className="mt-3 text-sm">Enroll a follower before starting a Fleet Update.</p>}
+    {inventoryLoaded && enrollmentFollowers.length > 0 && eligibleCanaries.length === 0 && <p className="mt-3 text-sm">No active enrolled followers are available for a Fleet Update. Pending and revoked followers can't be chosen as a canary.</p>}
     {fleet.data && <div className="mt-4" aria-live="polite">
       <p className="text-sm">{fleet.data.version}: {fleet.data.status}</p>
       <div className={cn("mt-2", settingsGroup)}>{fleet.data.followers.map((follower) => <SettingRow key={follower.id} title={follower.name} description={follower.detail}>
         <span className="text-sm">{follower.version ?? "Not reported"} · {follower.status}</span>
       </SettingRow>)}</div>
     </div>}
-    <ConfirmDialog open={confirmation === "start"} onOpenChange={(open) => { if (!open) setConfirmation(null); }} title={`Roll out Canonfig ${ws.admin.version.current}?`}
-      body={`${selected?.name ?? "The canary"} updates first, then the other enrolled followers. A failed health check halts the rollout; rollback is manual.`}
-      confirm="Start rollout" onConfirm={() => fleet.start(canary)} />
-    <ConfirmDialog open={confirmation === "stop"} onOpenChange={(open) => { if (!open) setConfirmation(null); }} title="Stop this rollout?"
+    <ConfirmDialog open={confirmStart !== undefined} onOpenChange={(open) => { if (!open) setConfirmation(null); }} title={`Roll out Canonfig ${ws.admin.version.current}?`}
+      body={confirmStart ? `${confirmStart.name} updates first, then the other enrolled followers. A failed health check halts the rollout; rollback is manual.` : ""}
+      confirm="Start rollout" onConfirm={() => { if (confirmStart && canChoose) fleet.start(confirmStart.id); }} />
+    <ConfirmDialog open={confirmation?.kind === "stop"} onOpenChange={(open) => { if (!open) setConfirmation(null); }} title="Stop this rollout?"
       body="No more followers will be admitted. A follower already activating may finish. Installed releases and applied configuration stay in place."
       confirm="Stop rollout" onConfirm={fleet.stop} />
   </section>;
