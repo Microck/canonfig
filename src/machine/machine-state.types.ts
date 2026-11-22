@@ -34,6 +34,7 @@ export interface EnsureDirectoryInput {
 /** A file source is copied with bounded memory and verified before replacement. */
 export type FileContent = Uint8Array | {
   readonly file: string;
+  readonly anchor?: string | undefined;
   readonly digest: ContentDigest;
   readonly maximumBytes?: number | undefined;
 };
@@ -60,10 +61,11 @@ export type AtomicWriteInput = {
   readonly content: FileContent;
   /**
    * Publish only into the existing directory reached from this one through
-   * real directories, never a link (see `anchored-directory.ts`). Missing
-   * parents are an error instead of being created.
+   * real directories, never a link (see `anchored-directory.ts`).
+   * Parents must already exist unless `createAnchoredParents` is set.
    */
   readonly anchor?: MachinePath | undefined;
+  readonly createAnchoredParents?: boolean | undefined;
   /** Fail with EEXIST instead of replacing a file already at `path`; publication is a hard link. */
   readonly noReplace?: boolean | undefined;
 } & FilePermissionPolicy;
@@ -99,6 +101,7 @@ export interface ReadFileInput {
 
 export interface RemoveFileInput {
   readonly path: MachinePath;
+  readonly anchor?: MachinePath | undefined;
   /**
    * Remove only while `path` still names this file; leave whatever else is
    * there, or nothing, alone. Rollback uses it so it never deletes a file
@@ -109,10 +112,12 @@ export interface RemoveFileInput {
 
 export interface RemoveEmptyDirectoryInput {
   readonly path: MachinePath;
+  readonly anchor?: MachinePath | undefined;
 }
 
 export interface RemoveTemporaryEntriesInput {
   readonly directory: MachinePath;
+  readonly anchor?: MachinePath | undefined;
   /** Also clean every directory beneath it, without following links. */
   readonly recursive: boolean;
 }
@@ -142,6 +147,7 @@ export type SafeRootMutation =
 
 export interface SafeRootMutationInput {
   readonly root: MachinePath;
+  readonly anchor?: MachinePath | undefined;
   readonly path: MachinePath;
   readonly mutation: SafeRootMutation;
 }
@@ -167,6 +173,7 @@ export type MachineObjectKind =
 
 export interface MachineObject {
   readonly kind: MachineObjectKind;
+  readonly identity?: FileIdentity | undefined;
 }
 
 /** One entry found by listing a managed directory, relative to its root. */
@@ -178,6 +185,8 @@ export interface MachineDirectoryEntry {
 
 export type SetPermissionsInput = {
   readonly path: MachinePath;
+  readonly identity?: FileIdentity | undefined;
+  readonly anchor?: MachinePath | undefined;
 } & (
   | { readonly mode: number; readonly permissions?: never }
   | { readonly mode?: never; readonly permissions: FilePermissionSnapshot }
@@ -238,6 +247,7 @@ export interface ProcessResult {
 
 export interface DigestFileInput {
   readonly path: MachinePath;
+  readonly anchor?: MachinePath | undefined;
   readonly maximumBytes?: number | undefined;
 }
 

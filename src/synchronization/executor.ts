@@ -3,6 +3,7 @@ import type { statfs } from "node:fs/promises";
 import { posix, win32 } from "node:path";
 
 import {
+  classifyAuthoredResourceId,
   ContentDigest,
   FollowerId,
   ProfileRevisionId,
@@ -1147,25 +1148,29 @@ export const removeRunTemporaryEntries = (
 ): Effect.Effect<ReadonlyArray<string>, MachineStateError, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
-    const directories = new Map<string, { readonly directory: MachinePath; recursive: boolean }>();
+    const directories = new Map<string, {
+      readonly directory: MachinePath;
+      anchor?: MachinePath | undefined;
+      recursive: boolean;
+    }>();
+    const { home, cache } = yield* machine.userDirectories();
     let uvPreparation: MachinePath | undefined;
-    const include = (directory: MachinePath, recursive: boolean): void => {
+    const include = (directory: MachinePath, recursive: boolean, anchor?: MachinePath): void => {
       const key = `${directory.platform}:${directory.platform === "windows"
         ? directory.absolute.toLowerCase()
         : directory.absolute}`;
       const existing = directories.get(key);
       if (existing === undefined) {
-        directories.set(key, { directory, recursive });
-      } else if (recursive) {
-        existing.recursive = true;
+        directories.set(key, { directory, anchor, recursive });
+      } else {
+        existing.anchor = anchor ?? existing.anchor;
+        existing.recursive = existing.anchor === undefined && (existing.recursive || recursive);
       }
     };
     for (const action of actions) {
       const detail = action.detail;
       if (detail.kind === "install-tool" && detail.method === "uv") {
         if (uvPreparation === undefined) {
-          const userDirectories = yield* machine.userDirectories();
-          const cache = userDirectories.cache;
           uvPreparation = yield* machine.normalizePath({
             path: (cache.platform === "windows" ? win32 : posix).join(
               cache.absolute, "canonfig", "uv-preparation", sha256Hex(run),
@@ -1184,20 +1189,63 @@ export const removeRunTemporaryEntries = (
         continue;
       }
       const target = yield* machine.normalizePath({ path: detail.target });
-      include({
-        platform: target.platform,
-        absolute: (target.platform === "windows" ? win32 : posix).dirname(target.absolute),
-      }, false);
-      if (
-        detail.kind === "mirror-directory"
-        || (detail.kind === "remove-resource" && detail.paths.length > 0)
-      ) {
-        include(target, true);
+      const paths = target.platform === "windows" ? win32 : posix;
+      const authored = classifyAuthoredResourceId(action.resource) !== "other";
+      const anchor = authored ? home : undefined;
+      const parent = { platform: target.platform, absolute: paths.dirname(target.absolute) };
+      include(parent, false, anchor);
+      const members = detail.kind === "mirror-directory" ? [...detail.adds, ...detail.removes]
+        : detail.kind === "remove-resource" ? detail.paths : [];
+      if (detail.kind === "mirror-directory" || members.length > 0) {
+        include(target, !authored, anchor);
+      }
+      // Authored operations stage beside a planned entry or one of its
+      // missing parents. Clean those parents individually without walking
+      // into unrelated directories or through a linked ancestor.
+      if (!authored) continue;
+      for (const member of members) {
+        const parts = member.split(/[\\/]/u);
+        if (paths.isAbsolute(member) || /^[A-Za-z]:/u.test(member)
+          || parts.some((part) => part === "" || part === "." || part === "..")) {
+          return yield* new MachineFilesystemError({
+            operation: "clean authored staging", path: member, message: "invalid planned directory member",
+          });
+        }
+        let absolute = target.absolute;
+        for (const part of parts.slice(0, -1)) {
+          absolute = paths.join(absolute, part);
+          include({ platform: target.platform, absolute }, false, home);
+        }
       }
     }
     const removed: Array<string> = [];
-    for (const { directory, recursive } of directories.values()) {
-      removed.push(...yield* machine.removeTemporaryEntries({ directory, recursive }));
+    const blocked: Array<MachinePath> = [];
+    const ordered = [...directories.values()].sort((left, right) => left.directory.absolute.length - right.directory.absolute.length);
+    for (const { directory, recursive, anchor } of ordered) {
+      if (anchor !== undefined) {
+        const paths = directory.platform === "windows" ? win32 : posix;
+        const underBlocked = blocked.some((parent) => {
+          const relative = paths.relative(parent.absolute, directory.absolute);
+          return relative !== ".." && !relative.startsWith(`..${paths.sep}`) && !paths.isAbsolute(relative);
+        });
+        if (underBlocked) continue;
+        if (paths.relative(anchor.absolute, directory.absolute) !== "") {
+          const current = yield* machine.inspectPath(directory, anchor).pipe(
+            Effect.catchTag("MachineFilesystemError", (error) =>
+              /\bENOENT:/u.test(error.message) ? Effect.succeed(undefined) : Effect.fail(error)),
+          );
+          // A recorded replacement can still have the old file here.
+          if (current?.kind !== "directory") {
+            blocked.push(directory);
+            continue;
+          }
+        }
+      }
+      const entries = yield* machine.removeTemporaryEntries({ directory, recursive, anchor }).pipe(
+        Effect.catchTag("MachineFilesystemError", (error) =>
+          anchor !== undefined && /\bENOENT\b/u.test(error.message) ? Effect.succeed([]) : Effect.fail(error)),
+      );
+      removed.push(...entries);
     }
     if (uvPreparation !== undefined) {
       yield* machine.removeEmptyDirectory({ path: uvPreparation }).pipe(
