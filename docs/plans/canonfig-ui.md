@@ -2,11 +2,17 @@
 
 ## Integrated live GUI
 
-`canonfig ui [--port n] [--no-open]` serves the packaged React application in the foreground on `127.0.0.1`. Omitting `--port` asks the operating system for a free port. The launch URL carries a single-use token that establishes a session cookie. The server checks Host and Origin, holds the normal command lease, and releases its resources on Ctrl-C or SIGTERM. Bare `canonfig` still prints help. This server is separate from `source serve` and never becomes a network administration service.
+[`canonfig ui`](https://canonfig.micr.dev/docs/reference/cli#browser-interface) serves the
+packaged React application in the foreground. By default it binds to loopback
+and selects a free port. It also supports an explicit tailnet bind or an
+HTTPS proxy origin. The launch URL exchanges a single-use token for a
+session cookie. The GUI holds a release lease while it reads the installed
+release or performs work. An idle GUI can yield to release activation.
+Ctrl-C or SIGTERM stops the server. Bare `canonfig` prints help.
 
 The four feature areas are integrated with the shared server and authoring API. Source and Follower workspaces call real services; an unconfigured machine opens the setup wizard. Production never reports a simulated mutation as successful or fills missing status fields with demo values.
 
-The production entry is `ui/src/live-app.tsx`, selected through Vite's build-selected `@app` entrypoint; `ui/src/gui-client.ts` imports the shared contract directly. Development and demo builds select `App.tsx`. Production supports the actual role's registered screens and `/setup` when unconfigured. Unsupported paths show an unavailable page rather than mounting demo screens. `src/gui/server.ts` uses Node HTTP under a scoped Effect lifetime. Bootstrap exchanges `GET /?token=...` for an HttpOnly, SameSite=Strict, Path=/ cookie, redirects with 303, and requires the cookie for assets and API calls. Host and any supplied Origin must match the actual loopback address and port.
+The production entry is `ui/src/live-app.tsx`, selected through Vite's build-selected `@app` entrypoint; `ui/src/gui-client.ts` imports the shared contract directly. Development and demo builds select `App.tsx`. Production supports the actual role's registered screens and `/setup` when unconfigured. Unsupported paths show an unavailable page rather than mounting demo screens. `src/gui/server.ts` uses Node HTTP under a scoped Effect lifetime. Bootstrap exchanges `GET /?token=...` for an HttpOnly, SameSite=Strict, Path=/ cookie, redirects with 303, and requires the cookie for assets and API calls. Host and any supplied Origin must match a configured authority. A proxy origin must use HTTPS and receives a Secure cookie.
 
 `src/gui/contract.ts` re-exports the area contracts under `src/gui/contract/`, imported directly by both packages. There are no generated copies. Session contracts live in `contract/session.ts`; operation tickets live in `contract/operations.ts`.
 

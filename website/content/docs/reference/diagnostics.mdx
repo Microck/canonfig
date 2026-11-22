@@ -80,9 +80,23 @@ A probe that runs past `--timeout-ms` fails with `<probe> probe timed out`.
 | warning | `not-verified` | What is missing and what to do, for example `secret-tool was not found on PATH. Install it with ...`. The same text is in `details.recovery`. |
 | fail, Human Action Required | | `credential capability check failed: <detail>` |
 
-On Linux and Windows the check stores a fixed non-secret test item under a
-unique name, reads it back, and deletes it. Existing credentials are never read
-or changed.
+On Linux and Windows the session probe writes a non-secret test item under
+a unique name, reads it back, and deletes it.
+
+On Linux, a successful session probe proves the current Secret Service session
+can store credentials. For evidence across a provider restart, first run
+`canonfig secrets bootstrap` in the intended session. It can save a disposable
+test credential. After Secret Service restarts, run `canonfig doctor` with the
+same keyring unlocked.
+
+When doctor finds restart evidence, the JSON report includes
+`details.restartPersistence` and `details.persistenceDetail`:
+
+| Verdict | Meaning |
+| --- | --- |
+| `manual` | Canonfig still needs a restart or could not verify the item. Read the detail for the next step. |
+| `verified` | Canonfig read the saved test credential after the restart and attempts to remove it. |
+| `failed` | The same keyring no longer held the test credential after the restart. The credentials check reports Human Action Required. |
 
 ### source
 

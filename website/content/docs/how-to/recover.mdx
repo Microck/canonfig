@@ -28,9 +28,11 @@ blocked. `doctor` checks this machine; see
 
 ## What a failed run leaves behind
 
-- **An apply failure (exit 7) rolls back.** Canonfig restores every file,
-  directory, and config it changed in that run, deletes the Takeover Snapshot
-  the run took, then names the resource and the cause.
+- **An apply failure (exit 7) can require rollback.** When rollback completes,
+  Canonfig restores the files, directories, and config it changed in that run
+  and removes the Takeover Snapshot the run took. If rollback is incomplete,
+  Canonfig keeps the recovery material. Follow the recovery instructions in
+  the error before you sync again.
 - **Human Action Required (exit 3) does not roll back or stop the run.** The
   blocked resource is unchanged, resources that depend on it wait, and every
   other resource is applied. The run lists each resource that needs you.
@@ -198,7 +200,7 @@ For every tunnel and service message, see
 
 | Message | Cause | Fix |
 | --- | --- | --- |
-| "resource `<id>` could not be applied to `<target>`: `<cause>`", for example "resource harness:claude-code:mcp could not be applied to /home/maria/.claude.json: atomically write file failed: EACCES: permission denied" | An action failed. Canonfig rolled the run back. | Fix the cause it names, then run `canonfig sync --apply`. |
+| "resource `<id>` could not be applied to `<target>`: `<cause>`", for example "resource harness:claude-code:mcp could not be applied to /home/maria/.claude.json: atomically write file failed: EACCES: permission denied" | An action failed. The result reports whether rollback finished. | Fix the cause it names. If rollback is incomplete, follow the recovery instructions before running `canonfig sync --apply`. |
 | "verification failed for resource `<id>`: ..." or "verification failed for agent task `<resource>`" | The actions ran, but the resource does not pass its `verify` check. | Fix the cause the message names, then run `canonfig sync --apply`. For tools, see [How Canonfig installs and verifies tools](/docs/explanation/tools-and-recipes). |
 | "the filesystem holding `<path>` needs N bytes (M MiB) free but only N bytes (M MiB) are available; nothing was changed. Free space there, then retry" | Canonfig checks free space before it records a run and before it downloads content. No run was opened, so there is nothing to recover. | Free space on that filesystem, then run `canonfig sync --apply`. |
 | "restore Windows permissions failed on `<path>`" (during `canonfig recover`) | Windows refused to restore an owner or access rule Canonfig recorded. The run stays failed, and the journal and backups stay in place. | Fix the permission problem on that path, then run `canonfig recover` again. |
