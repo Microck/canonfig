@@ -16,6 +16,7 @@ import { EnrollmentConfigurationError, type EnrollmentError } from "./enrollment
 import type { AuthenticatedFollower, SourceCredentials } from "./enrollment.types.ts";
 
 export const fleetPath = (state: string): string => `${state}.fleet-update.json`;
+const maximumFleetRecordBytes = 1_048_576;
 const maximumAdmissionAge = 60 * 60 * 1000;
 // The Source stamps expiresAt from its own clock (admission + one hour) and the
 // follower judges it with its clock. A follower even slightly behind the Source
@@ -23,11 +24,41 @@ const maximumAdmissionAge = 60 * 60 * 1000;
 // bound allows this much difference between the two machines' clocks.
 const maximumClockSkew = 5 * 60 * 1000;
 
+/**
+ * Halts a running rollout whose admitted follower sent no health report within
+ * one hour of admission, the same lifetime its directive carries. The deadline
+ * belongs to the rollout, not to that follower: a canary that went offline
+ * never polls again, so a check made only on its poll held the queue open.
+ */
+export function expireOverdueAdmission(rollout: FleetUpdate, now = Date.now()): FleetUpdate {
+  if (rollout.status !== "running") return rollout;
+  const overdue = rollout.followers.find((follower) => (follower.status === "updating" || follower.status === "deferred")
+    && follower.admittedAt !== null && now - Date.parse(follower.admittedAt) >= maximumAdmissionAge);
+  if (overdue === undefined) return rollout;
+  const halt = (detail: string): FleetUpdate => ({
+    ...rollout, status: "halted", followers: rollout.followers.map((follower) => follower.id === overdue.id
+      ? { ...follower, status: "failed", detail } : follower),
+  });
+  const expired = halt("No health report arrived within one hour; inspect the follower before retrying");
+  // A readable record at the size limit must remain readable after its status changes.
+  return Buffer.byteLength(JSON.stringify(expired)) + 1 <= maximumFleetRecordBytes ? expired : halt("");
+}
+
+/**
+ * The rollout as of now: every reader (status, doctor, polls and reports from
+ * any follower) sees an overdue admission as halted. Mutations persist that
+ * view under the fleet lock; a lock-free read only derives it, which is safe
+ * because the deadline only moves one way.
+ */
 export function readFleetUpdate(state: string): FleetUpdate | null {
+  const recorded = readFleetRecord(state);
+  return recorded === null ? null : expireOverdueAdmission(recorded);
+}
+function readFleetRecord(state: string): FleetUpdate | null {
   const path = fleetPath(state);
   regular(path);
   if (!existsSync(path)) return null;
-  if (statSync(path).size > 1_048_576) throw new Error("Fleet Update state exceeds 1 MiB");
+  if (statSync(path).size > maximumFleetRecordBytes) throw new Error("Fleet Update state exceeds 1 MiB");
   return Schema.decodeUnknownSync(Schema.fromJsonString(FleetUpdate), { onExcessProperty: "error" })(readFileSync(path, "utf8"));
 }
 export function writeFleetRecord<Value>(path: string, value: Value): void {
@@ -122,11 +153,24 @@ export function fleetSource(dependencies: FleetSourceDependencies): FleetSource 
     const state = yield* repository.databaseFile();
     return yield* withRunLock(`${state}.fleet`, "change Fleet Update", use(state));
   }));
-  const read = (state: string) => Effect.try({ try: () => readFleetUpdate(state), catch: (cause) => failure({ message: String(cause) }) });
   const write = (state: string, rollout: FleetUpdate) => Effect.try({
-    try: () => writeFleetRecord(fleetPath(state), rollout), catch: (cause) => failure({ message: String(cause) }),
+    try: () => {
+      if (Buffer.byteLength(JSON.stringify(rollout)) + 1 > maximumFleetRecordBytes) throw new Error("Fleet Update state exceeds 1 MiB");
+      writeFleetRecord(fleetPath(state), rollout);
+    }, catch: (cause) => failure({ message: String(cause) }),
   });
-  const fleetStatus = () => operation(Effect.gen(function*() { return yield* read(yield* repository.databaseFile()); }));
+  // A preview derives the same state without recording a transition.
+  const read = (state: string, persistExpiry: boolean) => Effect.gen(function*() {
+    const recorded = yield* Effect.try({ try: () => readFleetRecord(state), catch: (cause) => failure({ message: String(cause) }) });
+    if (recorded === null) return null;
+    const rollout = expireOverdueAdmission(recorded);
+    if (persistExpiry && rollout !== recorded) yield* write(state, rollout);
+    return rollout;
+  });
+  const fleetStatus = () => operation(Effect.gen(function*() {
+    const state = yield* repository.databaseFile();
+    return yield* Effect.try({ try: () => readFleetUpdate(state), catch: (cause) => failure({ message: String(cause) }) });
+  }));
   return {
     fleetStatus,
     startFleetUpdate: (input) => operation(Effect.gen(function*() {
@@ -143,7 +187,7 @@ export function fleetSource(dependencies: FleetSourceDependencies): FleetSource 
         }, catch: (cause) => failure({ message: `Cannot authorize this release: ${String(cause)}` }),
       });
       return yield* mutate((path) => Effect.gen(function*() {
-        const previous = yield* read(path);
+        const previous = yield* read(path, false);
         if (previous?.status === "running") return yield* failure({ message: "A Fleet Update is running. Stop it before starting another." });
         const ordered = [canary, ...roster.filter((follower) => follower.id !== canary.id).sort((a, b) => a.id.localeCompare(b.id))];
         const rollout: FleetUpdate = {
@@ -158,7 +202,7 @@ export function fleetSource(dependencies: FleetSourceDependencies): FleetSource 
       }));
     })),
     stopFleetUpdate: (apply) => mutate((path) => Effect.gen(function*() {
-      const rollout = yield* read(path);
+      const rollout = yield* read(path, apply);
       if (rollout === null || rollout.status !== "running") return rollout;
       const stopped: FleetUpdate = { ...rollout, status: "stopped" };
       if (apply) yield* write(path, stopped);
@@ -168,7 +212,7 @@ export function fleetSource(dependencies: FleetSourceDependencies): FleetSource 
       const authenticated = yield* authenticate(credential);
       const keys = yield* credentials();
       return yield* mutate((path) => Effect.gen(function*() {
-        const rollout = yield* read(path);
+        const rollout = yield* read(path, true);
         if (rollout === null || rollout.status !== "running") return { directive: null };
         if (rollout.version !== buildIdentity.packageVersion || rollout.source !== keys.material.source.publicKeyFingerprint) {
           yield* write(path, { ...rollout, status: "halted" });
@@ -176,13 +220,8 @@ export function fleetSource(dependencies: FleetSourceDependencies): FleetSource 
         }
         const active = rollout.followers.find((follower) => follower.status !== "healthy");
         if (active === undefined || active.id !== authenticated.follower.id) return { directive: null };
-        if (active.status === "updating" && active.admittedAt !== null && Date.now() - Date.parse(active.admittedAt) >= maximumAdmissionAge) {
-          yield* write(path, { ...rollout, status: "halted", followers: rollout.followers.map((follower) => follower.id === active.id
-            ? { ...follower, status: "failed", detail: "No health report arrived within one hour; inspect the follower before retrying" } : follower) });
-          return { directive: null };
-        }
         const attempt = active.attempt ?? randomUUID();
-        const admittedAt = active.status === "updating" ? active.admittedAt! : new Date().toISOString();
+        const admittedAt = active.admittedAt ?? new Date().toISOString();
         const directive: FleetDirective = {
           schema: "canonfig.fleet-directive/v1", rollout: rollout.id, sequence: rollout.sequence,
           follower: active.id, source: rollout.source, version: rollout.version, integrity: rollout.integrity,
@@ -206,7 +245,7 @@ export function fleetSource(dependencies: FleetSourceDependencies): FleetSource 
     reportFleetUpdate: (credential, report) => Effect.gen(function*() {
       const authenticated = yield* authenticate(credential);
       yield* mutate((path) => Effect.gen(function*() {
-        const rollout = yield* read(path);
+        const rollout = yield* read(path, true);
         const active = rollout?.followers.find((follower) => follower.id === authenticated.follower.id);
         if (rollout === null || rollout.id !== report.rollout || active === undefined || active.attempt !== report.attempt) {
           return yield* failure({ message: "Fleet Update report does not match an admitted attempt" });
