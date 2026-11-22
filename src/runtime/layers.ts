@@ -874,6 +874,12 @@ const followerCommandsLayer = (
         };
       });
 
+    // Give unfinished local runs priority over follower recovery.
+    const useLocalRecovery = Effect.gen(function*() {
+      if (yield* hasOpenLocalRun) return true;
+      return (yield* repository.getFollowerSynchronizationConfiguration()) === undefined;
+    });
+
     const service: FollowerCommandsService = {
       enroll: (input) =>
         Effect.gen(function*() {
@@ -1292,10 +1298,9 @@ const followerCommandsLayer = (
           })));
         }));
       },
-      // An open local projection run is resolved before any follower run.
       abandon: () =>
         mapFailure(Effect.gen(function*() {
-          return (yield* hasOpenLocalRun)
+          return (yield* useLocalRecovery)
             ? yield* abandonLocal(statePath)
             : yield* abandonFollowerRun(statePath);
         }).pipe(
@@ -1304,7 +1309,7 @@ const followerCommandsLayer = (
         )).pipe(Effect.map(payload)),
       recover: () =>
         mapFailure(Effect.gen(function*() {
-          return (yield* hasOpenLocalRun)
+          return (yield* useLocalRecovery)
             ? yield* recoverLocal(statePath)
             : yield* recoverFollower(statePath);
         }).pipe(

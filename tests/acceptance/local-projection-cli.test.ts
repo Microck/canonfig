@@ -52,7 +52,7 @@ const folderHome = (): string => {
 };
 
 describe("local projection CLI", () => {
-  it("plans, applies, and restores a takeover", () => {
+  it("plans, applies, and restores a takeover with no recovery needed afterward", () => {
     const home = folderHome();
     const plan = invoke(home, ["--json", "sync", "--plan"]);
     expect(plan.status, plan.stdout + plan.stderr).toBe(0);
@@ -76,6 +76,15 @@ describe("local projection CLI", () => {
     expect(readFileSync(join(home, ".codex", "AGENTS.md"), "utf8")).toBe("my old codex instructions\n");
     expect(readFileSync(join(home, ".codex", "auth.json"), "utf8")).toBe("{\"token\":\"never touch\"}\n");
     expect(readFileSync(join(home, ".canonfig", "local", "local.jsonc"), "utf8")).toContain("codex");
+
+    for (const [command, message] of [
+      ["recover", "no interrupted local run is waiting for recovery"],
+      ["abandon", "no interrupted local run is open"],
+    ] as const) {
+      const result = invoke(home, ["--json", command]);
+      expect(result.status, result.stdout + result.stderr).toBe(2);
+      expect(json(result).message).toContain(message);
+    }
   }, 120_000);
 
   it("reports the creating build before decoding a foreign local run", () => {
