@@ -93,13 +93,19 @@ function button(text: string) {
   return found;
 }
 async function click(text: string) { await act(async () => button(text).click()); }
-async function until(check: () => boolean) {
+async function waitForRender(check: () => boolean, expected: string) {
   if (check()) return;
-  // Resolve from the actual rendered result, including when the HTTP request fails.
+  // DOM changes signal completion. The timer only bounds how long failure can take.
   const ready = Promise.withResolvers<void>();
   const observer = new MutationObserver(() => { if (check()) ready.resolve(); });
   observer.observe(document.body, { subtree: true, childList: true, characterData: true });
-  try { await ready.promise; } finally { observer.disconnect(); }
+  const deadline = setTimeout(() => ready.reject(new Error(`Archive dialog never rendered "${expected}".`)), 5_000);
+  try {
+    await ready.promise;
+  } finally {
+    clearTimeout(deadline);
+    observer.disconnect();
+  }
 }
 async function selectArchive() {
   await click("Import archive");
@@ -110,7 +116,7 @@ async function selectArchive() {
 async function preview() {
   await selectArchive();
   await click("Verify and preview");
-  await until(() => !!document.querySelector('[role="status"]')?.textContent?.includes("Ready to import"));
+  await waitForRender(() => !!document.querySelector('[role="status"]')?.textContent?.includes("Ready to import"), "Ready to import");
   const consent = [...document.querySelectorAll<HTMLButtonElement>('[role="checkbox"]')].find((entry) => entry.closest("label")?.textContent === "I have reviewed the plan."); assert.ok(consent);
   await act(async () => consent.click());
 }
@@ -121,7 +127,7 @@ for (const response of ["disconnect", "unreadable", "invalid-result"] as const) 
     try {
       await selectArchive();
       await click("Verify and preview");
-      await until(() => !!document.body.textContent?.includes("Archive import failed"));
+      await waitForRender(() => !!document.body.textContent?.includes("Archive import failed"), "Archive import failed");
       assert.equal(app.previewSubmissions, 1);
       assert.equal(app.submissions, 0);
       assert.equal(document.body.textContent?.includes("Operation observation lost"), false);
@@ -130,7 +136,7 @@ for (const response of ["disconnect", "unreadable", "invalid-result"] as const) 
       assert.equal(button("Verify and preview").disabled, false);
       assert.equal(document.getElementById("archive-file")?.closest("fieldset[disabled]"), null);
       await click("Verify and preview");
-      await until(() => !!document.querySelector('[role="status"]')?.textContent?.includes("Ready to import"));
+      await waitForRender(() => !!document.querySelector('[role="status"]')?.textContent?.includes("Ready to import"), "Ready to import");
       assert.equal(app.previewSubmissions, 2);
       assert.equal(app.submissions, 0);
     } finally { await app.close(); }
@@ -141,13 +147,13 @@ it("allows dismissing the dialog after a lost preview response without a ticket"
   try {
     await selectArchive();
     await click("Verify and preview");
-    await until(() => !!document.body.textContent?.includes("Archive import failed"));
+    await waitForRender(() => !!document.body.textContent?.includes("Archive import failed"), "Archive import failed");
     await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     assert.equal(document.querySelector('[role="dialog"]'), null);
     app.failNextPreview();
     await selectArchive();
     await click("Verify and preview");
-    await until(() => !!document.body.textContent?.includes("Archive import failed"));
+    await waitForRender(() => !!document.body.textContent?.includes("Archive import failed"), "Archive import failed");
     await click("Cancel");
     assert.equal(document.querySelector('[role="dialog"]'), null);
     assert.equal(app.previewSubmissions, 2);
@@ -160,7 +166,7 @@ for (const response of ["disconnect", "unreadable", "invalid-ticket"] as const) 
     try {
       await preview();
       await click("Import verified archive");
-      await until(() => !!document.body.textContent?.includes("Operation observation lost"));
+      await waitForRender(() => !!document.body.textContent?.includes("Operation observation lost"), "Operation observation lost");
       assert.equal(app.submissions, 1);
       assert.ok(button("Cancel").disabled);
       assert.equal([...document.querySelectorAll("button")].some((entry) => entry.textContent === "Verify and preview" || entry.textContent === "Import verified archive"), false);
@@ -175,7 +181,7 @@ it("unlocks editing only when the server rejects the apply request", async () =>
   const app = await fixture("rejected");
   try {
     await preview(); await click("Import verified archive");
-    await until(() => !!document.body.textContent?.includes("Archive import failed"));
+    await waitForRender(() => !!document.body.textContent?.includes("Archive import failed"), "Archive import failed");
     assert.equal(app.submissions, 1);
     assert.equal(button("Cancel").disabled, false);
     assert.equal(button("Verify and preview").disabled, false);
@@ -185,10 +191,10 @@ it("resumes a known import ticket without submitting another apply", async () =>
   const app = await fixture("poll-failure");
   try {
     await preview(); await click("Import verified archive");
-    await until(() => !!document.body.textContent?.includes("Operation observation lost"));
+    await waitForRender(() => !!document.body.textContent?.includes("Operation observation lost"), "Operation observation lost");
     assert.ok(document.body.textContent?.includes("apply"));
     await click("Resume observation");
-    await until(() => !!document.querySelector('[role="status"]')?.textContent?.includes("Import complete"));
+    await waitForRender(() => !!document.querySelector('[role="status"]')?.textContent?.includes("Import complete"), "Import complete");
     assert.equal(app.submissions, 1);
     assert.equal(app.observations, 2);
   } finally { await app.close(); }
