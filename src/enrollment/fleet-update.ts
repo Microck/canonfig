@@ -23,7 +23,32 @@ const maximumAdmissionAge = 60 * 60 * 1000;
 // bound allows this much difference between the two machines' clocks.
 const maximumClockSkew = 5 * 60 * 1000;
 
+/**
+ * Halts a running rollout whose admitted follower sent no health report within
+ * one hour of admission, the same lifetime its directive carries. The deadline
+ * belongs to the rollout, not to that follower: a canary that went offline
+ * never polls again, so a check made only on its poll held the queue open.
+ */
+export function expireOverdueAdmission(rollout: FleetUpdate, now = Date.now()): FleetUpdate {
+  if (rollout.status !== "running") return rollout;
+  const overdue = rollout.followers.find((follower) => follower.status === "updating"
+    && follower.admittedAt !== null && now - Date.parse(follower.admittedAt) >= maximumAdmissionAge);
+  if (overdue === undefined) return rollout;
+  return { ...rollout, status: "halted", followers: rollout.followers.map((follower) => follower.id === overdue.id
+    ? { ...follower, status: "failed", detail: "No health report arrived within one hour; inspect the follower before retrying" } : follower) };
+}
+
+/**
+ * The rollout as of now: every reader (status, doctor, polls and reports from
+ * any follower) sees an overdue admission as halted. Mutations persist that
+ * view under the fleet lock; a lock-free read only derives it, which is safe
+ * because the deadline only moves one way.
+ */
 export function readFleetUpdate(state: string): FleetUpdate | null {
+  const recorded = readFleetRecord(state);
+  return recorded === null ? null : expireOverdueAdmission(recorded);
+}
+function readFleetRecord(state: string): FleetUpdate | null {
   const path = fleetPath(state);
   regular(path);
   if (!existsSync(path)) return null;
@@ -122,11 +147,21 @@ export function fleetSource(dependencies: FleetSourceDependencies): FleetSource 
     const state = yield* repository.databaseFile();
     return yield* withRunLock(`${state}.fleet`, "change Fleet Update", use(state));
   }));
-  const read = (state: string) => Effect.try({ try: () => readFleetUpdate(state), catch: (cause) => failure({ message: String(cause) }) });
   const write = (state: string, rollout: FleetUpdate) => Effect.try({
     try: () => writeFleetRecord(fleetPath(state), rollout), catch: (cause) => failure({ message: String(cause) }),
   });
-  const fleetStatus = () => operation(Effect.gen(function*() { return yield* read(yield* repository.databaseFile()); }));
+  // Callers hold the fleet lock, so a halt the deadline produced is recorded before anyone acts on the rollout.
+  const read = (state: string) => Effect.gen(function*() {
+    const recorded = yield* Effect.try({ try: () => readFleetRecord(state), catch: (cause) => failure({ message: String(cause) }) });
+    if (recorded === null) return null;
+    const rollout = expireOverdueAdmission(recorded);
+    if (rollout !== recorded) yield* write(state, rollout);
+    return rollout;
+  });
+  const fleetStatus = () => operation(Effect.gen(function*() {
+    const state = yield* repository.databaseFile();
+    return yield* Effect.try({ try: () => readFleetUpdate(state), catch: (cause) => failure({ message: String(cause) }) });
+  }));
   return {
     fleetStatus,
     startFleetUpdate: (input) => operation(Effect.gen(function*() {
@@ -176,11 +211,6 @@ export function fleetSource(dependencies: FleetSourceDependencies): FleetSource 
         }
         const active = rollout.followers.find((follower) => follower.status !== "healthy");
         if (active === undefined || active.id !== authenticated.follower.id) return { directive: null };
-        if (active.status === "updating" && active.admittedAt !== null && Date.now() - Date.parse(active.admittedAt) >= maximumAdmissionAge) {
-          yield* write(path, { ...rollout, status: "halted", followers: rollout.followers.map((follower) => follower.id === active.id
-            ? { ...follower, status: "failed", detail: "No health report arrived within one hour; inspect the follower before retrying" } : follower) });
-          return { directive: null };
-        }
         const attempt = active.attempt ?? randomUUID();
         const admittedAt = active.status === "updating" ? active.admittedAt! : new Date().toISOString();
         const directive: FleetDirective = {

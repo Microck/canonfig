@@ -87,6 +87,33 @@ it("binds admissions to the enrolled identity, advances only on fresh target-ver
     expect((await runtime.runPromise(Effect.result(controller.reportFleetUpdate(canary.credential, healthy))))._tag).toBe("Failure");
     await runtime.runPromise(controller.stopFleetUpdate(true));
     expect((await runtime.runPromise(controller.pollFleetUpdate(canary.credential))).directive).toBeNull();
+
+    // A canary that goes offline after admission halts the rollout at its deadline without polling again.
+    const offline = await runtime.runPromise(controller.startFleetUpdate({ canary: canary.follower.id, apply: true }));
+    const admitted = (await runtime.runPromise(controller.pollFleetUpdate(canary.credential))).directive!;
+    const rolloutPath = fleetPath(join(folder, "state.sqlite"));
+    const admitAgo = (minutes: number) => {
+      const recorded = JSON.parse(readFileSync(rolloutPath, "utf8"));
+      writeFleetRecord(rolloutPath, { ...recorded, followers: recorded.followers.map((follower: { id: string }) => follower.id === canary.follower.id
+        ? { ...follower, admittedAt: new Date(Date.now() - minutes * 60 * 1000).toISOString() } : follower) });
+    };
+    const recordedStatus = () => JSON.parse(readFileSync(rolloutPath, "utf8")).status;
+    admitAgo(59);
+    expect((await runtime.runPromise(controller.fleetStatus()))?.status).toBe("running");
+    expect((await runtime.runPromise(controller.pollFleetUpdate(second.credential))).directive).toBeNull();
+    admitAgo(61);
+    expect(await runtime.runPromise(controller.fleetStatus())).toMatchObject({ id: offline.id, status: "halted", followers: [
+      { id: canary.follower.id, status: "failed", detail: expect.stringContaining("within one hour") }, { id: second.follower.id, status: "queued" },
+    ] });
+    // Status only derives the halt; the next locked operation records it.
+    expect(recordedStatus()).toBe("running");
+    expect((await runtime.runPromise(controller.pollFleetUpdate(second.credential))).directive).toBeNull();
+    expect(recordedStatus()).toBe("halted");
+    expect((await runtime.runPromise(Effect.result(controller.reportFleetUpdate(canary.credential, {
+      ...healthy, rollout: offline.id, attempt: admitted.directive.attempt,
+      health: { ...healthy.health!, recordedAt: new Date().toISOString() },
+    }))))._tag).toBe("Failure");
+    expect((await runtime.runPromise(controller.startFleetUpdate({ canary: canary.follower.id, apply: true }))).sequence).toBe(offline.sequence + 1);
   } finally {
     await runtime.dispose();
     rmSync(home, { recursive: true, force: true });
