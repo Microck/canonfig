@@ -9,7 +9,7 @@ import type { ProfileRevision } from "../../domain/profile.ts";
 import { StateRepository } from "../../state/state-repository.service.ts";
 import { MachineState } from "../../machine/machine-state.service.ts";
 import { asJson } from "../../profile/profile-codec.ts";
-import { compileFolder } from "../../profile/publication.ts";
+import { compileReviewedFolder } from "../../profile/publication.ts";
 import { InvalidPublicationResourcesError } from "../../profile/profile-catalog.errors.ts";
 import { decodeFolderConfig } from "../../projection/folder.ts";
 import { readAuthoringItems, writeAuthoringItems, editAuthoringConfig, type AuthoringChange } from "../../projection/authoring.ts";
@@ -96,17 +96,16 @@ export const profileRoutes = Effect.gen(function*() {
     // is a finding; a valid folder returns the digest a publication must name.
     mutationRoute("POST", profileEndpoints.validate, GuiProfileValidationRequest, ({ items }) => target.pipe(
       Effect.flatMap((location) => Effect.gen(function*() {
-        const checkObservation = readAuthoringItems(location).pipe(
+        const observed = yield* readAuthoringItems(location).pipe(
           Effect.provideService(MachineState, machine),
           Effect.mapError(commandFailure),
-          Effect.flatMap((observed) => isDeepStrictEqual(items, observed.map(({ path, digest }) => ({ path, digest })))
-            ? Effect.void
-            : Effect.fail(new CliCommandFailure({ category: "conflict-or-drift", message: "The Canonical Folder changed. Review the refreshed Profile items and validate again." }))),
         );
-        yield* checkObservation;
-        const { profile, encoded } = yield* compileFolder(location.folder);
-        yield* checkObservation;
-        return { valid: true, errors: [], reviewDigest: encoded.digest, profile: asJson(profile) };
+        if (!isDeepStrictEqual(items, observed.map(({ path, digest }) => ({ path, digest })))) {
+          return yield* Effect.fail(new CliCommandFailure({ category: "conflict-or-drift", message: "The Canonical Folder changed. Review the refreshed Profile items and validate again." }));
+        }
+        const files = new Map(observed.flatMap((item) => item.files.map((file) => [file.path, file] as const)));
+        const { profile, reviewDigest } = yield* compileReviewedFolder(location.folder, files);
+        return { valid: true, errors: [], reviewDigest, profile: asJson(profile) };
       })),
       Effect.catch((error) => error instanceof CliCommandFailure
         ? Effect.fail(error)

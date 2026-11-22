@@ -26,7 +26,9 @@ import { sourceTextEnd } from "../src/domain/text-composition.ts";
 import { InvalidPublicationInputError, PublicationSourceError } from "../src/profile/profile-catalog.errors.ts";
 import { profileCatalogLayer } from "../src/profile/profile-catalog.layer.ts";
 import { ProfileCatalog } from "../src/profile/profile-catalog.service.ts";
-import { compileFolder, type ProfileRevisionSigner } from "../src/profile/publication.ts";
+import { compileFolder, compileReviewedFolder, type ProfileRevisionSigner } from "../src/profile/publication.ts";
+import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
+import { readAuthoringItems } from "../src/projection/authoring.ts";
 import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
 
 /**
@@ -418,6 +420,26 @@ describe("publishing the Canonical Folder", () => {
   const appendLocalNotes = {
     resources: { notes: { kind: "file", target: "~/notes/TEAM.md", source: "files/notes.md", policy: "append-local" } },
   };
+
+  it("compiles the reviewed bytes after the Canonical Folder changes", async () => {
+    const { directory, folder, database } = workspace(appendLocalNotes);
+    const notesPath = join(folder, "files", "notes.md");
+    write(notesPath, "Reviewed notes.\n");
+    const items = await Effect.runPromise(readAuthoringItems({ folder, scope: "canonical", statePath: database }).pipe(
+      Effect.provide(linuxMachineStateLayer({ environment: [{ name: "HOME", value: directory }] })),
+    ));
+    const files = new Map(items.flatMap((item) => item.files.map((file) => [file.path, file] as const)));
+    const original = await Effect.runPromise(compileFolder(folder));
+
+    writeConfig(folder, { ...baseConfig, ...appendLocalNotes, profile: { id: "workstation", name: "Renamed workstation" } });
+    write(notesPath, "Revised notes.\n");
+    write(join(folder, "skills", "deploy", "scripts", "run.sh"), "#!/bin/sh\necho changed\n", 0o755);
+    const current = await Effect.runPromise(compileFolder(folder));
+    expect(current.encoded.digest).not.toBe(original.encoded.digest);
+
+    const reviewed = await Effect.runPromise(compileReviewedFolder(folder, files));
+    expect(reviewed).toEqual({ profile: original.profile, reviewDigest: original.encoded.digest });
+  });
 
   it.each([
     ["a reserved marker cut between read chunks", Buffer.from(`${"a".repeat(readChunk - 10)}${sourceTextEnd}\n`), "append-local Source text contains a reserved Canonfig marker"],
