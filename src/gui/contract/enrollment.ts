@@ -53,6 +53,7 @@ export type GuiEnrollmentFollower = typeof GuiEnrollmentFollower.Type;
 export const GuiStoredInvitation = Schema.Struct({
   endpoint: Schema.String, groups: Schema.Array(GroupName),
   expiresAt: Schema.String, consumed: Schema.Boolean,
+  remainingMilliseconds: Schema.Number,
 });
 export const GuiMachines = Schema.Struct({
   followers: Schema.Array(GuiEnrollmentFollower),

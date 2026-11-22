@@ -140,17 +140,22 @@ it("Machines shows only unexpired, unused invitations as waiting", async () => {
   const valid = {
     endpoint: "https://valid.example",
     groups: ["work"],
-    expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    expiresAt: "2000-01-01T01:00:00Z",
+    remainingMilliseconds: 60 * 60 * 1000,
     consumed: false,
   };
+  let reads = 0;
+  const soon = { ...valid, endpoint: "https://soon.example", remainingMilliseconds: 250 };
   const app = await fixture((path, _body, outgoing) => {
     if (path !== "/api/machines") return false;
+    reads++;
     outgoing.end(JSON.stringify({
       followers: [follower],
       invitations: [
-        { ...valid, endpoint: "https://expired.example", expiresAt: "2000-01-01T00:00:00Z" },
+        { ...valid, endpoint: "https://expired.example", expiresAt: "2000-01-01T00:00:00Z", remainingMilliseconds: 0 },
         { ...valid, endpoint: "https://consumed.example", consumed: true },
         valid,
+        ...(reads === 1 ? [soon] : []),
       ],
       health: {},
     }));
@@ -166,6 +171,15 @@ it("Machines shows only unexpired, unused invitations as waiting", async () => {
     assert.ok(waiting.includes(`Expires ${valid.expiresAt}`));
     assert.ok(!waiting.includes("https://expired.example"));
     assert.ok(!waiting.includes("https://consumed.example"));
+    assert.ok(waiting.includes(soon.endpoint));
+    const expired = Promise.withResolvers<void>();
+    const observer = new MutationObserver(() => {
+      if (!document.body.textContent?.includes(soon.endpoint)) expired.resolve();
+    });
+    observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+    try { await expired.promise; } finally { observer.disconnect(); }
+    assert.equal(reads, 2);
+    assert.ok(document.body.textContent?.includes(valid.endpoint));
   } finally { await app.close(); }
 });
 
