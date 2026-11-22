@@ -34,6 +34,8 @@ export interface SourceScanInput {
 
 export interface SourcePublishInput {
   readonly reviewer: string;
+  /** The validated content digest a browser review approved; see PublishFolderInput. */
+  readonly reviewedDigest?: string | undefined;
 }
 
 export interface SourceServeInput {

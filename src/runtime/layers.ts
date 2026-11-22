@@ -369,7 +369,7 @@ const sourceCommandsLayer = (folder: string): Layer.Layer<
       scan: (input) =>
         asSource("scan its folder for tools", mapFailure(profiles.scan({ folder, ...input })).pipe(Effect.map(payload))),
       publish: (input) =>
-        asSource("publish a revision", profiles.publish({ folder, reviewer: input.reviewer, publishedAt: new Date().toISOString() }).pipe(
+        asSource("publish a revision", profiles.publish({ folder, reviewer: input.reviewer, reviewedDigest: input.reviewedDigest, publishedAt: new Date().toISOString() }).pipe(
           Effect.mapError((error) =>
             error instanceof InvalidPublicationResourcesError
               ? invalidResourcesFailure(error.errors)

@@ -1,4 +1,5 @@
 /// <reference types="node" />
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer, type ServerResponse } from "node:http";
@@ -38,6 +39,7 @@ function Probe() {
     {ws.revisions.map((revision) => <button key={revision.id} onClick={() => ws.profileLive?.inspectRevision(revision.id)}>Inspect {revision.sequence}</button>)}
     <p data-testid="revision">{JSON.stringify(ws.profileLive?.revisionDetail)}</p>
     <button onClick={() => { void ws.profileLive?.validate(); }}>Validate</button>
+    <button onClick={() => ws.publish("Alice", () => {})}>Publish</button>
     <button onClick={ws.followerLive?.check}>Check follower</button>
     <button onClick={ws.followerLive?.resumeObservation}>Resume follower</button>
     <button onClick={ws.applyPlan}>Apply follower</button>
@@ -288,7 +290,7 @@ it("revision inspection cancels superseded reads and does not share the mutation
     await until(() => pending.has("revision-3"), "Mutation blocked revision inspection");
     await act(async () => { pending.get("revision-3")?.end(JSON.stringify({ signature: "third revision" })); });
     await until(() => app.container.textContent?.includes("third revision") === true, "Third revision not displayed");
-    await act(async () => { validation?.end(JSON.stringify({ valid: true, errors: [], profile: {} })); });
+    await act(async () => { validation?.end(JSON.stringify({ valid: true, errors: [], reviewDigest: "reviewed-digest", profile: {} })); });
   } finally { await app.close(); }
 });
 
@@ -649,7 +651,7 @@ it("counts and labels additions from each reviewed scan instead of cached Profil
 
 
 it("a changed folder snapshot invalidates publication review evidence", async () => {
-  const responses: Record<string, unknown> = { ...sourceResponses(), "/api/profile/validate": { valid: true, errors: [], profile: {} } };
+  const responses: Record<string, unknown> = { ...sourceResponses(), "/api/profile/validate": { valid: true, errors: [], reviewDigest: "reviewed-digest", profile: {} } };
   const app = await fixture("/source/profile", responses);
   try {
     await until(() => !app.container.querySelector('[aria-busy="true"]'), "Profile did not load");
@@ -659,6 +661,20 @@ it("a changed folder snapshot invalidates publication review evidence", async ()
     await click("Reload page");
     await until(() => app.container.querySelector('[data-testid="profile-name"]')?.textContent === "Changed", "Folder did not refresh");
     assert.equal(app.container.querySelector('[data-testid="validation"]')?.textContent, "undefined");
+  } finally { await app.close(); }
+});
+
+it("publication names the digest its validation reviewed", async () => {
+  const reviewDigest = randomUUID();
+  const responses: Record<string, unknown> = { ...sourceResponses(), "/api/profile/validate": { valid: true, errors: [], reviewDigest, profile: {} } };
+  const app = await fixture("/source/profile", responses);
+  try {
+    await until(() => !app.container.querySelector('[aria-busy="true"]'), "Profile did not load");
+    await click("Validate");
+    await until(() => app.container.querySelector('[data-testid="validation"]')?.textContent === "true", "Validation did not finish");
+    await click("Publish");
+    await until(() => app.mutations.some(({ path }) => path === "/api/publications"), "Publication did not start");
+    assert.deepEqual(app.mutations.find(({ path }) => path === "/api/publications")?.body, { reviewer: "Alice", reviewDigest });
   } finally { await app.close(); }
 });
 
