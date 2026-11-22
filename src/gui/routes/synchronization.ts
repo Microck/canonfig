@@ -221,9 +221,9 @@ export const synchronizationRoutes = Effect.gen(function*() {
     ), 202),
     mutationRoute("POST", "/api/tunnel/stop", GuiTunnelStopInput, (input) => follower(commands.stopTunnel(input))),
     mutationRoute("DELETE", "/api/enrollment", EmptyBody, () => follower(commands.unenroll())),
-    privateRequest(mutationRoute("POST", "/api/imports/preview", GuiArchiveImportInput, (input) => start(
-      importArchive(input, true), ["source", "unconfigured"],
-    ), 202, archiveBody), "Invalid archive upload or signing fingerprint."),
+    privateRequest(mutationRoute("POST", "/api/imports/preview", GuiArchiveImportInput, (input) =>
+      role(["source", "unconfigured"]).pipe(Effect.andThen(importArchive(input, true))),
+    200, archiveBody), "Invalid archive upload or signing fingerprint."),
     privateRequest(mutationRoute("POST", "/api/imports", GuiArchiveImportApply, (input) => start(
       importArchive(input, false, input.sha256), ["source", "unconfigured"],
     ), 202, archiveBody), "Invalid verified archive upload."),

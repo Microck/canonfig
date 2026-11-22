@@ -30,15 +30,14 @@ export function ArchiveExportButton({ onExport, disabled }: { onExport: (include
 
 type PreviewSubmission = { kind: "preview"; input: typeof GuiArchiveImportInput.Type };
 type ApplySubmission = { kind: "apply"; input: typeof GuiArchiveImportInput.Type; sha256: string };
-type Submission = PreviewSubmission | ApplySubmission;
 type ImportState =
   | { kind: "editing"; error?: GuiRequestError }
-  | { kind: "reading" }
-  | { kind: "running"; submission: Submission; ticket?: string }
-  | { kind: "lost"; submission: Submission; ticket: string; error: GuiRequestError }
+  | { kind: "reading" | "verifying" }
+  | { kind: "running"; submission: ApplySubmission; ticket?: string }
+  | { kind: "lost"; submission: ApplySubmission; ticket: string; error: GuiRequestError }
   | { kind: "lost"; submission: ApplySubmission; ticket?: undefined; error: GuiRequestError }
-  | { kind: "review"; submission: Submission; result: GuiArchiveImportResult }
-  | { kind: "complete"; submission: Submission; result: GuiArchiveImportResult };
+  | { kind: "review"; submission: PreviewSubmission; result: GuiArchiveImportResult }
+  | { kind: "complete"; submission: ApplySubmission; result: GuiArchiveImportResult };
 
 /**
  * One immutable upload/options pair owns preview and apply. Lost observation never repeats a write.
@@ -60,14 +59,14 @@ function ArchiveImportDialog({ backend, onClose, onImported }: { backend: Worksp
   const [state, setState] = useState<ImportState>({ kind: "editing" });
   const active = useRef<AbortController | null>(null);
   useEffect(() => () => active.current?.abort(), []);
-  const busy = state.kind === "reading" || state.kind === "running";
+  const busy = state.kind === "reading" || state.kind === "verifying" || state.kind === "running";
   const locked = busy || state.kind === "lost";
   const result = state.kind === "review" || state.kind === "complete" ? state.result : null;
   const error = state.kind === "editing" || state.kind === "lost" ? state.error : undefined;
   const key = expectKey.trim().toLowerCase();
   const validKey = !key || /^[a-f0-9]{64}$/u.test(key);
 
-  const execute = async (submission: Submission, ticket?: string) => {
+  const execute = async (submission: ApplySubmission, ticket?: string) => {
     if (active.current) return;
     const controller = new AbortController();
     active.current = controller;
@@ -75,8 +74,8 @@ function ArchiveImportDialog({ backend, onClose, onImported }: { backend: Worksp
     setState({ kind: "running", submission, ...(ticket ? { ticket } : {}) });
     try {
       if (!operationId) {
-        const started = await backend.request(submission.kind === "preview" ? "/api/imports/preview" : "/api/imports", GuiOperationTicket, controller.signal, {
-          method: "POST", body: { ...submission.input, ...(submission.kind === "apply" ? { sha256: submission.sha256 } : {}) },
+        const started = await backend.request("/api/imports", GuiOperationTicket, controller.signal, {
+          method: "POST", body: { ...submission.input, sha256: submission.sha256 },
         });
         operationId = started.id;
         setState({ kind: "running", submission, ticket: operationId });
@@ -94,7 +93,7 @@ function ArchiveImportDialog({ backend, onClose, onImported }: { backend: Worksp
         return;
       }
       const completed = Schema.decodeUnknownSync(GuiArchiveImportResult)(operation.result);
-      setState(submission.kind === "preview" ? { kind: "review", submission, result: completed } : { kind: "complete", submission, result: completed });
+      setState({ kind: "complete", submission, result: completed });
     } catch (cause) {
       if (controller.signal.aborted) return;
       const failure = requestError(cause);
@@ -102,10 +101,9 @@ function ArchiveImportDialog({ backend, onClose, onImported }: { backend: Worksp
         setState({ kind: "lost", submission, ticket: operationId, error: failure });
         return;
       }
-      // Preview is read-only and cannot write the archive, so a lost start response returns to editing.
       // For apply, only a non-2xx response confirms rejection; transport or success-decoding failures may hide a started run.
       const rejected = cause instanceof GuiRequestError && cause.httpStatus !== undefined && (cause.httpStatus < 200 || cause.httpStatus >= 300);
-      if (submission.kind === "preview" || rejected) setState({ kind: "editing", error: failure });
+      if (rejected) setState({ kind: "editing", error: failure });
       else setState({ kind: "lost", submission, error: failure });
     } finally { active.current = null; }
   };
@@ -123,8 +121,10 @@ function ArchiveImportDialog({ backend, onClose, onImported }: { backend: Worksp
       reader.readAsDataURL(file);
       const base64 = await promise;
       controller.signal.throwIfAborted();
-      active.current = null;
-      await execute({ kind: "preview", input: { base64, replace, ...(key ? { expectKey: key } : {}) } });
+      const input = { base64, replace, ...(key ? { expectKey: key } : {}) };
+      setState({ kind: "verifying" });
+      const result = await backend.request("/api/imports/preview", GuiArchiveImportResult, controller.signal, { method: "POST", body: input });
+      if (!controller.signal.aborted) setState({ kind: "review", submission: { kind: "preview", input }, result });
     } catch (cause) { if (!controller.signal.aborted) setState({ kind: "editing", error: requestError(cause) }); }
     finally { if (active.current === controller) active.current = null; }
   };
@@ -138,7 +138,7 @@ function ArchiveImportDialog({ backend, onClose, onImported }: { backend: Worksp
         <div className="space-y-2"><Label htmlFor="archive-signer">Expected signing key fingerprint (optional)</Label><Input id="archive-signer" value={expectKey} onChange={(event) => { setExpectKey(event.target.value); edit(); }} placeholder="64 hex digits" /><p className="text-sm text-muted-foreground">From canonfig status on a trusted Source; leave blank to accept any signer or an unsigned archive.</p>{!validKey && <p role="alert" className="text-sm text-destructive">Enter all 64 hexadecimal digits.</p>}</div>
         <label className="flex items-start gap-3 text-sm"><Checkbox checked={replace} onCheckedChange={(value) => { setReplace(value === true); edit(); }} /><span>Allow replacement of existing folder entries<span className="mt-1 block text-muted-foreground">Matching whole files or directories are snapshotted to ~/.canonfig/.backups/ before replacement; canonfig restore puts them back.</span></span></label>
       </fieldset>}
-      {busy && <p role="status">{state.kind === "reading" ? "Reading archive…" : state.submission.kind === "preview" ? "Verifying archive…" : "Importing archive…"}</p>}
+      {busy && <p role="status">{state.kind === "reading" ? "Reading archive…" : state.kind === "verifying" ? "Verifying archive…" : "Importing archive…"}</p>}
       {error && <ErrorNotice error={error} title={state.kind === "lost" ? "Operation observation lost" : "Archive import failed"} />}
       {state.kind === "lost" && <div className="space-y-2 text-sm">{state.ticket ? <><Prop label="Operation"><Mono>{state.ticket}</Mono></Prop><Button onClick={() => void execute(state.submission, state.ticket)}>Resume observation</Button></> : <p>Check canonfig status, recover any interrupted run with canonfig recover, then reopen the GUI.</p>}</div>}
       {result && <div className="space-y-2 text-sm">

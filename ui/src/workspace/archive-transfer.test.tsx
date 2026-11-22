@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { after, it } from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { request, type WorkspaceBackend } from "../gui-client";
@@ -18,14 +17,13 @@ const { TooltipProvider } = await import("../components/ui/tooltip");
 after(async () => { await GlobalRegistrator.unregister(); });
 
 type ApplyResponse = "disconnect" | "unreadable" | "invalid-ticket" | "rejected" | "poll-failure";
-type PreviewResponse = "ok" | "disconnect" | "unreadable" | "invalid-ticket" | "poll-failure";
+type PreviewResponse = "ok" | "disconnect" | "unreadable" | "invalid-result";
 const result = { sha256: "a".repeat(64), manifestSha256: "b".repeat(64), signer: "unsigned", folderFiles: 1, replaced: [], plan: {} };
 async function fixture(applyResponse: ApplyResponse, previewResponse: PreviewResponse = "ok") {
   let previewSubmissions = 0;
-  let previewObservations = 0;
   let submissions = 0;
   let observations = 0;
-  let failPreviewOnce = previewResponse !== "ok" && previewResponse !== "poll-failure";
+  let failPreviewOnce = previewResponse !== "ok";
   const server = createServer((incoming, outgoing) => {
     outgoing.setHeader("Content-Type", "application/json");
     outgoing.setHeader("Access-Control-Allow-Origin", "http://localhost");
@@ -36,25 +34,16 @@ async function fixture(applyResponse: ApplyResponse, previewResponse: PreviewRes
     incoming.on("end", () => {
       if (incoming.url === "/api/imports/preview") {
         previewSubmissions++;
-        outgoing.statusCode = 202;
         if (failPreviewOnce) {
           failPreviewOnce = false;
           switch (previewResponse) {
             case "disconnect": outgoing.destroy(); break;
             case "unreadable": outgoing.end("not JSON"); break;
-            case "invalid-ticket": outgoing.end(JSON.stringify({ wrong: "ticket" })); break;
+            case "invalid-result": outgoing.end(JSON.stringify({ wrong: "result" })); break;
           }
           return;
         }
-        outgoing.end(JSON.stringify({ id: "preview" }));
-      } else if (incoming.url === "/api/operations/preview") {
-        previewObservations++;
-        if (previewResponse === "poll-failure" && previewObservations === 1) {
-          outgoing.statusCode = 500;
-          outgoing.end(JSON.stringify({ category: "internal", exitCode: 1, message: "Preview observation unavailable" }));
-        } else {
-          outgoing.end(JSON.stringify({ id: "preview", state: "succeeded", journal: null, result }));
-        }
+        outgoing.end(JSON.stringify(result));
       } else if (incoming.url === "/api/imports") {
         submissions++;
         outgoing.statusCode = 202;
@@ -89,7 +78,6 @@ async function fixture(applyResponse: ApplyResponse, previewResponse: PreviewRes
   await act(async () => root.render(<TooltipProvider><ArchiveImportButton backend={backend} /></TooltipProvider>));
   return {
     get previewSubmissions() { return previewSubmissions; },
-    get previewObservations() { return previewObservations; },
     get submissions() { return submissions; },
     get observations() { return observations; },
     failNextPreview() { failPreviewOnce = true; },
@@ -106,11 +94,12 @@ function button(text: string) {
 }
 async function click(text: string) { await act(async () => button(text).click()); }
 async function until(check: () => boolean) {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    if (check()) return;
-    await act(async () => { await delay(10); });
-  }
-  assert.fail("Archive flow did not reach the expected state");
+  if (check()) return;
+  // Resolve from the actual rendered result, including when the HTTP request fails.
+  const ready = Promise.withResolvers<void>();
+  const observer = new MutationObserver(() => { if (check()) ready.resolve(); });
+  observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+  try { await ready.promise; } finally { observer.disconnect(); }
 }
 async function selectArchive() {
   await click("Import archive");
@@ -126,7 +115,7 @@ async function preview() {
   await act(async () => consent.click());
 }
 
-for (const response of ["disconnect", "unreadable", "invalid-ticket"] as const) {
+for (const response of ["disconnect", "unreadable", "invalid-result"] as const) {
   it(`keeps read-only preview recoverable when the preview response is ${response}`, async () => {
     const app = await fixture("rejected", response);
     try {
@@ -165,27 +154,6 @@ it("allows dismissing the dialog after a lost preview response without a ticket"
     assert.equal(app.submissions, 0);
   } finally { await app.close(); }
 });
-it("resumes a known preview ticket without submitting another preview", async () => {
-  const app = await fixture("rejected", "poll-failure");
-  try {
-    await selectArchive();
-    await click("Verify and preview");
-    await until(() => !!document.body.textContent?.includes("Operation observation lost"));
-    assert.ok(document.body.textContent?.includes("preview"));
-    assert.equal(document.body.textContent?.includes("canonfig recover"), false);
-    assert.ok(button("Cancel").disabled);
-    assert.equal([...document.querySelectorAll("button")].some((entry) => entry.textContent === "Verify and preview"), false);
-    assert.ok(document.getElementById("archive-file")?.closest("fieldset[disabled]"));
-    await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
-    assert.ok(document.querySelector('[role="dialog"]'));
-    await click("Resume observation");
-    await until(() => !!document.querySelector('[role="status"]')?.textContent?.includes("Ready to import"));
-    assert.equal(app.previewSubmissions, 1);
-    assert.equal(app.previewObservations, 2);
-    assert.equal(app.submissions, 0);
-  } finally { await app.close(); }
-});
-
 for (const response of ["disconnect", "unreadable", "invalid-ticket"] as const) {
   it(`keeps import locked when the apply response is ${response}`, async () => {
     const app = await fixture(response);
