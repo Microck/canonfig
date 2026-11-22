@@ -171,8 +171,11 @@ Active commands defer installation. Active or unfinished Synchronization Runs
 also defer it: finish, recover or abandon the run before retrying. After activation,
 the command restarts under the new executable and performs the requested sync.
 Only a fresh Converged receipt at the target version admits the next follower.
-A failed health check halts the rollout. An admitted follower with no health
-report within one hour halts when it next polls; other followers stay queued.
+A failed health check halts the rollout. If an admitted follower has not
+completed its health check within one hour, status shows the rollout as halted
+even if that follower stays offline. A deferral keeps the original deadline.
+The next follower poll or report records the halt. Start and stop previews leave
+the rollout record alone. Other followers stay queued.
 
 Stop prevents new admission and cancels staging at its final admission check.
 It cannot undo an activation already past that check. Inspect the failed follower's
