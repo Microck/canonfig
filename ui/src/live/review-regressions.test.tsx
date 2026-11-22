@@ -26,7 +26,7 @@ const { RevisionsView, SecretsView } = await import("../workspace/source");
 const { FollowerOperationEvidence } = await import("../workspace/follower-evidence");
 const { SetupJournal } = await import("../onboarding/enrollment-controller");
 const { TooltipProvider } = await import("../components/ui/tooltip");
-const { AgentPolicyView, InstallersView } = await import("../workspace/settings");
+const { AgentPolicyView, InstallersView, VersionView } = await import("../workspace/settings");
 after(async () => { await GlobalRegistrator.unregister(); });
 
 function Probe() {
@@ -72,6 +72,7 @@ function Fixture({ backend, session }: { backend: WorkspaceBackend; session: Gui
     {route.view === "revisions" && <RevisionsView />}
     {route.view === "agent" && <AgentPolicyView />}
     {route.view === "installers" && <InstallersView />}
+    {route.view === "version" && <VersionView />}
     {route.view === "sync" ? <SyncView /> : route.role === "follower" && <FollowerOperationEvidence />}
   </LiveWorkspaceProvider></TooltipProvider>;
 }
@@ -147,6 +148,48 @@ const sourceResponses = () => ({
   "/api/skills": { version: 1, skills: [] },
   "/api/secrets": { secrets: [] },
   "/api/machines": { followers: [follower], invitations: [], health: {} },
+});
+
+it("refreshes the canary inventory and excludes pending and revoked followers", async () => {
+  const responses = {
+    ...sourceResponses(),
+    "/api/source-service": { report: null, error: null },
+    "/api/fleet-update": null,
+    "/api/self-update": { platform: "linux", enabled: false, pending: false, settings: null },
+    "/api/machines": {
+      followers: [
+        follower,
+        { ...follower, id: "pending-follower", name: "Pending laptop", pending: true },
+        { ...follower, id: "revoked-follower", name: "Revoked laptop", revoked: true },
+      ],
+      invitations: [], health: {},
+    },
+  };
+  const app = await fixture("/source/settings/version", responses);
+  const options = () => Array.from(app.container.querySelectorAll("#fleet-canary ~ select option"), (option) => option.textContent).filter(Boolean);
+  const initial = Promise.withResolvers<void>();
+  const refreshed = Promise.withResolvers<void>();
+  const updateInventory = () => {
+    const names = options();
+    if (names.includes(follower.name)) initial.resolve();
+    if (names.includes("New laptop")) refreshed.resolve();
+  };
+  const inventoryObserver = new MutationObserver(updateInventory);
+  inventoryObserver.observe(app.container, { subtree: true, childList: true });
+  updateInventory();
+  try {
+    await initial.promise;
+    assert.deepEqual(options(), [follower.name]);
+    responses["/api/machines"].followers = [
+      { ...follower, revoked: true },
+      { ...follower, id: "fresh-follower", name: "New laptop" },
+    ];
+    await click("Refresh followers");
+    await refreshed.promise;
+    assert.deepEqual(options(), ["New laptop"]);
+    assert.equal(app.requests.filter((entry) => entry === "GET /api/machines").length, 2);
+    assert.deepEqual(app.mutations, []);
+  } finally { inventoryObserver.disconnect(); await app.close(); }
 });
 
 for (const path of ["/source/secrets", "/source/profile/groups"]) {
