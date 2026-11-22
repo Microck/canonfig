@@ -14,7 +14,8 @@ The Configuration Agent is part of the product contract, but it is not the sourc
 3. Canonfig always produces and records a plan before it changes a follower.
 4. Transfer behavior and apply behavior are separate. Transfers are content-addressed and incremental; each Profile Resource declares its own Apply Policy.
 5. A modified follower skill is Follower Drift. Canonfig preserves it and reports the conflict instead of overwriting it.
-6. Credentials are referenced and verified, not copied from the Source Machine.
+6. Profile credential resources verify local references. A separate shared-secret
+   flow transfers explicitly shared values only to authorized Followers.
 7. Deterministic Installation Recipes run before any Agent Task is considered.
 8. An Agent Task has explicit allowed paths, commands, network origins, time limits, and completion checks.
 9. Scheduled sync uses the same command path as an interactive sync. There is no second reconciliation implementation.
@@ -55,7 +56,7 @@ The Configuration Agent is part of the product contract, but it is not the sourc
        platform adapters      and run journal   + controlled executor
 ```
 
-The CLI and native schedulers are thin adapters. They decode input, call a deep module, render the typed outcome, and set the process exit code.
+The CLI and native schedulers decode input, call domain services, render the typed outcome and set the process exit code. The live GUI calls the same services through authenticated browser routes. See the [CLI/GUI capability matrix](plans/canonfig-ui.md#screen-and-action-inventory).
 
 ## Deep modules
 
@@ -94,7 +95,7 @@ The caller does not fetch a profile, open SQLite, inspect the machine, or invoke
 
 `Enrollment` owns Source Machine identity, one-time enrollment invitations, Follower Identity issuance, group membership, credential rotation, and revocation.
 
-An enrollment link contains an HTTPS endpoint, a pinned source certificate fingerprint, and a short-lived one-time token. After enrollment, each follower uses its own revocable credential. A source-signed revision remains independently verifiable after download.
+A private invitation envelope contains an HTTPS endpoint, a pinned Source certificate fingerprint and a short-lived single-use token. After enrollment, each follower uses its own revocable credential. A source-signed revision remains independently verifiable after download.
 
 Transport uses pinned HTTPS over either a loopback SSH tunnel or a direct
 Tailscale/Headscale connection. Opt-in tailnet listeners use LocalAPI discovery,
@@ -119,7 +120,7 @@ Platform adapters return domain values. They do not expose raw command output or
 
 ### AgentResolution
 
-`AgentResolution` accepts an Agent Task and returns a typed proposal or completion record. AI harness adapters sit behind this seam. The first release may ship one adapter, but tests use a recording adapter through the same interface.
+`AgentResolution` accepts an Agent Task and returns a typed proposal or completion record. Codex, Claude Code and custom command adapters sit behind this seam.
 
 The agent cannot directly change the published profile. Discovery or repair suggestions become Profile Change Proposals on the Source Machine. Follower-side Agent Tasks may change only resources and commands authorized by the active plan.
 
@@ -623,7 +624,7 @@ Service tags, implementing layers, public errors, and domain types remain separa
 Canonfig does not provide:
 
 - bidirectional synchronization
-- automatic copying of source credentials
+- copying of Source identity credentials or undeclared local secrets
 - silent conflict resolution for modified skills
 - arbitrary whole-home-directory backup
 - a hosted fleet control plane

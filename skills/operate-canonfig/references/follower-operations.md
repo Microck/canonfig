@@ -130,9 +130,10 @@ canonfig agent harness
 `doctor` runs ten probes: `runtime`, `state`, `credentials`, `source`,
 `scheduler`, `package-managers`, `agent-adapter`, `harnesses`, `mcp` and
 `tailscale`. The `harnesses` probe warns `listed but not installed: <ids>` and
-reports pinned roots and snapshots. The `mcp` probe starts every MCP server the
-installed harnesses declare and lists each failing one. Doctor then sends the
-report to the Source, which shows it under Health in that machine's details.
+reports pinned roots and snapshots. The `mcp` probe checks enabled stdio,
+Streamable HTTP and HTTP+SSE servers. It leaves remote OAuth sign-in to the
+harness. Doctor sends the report to the Source, which shows it under Health
+in that machine's details.
 `status` reports only this follower, so its own `canonfig status` remains its
 completion evidence.
 
@@ -207,8 +208,8 @@ canonfig sync --apply
 
 ## Rotate, replace, or unenroll
 
-- Same name with a new invitation: rotates the credential and keeps agent
-  policy, harness bindings, and schedule choice.
+- Same name after revocation on the Source: a new invitation rotates the
+  credential and keeps agent policy, harness bindings, and schedule choice.
 - `canonfig follower enroll --stdin --name <new> --replace`: enrolls a new
   identity, revokes the old one, and lists in `resets` what it reset (agent
   policy, harness and secret bindings, schedule choice). Requires explicit

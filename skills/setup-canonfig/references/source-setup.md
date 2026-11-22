@@ -252,11 +252,11 @@ healthy login-free Source. On macOS, run `install` from the desktop session, not
 logged-out operation is not supported. For a trial,
 `canonfig source serve --host 127.0.0.1 --port 17342` runs it in the foreground.
 
-Omit `--group` when no group is intended. Tailscale peers are not valid direct
-invitation endpoints. For a remote machine, use Canonfig's managed,
-TLS-transparent loopback tunnel with the invitation and the Source's SSH host
-public key, read on the Source itself. Start the Source before the tunnel.
-Record the follower-local loopback origin separately from the source host.
+Omit `--group` when no group is intended. For direct tailnet enrollment, use
+the MagicDNS HTTPS endpoint printed by `canonfig source service install --tailnet`.
+For a remote Source serving on loopback, use Canonfig's managed tunnel with
+the Source's SSH host public key. Record the Follower-local loopback origin
+separately from the Source host.
 
 Offer numbered choices for follower identity, declared groups, lifetime, secure
 delivery, and any shared-secret grant. Recommend minimum scope, 15m proposed

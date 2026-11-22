@@ -20,7 +20,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const { LiveWorkspaceProvider } = await import("../workspace/live-provider");
 const { createRoot } = await import("react-dom/client");
 const { ProfileView } = await import("../workspace/profile");
-const { LocalView } = await import("../workspace/follower");
+const { LocalView, SyncView } = await import("../workspace/follower");
 const { RevisionsView, SecretsView } = await import("../workspace/source");
 const { FollowerOperationEvidence } = await import("../workspace/follower-evidence");
 const { SetupJournal } = await import("../onboarding/enrollment-controller");
@@ -70,7 +70,7 @@ function Fixture({ backend, session }: { backend: WorkspaceBackend; session: Gui
     {route.view === "revisions" && <RevisionsView />}
     {route.view === "agent" && <AgentPolicyView />}
     {route.view === "installers" && <InstallersView />}
-    {route.role === "follower" && <FollowerOperationEvidence />}
+    {route.view === "sync" ? <SyncView /> : route.role === "follower" && <FollowerOperationEvidence />}
   </LiveWorkspaceProvider></TooltipProvider>;
 }
 
@@ -482,6 +482,45 @@ it("offers ticket recovery even when the first operation observation fails", asy
     await until(() => app.container.querySelector('[data-testid="command"]')?.textContent?.includes("ObservationLost") === true, "First-poll failure lost the ticket");
     await click("Resume observation");
     await until(() => app.container.querySelector('[data-testid="can-apply"]')?.textContent === "true", "First-poll recovery did not complete the plan");
+  } finally { await app.close(); }
+});
+
+it("labels the running sync command without suggesting a plan applies changes", async () => {
+  const planReply = Promise.withResolvers<ServerResponse>();
+  const applyReply = Promise.withResolvers<ServerResponse>();
+  const app = await fixture("/follower/sync", {
+    ...sourceResponses(), "/api/tunnel": { lifecycle: "not-configured" },
+    "/api/sync/plan": { id: "plan" }, "/api/sync/apply": { id: "apply" },
+  }, (path, _method, _body, outgoing) => {
+    if (path === "/api/operations/plan") planReply.resolve(outgoing);
+    else if (path === "/api/operations/apply") applyReply.resolve(outgoing);
+    else return false;
+    return true;
+  });
+  const check = () => app.container.querySelector<HTMLButtonElement>('[data-tour="sync-check"]');
+  const apply = () => app.container.querySelector<HTMLButtonElement>('[data-tour="sync-apply"]');
+  try {
+    assert.equal(check()?.disabled, false);
+    await act(async () => {
+      check()?.click();
+      await planReply.promise;
+    });
+    const planned = await planReply.promise;
+    assert.equal(check()?.textContent?.trim(), "Checking…");
+    assert.equal(apply()?.textContent?.trim(), "Apply changes");
+    assert.equal(apply()?.disabled, true);
+    await act(async () => { planned.end(JSON.stringify({ id: "plan", state: "succeeded", journal: null, result: { planDigest: "a".repeat(64) } })); });
+    await until(() => apply()?.disabled === false, "Plan did not enable Apply");
+
+    await act(async () => {
+      apply()?.click();
+      await applyReply.promise;
+    });
+    const applied = await applyReply.promise;
+    assert.equal(check()?.textContent?.trim(), "Check for updates");
+    assert.equal(apply()?.textContent?.trim(), "Applying…");
+    await act(async () => { applied.end(JSON.stringify({ id: "apply", state: "succeeded", journal: null, result: {} })); });
+    await until(() => apply() === null, "Finished apply still showed its button");
   } finally { await app.close(); }
 });
 

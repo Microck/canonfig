@@ -512,6 +512,12 @@ function SyncForm() {
   const current = steps.find((p) => p.resource === selected);
   const unchanged = Math.max(0, sent - steps.length);
   const running = ws.phase === "running";
+  const command = live?.command;
+  const activeCommand = running && command && "command" in command ? command.command : undefined;
+  const planning = checking || activeCommand === "plan";
+  const applying = live ? activeCommand === "apply" : running;
+  const planLabel = localProjection ? "Plan local changes" : "Check for updates";
+  const planningLabel = localProjection ? "Planning…" : "Checking…";
   const step = ws.progress === undefined ? undefined : Math.min(steps.length, Math.floor((ws.progress / 100) * steps.length) + 1);
 
   return (
@@ -537,7 +543,7 @@ function SyncForm() {
                 }, 900);
               }}
             >
-              {checking && <HourglassMedium />} {checking ? "Checking…" : localProjection ? "Plan local changes" : "Check for updates"}
+              {planning && <HourglassMedium />} {planning ? planningLabel : planLabel}
             </Button>
             {ws.phase !== "done" && (
               <Button
@@ -547,7 +553,7 @@ function SyncForm() {
                 onClick={ws.applyPlan}
                 data-tour="sync-apply"
               >
-                {running ? "Applying…" : "Apply changes"}
+                {applying ? "Applying…" : "Apply changes"}
               </Button>
             )}
           </>

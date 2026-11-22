@@ -44,9 +44,9 @@ candidates, not ownership, authorization, or a requirement to enable them.
 | Source device | Exactly one machine publishes | Keep confirmed Source; this machine; one explicitly selected visible peer; manual candidate |
 | Follower devices | Defines the requested fleet | Current machine; selected peers (multi-select); manual inventory; none yet |
 | Discovery refresh | Keeps selections tied to identities | Keep displayed snapshot; refresh with consent; manual entry |
-| Connection / endpoint | Must preserve Canonfig loopback TLS pinning | Existing verified loopback origin; operator-managed TLS-transparent tunnel; defer |
+| Connection / endpoint | Preserves Canonfig TLS and signing pins | Direct tailnet via MagicDNS HTTPS, local loopback, managed tunnel for remote loopback, defer |
 | Source port / follower local port | Tunnel ports can differ between machines | Keep existing; observed free candidate; custom valid port |
-| Tunnel ownership / availability | Scheduled sync needs the tunnel running | Keep verified operator-managed tunnel; manual-only sync; defer scheduling |
+| Tunnel ownership / availability | A remote loopback invitation needs a tunnel | Keep verified managed tunnel, manual sync, defer scheduling |
 | Remote account / access | Device visibility is not OS login permission | Existing explicitly confirmed account; manual handoff; defer |
 
 OS, architecture, shell, and tool availability are observations. When disputed,

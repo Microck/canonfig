@@ -73,8 +73,8 @@ own `local/`.
 
 ## Keep the Source serving
 
-Followers fetch from the loopback HTTPS endpoint, so the Source must be serving
-when they sync. Supervise it as a native user service:
+Followers fetch from the Source when they sync. Supervise the Source as a
+native user service:
 
 ```bash
 canonfig source service install
@@ -86,7 +86,8 @@ canonfig source service status
 `drifted` (rerun `install`). `canonfig source service remove` removes it. See
 [platform boundaries](platform-boundaries.md) for when each platform's service
 runs. `canonfig source serve --host 127.0.0.1 --port 17342` is the foreground
-form; stop it before installing the service on the same port.
+form; stop it before installing the service on the same port. For direct
+remote access, see the [tailnet guide](https://canonfig.micr.dev/docs/how-to/connect-over-tailnet/).
 
 ## Invitations and groups
 

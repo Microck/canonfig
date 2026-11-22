@@ -95,7 +95,8 @@ The workflow performs the release in this order:
 1. resolve the package version and verify that `CHANGELOG.md` has a non-empty
    section for it;
 2. verify that npm and Git do not already contain the version;
-3. install locked dependencies and rerun the complete validation matrix;
+3. install locked dependencies and run the release validation steps on Ubuntu;
+   cross-platform acceptance runs on the preparation pull request;
 4. publish `@microck/canonfig` through npm trusted publishing, which generates
    provenance automatically;
 5. create the matching `vX.Y.Z` tag and GitHub release from that version's
