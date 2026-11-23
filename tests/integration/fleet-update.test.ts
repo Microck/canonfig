@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect, Layer, ManagedRuntime, Schema } from "effect";
 import { expect, it } from "vitest";
-import { fakeSsh, freePort } from "../fixtures/tunnel-forwarder.ts";
+import { fakeSsh, freePort, stopLinuxFakeSsh } from "../fixtures/tunnel-forwarder.ts";
 import { runCli } from "../../src/cli/cli.ts";
 import { SourceCommands } from "../../src/cli/source-commands.ts";
 import { FollowerCommands } from "../../src/cli/follower-commands.ts";
@@ -283,12 +283,16 @@ it("reports the published Source revision after a real follower projection conve
       restart: false, startedAt: null, deferredCheck: "The Source could not complete the Fleet Update request",
     });
   } finally {
-    lease.close();
-    if (process.platform !== "win32") await Effect.runPromise(Effect.flatMap(Tunnel, (tunnel) =>
-      tunnel.stopTunnel({ stateDirectory: tunnelDirectory })).pipe(Effect.provide(TunnelLive), Effect.ignore));
-    await close?.();
-    await follower.runtime.dispose();
-    await source.runtime.dispose();
-    rmSync(home, { recursive: true, force: true });
+    try {
+      lease.close();
+      await close?.();
+      await follower.runtime.dispose();
+      await source.runtime.dispose();
+    } finally {
+      if (process.platform === "linux") await stopLinuxFakeSsh(follower.directory);
+      if (process.platform !== "win32") await Effect.runPromise(Effect.flatMap(Tunnel, (tunnel) =>
+        tunnel.stopTunnel({ stateDirectory: tunnelDirectory })).pipe(Effect.provide(TunnelLive)));
+      rmSync(home, { recursive: true, force: true });
+    }
   }
 });
