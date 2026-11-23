@@ -89,9 +89,13 @@ export function configEdits(path: readonly (string | number)[], before: Schema.J
   }
   return [{ path, ...(after === undefined ? {} : { value: after }) }];
 }
-function fieldValue(resource: Resource): Record<string, Schema.Json> {
+export function fieldValue(resource: Resource): Record<string, Schema.Json> {
   const values: Record<string, Schema.Json> = {};
   for (const [key, label] of Object.entries(fields[resource.category] ?? {})) {
+    if (resource.category === "mcp") {
+      const isStdio = (resource.detail.Transport ?? "stdio") === "stdio";
+      if (isStdio ? key === "url" : key === "command" || key === "args") continue;
+    }
     const text = resource.detail[label];
     if (text === undefined || text === "" || key === "keys") continue;
     values[key] = key === "matcher" ? { capabilities: text.split(",").map((value) => value.trim()).filter(Boolean) } : listFields[key] ? text.split(",").map((value) => value.trim()).filter(Boolean) : key === "args" || key === "run" ? text.trim().split(/\s+/) : key === "writable" ? text === "true" : text;

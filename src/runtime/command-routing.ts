@@ -48,6 +48,14 @@ export const skillsArguments = (arguments_: ReadonlyArray<string>): ReadonlyArra
 export const validMcpRunArguments = (args: ReadonlyArray<string>): boolean =>
   args.length === 2 && args[0] === "run" && /^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(args[1]!);
 
+export const parseMcpProxyArguments = (args: ReadonlyArray<string>): { readonly port?: number } | undefined => {
+  if (args.length === 1 && args[0] === "proxy") return {};
+  const [command, flag, value] = args;
+  if (args.length !== 3 || command !== "proxy" || flag !== "--port" || !value || !/^\d+$/u.test(value)) return undefined;
+  const port = Number(value);
+  return port >= 1 && port <= 65535 ? { port } : undefined;
+};
+
 export const isReportIssueCommand = (args: ReadonlyArray<string>): boolean =>
   args.find((argument) => argument !== "--json") === "report-issue";
 

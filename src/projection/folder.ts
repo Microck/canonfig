@@ -12,6 +12,7 @@ import { TaggedError } from "../domain/tagged-error.ts";
 import { canonicalJson, sha256BytesHex, sha256Hex } from "../profile/profile-codec.ts";
 import { SecretNameSchema } from "../secrets/secret-store.ts";
 import { parseMarkdownDocument } from "./frontmatter.ts";
+import { isMcpProxyUpstream, usesSharedSecret } from "./mcp-launcher.ts";
 import {
   APPEND_LOCAL_CATEGORIES,
   CAPABILITIES,
@@ -109,8 +110,17 @@ const McpServerInput = Schema.Union([
     transport: Schema.Literals(["streamable-http", "sse"]),
     url: Schema.NonEmptyString,
     headers: Schema.optional(SecretMap),
+    proxy: Schema.optional(Schema.Literal(true)),
     ...McpCommon,
-  }),
+  }).check(Schema.makeFilter((server) => {
+    if (!server.proxy) return undefined;
+    if (server.transport !== "streamable-http" || !usesSharedSecret({ ...server, headers: server.headers ?? {} })) {
+      return { path: ["proxy"], issue: "requires Streamable HTTP with a fromSecret header" };
+    }
+    return !isMcpProxyUpstream(server.url)
+      ? { path: ["url"], issue: "the proxy requires an HTTPS URL or a loopback HTTP URL without userinfo or a fragment" }
+      : undefined;
+  })),
 ]);
 const McpMap = Schema.Record(identifier, McpServerInput);
 
@@ -660,6 +670,7 @@ const mcpServer = (input: FolderMcpServer): McpServer =>
       transport: input.transport,
       url: input.url,
       headers: input.headers ?? {},
+      proxy: input.proxy,
       timeoutMs: input.timeoutMs,
       enabledTools: input.enabledTools,
       disabledTools: input.disabledTools,
@@ -1011,16 +1022,22 @@ const loadResources = async <File extends { readonly executable: boolean }>(
   return resources;
 };
 
+const requireFolderConfig = async (source: FolderSource) => {
+  const configPath = join(source.folder, "canonfig.jsonc");
+  const config = await readJsonc(source, configPath, CanonfigJsonc);
+  if (config === undefined) {
+    throw failure(configPath, "does not exist; scaffold the folder with 'canonfig setup plan --role source', or enroll this machine as a follower");
+  }
+  return config;
+};
+
 const loadAuthored = async <File extends { readonly executable: boolean }>(
   source: FolderSource,
   reader: FileReader<File>,
 ): Promise<AuthoredFolder<File>> => {
   const folder = source.folder;
   const configPath = join(folder, "canonfig.jsonc");
-  const config = await readJsonc(source, configPath, CanonfigJsonc);
-  if (config === undefined) {
-    throw failure(configPath, "does not exist; scaffold the folder with 'canonfig setup plan --role source', or enroll this machine as a follower");
-  }
+  const config = await requireFolderConfig(source);
   return {
     config,
     instructions: await readText(source, join(folder, "AGENTS.md")),
@@ -1095,6 +1112,52 @@ const loadLocalFolder = async (source: FolderSource, allow: ReadonlyArray<LocalC
   return { localPath, localDirectory, localConfig, ignoredLocal, overlayEntries, overlays, mergeItems };
 };
 
+const effectiveMcp = (
+  config: FolderConfig,
+  { localPath, localConfig, overlays, ignoredLocal }: Awaited<ReturnType<typeof loadLocalFolder>>,
+) => {
+  const published = Object.entries(config.mcp ?? {});
+  let local = Object.entries(localConfig.mcp ?? {});
+  if (local.length > 0 && !config.local?.allow?.includes("mcp")) {
+    ignoredLocal.push("local/local.jsonc mcp");
+    local = [];
+  }
+  const servers = addLocal(published, local, ([name]) => name, "mcp", "MCP server", localPath, overlays);
+  return { published, local, servers };
+};
+
+/** A proxy request uses the same overlay rules as projection, without loading unrelated files. */
+export const loadMcpServer = async (folder: string, name: string): Promise<McpServer | undefined> => {
+  const source = diskSource(folder);
+  const configPath = join(folder, "canonfig.jsonc");
+  const localPath = join(folder, "local", "local.jsonc");
+  const stamp = async (path: string) => {
+    try {
+      const file = await lstat(path, { bigint: true });
+      return `${file.dev}:${file.ino}:${file.ctimeNs}:${file.mtimeNs}:${file.size}`;
+    } catch (error) {
+      if (error instanceof Error && isMissing(error)) return "";
+      throw error;
+    }
+  };
+  const stamps = () => Promise.all([stamp(configPath), stamp(localPath)]).then((files) => files.join("|"));
+  // Atomic replacements can happen between the two reads. Reload once if
+  // either authoring file changed before the whole pair was read.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const before = await stamps();
+    try {
+      const config = await requireFolderConfig(source);
+      const localFolder = await loadLocalFolder(source, config.local?.allow ?? []);
+      const { servers } = effectiveMcp(config, localFolder);
+      const server = servers.find(([candidate]) => candidate === name)?.[1];
+      if (before === await stamps()) return server === undefined || server.enabled === false ? undefined : mcpServer(server);
+    } catch (error) {
+      if (before === await stamps()) throw error;
+    }
+  }
+  throw failure(configPath, "MCP configuration changed while it was read. Retry the request.");
+};
+
 export interface FolderSkillNames {
   readonly items: ReadonlyArray<{
     readonly category: "skills" | "commands";
@@ -1138,8 +1201,8 @@ const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => 
   const authored = await loadAuthored(source, loading);
   const config = authored.config;
   const allow = config.local?.allow ?? [];
-  const { localPath, localDirectory, localConfig, ignoredLocal, overlayEntries, overlays, mergeItems } =
-    await loadLocalFolder(source, allow);
+  const localFolder = await loadLocalFolder(source, allow);
+  const { localPath, localDirectory, localConfig, ignoredLocal, overlayEntries, overlays, mergeItems } = localFolder;
   const claims = overlayEntries.flatMap((entry): ReadonlyArray<KeyClaim> =>
     entry.kind === "claim" ? [{ harness: entry.harness, key: entry.key }] : []
   );
@@ -1158,13 +1221,8 @@ const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => 
   if (allow.includes("instructions")) localInstructions = await readText(source, localInstructionsPath);
   else if (await source.holdsEntries(localInstructionsPath)) ignoredLocal.push("local/AGENTS.md");
 
-  const publishedMcp = Object.entries(config.mcp ?? {});
-  let localMcp = Object.entries(localConfig.mcp ?? {});
-  if (localMcp.length > 0 && !allow.includes("mcp")) {
-    ignoredLocal.push("local/local.jsonc mcp");
-    localMcp = [];
-  }
-  const mcp = addLocal(publishedMcp, localMcp, ([name]) => name, "mcp", "MCP server", localPath, overlays)
+  const { published: publishedMcp, local: localMcp, servers } = effectiveMcp(config, localFolder);
+  const mcp = servers
     .filter(([, server]) => server.enabled !== false)
     .map(([name, server]) => [name, mcpServer(server)] as const)
     .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);

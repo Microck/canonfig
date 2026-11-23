@@ -32,7 +32,7 @@ import {
   type Resource,
 } from "@/shared/metadata";
 import { sharedKey, useSharedState, useWorkspace } from "./store";
-import { authoredItems, draftFiles, type ExactDraft } from "./profile-authoring";
+import { authoredItems, draftFiles, fieldValue, type ExactDraft } from "./profile-authoring";
 import type { GuiProfileSnapshot } from "../../../src/gui/contract/profile";
 import { GuiRequestError } from "../gui-client";
 import { ExactItemFields, ProfileActionNotice } from "./profile-authoring-controls";
@@ -970,6 +970,9 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
             </Field>
           );
         })}
+        {ws.profileLive && category === "mcp" && draft.detail.Transport === "streamable-http" && !exactContent && (
+          <Button type="button" variant="outline" size="sm" onClick={() => setExact({ json: JSON.stringify(fieldValue(draft), null, 2), files: [] })}>Edit MCP JSON</Button>
+        )}
         {ws.profileLive && category === "hooks" && !exactContent && (exact ? <ExactItemFields value={exact} onChange={setExact} path={`hooks/${trimmed}.sh`} /> : <Button type="button" variant="outline" size="sm" onClick={() => setExact({ files: [] })}>Add supporting files</Button>)}
         {ws.profileLive && category === "skills" && !isNew && !exact && <Button type="button" variant="outline" size="sm" disabled={dirty} onClick={() => setExact({ files: draftFiles(snapshot?.items.find((item) => item.path === authored?.itemPath)?.files ?? []) })}>Edit full file tree</Button>}
 

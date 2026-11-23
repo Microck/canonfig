@@ -33,9 +33,15 @@ The production entry is `ui/src/live-app.tsx`, selected through Vite's build-sel
 | Project Profile commands as native commands or Agent Skills | Harnesses → Surfaces → Commands, then Sync | Existing sync plan and apply; the Source selects the surfaces | Source setup can import existing native commands |
 | Machine-readable preview and submission (`report-issue`) | CLI | CLI | CLI |
 | Launch an MCP server with `canonfig mcp run` | Harness-managed CLI process | Harness-managed CLI process | Harness-managed CLI process |
+| Supervise the shared Streamable HTTP MCP proxy | `canonfig mcp proxy` in the login session | `canonfig mcp proxy` in the login session | The same command can start before the first sync |
+| Enable the proxy for an MCP server | Profile → MCP server → Edit MCP JSON | Apply the Source's setting using Sync, or use the JSON editor in Local settings for an allowed local MCP entry | Available in Profile after Source setup |
 
 The launcher hands stdio to an MCP server and forwards signals for the harness.
 Its lease ends after the child starts. The existing Version page handles user-initiated updates.
+
+The proxy command runs a foreground process for a service manager or terminal
+to supervise. Source and Follower can review and apply its harness projections
+through the existing Sync workflow.
 
 The browser links to the Canonfig issue templates and can revoke consent.
 Automatic opt-in stays with the agent or CLI because it authorizes filing

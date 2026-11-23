@@ -10,6 +10,7 @@ import { terminateProcessTree } from "../machine/linux.layer.ts";
 import { adapterFor } from "../projection/adapters/index.ts";
 import { detectHarnesses, emptyModel } from "../projection/detect.ts";
 import { MAX_CONFIG_BYTES } from "../projection/import.ts";
+import { isMcpProxyAuthorization, mcpProxyHost, mcpProxyRouteName } from "../projection/mcp-launcher.ts";
 import { prepareMcpRun } from "./mcp-run.ts";
 import type { RootContext } from "../projection/harness.ts";
 import type { TargetId } from "../projection/model.ts";
@@ -633,6 +634,15 @@ class ServerReplyFailure extends Error {}
 
 const probeHttp = async (launch: Extract<Launch, { kind: "http" }>, timeoutMilliseconds: number, cancel: AbortSignal): Promise<ProbeOutcome> => {
   const signal = AbortSignal.any([AbortSignal.timeout(timeoutMilliseconds), cancel]);
+  const url = URL.parse(launch.url);
+  // A projected route authenticates with a recognizable local token. Its
+  // upstream can echo credentials Doctor has no access to, even in HTTP 200.
+  const proxyRoute = url?.protocol === "http:" && url.hostname === mcpProxyHost
+    && mcpProxyRouteName(url.pathname) !== undefined
+    && Object.entries(launch.headers).some(([name, value]) =>
+      name.toLowerCase() === "authorization" && isMcpProxyAuthorization(value));
+  const replyError = (reply: Parameters<typeof rpcError>[0]) =>
+    proxyRoute ? "the upstream returned a JSON-RPC error" : rpcError(reply, launch.secrets);
   // With no configured headers, a 401 means the harness signs in with OAuth.
   const authorized = Object.keys(launch.headers).length > 0;
   // After initialize, requests carry the session and the negotiated protocol version, as the transport requires.
@@ -651,7 +661,7 @@ const probeHttp = async (launch: Extract<Launch, { kind: "http" }>, timeoutMilli
     const headers = requestHeaders();
     headers.set("Content-Type", "application/json");
     headers.set("Accept", "application/json, text/event-stream");
-    return fetch(pushUrl, { method: "POST", headers, body, signal, redirect: launch.sse ? "manual" : redirect });
+    return fetch(pushUrl, { method: "POST", headers, body, signal, redirect: launch.sse || proxyRoute ? "manual" : redirect });
   };
   const post = (body: RpcMessage) => send(JSON.stringify(body));
   const answer = async (body: string) => {
@@ -729,7 +739,7 @@ const probeHttp = async (launch: Extract<Launch, { kind: "http" }>, timeoutMilli
       // Recorded before the body is read, so the session is closed even if the body stalls or is invalid.
       if (!launch.sse) session = initialized.headers.get("mcp-session-id") ?? undefined;
       const reply = await readReply(initialized, 1);
-      if (reply?.result === undefined) return { status: "fail", detail: `initialize failed: ${reply === undefined ? "no JSON-RPC reply" : rpcError(reply, launch.secrets)}` };
+      if (reply?.result === undefined) return { status: "fail", detail: `initialize failed: ${reply === undefined ? "no JSON-RPC reply" : replyError(reply)}` };
       if (reply.result.protocolVersion === undefined) return { status: "fail", detail: "initialize reply has no protocolVersion" };
       protocolVersion = reply.result.protocolVersion;
       const acknowledged = await post(initializedNotification);
@@ -742,7 +752,7 @@ const probeHttp = async (launch: Extract<Launch, { kind: "http" }>, timeoutMilli
         return { status: "fail", detail: `tools/list returned HTTP ${listed.status}` };
       }
       const tools = await readReply(listed, 2);
-      if (tools?.result === undefined) return { status: "fail", detail: `tools/list failed: ${tools === undefined ? "no JSON-RPC reply" : rpcError(tools, launch.secrets)}` };
+      if (tools?.result === undefined) return { status: "fail", detail: `tools/list failed: ${tools === undefined ? "no JSON-RPC reply" : replyError(tools)}` };
       if (tools.result.tools === undefined) return { status: "fail", detail: "tools/list reply has no tools list" };
       const count = tools.result.tools.length;
       return { status: "pass", detail: `${count} tools`, tools: count };
