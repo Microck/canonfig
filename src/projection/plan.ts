@@ -49,6 +49,7 @@ import type {
 import { adapterFor } from "./adapters/index.ts";
 import { commandSkill, groupProjectedSkillNames, skillDirectoryFiles } from "./adapters/shared-documents.ts";
 import { CanonicalFolderError, type KeyClaim, type LoadedFolder } from "./folder.ts";
+import { mcpProxyBindingFile, proxyMcpServer, readMcpProxyBinding } from "./mcp-launcher.ts";
 import { pathsFor, reservedResourcePaths, settingsSurfaceOf, supportedCategories, within } from "./layout-metadata.ts";
 import type {
   ConfigFormat,
@@ -308,6 +309,13 @@ export const projectSurfaces = (
       platform: context.platform,
     };
     const configPath = paths.join(model.folder, "canonfig.jsonc");
+    const proxyBinding = yield* Effect.cached(Effect.tryPromise({
+      try: () => readMcpProxyBinding(model.folder),
+      catch: () => new CanonicalFolderError({
+        path: paths.join(model.folder, mcpProxyBindingFile),
+        message: "Cannot read the private MCP proxy binding. Check it in this machine's login session.",
+      }),
+    }));
     const pinned = new Map(takeovers.map((takeover) => [takeover.harness, takeover.root]));
     const checkRoot = (harness: string, root: string) => {
       if (!within(paths, context.home, root)) {
@@ -380,7 +388,22 @@ export const projectSurfaces = (
     };
     for (const harness of model.harnesses) {
       const adapter = adapterFor(harness);
-      const scoped = modelFor(model, harness);
+      const selected = modelFor(model, harness);
+      let scoped = selected;
+      if (!loaded.local.preserveMcp.has(harness)
+        && selected.mcp.some(([, server]) => server.transport !== "stdio" && server.proxy)) {
+        const binding = yield* proxyBinding;
+        if (binding === undefined) return yield* new CanonicalFolderError({
+          path: configPath,
+          message: "Start 'canonfig mcp proxy' on this machine before projecting proxied MCP servers.",
+        });
+        scoped = {
+          ...selected,
+          mcp: selected.mcp.map(([name, server]) => [
+            name, server.transport !== "stdio" && server.proxy ? proxyMcpServer(name, server, binding) : server,
+          ]),
+        };
+      }
       // The command category controls translation independently of authored skills.
       const generated = adapter.descriptor.capabilities.commands === "translated" && scoped.commands.length > 0
         ? compiledCommands ??= scoped.commands.map((command) => ({ id: command.id, skill: commandSkill(command) }))

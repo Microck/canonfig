@@ -71,6 +71,7 @@ export interface RemoteMcpServer extends McpBase {
   readonly transport: "streamable-http" | "sse";
   readonly url: string;
   readonly headers: Readonly<Record<string, SecretValue>>;
+  readonly proxy?: true | undefined;
 }
 
 export type McpServer = StdioMcpServer | RemoteMcpServer;

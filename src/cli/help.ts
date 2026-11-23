@@ -48,14 +48,16 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     ],
   },
   {
-    title: "MCP launcher",
+    title: "MCP launcher and proxy",
     areas: ["mcp"],
-    usage: ["mcp run <name>"],
+    usage: ["mcp run <name>", "mcp proxy [--port <port>]"],
     notes: [
       "Launch an applied MCP server with shared secrets resolved only in memory.",
       "Reads ~/.canonfig/ and its allowed local overlays. Stdout is reserved for MCP frames.",
       "Exit 20: missing secret; 21: credential store unavailable; 22: child could not start.",
       "Use secrets sync or secrets set to supply a missing secret, then restart the server.",
+      "Share one loopback process for Streamable HTTP servers marked proxy: true.",
+      "Start the proxy before syncing harnesses. Its default port is 17343.",
     ],
   },
   {

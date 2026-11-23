@@ -147,6 +147,7 @@ start with a letter or digit and contain only letters, digits, `-`, and `_`.
 | `cwd` | `stdio` | string | Working directory. |
 | `url` | `streamable-http`, `sse` | string | Required. |
 | `headers` | `streamable-http`, `sse` | object of [secret values](#secret-values) | HTTP headers. |
+| `proxy` | `streamable-http` | `true` | Route through this machine's shared proxy. Requires a `fromSecret` header and HTTPS or loopback HTTP. |
 | `enabled` | all | boolean | `false` keeps the server in the file but projects nothing. |
 | `timeoutMs` | all | positive integer | Timeout in milliseconds, where the harness has one. |
 | `enabledTools`, `disabledTools` | all | array of strings | Tool filters, where the harness has them. |
@@ -173,7 +174,7 @@ starting with a letter or digit, followed by letters, digits, `.`, `_`, `:`,
 or `-`. It cannot have a default or be combined with `fromEnv`. Both
 `canonfig.jsonc` and allowed `local/local.jsonc` MCP entries accept it.
 
-If any value uses `fromSecret`, every harness receives a stdio command for
+If any value uses `fromSecret` and the entry omits `proxy`, every harness receives a stdio command for
 `canonfig mcp run <name>`, bound to the absolute installed Node executable and
 CLI entrypoint. The launcher reads this machine's applied folder, honors its
 local allowlist and explicit overlays, and resolves credentials only at launch.
@@ -184,7 +185,13 @@ On Windows, stdio commands must be native executables, not `.cmd` or `.bat`
 wrappers. For a JavaScript server, configure `node.exe` as the command and its
 JavaScript entrypoint as the first argument. The launcher does not use a shell.
 References, never resolved values, go into publications and exports. Harness
-configs and plans contain the launcher command, not credential values.
+configs and plans for the stdio launcher contain only its binding.
+
+For `proxy: true`, each harness gets a loopback HTTP URL and a local route token.
+Start [`canonfig mcp proxy`](/docs/reference/cli#shared-mcp-proxy) before syncing.
+The proxy reads `fromEnv` from its own launch environment and looks up
+`fromSecret` on each request. Upstream header values stay out of projections,
+publications, and exports.
 
 For those servers, projection forwards every `fromEnv` source name symbolically,
 including header references. On Linux it also forwards `DBUS_SESSION_BUS_ADDRESS`

@@ -29,7 +29,7 @@ export interface McpInvocation {
   readonly cwd?: string | undefined;
 }
 
-const resolveValue = (value: SecretValue, environment: NodeJS.ProcessEnv) =>
+export const resolveMcpValue = (value: SecretValue, environment: NodeJS.ProcessEnv) =>
   Effect.gen(function*() {
     if (Predicate.isString(value)) return value;
     if ("fromEnv" in value) {
@@ -94,7 +94,7 @@ export const resolveMcpInvocation = (
   const env = { ...environment };
   if (server.transport === "stdio") {
     for (const [name, value] of Object.entries(server.env)) {
-      const resolved = yield* resolveValue(value, environment);
+      const resolved = yield* resolveMcpValue(value, environment);
       if (platform === "win32") {
         const folded = name.toUpperCase();
         for (const key of Object.keys(env)) if (key.toUpperCase() === folded) delete env[key];
@@ -116,7 +116,7 @@ export const resolveMcpInvocation = (
   let index = 0;
   for (const [name, value] of Object.entries(server.headers)) {
     const variable = `CANONFIG_MCP_HEADER_${index++}`;
-    env[variable] = yield* resolveValue(value, environment);
+    env[variable] = yield* resolveMcpValue(value, environment);
     args.push("--header", `${name}:\${${variable}}`);
   }
   return { command: node, args, env } satisfies McpInvocation;
@@ -137,6 +137,10 @@ export const prepareMcpRun = (name: string, environment: NodeJS.ProcessEnv = pro
     const server = loaded.model.mcp.find(([candidate]) => candidate === name)?.[1];
     if (server === undefined) return yield* Effect.fail(new McpRunError(
       `Unknown or disabled MCP server ${name}. Check the applied ~/.canonfig/canonfig.jsonc and allowed local overlays.`,
+      MCP_RUN_EXIT.configuration,
+    ));
+    if (server.transport !== "stdio" && server.proxy) return yield* Effect.fail(new McpRunError(
+      `MCP server ${name} uses the shared HTTP proxy. Start canonfig mcp proxy and sync this machine's harnesses.`,
       MCP_RUN_EXIT.configuration,
     ));
     return yield* resolveMcpInvocation(server, environment);

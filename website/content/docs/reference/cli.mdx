@@ -1074,7 +1074,8 @@ canonfig mcp run github
 Runs the enabled MCP server named `github` from this machine's applied
 `~/.canonfig/canonfig.jsonc`, including allowed local additions and explicit
 overlays from `local/local.jsonc`. It does not fetch a Source revision or sync
-secrets. Harness configs use this command automatically for `fromSecret`.
+secrets. Harness configs use this command for `fromSecret` entries unless the
+server opts into the shared proxy.
 
 For stdio servers it inherits stdin, stdout and stderr, forwards termination
 signals and returns the child's exit code. Canonfig writes no status text to
@@ -1094,6 +1095,32 @@ Launcher failures print an actionable message on stderr:
 
 Child exit codes pass through unchanged, so they can overlap these launcher
 codes. See [Share MCP credentials](/docs/how-to/share-mcp-credentials).
+
+### Shared MCP proxy
+
+```bash
+canonfig mcp proxy
+```
+
+Runs one foreground Streamable HTTP proxy on `127.0.0.1` for enabled servers
+with `proxy: true`. Start it on each machine that projects those servers,
+in a login session with access to the credential store. A service manager
+can supervise the same command. SIGINT and SIGTERM stop the listener and close
+active streams.
+
+The default port is 17343. To choose another port on first start, use
+`canonfig mcp proxy --port 18443`. The machine keeps its chosen port and
+local authorization seed in `~/.canonfig/mcp-proxy.json`. To change the port,
+stop the proxy, remove that binding file, start it on the new port and sync
+your harnesses again.
+
+The proxy reads the applied MCP declarations and resolves their credentials
+on each request. It connects directly to the configured upstream URL and sends
+the configured headers. It rejects redirects and returns generic errors for
+upstream HTTP failures. Doctor omits the text of upstream JSON-RPC errors for
+these routes because the server can include credentials in that text.
+Harnesses use a separate local access token for each route. Keep their
+configuration files and the binding file private.
 
 ## Shared secrets
 
