@@ -4,7 +4,8 @@ import { AnimatePresence, motion } from "motion/react";
 import { Handle, NodeToolbar, Position, type Node, type NodeProps } from "@xyflow/react";
 import { ArrowSquareOut, PaintBrush, Plus } from "@/components/icons";
 import { cn, SNAP } from "@/lib/utils";
-import { DitherShader, fillStyle, usePrefersReducedMotion } from "@/lib/dither";
+import { DitherShader, usePrefersReducedMotion } from "@/lib/dither";
+import { cornerWashPaths, syncSheenPath } from "@/lib/dither/geometry";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { Mono, StateLabel, Term } from "@/shared/shared";
@@ -49,6 +50,14 @@ float field(vec2 uv, vec2 res, float t) {
 }
 `;
 const GLOW_PALETTE = ["transparent", "green"] as const;
+
+// Crisp Bayer 4x4 diagonal corner wash (24x24 cells = 1.5px cells on the 36px tile).
+const TILE_CELLS = 24;
+const TILE_WASH = {
+  source: cornerWashPaths(TILE_CELLS, true),
+  follower: cornerWashPaths(TILE_CELLS, false),
+  syncSheen: syncSheenPath(TILE_CELLS),
+} as const;
 
 function ToolbarButton({ className, ...props }: ComponentProps<"button">) {
   return (
@@ -168,9 +177,13 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
             className="relative grid size-9 shrink-0 place-items-center overflow-hidden rounded-md"
             style={{ color: accent, backgroundColor: `color-mix(in oklab, ${accent} ${Math.round(ICON_TILE_TINT * 100)}%, transparent)` }}
           >
-            <span aria-hidden className="absolute inset-0 opacity-70" style={fillStyle("gradient", { color: accent, cell: 1.5, edge: "bottom", length: 12, from: 0.5, to: 0 })} />
-            {/* A working machine's tile carries a still hatch; the source's dither glow is the map's one moving signal. */}
-            {data.active && <span aria-hidden className="absolute inset-0 opacity-30" style={fillStyle("hatched", { color: accent, cell: 1.5 })} />}
+            <svg aria-hidden className="pointer-events-none absolute inset-0 size-full" viewBox={`0 0 ${TILE_CELLS} ${TILE_CELLS}`} shapeRendering="crispEdges">
+              <path d={TILE_WASH[data.kind][0]} fill="currentColor" fillOpacity={0.28} />
+              <path d={TILE_WASH[data.kind][1]} fill="currentColor" fillOpacity={0.72} />
+              <path d={TILE_WASH[data.kind][2]} style={{ fill: "color-mix(in oklab, currentColor 64%, var(--foreground))" }} />
+              {/* A working machine's tile carries a still carved diagonal sheen; the source's dither glow is the map's one moving signal. */}
+              {data.active && <path d={TILE_WASH.syncSheen} style={{ fill: "color-mix(in oklab, currentColor 64%, var(--foreground))" }} />}
+            </svg>
             <span aria-hidden className="absolute inset-0 rounded-md border" style={{ borderColor: `color-mix(in oklab, ${accent} 40%, transparent)` }} />
             <LookIcon look={look} bold={lit} className="relative size-5" />
           </span>

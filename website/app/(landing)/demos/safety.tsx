@@ -151,7 +151,7 @@ function MachineNode({
       <rect className="sf-node" width={width} height={height} rx="6" />
       {ring ? <rect className={`sf-ring sf-ring-${ring.tone}`} x="-1" y="-1" width={width + 2} height={height + 2} rx="7" style={{ '--sweep': `${ring.delay}ms` }} /> : null}
       <g transform="translate(10 10)">
-        <IconTile id={`${id}-tile`} accent={accent} icon={icon} />
+        <IconTile id={`${id}-tile`} accent={accent} icon={icon} source={status.label === 'Source'} />
       </g>
       <text className={role ? 'sf-node-name' : 'sf-node-name sf-node-name-compact'} x="44" y={role ? 21 : 27}>
         {name}
