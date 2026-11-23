@@ -3,8 +3,8 @@ import { createServer as createNetServer } from "node:net";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-const fakeSshName = "fake-ssh";
 const fakeSshPidName = "ssh.pid";
+const fakeSshShutdownName = "ssh.shutdown";
 
 export const freePort = (): Promise<number> =>
   new Promise((resolvePort, rejectPort) => {
@@ -23,12 +23,12 @@ export const freePort = (): Promise<number> =>
  * each connection to the remote end, exactly like an authenticated `ssh -N`.
  */
 export const fakeSsh = async (root: string): Promise<string> => {
-  const path = join(root, fakeSshName);
+  const path = join(root, "fake-ssh");
   await writeFile(
     path,
     `#!${process.execPath}
 const net = require("node:net");
-require("node:fs").writeFileSync(${JSON.stringify(join(root, fakeSshPidName))}, String(process.pid));
+const fs = require("node:fs");
 const args = process.argv.slice(2);
 const [bind, localPort, remoteHost, remotePort] = args[args.indexOf("-L") + 1].split(":");
 const server = net.createServer((client) => {
@@ -37,7 +37,19 @@ const server = net.createServer((client) => {
   upstream.on("error", () => client.destroy());
   client.on("error", () => upstream.destroy());
 });
-server.listen(Number(localPort), bind);
+const shutdownToken = require("node:crypto").randomUUID();
+const shutdown = require("node:http").createServer((request, response) => {
+  if (request.method === "POST" && request.url === "/" + shutdownToken) {
+    response.writeHead(204).end(() => process.exit(0));
+  } else {
+    response.writeHead(404).end();
+  }
+});
+shutdown.listen(0, "127.0.0.1", () => {
+  fs.writeFileSync(${JSON.stringify(join(root, fakeSshShutdownName))}, shutdown.address().port + "/" + shutdownToken, { mode: 0o600 });
+  fs.writeFileSync(${JSON.stringify(join(root, fakeSshPidName))}, String(process.pid));
+  server.listen(Number(localPort), bind);
+});
 process.on("SIGTERM", () => process.exit(0));
 `,
   );
@@ -45,17 +57,34 @@ process.on("SIGTERM", () => process.exit(0));
   return path;
 };
 
-/** The Linux kernel adds the script path to Node's argv, so TunnelLive cannot stop this fixture as SSH. */
-export const stopLinuxFakeSsh = async (root: string): Promise<void> => {
+const linuxStartTime = async (pid: number): Promise<string | undefined> => {
+  const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+  // The command name can contain spaces and parentheses. Start time is field 22.
+  return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+};
+
+/** Ask the fixture itself to exit. A stale PID can never receive a termination signal. */
+export const stopFakeSsh = async (root: string): Promise<void> => {
   try {
     const pid = Number(await readFile(join(root, fakeSshPidName), "utf8"));
-    const commandLine = await readFile(`/proc/${pid}/cmdline`, "utf8");
-    // A fixture killed earlier in the test can leave a stale PID file.
-    if (commandLine.split("\0")[1] !== join(root, fakeSshName)) return;
-    process.kill(pid, "SIGTERM");
+    const startTime = process.platform === "linux" ? await linuxStartTime(pid) : undefined;
+    const endpoint = await readFile(join(root, fakeSshShutdownName), "utf8");
+    try {
+      const response = await fetch(`http://127.0.0.1:${endpoint}`, {
+        method: "POST", redirect: "error", signal: AbortSignal.timeout(5_000),
+      });
+      await response.body?.cancel();
+      if (response.status !== 204) throw new Error(`The disposable SSH shutdown returned HTTP ${response.status}`);
+    } catch (error) {
+      // A previous launch can leave its endpoint on disk after it exits.
+      const cause = error instanceof Error ? error.cause : undefined;
+      if (cause instanceof Error && "code" in cause && cause.code === "ECONNREFUSED") return;
+      throw error;
+    }
     const deadline = performance.now() + 5_000;
     while (performance.now() < deadline) {
-      process.kill(pid, 0);
+      if (startTime === undefined) process.kill(pid, 0);
+      else if (await linuxStartTime(pid) !== startTime) return;
       await delay(10);
     }
     throw new Error(`The disposable SSH process ${pid} did not exit`);
