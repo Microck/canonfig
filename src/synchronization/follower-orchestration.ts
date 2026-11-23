@@ -349,8 +349,6 @@ const desiredFor = (
 /** The resource id of a follower's rendered `canonfig.jsonc`. */
 const mirrorConfigResource = Schema.decodeUnknownSync(ResourceId)("mirror:canonfig.jsonc");
 
-const McpRequires = Schema.Struct({ requires: Schema.optional(Schema.Array(Schema.String)) });
-
 const encoder = new TextEncoder();
 
 /**
@@ -463,14 +461,7 @@ const planFollowerRun = Effect.fn("FollowerOrchestration.planRun")(function*(
   const projectionApplied = releaseExcludedSkillRecords(appliedResources, loaded.local.excludeSkills);
   const projection = yield* buildProjection(loaded, context, takeovers, projectionApplied, notInstalled);
   const authorized = new Set<string>(built.map((item) => item.resource.id));
-  const requiredTools = entries.flatMap((entry) =>
-    entry.key.startsWith("mcp.")
-      ? Option.match(Schema.decodeUnknownOption(McpRequires)(entry.value), {
-        onNone: () => [],
-        onSome: (server) => (server.requires ?? []).map((reference) => reference.replace("/", ":")),
-      })
-      : []
-  ).filter((id) => authorized.has(id));
+  const requiredTools = [...projection.requiredMcpTools].filter((id) => authorized.has(id));
   const prerequisites = [...new Set([...mirrored, ...requiredTools.map((id) => Schema.decodeUnknownSync(ResourceId)(id))])].sort();
   built.push(...projection.built.map((item) => ({
     ...item,

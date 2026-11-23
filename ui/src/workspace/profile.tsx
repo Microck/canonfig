@@ -342,7 +342,7 @@ function GroupPicker({ idPrefix, value, onChange }: { idPrefix: string; value: s
 function McpHarnessPicker({ value, onChange }: { value: string[]; onChange: (harnesses: string[]) => void }) {
   return (
     <Collapsible className="grid gap-2">
-      <CollapsibleTrigger type="button" className="flex min-h-10 items-center gap-2 text-left text-sm">
+      <CollapsibleTrigger type="button" className="flex min-h-10 items-center gap-2 text-left text-sm pointer-coarse:min-h-11">
         <CaretRight />
         <span>{MCP_HARNESSES_LABEL}</span>
         <span className="text-muted-foreground">{value.length === 0 ? "All eligible" : `${value.length} selected`}</span>
@@ -351,7 +351,7 @@ function McpHarnessPicker({ value, onChange }: { value: string[]; onChange: (har
         <fieldset className="grid gap-1 sm:grid-cols-2">
           <legend className="pb-2 text-sm text-muted-foreground">Select the harnesses that receive this server. Clear the selection to include all eligible harnesses.</legend>
           {TARGET_IDS.map((id) => (
-            <Label key={id} className="flex min-h-10 cursor-pointer items-center gap-2 text-sm font-normal">
+            <Label key={id} className="flex min-h-10 cursor-pointer items-center gap-2 text-sm font-normal pointer-coarse:min-h-11">
               <Checkbox checked={value.includes(id)} onCheckedChange={(checked) => onChange(checked ? [...value, id] : value.filter((harness) => harness !== id))} />
               {HARNESS_NAMES[id]}
             </Label>

@@ -56,6 +56,7 @@ export type SecretValue = string | SecretReference | StoredSecretReference;
 interface McpBase {
   /** An omitted list allows every eligible harness. */
   readonly harnesses?: ReadonlyArray<TargetId> | undefined;
+  readonly requires?: ReadonlyArray<string> | undefined;
   readonly timeoutMs?: number | undefined;
   readonly enabledTools?: ReadonlyArray<string> | undefined;
   readonly disabledTools?: ReadonlyArray<string> | undefined;

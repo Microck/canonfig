@@ -152,7 +152,7 @@ start with a letter or digit and contain only letters, digits, `-`, and `_`.
 | `harnesses` | all | non-empty array of [harness IDs](/docs/reference/harnesses) | Limits projection of this server to those harnesses. Omit the field to include every eligible harness. |
 | `timeoutMs` | all | positive integer | Timeout in milliseconds, where the harness has one. |
 | `enabledTools`, `disabledTools` | all | array of strings | Tool filters, where the harness has them. |
-| `requires` | all | array of `tools/<id>` | Tools to install and verify before the server is projected. Each must be declared under `tools`. |
+| `requires` | all | array of `tools/<id>` | Tools to install and verify before projecting this server. Each must be declared under `tools`. A server outside all eligible harnesses adds no projection dependency. |
 
 The server's list further limits the profile's harness selection and the
 `mcp` category in `surfaces`. You can name a supported harness before adding

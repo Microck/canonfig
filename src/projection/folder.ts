@@ -658,6 +658,7 @@ const loadSkills = async <File>(
 const mcpServer = (input: FolderMcpServer): McpServer => {
   const common = {
     harnesses: input.harnesses && [...new Set(input.harnesses)].sort(),
+    requires: input.requires,
     timeoutMs: input.timeoutMs,
     enabledTools: input.enabledTools,
     disabledTools: input.disabledTools,

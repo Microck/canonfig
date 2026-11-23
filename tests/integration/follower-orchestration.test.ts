@@ -1226,6 +1226,19 @@ process.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringi
     expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
   });
 
+  it("projects a harness while a tool required only by an excluded MCP server needs action", async () => {
+    const root = temporaryRoot("scoped-mcp-tool-follower");
+    const source = await startSource(root, (folder) => authorFolder(folder, {
+      tools: { probe: { executable: "probe-tool", recipes: [{ platform: "linux", method: "cargo", package: "probe-tool", version: "1.0.0" }] } },
+      mcp: { probe: { transport: "stdio", command: "probe-tool", requires: ["tools/probe"], harnesses: ["codex"] } },
+    }, { "AGENTS.md": "Prefer small diffs.\n" }));
+    const follower = await enroll(root, source, { name: "Scoped tool follower", harnesses: ["claude-code"] });
+
+    expect((await follower.apply()).outcome).toMatchObject({ outcome: "HumanActionRequired" });
+    expect(read(join(follower.home, ".claude", "CLAUDE.md"))).toContain("Prefer small diffs.");
+    expect(existsSync(join(follower.home, ".claude.json"))).toBe(false);
+  });
+
   it("releases takeovers of surfaces an abandoned first run never applied", async () => {
     const root = temporaryRoot("abandoned-takeover");
     const source = await startSource(root, (folder) => authorFolder(folder, { harnesses: ["amp", "claude-code", "qwen"] }, {

@@ -48,7 +48,7 @@ import type {
 } from "../synchronization/synchronization.types.ts";
 import { adapterFor } from "./adapters/index.ts";
 import { commandSkill, groupProjectedSkillNames, skillDirectoryFiles } from "./adapters/shared-documents.ts";
-import { CanonicalFolderError, type KeyClaim, type LoadedFolder } from "./folder.ts";
+import { CanonicalFolderError, itemResourceId, type KeyClaim, type LoadedFolder } from "./folder.ts";
 import { mcpProxyBindingFile, proxyMcpServer, readMcpProxyBinding } from "./mcp-launcher.ts";
 import { pathsFor, reservedResourcePaths, settingsSurfaceOf, supportedCategories, within } from "./layout-metadata.ts";
 import type {
@@ -386,10 +386,14 @@ export const projectSurfaces = (
       }
       return Effect.void;
     };
+    const requiredMcpTools = new Set<string>();
     for (const harness of model.harnesses) {
       const adapter = adapterFor(harness);
       const scoped = modelFor(model, harness);
       let mcp = scoped.mcp.filter(([, server]) => server.harnesses?.includes(harness) ?? true);
+      for (const [, server] of mcp) {
+        for (const reference of server.requires ?? []) requiredMcpTools.add(itemResourceId(reference));
+      }
       if (!loaded.local.preserveMcp.has(harness)
         && mcp.some(([, server]) => server.transport !== "stdio" && server.proxy)) {
         const binding = yield* proxyBinding;
@@ -481,7 +485,7 @@ export const projectSurfaces = (
       );
       surfaces.push(resource);
     }
-    return { surfaces, harnesses, diagnostics, runtime, runtimeVersion };
+    return { surfaces, harnesses, requiredMcpTools, diagnostics, runtime, runtimeVersion };
   });
 
 /** Units of takeover: whole files and directories, and single config keys. */
@@ -724,6 +728,7 @@ const heldResource = (
 /** What a projection run writes: built resources plus the takeovers they perform. */
 export interface Projection {
   readonly built: ReadonlyArray<BuiltResource>;
+  readonly requiredMcpTools: ReadonlySet<string>;
   /** Surfaces (and config keys) this run takes over, not yet owned. */
   readonly takeovers: ReadonlyArray<TakeoverUnit>;
   readonly diagnostics: ReadonlyArray<Diagnostic>;
@@ -946,6 +951,7 @@ export const buildProjection = (
     }
     return {
       built,
+      requiredMcpTools: projected.requiredMcpTools,
       takeovers: units,
       diagnostics,
       harnesses: projected.harnesses,
