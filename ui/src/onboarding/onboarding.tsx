@@ -35,8 +35,9 @@ import { TunnelAdvancedFields, tunnelPortsError, tunnelTimeoutError } from "@/sh
 //     fading as it goes, so each tick of the list shows in the room around it.
 //   settled: 1 once the job succeeded. Filaments straighten, rings brighten, and the palette
 //     shifts to the settled Ender green ramp.
-//   inspecting: 1 while pending inspection. A rotating angular sweep uses the shader's clock
-//     without inventing progress or a second frame loop.
+//   inspecting: 1 while any live operation is loading (inspection, approval, apply), since
+//     those report no progress. A rotating angular sweep uses the shader's clock without
+//     inventing progress or a second frame loop.
 const CONVERGE_FIELD = /* glsl */ `
 float field(vec2 uv, vec2 res, float t) {
   vec2 p = (uv - vec2(0.5, 0.48)) * vec2(res.x / res.y, 1.0);
