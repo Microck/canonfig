@@ -2,12 +2,12 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
+import { createServer, type IncomingHttpHeaders, request as httpRequest, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { Effect, Predicate, Redacted } from "effect";
+import { Effect, Layer, Predicate, Redacted } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { ConfigValue } from "../src/domain/resource.ts";
@@ -22,7 +22,7 @@ import { mcpProxyAuthorization, projectedMcpServer, readMcpProxyBinding } from "
 import type { McpServer } from "../src/projection/model.ts";
 import { projectSurfaces } from "../src/projection/plan.ts";
 import { checkMcpEntries } from "../src/runtime/mcp-check.ts";
-import { launchMcp, MCP_REMOTE_VERSION, MCP_RUN_EXIT, npxCliPath, resolveMcpInvocation } from "../src/runtime/mcp-run.ts";
+import { launchMcp, MCP_REMOTE_VERSION, MCP_RUN_EXIT, npxCliPath, resolveMcpInvocation, resolveMcpValue } from "../src/runtime/mcp-run.ts";
 import { scheduleCommand } from "../src/schedule/schedule-command.ts";
 
 const roots: string[] = [];
@@ -63,7 +63,7 @@ const fixture = async () => {
   const writeConfig = (mcp: Record<string, ConfigValue>) => writeFileSync(join(folder, "canonfig.jsonc"), JSON.stringify({
     version: 1, harnesses: [], local: { allow: ["mcp"] }, mcp,
   }));
-  return { root, home, folder, credentials, machine, token, env, writeConfig };
+  return { root, home, folder, credentials, machine, token, reference, env, writeConfig };
 };
 
 const invoke = (env: NodeJS.ProcessEnv, name = "echo") => spawnSync(process.execPath,
@@ -341,6 +341,34 @@ const stopListening = (server: Server) => new Promise<void>((resolve, reject) =>
 });
 
 describe("canonfig mcp proxy", () => {
+  it("rereads a reference retired between lookup and native credential read", async () => {
+    const f = await fixture();
+    const replacement = "replacement-proxy-fixture";
+    const reads: string[] = [];
+    const rotatingStore = Layer.effect(MachineState, Effect.gen(function*() {
+      const machine = yield* MachineState;
+      const next = yield* machine.storeCredential({ name: "github.token.replacement", value: Redacted.make(replacement) });
+      return MachineState.of({
+        ...machine,
+        loadCredential: (input) => Effect.gen(function*() {
+          reads.push(input.reference);
+          if (input.reference === f.reference && reads.length === 1) {
+            writeFileSync(join(f.folder, "secrets.json"), JSON.stringify({
+              schemaVersion: 1, secrets: [{ name: "github.token", reference: next, origin: "source" }], retiredReferences: [],
+            }));
+            yield* machine.removeCredential(f.reference);
+          }
+          return yield* machine.loadCredential(input);
+        }),
+      });
+    })).pipe(Layer.provide(f.machine));
+    const resolved = await Effect.runPromise(resolveMcpValue({ fromSecret: "github.token" }, {}).pipe(Effect.provide(rotatingStore)));
+    expect(resolved).toBe(replacement);
+    expect(reads).toHaveLength(2);
+    expect(reads[0]).toBe(f.reference);
+    expect(reads[1]).not.toBe(f.reference);
+  });
+
   it.each([
     { transport: "sse" },
     { headers: { Authorization: "literal" } },
@@ -372,6 +400,8 @@ describe("canonfig mcp proxy", () => {
       } else if (request.url === "/stream") {
         streamClosed = once(response, "close", { signal: AbortSignal.timeout(5_000) });
         response.writeHead(200, { "content-type": "text/event-stream" }).write("data: active\n\n");
+      } else if (request.url === "/connection") {
+        response.writeHead(200, { connection: "close, Mcp-Session-Id", "mcp-session-id": "hop-only" }).end();
       } else if (request.method === "GET") {
         response.writeHead(200, { "content-type": "text/event-stream" }).end("data: {\"jsonrpc\":\"2.0\"}\n\n");
       } else if (request.method === "DELETE") {
@@ -402,9 +432,13 @@ describe("canonfig mcp proxy", () => {
         },
       }));
       mkdirSync(join(f.folder, "local"));
-      const writeOverlay = (path: string, preserveMcp = false) => writeFileSync(join(f.folder, "local", "local.jsonc"), JSON.stringify({
-        overlays: ["mcp/remote"], mcp: { remote: { ...proxied, url: `${url}${path}` } }, preserveMcp,
-      }));
+      const writeOverlay = (path: string, preserveMcp = false, secretName = "github.token") =>
+        writeFileSync(join(f.folder, "local", "local.jsonc"), JSON.stringify({
+          overlays: ["mcp/remote"],
+          mcp: { remote: { ...proxied, url: `${url}${path}`,
+            headers: { ...remote.headers, Authorization: { fromSecret: secretName } } } },
+          preserveMcp,
+        }));
       writeOverlay("/mcp?configured=true");
       const project = async () => {
         const loaded = await loadCanonicalFolder(f.folder);
@@ -465,7 +499,7 @@ describe("canonfig mcp proxy", () => {
         method: "POST", body, headers: { authorization, cookie: "do-not-forward=1", "content-type": "application/json" },
       });
       const session = initialized.headers.get("mcp-session-id");
-      expect(session).toBe("upstream-session");
+      expect(session).toMatch(/^[a-f0-9]{64}\.upstream-session$/u);
       expect(await initialized.json()).toMatchObject({ result: { protocolVersion: "2025-03-26" } });
       expect(requests[0]).toMatchObject({
         url: "/mcp?configured=true", method: "POST", body, headers: { authorization: f.token, "x-region": "eu" },
@@ -477,7 +511,7 @@ describe("canonfig mcp proxy", () => {
       expect(stream.headers.get("content-type")).toBe("text/event-stream");
       expect(await stream.text()).toBe("data: {\"jsonrpc\":\"2.0\"}\n\n");
       expect(requests[1]).toMatchObject({ method: "GET", headers: {
-        "mcp-session-id": session, "mcp-protocol-version": "2025-03-26", "last-event-id": "event-1",
+        "mcp-session-id": "upstream-session", "mcp-protocol-version": "2025-03-26", "last-event-id": "event-1",
       } });
       expect((await fetch(endpoint, { method: "DELETE", headers })).status).toBe(204);
 
@@ -489,6 +523,9 @@ describe("canonfig mcp proxy", () => {
       expect(await missing.text()).toContain("Secret missing.token is missing");
       expect(requests).toHaveLength(4);
 
+      writeOverlay("/redirect", false, "missing.token");
+      expect((await fetch(endpoint, { headers })).status).toBe(404);
+      expect(requests).toHaveLength(4);
       writeOverlay("/redirect");
       const redirected = await fetch(endpoint, { headers: { authorization } });
       expect(redirected.status).toBe(502);
@@ -511,6 +548,21 @@ describe("canonfig mcp proxy", () => {
       expect(report).toMatchObject([{ status: "fail", detail: "initialize failed: the upstream returned a JSON-RPC error" }]);
       expect(JSON.stringify(report)).not.toContain(f.token);
 
+      writeOverlay("/connection");
+      const response = await new Promise<IncomingHttpHeaders>((resolve, reject) => {
+        const request = httpRequest(endpoint, {
+          headers: { authorization, connection: "close, Mcp-Session-Id", "mcp-session-id": "hop-only" },
+        }, (response) => {
+          response.resume();
+          response.once("end", () => resolve(response.headers));
+        });
+        request.once("error", reject);
+        request.end();
+      });
+      expect(requests.at(-1)).toMatchObject({ url: "/connection" });
+      expect(requests.at(-1)?.headers["mcp-session-id"]).toBeUndefined();
+      expect(response["mcp-session-id"]).toBeUndefined();
+
       writeOverlay("/stream");
       const active = await fetch(endpoint, { headers: { authorization }, signal: AbortSignal.timeout(5_000) });
       const reader = active.body!.getReader();
@@ -519,6 +571,19 @@ describe("canonfig mcp proxy", () => {
       expect(streamClosed).toBeDefined();
       await reader.cancel();
       await streamClosed;
+
+      const rotated = "rotated-proxy-fixture";
+      const reference = await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        return yield* machine.storeCredential({ name: "github.token.rotated", value: Redacted.make(rotated) });
+      }).pipe(Effect.provide(f.machine)));
+      writeFileSync(join(f.folder, "secrets.json"), JSON.stringify({
+        schemaVersion: 1, secrets: [{ name: "github.token", reference, origin: "source" }], retiredReferences: [],
+      }));
+      writeOverlay("/rotated");
+      const afterRotation = await fetch(endpoint, { headers: { authorization } });
+      expect(await afterRotation.text()).toContain("data:");
+      expect(requests.at(-1)?.headers.authorization).toBe(rotated);
 
       await stopListening(upstream);
       const unavailable = await fetch(endpoint, { headers: { authorization } });

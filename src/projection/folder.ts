@@ -1129,10 +1129,33 @@ const effectiveMcp = (
 /** A proxy request uses the same overlay rules as projection, without loading unrelated files. */
 export const loadMcpServer = async (folder: string, name: string): Promise<McpServer | undefined> => {
   const source = diskSource(folder);
-  const config = await requireFolderConfig(source);
-  const { servers } = effectiveMcp(config, await loadLocalFolder(source, config.local?.allow ?? []));
-  const server = servers.find(([candidate]) => candidate === name)?.[1];
-  return server === undefined || server.enabled === false ? undefined : mcpServer(server);
+  const configPath = join(folder, "canonfig.jsonc");
+  const localPath = join(folder, "local", "local.jsonc");
+  const stamp = async (path: string) => {
+    try {
+      const file = await lstat(path, { bigint: true });
+      return `${file.dev}:${file.ino}:${file.ctimeNs}:${file.mtimeNs}:${file.size}`;
+    } catch (error) {
+      if (error instanceof Error && isMissing(error)) return "";
+      throw error;
+    }
+  };
+  const stamps = () => Promise.all([stamp(configPath), stamp(localPath)]).then((files) => files.join("|"));
+  // Atomic replacements can happen between the two reads. Reload once if
+  // either authoring file changed before the whole pair was read.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const before = await stamps();
+    try {
+      const config = await requireFolderConfig(source);
+      const localFolder = await loadLocalFolder(source, config.local?.allow ?? []);
+      const { servers } = effectiveMcp(config, localFolder);
+      const server = servers.find(([candidate]) => candidate === name)?.[1];
+      if (before === await stamps()) return server === undefined || server.enabled === false ? undefined : mcpServer(server);
+    } catch (error) {
+      if (before === await stamps()) throw error;
+    }
+  }
+  throw failure(configPath, "MCP configuration changed while it was read. Retry the request.");
 };
 
 export interface FolderSkillNames {

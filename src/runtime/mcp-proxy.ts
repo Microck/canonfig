@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { Agent as HttpAgent, createServer, type IncomingMessage, request as httpRequest, type ServerResponse } from "node:http";
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { join } from "node:path";
@@ -24,10 +24,10 @@ import { MCP_RUN_EXIT, McpRunError, resolveMcpValue } from "./mcp-run.ts";
 import type { ManagedCommandLease } from "./self-update/coordination.ts";
 
 const clientHeaders = [
-  "accept", "content-type", "mcp-protocol-version", "mcp-session-id", "last-event-id",
+  "accept", "content-type", "mcp-protocol-version", "mcp-session-id", "last-event-id", "content-length",
 ];
 const blockedUpstreamHeaders = new Set([
-  "connection", "content-length", "expect", "host", "keep-alive", "proxy-authorization",
+  "connection", "content-length", "expect", "host", "keep-alive", "mcp-session-id", "proxy-authorization",
   "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade",
 ]);
 
@@ -40,13 +40,11 @@ const authorized = (actual: string | undefined, expected: string): boolean =>
   actual !== undefined && Buffer.byteLength(actual) === expected.length
   && timingSafeEqual(Buffer.from(actual), Buffer.from(expected));
 
-const upstreamHeaders = (server: RemoteMcpServer, incoming: IncomingMessage) =>
+const connectionHeaders = (message: IncomingMessage): ReadonlySet<string> =>
+  new Set(message.headers.connection?.split(",").map((name) => name.trim().toLowerCase()));
+
+const upstreamHeaders = (server: RemoteMcpServer, headers: Headers) =>
   Effect.gen(function*() {
-    const headers = new Headers();
-    for (const name of clientHeaders) {
-      const value = incoming.headers[name];
-      if (Predicate.isString(value)) headers.set(name, value);
-    }
     for (const [name, value] of Object.entries(server.headers)) {
       if (blockedUpstreamHeaders.has(name.toLowerCase())) return yield* Effect.fail(new McpRunError(
         "MCP proxy upstream configuration contains a transport header.",
@@ -60,7 +58,9 @@ const upstreamHeaders = (server: RemoteMcpServer, incoming: IncomingMessage) =>
 type McpHttpMethod = "GET" | "POST" | "DELETE";
 const upstreamConnectionTimeout = 15_000;
 
-const reply = async (upstream: IncomingMessage, response: ServerResponse, signal: AbortSignal): Promise<void> => {
+const reply = async (
+  upstream: IncomingMessage, response: ServerResponse, sessionPrefix: string, signal: AbortSignal,
+): Promise<void> => {
   const status = upstream.statusCode ?? 502;
   if (status < 200 || status >= 300) {
     upstream.destroy();
@@ -74,9 +74,14 @@ const reply = async (upstream: IncomingMessage, response: ServerResponse, signal
   }
   response.statusCode = status;
   response.setHeader("cache-control", "no-store, no-transform");
-  for (const name of ["content-type", "content-encoding", "mcp-session-id", "mcp-protocol-version"]) {
+  const nominated = connectionHeaders(upstream);
+  for (const name of ["content-type", "content-encoding", "mcp-protocol-version"]) {
     const value = upstream.headers[name];
-    if (value !== undefined) response.setHeader(name, value);
+    if (value !== undefined && !nominated.has(name)) response.setHeader(name, value);
+  }
+  const session = upstream.headers["mcp-session-id"];
+  if (Predicate.isString(session) && !nominated.has("mcp-session-id")) {
+    response.setHeader("mcp-session-id", sessionPrefix + session);
   }
   // Send the response headers before the first SSE event and preserve backpressure.
   response.flushHeaders();
@@ -129,18 +134,26 @@ const serve = (
       }
     });
 
-    const prepare = async (name: string, request: IncomingMessage, signal: AbortSignal) => {
+    const prepare = async (name: string, incoming: Headers, signal: AbortSignal) => {
       // Leave the lease before upstream I/O so long-lived SSE streams cannot
       // keep an update from activating. Later requests check for replacement.
       const release = hold?.();
       try {
         const server = await loadMcpServer(folder, name);
         if (server === undefined || server.transport !== "streamable-http" || !server.proxy) return undefined;
-        const headers = await run(upstreamHeaders(server, request).pipe(Effect.match({
+        // Tie sessions to the selected URL without retaining a session map
+        // or routing to an upstream the operator has since replaced.
+        const sessionPrefix = createHmac("sha256", binding.seed).update(JSON.stringify(["session", name, server.url])).digest("hex") + ".";
+        const session = incoming.get("mcp-session-id");
+        if (session !== null) {
+          if (!session.startsWith(sessionPrefix) || session.length === sessionPrefix.length) return { expired: true };
+          incoming.set("mcp-session-id", session.slice(sessionPrefix.length));
+        }
+        const headers = await run(upstreamHeaders(server, incoming).pipe(Effect.match({
           onFailure: (error) => error,
           onSuccess: (headers) => headers,
         })), { signal });
-        return { url: server.url, headers };
+        return { url: server.url, headers, sessionPrefix };
       } finally {
         release?.();
       }
@@ -161,18 +174,22 @@ const serve = (
       }
       const abort = new AbortController();
       response.once("close", () => abort.abort());
-      const route = await prepare(name, request, abort.signal);
+      const incoming = new Headers();
+      const nominated = connectionHeaders(request);
+      for (const header of clientHeaders) {
+        if (nominated.has(header) || (header === "content-length" && method !== "POST")) continue;
+        const value = request.headers[header];
+        if (Predicate.isString(value)) incoming.set(header, value);
+      }
+      const route = await prepare(name, incoming, abort.signal);
       if (route === undefined) return reject(response, 404, "MCP proxy route not found.");
+      if ("expired" in route) return reject(response, 404, "MCP session expired. Initialize a new session.");
       const { headers } = route;
       if (headers instanceof McpRunError) return reject(response, 503, headers.message);
       // Forward to the configured destination verbatim. Client paths, query
       // strings, Host and Authorization can never select an upstream.
-      if (method === "POST") {
-        const length = request.headers["content-length"];
-        if (length !== undefined) headers.set("content-length", length);
-      }
       const upstream = await requestUpstream(route.url, method, headers, request, abort.signal);
-      await reply(upstream, response, abort.signal);
+      await reply(upstream, response, route.sessionPrefix, abort.signal);
     };
 
     const server = createServer((request, response) => {

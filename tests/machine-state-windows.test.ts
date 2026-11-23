@@ -21,6 +21,7 @@ import { CredentialStorageError } from "../src/machine/machine-state.errors.ts";
 import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
 import { StateRepository } from "../src/state/state-repository.service.ts";
 import { sha256BytesHex } from "../src/profile/profile-codec.ts";
+import { mcpProxyBindingFile, newMcpProxyBinding, readMcpProxyBinding } from "../src/projection/mcp-launcher.ts";
 import { defaultSynchronizationExecutionLimits, removeRunTemporaryEntries } from "../src/synchronization/executor.ts";
 import {
   prepareResourceAction,
@@ -314,6 +315,25 @@ describe.skipIf(process.platform !== "win32")("Windows file permission ownership
     ], { env: { ...process.env, CANONFIG_TEST_PATH: path } });
     return output.stdout.trim();
   };
+
+  it("accepts a private MCP proxy binding and rejects a broadened ACL", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-proxy-acl-"));
+    const target = join(root, mcpProxyBindingFile);
+    const binding = newMcpProxyBinding(17343);
+    try {
+      await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const path = yield* machine.normalizePath({ path: target });
+        yield* machine.atomicWrite({ path, content: Buffer.from(JSON.stringify(binding)), mode: 0o600, noReplace: true });
+      }).pipe(Effect.provide(windowsMachineStateLayer())));
+      await expect(readMcpProxyBinding(root)).resolves.toEqual(binding);
+      await promisify(execFile)(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "icacls.exe"),
+        [target, "/grant", "*S-1-1-0:(R)"]);
+      await expect(readMcpProxyBinding(root)).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   it.each(["file", "directory"] as const)("restores persisted %s permissions in a fresh process", async (kind) => {
     const root = await mkdtemp(join(tmpdir(), "canonfig-native-rollback-"));

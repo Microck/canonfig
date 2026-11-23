@@ -34,6 +34,7 @@ The production entry is `ui/src/live-app.tsx`, selected through Vite's build-sel
 | Machine-readable preview and submission (`report-issue`) | CLI | CLI | CLI |
 | Launch an MCP server with `canonfig mcp run` | Harness-managed CLI process | Harness-managed CLI process | Harness-managed CLI process |
 | Supervise the shared Streamable HTTP MCP proxy | `canonfig mcp proxy` in the login session | `canonfig mcp proxy` in the login session | The same command can start before the first sync |
+| Enable the proxy for an MCP server | Profile → MCP server → Edit MCP JSON | Apply the Source's setting using Sync, or use the JSON editor in Local settings for an allowed local MCP entry | Available in Profile after Source setup |
 
 The launcher hands stdio to an MCP server and forwards signals for the harness.
 Its lease ends after the child starts. The existing Version page handles user-initiated updates.

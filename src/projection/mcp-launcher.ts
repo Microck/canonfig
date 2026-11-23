@@ -1,7 +1,11 @@
+import { execFile } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
-import { lstat, readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open } from "node:fs/promises";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { Predicate, Schema } from "effect";
+import { windowsPowerShellExecutable } from "../machine/windows-credentials.ts";
 import { scheduleCommand } from "../schedule/schedule-command.ts";
 import type { McpServer, RemoteMcpServer } from "./model.ts";
 
@@ -17,17 +21,49 @@ const McpProxyBinding = Schema.fromJsonString(Schema.Struct({
 }));
 type McpProxyBinding = typeof McpProxyBinding.Type;
 
+const readWindowsBinding = async (path: string): Promise<string> => {
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    "$file=[IO.File]::Open($env:CANONFIG_PROXY_BINDING_PATH,'Open','Read','Read')",
+    // Check and read the same handle even if an ancestor path changes.
+    "$acl=if ($PSVersionTable.PSEdition -eq 'Core') { [IO.FileSystemAclExtensions]::GetAccessControl($file) } else { $file.GetAccessControl() }",
+    "$sidType=[Security.Principal.SecurityIdentifier]",
+    "$user=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+    // The OS and its administrators can already access the user's files.
+    "$trusted=@($user,'S-1-5-18','S-1-5-32-544')",
+    "if ($acl.GetOwner($sidType).Value -notin $trusted -or -not $acl.AreAccessRulesProtected) { exit 1 }",
+    "foreach ($rule in $acl.GetAccessRules($true,$true,$sidType)) { if ($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin $trusted) { exit 1 } }",
+    "$reader=[IO.StreamReader]::new($file); try { [Console]::Write($reader.ReadToEnd()) } finally { $reader.Dispose() }",
+  ].join(";");
+  const { stdout } = await promisify(execFile)(windowsPowerShellExecutable(), ["-NoProfile", "-NonInteractive", "-Command", script], {
+    env: { ...process.env, CANONFIG_PROXY_BINDING_PATH: path }, timeout: 60_000, maxBuffer: 4096, windowsHide: true,
+  });
+  return stdout;
+};
+
 export const readMcpProxyBinding = async (folder: string): Promise<McpProxyBinding | undefined> => {
   const path = join(folder, mcpProxyBindingFile);
-  const info = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+  const info = await lstat(path, { bigint: true }).catch((error: NodeJS.ErrnoException) => {
     if (error.code !== "ENOENT") throw error;
     return undefined;
   });
   if (info === undefined) return undefined;
-  if (!info.isFile() || (process.getuid && (info.uid !== process.getuid() || (info.mode & 0o077) !== 0))) {
-    throw new Error("Expected a private MCP proxy binding file");
+  if (!info.isFile()) throw new Error("Expected a regular MCP proxy binding file");
+  const decodeBinding = Schema.decodeUnknownSync(McpProxyBinding);
+  if (process.platform === "win32") return decodeBinding(await readWindowsBinding(path));
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const opened = await file.stat({ bigint: true });
+    if (opened.ino !== info.ino || opened.dev !== info.dev || opened.ctimeNs !== info.ctimeNs) {
+      throw new Error("MCP proxy binding changed while checking permissions");
+    }
+    if (process.getuid && (opened.uid !== BigInt(process.getuid()) || (opened.mode & 0o077n) !== 0n)) {
+      throw new Error("Expected a private MCP proxy binding file");
+    }
+    return decodeBinding(await file.readFile("utf8"));
+  } finally {
+    await file.close();
   }
-  return Schema.decodeUnknownSync(McpProxyBinding)(await readFile(path, "utf8"));
 };
 
 export const newMcpProxyBinding = (port: number): McpProxyBinding => ({ port, seed: randomBytes(32).toString("hex") });

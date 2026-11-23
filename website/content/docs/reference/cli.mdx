@@ -1119,6 +1119,8 @@ on each request. It connects directly to the configured upstream URL and sends
 the configured headers. It rejects redirects and returns generic errors for
 upstream HTTP failures. Doctor omits the text of upstream JSON-RPC errors for
 these routes because the server can include credentials in that text.
+If the upstream URL changes, the proxy rejects old session IDs with HTTP 404
+so harnesses initialize a new session at the new destination.
 Harnesses use a separate local access token for each route. Keep their
 configuration files and the binding file private.
 

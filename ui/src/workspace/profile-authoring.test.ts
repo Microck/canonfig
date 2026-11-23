@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { parseDocument } from "yaml";
 import type { GuiProfileSnapshot } from "../../../src/gui/contract/profile";
-import { authoredItems, configEdits, decodeText, encodeText, itemWrite } from "./profile-authoring";
+import { authoredItems, configEdits, decodeText, encodeText, fieldValue, itemWrite } from "./profile-authoring";
 
 const snapshot = (path: string, text: string, config: GuiProfileSnapshot["config"] = {}): GuiProfileSnapshot => ({ config, reservedPaths: [], caseSensitive: true, supportedSurfaces: {}, items: [{ path: "canonfig.jsonc", digest: "config-digest", files: [{ path: "canonfig.jsonc", base64: encodeText("{}"), executable: false }] }, { path, digest: "item-digest", files: [{ path: path.startsWith("skills/") ? `${path}/SKILL.md` : path, base64: encodeText(text), executable: false }] }] });
 
@@ -61,6 +61,24 @@ describe("shared profile authoring", () => {
       assert.ok(entry.exact);
       assert.deepEqual(itemWrite(state, entry.resource, entry.resource, entry.exact).edits, []);
     }
+  });
+  it("enables the proxy when a structured MCP draft switches to JSON", () => {
+    const state: GuiProfileSnapshot = {
+      config: { mcp: { server: { transport: "stdio", command: "node", args: ["mcp.js"] } } },
+      reservedPaths: [], caseSensitive: true, supportedSurfaces: {}, items: [],
+    };
+    const entry = authoredItems(state)[0]!;
+    const draft = { ...entry.resource, detail: { ...entry.resource.detail, Transport: "streamable-http", URL: "https://example.invalid/updated" } };
+    const headers = { Authorization: { fromSecret: "docs.token" } };
+    const exact = { files: [], json: JSON.stringify({ ...fieldValue(draft), proxy: true, headers }) };
+    assert.deepEqual(itemWrite(state, entry.resource, draft, exact).edits, [
+      { path: ["mcp", "server", "transport"], value: "streamable-http" },
+      { path: ["mcp", "server", "command"] },
+      { path: ["mcp", "server", "args"] },
+      { path: ["mcp", "server", "url"], value: "https://example.invalid/updated" },
+      { path: ["mcp", "server", "proxy"], value: true },
+      { path: ["mcp", "server", "headers"], value: headers },
+    ]);
   });
   it("renames a file and memberships in one digest checked write", () => {
     const state = snapshot("rules/old.md", "Old body\n", { groups: { work: ["rules/old"] } });

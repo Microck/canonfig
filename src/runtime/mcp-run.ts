@@ -44,13 +44,22 @@ export const resolveMcpValue = (value: SecretValue, environment: NodeJS.ProcessE
       `Secret ${value.fromSecret} could not be read. Unlock the native credential store in this session and retry canonfig secrets sync.`,
       MCP_RUN_EXIT.storage,
     );
-    const reference = yield* findSecretReference(value.fromSecret).pipe(Effect.mapError(storageFailure));
-    if (reference === undefined) return yield* Effect.fail(new McpRunError(
-      `Secret ${value.fromSecret} is missing. Run canonfig secrets sync on an enrolled follower in canonfig:secrets, or canonfig secrets set ${value.fromSecret}, then restart this MCP server.`,
-      MCP_RUN_EXIT.missingSecret,
-    ));
+    const resolveReference = findSecretReference(value.fromSecret).pipe(
+      Effect.mapError(storageFailure),
+      Effect.flatMap((reference) => reference === undefined ? Effect.fail(new McpRunError(
+        `Secret ${value.fromSecret} is missing. Run canonfig secrets sync on an enrolled follower in canonfig:secrets, or canonfig secrets set ${value.fromSecret}, then restart this MCP server.`,
+        MCP_RUN_EXIT.missingSecret,
+      )) : Effect.succeed(reference)),
+    );
+    const reference = yield* resolveReference;
     const machine = yield* MachineState;
-    const loaded = yield* machine.loadCredential({ reference }).pipe(Effect.mapError(storageFailure));
+    const loaded = yield* machine.loadCredential({ reference }).pipe(Effect.catch(() =>
+      // Rotation publishes the new reference before removing the old one.
+      // A locked or unchanged credential only gets one native read.
+      Effect.flatMap(resolveReference, (current) => current === reference
+        ? Effect.fail(storageFailure())
+        : machine.loadCredential({ reference: current }).pipe(Effect.mapError(storageFailure))),
+    ));
     return Redacted.value(loaded);
   });
 
