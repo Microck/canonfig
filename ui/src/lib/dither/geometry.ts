@@ -132,3 +132,88 @@ export function rampTile(
     width,
   };
 }
+
+const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+const smoothstep = (e0: number, e1: number, x: number) => {
+  const t = clamp01((x - e0) / (e1 - e0));
+  return t * t * (3 - 2 * t);
+};
+
+/** Quantize a continuous [0, 1] field onto a square Bayer grid into `stops` SVG paths. */
+function fieldStopPaths(
+  cells: number,
+  fieldAt: (u: number, v: number) => number,
+  stops: number,
+  matrix: ThresholdMap = BAYER_4,
+): string[] {
+  const layers = Array.from({ length: stops }, () => "");
+  const { size, thresholds } = matrix;
+  for (let row = 0; row < cells; row += 1) {
+    const v = 1 - (row + 0.5) / cells;
+    const my = (cells - 1 - row) % size;
+    let activeStop = 0;
+    let runStart = 0;
+    const flush = (end: number) => {
+      if (activeStop > 0 && end > runStart) {
+        layers[activeStop - 1] += `M${runStart} ${row}h${end - runStart}v1h${runStart - end}z`;
+      }
+    };
+    for (let col = 0; col <= cells; col += 1) {
+      let stop = 0;
+      if (col < cells) {
+        const tone = clamp01(fieldAt((col + 0.5) / cells, v));
+        const th = thresholds[my * size + (col % size)] ?? 1;
+        const scaled = tone * stops;
+        let idx = Math.floor(scaled);
+        if (scaled - idx >= th && idx < stops) idx += 1;
+        stop = idx;
+      }
+      if (stop !== activeStop) {
+        flush(col);
+        activeStop = stop;
+        runStart = col;
+      }
+    }
+  }
+  return layers;
+}
+
+/**
+ * Three-stop Bayer 4x4 diagonal corner wash for machine icon tiles (`dim`, `mid`, `bright`).
+ * Carves a dark center pocket behind the glyph so icons keep contrast on any accent;
+ * `source` adds a top-right corner emitter glint.
+ */
+export function cornerWashPaths(cells: number, source: boolean): readonly [string, string, string] {
+  const [dim = "", mid = "", bright = ""] = fieldStopPaths(
+    cells,
+    (u, v) => {
+      const r = Math.hypot(u - 0.5, v - 0.5);
+      const halo = smoothstep(0.23, 0.43, r);
+      const diag = clamp01((u * 0.88 + (1 - v) * 0.96 - 0.56) / 1.12);
+      let tone = diag * (source ? 0.88 : 0.7) * (0.1 + 0.9 * halo);
+      if (source) {
+        const dTopRight = Math.hypot(u - 0.94, v - 0.94);
+        tone = Math.max(tone, Math.exp(-dTopRight * 7.2) * 0.98);
+      }
+      return tone;
+    },
+    3,
+  );
+  return [dim, mid, bright];
+}
+
+/** Single-stop carved diagonal sheen layered over an active syncing machine icon tile. */
+export function syncSheenPath(cells: number): string {
+  return (
+    fieldStopPaths(
+      cells,
+      (u, v) => {
+        const r = Math.hypot(u - 0.5, v - 0.5);
+        const halo = smoothstep(0.23, 0.43, r);
+        const diagCoord = (u + (1 - v)) * 0.5;
+        return Math.exp(-Math.abs(diagCoord - 0.58) * 11) * 0.58 * (0.18 + 0.82 * halo);
+      },
+      1,
+    )[0] ?? ""
+  );
+}

@@ -1,4 +1,4 @@
-import { FillPattern } from '../dither';
+import { cornerWashPaths } from '../../../../ui/src/lib/dither/geometry';
 import type { HarnessLogoId } from './harnesses';
 
 export type Machine = { name: string; platform: string; accent: string; icon: MachineIcon; harnesses: HarnessLogoId[] };
@@ -44,21 +44,39 @@ const ICON_PATHS = {
 
 export type MachineIcon = keyof typeof ICON_PATHS;
 
+// Shared Bayer 4x4 diagonal corner wash (18x18 cells scaled to the 26-unit tile).
+const TILE_CELLS = 18;
+const TILE_SCALE = 26 / TILE_CELLS;
+const TILE_WASH = {
+  source: cornerWashPaths(TILE_CELLS, true),
+  follower: cornerWashPaths(TILE_CELLS, false),
+} as const;
+
 /**
  * A machine's icon tile as the GUI's map draws it (machine-node.tsx): a 9%
- * tint of its accent, a dithered ramp rising from the bottom at 70%, a 40%
- * border and the device icon. SVG elements in a 26-unit box at the origin, so
- * it drops into a larger SVG or into `<svg viewBox="0 0 26 26">` on its own.
- * `id` must be unique on the page: it names the tile's dither pattern.
+ * tint of its accent, a 3-stop Bayer 4x4 diagonal corner wash carved around
+ * the icon (with a top-right emitter glint on the Source), a 40% border and
+ * the device icon. SVG elements in a 26-unit box at the origin, so it drops
+ * into a larger SVG or into `<svg viewBox="0 0 26 26">` on its own.
+ * `id` must be unique on the page: it names the tile's clip path.
  */
-export function IconTile({ id, accent, icon }: { id: string; accent: string; icon: MachineIcon }) {
+export function IconTile({ id, accent, icon, source = false }: { id: string; accent: string; icon: MachineIcon; source?: boolean }) {
+  const paths = source ? TILE_WASH.source : TILE_WASH.follower;
   return (
     <>
       <defs>
-        <FillPattern id={id} fill="ramp" color={accent} height={26} />
+        <clipPath id={id}>
+          <rect width="26" height="26" rx="5" />
+        </clipPath>
       </defs>
       <rect width="26" height="26" rx="5" fill={accent} fillOpacity="0.09" />
-      <rect width="26" height="26" rx="5" fill={`url(#${id})`} opacity="0.7" />
+      <g clipPath={`url(#${id})`}>
+        <g className="dither-cells" transform={`scale(${TILE_SCALE})`}>
+          <path d={paths[0]} fill={accent} fillOpacity="0.28" />
+          <path d={paths[1]} fill={accent} fillOpacity="0.72" />
+          <path d={paths[2]} fill={`color-mix(in oklab, ${accent} 64%, var(--sa-12))`} />
+        </g>
+      </g>
       <rect x="0.5" y="0.5" width="25" height="25" rx="4.5" fill="none" stroke={accent} strokeOpacity="0.4" />
       <g transform="translate(5 5) scale(0.667)" fill="none" stroke={accent} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
         {ICON_PATHS[icon].map((d) => (
