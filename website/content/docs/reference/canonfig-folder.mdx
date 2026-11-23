@@ -115,7 +115,7 @@ does not list is an error, so a typo fails instead of being ignored.
 | `version` | Yes | `1` | The file format. |
 | `profile` | To publish | `{ "id": string, "name": string }` | The Machine Profile this folder publishes. `id` starts with a letter or digit and contains letters, digits, `.`, `_`, `:`, and `-`. Projection does not use it. |
 | `harnesses` | Yes | array of harness ids | The Target Harnesses to project into. Ids are listed in the [harness reference](/docs/reference/harnesses). |
-| `mcp` | No | object: name to [MCP server](#mcp-servers) | MCP servers every listed harness gets. |
+| `mcp` | No | object: name to [MCP server](#mcp-servers) | MCP servers to project into the listed harnesses. |
 | `hooks` | No | array of [hooks](#hooks) | Lifecycle hooks, in the order they run. |
 | `settings` | No | object: harness id to object of key path to value | Keys written into that harness's settings file. See [Settings](#settings). |
 | `surfaces` | No | object: harness id to array of categories | Gives a listed harness only these categories: any of `instructions`, `rules`, `skills`, `agents`, `commands`, `hooks`, `mcp`, `settings`. A harness not named gets every category. Naming a harness that `harnesses` does not list fails validation. See [Give a harness only some categories](/docs/how-to/choose-harnesses#give-a-harness-only-some-categories). |
@@ -134,7 +134,7 @@ start with a letter or digit and contain only letters, digits, `-`, and `_`.
 ```jsonc
 "mcp": {
   "git": { "transport": "stdio", "command": "uvx", "args": ["mcp-server-git"], "env": { "GIT_AUTHOR": "dana" } },
-  "docs": { "transport": "streamable-http", "url": "https://docs.example.com/mcp" }
+  "docs": { "transport": "streamable-http", "url": "https://docs.example.com/mcp", "harnesses": ["codex", "claude-code"] }
 }
 ```
 
@@ -149,9 +149,20 @@ start with a letter or digit and contain only letters, digits, `-`, and `_`.
 | `headers` | `streamable-http`, `sse` | object of [secret values](#secret-values) | HTTP headers. |
 | `proxy` | `streamable-http` | `true` | Route through this machine's shared proxy. Requires a `fromSecret` header and HTTPS or loopback HTTP. |
 | `enabled` | all | boolean | `false` keeps the server in the file but projects nothing. |
+| `harnesses` | all | non-empty array of [harness IDs](/docs/reference/harnesses) | Limits projection of this server to those harnesses. Omit the field to include every eligible harness. |
 | `timeoutMs` | all | positive integer | Timeout in milliseconds, where the harness has one. |
 | `enabledTools`, `disabledTools` | all | array of strings | Tool filters, where the harness has them. |
 | `requires` | all | array of `tools/<id>` | Tools to install and verify before the server is projected. Each must be declared under `tools`. |
+
+The server's list further limits the profile's harness selection and the
+`mcp` category in `surfaces`. You can name a supported harness before adding
+it to the profile. The next sync removes a previously projected server from
+a harness that no longer receives it, subject to the usual drift checks and
+local preservation settings.
+
+The field also works in `local/local.jsonc` for locally authored servers.
+A Local Overlay replaces the published server's entire declaration,
+including its harness list.
 
 A harness that cannot express a field, or the `sse` transport, gets a warning
 in the plan naming the server; Canonfig does not write the field somewhere
@@ -352,7 +363,7 @@ takes these keys:
 | `excludeHarnesses` | array of harness ids | Harnesses this machine never projects, even when listed. `canonfig harnesses exclude` and `canonfig restore` edit it. |
 | `excludeResources` | array of resource ids | Authored resources this machine never projects. `canonfig restore` adds the ones it gives back. |
 | `excludeSkills` | array of skill names | Skill directories this machine keeps local in every harness, including shared skills. Requires Source `local.appendLocal` to include `skills`. Excluded skills are not written, checked, or deleted, even if previously managed. Source copies can remain in the canonical mirror. Removing an exclusion does not adopt a local copy; overlapping local content stops sync. Use `canonfig local skills list`, `add <name>`, or `remove <name>`, or **Kept on this machine** in the machine-local settings page. |
-| `preserveMcp` | boolean or non-empty array of harness ids | `true` keeps every harness's native MCP configuration outside projection on this machine. `false` or absent projects MCP everywhere. An array such as `["codex"]` preserves only those harnesses; other harnesses still receive Source MCP. Unknown ids and empty arrays are rejected. Native options the canonical format cannot represent stay untouched, including on later Source additions. Other settings still follow the Source. Use `canonfig local mcp status`, `preserve` or `project` with repeatable `--harness <id>`, or **Native MCP** under **Kept on this machine** in the browser. Preserved is not disabled or verified connectivity. |
+| `preserveMcp` | boolean or non-empty array of harness ids | `true` keeps every harness's native MCP configuration outside projection on this machine. Omit it or set it to `false` to project MCP according to each server's harness scope. An array such as `["codex"]` preserves only those harnesses; the rest use normal projection. Unknown ids and empty arrays are rejected. Native options the canonical format cannot represent stay untouched, including on later Source additions. Other settings still follow the Source. Use `canonfig local mcp status`, `preserve` or `project` with repeatable `--harness <id>`, or **Native MCP** under **Kept on this machine** in the browser. Preserved is not disabled or verified connectivity. |
 | `overlays` | array of `<category>/<name>` or `settings/<harness>#<key>` | Local Overlays: published items this machine's local item replaces. Key claims: settings keys Canonfig never writes, removes, or checks on this machine, while the other keys of that settings file follow the Source. `canonfig overlay set` and `remove` edit it. See [Replace a published item on one machine](/docs/how-to/use-local-overlays). |
 | `backups` | boolean | `false` turns harness takeover snapshots off on this machine; `canonfig import --replace` still snapshots the folder entries it replaces. Default `true`. |
 

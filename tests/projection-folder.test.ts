@@ -11,6 +11,7 @@ import { classifyAuthoredResourceId, parseSurfaceResourceId, ResourceId, resourc
 import {
   CanonicalFolderError,
   decodeFolderConfig,
+  decodeLocalConfig,
   type FolderResourceInput,
   loadCanonicalFolder,
   LocalItemCollisionError,
@@ -37,6 +38,16 @@ const folder = (files: Record<string, string>): string => {
 };
 
 const minimal = "{ \"version\": 1, \"harnesses\": [\"claude-code\"] }";
+
+describe("MCP server harness lists", () => {
+  it.each([[[]], [["unknown-harness"]], ["codex"]])("rejects an invalid list %j in either config", (harnesses) => {
+    const mcp = { docs: { transport: "streamable-http", url: "https://example.invalid/mcp", harnesses } };
+    expect(() => decodeFolderConfig("canonfig.jsonc", JSON.stringify({ version: 1, harnesses: ["codex"], mcp })))
+      .toThrow(/\["mcp"\]\["docs"\]\["harnesses"\]/u);
+    expect(() => decodeLocalConfig("local.jsonc", JSON.stringify({ mcp })))
+      .toThrow(/\["mcp"\]\["docs"\]\["harnesses"\]/u);
+  });
+});
 
 describe("Canonical Folder loader", () => {
   it.each([

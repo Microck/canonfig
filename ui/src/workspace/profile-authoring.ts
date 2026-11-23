@@ -15,17 +15,18 @@ export const decodeText = (base64: string) => new TextDecoder("utf-8", { fatal: 
 export interface DraftFile { path: string; content: string; encoding: "text" | "base64"; executable: boolean }
 export interface ExactDraft { json?: string; files: DraftFile[] }
 export interface AuthoredItem { resource: Resource; configPath?: (string | number)[]; value?: Schema.Json; itemPath?: string; exact?: ExactDraft }
+export const MCP_HARNESSES_LABEL = "Target harnesses";
 const fields: Partial<Record<ItemCategory, Record<string, string>>> = {
   rules: { description: "Description", paths: "Paths", activation: "Activation" },
   skills: { name: "Name", description: "Description" },
   agents: { description: "Description", model: "Model", tools: "Tools", writable: "Writable" },
   commands: { description: "Description", argumentHint: "Argument hint" },
-  mcp: { transport: "Transport", command: "Command", args: "Args", url: "URL" },
+  mcp: { transport: "Transport", command: "Command", args: "Args", url: "URL", harnesses: MCP_HARNESSES_LABEL },
   hooks: { id: "Name", event: "Event", run: "Run", matcher: "Capabilities", onFailure: "On failure" },
   credentials: { reference: "Reference" },
   resources: { kind: "Type", target: "Target", source: "Source", policy: "Policy", format: "Format", keys: "Keys" },
 };
-const listFields: Record<string, true> = { paths: true, tools: true, capabilities: true };
+const listFields: Record<string, true> = { paths: true, tools: true, capabilities: true, harnesses: true };
 function representable(category: ItemCategory, value: Record<string, Schema.Json>) {
   const known = fields[category];
   return known !== undefined && Object.entries(value).every(([key, entry]) => {

@@ -19,7 +19,7 @@ import { emptyModel } from "../src/projection/detect.ts";
 import { decodeFolderConfig, decodeLocalConfig, loadCanonicalFolder } from "../src/projection/folder.ts";
 import type { RootContext } from "../src/projection/harness.ts";
 import { mcpProxyAuthorization, projectedMcpServer, readMcpProxyBinding } from "../src/projection/mcp-launcher.ts";
-import type { McpServer } from "../src/projection/model.ts";
+import type { CanonicalModel, McpServer } from "../src/projection/model.ts";
 import { projectSurfaces } from "../src/projection/plan.ts";
 import { checkMcpEntries } from "../src/runtime/mcp-check.ts";
 import { launchMcp, MCP_REMOTE_VERSION, MCP_RUN_EXIT, npxCliPath, resolveMcpInvocation, resolveMcpValue } from "../src/runtime/mcp-run.ts";
@@ -141,8 +141,11 @@ for (const platform of ["linux", "windows"] as const) {
       expect(projectedMcpServer("ordinary", ordinary)).toBe(ordinary);
       const expected = { ...model, mcp: [["remote", wrapped], ["local", { ...wrapped, env: sessionEnv, args: [binding.arguments[0]!, "mcp", "run", "local"] }], ["ordinary", ordinary]] as const };
       const runtime = { folder, hookRunner: pathJoin(folder, ".runtime", "hook-runner.mjs"), platform };
-      const actual = adapter.project(model, adapter.layout(context, model), runtime);
-      expect(actual).toEqual(adapter.project(expected, adapter.layout(context, expected), runtime));
+      const project = (input: CanonicalModel) => adapter.project(
+        { ...input, mcpPermissionNames: input.mcp.map(([name]) => name) }, adapter.layout(context, input), runtime,
+      );
+      const actual = project(model);
+      expect(actual).toEqual(project(expected));
       if (adapter.descriptor.id === "codex") {
         const config = actual.contents.find((content) => content.kind === "config");
         expect(config?.kind === "config" && config.keys).toContainEqual({

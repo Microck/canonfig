@@ -388,21 +388,18 @@ export const projectSurfaces = (
     };
     for (const harness of model.harnesses) {
       const adapter = adapterFor(harness);
-      const selected = modelFor(model, harness);
-      let scoped = selected;
+      const scoped = modelFor(model, harness);
+      let mcp = scoped.mcp.filter(([, server]) => server.harnesses?.includes(harness) ?? true);
       if (!loaded.local.preserveMcp.has(harness)
-        && selected.mcp.some(([, server]) => server.transport !== "stdio" && server.proxy)) {
+        && mcp.some(([, server]) => server.transport !== "stdio" && server.proxy)) {
         const binding = yield* proxyBinding;
         if (binding === undefined) return yield* new CanonicalFolderError({
           path: configPath,
           message: "Start 'canonfig mcp proxy' on this machine before projecting proxied MCP servers.",
         });
-        scoped = {
-          ...selected,
-          mcp: selected.mcp.map(([name, server]) => [
-            name, server.transport !== "stdio" && server.proxy ? proxyMcpServer(name, server, binding) : server,
-          ]),
-        };
+        mcp = mcp.map(([name, server]) => [
+          name, server.transport !== "stdio" && server.proxy ? proxyMcpServer(name, server, binding) : server,
+        ]);
       }
       // The command category controls translation independently of authored skills.
       const generated = adapter.descriptor.capabilities.commands === "translated" && scoped.commands.length > 0
@@ -420,7 +417,13 @@ export const projectSurfaces = (
       }
       yield* checkRoot(harness, layout.root);
       harnesses.push({ harness, layout });
-      const projection = adapter.project(input, layout, runtime);
+      // A native map may still contain a scoped-out server if Canonfig does not
+      // own the map or drift blocks the write. Keep its agent permissions.
+      const projection = adapter.project({
+        ...input,
+        mcpPermissionNames: scoped.mcp.map(([name]) => name),
+        mcp,
+      }, layout, runtime);
       diagnostics.push(...projection.diagnostics);
       const contents = yield* Effect.try({
         try: () => withSettings(harness, layout, projection.contents, scoped.settings[harness] ?? [], configPath),

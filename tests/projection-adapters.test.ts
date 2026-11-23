@@ -174,7 +174,7 @@ interface AdapterRun {
 
 function run(adapter: HarnessAdapter, context: RootContext): AdapterRun {
   const layout = adapter.layout(context, model);
-  return { layout, projection: adapter.project(model, layout, runtime) };
+  return { layout, projection: adapter.project({ ...model, mcpPermissionNames: model.mcp.map(([name]) => name) }, layout, runtime) };
 }
 
 const relative = (target: string) => (target.startsWith(`${HOME}/`) ? `~/${target.slice(HOME.length + 1)}` : target);

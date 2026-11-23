@@ -93,6 +93,18 @@ describe("shared profile authoring", () => {
     const next = { ...entry.resource, detail: { ...entry.resource.detail, Command: "bun" } };
     assert.deepEqual(itemWrite(state, entry.resource, next).edits, [{ path: ["mcp", "server", "command"], value: "bun" }]);
   });
+  it("loads, changes and clears a server's target harnesses", () => {
+    const state: GuiProfileSnapshot = { config: { mcp: { server: { transport: "stdio", command: "node", harnesses: ["codex"] } } }, reservedPaths: [], caseSensitive: true, supportedSurfaces: {}, items: [] };
+    const entry = authoredItems(state)[0]!;
+    assert.equal(entry.exact, undefined);
+    assert.equal(entry.resource.detail["Target harnesses"], "codex");
+    const edit = (harnesses: string) => itemWrite(state, entry.resource, {
+      ...entry.resource, detail: { ...entry.resource.detail, "Target harnesses": harnesses },
+    }).edits;
+    const path = ["mcp", "server", "harnesses"];
+    assert.deepEqual(edit("codex, claude-code"), [{ path, value: ["codex", "claude-code"] }]);
+    assert.deepEqual(edit(""), [{ path }]);
+  });
   it("writes supporting hook files with field edits in one transaction", () => {
     const state: GuiProfileSnapshot = { config: { hooks: [{ id: "test", event: "session_start", run: ["hooks/test.sh"], matcher: { capabilities: [] } }] }, reservedPaths: [], caseSensitive: true, supportedSurfaces: {}, items: [] };
     const entry = authoredItems(state)[0]!;

@@ -31,6 +31,7 @@ The production entry is `ui/src/live-app.tsx`, selected through Vite's build-sel
 | Report a Canonfig issue, check or turn off automatic reporting | Sidebar → Issue reporting | Sidebar → Issue reporting | Open glossary → Issue reporting |
 | Enable automatic issue reporting | Agent consent prompt or CLI | Agent consent prompt or CLI | Agent consent prompt or CLI |
 | Project Profile commands as native commands or Agent Skills | Harnesses → Surfaces → Commands, then Sync | Existing sync plan and apply; the Source selects the surfaces | Source setup can import existing native commands |
+| Limit an MCP server to specific harnesses | Profile → Items → MCP server. Set Target harnesses or edit `harnesses` in the server JSON when the item uses the JSON editor. | Local → MCP server. Set `harnesses` in the local server JSON. Published scopes arrive through Sync. | Available after setup |
 | Machine-readable preview and submission (`report-issue`) | CLI | CLI | CLI |
 | Launch an MCP server with `canonfig mcp run` | Harness-managed CLI process | Harness-managed CLI process | Harness-managed CLI process |
 | Supervise the shared Streamable HTTP MCP proxy | `canonfig mcp proxy` in the login session | `canonfig mcp proxy` in the login session | The same command can start before the first sync |
