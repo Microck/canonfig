@@ -84,7 +84,7 @@ function model(overrides: Partial<CanonicalModel> = {}): CanonicalModel {
 
 function project(harness: TargetId, input: CanonicalModel): HarnessProjection {
   const adapter = adapterFor(harness);
-  return adapter.project(input, adapter.layout(context, input), runtime);
+  return adapter.project({ ...input, mcpPermissionNames: input.mcp.map(([name]) => name) }, adapter.layout(context, input), runtime);
 }
 
 function content(projection: HarnessProjection, surface: string): SurfaceContent {

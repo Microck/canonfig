@@ -62,13 +62,13 @@ describe("shared profile authoring", () => {
       assert.deepEqual(itemWrite(state, entry.resource, entry.resource, entry.exact).edits, []);
     }
   });
-  it("enables the proxy when a structured MCP draft switches to JSON", () => {
+  it("enables the proxy and preserves the harness selection when a structured MCP draft switches to JSON", () => {
     const state: GuiProfileSnapshot = {
       config: { mcp: { server: { transport: "stdio", command: "node", args: ["mcp.js"] } } },
       reservedPaths: [], caseSensitive: true, supportedSurfaces: {}, items: [],
     };
     const entry = authoredItems(state)[0]!;
-    const draft = { ...entry.resource, detail: { ...entry.resource.detail, Transport: "streamable-http", URL: "https://example.invalid/updated" } };
+    const draft = { ...entry.resource, detail: { ...entry.resource.detail, Transport: "streamable-http", URL: "https://example.invalid/updated", "Target harnesses": "codex" } };
     const headers = { Authorization: { fromSecret: "docs.token" } };
     const exact = { files: [], json: JSON.stringify({ ...fieldValue(draft), proxy: true, headers }) };
     assert.deepEqual(itemWrite(state, entry.resource, draft, exact).edits, [
@@ -76,6 +76,7 @@ describe("shared profile authoring", () => {
       { path: ["mcp", "server", "command"] },
       { path: ["mcp", "server", "args"] },
       { path: ["mcp", "server", "url"], value: "https://example.invalid/updated" },
+      { path: ["mcp", "server", "harnesses"], value: ["codex"] },
       { path: ["mcp", "server", "proxy"], value: true },
       { path: ["mcp", "server", "headers"], value: headers },
     ]);
@@ -92,6 +93,18 @@ describe("shared profile authoring", () => {
     const entry = authoredItems(state)[0]!;
     const next = { ...entry.resource, detail: { ...entry.resource.detail, Command: "bun" } };
     assert.deepEqual(itemWrite(state, entry.resource, next).edits, [{ path: ["mcp", "server", "command"], value: "bun" }]);
+  });
+  it("loads, changes and clears a server's target harnesses", () => {
+    const state: GuiProfileSnapshot = { config: { mcp: { server: { transport: "stdio", command: "node", harnesses: ["codex"] } } }, reservedPaths: [], caseSensitive: true, supportedSurfaces: {}, items: [] };
+    const entry = authoredItems(state)[0]!;
+    assert.equal(entry.exact, undefined);
+    assert.equal(entry.resource.detail["Target harnesses"], "codex");
+    const edit = (harnesses: string) => itemWrite(state, entry.resource, {
+      ...entry.resource, detail: { ...entry.resource.detail, "Target harnesses": harnesses },
+    }).edits;
+    const path = ["mcp", "server", "harnesses"];
+    assert.deepEqual(edit("codex, claude-code"), [{ path, value: ["codex", "claude-code"] }]);
+    assert.deepEqual(edit(""), [{ path }]);
   });
   it("writes supporting hook files with field edits in one transaction", () => {
     const state: GuiProfileSnapshot = { config: { hooks: [{ id: "test", event: "session_start", run: ["hooks/test.sh"], matcher: { capabilities: [] } }] }, reservedPaths: [], caseSensitive: true, supportedSurfaces: {}, items: [] };

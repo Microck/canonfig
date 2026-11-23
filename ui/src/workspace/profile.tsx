@@ -32,8 +32,9 @@ import {
   type Resource,
 } from "@/shared/metadata";
 import { sharedKey, useSharedState, useWorkspace } from "./store";
-import { authoredItems, draftFiles, fieldValue, type ExactDraft } from "./profile-authoring";
+import { authoredItems, draftFiles, fieldValue, MCP_HARNESSES_LABEL, type ExactDraft } from "./profile-authoring";
 import type { GuiProfileSnapshot } from "../../../src/gui/contract/profile";
+import { TARGET_IDS } from "../../../src/projection/model";
 import { GuiRequestError } from "../gui-client";
 import { ExactItemFields, ProfileActionNotice } from "./profile-authoring-controls";
 import { ArchiveExportButton, ArchiveImportButton } from "./archive-transfer";
@@ -264,7 +265,8 @@ function preview(r: Resource): { where: string; text: string } | null {
     const server = stdio(d)
       ? { transport: "stdio", command: d.Command, ...(d.Args?.trim() ? { args: d.Args.trim().split(/\s+/) } : {}) }
       : { transport: d.Transport, url: d.URL };
-    return { where, text: `${key}: ${JSON.stringify(server, null, 2)}` };
+    const harnesses = listOf(d[MCP_HARNESSES_LABEL]);
+    return { where, text: `${key}: ${JSON.stringify(harnesses.length ? { ...server, harnesses } : server, null, 2)}` };
   }
   if (r.category === "hooks") {
     const hook = {
@@ -334,6 +336,29 @@ function GroupPicker({ idPrefix, value, onChange }: { idPrefix: string; value: s
         );
       })}
     </div>
+  );
+}
+
+function McpHarnessPicker({ value, onChange }: { value: string[]; onChange: (harnesses: string[]) => void }) {
+  return (
+    <Collapsible className="grid gap-2">
+      <CollapsibleTrigger type="button" className="flex min-h-10 items-center gap-2 text-left text-sm pointer-coarse:min-h-11">
+        <CaretRight />
+        <span>{MCP_HARNESSES_LABEL}</span>
+        <span className="text-muted-foreground">{value.length === 0 ? "All eligible" : `${value.length} selected`}</span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <fieldset className="grid gap-1 sm:grid-cols-2">
+          <legend className="pb-2 text-sm text-muted-foreground">Select the harnesses that receive this server. Clear the selection to include all eligible harnesses.</legend>
+          {TARGET_IDS.map((id) => (
+            <Label key={id} className="flex min-h-10 cursor-pointer items-center gap-2 text-sm font-normal pointer-coarse:min-h-11">
+              <Checkbox checked={value.includes(id)} onCheckedChange={(checked) => onChange(checked ? [...value, id] : value.filter((harness) => harness !== id))} />
+              {HARNESS_NAMES[id]}
+            </Label>
+          ))}
+        </fieldset>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -699,6 +724,12 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
   const returnFocus = useRef<HTMLElement | null>(null);
   const [tried, setTried] = useState(false);
   const setDetail = (k: string, v: string) => setDraft((d) => ({ ...d, detail: { ...d.detail, [k]: v } }));
+  const setMcpHarnesses = (harnesses: string[]) => setDraft((resource) => {
+    const detail = { ...resource.detail };
+    if (harnesses.length === 0) delete detail[MCP_HARNESSES_LABEL];
+    else detail[MCP_HARNESSES_LABEL] = harnesses.join(", ");
+    return { ...resource, detail };
+  });
   const category = draft.category;
   const exactContent = exact && (exact.json !== undefined || category !== "hooks" || authored?.itemPath);
   const isSettings = category === "settings";
@@ -970,6 +1001,9 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
             </Field>
           );
         })}
+        {category === "mcp" && (exactContent
+          ? <p className="text-sm text-muted-foreground">To limit this server, add a harness list such as <code className="font-mono">"harnesses": ["codex"]</code>.</p>
+          : <McpHarnessPicker value={listOf(draft.detail[MCP_HARNESSES_LABEL])} onChange={setMcpHarnesses} />)}
         {ws.profileLive && category === "mcp" && draft.detail.Transport === "streamable-http" && !exactContent && (
           <Button type="button" variant="outline" size="sm" onClick={() => setExact({ json: JSON.stringify(fieldValue(draft), null, 2), files: [] })}>Edit MCP JSON</Button>
         )}

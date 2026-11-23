@@ -90,6 +90,7 @@ const toolReference = Schema.String.check(
 
 const McpCommon = {
   enabled: Schema.optional(Schema.Boolean),
+  harnesses: Schema.optional(Schema.NonEmptyArray(Schema.Literals(TARGET_IDS))),
   timeoutMs: Schema.optional(positiveInteger),
   enabledTools: Schema.optional(ToolList),
   disabledTools: Schema.optional(ToolList),
@@ -654,27 +655,31 @@ const loadSkills = async <File>(
   return skills;
 };
 
-const mcpServer = (input: FolderMcpServer): McpServer =>
-  input.transport === "stdio"
+const mcpServer = (input: FolderMcpServer): McpServer => {
+  const common = {
+    harnesses: input.harnesses && [...new Set(input.harnesses)].sort(),
+    requires: input.requires,
+    timeoutMs: input.timeoutMs,
+    enabledTools: input.enabledTools,
+    disabledTools: input.disabledTools,
+  };
+  return input.transport === "stdio"
     ? {
+      ...common,
       transport: "stdio",
       command: input.command,
       args: input.args ?? [],
       cwd: input.cwd,
       env: input.env ?? {},
-      timeoutMs: input.timeoutMs,
-      enabledTools: input.enabledTools,
-      disabledTools: input.disabledTools,
     }
     : {
+      ...common,
       transport: input.transport,
       url: input.url,
       headers: input.headers ?? {},
       proxy: input.proxy,
-      timeoutMs: input.timeoutMs,
-      enabledTools: input.enabledTools,
-      disabledTools: input.disabledTools,
     };
+};
 
 /**
  * The script a hook runs from the folder's `hooks/` directory, relative to

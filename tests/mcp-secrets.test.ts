@@ -19,7 +19,7 @@ import { emptyModel } from "../src/projection/detect.ts";
 import { decodeFolderConfig, decodeLocalConfig, loadCanonicalFolder } from "../src/projection/folder.ts";
 import type { RootContext } from "../src/projection/harness.ts";
 import { mcpProxyAuthorization, projectedMcpServer, readMcpProxyBinding } from "../src/projection/mcp-launcher.ts";
-import type { McpServer } from "../src/projection/model.ts";
+import type { CanonicalModel, McpServer } from "../src/projection/model.ts";
 import { projectSurfaces } from "../src/projection/plan.ts";
 import { checkMcpEntries } from "../src/runtime/mcp-check.ts";
 import { launchMcp, MCP_REMOTE_VERSION, MCP_RUN_EXIT, npxCliPath, resolveMcpInvocation, resolveMcpValue } from "../src/runtime/mcp-run.ts";
@@ -141,8 +141,11 @@ for (const platform of ["linux", "windows"] as const) {
       expect(projectedMcpServer("ordinary", ordinary)).toBe(ordinary);
       const expected = { ...model, mcp: [["remote", wrapped], ["local", { ...wrapped, env: sessionEnv, args: [binding.arguments[0]!, "mcp", "run", "local"] }], ["ordinary", ordinary]] as const };
       const runtime = { folder, hookRunner: pathJoin(folder, ".runtime", "hook-runner.mjs"), platform };
-      const actual = adapter.project(model, adapter.layout(context, model), runtime);
-      expect(actual).toEqual(adapter.project(expected, adapter.layout(context, expected), runtime));
+      const project = (input: CanonicalModel) => adapter.project(
+        { ...input, mcpPermissionNames: input.mcp.map(([name]) => name) }, adapter.layout(context, input), runtime,
+      );
+      const actual = project(model);
+      expect(actual).toEqual(project(expected));
       if (adapter.descriptor.id === "codex") {
         const config = actual.contents.find((content) => content.kind === "config");
         expect(config?.kind === "config" && config.keys).toContainEqual({
@@ -380,6 +383,18 @@ describe("canonfig mcp proxy", () => {
     expect(() => decodeFolderConfig("canonfig.jsonc", JSON.stringify(config))).toThrow();
   });
 
+  it("does not require a proxy binding when the server targets another harness", async () => {
+    const f = await fixture();
+    writeFileSync(join(f.folder, "canonfig.jsonc"), JSON.stringify({
+      version: 1, harnesses: ["claude-code"],
+      mcp: { remote: { ...remote, proxy: true, harnesses: ["codex"] } },
+    }));
+    const loaded = await loadCanonicalFolder(f.folder);
+    const context: RootContext = { platform: process.platform, home: f.home, appData: f.home, environment: () => undefined, join };
+    const { surfaces } = await Effect.runPromise(projectSurfaces(loaded, context, [], new Set()).pipe(Effect.provide(f.machine)));
+    expect(surfaces.some(({ surface }) => surface.id === "mcp")).toBe(false);
+  });
+
   it("uses one listener for native HTTP projections and keeps upstream credentials private", async () => {
     const f = await fixture();
     const requests: Array<{ url: string | undefined; method: string | undefined; headers: IncomingHttpHeaders; body: string }> = [];
@@ -424,8 +439,10 @@ describe("canonfig mcp proxy", () => {
       const pendingConfigPath = join(f.root, "pending-config.jsonc");
       writeFileSync(configPath, JSON.stringify({
         version: 1, harnesses: ["codex", "claude-code"], local: { allow: ["mcp"] },
+        tools: { probe: { executable: "probe-tool", recipes: [] } },
         mcp: {
           remote: proxied,
+          scoped: { ...proxied, url: `${url}/scoped`, harnesses: ["codex"], requires: ["tools/probe"] },
           other: { ...proxied, url: `${url}/other` },
           missing: { ...proxied, headers: { Authorization: { fromSecret: "missing.token" } } },
           ordinary: { ...remote, url: `${url}/ordinary` },
@@ -464,7 +481,8 @@ describe("canonfig mcp proxy", () => {
       const origin = `http://127.0.0.1:${port}`;
       expect(ready).toBe(`MCP proxy listening at ${origin}.\n`);
       renameSync(pendingConfigPath, configPath);
-      const { surfaces } = await project();
+      const { surfaces, requiredMcpTools } = await project();
+      expect([...requiredMcpTools]).toEqual(["tools:probe"]);
       const projection = JSON.stringify(surfaces);
       const binding = await readMcpProxyBinding(f.folder);
       expect(binding).toBeDefined();
@@ -473,11 +491,14 @@ describe("canonfig mcp proxy", () => {
       }
       const authorization = mcpProxyAuthorization(binding!, "remote");
       const endpoint = `${origin}/mcp/remote`;
+      const scopedAuthorization = mcpProxyAuthorization(binding!, "scoped");
+      const scopedEndpoint = `${origin}/mcp/scoped`;
       const codex = surfaces.find(({ harness, surface }) => harness === "codex" && surface.id === "config")?.content;
       const claude = surfaces.find(({ harness, surface }) => harness === "claude-code" && surface.id === "mcp")?.content;
       expect(codex?.kind === "config" && codex.keys).toContainEqual({
         path: "mcp_servers", value: expect.objectContaining({
           remote: { url: endpoint, http_headers: { Authorization: authorization } },
+          scoped: { url: scopedEndpoint, http_headers: { Authorization: scopedAuthorization } },
           ordinary: expect.objectContaining({ args: expect.arrayContaining(["mcp", "run", "ordinary"]) }),
         }),
       });
@@ -486,6 +507,7 @@ describe("canonfig mcp proxy", () => {
           remote: { type: "http", url: endpoint, headers: { Authorization: authorization } },
         }),
       });
+      expect(claude?.kind === "config" && claude.keys.find(({ path }) => path === "mcpServers")?.value).not.toHaveProperty("scoped");
 
       expect((await fetch(endpoint)).status).toBe(404);
       expect((await fetch(endpoint, { headers: { authorization, origin: "https://example.invalid" } })).status).toBe(403);
@@ -584,6 +606,10 @@ describe("canonfig mcp proxy", () => {
       const afterRotation = await fetch(endpoint, { headers: { authorization } });
       expect(await afterRotation.text()).toContain("data:");
       expect(requests.at(-1)?.headers.authorization).toBe(rotated);
+
+      const scopedResponse = await fetch(scopedEndpoint, { headers: { authorization: scopedAuthorization } });
+      expect(await scopedResponse.text()).toContain("data:");
+      expect(requests.at(-1)).toMatchObject({ url: "/scoped", headers: { authorization: rotated } });
 
       await stopListening(upstream);
       const unavailable = await fetch(endpoint, { headers: { authorization } });
