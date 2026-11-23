@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect, Layer, ManagedRuntime, Schema } from "effect";
 import { expect, it } from "vitest";
-import { fakeSsh, freePort } from "../fixtures/tunnel-forwarder.ts";
+import { fakeSsh, freePort, stopFakeSsh } from "../fixtures/tunnel-forwarder.ts";
 import { runCli } from "../../src/cli/cli.ts";
 import { SourceCommands } from "../../src/cli/source-commands.ts";
 import { FollowerCommands } from "../../src/cli/follower-commands.ts";
@@ -266,7 +266,7 @@ it("reports the published Source revision after a real follower projection conve
     expect(rollout).toMatchObject({ status: "complete", followers: [{ status: "healthy", health: { revision: control.revision.id, run: receipt?.run } }] });
     if (process.platform !== "win32") {
       const oldPid = Number(readFileSync(join(follower.directory, "ssh.pid"), "utf8"));
-      process.kill(oldPid, "SIGKILL");
+      await stopFakeSsh(follower.directory);
       await source.runtime.runPromise(control.controller.startFleetUpdate({ canary: configuration.follower.id, apply: true }));
       const restarted = await syncFromCli(true);
       expect(restarted.exitCode).toBe(0);
@@ -283,12 +283,23 @@ it("reports the published Source revision after a real follower projection conve
       restart: false, startedAt: null, deferredCheck: "The Source could not complete the Fleet Update request",
     });
   } finally {
-    lease.close();
-    if (process.platform !== "win32") await Effect.runPromise(Effect.flatMap(Tunnel, (tunnel) =>
-      tunnel.stopTunnel({ stateDirectory: tunnelDirectory })).pipe(Effect.provide(TunnelLive), Effect.ignore));
-    await close?.();
-    await follower.runtime.dispose();
-    await source.runtime.dispose();
-    rmSync(home, { recursive: true, force: true });
+    try {
+      lease.close();
+      await close?.();
+      await follower.runtime.dispose();
+      await source.runtime.dispose();
+    } finally {
+      try {
+        if (process.platform !== "win32") await stopFakeSsh(follower.directory);
+      } finally {
+        if (process.platform !== "win32") await Effect.runPromise(Effect.gen(function*() {
+          const tunnel = yield* Tunnel;
+          yield* tunnel.stopTunnel({ stateDirectory: tunnelDirectory, forget: true });
+          const status = yield* tunnel.tunnelStatus({ stateDirectory: tunnelDirectory });
+          expect(status.lifecycle).toBe("not-configured");
+        }).pipe(Effect.provide(TunnelLive)));
+      }
+      rmSync(home, { recursive: true, force: true });
+    }
   }
 });
