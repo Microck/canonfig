@@ -213,6 +213,12 @@
   --dither-color-red: #ef6b6b;
   --dither-color-grey: #4d6460;
   --dither-color-gold: #f1c332;
+  --dither-converge-dim: #192a27;
+  --dither-converge-mid: #3c6b53;
+  --dither-converge-bright: #8ac789;
+  --dither-converge-settled-dim: #1c3827;
+  --dither-converge-settled-mid: #5d9a62;
+  --dither-converge-settled-bright: #b8ebb5;
 
   color-scheme: dark;
 }

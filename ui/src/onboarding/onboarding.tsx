@@ -24,34 +24,71 @@ import type { SetupImportOffer, SetupImportReview } from "../../../src/setup/set
 import { ImportReview } from "./import-review";
 import { TunnelAdvancedFields, tunnelPortsError, tunnelTimeoutError } from "@/shared/tunnel-fields";
 
-// Rings drifting inward toward the centre: many machines converging on one.
-// At speed 1 a ring takes about 20 seconds to move one ring inward.
-// The setup job (SetupBackdrop) drives four uniforms, all 0 while nothing runs:
-//   progress: the job's share done. The rings travel two rings inward over the whole job,
-//     so they close in on the card in step with its progress bar, and stop when it stops.
-//     Two whole rings, so the pattern after a job matches the one before.
-//   energy: 1 while the job runs. The clear space around the card shrinks so the rings come
-//     closer, and they gain green as progress grows.
+// Ender convergence field: curved radial filaments, orbital contour rings, and
+// inward traveling sync packets converging on the setup card.
+// The setup job (SetupBackdrop) drives five uniforms, all 0 while nothing runs:
+//   progress: the job's share done. Orbital rings travel two rings inward over the whole job,
+//     so they close in on the card in step with its progress bar and stop when it stops.
+//   energy: 1 while the job runs. The clear pocket around the card tightens, filaments
+//     brighten, and inward packets accelerate.
 //   ripple: 1 the moment a step completes, falling to 0. One lit ring runs out from the card,
 //     fading as it goes, so each tick of the list shows in the room around it.
-//   settled: 1 once the job succeeded. Rings turn fully green and wobble half as much.
-// Inspection has no measurable percentage. A travelling band uses the shader's existing
-// clock while the request is pending, without inventing progress or another frame loop.
+//   settled: 1 once the job succeeded. Filaments straighten, rings brighten, and the palette
+//     shifts to the settled Ender green ramp.
+//   inspecting: 1 while any live operation is loading (inspection, approval, apply), since
+//     those report no progress. A rotating angular sweep uses the shader's clock without
+//     inventing progress or a second frame loop.
 const CONVERGE_FIELD = /* glsl */ `
 float field(vec2 uv, vec2 res, float t) {
   vec2 p = (uv - vec2(0.5, 0.48)) * vec2(res.x / res.y, 1.0);
   float r = length(p);
-  float wobble = (fbm(p * 1.3 + vec2(t * 0.02, -t * 0.015)) - 0.5) * 0.16 * (1.0 - 0.5 * settled);
-  float band = abs(fract((r + wobble) * 5.0 + t * 0.05 + progress * 2.0) - 0.5) * 2.0;
-  float ring = smoothstep(0.78, 1.0, band);
-  float halo = smoothstep(0.34 - 0.1 * energy, 0.95, r);
-  float level = 0.7 + 0.2 * energy * progress + 0.3 * settled;
-  float front = (0.3 + 0.9 * (1.0 - ripple) - r) / 0.05;
-  float wave = 0.6 * ripple * ripple * exp(-front * front);
-  float scan = inspecting * (1.0 - smoothstep(0.0, 0.18, abs(fract(r * 1.4 + t * 0.12) - 0.5)));
-  return clamp(ring * halo * level + halo * 0.05 + wave + scan * halo * 0.35, 0.0, 1.0);
+  float ang = atan(p.y, p.x);
+  float halo = smoothstep(0.30 - 0.08 * energy, 0.80, r);
+
+  // Twelve gently curved radial convergence filaments.
+  float twist = 1.35 * (1.0 - 0.45 * settled);
+  float spokeWave = cos(ang * 12.0 + r * twist - t * 0.14);
+  float spokeFactor = clamp(spokeWave * 0.5 + 0.5, 0.0, 1.0);
+  float spokes = pow(max(spokeFactor, 0.0), 5.0) * (0.44 + 0.14 * energy);
+
+  // Orbital contour rings pulling inward in lockstep with progress.
+  float ringPhase = abs(fract(r * 3.5 + t * 0.08 + progress * 2.0) - 0.5) * 2.0;
+  float rings = smoothstep(0.76, 0.99, ringPhase) * (0.50 + 0.16 * settled);
+
+  // Inward traveling packets staggered along each filament.
+  float spokeIdx = floor((ang + 3.14159265) / 6.2831853 * 12.0);
+  float pShift = hash21(vec2(spokeIdx, 3.7));
+  float pPos = fract(r * 1.8 + t * (0.20 + 0.35 * energy) + pShift);
+  float packet = smoothstep(0.85, 0.99, pPos) * pow(max(spokeFactor, 0.0), 7.0) * (0.85 + 0.15 * energy);
+
+  // Step-completion ripple radiating outward from the card.
+  float front = (0.28 + 0.95 * (1.0 - ripple) - r) / 0.055;
+  float wave = 0.72 * ripple * ripple * exp(-front * front);
+
+  // Rotating angular sweep while inspecting.
+  float sweepAng = fract(t * 0.16) * 6.2831853 - 3.14159265;
+  float da = abs(ang - sweepAng);
+  da = min(da, 6.2831853 - da);
+  float scan = inspecting * exp(-da * 4.5) * 0.55;
+
+  float depth = smoothstep(0.36, 1.3, r) * 0.2;
+  return clamp((depth + spokes + rings + packet + scan) * halo + wave, 0.0, 1.0);
 }
 `;
+
+const CONVERGE_IDLE_PALETTE = [
+  "--dither-paper",
+  "--dither-converge-dim",
+  "--dither-converge-mid",
+  "--dither-converge-bright",
+] as const;
+
+const CONVERGE_SETTLED_PALETTE = [
+  "--dither-paper",
+  "--dither-converge-settled-dim",
+  "--dither-converge-settled-mid",
+  "--dither-converge-settled-bright",
+] as const;
 
 /** The simulated setup job: the wizard shows it as a progress bar and a list, the backdrop as motion. */
 interface Job {
@@ -130,13 +167,14 @@ function SetupBackdrop({ job, busy }: { job: Job | null; busy: boolean }) {
         field={CONVERGE_FIELD}
         data-activity={busy ? "working" : "idle"}
         uniforms={uniforms}
-        palette={["--dither-paper", "--dither-color-grey", "--dither-color-green"]}
+        matrix="bayer8"
+        palette={uniforms.settled > 0.5 ? CONVERGE_SETTLED_PALETTE : CONVERGE_IDLE_PALETTE}
         cell={3}
         fps={BACKDROP_FPS}
         // Livelier while the job runs, slower once it settled.
         speed={(1 + 2 * uniforms.energy) * (1 - 0.5 * uniforms.settled)}
         stillTime={6}
-        className="absolute inset-0 opacity-60"
+        className="absolute inset-0 opacity-70"
       />
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_48%_52%_at_50%_48%,var(--background)_45%,transparent_100%)]" />
     </>
