@@ -191,3 +191,18 @@ it("shows a Follower receipt without empty revision or recovery rows", () => {
   const source = Schema.decodeUnknownSync(GuiStatus)({ ...follower, machineRole: { role: "source" } });
   assert.equal(renderToStaticMarkup(<PersistentStatusEvidence status={source} />), "");
 });
+
+const watch = (installed: boolean, active: boolean) => ({
+  state: !installed ? "not-installed" : active ? "running" : "not-running", platform: "linux", mechanism: "systemd-user-service",
+  serviceName: "canonfig-watch.service", manager: { installed, matches: installed, enabled: installed, active, state: active ? "active/running" : "inactive/dead" },
+  supportedModes: "", logs: "journalctl --user -u canonfig-watch.service", detail: "",
+});
+
+it("reports whether this Source applies its folder automatically, next to its other machine state", async () => {
+  for (const [installed, active, expected] of [[false, false, "Automatic applyOff"], [true, true, "Automatic applyOn"], [true, false, "Automatic applyNot running"]] as const) {
+    const page = await overview({ "/api/status": status, "/api/source-service": service(true), "/api/revisions": { revisions: [] }, "/api/watch": watch(installed, active) });
+    try {
+      assert.ok((await page.text(expected)).includes(expected), expected);
+    } finally { await page.close(); }
+  }
+});

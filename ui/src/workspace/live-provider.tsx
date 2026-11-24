@@ -21,7 +21,8 @@ export function livePageResources(session: GuiSession, route: WorkspaceRoute): r
   const shared = session.role === "source" ? ["/api/status", "/api/source-service"] : ["/api/status"];
   const pages: Partial<Record<Workspace["view"], readonly string[]>> = {
     // The Source Overview states what was published; it has no fleet telemetry to read.
-    ...(session.role === "source" ? { overview: ["/api/revisions"] } : {}),
+    // The Overview also reports whether this Source applies its own folder automatically.
+    ...(session.role === "source" ? { overview: ["/api/revisions", "/api/watch"] } : {}),
     profile: ["/api/profile/items", "/api/revisions", ...(route.profileTab === "items" ? ["/api/skills"] : []), ...(route.profileTab === "harnesses" ? ["/api/harnesses"] : []), ...(route.profileTab === "groups" ? ["/api/machines"] : [])],
     revisions: ["/api/revisions"],
     machines: session.role === "source" ? ["/api/machines", "/api/profile/items", "/api/source-look"] : ["/api/enrollment", "/api/source-look"],
