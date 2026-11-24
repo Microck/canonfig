@@ -2,6 +2,79 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
+## Unreleased
+
+### Automatic local sync
+
+- `canonfig watch` applies the Canonfig folder to this machine's harnesses
+  about a second after each change to `canonfig.jsonc`, `AGENTS.md`,
+  `rules/`, `skills/`, `agents/`, `commands/`, `hooks/`, `files/` or
+  `local/`. It runs on a Source or unenrolled machine; a Follower refuses it.
+- `canonfig watch enable` runs the watcher as a user service (systemd user
+  unit, LaunchAgent or Task Scheduler logon task), `watch status` reports it
+  and its latest run, and `watch disable` removes it.
+- The Local sync page has an Apply changes automatically switch, and the
+  Source Overview shows whether automatic apply is on. A Follower that kept a
+  watcher from before it enrolled can remove it from its Sync page.
+
+### MCP servers
+
+- `mcp.<name>.harnesses` limits a server to the listed harnesses, and sync
+  removes it from harnesses dropped from the list. The Source editor has a
+  Target harnesses picker.
+- With `proxy: true`, Streamable HTTP servers that take a `fromSecret`
+  header share one local listener, `canonfig mcp proxy`, instead of starting
+  a launcher for each harness session. Upstream credentials stay out of
+  harness configuration.
+
+### Diagnostics
+
+- `doctor` verifies legacy HTTP+SSE MCP servers through initialization and
+  tool listing, and does not follow redirects on that connection, so their
+  configured headers stay on the configured origin.
+- `doctor` reports MCP servers that reject or never acknowledge ping replies,
+  and reports a failed session cleanup separately from the handshake result.
+- `doctor` checks Codex MCP servers on Windows with the environment Codex
+  gives them.
+- Setup and installer checks find Rustup-managed Cargo without starting the
+  Rustup proxy, and give recovery steps for a missing or ambiguous toolchain.
+
+### Fleet Update
+
+- A rollout halts when an admitted canary misses its one-hour health deadline,
+  even if that follower stays offline.
+- A scheduled sync repairs a managed tunnel before checking for a Fleet
+  Update. If the check still fails, the sync continues and reports the check
+  as deferred.
+- The browser refreshes the canary list, and the Source checks it again
+  before a rollout starts.
+
+### Synchronization, archives and recovery
+
+- An interrupted profile download resumes from its verified part instead of
+  starting over.
+- File operations for authored resources stay anchored under your home folder.
+- Archive import and restore keep the original error when cleanup also fails,
+  and recovery cleans up only the failed run's files.
+- `recover` says so when no local run needs recovery.
+- Linux checks that stored credentials survive a credential provider restart,
+  and Windows keeps credential generations consistent during rotation.
+
+### Browser interface
+
+- Publishing sends exactly the profile content you reviewed.
+- Unsaved drafts survive browser back and forward navigation.
+- A lost archive preview can be retried.
+- Expired invitations leave the waiting list.
+- Dithered status bands, machine tiles and progress bars match the approved
+  designs again, empty states no longer draw cut-off art, and the tour route
+  meets each step at its centre.
+
+### Agent skills
+
+- The `setup-canonfig` and `operate-canonfig` skills now start from local
+  setup and load detail only when a branch needs it.
+
 ## v7.8.2 - 2026-11-20
 
 ### Self-update
