@@ -68,6 +68,9 @@
   --sa-ok: oklch(0.74 0.093 144.5);
   --sa-ok-dim: #193023;
   --sa-ok-bright: #a9dca7;
+  /* StateBand midtones, matching --dither-*-mid in the GUI. */
+  --sa-ok-mid: #5e9460;
+  --sa-warn-mid: #c79c24;
   --sa-track-dot: #263a3b;
   --sa-warn: #f1c332;
   --sa-warn-dim: #3c3012;

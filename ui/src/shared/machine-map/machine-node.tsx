@@ -1,11 +1,11 @@
 // Machine map nodes: one card per machine, plus the dashed "Add machine" slot.
-import { memo, use, useCallback, type ComponentProps } from "react";
+import { memo, use, useCallback, useEffect, useState, type ComponentProps } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Handle, NodeToolbar, Position, type Node, type NodeProps } from "@xyflow/react";
 import { ArrowSquareOut, PaintBrush, Plus } from "@/components/icons";
 import { cn, SNAP } from "@/lib/utils";
 import { DitherShader, usePrefersReducedMotion } from "@/lib/dither";
-import { cornerWashPaths, syncSheenPath } from "@/lib/dither/geometry";
+import { cornerWashPaths } from "@/lib/dither/geometry";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { Mono, StateLabel, Term } from "@/shared/shared";
@@ -56,8 +56,49 @@ const TILE_CELLS = 24;
 const TILE_WASH = {
   source: cornerWashPaths(TILE_CELLS, true),
   follower: cornerWashPaths(TILE_CELLS, false),
-  syncSheen: syncSheenPath(TILE_CELLS),
 } as const;
+// The syncing sheen redraws at 15fps, the rate it was designed at; 24x24 cells is cheap to re-quantize.
+const SHEEN_FPS = 15;
+// Reduced motion holds the band mid-tile: the time at which the sweep crosses the tile's center diagonal.
+const SHEEN_STILL_T = 0.76;
+
+/**
+ * Seconds since this tile started syncing, ticking at SHEEN_FPS while `active`; undefined at rest.
+ * A timer outside React's render flow, so it lives in an effect.
+ */
+function useSheenTime(active: boolean, reduced: boolean): number | undefined {
+  const [t, setT] = useState(0);
+  useEffect(() => {
+    if (!active || reduced) return;
+    const start = performance.now();
+    let drawn = -Infinity;
+    let frame = requestAnimationFrame(function tick(now) {
+      if (now - drawn >= 1000 / SHEEN_FPS) {
+        drawn = now;
+        setT((now - start) / 1000);
+      }
+      frame = requestAnimationFrame(tick);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [active, reduced]);
+  if (!active) return undefined;
+  return reduced ? SHEEN_STILL_T : t;
+}
+
+/** The tile's dither art. Its own component so the 15fps sheen re-renders only the tile, not the card. */
+function TileWash({ kind, active }: { kind: MachineNodeData["kind"]; active: boolean }) {
+  const reduced = usePrefersReducedMotion();
+  const sheenT = useSheenTime(active, reduced);
+  const paths = sheenT === undefined ? TILE_WASH[kind] : cornerWashPaths(TILE_CELLS, kind === "source", sheenT);
+  const bright = { fill: "color-mix(in oklab, currentColor 64%, var(--foreground))" };
+  return (
+    <svg aria-hidden className="pointer-events-none absolute inset-0 size-full" viewBox={`0 0 ${TILE_CELLS} ${TILE_CELLS}`} shapeRendering="crispEdges">
+      <path d={paths[0]} fill="currentColor" fillOpacity={0.28} />
+      <path d={paths[1]} fill="currentColor" fillOpacity={0.72} />
+      <path d={paths[2]} style={bright} />
+    </svg>
+  );
+}
 
 function ToolbarButton({ className, ...props }: ComponentProps<"button">) {
   return (
@@ -177,13 +218,8 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
             className="relative grid size-9 shrink-0 place-items-center overflow-hidden rounded-md"
             style={{ color: accent, backgroundColor: `color-mix(in oklab, ${accent} ${Math.round(ICON_TILE_TINT * 100)}%, transparent)` }}
           >
-            <svg aria-hidden className="pointer-events-none absolute inset-0 size-full" viewBox={`0 0 ${TILE_CELLS} ${TILE_CELLS}`} shapeRendering="crispEdges">
-              <path d={TILE_WASH[data.kind][0]} fill="currentColor" fillOpacity={0.28} />
-              <path d={TILE_WASH[data.kind][1]} fill="currentColor" fillOpacity={0.72} />
-              <path d={TILE_WASH[data.kind][2]} style={{ fill: "color-mix(in oklab, currentColor 64%, var(--foreground))" }} />
-              {/* A working machine's tile carries a still carved diagonal sheen; the source's dither glow is the map's one moving signal. */}
-              {data.active && <path d={TILE_WASH.syncSheen} style={{ fill: "color-mix(in oklab, currentColor 64%, var(--foreground))" }} />}
-            </svg>
+            {/* A working machine's tile sweeps a diagonal sheen; alongside it the Source's dither glow marks the run on the map. */}
+            <TileWash kind={data.kind} active={data.active} />
             <span aria-hidden className="absolute inset-0 rounded-md border" style={{ borderColor: `color-mix(in oklab, ${accent} 40%, transparent)` }} />
             <LookIcon look={look} bold={lit} className="relative size-5" />
           </span>

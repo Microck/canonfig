@@ -183,8 +183,12 @@ function fieldStopPaths(
  * Three-stop Bayer 4x4 diagonal corner wash for machine icon tiles (`dim`, `mid`, `bright`).
  * Carves a dark center pocket behind the glyph so icons keep contrast on any accent;
  * `source` adds a top-right corner emitter glint.
+ * `sheenT` (seconds) adds the syncing sheen: a diagonal band that sweeps across the tile about
+ * every 1.4s, quantized together with the wash so it brightens the same three stops. It is carved
+ * out of the pocket too (`* halo`), so no cell lands inside the glyph.
  */
-export function cornerWashPaths(cells: number, source: boolean): readonly [string, string, string] {
+export function cornerWashPaths(cells: number, source: boolean, sheenT?: number): readonly [string, string, string] {
+  const wavePos = sheenT === undefined ? 0 : (sheenT * 0.72 - Math.floor(sheenT * 0.72)) * 1.7 - 0.35;
   const [dim = "", mid = "", bright = ""] = fieldStopPaths(
     cells,
     (u, v) => {
@@ -196,25 +200,13 @@ export function cornerWashPaths(cells: number, source: boolean): readonly [strin
         const dTopRight = Math.hypot(u - 0.94, v - 0.94);
         tone = Math.max(tone, Math.exp(-dTopRight * 7.2) * 0.98);
       }
+      if (sheenT !== undefined) {
+        const diagCoord = (u + (1 - v)) * 0.5;
+        tone += Math.exp(-Math.abs(diagCoord - wavePos) * 12) * 0.44 * halo;
+      }
       return tone;
     },
     3,
   );
   return [dim, mid, bright];
-}
-
-/** Single-stop carved diagonal sheen layered over an active syncing machine icon tile. */
-export function syncSheenPath(cells: number): string {
-  return (
-    fieldStopPaths(
-      cells,
-      (u, v) => {
-        const r = Math.hypot(u - 0.5, v - 0.5);
-        const halo = smoothstep(0.23, 0.43, r);
-        const diagCoord = (u + (1 - v)) * 0.5;
-        return Math.exp(-Math.abs(diagCoord - 0.58) * 11) * 0.58 * (0.18 + 0.82 * halo);
-      },
-      1,
-    )[0] ?? ""
-  );
 }

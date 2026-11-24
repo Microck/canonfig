@@ -418,32 +418,36 @@ float field(vec2 uv, vec2 res, float t) {
 `;
 
 const BAND_PALETTE = {
-  ok: ["--dither-paper", "--dither-ok-dim", "green", "--dither-ok-bright"],
-  warn: ["--dither-paper", "--dither-warn-dim", "--warn", "--dither-warn-bright"],
-  act: ["--dither-paper", "--dither-act-dim", "orange", "--dither-act-bright"],
-  bad: ["--dither-paper", "--dither-bad-dim", "red", "--dither-bad-bright"],
+  ok: ["--dither-paper", "--dither-ok-dim", "--dither-ok-mid", "--dither-ok-bright"],
+  warn: ["--dither-paper", "--dither-warn-dim", "--dither-warn-mid", "--dither-warn-bright"],
+  act: ["--dither-paper", "--dither-act-dim", "--dither-act-mid", "--dither-act-bright"],
+  bad: ["--dither-paper", "--dither-bad-dim", "--dither-bad-mid", "--dither-bad-bright"],
   muted: ["--dither-paper", "--dither-muted-dim", "grey", "--dither-muted-bright"],
 } as const;
+
+// A run reads the same in every tone, so it has its own mint ramp rather than the tone's.
+const BAND_RUNNING_PALETTE = ["--dither-paper", "--dither-running-dim", "--dither-running-mid", "--dither-running-bright"] as const;
 
 /**
  * Each state's motion character, threshold matrix, and reduced-motion still frame.
  * `fps` never exceeds 20; muted barely moves, so 10 is enough.
  */
 const BAND_MOTION = {
-  // Calm orbital iso-contours.
-  ok: { speed: 0.6, fps: 20, stillTime: 4, matrix: "bayer8", uniforms: { kind: 0 } },
-  // Moire fault seam pulsing slowly.
-  warn: { speed: 0.5, fps: 20, stillTime: 0.63, matrix: "bayer4", uniforms: { kind: 1 } },
+  // Calm orbital iso-contours. The fields' own time constants set the approved pace, so speed is 1.
+  ok: { speed: 1, fps: 20, stillTime: 4, matrix: "bayer8", uniforms: { kind: 0 } },
+  // Moire fault seam pulsing.
+  warn: { speed: 1, fps: 20, stillTime: 0.63, matrix: "bayer4", uniforms: { kind: 1 } },
   // Directional beacon chevrons marching right.
-  act: { speed: 0.6, fps: 20, stillTime: 4, matrix: "bayer4", uniforms: { kind: 2 } },
-  // Beat-stepped telemetry shear and vertical dropouts.
+  act: { speed: 1, fps: 20, stillTime: 4, matrix: "bayer4", uniforms: { kind: 2 } },
+  // Beat-stepped telemetry shear and vertical dropouts. Slowed to 0.6 so the dropouts stay under the
+  // WCAG 2.3.1 flash rate (see the `bad` field above).
   bad: { speed: 0.6, fps: 20, stillTime: 3.08, matrix: "bayer4", uniforms: { kind: 3 } },
   // Nearly still quiet strata.
   muted: { speed: 0.15, fps: 10, stillTime: 4, matrix: "bayer8", uniforms: { kind: 4 } },
 } as const;
 
 // A publish or sync in progress, in any tone: a packet wavefront sweeping left to right.
-const BAND_RUNNING = { speed: 1.4, fps: 20, stillTime: 2, matrix: "bayer8", uniforms: { kind: 5 } } as const;
+const BAND_RUNNING = { speed: 1, fps: 20, stillTime: 2, matrix: "bayer8", uniforms: { kind: 5 } } as const;
 
 /**
  * A dithered band behind a machine-state header. Each tone renders its own
@@ -460,14 +464,15 @@ export function StateBand({ tone = "ok", mode = "idle", className }: { tone?: ke
         field={STATE_BAND_FIELD}
         uniforms={band.uniforms}
         matrix={band.matrix}
-        palette={BAND_PALETTE[tone]}
+        palette={mode === "running" ? BAND_RUNNING_PALETTE : BAND_PALETTE[tone]}
         speed={band.speed}
         fps={band.fps}
         stillTime={band.stillTime}
         cell={2}
-        className="absolute inset-0 opacity-80"
+        className="absolute inset-0"
       />
-      <div className="absolute inset-0 bg-gradient-to-r from-background via-background/90 to-transparent" />
+      {/* The approved scrim: solid under the headline, gone by 80% so the motif keeps its full strength on the right. */}
+      <div className="absolute inset-0 bg-[linear-gradient(90deg,var(--background)_0%,color-mix(in_oklab,var(--background)_94%,transparent)_44%,color-mix(in_oklab,var(--background)_45%,transparent)_62%,transparent_80%)]" />
     </div>
   );
 }
@@ -585,7 +590,8 @@ function motifTone(motif: Exclude<DitherBlockMotif, "fade">, u: number, v: numbe
   const ringDist = Math.abs(fract(r * 2.8) - 0.5) * 2;
   const rings = smoothstep(0.76, 0.99, ringDist) * smoothstep(1.45, 0.12, r) * 0.78;
   const ticks = smoothstep(0.94, 0.995, Math.abs(Math.cos(ang * 6))) * smoothstep(1.25, 0.15, r) * 0.52;
-  const beam = Math.exp(-Math.abs(ang - 1.15) * 5) * smoothstep(1.35, 0.05, r) * 0.88;
+  // The approved still frame's beam angle (the preview's sweep at t = 1.2s, the same frame the route motif freezes).
+  const beam = Math.exp(-Math.abs(ang - 2.25) * 5) * smoothstep(1.35, 0.05, r) * 0.88;
   const core = Math.exp(-r * 5.2) * 0.98;
   return clamp01(Math.max(rings, ticks, beam, core));
 }
