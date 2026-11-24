@@ -1,10 +1,10 @@
 # Dither
 
-Ordered dithering is the system's only texture: empty states, state bands, progress, the convergence matrix and setup's backdrop. It replaces illustration, gradient fills and drop shadows. The engine is `src/lib/dither` (matrices, `fillStyle`, `DitherShader`); screens use the four components in `shared.tsx` and never call the engine.
+Ordered dithering is the system's only texture: the tour offer's card, state bands, progress, the convergence matrix and setup's backdrop. It replaces illustration, gradient fills and drop shadows. The engine is `src/lib/dither` (matrices, `fillStyle`, `DitherShader`); screens use the four components in `shared.tsx` and never call the engine.
 
 ```
 What does the texture show?
- ├── Nothing here yet (empty list, empty card) → DitherBlock (through EmptyState when it is a list)
+ ├── Guidance art at the top of a card (the tour offer) → DitherBlock
  ├── The live state of a machine behind a headline → StateBand (through StateHeader on Overview)
  ├── How far an operation has got → DitherProgress
  └── One item on one machine in the matrix → StateCell
@@ -21,13 +21,12 @@ Components take a `tone`, not a colour:
 | `DitherBlock` | `ok`, `warn`, `act`, `bad`, `muted`, `purple` | `muted` |
 | `DitherProgress` | `ok`, `warn`, `act`, `bad`, `muted`, `purple` | `ok` |
 | `StateBand` | `ok`, `warn`, `act`, `bad`, `muted` | `ok` |
-| `EmptyState` | `muted`, `ok` | `muted` |
 
 The tone follows the colour rules: state tones report state, `purple` is guidance only (the tour offer's block), `muted` is neutral. Never pass a hex or a CSS variable as a tone.
 
 ## DitherBlock
 
-Empty-state and guidance art revealed once on mount in 600ms. Pass `motif` for a static three-stop Bayer 8x8 composition: `route` (constellation waypoints for `TourOffer`), `strata` (calm layered ridges for `EmptyState` `tone="ok"`), `radar` (listening range arcs for `EmptyState` `tone="muted"`), or omit it for the plain edge `fade` (`edge`: `top`, `bottom`, `left`, `right`; default `bottom`). Give it a height (`h-24`) or an absolutely placed box. It is static SVG, `aria-hidden`, and carries `skullet-ignore`.
+Guidance art revealed once on mount in 600ms. Pass `motif="route"` for the static three-stop Bayer 8x8 constellation waypoints of `TourOffer`, drawn for its 280x80 box, or omit it for the plain edge `fade` (`edge`: `top`, `bottom`, `left`, `right`; default `bottom`). Give it a height (`h-24`) or an absolutely placed box. It is static SVG, `aria-hidden`, and carries `skullet-ignore`.
 
 ```tsx
 // Correct (guide.tsx TourOffer): guidance art fills its box behind the dismiss button

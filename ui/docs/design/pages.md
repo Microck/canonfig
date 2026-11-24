@@ -67,7 +67,7 @@ The machine-state headline that opens Overview, with a `StateBand` behind it. Ov
 
 ## EmptyState
 
-Use when a list or page has nothing in it: a `title` that states the fact, a `body` that says how to get something there, and an optional `action` button. It grows into the leftover height so its `DitherBlock` sits on the bottom edge. `tone` is `muted` (default) or `ok`; nothing else.
+Use when a list or page has nothing in it: a `title` that states the fact, a `body` that says how to get something there, and an optional `action` button. It grows into the leftover height and centres its text there. It has no dither or illustration.
 
 ```tsx
 // Correct (source.tsx)
