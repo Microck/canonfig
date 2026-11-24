@@ -1,4 +1,4 @@
 interface:
   display_name: "Set Up Canonfig"
-  short_description: "Guided, low-friction Canonfig setup"
-  default_prompt: "Use $setup-canonfig to inspect this environment, ask only necessary questions with brief explanations and recommended answers, then complete and verify the requested Canonfig setup."
+  short_description: "Install and set up Canonfig locally or across machines"
+  default_prompt: "Use $setup-canonfig to inspect my installed harnesses and guide me through setting up Canonfig."

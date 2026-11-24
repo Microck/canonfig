@@ -1,4 +1,4 @@
 interface:
   display_name: "Operate Canonfig"
-  short_description: "Operate and recover Canonfig safely"
-  default_prompt: "Use $operate-canonfig to plan, apply, diagnose, or recover Canonfig safely."
+  short_description: "Sync, diagnose, and recover Canonfig safely"
+  default_prompt: "Use $operate-canonfig to inspect status, plan and apply changes, or recover Canonfig safely."
