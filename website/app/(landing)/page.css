@@ -206,7 +206,7 @@
   z-index: -1;
   overflow: hidden;
   pointer-events: none;
-  color: var(--sa-accent);
+  color: var(--sa-ok-mid);
   --band-dim: var(--sa-ok-dim);
   --band-bright: var(--sa-ok-bright);
   /* Centred behind the followers and wholly inside the box (58% ± 42%), so

@@ -124,24 +124,30 @@ const snap = cubicBezier(...SNAP);
 function SetupBackdrop({ job, busy }: { job: Job | null; busy: boolean }) {
   const reduced = useReducedMotion();
   const [live, setLive] = useState(JOB_IDLE);
-  // When the job started, its latest step completed and it finished (performance.now() ms), and how many steps are done.
-  const marks = useRef({ start: 0, step: 0, done: 0, completed: 0 });
+  // When the job started, the latest ripple began and the job finished (performance.now() ms), how many steps
+  // are done, and the latest ripple's strength: a softer 0.85 as the job starts, full for each completed step.
+  const marks = useRef({ start: 0, step: 0, done: 0, completed: 0, strength: 1 });
   useEffect(() => {
     if (!job || reduced) return;
     const m = marks.current;
     const now = performance.now();
-    m.start ||= now;
+    if (!m.start) {
+      m.start = now;
+      m.step = now;
+      m.strength = 0.85;
+    }
     const completed = Math.floor((job.progress / 100) * job.steps);
     if (completed > m.completed) {
       m.completed = completed;
       m.step = now;
+      m.strength = 1;
     }
     if (job.done) m.done ||= now;
     let frame = 0;
     let drawn = -Infinity;
     const tick = (t: number) => {
       const settle = m.done ? Math.min(1, (t - m.done) / SETTLE_MS) : 0;
-      const ripple = m.step ? Math.max(0, 1 - (t - m.step) / RIPPLE_MS) : 0;
+      const ripple = m.step ? m.strength * Math.max(0, 1 - (t - m.step) / RIPPLE_MS) : 0;
       const moving = !job.done || settle < 1 || ripple > 0;
       // Throttled to the shader's frame rate, but the last frame always lands, so the rings rest exactly settled.
       if (t - drawn >= 1000 / BACKDROP_FPS || !moving) {

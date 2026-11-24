@@ -214,6 +214,15 @@
   --dither-color-grey: #4d6460;
   --dither-color-gold: #f1c332;
   --dither-track-dot: #263a3b;
+  /* StateBand midtones from the approved design: darker than the full accents so the bright crest reads. */
+  --dither-ok-mid: #5e9460;
+  --dither-warn-mid: #c79c24;
+  --dither-act-mid: #d97e42;
+  --dither-bad-mid: #cf5454;
+  /* StateBand while running (publish or sync), in any tone: the approved mint wavefront. */
+  --dither-running-dim: #1a3526;
+  --dither-running-mid: #6ca86c;
+  --dither-running-bright: #ccf5c6;
   --dither-ok-dim: #193023;
   --dither-ok-bright: #a9dca7;
   --dither-warn-dim: #3c3012;

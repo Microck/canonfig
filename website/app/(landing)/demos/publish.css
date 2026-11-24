@@ -55,13 +55,13 @@
 }
 
 .dither-band.pub-band-warn {
-  color: var(--sa-warn);
+  color: var(--sa-warn-mid);
   --band-dim: var(--sa-warn-dim);
   --band-bright: var(--sa-warn-bright);
 }
 
 .dither-band.pub-band-ok {
-  color: var(--sa-ok);
+  color: var(--sa-ok-mid);
   --band-dim: var(--sa-ok-dim);
   --band-bright: var(--sa-ok-bright);
   opacity: 0;

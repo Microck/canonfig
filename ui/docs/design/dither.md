@@ -41,7 +41,7 @@ Empty-state and guidance art revealed once on mount in 600ms. Pass `motif` for a
 
 ## StateBand
 
-The dithered band behind a machine-state header. Each state renders its own right-weighted motif in a four-stop Ender palette (`paper -> dim -> tone -> bright`) so state reads by shape as well as colour: `ok` orbital iso-contours (Bayer 8x8), `warn` diagonal moire fault seam (Bayer 4x4), `act` right-pointing beacon chevrons (Bayer 4x4), `bad` WCAG-safe telemetry shear and dropouts (Bayer 4x4), `muted` quiet strata (Bayer 8x8), and `mode="running"` a propagating packet wavefront (Bayer 8x8). Place it as the first child of a `relative isolate overflow-hidden` section with `className="-z-10"`.
+The dithered band behind a machine-state header. Each state renders its own right-weighted motif in a four-stop Ender palette (`paper -> dim -> mid -> bright`, with darker `--dither-*-mid` midtones so the bright crest reads) so state reads by shape as well as colour: `ok` orbital iso-contours (Bayer 8x8), `warn` diagonal moire fault seam (Bayer 4x4), `act` right-pointing beacon chevrons (Bayer 4x4), `bad` WCAG-safe telemetry shear and dropouts (Bayer 4x4), `muted` quiet strata (Bayer 8x8), and `mode="running"` a propagating packet wavefront (Bayer 8x8) in its own mint palette whatever the tone. The canvas runs at full strength under a left scrim that is solid behind the headline and gone by 80% of the width. Place it as the first child of a `relative isolate overflow-hidden` section with `className="-z-10"`.
 
 ```tsx
 // Correct (kit.tsx StateHeader)
