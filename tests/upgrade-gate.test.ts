@@ -139,7 +139,7 @@ describe("build identity", () => {
       sourceDigest: string;
       commit: string | null;
     };
-    expect(identity.packageVersion).toBe("7.8.2");
+    expect(identity.packageVersion).toBe("7.9.0");
     expect(identity.sourceDigest).toBe("unbuilt");
     expect(identity.commit).toBeNull();
   });
@@ -158,7 +158,7 @@ describe("build identity", () => {
   it("keeps the plain --version output as the release version", () => {
     expect(evaluateCli(["--version"])).toEqual({
       _tag: "Version",
-      text: "7.8.2",
+      text: "7.9.0",
       exitCode: 0,
     });
   });
@@ -175,7 +175,7 @@ describe("upgrade gate", () => {
     }));
     expect(open).toEqual({
       run: "run-gate-1",
-      creatingVersion: "7.8.2",
+      creatingVersion: "7.9.0",
       creatingIdentity: "unbuilt",
       stateFormat: stateFormatVersion,
     });
@@ -281,7 +281,7 @@ describe("deployment receipts", () => {
       };
       expect(receipt).toEqual({
         run_id: "run-gate-1",
-        package_version: "7.8.2",
+        package_version: "7.9.0",
         build_identity: "unbuilt",
         state_format: stateFormatVersion,
         outcome: "Converged",
