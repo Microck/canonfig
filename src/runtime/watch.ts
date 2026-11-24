@@ -114,7 +114,10 @@ export const watchFolder = (
       stop();
       void (inflight ?? Promise.resolve()).then(() => reject(error), () => reject(error));
     };
+    // Once stopped (aborted or failed, including partway through startup),
+    // nothing is armed or scheduled, so no pass can start after shutdown.
     const schedule = (delay: number) => {
+      if (stopped) return;
       clearTimeout(timer);
       timer = setTimeout(() => void fire(), delay);
     };
@@ -123,6 +126,7 @@ export const watchFolder = (
       schedule(quietMilliseconds);
     };
     const fire = async () => {
+      if (stopped) return;
       if (inflight !== undefined) {
         pending = true;
         return;
@@ -150,6 +154,7 @@ export const watchFolder = (
     // installer renaming a staged tree into place) needs a new watcher, so an
     // existing one is always closed first.
     const watchDirectory = (name: string) => {
+      if (stopped) return;
       directories.get(name)?.close();
       directories.delete(name);
       const path = join(folder, name);
@@ -200,6 +205,7 @@ export const watchFolder = (
       });
       top.on("error", fail);
       for (const name of WATCHED_ENTRIES) watchDirectory(name);
+      if (stopped) return;
     } catch (error) {
       fail(error instanceof Error ? error : new Error(String(error)));
       return;
