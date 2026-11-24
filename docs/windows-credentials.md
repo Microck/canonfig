@@ -1,12 +1,20 @@
 # Windows native credential execution
 
-Both enrollment's MachineState path and shared-secret transfer use the same
-fixed PowerShell program. It explicitly activates both Windows Runtime types it
-needs, the vault and the credential, and sets UTF-8 input and output.
-Secret values travel through standard input, not command arguments or environment
-variables. Names are hashed into Canonfig-owned native credential references.
+MachineState enrollment and shared-secret transfer use the native Windows
+Credential Manager generic credential API through a fixed PowerShell helper.
+Secret values enter over UTF-8 standard input. Credential names are hashed
+into Canonfig-owned targets.
 
-The native regression contract exercises both paths with disposable ASCII,
+The root record names the active generation and its expected length and
+digest. A write publishes new chunks before switching the root to that
+generation. A per-user, per-credential mutex serializes reads, writes and
+removals across Windows login sessions. Readers keep their generation
+protected until they finish verifying and assembling it. Replacement and
+removal reclaim unreferenced chunks, including chunks left behind by an
+interrupted writer.
+
+Native regression tests cover concurrent rotation and cleanup of interrupted
+generations. A separate contract exercises both paths with disposable ASCII,
 Unicode, and quoted/multiline values, checks exact readback, removes its own
 items, and checks that removed values cannot be loaded. It runs in the existing
 Windows native secret-store CI step; non-Windows runs skip these native cases.

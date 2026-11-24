@@ -100,9 +100,9 @@ remove them after review. This flag requires interactive `--plan`, not
   per-user Task Scheduler task; `scheduled` in the completion receipt becomes
   `verified` only after a real scheduled run completed.
 
-The Source has no fleet view. On the Source, `canonfig status --follower <id>`
-shows only that follower's enrollment. Each follower's own `canonfig status` is
-its completion evidence; report followers without that evidence as pending.
+The Source GUI’s Machines page shows enrollment and reported health. Confirm
+Convergence with each Follower’s own `canonfig status`. Report pending any
+Follower whose completion evidence you have yet to read.
 
 ### Setup-agent execution permissions
 
@@ -175,7 +175,7 @@ Setup result: complete
 Machine
 - role: Follower Machine
 - name: laptop
-- Canonfig: 7.8.1
+- Canonfig: 7.8.2
 
 Trust
 - Source endpoint: https://127.0.0.1:17342

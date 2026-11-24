@@ -111,6 +111,7 @@ export interface ScheduleFireEvidence {
   readonly outcome: string;
   /** Why a `failed` run failed: its failure category and message. */
   readonly reason?: string | undefined;
+  readonly deferredFleetCheck?: string | undefined;
 }
 
 /** Historical or unbound receipts cannot prove that this installation fired. */
@@ -146,8 +147,9 @@ export const describeUnattendedRuns = (
   if (latest === undefined) {
     return { completed: false, text: "the native scheduler has not been observed starting a run yet" };
   }
+  const deferred = latest.deferredFleetCheck === undefined ? "" : `. Fleet Update check deferred: ${latest.deferredFleetCheck}`;
   if (latest.outcome === "completed") {
-    return { completed: true, text: `the last unattended run completed at ${latest.at}` };
+    return { completed: true, text: `the last unattended run completed at ${latest.at}${deferred}` };
   }
   const lastCompleted = ordered.filter((fire) => fire.outcome === "completed").at(-1);
   const previous = lastCompleted === undefined
@@ -156,7 +158,7 @@ export const describeUnattendedRuns = (
   const text = latest.outcome === "failed"
     ? `the last unattended run failed at ${latest.at}: ${latest.reason ?? "no reason was recorded"}; ${previous}`
     : `an unattended run started at ${latest.at} and recorded no outcome (still running, or killed); ${previous}`;
-  return { completed: false, text };
+  return { completed: false, text: text + deferred };
 };
 
 /** The probe details a recorded fire contributes; none without one. */
@@ -166,6 +168,7 @@ const lastFireDetails = (lastFire: ScheduleFireEvidence | undefined) => {
   details.lastFiredAt = lastFire.at;
   details.lastFiredOutcome = lastFire.outcome;
   if (lastFire.reason !== undefined) details.lastFiredReason = lastFire.reason;
+  if (lastFire.deferredFleetCheck !== undefined) details.deferredFleetCheck = lastFire.deferredFleetCheck;
   return details;
 };
 

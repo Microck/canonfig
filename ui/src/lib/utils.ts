@@ -35,17 +35,22 @@ export function removeKeepingFocus(button: HTMLElement, remove: () => void, fall
  * `gap` ms after the one before, starting after `delay`. From the `cap`th element on they
  * share the last slot, so a long list doesn't trail. WAAPI with a backwards fill: each
  * element stays hidden until its turn and keeps no style once done. Decoration only: the
- * elements take clicks and focus throughout. Returns the animations, so a caller can pin
- * their start time.
+ * elements take clicks and focus throughout. Returns a cleanup function to cancel the stagger.
  */
-export function riseIn(elements: Iterable<Element>, { delay = 0, gap = 40, duration = 300, distance = 8, cap = Infinity } = {}): Animation[] {
+export function riseIn(elements: Iterable<Element>, { delay = 0, gap = 40, duration = 300, distance = 8, cap = Infinity } = {}): () => void {
   let index = 0;
-  return Array.from(elements, (element) =>
-    element.animate([{ opacity: 0, transform: `translateY(${distance}px)` }, { opacity: 1, transform: "translateY(0px)" }], {
+  const animations = Array.from(elements, (element) => {
+    const animation = element.animate([{ opacity: 0, transform: `translateY(${distance}px)` }, { opacity: 1, transform: "translateY(0px)" }], {
       duration,
       delay: delay + Math.min(index++, cap) * gap,
       easing: SNAP_EASING,
       fill: "backwards",
-    }),
-  );
+    });
+    // Cancelling a pending stagger rejects its finished promise.
+    void animation.finished.catch(() => {});
+    return animation;
+  });
+  return () => {
+    for (const animation of animations) animation.cancel();
+  };
 }

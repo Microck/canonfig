@@ -45,7 +45,7 @@ async function fixture(category: LocalCategory = "skills", existing = false) {
     local: { items: [{ path: "local.jsonc", digest: "config-digest", files: [] }, ...(existing ? [{ path: "skills/example", digest: "item-digest", files: [
       { path: "skills/example/SKILL.md", base64: "b3JpZ2luYWw=", executable: false, digest: "text-digest" },
       { path: "skills/example/asset.bin", base64: "/wCA", executable: true, digest: "binary-digest" },
-    ] }] : [])], config: {}, canonicalConfig: {} },
+    ] }] : [])], config: {}, settingsFiles: {}, canonicalConfig: {} },
     schedule: null, tunnel: null, enrollment: null, secrets: [], archive: null,
     saveItems: save, savePreferences: save, check: unexpected, createReview: unexpected, saveSchedule: unexpected, removeSchedule: unexpected,
     refreshSecrets: unexpected, setSecret: unexpected, removeSecret: unexpected, inspectTunnelInvitation: unexpected, configureTunnel: unexpected, startTunnel: unexpected, stopTunnel: unexpected, exportArchive: unexpected,
@@ -226,7 +226,7 @@ it("refreshing local config replaces an editing draft and its save digest", asyn
   const app = await fixture("mcp", true);
   try {
     await input("local-value", "{\"command\":\"unsaved\"}");
-    await app.refresh({ items: [{ path: "local.jsonc", digest: "reloaded-digest", files: [] }], config: { mcp: { example: { command: "disk-value" } } }, canonicalConfig: {} });
+    await app.refresh({ items: [{ path: "local.jsonc", digest: "reloaded-digest", files: [] }], config: { mcp: { example: { command: "disk-value" } } }, settingsFiles: {}, canonicalConfig: {} });
     assert.equal((document.getElementById("local-value") as HTMLTextAreaElement).value, '{\n  "command": "disk-value"\n}');
     await input("local-value", "{\"command\":\"new edit\"}");
     await click("Save");
@@ -243,7 +243,7 @@ it("refreshing local config during submission keeps the frozen generation until 
     await input("local-value", "{\"command\":\"submitted\"}");
     await click("Save");
     await until(() => app.writes.length === 1);
-    await app.refresh({ items: [{ path: "local.jsonc", digest: "saved-digest", files: [] }], config: { mcp: { example: { command: "refreshed value" } } }, canonicalConfig: {} });
+    await app.refresh({ items: [{ path: "local.jsonc", digest: "saved-digest", files: [] }], config: { mcp: { example: { command: "refreshed value" } } }, settingsFiles: {}, canonicalConfig: {} });
     assert.equal((document.getElementById("local-value") as HTMLTextAreaElement).value, "{\"command\":\"submitted\"}");
     assert.ok(button("Discard").disabled);
     assert.deepEqual(app.writes[0], { expectedDigest: "config-digest", edits: [{ path: ["mcp", "example"], value: { command: "submitted" } }] });

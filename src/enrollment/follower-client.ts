@@ -42,6 +42,8 @@ import {
 } from "../machine/machine-state.errors.ts";
 import { SourceLook } from "./source-look.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
+import { withSqliteWriteLock } from "../state/sqlite-write-lock.ts";
+import { blobCacheCheckpoint } from "./blob-cache-checkpoint.ts";
 import { BlobTransferProgress } from "./blob-transfer-progress.ts";
 import { checkSourceServerIdentity } from "./tls-identity.ts";
 import {
@@ -116,7 +118,7 @@ interface JsonResponse {
 
 interface BinaryResponse {
   readonly status: number;
-  readonly body: Uint8Array;
+  readonly body: Buffer;
   readonly contentRange?: string | undefined;
   readonly contentLength?: number | undefined;
   readonly errorBody?: unknown | undefined;
@@ -1205,9 +1207,12 @@ export const getRevisionMetadata = (
     return yield* verifyMetadata(metadata, input.sourceFingerprint);
   });
 
-export const retrieveBlob = (
+/** Only hand a range to the caller after its authenticated response matches the signed blob length. */
+const retrieveBlobRanges = <E>(
   input: BlobRetrievalInput,
-): Effect.Effect<Uint8Array, EnrollmentError, MachineState> =>
+  start: number,
+  accept: (offset: number, bytes: Buffer) => Effect.Effect<void, E>,
+): Effect.Effect<void, EnrollmentError | E, MachineState> =>
   Effect.gen(function*() {
     const context = yield* transportContext(input);
     const maximumRangeBytes = input.maximumBlobBytes ?? defaultMaximumBlobBytes;
@@ -1223,8 +1228,8 @@ export const retrieveBlob = (
         message: "selected revision and signed blob length are required",
       });
     }
-    const chunks: Array<Buffer> = [];
-    let offset = 0;
+    let offset = start;
+    if (offset > 0 && offset === input.blobBytes) return;
     do {
       const end: number = input.blobBytes === 0
         ? 0
@@ -1272,10 +1277,18 @@ export const retrieveBlob = (
           message: "the source returned inconsistent byte range metadata",
         });
       }
-      chunks.push(Buffer.from(response.body));
+      yield* accept(offset, response.body);
       offset = end + 1;
       input.onProgress?.(offset);
     } while (offset < input.blobBytes);
+  });
+
+export const retrieveBlob = (
+  input: BlobRetrievalInput,
+): Effect.Effect<Uint8Array, EnrollmentError, MachineState> =>
+  Effect.gen(function*() {
+    const chunks: Array<Buffer> = [];
+    yield* retrieveBlobRanges(input, 0, (_offset, bytes) => Effect.sync(() => { chunks.push(bytes); }));
     const bytes = Buffer.concat(chunks, input.blobBytes);
     if (sha256BytesHex(bytes) !== input.blobId) {
       return yield* new TransportIntegrityError({
@@ -1365,22 +1378,28 @@ const cachedBlob = async (
 
 const NoSpaceError = Schema.Struct({ code: Schema.Literal("ENOSPC") });
 
-export const fetchRevision = (
+const cacheWrite = <A>(directory: string, bytes: number, operation: string, use: () => Promise<A>) =>
+  Effect.tryPromise({ try: use, catch: (cause) => cause }).pipe(
+    Effect.uninterruptible,
+    Effect.catch((cause): Effect.Effect<never, InsufficientDiskError | EnrollmentTransportError> =>
+      Schema.is(NoSpaceError)(cause)
+        ? Effect.flatMap(availableBytes(directory), (available) =>
+          Effect.fail(new InsufficientDiskError({
+            path: directory,
+            requiredBytes: BigInt(bytes) + diskMarginBytes,
+            availableBytes: available,
+          })))
+        : Effect.fail(cacheFailure(operation, cause))),
+  );
+
+const fetchIntoCache = (
   input: FetchRevisionInput,
+  metadata: RevisionMetadata,
+  blobDirectory: string,
+  revisionDirectory: string,
 ): Effect.Effect<FetchedRevision, EnrollmentError | InsufficientDiskError, MachineState> =>
   Effect.gen(function*() {
-    const metadata = yield* getRevisionMetadata(input);
-    const blobDirectory = join(input.cacheDirectory, "blobs");
-    const revisionDirectory = join(input.cacheDirectory, "revisions");
-    yield* Effect.tryPromise({
-      try: () => Promise.all([
-        ensureCacheDirectory(blobDirectory),
-        ensureCacheDirectory(revisionDirectory),
-      ]),
-      catch: (cause) =>
-        cacheFailure("create follower transport cache", cause),
-    });
-    const blobBytes = new Map<string, number>();
+    const blobBytes = new Map<typeof BlobId.Type, number>();
     for (const resource of metadata.resources) {
       const files = resource.spec.kind === "file"
         ? [resource.spec]
@@ -1409,42 +1428,52 @@ export const fetchRevision = (
       }
     }
     const ids = [...blobBytes.keys()];
-    const cached = new Map<string, CachedBlob>();
+    const cached = new Map<typeof BlobId.Type, CachedBlob>();
     let missingBytes = 0n;
     for (const id of ids) {
       const existing = yield* Effect.promise(() =>
         cachedBlob(blobDirectory, id, blobBytes.get(id)!)
-      );
+      ).pipe(Effect.uninterruptible);
       if (existing === undefined) {
         missingBytes += BigInt(blobBytes.get(id)!);
       } else {
         cached.set(id, existing);
       }
     }
-    // The signed sizes are known before the first byte arrives. Downloading
-    // until the cache filled up used to take minutes and then fail as a
-    // transport error.
-    yield* requireFreeSpace([{ path: blobDirectory, bytes: missingBytes }]);
-    const progress = yield* BlobTransferProgress;
-    // Smallest first: an interruption inside a large blob then keeps every
-    // smaller blob verified in the cache, and the next run fetches only what
-    // is still missing. A blob is cached only whole and verified, so one cut
-    // mid-transfer is fetched again from its start.
+    // Smallest first preserves every verified small blob when a larger
+    // transfer is interrupted. Only the first missing blob can have a prefix.
     const missing = ids
       .filter((id) => !cached.has(id))
       .sort((left, right) => blobBytes.get(left)! - blobBytes.get(right)!);
-    const total = missing.reduce((sum, id) => sum + blobBytes.get(id)!, 0);
+    const progress = yield* BlobTransferProgress;
+    const checkpoint = blobCacheCheckpoint(input.cacheDirectory);
+    const transferId = (id: typeof BlobId.Type) => digestOf([
+      input.sourceFingerprint, metadata.id, id, blobBytes.get(id)!,
+    ]);
+    const first = missing[0];
+    const firstTransfer = first === undefined ? undefined : {
+      id: transferId(first),
+      length: blobBytes.get(first)!,
+    };
+    const prefix = firstTransfer === undefined
+      ? yield* cacheWrite(blobDirectory, 0, "clear blob checkpoint", checkpoint.clear)
+      : yield* cacheWrite(blobDirectory, 0, "read blob checkpoint", () =>
+        checkpoint.resume(firstTransfer.id, firstTransfer.length));
+    yield* requireFreeSpace([{ path: blobDirectory, bytes: missingBytes - BigInt(prefix?.bytes ?? 0) }]);
+    const total = Number(missingBytes);
     let received = 0;
     for (const [index, id] of missing.entries()) {
-      const blobId = decode(BlobId)(id);
       const bytesOfBlob = blobBytes.get(id)!;
-      const bytes = yield* retrieveBlob({
+      const saved = index === 0 ? prefix : undefined;
+      const hash = saved?.hash ?? createHash("sha256");
+      const transfer = index === 0 && firstTransfer !== undefined ? firstTransfer.id : transferId(id);
+      yield* retrieveBlobRanges({
         endpoint: input.endpoint,
         tlsFingerprint: input.tlsFingerprint,
         credentialReference: input.credentialReference,
         sourceFingerprint: input.sourceFingerprint,
         revisionId: metadata.id,
-        blobId,
+        blobId: id,
         blobBytes: bytesOfBlob,
         timeoutMilliseconds: input.timeoutMilliseconds,
         maximumBlobBytes: input.maximumBlobBytes,
@@ -1458,25 +1487,16 @@ export const fetchRevision = (
           received: received + blobReceived,
           total,
         }),
-      });
+      }, saved?.bytes ?? 0, (offset, range) =>
+        cacheWrite(blobDirectory, range.byteLength, "checkpoint blob range", () =>
+          checkpoint.append(transfer, offset, range, hash)));
       const path = join(blobDirectory, id);
-      // Space can still run out while writing when something else fills the
-      // disk after the preflight. That is a disk-space failure too.
-      yield* Effect.tryPromise({
-        try: () => atomicWrite(path, bytes),
-        catch: (cause) => cause,
-      }).pipe(
-        Effect.catch((cause): Effect.Effect<never, InsufficientDiskError | EnrollmentTransportError> =>
-          Schema.is(NoSpaceError)(cause)
-            ? Effect.flatMap(availableBytes(blobDirectory), (available) =>
-              Effect.fail(new InsufficientDiskError({
-                path: blobDirectory,
-                requiredBytes: BigInt(bytes.byteLength) + diskMarginBytes,
-                availableBytes: available,
-              })))
-            : Effect.fail(cacheFailure("cache verified blob", cause))
-        ),
-      );
+      const verified = yield* cacheWrite(blobDirectory, 0, "cache verified blob", () =>
+        checkpoint.publish(path, id, bytesOfBlob));
+      if (!verified) {
+        yield* cacheWrite(blobDirectory, 0, "clear invalid blob checkpoint", checkpoint.clear);
+        return yield* new TransportIntegrityError({ artifact: id, message: "blob length or digest mismatch" });
+      }
       received += bytesOfBlob;
       // An empty blob has no range, so it reports once it is cached.
       if (bytesOfBlob === 0) {
@@ -1485,7 +1505,7 @@ export const fetchRevision = (
           blobReceived: 0, blobBytes: 0, received, total,
         });
       }
-      cached.set(id, { id: blobId, path });
+      cached.set(id, { id, path });
     }
     const blobs = ids.map((id) => cached.get(id)!);
     const downloadedBlobs = missing.length;
@@ -1494,13 +1514,29 @@ export const fetchRevision = (
       revisionDirectory,
       `${createHash("sha256").update(metadata.id).digest("hex")}.json`,
     );
-    yield* Effect.tryPromise({
-      try: () => atomicWrite(
-        metadataPath,
-        Buffer.from(JSON.stringify(metadata)),
-      ),
-      catch: (cause) =>
-        cacheFailure("cache verified revision metadata", cause),
-    });
+    yield* cacheWrite(blobDirectory, 0, "cache verified revision metadata", () =>
+      atomicWrite(metadataPath, Buffer.from(JSON.stringify(metadata))));
     return { metadata, blobs, downloadedBlobs, reusedBlobs };
+  });
+
+
+export const fetchRevision = (
+  input: FetchRevisionInput,
+): Effect.Effect<FetchedRevision, EnrollmentError | InsufficientDiskError, MachineState> =>
+  Effect.gen(function*() {
+    const metadata = yield* getRevisionMetadata(input);
+    const blobDirectory = join(input.cacheDirectory, "blobs");
+    const revisionDirectory = join(input.cacheDirectory, "revisions");
+    yield* Effect.tryPromise({
+      try: () => Promise.all([
+        ensureCacheDirectory(blobDirectory),
+        ensureCacheDirectory(revisionDirectory),
+      ]),
+      catch: (cause) => cacheFailure("create follower transport cache", cause),
+    });
+    return yield* withSqliteWriteLock(
+      join(input.cacheDirectory, "transfer-lock.sqlite"),
+      fetchIntoCache(input, metadata, blobDirectory, revisionDirectory),
+      (cause) => cacheFailure("lock follower transport cache", cause),
+    );
   });

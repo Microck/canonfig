@@ -97,7 +97,10 @@ The projected harness set is: listed in `harnesses`, installed, and not in
 retires unmodified outputs; it does not restore the snapshot. `surfaces.<harness>`
 narrows what one harness gets: `modelFor` empties the categories it leaves
 out before that harness's adapter runs, so outputs for them are never built
-and earlier ones retire through the same removal path. The shared
+and earlier ones retire through the same removal path. The planner also applies
+each MCP server's optional `mcp.<name>.harnesses` allowlist before adapter
+translation. The planner retains declared server names for subagent
+permissions because an existing native map can still hold those servers. The shared
 `~/.agents/skills/` directory is written when any harness that reads it gets
 `skills` or translates `commands`. The planner compiles those commands into
 Agent Skills before computing the private or shared skill surfaces. Generated

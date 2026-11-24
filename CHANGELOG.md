@@ -2,6 +2,52 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
+## v7.8.2 - 2026-11-20
+
+### Self-update
+
+- An idle Source service, `canonfig ui` or `skills auto --apply` no longer
+  holds off updates. Each holds its lease only while it handles a request,
+  operation or pass. When its next request finds that an update replaced
+  Canonfig, it exits with status 75 before running new code, and its service
+  manager starts it again on the new release. A foreground `canonfig ui`
+  prints why it stopped; run it again.
+- Canonfig commands, MCP servers included, keep starting while an update
+  downloads and stages its release. Only the final package swap makes a
+  starting command wait, and a command still working at that point defers
+  the update instead of failing it.
+
+### Source
+
+- Every Source state directory must use its own credential namespace. Legacy
+  state is refused with recovery steps instead of being migrated, and setup
+  and `source service status` no longer probe the keyring for it.
+
+### Synchronization and recovery
+
+- Observation records the final kind of every filesystem path, so an unknown
+  path is never treated as a file, directory or symlink.
+- `recover` and `abandon` name the build that created an unfinished run from
+  another release before reading its journal, and clean up only the staging
+  names the current build creates.
+- Incomplete authored resource IDs fail before preparation or rollback.
+
+### Browser interface
+
+- Health checks start through one flow, keep their timeout across pages and
+  cannot be started twice.
+- Custom map icons are rejected when the browser cannot check transparency,
+  with browser-specific guidance; the saved icon is kept.
+- Focused machine cards and their toolbars are scrolled into view on the map.
+- Tours preview and navigate to the page each step names.
+- The setup approval control cannot be submitted while it fades out.
+- Installer and agent model settings use the same validation as the CLI.
+
+### CLI
+
+- Node's SQLite warning is no longer filtered, and `self-update` help works
+  on unsupported Node versions.
+
 ## v7.8.1 - 2026-11-19
 
 ### Synchronization

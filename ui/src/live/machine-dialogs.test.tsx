@@ -41,7 +41,7 @@ type Handler = (path: string, body: unknown, outgoing: ServerResponse) => boolea
 async function fixture(handler: Handler) {
   const responses: Record<string, unknown> = {
     "/api/status": { machineRole: { role: "source" }, lifecycle: {}, tunnel: null },
-    "/api/profile/items": { items: [], config: { profile: { id: "dialog", name: "Dialog" }, groups: { work: [] } }, supportedSurfaces: {} },
+    "/api/profile/items": { items: [], config: { profile: { id: "dialog", name: "Dialog" }, groups: { work: [] } }, reservedPaths: [], caseSensitive: true, supportedSurfaces: {} },
     "/api/source-service": { report: { ...serviceNetwork, state: "not-installed", platform: "linux", mechanism: "systemd-user-service", serviceName: "dialog-fixture", endpoint: "", manager: { installed: false, matches: false, enabled: false, active: false, state: "not-installed" }, serving: false, supportedModes: "", logs: "", detail: "" }, error: null },
     "/api/revisions": { revisions: [] },
     "/api/machines": { followers: [follower], invitations: [], health: {} },
@@ -133,6 +133,53 @@ it("shows stored enrollment evidence without remote convergence claims", async (
     for (const expected of ["Revoked", "Enrollment pending", "Credential", "Missing"]) {
       assert.ok(document.body.textContent?.includes(expected), expected);
     }
+  } finally { await app.close(); }
+});
+
+it("Machines shows only unexpired, unused invitations as waiting", async () => {
+  const valid = {
+    endpoint: "https://valid.example",
+    groups: ["work"],
+    expiresAt: "2000-01-01T01:00:00Z",
+    remainingMilliseconds: 60 * 60 * 1000,
+    consumed: false,
+  };
+  let reads = 0;
+  const soon = { ...valid, endpoint: "https://soon.example", remainingMilliseconds: 250 };
+  const app = await fixture((path, _body, outgoing) => {
+    if (path !== "/api/machines") return false;
+    reads++;
+    outgoing.end(JSON.stringify({
+      followers: [follower],
+      invitations: [
+        { ...valid, endpoint: "https://expired.example", expiresAt: "2000-01-01T00:00:00Z", remainingMilliseconds: 0 },
+        { ...valid, endpoint: "https://consumed.example", consumed: true },
+        valid,
+        ...(reads === 1 ? [soon] : []),
+      ],
+      health: {},
+    }));
+    return true;
+  });
+  try {
+    const heading = [...document.querySelectorAll("section")].find(
+      (section) => section.textContent?.includes("Invitations waiting to be used"),
+    );
+    assert.ok(heading);
+    const waiting = heading.textContent ?? "";
+    assert.ok(waiting.includes(valid.endpoint));
+    assert.ok(waiting.includes(`Expires ${valid.expiresAt}`));
+    assert.ok(!waiting.includes("https://expired.example"));
+    assert.ok(!waiting.includes("https://consumed.example"));
+    assert.ok(waiting.includes(soon.endpoint));
+    const expired = Promise.withResolvers<void>();
+    const observer = new MutationObserver(() => {
+      if (!document.body.textContent?.includes(soon.endpoint)) expired.resolve();
+    });
+    observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+    try { await expired.promise; } finally { observer.disconnect(); }
+    assert.equal(reads, 2);
+    assert.ok(document.body.textContent?.includes(valid.endpoint));
   } finally { await app.close(); }
 });
 

@@ -43,7 +43,7 @@ to date without a resident follower daemon.
 requires Node.js 24.15+ or 26+ and npm. install the same release on the source and every follower:
 
 ```sh
-npm install --global @microck/canonfig@7.8.1
+npm install --global @microck/canonfig@7.8.2
 canonfig --version
 canonfig doctor --no-input
 ```
@@ -101,8 +101,10 @@ start with the [first sync tutorial](https://canonfig.micr.dev/docs/tutorials/fi
 it covers setup, the folder, the source service, the pinned connection, and
 follower enrollment.
 
-on the source, setup detects your harnesses, offers to import what they
-already hold, and scaffolds `~/.canonfig/`:
+on the source, setup detects your harnesses and scaffolds `~/.canonfig/`.
+the plan lists content available for one-time import. add
+`--import <harness|item-id>` or `--import-all` to the planning command to include
+that content.
 
 ```sh
 canonfig setup plan --role source
@@ -169,12 +171,18 @@ see [restore from a backup](https://canonfig.micr.dev/docs/how-to/restore-from-a
 export writes the folder (plus `local/`) to one private `.tar.gz` with a
 `manifest.json` of every file's size, sha-256 and mode, signed with the source
 key when you export on the source. state, backups and credentials never go in.
-import checks the signature and every checksum and writes the folder back as a
-journaled run on a machine that isn't an enrolled follower. `--expect-key`
-refuses anything your source didn't sign.
+import verifies any signature and every checksum, then writes the folder in a
+journaled run. `--expect-key` requires a signature from the key you specify.
 
 ```sh
 canonfig export --output ~/canonfig-setup.tar.gz
+```
+
+transfer the archive to a destination machine that isn't an enrolled follower.
+if it already has folder entries the archive would replace, preview and apply
+with `--replace`.
+
+```sh
 canonfig import ~/canonfig-setup.tar.gz --dry-run
 canonfig import ~/canonfig-setup.tar.gz
 ```

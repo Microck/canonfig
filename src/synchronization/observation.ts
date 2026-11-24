@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 
-import { ContentDigest, CredentialReference } from "../domain/brand.ts";
+import { ContentDigest, CredentialReference, type ResourceId } from "../domain/brand.ts";
 import type { ProfileRevision, VerificationInput } from "../domain/profile.ts";
 import type { AppliedResourceRecord, ObservedResourceState } from "../domain/synchronization.ts";
 import { parseTextComposition } from "../domain/text-composition.ts";
@@ -11,6 +11,7 @@ import { configKeysDigest, parseConfigDocument, renderConfigDocument } from "./c
 import { defaultSynchronizationExecutionLimits } from "./executor.ts";
 import { toolInstallMethods } from "./installer-bindings.ts";
 import { installedToolVersion } from "./installed-tool-version.ts";
+import { authoredResourceAnchor } from "./resource-executors.ts";
 import { relativePathAncestors, selectToolRecipe } from "./resource-plans.ts";
 import type { DesiredResource } from "./synchronization.types.ts";
 import { binaryDestination, binaryFormatProblem, binaryRecipeProblem } from "./binary-artifact.ts";
@@ -41,13 +42,15 @@ const observeFile = (
   desired: Extract<DesiredResource, { readonly kind: "file" }>,
   /** Read the marked composition: the policy is append-local now or was when last applied. */
   composed: boolean,
+  resourceId: ResourceId | undefined,
 ): Effect.Effect<ObservedResourceState, never, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
+    const anchor = yield* authoredResourceAnchor(resourceId);
     const path = yield* machine.normalizePath({ path: target });
-    const observedKind = yield* machine.inspectPath(path);
+    const observedKind = yield* machine.inspectPath(path, anchor);
     if (observedKind.kind === "symlink") {
-      return yield* machine.readSymlink(path).pipe(
+      return yield* machine.readSymlink(path, anchor).pipe(
         Effect.map((symlinkTo): ObservedResourceState => ({
           state: "present",
           digest: desired.symlinkTo === symlinkTo
@@ -76,9 +79,9 @@ const observeFile = (
       } as const;
     }
     if (composed) {
-      const bytes = yield* machine.readFile({ path, maximumBytes: defaultSynchronizationExecutionLimits.maximumFileBytes });
+      const bytes = yield* machine.readFile({ path, anchor, maximumBytes: defaultSynchronizationExecutionLimits.maximumFileBytes });
       const composition = yield* Effect.try(() => parseTextComposition(bytes));
-      const permissions = yield* machine.permissions(path);
+      const permissions = yield* machine.permissions(path, anchor);
       const observation = {
         state: "present",
         digest: sha256BytesHex(bytes),
@@ -90,9 +93,9 @@ const observeFile = (
         ? { ...observation, textComposition: { kind: "managed" as const, sourceDigest: sha256Hex(composition.source), hasLocal: composition.local.length > 0 } }
         : { ...observation, textComposition: { kind: "unmanaged" as const } };
     }
-    return yield* machine.digestFile({ path }).pipe(
+    return yield* machine.digestFile({ path, anchor }).pipe(
       Effect.flatMap((digest) =>
-        machine.permissions(path).pipe(
+        machine.permissions(path, anchor).pipe(
           Effect.map((permissions): ObservedResourceState => ({
             state: "present",
             digest: digest.value,
@@ -124,15 +127,16 @@ const observeFile = (
 
 const observeConfig = (
   decoded: {
-    readonly resource: Pick<ProfileRevision["resources"][number], "target">;
+    readonly resource: Pick<ProfileRevision["resources"][number], "target"> & { readonly id?: ResourceId };
   },
   desired: Extract<DesiredResource, { readonly kind: "config" }>,
   applied: AppliedResourceRecord | undefined,
 ): Effect.Effect<ObservedResourceState, never, MachineState> =>
   Effect.gen(function*() {
     const machine = yield* MachineState;
+    const anchor = yield* authoredResourceAnchor(decoded.resource.id);
     const path = yield* machine.normalizePath({ path: decoded.resource.target });
-    const observedKind = yield* machine.inspectPath(path);
+    const observedKind = yield* machine.inspectPath(path, anchor);
     if (observedKind.kind !== "regular") {
       return {
         state: "present",
@@ -143,6 +147,7 @@ const observeConfig = (
     }
     const bytes = yield* machine.readFile({
       path,
+      anchor,
       maximumBytes: 8 * 1024 * 1024,
     });
     // An unparseable follower file blocks only the resources that merge into
@@ -195,7 +200,7 @@ export const observeFollowerResource = (
     readonly resource: Pick<
       ProfileRevision["resources"][number],
       "kind" | "target" | "policy"
-    >;
+    > & { readonly id?: ResourceId };
   },
   desired: DesiredResource,
   verification: VerificationInput,
@@ -207,6 +212,7 @@ export const observeFollowerResource = (
         decoded.resource.target,
         desired,
         decoded.resource.policy === "append-local" || applied?.policy === "append-local",
+        decoded.resource.id,
       );
     case "config":
       return observeConfig(decoded, desired, applied);
@@ -214,8 +220,9 @@ export const observeFollowerResource = (
     case "skill":
       return Effect.gen(function*() {
         const machine = yield* MachineState;
+        const anchor = yield* authoredResourceAnchor(decoded.resource.id);
         const root = yield* machine.normalizePath({ path: decoded.resource.target });
-        const rootKind = yield* machine.inspectPath(root).pipe(
+        const rootKind = yield* machine.inspectPath(root, anchor).pipe(
           Effect.catchTag("MachineFilesystemError", (error) =>
             isNotFoundFilesystemError(error)
               ? Effect.succeed(undefined)
@@ -231,7 +238,7 @@ export const observeFollowerResource = (
             objectKind: rootKind.kind,
           } as const;
         }
-        const rootPermissions = yield* machine.permissions(root);
+        const rootPermissions = yield* machine.permissions(root, anchor);
         // Under `replace` the managed subtree is the desired subtree exactly,
         // so every entry has to be observed, including ones Canonfig never
         // wrote. Observation otherwise inspects only owned and desired paths,
@@ -254,17 +261,17 @@ export const observeFollowerResource = (
           ? [...new Set(managedPaths.map((path) => path.split("/", 1)[0]!))].sort()
           : [];
         const listed = listsEverything
-          ? yield* machine.listDirectory(root)
+          ? yield* machine.listDirectory(root, anchor)
           : yield* Effect.forEach(claimed, (name) =>
             Effect.gen(function*() {
               const entry = yield* machine.normalizePath({ path: name, base: root });
-              const kind = yield* machine.inspectPath(entry).pipe(
+              const kind = yield* machine.inspectPath(entry, anchor).pipe(
                 Effect.catchTag("MachineFilesystemError", (error) =>
                   isNotFoundFilesystemError(error) ? Effect.succeed(undefined) : Effect.fail(error)
                 ),
               );
               if (kind?.kind !== "directory") return [];
-              return (yield* machine.listDirectory(entry)).map((child) => ({ ...child, path: `${name}/${child.path}` }));
+              return (yield* machine.listDirectory(entry, anchor)).map((child) => ({ ...child, path: `${name}/${child.path}` }));
             })).pipe(Effect.map((lists) => lists.flat()));
         const ancestors = [...relativePathAncestors(managedPaths)]
           .sort((left, right) => left.split("/").length - right.split("/").length);
@@ -281,7 +288,7 @@ export const observeFollowerResource = (
               return { path: relativePath, state: "absent" } as const;
             }
             const path = yield* machine.normalizePath({ path: relativePath, base: root });
-            const kind = yield* machine.inspectPath(path).pipe(
+            const kind = yield* machine.inspectPath(path, anchor).pipe(
               Effect.catchTag("MachineFilesystemError", (error) =>
                 isNotFoundFilesystemError(error)
                   ? Effect.succeed(undefined)
@@ -294,7 +301,7 @@ export const observeFollowerResource = (
             }
             if (kind.kind !== "directory") blockedAncestors.add(relativePath);
             if (kind.kind === "directory") {
-              const permissions = yield* machine.permissions(path);
+              const permissions = yield* machine.permissions(path, anchor);
               return {
                 path: relativePath,
                 digest: sha256Hex("canonfig:directory"),
@@ -304,7 +311,7 @@ export const observeFollowerResource = (
               };
             }
             if (kind.kind === "symlink") {
-              const symlinkTo = yield* machine.readSymlink(path);
+              const symlinkTo = yield* machine.readSymlink(path, anchor);
               return {
                 path: relativePath,
                 digest: sha256Hex(symlinkTo),
@@ -321,9 +328,9 @@ export const observeFollowerResource = (
                 objectKind: kind.kind,
               } as const;
             }
-            return yield* machine.digestFile({ path }).pipe(
+            return yield* machine.digestFile({ path, anchor }).pipe(
               Effect.flatMap((digest) =>
-                machine.permissions(path).pipe(
+                machine.permissions(path, anchor).pipe(
                   Effect.map((permissions) => ({
                     path: relativePath,
                     digest: digest.value,

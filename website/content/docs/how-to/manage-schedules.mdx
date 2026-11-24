@@ -191,6 +191,10 @@ run, for example:
 > last completed one was at 2026-11-01T09:00:03.977Z
 
 so you can see a failed scheduled run without reading scheduler logs.
+If the Source could not complete the Follower's Fleet Update check, the
+recorded result includes `Fleet Update check deferred` and the reason.
+Configuration sync still has its own outcome. It can converge while the
+release update check is deferred.
 
 ## Turn the schedule back on, or off for good
 

@@ -22,6 +22,7 @@ export class CliCommandFailure extends Data.TaggedError(
   readonly category: CliFailureCategory;
   readonly message: string;
   readonly details?: CliPayload | undefined;
+  readonly deferredFleetCheck?: string | undefined;
 }> {}
 
 export interface SourceScanInput {
@@ -33,11 +34,15 @@ export interface SourceScanInput {
 
 export interface SourcePublishInput {
   readonly reviewer: string;
+  /** The validated content digest a browser review approved; see PublishFolderInput. */
+  readonly reviewedDigest?: string | undefined;
 }
 
 export interface SourceServeInput {
   readonly hostname: "127.0.0.1" | "::1" | "tailnet";
   readonly port: number;
+  /** Takes the command lease for one request; see ManagedCommandLease.hold. */
+  readonly hold?: (() => () => void) | undefined;
 }
 
 export interface SourceInviteInput {

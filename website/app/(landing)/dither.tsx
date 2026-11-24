@@ -1,66 +1,12 @@
-/**
- * Ordered dithering, the GUI's only texture (ui/docs/design/dither.md), in
- * the two forms this page uses:
- *
- * - `FillPattern`: an SVG `<pattern>` for picture tiles and matrix cells, the
- *   GUI's `solid`, `dotted`, `hatched` and edge-ramp fills
- *   (ui/src/lib/dither/style.ts, fill.tsx).
- * - `horizonLevel`: the still frame of the GUI's `StateBand` field in its calm
- *   `ok` state (ui/src/shared/shared.tsx HORIZON_FIELD at stillTime 4), drawn
- *   once by `DitherBand`.
- *
- * Ported rather than imported, because the website and ui/ are separate
- * builds. Keep them in step when the GUI's texture changes.
- */
-
-const SIZE = 4;
-const SIZE_8 = 8;
-
-// Bayer ranks: interleave the bits of (x xor y) and y, least significant
-// first, so each 2x2 block of the previous size splits into four.
-function bayerThresholds(size: number) {
-  return Array.from({ length: size * size }, (_, index) => {
-    const x = index % size;
-    const y = Math.floor(index / size);
-    let rank = 0;
-    for (let bit = 1; bit < size; bit *= 2) {
-      const xBit = Math.floor(x / bit) % 2;
-      const yBit = Math.floor(y / bit) % 2;
-      rank = rank * 4 + 2 * ((xBit + yBit) % 2) + yBit;
-    }
-    return (rank + 0.5) / (size * size);
-  });
-}
-
-const THRESHOLDS = bayerThresholds(SIZE);
-const THRESHOLDS_8 = bayerThresholds(SIZE_8);
+import { BAYER_4, BAYER_8, fillTile, rampTile } from '../../../ui/src/lib/dither/geometry';
 
 /** The Bayer 4x4 threshold in (0, 1) at cell (x, y); coordinates wrap. */
-export const thresholdAt = (x: number, y: number) => THRESHOLDS[(y % SIZE) * SIZE + (x % SIZE)] ?? 1;
+export const thresholdAt = (x: number, y: number) =>
+  BAYER_4.thresholds[(y % BAYER_4.size) * BAYER_4.size + (x % BAYER_4.size)] ?? 1;
 
 /** The Bayer 8x8 threshold in (0, 1) at cell (x, y); coordinates wrap. */
-export const thresholdAt8 = (x: number, y: number) => THRESHOLDS_8[(y % SIZE_8) * SIZE_8 + (x % SIZE_8)] ?? 1;
-
-/** One SVG path covering the inked cells of a grid, in cell units. */
-function cellsPath(width: number, height: number, inked: (x: number, y: number) => boolean) {
-  let path = '';
-  for (let y = 0; y < height; y += 1) {
-    let start = -1;
-    for (let x = 0; x <= width; x += 1) {
-      const on = x < width && inked(x, y);
-      if (on && start === -1) start = x;
-      else if (!on && start !== -1) {
-        path += `M${start} ${y}h${x - start}v1h${start - x}z`;
-        start = -1;
-      }
-    }
-  }
-  return path;
-}
-
-// Dots on a staggered lattice and rising diagonals, as in the GUI.
-const DOTTED = cellsPath(4, 4, (x, y) => y % 2 === 0 && (x + y / 2) % 2 === 0);
-const HATCHED = cellsPath(4, 4, (x, y) => (x + y) % 4 === 3);
+export const thresholdAt8 = (x: number, y: number) =>
+  BAYER_8.thresholds[(y % BAYER_8.size) * BAYER_8.size + (x % BAYER_8.size)] ?? 1;
 
 export type Fill = 'solid' | 'dotted' | 'hatched' | 'ramp' | 'ramp-x';
 
@@ -101,39 +47,35 @@ export function FillPattern({
       </pattern>
     );
   }
-  if (fill === 'ramp') {
-    // One matrix wide, `rows` tall, so it lines up with the box it fills.
-    const rows = Math.max(SIZE, Math.ceil(height / cell / SIZE) * SIZE);
-    const path = cellsPath(SIZE, rows, (column, row) => {
-      const fromBottom = (rows - 1 - row + 0.5) / rows;
-      return from + (to - from) * fromBottom > thresholdAt(column, row);
-    });
+  if (fill === 'ramp' || fill === 'ramp-x') {
+    const vertical = fill === 'ramp';
+    const { size } = BAYER_4;
+    // On the landing page the fade fills the whole box, aligned at its dense edge.
+    const length = Math.max(size, Math.ceil((vertical ? height : width) / cell / size) * size);
+    const tile = rampTile({ edge: vertical ? 'bottom' : 'right', length, from, to });
+    const tileWidth = tile.width * cell;
+    const tileHeight = tile.height * cell;
     return (
-      <pattern className="dither-cells" id={id} y={y + height - rows * cell} width={SIZE * cell} height={rows * cell} patternUnits="userSpaceOnUse">
-        <path d={path} transform={`scale(${cell})`} fill={color} />
+      <pattern
+        className="dither-cells"
+        id={id}
+        x={vertical ? undefined : x + width - tileWidth}
+        y={vertical ? y + height - tileHeight : undefined}
+        width={tileWidth}
+        height={tileHeight}
+        patternUnits="userSpaceOnUse"
+      >
+        <path d={tile.path} transform={`scale(${cell})`} fill={color} />
       </pattern>
     );
   }
-  if (fill === 'ramp-x') {
-    // One matrix tall, `columns` wide, ending at the box's right edge.
-    const columns = Math.max(SIZE, Math.ceil(width / cell / SIZE) * SIZE);
-    const path = cellsPath(columns, SIZE, (column, row) => {
-      const fromRight = (columns - 1 - column + 0.5) / columns;
-      return from + (to - from) * fromRight > thresholdAt(column, row);
-    });
-    return (
-      <pattern className="dither-cells" id={id} x={x + width - columns * cell} width={columns * cell} height={SIZE * cell} patternUnits="userSpaceOnUse">
-        <path d={path} transform={`scale(${cell})`} fill={color} />
-      </pattern>
-    );
-  }
+  const tile = fillTile(fill);
   return (
-    <pattern className="dither-cells" id={id} width={SIZE * cell} height={SIZE * cell} patternUnits="userSpaceOnUse">
-      <path d={fill === 'dotted' ? DOTTED : HATCHED} transform={`scale(${cell})`} fill={color} />
+    <pattern className="dither-cells" id={id} width={tile.size * cell} height={tile.size * cell} patternUnits="userSpaceOnUse">
+      <path d={tile.path} transform={`scale(${cell})`} fill={color} />
     </pattern>
   );
 }
-
 const smoothstep = (edge0: number, edge1: number, x: number) => {
   const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
   return t * t * (3 - 2 * t);

@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 
+import { fillTile, rampTile, type FillEdge, type RampGeometryOptions, type RampTile } from "./geometry";
 import { getThresholdMap } from "@/lib/dither/matrices";
 import type { DitherMatrix } from "@/lib/dither/matrices";
 import { ditherMask } from "@/lib/dither/pattern";
@@ -27,9 +28,6 @@ export const FILL_VARIANTS = [
 ] as const;
 export type FillVariant = (typeof FILL_VARIANTS)[number];
 
-/** The side of a shape where a gradient fill is densest. */
-export type FillEdge = "top" | "bottom" | "left" | "right";
-
 /** A soft glow in the fill's colour behind it. */
 export const BLOOMS = ["off", "low", "high"] as const;
 export type Bloom = (typeof BLOOMS)[number];
@@ -53,71 +51,12 @@ export const SERIES_COLORS = [
 export const seriesColor = (color: DitherColor | undefined, index: number) =>
   color ?? SERIES_COLORS[index % SERIES_COLORS.length] ?? "ink";
 
-/** Write one SVG path covering the inked cells of a grid, in cell units. */
-const cellsPath = (
-  width: number,
-  height: number,
-  inked: (x: number, y: number) => boolean
-) => {
-  let path = "";
-  for (let y = 0; y < height; y += 1) {
-    let start = -1;
-    for (let x = 0; x <= width; x += 1) {
-      const on = x < width && inked(x, y);
-      if (on && start === -1) {
-        start = x;
-      } else if (!on && start !== -1) {
-        path += `M${start} ${y}h${x - start}v1h${start - x}z`;
-        start = -1;
-      }
-    }
-  }
-  return path;
-};
+export { fillTile } from "./geometry";
+export type { FillEdge, FillTile, RampTile } from "./geometry";
 
-/** One tile of a texture: its side in cells and the inked cells as a path. */
-export interface FillTile {
-  size: number;
-  path: string;
-}
-
-// Dots on a staggered lattice: every other cell, rows offset by one.
-const DOTTED: FillTile = {
-  path: cellsPath(4, 4, (x, y) => y % 2 === 0 && (x + y / 2) % 2 === 0),
-  size: 4,
-};
-
-// Rising diagonals, one cell wide, four cells apart.
-const HATCHED: FillTile = {
-  path: cellsPath(4, 4, (x, y) => (x + y) % 4 === 3),
-  size: 4,
-};
-
-/** The repeating tile of a textured variant. */
-export const fillTile = (variant: "dotted" | "hatched"): FillTile =>
-  variant === "dotted" ? DOTTED : HATCHED;
-
-export interface RampOptions {
-  /** Side where the ramp is densest. */
-  edge: FillEdge;
-  /** Length of the fade in cells. */
-  length: number;
-  /** Total length of the tile in cells, at least `length`. Past the fade it holds `to`. */
-  extent?: number;
-  /** Coverage at the edge, 0 to 1. */
-  from: number;
-  /** Coverage at the far end of the fade, 0 to 1. */
-  to: number;
+export interface RampOptions extends RampGeometryOptions {
   /** Threshold matrix. Default `bayer4`. */
   matrix?: DitherMatrix;
-}
-
-export interface RampTile {
-  /** Tile width in cells. */
-  width: number;
-  /** Tile height in cells. */
-  height: number;
-  path: string;
 }
 
 const rampCache = new Map<string, RampTile>();
@@ -141,27 +80,7 @@ export const ditherRamp = ({
   if (cached !== undefined) {
     return cached;
   }
-  const { size, thresholds } = getThresholdMap(matrix);
-  const fade = Math.max(1, Math.round(length));
-  const along = Math.ceil(Math.max(fade, extent) / size) * size;
-  const vertical = edge === "top" || edge === "bottom";
-  const width = vertical ? size : along;
-  const height = vertical ? along : size;
-  const levelAt = (index: number) => {
-    const step = edge === "top" || edge === "left" ? index : along - 1 - index;
-    return step >= fade ? to : from + (to - from) * ((step + 0.5) / fade);
-  };
-  const tile: RampTile = {
-    height,
-    path: cellsPath(
-      width,
-      height,
-      (x, y) =>
-        levelAt(vertical ? y : x) >
-        (thresholds[(y % size) * size + (x % size)] ?? 1)
-    ),
-    width,
-  };
+  const tile = rampTile({ edge, length, extent, from, to }, getThresholdMap(matrix));
   rampCache.set(key, tile);
   return tile;
 };

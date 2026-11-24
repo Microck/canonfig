@@ -195,7 +195,10 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly startRun: (
     input: StartRunInput,
   ) => Effect.Effect<void, StateRepositoryError>;
-  readonly beginRun: (run: RunId) => Effect.Effect<void, StateRepositoryError>;
+  readonly beginRun: (
+    run: RunId,
+    pendingRollbackReferences?: StartRunInput["pendingRollbackReferences"],
+  ) => Effect.Effect<void, StateRepositoryError>;
   readonly abandonRun: (run: RunId) => Effect.Effect<void, StateRepositoryError>;
   /** Acknowledge idempotent finalization effects, then publish the receipt. */
   readonly finalizeRun: (run: RunId, completedAt: string) => Effect.Effect<void, StateRepositoryError>;
@@ -223,6 +226,7 @@ export class StateRepository extends Context.Service<StateRepository, {
   readonly loadRecovery: (
     follower: FollowerId,
   ) => Effect.Effect<RecoveryState | undefined, StateRepositoryError>;
+  readonly listOpenRunFollowers: () => Effect.Effect<ReadonlyArray<FollowerId>, StateRepositoryError>;
   readonly loadOpenRunIdentity: (
     follower: FollowerId,
   ) => Effect.Effect<{

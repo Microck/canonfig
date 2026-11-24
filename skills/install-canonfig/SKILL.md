@@ -1,6 +1,6 @@
 ---
 name: install-canonfig
-description: Install or upgrade Canonfig 7.8.1 from its scoped npm package on Linux, macOS, or Windows. Use for prerequisites, safe upgrades, first-time Source setup and publication, follower enrollment and pinned trust, harness takeover, native scheduling, installation verification, or troubleshooting.
+description: Install or upgrade Canonfig 7.8.2 from its scoped npm package on Linux, macOS, or Windows. Use for prerequisites, safe upgrades, first-time Source setup and publication, follower enrollment and pinned trust, harness takeover, native scheduling, installation verification, or troubleshooting.
 ---
 
 # Install Canonfig
@@ -20,7 +20,7 @@ instead of repeating role setup.
    - macOS: [references/macos.md](references/macos.md)
    - Windows: [references/windows.md](references/windows.md)
 3. Confirm Node.js 24.15+ or 26+ and npm are available.
-4. Install the exact `@microck/canonfig@7.8.1` package version. The installed
+4. Install the exact `@microck/canonfig@7.8.2` package version. The installed
    executable remains `canonfig`. The Source and followers must run the same
    major.minor release; a mismatch fails with "source/follower version
    mismatch" (exit 2).
@@ -80,8 +80,8 @@ Before its first write to a harness, `sync --apply` copies what it replaces to
 a takeover snapshot in `~/.canonfig/.backups/`; `canonfig restore` writes it
 back. `--no-backup` skips the snapshot and needs explicit approval.
 
-Keep the loopback-only server running as a native user service, then create a
-short-lived, single-use invitation:
+For loopback hosting, start the native user service and create a short-lived,
+single-use invitation:
 
 ```bash
 canonfig source service install
@@ -91,9 +91,8 @@ canonfig source invite --endpoint https://127.0.0.1:17342 --output ./canonfig-in
 
 `canonfig source serve --host 127.0.0.1 --port 17342` runs the same server in
 the foreground instead. Treat the mode-`0600` envelope as temporary sensitive
-material. For a remote follower, transfer it over an authenticated private
-channel together with the Source's SSH host public key, read on the Source
-itself.
+material and transfer it over an authenticated private channel. For direct
+remote enrollment, see the [tailnet guide](https://canonfig.micr.dev/docs/how-to/connect-over-tailnet/).
 
 ## Follower Machine
 
@@ -102,8 +101,8 @@ folder whose authoring entries already hold content and names them; move what
 the machine should keep into `~/.canonfig/local/` or remove it, with approval,
 then enroll again.
 
-When the Source is another host, start the managed tunnel after the Source is
-serving:
+A tailnet invitation connects directly. For a remote Source serving on
+loopback, start a managed tunnel with the Source's SSH host public key:
 
 ```bash
 canonfig tunnel start --invitation ./canonfig-invite --ssh-host source.example --ssh-user operator --ssh-host-key-file ./source-host-key.pub
@@ -122,8 +121,8 @@ independently revocable follower credential in the native store.
 Refuse an expired, replayed, exposed, or fingerprint-mismatched invitation.
 Request a new invitation from the Source Machine;
 never reset trust or suppress verification.
-Enrolling again under the same name with a new invitation rotates the
-credential and keeps local settings. `--replace` enrolls a new identity,
+To reuse a name, revoke it on the Source first. A fresh invitation then
+rotates the credential and keeps local settings. `--replace` enrolls a new identity,
 revokes the old one, and resets agent policy, harness and secret bindings, and
 schedule choice; get explicit approval first.
 
@@ -184,9 +183,9 @@ canonfig harnesses
 
 `doctor` runs ten probes: `runtime`, `state`, `credentials`, `source`,
 `scheduler`, `package-managers`, `agent-adapter`, `harnesses` (listed
-harnesses that are not installed, pinned roots, snapshots), `mcp` (starts every
-MCP server the installed harnesses declare and requires it to answer) and
-`tailscale`. An enrolled follower then sends the report to the Source.
+harnesses that are not installed, pinned roots, snapshots), `mcp` and `tailscale`.
+Doctor checks enabled MCP servers and leaves remote OAuth sign-in to the
+harness. An enrolled follower then sends the report to the Source.
 
 Interpret exit code `2` as usage, configuration, or version mismatch, `3` as
 Human Action Required (including a locked or unavailable local credential

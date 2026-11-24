@@ -73,7 +73,7 @@ it("polls actual journal bytes and retains the CLI failure without invented prog
   await writeFile(path, '{"step":"planned"}');
   try {
     await Effect.runPromise(Effect.gen(function*() {
-      const manager = yield* makeGuiOperations;
+      const manager = yield* makeGuiOperations();
       const continueApply = yield* Deferred.make<void>();
       const ticket = yield* manager.start(
         Deferred.await(continueApply).pipe(Effect.andThen(Effect.fail(new CliCommandFailure({ category: "human-action-required", message: "Approve this setup plan first." })))),
@@ -93,6 +93,11 @@ it("polls actual journal bytes and retains the CLI failure without invented prog
       let completed = yield* poll();
       while (completed.state === "running") { yield* Effect.yieldNow; completed = yield* poll(); }
       expect(completed).toEqual({ id: ticket.id, state: "failed", journal: { step: "approval-required" }, failure: { category: "human-action-required", exitCode: 3, message: "Approve this setup plan first." } });
+      yield* Effect.promise(() => rm(path));
+      expect(yield* poll()).toEqual({
+        id: ticket.id, state: "failed", journal: null,
+        failure: { category: "human-action-required", exitCode: 3, message: "Approve this setup plan first.\nCanonfig could not read the operation journal" },
+      });
       incoming.destroy();
     }).pipe(Effect.scoped));
   } finally { await rm(directory, { recursive: true, force: true }); }
@@ -110,7 +115,7 @@ it("requires the payload belonging to each operation state", () => {
 it("delivers a successful operation only once across repeated polls", async () => {
   let delivered = 0;
   await Effect.runPromise(Effect.gen(function*() {
-    const manager = yield* makeGuiOperations;
+    const manager = yield* makeGuiOperations();
     const ticket = yield* manager.start(Effect.succeed({ saved: true }), () => Effect.succeed(null), () => { delivered++; });
     const incoming = new IncomingMessage(new Socket());
     const url = new URL(`http://127.0.0.1/api/operations/${ticket.id}`);

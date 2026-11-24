@@ -1226,6 +1226,19 @@ process.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringi
     expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
   });
 
+  it("projects a harness while a tool required only by an excluded MCP server needs action", async () => {
+    const root = temporaryRoot("scoped-mcp-tool-follower");
+    const source = await startSource(root, (folder) => authorFolder(folder, {
+      tools: { probe: { executable: "probe-tool", recipes: [{ platform: "linux", method: "cargo", package: "probe-tool", version: "1.0.0" }] } },
+      mcp: { probe: { transport: "stdio", command: "probe-tool", requires: ["tools/probe"], harnesses: ["codex"] } },
+    }, { "AGENTS.md": "Prefer small diffs.\n" }));
+    const follower = await enroll(root, source, { name: "Scoped tool follower", harnesses: ["claude-code"] });
+
+    expect((await follower.apply()).outcome).toMatchObject({ outcome: "HumanActionRequired" });
+    expect(read(join(follower.home, ".claude", "CLAUDE.md"))).toContain("Prefer small diffs.");
+    expect(existsSync(join(follower.home, ".claude.json"))).toBe(false);
+  });
+
   it("releases takeovers of surfaces an abandoned first run never applied", async () => {
     const root = temporaryRoot("abandoned-takeover");
     const source = await startSource(root, (folder) => authorFolder(folder, { harnesses: ["amp", "claude-code", "qwen"] }, {
@@ -1360,6 +1373,30 @@ process.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringi
     expect(Object.keys(JSON.parse(read(join(follower.home, ".claude.json"))).mcpServers)).toEqual(["git"]);
     expect(read(instructions)).toBe("my own notes\n");
     expect(existsSync(join(follower.home, ".claude", "skills", "deploy"))).toBe(false);
+  });
+
+  it("retains the MCP scope through signed publication and follower projection", async () => {
+    const root = temporaryRoot("mcp-scope-follower");
+    const harnesses = ["claude-code", "codex"] as const;
+    const docs = { transport: "stdio", command: "docs-server" };
+    const source = await startSource(root, (folder) => authorFolder(folder, { harnesses, mcp: { docs } }));
+    const follower = await enroll(root, source, { name: "MCP follower", harnesses });
+    const claude = join(follower.home, ".claude.json");
+    const codex = join(follower.home, ".codex", "config.toml");
+    expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readJson(claude)).toHaveProperty("mcpServers.docs.command", "docs-server");
+
+    const scoped = { ...docs, harnesses: ["codex"] };
+    writeConfig(source.folder, { harnesses, mcp: { docs: scoped } });
+    const revision = await source.publish();
+    expect(revision.resources.find(({ id }) => id === "mcp:docs")?.spec).toMatchObject({
+      keys: [{ path: "mcp.docs", value: scoped }],
+    });
+
+    expect((await follower.apply()).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readJson(join(follower.folder, "canonfig.jsonc"))).toHaveProperty("mcp.docs", scoped);
+    expect(readJson(claude)).not.toHaveProperty("mcpServers");
+    expect(parseConfigDocument("toml", read(codex))).toHaveProperty("mcp_servers.docs.command", "docs-server");
   });
 
   it("retires no harness output while a mirror item has drifted", async () => {

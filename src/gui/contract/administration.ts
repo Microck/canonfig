@@ -70,6 +70,7 @@ export const GuiInstallerBinding = Schema.Struct({
   platform: Schema.Literals(["linux", "macos", "windows"]),
   executable: Schema.String,
   arguments: Schema.Array(Schema.String),
+  rustupProxy: Schema.optional(Schema.Literal(true)),
 });
 /** A PATH executable that would make a valid binding; the GUI offers it as a one-click choice. */
 export const GuiDetectedInstaller = Schema.Struct({

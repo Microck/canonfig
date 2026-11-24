@@ -1,6 +1,6 @@
 ---
 name: operate-canonfig
-description: Operate Canonfig 7.8.1 Source and Follower Machines safely. Use for ~/.canonfig/ edits and publication, tool discovery, machine-local MCP and skill preservation, the Source service and tunnel, invitations, groups, revocation, unenrollment, harness selection and exclusions, takeover snapshots and restore, local/ items, synchronization planning or apply, no-input runs, agent policy and harness bounds, schedules, status or doctor diagnostics, client trust, Follower Drift, Human Action Required, interrupted-run recovery, and reporting Canonfig issues.
+description: Operate Canonfig 7.8.2 Source and Follower Machines safely. Use for ~/.canonfig/ edits and publication, tool discovery, machine-local MCP and skill preservation, the Source service and tunnel, invitations, groups, revocation, unenrollment, harness selection and exclusions, takeover snapshots and restore, local/ items, synchronization planning or apply, no-input runs, agent policy and harness bounds, schedules, status or doctor diagnostics, client trust, Follower Drift, Human Action Required, interrupted-run recovery, and reporting Canonfig issues.
 ---
 
 # Operate Canonfig
@@ -37,9 +37,8 @@ Use one-way, evidence-first operations. The Source publishes its
    the operator's steps.
 6. Preserve and report `HumanActionRequired`, `FollowerDrift`, `Failed`, or
    `Interrupted` exactly. Never reinterpret partial success as convergence.
-7. Report each follower from its own `canonfig status`. The Source has no fleet
-   view: on the Source, `canonfig status --follower <id>` reports only that
-   follower's enrollment, not its convergence.
+7. Use the Source GUI’s Machines page for inventory and reported health.
+   Confirm each follower’s convergence with its own `canonfig status`.
 
 ## Harnesses and backups
 

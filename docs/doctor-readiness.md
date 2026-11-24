@@ -13,16 +13,21 @@ harnesses, pinned roots and takeover snapshots. It is skipped while
 `listed but not installed: <harnesses>` when a listed harness is missing; the
 run still converges without it.
 
-The `mcp` probe starts every MCP server that each installed harness's own
-config file declares, including preserved and hand-written entries, and
-requires `initialize` and `tools/list` to answer. It starts one harness's
-servers at a time, all at once, as the harness does at session start, and
-gives Codex servers only the environment Codex passes them. A server whose
-entry sets a startup timeout gets that, up to 120 seconds; any other server
-gets Codex's default 10 seconds, or `--timeout-ms` when that is longer. The
-details list every server with
-the harnesses that declare it; remote servers that sign in with OAuth, and the
-legacy SSE transport, are reported as not checked.
+The `mcp` probe checks enabled servers in installed harnesses' native
+configuration, including preserved and hand-written entries. It requires
+`initialize` to succeed and calls `tools/list` when the server advertises the
+tools capability. It checks one harness's servers concurrently before moving
+to the next harness. Codex stdio servers get Codex's environment, including
+case-insensitive variable names and native command resolution on Windows. A
+configured startup timeout is capped at 120 seconds. Other servers get 10
+seconds, or `--timeout-ms` when that is longer.
+
+Streamable HTTP and HTTP+SSE checks also verify replies to server pings.
+HTTP+SSE sends messages to the endpoint advertised by the event stream on the
+same origin. Streamable HTTP allows up to two seconds to close an opened
+session and reports cleanup failures in its detail. The report lists each
+server and the harnesses that declare it. Servers that require the harness's
+OAuth sign-in are reported as unchecked.
 
 After the probes, an enrolled Follower sends its report to the Source and a
 Source records its own (`sourceReport` in the output says which, or why
@@ -48,6 +53,15 @@ value under a unique `canonfig-probe:<uuid>` name, reads it back, and deletes
 it, through the same calls that store real credentials. Success reports
 `session-probe`; any failed step reports the warning `session-probe-failed`
 with the recovery as its message and the provider's error in `details.reason`.
+
+On Linux, `canonfig secrets bootstrap` can also save a separate test
+credential for a restart-persistence check. After a natural Secret Service
+restart or the next login, run `canonfig doctor` in the same keyring session.
+Doctor reads and removes that saved test credential and reports the outcome
+under `restartPersistence`. If the provider has not restarted or the keyring
+cannot be verified, the check remains manual. If Doctor establishes that the
+restarted provider lost the credential, the credentials probe reports Human
+Action Required even if the current session can store a new credential.
 
 ## Keychain access per macOS session
 

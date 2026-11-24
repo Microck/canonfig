@@ -11,6 +11,7 @@ export interface InstallerBinding {
   readonly platform: InstallerPlatform;
   readonly executable: string;
   readonly arguments: ReadonlyArray<string>;
+  readonly rustupProxy?: true;
 }
 
 /**
@@ -25,6 +26,7 @@ const InstallerBindingDocument = Schema.Struct({
   platform: Schema.Literals(["linux", "macos", "windows"]),
   executable: Schema.String,
   arguments: Schema.Array(Schema.String),
+  rustupProxy: Schema.optional(Schema.Literal(true)),
 });
 
 type InstallerBindingDocument = Schema.Schema.Type<typeof InstallerBindingDocument>;
@@ -83,7 +85,11 @@ const bindingFromDocument = (document: InstallerBindingDocument): InstallerBindi
   if ((method === "winget" && platform !== "windows") || (method === "apt" && platform !== "linux")) {
     throw new Error("Installer method is incompatible with this platform");
   }
-  return { schema: "canonfig.installer/v1", method, platform, executable, arguments: arguments_ };
+  if (document.rustupProxy && method !== "cargo") {
+    throw new Error("Only Cargo bindings can name a rustup proxy");
+  }
+  const binding: InstallerBinding = { schema: "canonfig.installer/v1", method, platform, executable, arguments: arguments_ };
+  return document.rustupProxy ? { ...binding, rustupProxy: true } : binding;
 };
 
 /** Parse one persisted binding. The JSON text is the untrusted I/O boundary. */
@@ -96,6 +102,7 @@ export const installerBindingFor = (
   platform: InstallerPlatform,
   executable: string,
   arguments_: ReadonlyArray<string>,
+  rustupProxy?: true,
 ): InstallerBinding => bindingFromDocument(parseDocument({
-  schema: "canonfig.installer/v1", method, platform, executable, arguments: arguments_,
+  schema: "canonfig.installer/v1", method, platform, executable, arguments: arguments_, rustupProxy,
 }));

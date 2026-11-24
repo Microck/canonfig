@@ -156,7 +156,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
   const metadata = Schema.decodeUnknownSync(PackageMetadata)(
     JSON.parse(readFileSync(metadataPath, "utf8")),
   );
-  if (metadata.name !== "@microck/canonfig" || metadata.version !== "7.8.1") {
+  if (metadata.name !== "@microck/canonfig" || metadata.version !== "7.8.2") {
     fail(`unexpected package identity: ${metadata.name}@${metadata.version}`);
   }
   if (metadata.license !== "MIT") fail(`unexpected package license: ${metadata.license}`);
@@ -167,13 +167,14 @@ const validatePackageMetadata = (metadataPath: string): void => {
     fail("package bin must map canonfig to dist/runtime/main.js");
   }
   const runtimeDependencies = Object.keys(metadata.dependencies).sort();
-  // Sigstore dependencies verify npm provenance for Fleet Updates.
+  // Sigstore verifies Fleet Update provenance. Koffi opens native Windows directory handles.
   const expectedRuntimeDependencies = [
     "@canonfig/effect-platform-node-shared",
     "@canonfig/effect-sql-sqlite-node",
     "@sigstore/bundle",
     "effect",
     "jsonc-parser",
+    "koffi",
     "selfsigned",
     "sigstore",
     "smol-toml",
@@ -193,7 +194,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
 const validatePackageContents = (
   artifact: typeof PackedArtifact.Type,
 ): void => {
-  if (artifact.name !== "@microck/canonfig" || artifact.version !== "7.8.1") {
+  if (artifact.name !== "@microck/canonfig" || artifact.version !== "7.8.2") {
     fail(`unexpected packed identity: ${artifact.name}@${artifact.version}`);
   }
   // The shared live screens include full authoring, enrollment, synchronization,
@@ -259,7 +260,7 @@ const validateBinary = (executable: string): void => {
 
   const version = invokeExecutable(executable, ["--version"]);
   requireSuccess("packed executable version", version);
-  if (version.stdout !== "7.8.1\n" || version.stderr !== "") {
+  if (version.stdout !== "7.8.2\n" || version.stderr !== "") {
     fail("packed executable version output is invalid");
   }
 

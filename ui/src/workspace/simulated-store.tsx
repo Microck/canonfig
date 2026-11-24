@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { toast } from "sonner";
+import { demoProjection } from "./demo-projection";
 import {
   DEMO,
   APP_VERSION,
@@ -368,6 +369,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
 
   return {
     ...navigation,
+    demoProjection,
     folderPath: machine.folder,
     version: APP_VERSION,
     reload: () => window.location.reload(),

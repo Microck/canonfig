@@ -48,6 +48,14 @@ describe("automatic upstream skill updates", () => {
     expect(await automaticSkillUpdates(location, [], { apply: true, once: false, intervalSeconds: 60, signal: controller.signal, onPass: vi.fn() }, run)).toBe(1);
     expect(run.update).toHaveBeenCalledOnce(); expect(run.sleep).toHaveBeenCalledWith(60000, controller.signal);
   });
+  it("holds the command lease during each pass and never while it sleeps", async () => {
+    const run = fixture(); const controller = new AbortController(); let held = 0;
+    const hold = () => { held += 1; return () => { held -= 1; }; };
+    run.update = vi.fn(async () => { expect(held).toBe(1); return [check]; });
+    run.sleep = vi.fn(async () => { expect(held).toBe(0); controller.abort(); throw new Error("aborted"); });
+    expect(await automaticSkillUpdates(location, [], { apply: true, once: false, intervalSeconds: 60, signal: controller.signal, onPass: vi.fn(), hold }, run)).toBe(1);
+    expect(run.sleep).toHaveBeenCalledOnce(); expect(held).toBe(0);
+  });
   it("stops on a local-edit, fetch, recovery or write failure without retry", async () => {
     const run = fixture(); run.update = vi.fn(async () => { throw new Error("Local edits"); });
     await expect(automaticSkillUpdates(location, [], { apply: true, once: false, intervalSeconds: 60, onPass: vi.fn() }, run)).rejects.toThrow("Local edits");
