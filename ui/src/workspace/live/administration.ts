@@ -205,6 +205,12 @@ export function useLiveAdministration(backend: WorkspaceBackend, session: GuiSes
   return {
     fleet: session.role === "source" ? {
       ...fleet,
+      // Refresh both the rollout state and the machine inventory that populates the canary selector.
+      reload: () => {
+        if (fleet.busy) return;
+        fleet.reload();
+        resources?.cache.invalidate(["/api/machines"]);
+      },
       start: (canary) => { void fleet.run(async (signal) => {
         const updated = await backend.request("/api/fleet-update", FleetUpdate, signal, { method: "POST", body: { canary, apply: true } });
         if (!signal.aborted) fleet.setData(updated);

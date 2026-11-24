@@ -15,17 +15,18 @@ export const decodeText = (base64: string) => new TextDecoder("utf-8", { fatal: 
 export interface DraftFile { path: string; content: string; encoding: "text" | "base64"; executable: boolean }
 export interface ExactDraft { json?: string; files: DraftFile[] }
 export interface AuthoredItem { resource: Resource; configPath?: (string | number)[]; value?: Schema.Json; itemPath?: string; exact?: ExactDraft }
+export const MCP_HARNESSES_LABEL = "Target harnesses";
 const fields: Partial<Record<ItemCategory, Record<string, string>>> = {
   rules: { description: "Description", paths: "Paths", activation: "Activation" },
   skills: { name: "Name", description: "Description" },
   agents: { description: "Description", model: "Model", tools: "Tools", writable: "Writable" },
   commands: { description: "Description", argumentHint: "Argument hint" },
-  mcp: { transport: "Transport", command: "Command", args: "Args", url: "URL" },
+  mcp: { transport: "Transport", command: "Command", args: "Args", url: "URL", harnesses: MCP_HARNESSES_LABEL },
   hooks: { id: "Name", event: "Event", run: "Run", matcher: "Capabilities", onFailure: "On failure" },
   credentials: { reference: "Reference" },
   resources: { kind: "Type", target: "Target", source: "Source", policy: "Policy", format: "Format", keys: "Keys" },
 };
-const listFields: Record<string, true> = { paths: true, tools: true, capabilities: true };
+const listFields: Record<string, true> = { paths: true, tools: true, capabilities: true, harnesses: true };
 function representable(category: ItemCategory, value: Record<string, Schema.Json>) {
   const known = fields[category];
   return known !== undefined && Object.entries(value).every(([key, entry]) => {
@@ -89,9 +90,13 @@ export function configEdits(path: readonly (string | number)[], before: Schema.J
   }
   return [{ path, ...(after === undefined ? {} : { value: after }) }];
 }
-function fieldValue(resource: Resource): Record<string, Schema.Json> {
+export function fieldValue(resource: Resource): Record<string, Schema.Json> {
   const values: Record<string, Schema.Json> = {};
   for (const [key, label] of Object.entries(fields[resource.category] ?? {})) {
+    if (resource.category === "mcp") {
+      const isStdio = (resource.detail.Transport ?? "stdio") === "stdio";
+      if (isStdio ? key === "url" : key === "command" || key === "args") continue;
+    }
     const text = resource.detail[label];
     if (text === undefined || text === "" || key === "keys") continue;
     values[key] = key === "matcher" ? { capabilities: text.split(",").map((value) => value.trim()).filter(Boolean) } : listFields[key] ? text.split(",").map((value) => value.trim()).filter(Boolean) : key === "args" || key === "run" ? text.trim().split(/\s+/) : key === "writable" ? text === "true" : text;

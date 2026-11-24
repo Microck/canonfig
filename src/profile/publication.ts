@@ -24,7 +24,7 @@ import {
   validateMachineProfile,
 } from "../domain/profile.ts";
 import { ConfigValue } from "../domain/resource.ts";
-import { sourceChunksIssue, sourceTextIssue } from "../domain/text-composition.ts";
+import { sourceBytesIssue, sourceChunksIssue, sourceTextIssue } from "../domain/text-composition.ts";
 import {
   CanonicalFolderError,
   hookScript,
@@ -32,6 +32,7 @@ import {
   itemResourceId,
   listFolderFiles,
   loadAuthoredFolder,
+  type FolderFile,
 } from "../projection/folder.ts";
 import { emptyModel } from "../projection/detect.ts";
 import { TARGET_IDS } from "../projection/model.ts";
@@ -52,7 +53,7 @@ import {
   PublicationSourceError,
   type ProfileCatalogPublishError,
 } from "./profile-catalog.errors.ts";
-import { asJson, canonicalJson } from "./profile-codec.ts";
+import { asJson, canonicalJson, sha256BytesHex } from "./profile-codec.ts";
 
 /**
  * Publication: `canonfig source publish` compiles the Canonical Folder into
@@ -67,6 +68,13 @@ export interface PublishFolderInput {
   readonly folder: string;
   /** Who reviewed the folder content being published. */
   readonly reviewer: string;
+  /**
+   * The compiled content digest the reviewer approved.
+   * When set, publication refuses any other content, so an edit made after
+   * the review needs a new review. The CLI leaves it unset: its reviewer
+   * vouches for the folder as it is when the command runs.
+   */
+  readonly reviewedDigest?: string | undefined;
   readonly publishedAt: string;
 }
 
@@ -157,8 +165,8 @@ const scheduleDefaultOf = (calendar: string): ScheduleDefault => {
  * sources relative to the folder. Groups and `requires` must name items the
  * folder declares, and every file under `hooks/` must be a script a hook runs.
  */
-export const folderProfile = async (folder: string): Promise<MachineProfile> => {
-  const authored = await loadAuthoredFolder(folder);
+export const folderProfile = async (folder: string, observedFiles?: ReadonlyMap<string, FolderFile>): Promise<MachineProfile> => {
+  const authored = await loadAuthoredFolder(folder, observedFiles);
   const config = authored.config;
   const configPath = resolve(folder, "canonfig.jsonc");
   const refuse = (message: string) => new CanonicalFolderError({ path: configPath, message });
@@ -195,7 +203,7 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
   }
 
   // Hooks: the definition is a JSON item, the script it runs a file item.
-  const scripts = new Map((await listFolderFiles(folder, "hooks")).map((file) => [`hooks/${file.path}`, file.executable]));
+  const scripts = new Map((await listFolderFiles(folder, "hooks", observedFiles)).map((file) => [`hooks/${file.path}`, file.executable]));
   const scriptUsers = new Map<string, Array<string>>();
   const enabledScripts = new Set<string>();
   for (const [position, hook] of (config.hooks ?? []).entries()) {
@@ -225,7 +233,7 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
   // Authored resources: the definition is a JSON item, each file it reads a
   // file item under files/. Like a hook script, a file goes wherever one of
   // its resources goes, and a file no resource reads is refused.
-  const files = new Map((await listFolderFiles(folder, "files")).map((file) => [`files/${file.path}`, file.executable]));
+  const files = new Map((await listFolderFiles(folder, "files", observedFiles)).map((file) => [`files/${file.path}`, file.executable]));
   const fileUsers = new Map<string, Array<string>>();
   for (const resource of authored.resources) {
     const used = resource.kind === "file"
@@ -235,7 +243,9 @@ export const folderProfile = async (folder: string): Promise<MachineProfile> => 
       : [];
     for (const path of used) fileUsers.set(path, [...fileUsers.get(path) ?? [], `resources:${resource.id}`]);
     if (resource.kind === "file" && resource.policy === "append-local") {
-      const issue = await sourceChunksIssue(sourceChunks(resolve(folder, resource.source)));
+      const issue = observedFiles === undefined
+        ? await sourceChunksIssue(sourceChunks(resolve(folder, resource.source)))
+        : sourceBytesIssue(observedSource(observedFiles, resource.id, resource.source));
       if (issue !== undefined) throw refuse(`resources.${resource.id} cannot use append-local: ${issue}`);
     }
     resources.push(jsonItem(
@@ -396,13 +406,31 @@ const digestSourceFile = async (path: string): Promise<{ readonly blob: string; 
   return { blob: hash.digest("hex"), bytes };
 };
 
+const observedSource = (files: ReadonlyMap<string, FolderFile>, resource: string, source: string): Uint8Array => {
+  const file = files.get(source);
+  if (file === undefined) {
+    throw new PublicationSourceError({ resource, path: source, reason: "file is missing from the reviewed folder" });
+  }
+  return file.content;
+};
+
 /** Hash one `source` found inside the folder. Links are never published. */
 const resolveSource = async (
   resource: string,
   source: string,
   directory: string,
   sources: Map<string, ResolvedSourceFile>,
+  observedFiles?: ReadonlyMap<string, FolderFile>,
 ): Promise<void> => {
+  if (observedFiles !== undefined) {
+    const content = observedSource(observedFiles, resource, source);
+    sources.set(source, {
+      path: resolve(directory, source),
+      blob: Schema.decodeUnknownSync(BlobId)(sha256BytesHex(content)),
+      bytes: content.byteLength,
+    });
+    return;
+  }
   const path = await resolveSourcePath(resource, directory, source);
   if (!(await lstat(path)).isFile()) {
     throw new PublicationSourceError({
@@ -420,13 +448,13 @@ const resolveSource = async (
 };
 
 /**
- * Hash every `source` read from inside the folder by streaming it. File
- * bytes are never held whole in memory: publication streams them into
- * storage again and rejects a file that changed in between.
+ * Hash each resource source. For review, use the captured bytes. For disk
+ * publication, stream the files and verify their hashes again during storage.
  */
 const resolveResourceSources = (
   resources: ReadonlyArray<ProfileResourceInput>,
   directory: string,
+  observedFiles?: ReadonlyMap<string, FolderFile>,
 ): Effect.Effect<ResolvedSourceFiles, PublicationSourceError | InvalidPublicationInputError> =>
   Effect.tryPromise({
     try: async () => {
@@ -436,7 +464,7 @@ const resolveResourceSources = (
           ? [resource.spec.source]
           : resource.spec.kind === "skill" ? resource.spec.files.map((file) => file.source) : [];
         for (const source of files) {
-          if (source !== undefined) await resolveSource(resource.id, source, directory, sources);
+          if (source !== undefined) await resolveSource(resource.id, source, directory, sources, observedFiles);
         }
       }
       return sources;
@@ -448,6 +476,44 @@ const resolveResourceSources = (
           reason: `resource source could not be read: ${String(cause)}`,
         }),
   });
+
+const compileFolderInputs = (folder: string, observedFiles?: ReadonlyMap<string, FolderFile>) =>
+  Effect.gen(function*() {
+    const profile = yield* Effect.tryPromise({
+      try: () => folderProfile(folder, observedFiles),
+      catch: (cause) => new InvalidPublicationInputError({
+        reason: cause instanceof CanonicalFolderError
+          ? `${cause.path} ${cause.message}`
+          : `the Canonical Folder could not be read: ${String(cause)}`,
+      }),
+    });
+    const sources = yield* resolveResourceSources(profile.resources, folder, observedFiles);
+    const errors = validateMachineProfile(profile);
+    if (errors.length > 0) {
+      return yield* Effect.fail(new InvalidPublicationResourcesError(errors));
+    }
+    const credentialIssue = publicationCredentialIssue(profile.resources);
+    if (credentialIssue !== undefined) {
+      return yield* new InvalidPublicationInputError({ reason: credentialIssue });
+    }
+    const encoded = yield* Effect.try({
+      try: () => compileProfileCandidate(profile, sources),
+      catch: (cause) =>
+        cause instanceof ProfileContractError
+          ? new InvalidPublicationResourcesError(cause.errors)
+          : new InvalidPublicationInputError({
+            reason: cause instanceof Error ? cause.message : `resource bytes could not be encoded: ${String(cause)}`,
+          }),
+    });
+    return { profile, encoded };
+  });
+
+/** Compile the Canonical Folder from disk without signing or storing anything. */
+export const compileFolder = (folder: string) => compileFolderInputs(folder);
+
+/** Validate the exact files that supplied the reviewed item digests. */
+export const compileReviewedFolder = (folder: string, files: ReadonlyMap<string, FolderFile>) =>
+  compileFolderInputs(folder, files).pipe(Effect.map(({ profile, encoded }) => ({ profile, reviewDigest: encoded.digest })));
 
 interface UnsignedRevision {
   readonly id: ProfileRevision["id"];
@@ -486,14 +552,7 @@ export const makePublication = (
         try: () => Schema.decodeUnknownSync(Timestamp)(input.publishedAt),
         catch: (cause) => new InvalidPublicationInputError({ reason: `invalid publication timestamp: ${String(cause)}` }),
       });
-      const profile = yield* Effect.tryPromise({
-        try: () => folderProfile(input.folder),
-        catch: (cause) => new InvalidPublicationInputError({
-          reason: cause instanceof CanonicalFolderError
-            ? `${cause.path} ${cause.message}`
-            : `the Canonical Folder could not be read: ${String(cause)}`,
-        }),
-      });
+      const { profile, encoded } = yield* compileFolder(input.folder);
       // One Source publishes one Machine Profile. Followers select it by id,
       // so a second id would leave them on the first.
       const published = (yield* repository.listRevisions()).find((revision) => revision.profileId !== profile.id);
@@ -502,25 +561,14 @@ export const makePublication = (
           reason: `this Source publishes profile ${published.profileId}; set "profile.id" in canonfig.jsonc back to ${published.profileId}`,
         });
       }
-      const sources = yield* resolveResourceSources(profile.resources, input.folder);
-      const errors = validateMachineProfile(profile);
-      if (errors.length > 0) {
-        return yield* Effect.fail(new InvalidPublicationResourcesError(errors));
+      // The approval below names this digest, and storing the blobs rejects a
+      // file that no longer matches it, so checking it here binds the review
+      // to exactly the content the revision carries.
+      if (input.reviewedDigest !== undefined && input.reviewedDigest !== encoded.digest) {
+        return yield* new InvalidPublicationInputError({
+          reason: "the Canonical Folder changed after it was validated. Validate it again and review the changes before publishing",
+        });
       }
-      const credentialIssue = publicationCredentialIssue(profile.resources);
-      if (credentialIssue !== undefined) {
-        return yield* new InvalidPublicationInputError({ reason: credentialIssue });
-      }
-
-      const encoded = yield* Effect.try({
-        try: () => compileProfileCandidate(profile, sources),
-        catch: (cause) =>
-          cause instanceof ProfileContractError
-            ? new InvalidPublicationResourcesError(cause.errors)
-            : new InvalidPublicationInputError({
-              reason: cause instanceof Error ? cause.message : `resource bytes could not be encoded: ${String(cause)}`,
-            }),
-      });
       const canonicalBytes = encoded.canonicalBytes;
       const digest = encoded.digest;
       const approval = {

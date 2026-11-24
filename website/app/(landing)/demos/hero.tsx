@@ -96,7 +96,7 @@ function Node({ machine, role, folder = false, pulseDelay }: { machine: Machine;
       {pulseDelay ? <span className="hm-ring" aria-hidden="true" style={{ '--animation-delay': pulseDelay }} /> : null}
       <div className="hm-head">
         <svg className="hm-tile" viewBox="0 0 26 26" aria-hidden="true">
-          <IconTile id={`hero-${machine.name}`} accent={machine.accent} icon={machine.icon} />
+          <IconTile id={`hero-${machine.name}`} accent={machine.accent} icon={machine.icon} source={folder} />
         </svg>
         <span className="hm-name">
           <b>{machine.name}</b>

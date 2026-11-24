@@ -81,6 +81,14 @@ export interface MachineMapProps {
 
 type MapNode = MachineNodeType | AddNodeType;
 
+function machineNodeAttributes(id: string): NonNullable<MachineNodeType["domAttributes"]> & { "data-cf-machine": string } {
+  return { "data-cf-machine": id };
+}
+
+function findMachineNode(root: HTMLDivElement | null, id: string) {
+  return root?.querySelector<HTMLElement>(`[data-cf-machine="${CSS.escape(id)}"]`);
+}
+
 const nodeTypes = { machine: MachineNode, add: AddNode };
 const edgeTypes = { sync: SyncEdge };
 // Cards stay readable at fit: a 4-follower row fills most of an 1100px panel without blowing up a 1-machine map.
@@ -274,6 +282,7 @@ function MapCanvas({
     const sourceNode: MachineNodeType = {
       id: SOURCE_ID,
       type: "machine",
+      domAttributes: machineNodeAttributes(SOURCE_ID),
       position: saved[SOURCE_ID] ?? layout[SOURCE_ID],
       ariaLabel: `${looks[SOURCE_ID].name}, the Source${role === "source" ? ", this machine" : ""}${latest === undefined ? "" : `, revision ${latest}`}${publishing ? ", publishing" : ""}`,
       data: {
@@ -296,6 +305,7 @@ function MapCanvas({
       return {
         id: f.id,
         type: "machine",
+        domAttributes: machineNodeAttributes(f.id),
         position: saved[f.id] ?? layout[f.id],
         ariaLabel: `${look.name}${f.state === undefined ? "" : `, ${STATE_META[f.state].label}`}${f.revision === undefined ? "" : `, revision ${f.revision ?? "none"}`}${behind ? `, revision ${latest} waiting` : ""}${role === "follower" ? ", this machine" : ""}`,
         data: {
@@ -322,14 +332,47 @@ function MapCanvas({
   const [nodes, setNodes, onNodesChange] = useNodesState<MapNode>(built);
   const selectedId = nodes.find((n) => n.selected && n.type === "machine")?.id ?? null;
 
+  // Measure the card and the unanimated toolbar wrapper. The toolbar sits outside the zoom transform.
+  const reveal = useCallback(
+    (id: string) => {
+      const root = containerRef.current;
+      if (!root) return;
+      const card = findMachineNode(root, id)?.getBoundingClientRect();
+      if (!card) return;
+      const toolbar = root.querySelector(`[data-cf-machine-toolbar="${CSS.escape(id)}"]`)?.getBoundingClientRect();
+      const box = root.getBoundingClientRect();
+      const pad = 12;
+      // When the target is wider than the available area, keep its start edge visible.
+      const shift = (lo: number, hi: number, min: number, max: number) => Math.max(min - lo, Math.min(0, max - hi));
+      const dx = shift(
+        Math.min(card.left, toolbar?.left ?? card.left),
+        Math.max(card.right, toolbar?.right ?? card.right),
+        box.left + pad,
+        box.right - pad,
+      );
+      const dy = shift(
+        Math.min(card.top, toolbar?.top ?? card.top),
+        Math.max(card.bottom, toolbar?.bottom ?? card.bottom),
+        box.top + pad,
+        box.bottom - pad,
+      );
+      if (!dx && !dy) return;
+      stopZoom();
+      const viewport = getViewport();
+      void setViewport({ x: viewport.x + dx, y: viewport.y + dy, zoom: viewport.zoom }, { duration: reduced ? 0 : 200, ease: VIEW_EASE });
+    },
+    [getViewport, setViewport, reduced, stopZoom],
+  );
+
   const actions = useMemo(
     (): MapActions => ({
       open: (id) => onOpenMachine?.(id),
+      reveal,
       invite: () => onInvite?.(),
       toggleCustomize: (id) => setCustomize(sheetId === id ? null : id),
       customizingId: sheetId,
     }),
-    [onOpenMachine, onInvite, setCustomize, sheetId],
+    [onOpenMachine, onInvite, reveal, setCustomize, sheetId],
   );
 
   // New data (looks, followers, revision) replaces node data but keeps where each node is.
@@ -408,51 +451,18 @@ function MapCanvas({
 
   const sheetFollower = visible.find((f) => f.id === sheetId);
   const zoomFromCentre = (factor: number, event: MouseEvent<HTMLButtonElement>) => zoomBy(factor, paneWidth / 2, paneHeight / 2, event.detail !== 0);
-  const focusNode = (id: string) => containerRef.current?.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"]`)?.focus();
-
-  // Pans just enough that a node and its toolbar sit inside the map, keeping the zoom. ReactFlow's own
-  // autoPanOnNodeFocus only recentres fully hidden nodes and ignores the toolbar, which at 390px (fit zoom 1)
-  // left half-visible nodes and their Open/Customize buttons off-screen. Runs on keyboard focus and selection,
-  // never on hover; reduced motion jumps instantly.
-  const reveal = useCallback(
-    (id: string) => {
-      requestAnimationFrame(() => {
-        const root = containerRef.current;
-        if (!root) return;
-        const sel = `[data-id="${CSS.escape(id)}"]`;
-        const rects = [...root.querySelectorAll<HTMLElement>(`.react-flow__node${sel}, .react-flow__node-toolbar${sel}`)].map((el) => el.getBoundingClientRect());
-        if (!rects.length) return;
-        const box = root.getBoundingClientRect();
-        const pad = 12;
-        const left = Math.min(...rects.map((r) => r.left));
-        const right = Math.max(...rects.map((r) => r.right));
-        const top = Math.min(...rects.map((r) => r.top));
-        const bottom = Math.max(...rects.map((r) => r.bottom));
-        // Shift toward whichever edge is crossed; when the target is wider than the map, keep its start edge.
-        const shift = (lo: number, hi: number, min: number, max: number) => (lo < min ? min - lo : hi > max ? Math.max(max - hi, min - lo) : 0);
-        const dx = shift(left, right, box.left + pad, box.right - pad);
-        const dy = shift(top, bottom, box.top + pad, box.bottom - pad);
-        if (!dx && !dy) return;
-        const vp = getViewport();
-        void setViewport({ x: vp.x + dx, y: vp.y + dy, zoom: vp.zoom }, { duration: reduced ? 0 : 200, ease: VIEW_EASE });
-      });
-    },
-    [getViewport, setViewport, reduced],
-  );
-  useEffect(() => {
-    if (selectedId) reveal(selectedId);
-  }, [selectedId, reveal]);
 
   return (
     <MapActionsContext value={actions}>
       <div
         ref={containerRef}
-        className={cn("cf-map relative isolate h-full min-h-[420px] w-full overflow-hidden rounded-lg border border-border bg-panel", className)}
+        className={cn("cf-map relative isolate h-full min-h-[420px] w-full overflow-clip rounded-lg border border-border bg-panel", className)}
         onFocus={(e) => {
           // Keyboard focus only: a pointer press also focuses the node, and selection already covers that case.
           if (!e.target.matches(":focus-visible")) return;
-          const owner = e.target.closest<HTMLElement>(".react-flow__node, .react-flow__node-toolbar");
-          if (owner?.dataset.id) reveal(owner.dataset.id);
+          const owner = e.target.closest<HTMLElement>("[data-cf-machine], [data-cf-machine-toolbar]");
+          const id = owner?.dataset.cfMachine ?? owner?.dataset.cfMachineToolbar;
+          if (id) reveal(id);
         }}
       >
         <ReactFlow<MapNode, SyncEdgeType | Edge>
@@ -465,14 +475,16 @@ function MapCanvas({
           onPaneClick={() => sheetId && setCustomize(null)}
           onKeyDown={(e) => {
             const el = e.target as HTMLElement;
-            if (e.key !== "Enter" || !el.classList.contains("react-flow__node") || !el.dataset.id || el.dataset.id === ADD_ID) return;
+            if (e.key !== "Enter" || !el.dataset.cfMachine) return;
             // Consume the key: below md the opened panel moves focus to its close button during this keydown,
             // and an unconsumed Enter would then activate that button and close the panel at once.
             e.preventDefault();
-            onOpenMachine?.(el.dataset.id);
+            onOpenMachine?.(el.dataset.cfMachine);
           }}
           fitView
           autoPanOnNodeFocus={false}
+          // Native focus must not scroll the wrapper before the map measures and pans to the card.
+          className="overflow-clip!"
           fitViewOptions={FIT}
           minZoom={MIN_ZOOM}
           maxZoom={MAX_ZOOM}
@@ -557,7 +569,7 @@ function MapCanvas({
               shared={sheetId === SOURCE_ID && onSourceLookSave !== undefined}
               onClose={() => {
                 setCustomize(null);
-                focusNode(sheetId);
+                findMachineNode(containerRef.current, sheetId)?.focus();
               }}
             />
           )}

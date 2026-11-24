@@ -1,3 +1,4 @@
+import { resumeMachineCredentialPersistence } from "../secrets/linux-credential-bootstrap.ts";
 import { createHash, X509Certificate } from "node:crypto";
 import { constants as filesystemConstants } from "node:fs";
 import { access, open } from "node:fs/promises";
@@ -334,6 +335,16 @@ const credentialProbe = (
         )
         : Effect.succeed(credentialReadiness(found))
     ),
+    Effect.flatMap((probe) => Effect.gen(function*() {
+      if (process.platform !== "linux" || probe.details?.provider !== "secret-service") return probe;
+      const persistence = yield* resumeMachineCredentialPersistence(machine).pipe(Effect.catch((error) => Effect.succeed({ verdict: "manual" as const, detail: error.message })));
+      if (persistence === undefined) return probe;
+      const message = `${probe.message}. ${persistence.detail}`;
+      const details = { ...probe.details, restartPersistence: persistence.verdict, persistenceDetail: persistence.detail };
+      return persistence.verdict === "failed"
+        ? failed("credentials", "human-action-required", message, details)
+        : { ...probe, message, details };
+    })),
   );
 
 const sourceProbe = (

@@ -239,10 +239,10 @@ execution limits.
 discovery on the files you name. An accepted recipe becomes a plan item only
 when its package manager is present on the machine.
 
-`setup plan` changes nothing. It does not let Corepack or rustup download a
-toolchain. A `cargo` that rustup provides is reported unverified until rustup
-has a default toolchain, and `setup apply` fails that optional item and tells
-you to run `rustup default stable`.
+`setup plan` checks Corepack's existing cache with downloads disabled. For
+Cargo installed through rustup, it reads the toolchain selection and checks
+the installed Cargo executable directly. If Cargo is unavailable, the plan
+shows how to fix the selected toolchain before you apply it.
 
 After `canonfig setup approve`, `canonfig setup apply` runs the approved
 recipes, verifies each one, and records the result. A failed optional recipe

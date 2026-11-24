@@ -245,7 +245,7 @@ Check installed help when it differs; do not downgrade silently. On a new
 installation, use:
 
 ```bash
-npm install --global @microck/canonfig@7.8.1
+npm install --global @microck/canonfig@7.8.2
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```
@@ -270,10 +270,8 @@ evidence instead of rerunning setup.
 ### 5. Verify and report
 
 Use the completion checklist in both modes. Separate discovered, selected,
-reachable, enrolled, converged, and scheduled machines. One configured machine
-is not proof that the whole selected fleet is configured: the Source has no
-fleet view, so each follower's own `canonfig status` is its completion
-evidence. After an apply, give the client trust and hook review steps
+reachable, enrolled, converged, and scheduled machines. Use each follower's
+own `canonfig status` as its completion evidence. After an apply, give the client trust and hook review steps
 from [completion](references/completion.md); `clientLoaded` stays
 `not-verified`. Unavailable optional discovery does not prevent an otherwise
 verified local setup from completing.
@@ -284,7 +282,7 @@ Stop the affected stage for conflicting identity, unapproved mutation, changed
 publication inputs, guessed recipes, unavailable required secure storage, drift,
 a harness root that differs from the one pinned at takeover, or failed
 verification. Preserve Human Action Required and Follower Drift.
-Canonfig source endpoints remain loopback HTTPS; a Tailscale IP or MagicDNS name
-is not a supported direct invitation endpoint. Discovery never changes that rule.
+Use the invited HTTPS origin and verify the selected
+[transport](references/tailscale-discovery.md#discovery-is-not-connectivity-or-enrollment).
 Do not disable trust checks, overwrite evidence, or silently mark deferred
 requirements complete in either mode.

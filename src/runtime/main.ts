@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { fileURLToPath } from "node:url";
-import { managedCommandLease, type ManagedCommandLease } from "./self-update/coordination.ts";
+import { exitForReplacement, managedCommandLease, type ManagedCommandLease } from "./self-update/coordination.ts";
 
 import type * as EffectModule from "effect";
 
@@ -195,7 +195,21 @@ if (early !== undefined) {
 } else if (isSkillsCommand(arguments_)) {
   const argv = skillsArguments(arguments_);
   const { runSkillsCli } = await import("../skills/cli.ts");
-  await runMain((effect) => effect.Effect.promise((signal) => runSkillsCli(argv, nodeCliIo, signal)), `skills.${argv.filter((value) => value !== "--json")[0] ?? "help"}`);
+  await runMain((effect) => effect.Effect.promise((signal) => runSkillsCli(argv, nodeCliIo, signal, lease)), `skills.${argv.filter((value) => value !== "--json")[0] ?? "help"}`);
+} else if (arguments_[0] === "mcp" && arguments_[1] === "proxy") {
+  const [{ runMcpProxy }, { runtimeMachineLayer }] = await Promise.all([
+    import("./mcp-proxy.ts"), import("./layers.ts"),
+  ]);
+  await runMain(({ Effect }) => runMcpProxy(arguments_.slice(1), (message) => {
+    lease?.becomeResident(exitForReplacement(nodeCliIo.writeStderr));
+    nodeCliIo.writeStdout(message);
+  }, lease?.hold).pipe(
+    Effect.provide(runtimeMachineLayer()),
+    Effect.catch((error) => Effect.sync(() => {
+      nodeCliIo.writeStderr(`${error.message}\n`);
+      nodeCliIo.setExitCode(error.exitCode);
+    })),
+  ), "mcp.proxy");
 } else if (arguments_[0] === "mcp") {
   // This protocol worker owns signal forwarding, not the Effect CLI runtime.
   const { runMcpCli } = await import("./mcp-run.ts");

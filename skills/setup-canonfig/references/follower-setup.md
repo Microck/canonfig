@@ -78,11 +78,11 @@ stop / Other. Retiring a Source strands its followers and needs approval.
 
 Check `canonfig --version` on the Source before installing the Follower. Source
 and Followers must share the same major.minor version. If the Source is not on
-7.8.x, stop and arrange an approved fleet upgrade before installing 7.8.1.
+7.8.x, stop and arrange an approved fleet upgrade before installing 7.8.2.
 Use an approved user-level install only when needed.
 
 ```bash
-npm install --global @microck/canonfig@7.8.1
+npm install --global @microck/canonfig@7.8.2
 canonfig --version
 canonfig doctor --no-input --timeout-ms 5000
 ```
@@ -115,9 +115,9 @@ command to run:
   `security unlock-keychain ~/Library/Keychains/login.keychain-db`, typed by the
   operator, unlocks it for that SSH session only, never for scheduled runs.
 
-The source is an exact loopback HTTPS origin. A Tailscale IP/MagicDNS name is not
-that endpoint. For a remote Source, start Canonfig's managed tunnel after the
-Source is serving, with the Source's SSH host public key read on the Source:
+A direct tailnet invitation uses the Source's MagicDNS HTTPS endpoint. For a
+remote Source serving on loopback, start Canonfig's managed tunnel with the
+Source's SSH host public key:
 
 ```bash
 canonfig tunnel start --invitation ./canonfig-invite --ssh-host source.example --ssh-user operator --ssh-host-key-file ./source-host-key.pub
@@ -141,8 +141,8 @@ independently revocable credentials, pinned TLS/signing fingerprints, and an
 authorized profile revision. Refuse invalid/exposed/expired/replayed material
 and request a fresh invitation; never reset trust or suppress verification.
 
-An already enrolled machine is re-enrolled only on request. The same name with a
-new invitation rotates the credential and keeps local settings. `--replace`
+Re-enroll only on request. To reuse a name, revoke it on the Source first. A
+new invitation then rotates the credential and keeps local settings. `--replace`
 creates a new identity, revokes the old one, and resets agent policy, harness
 and secret bindings, and schedule choice; it needs explicit approval.
 `~/.canonfig/local/` is untouched by either.
@@ -292,6 +292,5 @@ older one. It refuses a surface that changed since Canonfig last applied it.
 Report actual identity/name, profile/revision, groups, pins, projected and
 excluded harnesses, takeover snapshots, verified convergence, authorized secret
 outcome, client trust steps given, and requested scheduler state. Plan-only work
-is complete only as a plan-only request, never as a configured follower. The
-Source has no fleet view: report selected remote devices separately until each
-has its own `canonfig status` evidence.
+is complete only as a plan-only request. Report selected remote devices as
+pending until each has its own `canonfig status` evidence.

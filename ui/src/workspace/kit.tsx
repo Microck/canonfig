@@ -1,5 +1,5 @@
 // Workspace layout components: page headers, dense rows, and detail panels.
-import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, Fragment, useContext, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { AnimatePresence, motion, usePresence, useReducedMotion, type Transition } from "motion/react";
 import { Skeleton } from "skullet/react";
@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Kbd } from "@/components/ui/kbd";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ShortcutHint, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { AnimatedNumber, DitherBlock, Hint, StateBand, StatusMark, type StatusKind } from "@/shared/shared";
 import { PLAIN, type ItemCategory } from "@/shared/metadata";
 import { useScreenContext, type ScreenGroup } from "./screen-context";
@@ -484,25 +484,22 @@ export function DetailPanel({
       fallback?.focus();
     };
   }, []);
-  // Escape closes the panel wherever focus is (the row that opened it, the bare page, the panel),
-  // except in a text field outside the panel, where Escape belongs to the field. Below md the panel
-  // is a full-screen overlay, so it closes from anywhere. Handlers that consume Escape (dialogs,
-  // menus, tooltips) prevent default first.
-  const closeRef = useRef(onClose);
-  useEffect(() => {
-    closeRef.current = onClose;
+  // Interactive overlays and controls handle Escape first. On desktop, fields outside the panel keep it.
+  const dismissOnEscape = useEffectEvent((event: KeyboardEvent) => {
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    const active = document.activeElement;
+    const overlay = window.matchMedia("(max-width: 767.98px)").matches;
+    const outsideField = active instanceof HTMLElement && active.matches("input, textarea, select, [contenteditable]") && !panel.current?.contains(active);
+    if (!overlay && outsideField) return;
+    event.preventDefault();
+    onClose();
   });
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || e.defaultPrevented) return;
-      const active = document.activeElement;
-      const overlay = window.matchMedia("(max-width: 767.98px)").matches;
-      const field = active instanceof HTMLElement && active.matches("input, textarea, select, [contenteditable]") && !panel.current?.contains(active);
-      if (overlay || !field) closeRef.current();
-    };
+    if (!isPresent) return;
+    const onKey = (event: KeyboardEvent) => dismissOnEscape(event);
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, []);
+  }, [isPresent]);
   // Written straight to the elements so resizing doesn't re-render the panel's contents.
   const resize = (w: number) => {
     const width = Math.round(Math.min(PANEL_MAX, Math.max(PANEL_MIN, w)));
@@ -573,17 +570,11 @@ export function DetailPanel({
       <div data-panel-part className="flex h-[44px] shrink-0 items-center gap-2 border-b border-border pr-2 pl-4">
         <h2 className="min-w-0 truncate text-base font-medium">{title}</h2>
         {subtitle && <div className="shrink-0 truncate text-sm text-muted-foreground">{subtitle}</div>}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button data-panel-close variant="ghost" size="icon-sm" className="relative ml-auto text-muted-foreground pointer-coarse:after:absolute pointer-coarse:after:-inset-2" onClick={onClose} aria-label="Close details">
-              <X />
-            </Button>
-          </TooltipTrigger>
-          {/* Radix consumes (and prevents) Escape while this tooltip is open, so the document listener above skips it; keep the advertised shortcut working here. */}
-          <TooltipContent onEscapeKeyDown={onClose}>
-            Close <Kbd>Esc</Kbd>
-          </TooltipContent>
-        </Tooltip>
+        <ShortcutHint className="ml-auto" hint={<>Close <Kbd>Esc</Kbd></>}>
+          <Button data-panel-close variant="ghost" size="icon-sm" className="relative text-muted-foreground pointer-coarse:after:absolute pointer-coarse:after:-inset-2" onClick={onClose} aria-label="Close details" aria-keyshortcuts="Escape">
+            <X />
+          </Button>
+        </ShortcutHint>
       </div>
       {/* Header stays: the title comes from the row the person picked. Body and footer are page data, so they
           load with the page (Body). Each Skeleton sits inside its part so swapPanel still finds the parts. */}
@@ -626,10 +617,8 @@ export function useDialogReturnFocus(fallback: () => void) {
 }
 
 /**
- * Asks before in-app navigation discards an unsaved draft. While `dirty`, every in-app link, row, sidebar
- * entry, palette command and Demo switcher change goes through the guard in routes.ts and opens `dialog`
- * instead; Discard changes completes the navigation, Keep editing stays. Browser Back/Forward and reloads
- * are not intercepted. Every form with a saveable draft uses this, so they all ask the same way.
+ * Registers a dirty draft with the workspace router. In-app navigation and same-document
+ * Back and Forward open the discard dialog. The browser confirms reloads and document exits.
  *
  * Render `dialog` inside the form. `label` finishes "Your edits to … aren't saved". Exits that settle the
  * draft themselves (save, remove, Cancel on a new record) navigate inside `leaveWithoutAsking`.

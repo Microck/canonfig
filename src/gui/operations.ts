@@ -25,8 +25,12 @@ function finish(entry: OperationRecord, snapshot: Exclude<GuiOperation, { state:
   entry.snapshot = snapshot;
 }
 
-/** HTTP disconnection does not cancel an apply. The GUI scope still owns its lifetime. */
-export const makeGuiOperations = Effect.gen(function*() {
+/**
+ * HTTP disconnection does not cancel an apply. The GUI scope still owns its lifetime.
+ * `hold` takes the resident command lease for each detached operation, which
+ * outlives the request that started it.
+ */
+export const makeGuiOperations = (hold: () => () => void = () => () => undefined) => Effect.gen(function*() {
   // Register one child-scope finalizer before the HTTP listener is acquired.
   // Shutdown closes the listener first, then waits for non-cancellable work.
   const scope = yield* Effect.acquireRelease(Scope.make(), (scope, exit) => Scope.close(scope, exit));
@@ -43,7 +47,8 @@ export const makeGuiOperations = Effect.gen(function*() {
     const id = randomUUID();
     const entry: OperationRecord = { snapshot: { id, state: "running", journal: null }, journal, delivery: onDelivered ? { kind: "pending", callback: onDelivered } : { kind: "none" } };
     operations.set(id, entry);
-    yield* operation.pipe(
+    const leased = Effect.acquireUseRelease(Effect.sync(hold), () => operation, (release) => Effect.sync(release));
+    yield* leased.pipe(
       Effect.match({
         onSuccess: (result) => { finish(entry, { id, state: "succeeded", journal: null, result }); },
         onFailure: (error) => { finish(entry, { id, state: "failed", journal: null, failure: failureBody(error.category, error.message) }); },
@@ -64,8 +69,13 @@ export const makeGuiOperations = Effect.gen(function*() {
       if (entry === undefined) return yield* Effect.fail(new CliCommandFailure({
         category: "usage-or-configuration", message: "Unknown operation. Tickets belong to the running GUI session.",
       }));
-      const journal = yield* entry.journal();
-      return { ...entry.snapshot, journal };
+      const journal = yield* entry.journal().pipe(Effect.result);
+      const snapshot = entry.snapshot;
+      if (journal._tag === "Success") return { ...snapshot, journal: journal.success };
+      if (snapshot.state !== "failed") return yield* Effect.fail(journal.failure);
+      // The saved operation failure is still valid when its journal is unreadable.
+      const failure = { ...snapshot.failure, message: `${snapshot.failure.message}\nCanonfig could not read the operation journal` };
+      return { ...snapshot, failure };
     }),
     afterResponse: (body) => {
       if (Schema.is(GuiOperation)(body) && body.state === "succeeded") {

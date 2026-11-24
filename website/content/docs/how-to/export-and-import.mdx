@@ -31,9 +31,11 @@ archive**. Verification writes no folder entries. The completed import reports i
 fingerprints and any recovery snapshot. It does not publish a revision, create a
 Source identity, enroll this machine or apply harness files.
 
-If observation fails, use **Resume observation**, not another import. For an
-interrupted run, inspect `canonfig status` and use `canonfig recover`. To undo a
-replacement, use `canonfig restore <snapshot>` with the reported snapshot.
+If observation fails after the browser receives an operation ID, choose
+**Resume observation** to check the same operation. If there is no operation ID
+after you confirm the import, inspect `canonfig status` before trying again. Run
+`canonfig recover` if the run was interrupted. To undo a replacement, use
+`canonfig restore <snapshot>` with the reported snapshot.
 
 
 ## Export the folder
@@ -209,12 +211,13 @@ files for the harnesses installed on that machine.
 
 ## Find past exports and imports
 
-Every export, and every import except `--dry-run`, adds a row to the
-`archive_events` table in `~/.canonfig/state.sqlite`, apart from
-Synchronization Runs, so `canonfig status` keeps reporting the last sync. Each
-row holds the time, the command, the outcome (`Exported`, the import run's
-outcome, or `Error`), the archive path, its SHA-256 and the signer. Rows are
-never changed or deleted. To list them:
+Canonfig records exports and imports in the `archive_events` table in
+`~/.canonfig/state.sqlite`. Imports with `--dry-run` skip this history. A row
+holds the time, command, outcome (`Exported`, the import run's outcome, or
+`Error`), and archive path. The SHA-256 and signer are recorded when available.
+If Canonfig also fails to record an archive error, it reports that separately
+and preserves the original error and its exit category. To list the recorded
+events:
 
 ```bash
 sqlite3 ~/.canonfig/state.sqlite "SELECT * FROM archive_events"

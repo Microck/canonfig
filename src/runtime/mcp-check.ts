@@ -1,5 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { open } from "node:fs/promises";
+import { win32 } from "node:path";
 
 import { Effect, Option, Predicate, Schema } from "effect";
 
@@ -9,6 +10,7 @@ import { terminateProcessTree } from "../machine/linux.layer.ts";
 import { adapterFor } from "../projection/adapters/index.ts";
 import { detectHarnesses, emptyModel } from "../projection/detect.ts";
 import { MAX_CONFIG_BYTES } from "../projection/import.ts";
+import { isMcpProxyAuthorization, mcpProxyHost, mcpProxyRouteName } from "../projection/mcp-launcher.ts";
 import { prepareMcpRun } from "./mcp-run.ts";
 import type { RootContext } from "../projection/harness.ts";
 import type { TargetId } from "../projection/model.ts";
@@ -29,15 +31,26 @@ import { type ConfigJson, type ConfigObject, isConfigObject } from "../synchroni
 /** Codex's default `startup_timeout_sec`; a slower server fails in Codex anyway. */
 export const MCP_STARTUP_TIMEOUT_MILLISECONDS = 10_000;
 
-/**
- * The variables Codex passes to a stdio server besides its `env` and
- * `env_vars` (codex-rs/rmcp-client/src/utils.rs DEFAULT_ENV_VARS). Other
- * harnesses pass their whole environment. Windows uses a longer core list in
- * Codex, so there the whole environment is passed as an approximation.
- */
-const CODEX_INHERITED_ENV = [
+// Codex rust-v0.171.0 (ccf9be8cc458bd6b8336fe84d68d8893f2691a5e).
+// rmcp-client/src/utils.rs, protocol/src/shell_environment.rs and network-proxy/src/certs.rs.
+const CODEX_UNIX_ENV = [
   "HOME", "LOGNAME", "PATH", "SHELL", "USER", "__CF_USER_TEXT_ENCODING", "LANG", "LC_ALL", "TERM", "TMPDIR", "TZ",
 ] as const;
+const CODEX_WINDOWS_ENV = [
+  "PATH", "PATHEXT", "SHELL", "COMSPEC", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE",
+  "USERNAME", "USERDOMAIN", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+  "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "PROGRAMDATA", "LOCALAPPDATA", "APPDATA",
+  "TEMP", "TMP", "TMPDIR", "POWERSHELL", "PWSH",
+] as const;
+const CODEX_WINDOWS_CA_ENV = [
+  "CODEX_CA_CERTIFICATE", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
+  "GIT_SSL_CAINFO", "CARGO_HTTP_CAINFO", "PIP_CERT", "BUNDLE_SSL_CA_CERT", "NPM_CONFIG_CAFILE",
+] as const;
+const CODEX_NON_INHERITABLE_ENV: ReadonlySet<string> = new Set([
+  "CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN", "NODE_REPL_AUTH_TOKEN", "CODEX_GUARDIAN_DECISIONS_API_KEY",
+  "OPENAI_FEDERATION_RULE_ID", "OPENAI_IDENTITY_TOKEN_FILE", "OPENAI_IDENTITY_TOKEN_SOURCE",
+  "OPENAI_SPIFFE_AUDIENCE", "OPENAI_SPIFFE_ID", "OPENAI_WORKLOAD_IDENTITY_CONTEXT",
+]);
 
 const MAX_STDOUT_BYTES = 4 * 1024 * 1024;
 
@@ -48,6 +61,7 @@ type Launch =
     readonly args: ReadonlyArray<string>;
     readonly env: Readonly<Record<string, string>>;
     readonly cwd: string | undefined;
+    readonly codexWindows?: true | undefined;
     /** Values the entry itself declares, redacted from any stderr the check reports. */
     readonly secrets: ReadonlyArray<string>;
     readonly timeoutMilliseconds: number | undefined;
@@ -86,6 +100,42 @@ export interface McpCheckResult {
 
 const stringList = (value: ConfigJson | undefined): ReadonlyArray<string> | undefined =>
   Array.isArray(value) && value.every(Predicate.isString) ? value : undefined;
+
+const CodexLocalEnvVars = Schema.Array(Schema.Union([
+  Schema.String,
+  Schema.Struct({ name: Schema.String, source: Schema.optionalKey(Schema.Literal("local")) }),
+]));
+
+const windowsEnvKey = (name: string) => name.replace(/[a-z]/gu, (letter) => letter.toUpperCase());
+
+const codexWindowsEnvironment = (
+  parent: NodeJS.ProcessEnv,
+  forwarded: ReadonlyArray<string>,
+  declared: Record<string, string>,
+  cwd: string,
+) => {
+  // Fold names before passing them to Node. A child environment with both
+  // Path and PATH would otherwise let Node's key ordering choose the winner.
+  const inherited = new Map<string, string>();
+  for (const [name, value] of Object.entries(parent)) {
+    if (value !== undefined) inherited.set(windowsEnvKey(name), value);
+  }
+
+  const effective = new Map<string, string>();
+  for (const name of [...CODEX_WINDOWS_ENV, ...forwarded]) {
+    const key = windowsEnvKey(name);
+    const value = inherited.get(key);
+    if (value !== undefined) effective.set(key, value);
+  }
+  for (const key of CODEX_WINDOWS_CA_ENV) {
+    const path = inherited.get(key);
+    if (path) effective.set(key, path.startsWith("\\\\?\\") ? path : win32.resolve(cwd, path));
+  }
+  for (const [name, value] of Object.entries(declared)) effective.set(windowsEnvKey(name), value);
+  for (const key of CODEX_NON_INHERITABLE_ENV) effective.delete(key);
+  const sensitive = new Set([...forwarded, ...Object.keys(declared), ...CODEX_WINDOWS_CA_ENV].map(windowsEnvKey));
+  return { env: Object.fromEntries(effective), sensitive: [...effective].filter(([name]) => sensitive.has(name)) };
+};
 
 const stringTable = (...sources: ReadonlyArray<ConfigJson | undefined>) =>
   Object.fromEntries(sources.flatMap((source) => isConfigObject(source)
@@ -160,6 +210,7 @@ const launchOf = (
   entry: ConfigObject,
   environment: NodeJS.ProcessEnv,
   cwd: string,
+  platform: RootContext["platform"],
 ): McpEntry["launch"] => {
   if (entry.enabled === false || entry.disabled === true) return { kind: "disabled" };
   // Codex launches what its config says literally; the other harnesses expand references.
@@ -174,24 +225,37 @@ const launchOf = (
     if (parts?.[0] === undefined || parts[0].trim() === "" || args === undefined) {
       return { kind: "invalid", reason: "its command or arguments are not text" };
     }
-    const declared = resolveTable(stringTable(entry.env, entry.environment));
-    const forwarded = (stringList(entry.env_vars) ?? []).filter((name) => environment[name] !== undefined);
-    const inherited = harness === "codex" && process.platform !== "win32"
-      ? Object.fromEntries([...CODEX_INHERITED_ENV, ...forwarded].flatMap((name) => {
+    const windowsCodex = harness === "codex" && platform === "windows";
+    const declared = resolveTable(stringTable(entry.env, windowsCodex ? undefined : entry.environment));
+    const variables = (() => {
+      if (windowsCodex) {
+        const decoded = Schema.decodeUnknownOption(CodexLocalEnvVars)(entry.env_vars ?? []);
+        if (Option.isNone(decoded)) return undefined;
+        const explicit = decoded.value.map((item) => Predicate.isString(item) ? item : item.name);
+        return codexWindowsEnvironment(environment, explicit, declared, cwd);
+      }
+      const names = stringList(entry.env_vars) ?? [];
+      const definedValues = (keys: ReadonlyArray<string>) => keys.flatMap((name) => {
         const value = environment[name];
         return value === undefined ? [] : [[name, value] as const];
-      }))
-      : Object.fromEntries(Object.entries(environment).filter((pair): pair is [string, string] => pair[1] !== undefined));
+      });
+      const inherited = Object.fromEntries(harness === "codex"
+        ? definedValues([...CODEX_UNIX_ENV, ...names])
+        : definedValues(Object.keys(environment)));
+      return { env: { ...inherited, ...declared }, sensitive: [...Object.entries(declared), ...definedValues(names)] };
+    })();
+    if (variables === undefined) return { kind: "invalid", reason: "its env_vars must name local environment variables" };
     return {
       kind: "stdio",
       command: resolve(parts[0]),
       args: [...parts.slice(1), ...args].map(resolve),
-      env: { ...inherited, ...declared },
+      env: variables.env,
+      codexWindows: windowsCodex || undefined,
       // Harnesses start servers in the session's folder unless one is configured.
       cwd: Predicate.isString(entry.cwd) && entry.cwd.trim() !== "" ? entry.cwd : cwd,
       // Forwarded variables and values substituted into the command or arguments reach the server too.
       secrets: secretValues(
-        [...Object.entries(declared), ...forwarded.flatMap((name) => environment[name] === undefined ? [] : [[name, environment[name]] as const])],
+        variables.sensitive,
         harness === "codex" ? [] : referencedValues([...parts, ...args], environment),
       ),
       timeoutMilliseconds: startupTimeout(harness, entry),
@@ -268,7 +332,7 @@ export const readHarnessMcpEntries = async (input: {
               path,
               name,
               launch: isConfigObject(entry)
-                ? launchOf(harness, entry, input.environment, input.cwd)
+                ? launchOf(harness, entry, input.environment, input.cwd, input.context.platform)
                 : { kind: "invalid", reason: "it is not a table" },
             });
           }
@@ -341,6 +405,29 @@ const rpcError = (reply: RpcReply, secrets: ReadonlyArray<string>): string =>
 /** Starts the server, completes initialize and tools/list, then stops its whole process group. */
 const CANCELLED: ProbeOutcome = { status: "skipped", detail: "not checked: the doctor run was cancelled" };
 
+const startStdioServer = (launch: Extract<Launch, { kind: "stdio" }>) => {
+  const start = () => spawn(launch.command, [...launch.args], {
+    env: launch.env, cwd: launch.cwd, stdio: "pipe", detached: process.platform !== "win32", windowsHide: true,
+  });
+  if (!launch.codexWindows) return start();
+
+  // Node propagates coverage settings and libuv supplies LOGONSERVER even
+  // with an explicit env. Spawn copies the OS environment synchronously.
+  // Keep the omission scoped to that call, with no await before restoration.
+  const withheld: Array<readonly [string, string]> = [];
+  try {
+    for (const name of ["LOGONSERVER", "NODE_V8_COVERAGE"]) {
+      const value = process.env[name];
+      if (Object.hasOwn(launch.env, name) || value === undefined) continue;
+      withheld.push([name, value]);
+      delete process.env[name];
+    }
+    return start();
+  } finally {
+    for (const [name, value] of withheld) process.env[name] = value;
+  }
+};
+
 const probeStdio = (launch: Extract<Launch, { kind: "stdio" }>, timeoutMilliseconds: number, cancel: AbortSignal) =>
   new Promise<ProbeOutcome>((resolve) => {
     let stage: "initialize" | "tools/list" = "initialize";
@@ -348,15 +435,11 @@ const probeStdio = (launch: Extract<Launch, { kind: "stdio" }>, timeoutMilliseco
     let stdoutBytes = 0;
     let stderr = "";
     let settled = false;
-    // A process group lets the check stop wrappers (uv, npx, shell scripts) and their children together.
-    const detached = process.platform !== "win32";
     // The configured command, not its expansion, appears in messages: an expanded reference may be a secret.
     const shownCommand = redactText(launch.command, launch.secrets);
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawn(launch.command, [...launch.args], {
-        env: launch.env, cwd: launch.cwd, stdio: "pipe", detached, windowsHide: true,
-      });
+      child = startStdioServer(launch);
     } catch (error) {
       // Invalid arguments (such as a NUL byte) throw before the child exists.
       return resolve({ status: "fail", detail: `could not start ${shownCommand}: ${error instanceof Error && "code" in error ? String(error.code) : "invalid command"}` });
@@ -434,60 +517,139 @@ const probeStdio = (launch: Extract<Launch, { kind: "stdio" }>, timeoutMilliseco
 /** The most a single HTTP response may send before the check gives up on it. */
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
-/**
- * The reply to request `id` in a Streamable HTTP response, sent as JSON or as
- * SSE events. An SSE stream may carry server requests first and stay open
- * after the reply, so it is read event by event until the reply arrives, then
- * cancelled. Either way at most MAX_RESPONSE_BYTES are read.
- */
-const responseMessage = async (response: Response, id: number, answer: (body: string) => void): Promise<RpcReply | undefined> => {
-  if (response.body === null) return undefined;
-  const sse = (response.headers.get("content-type") ?? "").includes("text/event-stream");
+type HttpEvent = { event: string | undefined; data: string };
+
+function isEventStream(response: Response): boolean {
+  return (response.headers.get("content-type") ?? "").split(";", 1)[0]?.trim().toLowerCase() === "text/event-stream";
+}
+
+/** Read one bounded response, preserving SSE event boundaries across chunks. */
+export async function* responseEvents(response: Response): AsyncGenerator<HttpEvent> {
+  if (response.body === null) return;
+  const sse = isEventStream(response);
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
   let received = 0;
   let buffered = "";
-  // An event's data may span several `data:` lines; it is complete at the blank line that ends the event.
+  let event = "message";
   let eventData: Array<string> = [];
+  let skipLf = false;
+  let failed = false;
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) {
-        if (sse) return undefined;
-        const reply = decodeReply(buffered);
-        return Option.isSome(reply) && isReplyTo(reply.value, id) ? reply.value : undefined;
+        if (!sse) yield { event: undefined, data: buffered };
+        return;
       }
       received += Buffer.byteLength(value);
-      if (received > MAX_RESPONSE_BYTES) return undefined;
-      buffered += value;
-      if (!sse) continue;
-      const lines = buffered.split(/\r?\n/u);
+      if (received > MAX_RESPONSE_BYTES) return;
+      if (!sse) {
+        buffered += value;
+        continue;
+      }
+      // A CR already ended its line, even when the LF arrives in the next chunk.
+      if (value.length === 0) continue;
+      const chunk: string = skipLf && value.startsWith("\n") ? value.slice(1) : value;
+      skipLf = chunk.endsWith("\r");
+      if (chunk.length === 0) continue;
+      // Split only the new chunk so long lines are not scanned again on each read.
+      const lines = chunk.split(/\r\n|[\r\n]/u);
+      if (lines.length === 1) {
+        buffered += chunk;
+        continue;
+      }
+      lines[0] = buffered + lines[0];
       buffered = lines.pop() ?? "";
       for (const line of lines) {
-        if (line.startsWith("data:")) {
-          eventData.push(line.slice(line.startsWith("data: ") ? 6 : 5));
-          continue;
+        const separator = line.indexOf(":");
+        const field = separator < 0 ? line : line.slice(0, separator);
+        const text = separator < 0 ? "" : line.slice(separator + 1).replace(/^ /u, "");
+        if (field === "event") event = text || "message";
+        else if (field === "data") eventData.push(text);
+        else if (line === "") {
+          if (eventData.length) yield { event, data: eventData.join("\n") };
+          event = "message";
+          eventData = [];
         }
-        if (line !== "" || eventData.length === 0) continue;
-        const reply = decodeReply(eventData.join("\n"));
-        eventData = [];
-        if (Option.isNone(reply)) continue;
-        const pong = pingAnswer(reply.value);
-        if (pong !== undefined) answer(pong);
-        if (isReplyTo(reply.value, id)) return reply.value;
       }
     }
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
-    await reader.cancel();
+    // An errored response can also reject cancellation. Preserve the read failure.
+    const cancelled = reader.cancel();
+    await (failed ? cancelled.catch(() => undefined) : cancelled);
   }
+}
+
+async function responseMessage(
+  events: AsyncGenerator<HttpEvent>, id: number, answer: (body: string) => Promise<void>, legacySse = false,
+): Promise<RpcReply | undefined> {
+  for (;;) {
+    const event = await events.next();
+    if (event.done) return undefined;
+    if (legacySse && event.value.event !== "message") continue;
+    const reply = decodeReply(event.value.data);
+    if (Option.isNone(reply)) continue;
+    const pong = event.value.event === undefined ? undefined : pingAnswer(reply.value);
+    if (pong !== undefined) await answer(pong);
+    if (isReplyTo(reply.value, id)) return reply.value;
+  }
+}
+
+async function streamableReply(response: Response, id: number, answer: (body: string) => Promise<void>) {
+  const events = responseEvents(response);
+  let reply: RpcReply | undefined;
+  try {
+    reply = await responseMessage(events, id, answer);
+  } catch (error) {
+    // An aborted stream can reject closure too. Keep the original reply failure.
+    await events.return(undefined).catch(() => undefined);
+    throw error;
+  }
+  await events.return(undefined);
+  return reply;
+}
+
+async function sseMessageEndpoint(events: AsyncGenerator<HttpEvent>, streamUrl: string): Promise<URL | undefined> {
+  for (;;) {
+    const event = await events.next();
+    if (event.done) return undefined;
+    if (event.value.event !== "endpoint") continue;
+    const endpoint = URL.parse(event.value.data, streamUrl);
+    // The advertised URL is server input. Keep configured headers within the stream origin.
+    if (endpoint === null || !["http:", "https:"].includes(endpoint.protocol)
+      || endpoint.origin !== new URL(streamUrl).origin || endpoint.username || endpoint.password) return undefined;
+    return endpoint;
+  }
+}
+
+const OAUTH_REQUIRED: ProbeOutcome = {
+  status: "skipped",
+  detail: "the server asks for OAuth sign-in, which only the harness holds; not checked",
 };
+
+class ServerReplyFailure extends Error {}
 
 const probeHttp = async (launch: Extract<Launch, { kind: "http" }>, timeoutMilliseconds: number, cancel: AbortSignal): Promise<ProbeOutcome> => {
   const signal = AbortSignal.any([AbortSignal.timeout(timeoutMilliseconds), cancel]);
+  const url = URL.parse(launch.url);
+  // A projected route authenticates with a recognizable local token. Its
+  // upstream can echo credentials Doctor has no access to, even in HTTP 200.
+  const proxyRoute = url?.protocol === "http:" && url.hostname === mcpProxyHost
+    && mcpProxyRouteName(url.pathname) !== undefined
+    && Object.entries(launch.headers).some(([name, value]) =>
+      name.toLowerCase() === "authorization" && isMcpProxyAuthorization(value));
+  const replyError = (reply: Parameters<typeof rpcError>[0]) =>
+    proxyRoute ? "the upstream returned a JSON-RPC error" : rpcError(reply, launch.secrets);
   // With no configured headers, a 401 means the harness signs in with OAuth.
   const authorized = Object.keys(launch.headers).length > 0;
   // After initialize, requests carry the session and the negotiated protocol version, as the transport requires.
   let session: string | undefined;
   let protocolVersion: string | undefined;
+  let pushUrl = launch.url;
+  let events: AsyncGenerator<HttpEvent> | undefined;
   const requestHeaders = () => {
     const headers = new Headers(launch.headers);
     if (session !== undefined) headers.set("Mcp-Session-Id", session);
@@ -495,71 +657,119 @@ const probeHttp = async (launch: Extract<Launch, { kind: "http" }>, timeoutMilli
     return headers;
   };
   // Every POST, including answers to server requests, carries the headers the transport requires.
-  const send = (body: string) => {
+  const send = (body: string, redirect: RequestInit["redirect"] = "follow") => {
     const headers = requestHeaders();
     headers.set("Content-Type", "application/json");
     headers.set("Accept", "application/json, text/event-stream");
-    return fetch(launch.url, { method: "POST", headers, body, signal });
+    return fetch(pushUrl, { method: "POST", headers, body, signal, redirect: launch.sse || proxyRoute ? "manual" : redirect });
   };
   const post = (body: RpcMessage) => send(JSON.stringify(body));
-  // A server request that arrives on a response stream is answered with its own POST, without waiting.
-  const answer = (body: string) => {
-    void send(body).then((sent) => sent.body?.cancel(), () => undefined);
+  const answer = async (body: string) => {
+    try {
+      // A redirect to a login page is not an acknowledgement of the reply.
+      const sent = await send(body, "manual");
+      await sent.body?.cancel();
+      if (!sent.ok) throw new ServerReplyFailure(`reply to server ping returned HTTP ${sent.status}`);
+    } catch (error) {
+      if (error instanceof ServerReplyFailure) throw error;
+      throw new ServerReplyFailure(signal.aborted
+        ? `no acknowledgement for the reply to server ping within ${timeoutMilliseconds} ms`
+        : "could not send the reply to server ping");
+    }
   };
-  // Best effort, on every exit once a session exists: end it instead of leaving it to expire on the
-  // server. The close has its own short deadline, independent of the probe's, so it still runs after
-  // a timeout or cancellation, and a server that ignores DELETE cannot hold the result.
-  const close = async () => {
-    if (session === undefined) return;
-    const closing = AbortSignal.timeout(2_000);
-    await fetch(launch.url, { method: "DELETE", headers: requestHeaders(), signal: closing }).then((closed) => closed.body?.cancel(), () => undefined);
+  const close = async (): Promise<string | undefined> => {
+    if (events) {
+      try {
+        await events.return(undefined);
+      } catch {
+        if (!signal.aborted) return "SSE stream cleanup failed";
+      }
+      return undefined;
+    }
+    // Session termination has its own deadline and the server may decline with HTTP 405.
+    if (session === undefined) return undefined;
+    const closeMilliseconds = 2_000;
+    const closing = AbortSignal.timeout(closeMilliseconds);
+    try {
+      const closed = await fetch(launch.url, { method: "DELETE", headers: requestHeaders(), signal: closing, redirect: "manual" });
+      await closed.body?.cancel();
+      if (!closed.ok && closed.status !== 405) return `session cleanup failed: DELETE returned HTTP ${closed.status}`;
+    } catch {
+      return closing.aborted
+        ? `session cleanup timed out after ${closeMilliseconds} ms`
+        : "session cleanup failed: could not complete DELETE";
+    }
+    return undefined;
   };
-  try {
-    if (launch.sse) {
-      // The legacy SSE transport answers on a second channel; reaching the stream is checked, the handshake is not.
-      const response = await fetch(launch.url, { headers: { ...launch.headers, Accept: "text/event-stream" }, signal });
-      await response.body?.cancel();
-      if (response.ok) return { status: "skipped", detail: "SSE stream reachable; handshake not verified for the legacy SSE transport" };
-      return { status: "fail", detail: `HTTP ${response.status} opening the SSE stream` };
+  const run = async (): Promise<ProbeOutcome> => {
+    try {
+      if (launch.sse) {
+        const headers = requestHeaders();
+        headers.set("Accept", "text/event-stream");
+        const response = await fetch(launch.url, { headers, signal, redirect: "manual" });
+        if (response.status === 401 && !authorized) {
+          await response.body?.cancel();
+          return OAUTH_REQUIRED;
+        }
+        if (!response.ok || !isEventStream(response)) {
+          await response.body?.cancel();
+          return { status: "fail", detail: !response.ok ? "HTTP " + response.status + " opening the SSE stream" : "SSE endpoint did not return an event stream" };
+        }
+        events = responseEvents(response);
+        const endpoint = await sseMessageEndpoint(events, response.url);
+        if (endpoint === undefined) return { status: "fail", detail: "SSE stream did not advertise a usable same-origin message endpoint" };
+        pushUrl = endpoint.href;
+      }
+      const readReply = async (response: Response, id: number) => {
+        if (!events) return streamableReply(response, id, answer);
+        await response.body?.cancel();
+        return responseMessage(events, id, answer, true);
+      };
+      const initialized = await post(launch.sse
+        ? { ...initializeRequest, params: { ...initializeRequest.params, protocolVersion: "2024-11-05" } }
+        : initializeRequest);
+      if (initialized.status === 401 && !authorized) {
+        await initialized.body?.cancel();
+        return OAUTH_REQUIRED;
+      }
+      if (!initialized.ok) {
+        await initialized.body?.cancel();
+        return { status: "fail", detail: `initialize returned HTTP ${initialized.status}` };
+      }
+      // Recorded before the body is read, so the session is closed even if the body stalls or is invalid.
+      if (!launch.sse) session = initialized.headers.get("mcp-session-id") ?? undefined;
+      const reply = await readReply(initialized, 1);
+      if (reply?.result === undefined) return { status: "fail", detail: `initialize failed: ${reply === undefined ? "no JSON-RPC reply" : replyError(reply)}` };
+      if (reply.result.protocolVersion === undefined) return { status: "fail", detail: "initialize reply has no protocolVersion" };
+      protocolVersion = reply.result.protocolVersion;
+      const acknowledged = await post(initializedNotification);
+      await acknowledged.body?.cancel();
+      if (!acknowledged.ok) return { status: "fail", detail: `notifications/initialized returned HTTP ${acknowledged.status}` };
+      if (reply.result.capabilities?.tools === undefined) return NO_TOOLS;
+      const listed = await post(toolsRequest);
+      if (!listed.ok) {
+        await listed.body?.cancel();
+        return { status: "fail", detail: `tools/list returned HTTP ${listed.status}` };
+      }
+      const tools = await readReply(listed, 2);
+      if (tools?.result === undefined) return { status: "fail", detail: `tools/list failed: ${tools === undefined ? "no JSON-RPC reply" : replyError(tools)}` };
+      if (tools.result.tools === undefined) return { status: "fail", detail: "tools/list reply has no tools list" };
+      const count = tools.result.tools.length;
+      return { status: "pass", detail: `${count} tools`, tools: count };
+    } catch (error) {
+      if (cancel.aborted) return CANCELLED;
+      if (error instanceof ServerReplyFailure) return { status: "fail", detail: error.message };
+      const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : "network error";
+      return {
+        status: "fail",
+        detail: signal.aborted ? "no reply within " + timeoutMilliseconds + " ms" : "request failed: " + redactText(cause, launch.secrets),
+      };
     }
-    const initialized = await post(initializeRequest);
-    if (initialized.status === 401 && !authorized) {
-      await initialized.body?.cancel();
-      return { status: "skipped", detail: "the server asks for OAuth sign-in, which only the harness holds; not checked" };
-    }
-    if (!initialized.ok) {
-      await initialized.body?.cancel();
-      return { status: "fail", detail: `initialize returned HTTP ${initialized.status}` };
-    }
-    // Recorded before the body is read, so the session is closed even if the body stalls or is invalid.
-    session = initialized.headers.get("mcp-session-id") ?? undefined;
-    const reply = await responseMessage(initialized, 1, answer);
-    if (reply?.result === undefined) return { status: "fail", detail: `initialize failed: ${reply === undefined ? "no JSON-RPC reply" : rpcError(reply, launch.secrets)}` };
-    if (reply.result.protocolVersion === undefined) return { status: "fail", detail: "initialize reply has no protocolVersion" };
-    protocolVersion = reply.result.protocolVersion;
-    const acknowledged = await post(initializedNotification);
-    await acknowledged.body?.cancel();
-    if (!acknowledged.ok) return { status: "fail", detail: `notifications/initialized returned HTTP ${acknowledged.status}` };
-    if (reply.result.capabilities?.tools === undefined) return NO_TOOLS;
-    const listed = await post(toolsRequest);
-    if (!listed.ok) {
-      await listed.body?.cancel();
-      return { status: "fail", detail: `tools/list returned HTTP ${listed.status}` };
-    }
-    const tools = await responseMessage(listed, 2, answer);
-    if (tools?.result === undefined) return { status: "fail", detail: `tools/list failed: ${tools === undefined ? "no JSON-RPC reply" : rpcError(tools, launch.secrets)}` };
-    if (tools.result.tools === undefined) return { status: "fail", detail: "tools/list reply has no tools list" };
-    const count = tools.result.tools.length;
-    return { status: "pass", detail: `${count} tools`, tools: count };
-  } catch (error) {
-    if (cancel.aborted) return CANCELLED;
-    return {
-      status: "fail",
-      detail: signal.aborted ? `no reply within ${timeoutMilliseconds} ms` : `request failed: ${error instanceof Error && error.cause instanceof Error ? error.cause.message : "network error"}`,
-    };
-  } finally {
-    await close();
-  }
+  };
+
+  const result = await run();
+  const cleanup = await close();
+  return cleanup === undefined ? result : { ...result, detail: `${result.detail}; ${cleanup}` };
 };
 
 /**

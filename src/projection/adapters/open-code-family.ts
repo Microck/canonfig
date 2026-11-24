@@ -129,10 +129,9 @@ export function openCodeFamilyAdapter(family: OpenCodeFamily): HarnessAdapter {
         contents.push({ kind: "directory", surface: "skills", files: skillDirectoryFiles(model.skills) });
       }
       if (model.agents.length > 0) {
-        const servers = model.mcp.map(([name]) => name);
         contents.push({
           kind: "directory", surface: "agents",
-          files: documentFiles(model.agents, ".md", (agent) => openCodeAgentMarkdown(harness, agent, servers)),
+          files: documentFiles(model.agents, ".md", (agent) => openCodeAgentMarkdown(harness, agent, model.mcpPermissionNames)),
         });
       }
       if (model.commands.length > 0) {

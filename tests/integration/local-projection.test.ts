@@ -24,7 +24,7 @@ import {
   synchronizeLocal,
   writeAdoptionReviews,
 } from "../../src/projection/sync.ts";
-import { listSnapshots, pruneSnapshots, readSnapshot, writeTakeoverSnapshot, type TakeoverUnit } from "../../src/projection/takeover.ts";
+import { discardSnapshotStaging, listSnapshots, pruneSnapshots, readSnapshot, writeTakeoverSnapshot, type TakeoverUnit } from "../../src/projection/takeover.ts";
 import { RunId } from "../../src/domain/brand.ts";
 import { stateRepositoryLayer } from "../../src/state/state-repository.layer.ts";
 import { StateRepository } from "../../src/state/state-repository.service.ts";
@@ -187,6 +187,34 @@ const claudeJson = {
 };
 
 describe("local projection", () => {
+  it("projects MCP server allowlists and removes a server from a harness when its scope narrows", async () => {
+    const git = { transport: "stdio", command: "uvx", args: ["mcp-server-git"] };
+    const docs = { transport: "streamable-http", url: "https://example.invalid/mcp", harnesses: ["codex"] };
+    const value = fixture(["codex", "claude-code"], { mcp: { docs, git }, local: { allow: ["mcp"] } });
+    const codex = join(value.home, ".codex", "config.toml");
+    const claude = join(value.home, ".claude.json");
+    write(claude, JSON.stringify({ oauthAccount: claudeJson.oauthAccount }));
+
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(Object.keys(parseToml(readFileSync(codex, "utf8")).mcp_servers ?? {})).toEqual(["docs", "git"]);
+    expect(JSON.parse(readFileSync(claude, "utf8"))).toEqual({
+      oauthAccount: claudeJson.oauthAccount,
+      mcpServers: { git: { type: "stdio", command: "uvx", args: ["mcp-server-git"] } },
+    });
+
+    editFolderConfig(value, { mcp: { docs, git: { ...git, harnesses: ["codex"] } } });
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(JSON.parse(readFileSync(claude, "utf8"))).toEqual({ oauthAccount: claudeJson.oauthAccount });
+
+    write(join(value.folder, "local", "local.jsonc"), JSON.stringify({
+      mcp: { git: { ...git, harnesses: ["claude-code"] } },
+      overlays: ["mcp/git"],
+    }));
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(Object.keys(parseToml(readFileSync(codex, "utf8")).mcp_servers ?? {})).toEqual(["docs"]);
+    expect(Object.keys(JSON.parse(readFileSync(claude, "utf8")).mcpServers)).toEqual(["git"]);
+  });
+
   it("preserves only selected native MCP maps and releases ownership before checking app updates", async () => {
     const value = fixture(["codex", "claude-code", "pi", "oh-my-pi", "factory-droid", "antigravity"]);
     const codex = join(value.home, ".codex", "config.toml");
@@ -216,6 +244,41 @@ describe("local projection", () => {
     await sync(value, "apply");
     expect(readFileSync(codex, "utf8")).toBe(updated);
     expect(JSON.parse(readFileSync(claude, "utf8")).mcpServers).toBeUndefined();
+  });
+
+  it.each([
+    {},
+    { preserveMcp: ["opencode"] },
+    { overlays: ["settings/opencode#mcp"] },
+  ])("retains subagent permissions for MCP servers in an unmanaged native map (%j)", async (local) => {
+    const value = fixture(["codex", "opencode"], {
+      mcp: { docs: { transport: "stdio", command: "docs-server", harnesses: ["codex"] } },
+    });
+    const opencode = join(value.home, ".config", "opencode");
+    const config = join(opencode, "opencode.json");
+    const native = '{"mcp":{"docs":{"type":"local","command":["docs-server"],"enabled":true}}}\n';
+    write(config, native);
+    write(join(value.folder, "local", "local.jsonc"), JSON.stringify(local));
+
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+    expect(readFileSync(config, "utf8")).toBe(native);
+    expect(readFileSync(join(opencode, "agents", "reviewer.md"), "utf8")).toContain("docs_*: deny");
+  });
+
+  it("retains subagent permissions when drift blocks removal of a scoped-out MCP server", async () => {
+    const docs = { transport: "stdio", command: "docs-server" };
+    const git = { transport: "stdio", command: "git-server" };
+    const value = fixture(["codex", "opencode"], { mcp: { docs, git } });
+    const opencode = join(value.home, ".config", "opencode");
+    const config = join(opencode, "opencode.json");
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "Converged" });
+
+    const edited = readFileSync(config, "utf8").replace('"docs-server"', '"edited-docs-server"');
+    write(config, edited);
+    editFolderConfig(value, { mcp: { docs: { ...docs, harnesses: ["codex"] }, git } });
+    expect((await sync(value, "apply")).outcome).toMatchObject({ outcome: "FollowerDrift" });
+    expect(readFileSync(config, "utf8")).toBe(edited);
+    expect(readFileSync(join(opencode, "agents", "reviewer.md"), "utf8")).toContain("docs_*: deny");
   });
 
   it("recovers a takeover captured before the engine starts without adopting untouched bytes", async () => {
@@ -1229,7 +1292,7 @@ describe("takeover snapshots", () => {
     expect(readFileSync(target, "utf8")).toBe("keep this outside home\n");
   });
 
-  it("leaves nothing in .backups when capturing a takeover fails", async () => {
+  it("retains an incomplete capture until its run reconciles it", async () => {
     const value = fixture(["claude-code"]);
     const backups = join(value.folder, ".backups");
     write(join(value.home, ".claude", "CLAUDE.md"), "old instructions\n");
@@ -1240,6 +1303,8 @@ describe("takeover snapshots", () => {
       { harness: "claude-code", surface: "mcp#mcpServers", root: value.home, kind: "config", target: join(value.home, ".claude.json"), format: "json", key: "mcpServers" },
     ]).pipe(Effect.flip, Effect.provide(machineLayer(value))));
     expect(failure._tag).toBe("TakeoverSnapshotError");
+    expect(readdirSync(backups)).toHaveLength(1);
+    await Effect.runPromise(discardSnapshotStaging(backups, runId("failed")));
     expect(readdirSync(backups)).toEqual([]);
   }, 60_000);
 
@@ -1267,7 +1332,7 @@ describe("takeover snapshots", () => {
     expect(await Effect.runPromise(pruneSnapshots(backups))).toEqual([ids[1]]);
     expect(await Effect.runPromise(listSnapshots(backups))).toEqual([ids[0], ...ids.slice(2)]);
     expect(readFileSync(join(backups, ids[0]!, "claude-code", ".claude", "CLAUDE.md"), "utf8")).toBe("original\n");
-    expect(existsSync(join(backups, `.tmp-${ids[0]}`))).toBe(false);
+    expect(existsSync(join(backups, `.tmp-${ids[0]}`))).toBe(true);
   }, 60_000);
 
   it("captures and restores a config key whose prior value is null", async () => {

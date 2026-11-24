@@ -75,7 +75,10 @@ export const enrollmentRoutes = Effect.gen(function*() {
         try: () => readMachineHealth(state).machines,
         catch: (cause) => new CliCommandFailure({ category: "internal", message: `Machine health could not be read: ${String(cause)}` }),
       });
-      return yield* json({ followers, invitations, health });
+      const now = Date.now();
+      return yield* json({ followers, invitations: invitations.map((invitation) => ({
+        ...invitation, remainingMilliseconds: Math.max(0, Date.parse(invitation.expiresAt) - now),
+      })), health });
     })),
     queryRoute("/api/enrollment", enrollment),
     mutationRoute("POST", "/api/invitations", GuiInviteInput, (input) => Effect.gen(function*() {

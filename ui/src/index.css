@@ -225,6 +225,12 @@
   --dither-muted-bright: #9ec0ba;
   --dither-purple-dim: #2c224a;
   --dither-purple-bright: #cbb8ff;
+  --dither-converge-dim: #192a27;
+  --dither-converge-mid: #3c6b53;
+  --dither-converge-bright: #8ac789;
+  --dither-converge-settled-dim: #1c3827;
+  --dither-converge-settled-mid: #5d9a62;
+  --dither-converge-settled-bright: #b8ebb5;
 
   color-scheme: dark;
 }

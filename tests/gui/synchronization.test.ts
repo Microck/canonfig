@@ -244,9 +244,8 @@ it("round trips a signed archive through GUI preview/import with signer checks, 
   target.env.TMPDIR = privateTmp;
   const api = await gui(target);
   const input = { base64: exported.base64, replace: false, expectKey: exported.signer };
-  const mismatch = await api.operation("/api/imports/preview", { ...input, expectKey: "0".repeat(64) });
-  expect(mismatch.state).toBe("failed");
-  if (mismatch.state === "failed") expect(mismatch.failure.message).toContain("--expect-key");
+  const mismatch = await api.call("/api/imports/preview", "POST", { ...input, expectKey: "0".repeat(64) });
+  expect(mismatch.payload).toMatchObject({ message: expect.stringContaining("--expect-key") });
   expect(existsSync(join(target.folder, "canonfig.jsonc"))).toBe(false);
   expect(readdirSync(privateTmp).filter((entry) => entry.startsWith("canonfig-gui-archive-"))).toEqual([]);
   expect((await api.call("/api/imports/preview", "POST", { ...input, expectKey: "invalid" })).status).toBe(400);
@@ -256,10 +255,9 @@ it("round trips a signed archive through GUI preview/import with signer checks, 
     expect(rejected.status).toBe(400);
     expect(JSON.stringify(rejected.payload)).not.toContain(privateMarker);
   }
-  const preview = await api.operation("/api/imports/preview", input);
-  expect(preview.state).toBe("succeeded");
-  if (preview.state !== "succeeded") throw new Error("Archive preview failed");
-  const plan = Schema.decodeUnknownSync(GuiArchiveImportResult)(preview.result);
+  const preview = await api.call("/api/imports/preview", "POST", input);
+  expect(preview.status).toBe(200);
+  const plan = Schema.decodeUnknownSync(GuiArchiveImportResult)(preview.payload);
   expect(plan).toMatchObject({ sha256: exported.sha256, signer: exported.signer, folderFiles: 4, replaced: [] });
   expect(existsSync(join(target.folder, "AGENTS.md"))).toBe(false);
   expect((await api.operation("/api/imports", { ...input, sha256: "0".repeat(64) })).state).toBe("failed");
@@ -270,13 +268,23 @@ it("round trips a signed archive through GUI preview/import with signer checks, 
   expect(readFileSync(join(target.folder, "skills", "sample", "asset.bin"))).toEqual(asset);
   expect((await api.call("/api/session")).payload).toMatchObject({ role: "unconfigured" });
   expect(readdirSync(privateTmp).filter((entry) => entry.startsWith("canonfig-gui-archive-"))).toEqual([]);
-  const conflict = await api.operation("/api/imports/preview", input);
-  expect(conflict.state).toBe("failed");
-  if (conflict.state === "failed") expect(conflict.failure.category).toBe("conflict-or-drift");
+  const conflict = await api.call("/api/imports/preview", "POST", input);
+  expect(conflict.payload).toMatchObject({ category: "conflict-or-drift" });
   write(join(target.folder, "AGENTS.md"), "Keep this in a snapshot\n");
   write(join(target.folder, "rules", "untouched.md"), "Not in archive\n");
   const replace = { ...input, replace: true };
-  expect((await api.operation("/api/imports/preview", replace)).state).toBe("succeeded");
+  expect((await api.call("/api/imports/preview", "POST", replace)).status).toBe(200);
+  const backupRoot = join(target.folder, ".backups");
+  write(backupRoot, "blocks snapshot and staging cleanup");
+  const blocked = await api.operation("/api/imports", { ...replace, sha256: plan.sha256 });
+  expect(blocked).toMatchObject({
+    state: "failed",
+    failure: { category: "verification-or-apply-failure", exitCode: 7, message: expect.stringContaining("Run 'canonfig recover'") },
+  });
+  if (blocked.state === "failed") expect(blocked.failure.message).toContain("cannot take a takeover snapshot");
+  expect(readFileSync(join(target.folder, "AGENTS.md"), "utf8")).toBe("Keep this in a snapshot\n");
+  rmSync(backupRoot);
+  await api.operation("/api/recovery");
   const replaced = await api.operation("/api/imports", { ...replace, sha256: plan.sha256 });
   expect(replaced.state).toBe("succeeded");
   if (replaced.state !== "succeeded") throw new Error("Replacement failed");
@@ -292,10 +300,9 @@ it("round trips a signed archive through GUI preview/import with signer checks, 
   const unsignedPath = join(target.home, "unsigned.tar.gz");
   success(target.invoke(["export", "--output", unsignedPath]));
   const unsigned = { base64: readFileSync(unsignedPath).toString("base64") };
-  const unsignedRefused = await sourceApi.operation("/api/imports/preview", { base64: unsigned.base64, replace: true, expectKey: exported.signer });
-  expect(unsignedRefused.state).toBe("failed");
-  if (unsignedRefused.state === "failed") expect(unsignedRefused.failure.message).toContain("unsigned");
-  expect((await sourceApi.operation("/api/imports/preview", { base64: unsigned.base64, replace: true })).state).toBe("succeeded");
+  const unsignedRefused = await sourceApi.call("/api/imports/preview", "POST", { base64: unsigned.base64, replace: true, expectKey: exported.signer });
+  expect(unsignedRefused.payload).toMatchObject({ message: expect.stringContaining("unsigned") });
+  expect((await sourceApi.call("/api/imports/preview", "POST", { base64: unsigned.base64, replace: true })).status).toBe(200);
 }, 300_000);
 
 it("keeps Source harness exclusions, item overlays and key claims machine-local without applying files", async () => {

@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -53,6 +53,65 @@ machineStateContract("macOS", {
     expect(rendered.schedule).toContain("<key>Hour</key><integer>0</integer>");
   },
 });
+
+it.skipIf(process.platform !== "darwin" || process.getuid?.() === 0)(
+  "recovers authored directory permissions without changing an unpinned entry",
+  async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "canonfig-macos-anchored-mode-")));
+    const home = join(root, "home");
+    const directory = join(home, "owned");
+    const member = join(directory, "profile");
+    try {
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await writeFile(member, "original content");
+      await chmod(directory, 0o000);
+      await runWith(macosMachineStateLayer({ environment: environment(root) }), Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const anchor = yield* machine.normalizePath({ path: home });
+        const path = yield* machine.normalizePath({ path: directory });
+        const before = yield* machine.inspectPath(path, anchor);
+        expect(before.identity).toBeDefined();
+
+        const setMode = machine.setPermissions({ path, anchor, identity: before.identity, mode: 0o700 });
+        const restore = machine.mutateWithinRoot({
+          root: anchor, anchor, path, mutation: { kind: "directory", mode: 0o750 },
+        });
+        for (const operation of [setMode, restore]) {
+          const refused = yield* Effect.result(operation);
+          expect(refused).toMatchObject({
+            _tag: "Failure",
+            failure: { _tag: "HumanActionRequiredError", recovery: expect.stringContaining(directory) },
+          });
+          const unchanged = yield* machine.inspectPath(path, anchor);
+          expect(unchanged.identity).toEqual(before.identity);
+          const metadata = yield* Effect.promise(() => stat(directory));
+          expect(metadata.mode & 0o777).toBe(0);
+        }
+
+        const memberPath = yield* machine.normalizePath({ path: member });
+        const inspection = yield* Effect.result(machine.inspectPath(memberPath, anchor));
+        expect(inspection).toMatchObject({
+          _tag: "Failure",
+          failure: { message: expect.stringContaining(`chmod u+rwx '${directory}'`) },
+        });
+
+        // The operator confirms the path and enables search. Canonfig can
+        // then widen it by its descriptor even though read is still denied.
+        yield* Effect.promise(() => chmod(directory, 0o100));
+        yield* setMode;
+        const widened = yield* Effect.promise(() => stat(directory));
+        expect(widened.mode & 0o777).toBe(0o700);
+        const restored = yield* restore;
+        expect(restored).toEqual(before.identity);
+      }));
+      expect((await stat(directory)).mode & 0o777).toBe(0o750);
+      expect(await readFile(member, "utf8")).toBe("original content");
+    } finally {
+      if (existsSync(directory)) await chmod(directory, 0o700);
+      await rm(root, { recursive: true });
+    }
+  },
+);
 
 describe("macOS native scheduler inspection", () => {
   it("never boots out the launchd agent that started this process", async () => {

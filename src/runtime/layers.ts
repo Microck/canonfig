@@ -43,7 +43,7 @@ import { TunnelLive } from "../enrollment/tunnel.layer.ts";
 import { Tunnel } from "../enrollment/tunnel.service.ts";
 import {
   tunnelCarriesSource,
-  withManagedTunnel,
+  prepareManagedTunnel,
 } from "../enrollment/tunnel-supervision.ts";
 import { startSourceServer } from "../enrollment/source-server.ts";
 import { sourceServiceLayer } from "../source-service/source-service.layer.ts";
@@ -98,17 +98,16 @@ import {
   clientReviewSteps,
 } from "../synchronization/client-review.ts";
 import {
-  abandonFollowerRun,
-  recoverFollower,
+  abandonFollowerRunUnderLock,
+  recoverFollowerUnderLock,
   synchronizeFollower,
 } from "../synchronization/follower-orchestration.ts";
 import {
-  abandonLocal,
+  abandonLocalUnderLock,
   harnessesLocal,
-  hasOpenLocalRun,
   importLocal,
   overlaysLocal,
-  recoverLocal,
+  recoverLocalUnderLock,
   restoreLocal,
   synchronizeLocal,
 } from "../projection/sync.ts";
@@ -230,6 +229,7 @@ const readScheduleFires = (repository: StateRepository["Service"]) =>
       at: invocation._tag === "Running" ? invocation.startedAt : invocation.at,
       outcome: invocation._tag === "Running" ? "started" : invocation._tag === "Completed" ? "completed" : "failed",
       reason: invocation._tag === "Failed" ? invocation.reason : undefined,
+      deferredFleetCheck: invocation._tag === "Running" ? undefined : invocation.deferredFleetCheck,
     }));
   });
 
@@ -368,7 +368,7 @@ const sourceCommandsLayer = (folder: string): Layer.Layer<
       scan: (input) =>
         asSource("scan its folder for tools", mapFailure(profiles.scan({ folder, ...input })).pipe(Effect.map(payload))),
       publish: (input) =>
-        asSource("publish a revision", profiles.publish({ folder, reviewer: input.reviewer, publishedAt: new Date().toISOString() }).pipe(
+        asSource("publish a revision", profiles.publish({ folder, reviewer: input.reviewer, reviewedDigest: input.reviewedDigest, publishedAt: new Date().toISOString() }).pipe(
           Effect.mapError((error) =>
             error instanceof InvalidPublicationResourcesError
               ? invalidResourcesFailure(error.errors)
@@ -724,31 +724,33 @@ const followerCommandsLayer = (
       return { _tag: "Finished" as const, configuration, source: state.sourceIdentity, revocation };
     });
     const outcomePayload = <Value extends {
+      readonly archiveDiagnostics?: ReadonlyArray<string> | undefined;
       readonly outcome?: {
         readonly outcome: string;
       } | undefined;
     }>(value: Value) => {
       const outcome = value.outcome?.outcome;
+      const withDiagnostics = (message: string) => [message, ...(value.archiveDiagnostics ?? [])].join("\n");
       if (outcome === "HumanActionRequired") {
         return Effect.fail(new CliCommandFailure({
           category: "human-action-required",
-          message: "synchronization requires human action",
+          message: withDiagnostics("synchronization requires human action"),
           details: payload(value),
         }));
       }
       if (outcome === "FollowerDrift") {
         return Effect.fail(new CliCommandFailure({
           category: "conflict-or-drift",
-          message: "follower drift conflicts with the selected revision",
+          message: withDiagnostics("follower drift conflicts with the selected revision"),
           details: payload(value),
         }));
       }
       if (outcome === "Failed" || outcome === "Interrupted") {
         return Effect.fail(new CliCommandFailure({
           category: "verification-or-apply-failure",
-          message: outcome === "Interrupted"
+          message: withDiagnostics(outcome === "Interrupted"
             ? "synchronization was interrupted"
-            : "synchronization failed",
+            : "synchronization failed"),
           details: payload(value),
         }));
       }
@@ -871,6 +873,29 @@ const followerCommandsLayer = (
         };
       });
 
+    // Select the journal owner under the same lock as the recovery operation.
+    const recoveryFollower = Effect.gen(function*() {
+      const open = yield* repository.listOpenRunFollowers();
+      if (open.includes(localProjectionFollower)) return localProjectionFollower;
+      const configuration = yield* repository.getFollowerSynchronizationConfiguration();
+      const current = configuration?.follower.id;
+      if (current !== undefined && open.includes(current)) return current;
+      if (open.length > 1) return yield* new CliCommandFailure({
+        category: "conflict-or-drift", message: "multiple interrupted Follower runs exist and none belongs to this enrollment",
+      });
+      return open[0] ?? current ?? localProjectionFollower;
+    });
+
+    const requireNoFollowerRun = (follower: FollowerSynchronizationConfiguration["follower"]["id"]) =>
+      Effect.gen(function*() {
+        if ((yield* mapFailure(repository.loadOpenRunIdentity(follower))) !== undefined) {
+          return yield* new CliCommandFailure({
+            category: "conflict-or-drift",
+            message: "this Follower has an interrupted sync; run 'canonfig recover' or 'canonfig abandon' before changing enrollment",
+          });
+        }
+      });
+
     const service: FollowerCommandsService = {
       enroll: (input) =>
         Effect.gen(function*() {
@@ -890,6 +915,7 @@ const followerCommandsLayer = (
             let existing = yield* mapFailure(
               repository.getFollowerSynchronizationConfiguration(),
             );
+            if (existing !== undefined) yield* requireNoFollowerRun(existing.follower.id);
             yield* recoverStagedCredentials;
             if (existing !== undefined && existing.lifecycle._tag !== "Active") {
               const finished = yield* finishEnrollment(existing);
@@ -1132,6 +1158,7 @@ const followerCommandsLayer = (
               detail: "this machine is not enrolled; nothing was removed",
             });
           }
+          yield* requireNoFollowerRun(configuration.follower.id);
           yield* recoverStagedCredentials;
           if (configuration.lifecycle._tag !== "Unenrolling") {
             const state = yield* mapFailure(repository.loadState(configuration.follower.id));
@@ -1235,48 +1262,47 @@ const followerCommandsLayer = (
           Effect.provideService(MachineState, machine),
           Effect.provideService(Synchronization, synchronization),
         )).pipe(Effect.flatMap(outcomePayload));
-        const run: Effect.Effect<CliPayload, CliCommandFailure> = mapFailure(
-          repository.getFollowerSynchronizationConfiguration(),
-        ).pipe(Effect.flatMap((configuration) => configuration === undefined ? local : follower));
         return installedGeneration.pipe(Effect.flatMap((generation) => {
           const identity = { ...invocation, generation };
           const start = scheduled
             ? mapFailure(repository.transitionScheduledInvocation({ ...identity, _tag: "Running" }))
             : Effect.void;
           return start.pipe(Effect.andThen(Effect.gen(function*() {
-            // A scheduled run restarts a down managed tunnel once, and a
-            // transport failure while the tunnel is down reports the tunnel.
-            const synchronize = repository.getFollowerSynchronizationConfiguration().pipe(
-              Effect.catch(() => Effect.succeed(undefined)),
-              Effect.flatMap((configuration) =>
-                withManagedTunnel(
-                  {
-                    stateDirectory: join(dirname(statePath), "tunnel"),
-                    sourceEndpoint: configuration?.source.endpoint,
-                    restart: scheduled,
-                  },
-                  (failure: CliCommandFailure) => failure.category === "transport",
-                  run,
-                )
-              ),
-              Effect.provideService(Tunnel, tunnel),
-              Effect.catchTag("TunnelDownError", (error) => Effect.fail(commandFailure(error))),
-              // Retain completed file-run evidence if shared-secret refresh fails.
-              Effect.tap((result) => input.mode === "apply" ? synchronizeSharedSecrets().pipe(
-                Effect.provideService(MachineState, machine),
-                Effect.provideService(StateRepository, repository),
-                Effect.mapError((error) => new CliCommandFailure({
-                  category: secretFailureCategory(error),
-                  message: `File synchronization completed, but shared-secret synchronization failed: ${error.message}`,
-                  details: result,
-                })),
-              ) : Effect.void),
-            );
-            const result = yield* (execute === undefined ? synchronize : execute(synchronize)).pipe(Effect.catch((error) => {
+            const prepared = Effect.gen(function*() {
+              const configuration = yield* mapFailure(repository.getFollowerSynchronizationConfiguration());
+              // The Fleet Update poll and synchronization both need the Source connection.
+              const guard = yield* mapFailure(prepareManagedTunnel({
+                stateDirectory: join(dirname(statePath), "tunnel"),
+                sourceEndpoint: configuration?.source.endpoint,
+                restart: scheduled,
+              }).pipe(Effect.provideService(Tunnel, tunnel)));
+              // Dispatch from the role at execution time, after the fleet preflight.
+              const run = mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
+                Effect.flatMap((current) => current === undefined ? local : follower),
+              );
+              const synchronize = guard((failure) => failure.category === "transport", run).pipe(
+                Effect.catchTag("TunnelDownError", (error) => Effect.fail(commandFailure(error))),
+                // Retain completed file-run evidence if shared-secret refresh fails.
+                Effect.tap((result) => input.mode === "apply" ? synchronizeSharedSecrets().pipe(
+                  Effect.provideService(MachineState, machine),
+                  Effect.provideService(StateRepository, repository),
+                  Effect.mapError((error) => new CliCommandFailure({
+                    category: secretFailureCategory(error),
+                    message: `File synchronization completed, but shared-secret synchronization failed: ${error.message}`,
+                    details: result,
+                  })),
+                ) : Effect.void),
+              );
+              return yield* execute === undefined
+                ? synchronize.pipe(Effect.map((data) => ({ payload: data, deferredFleetCheck: undefined })))
+                : execute(synchronize);
+            });
+            const { payload: result, deferredFleetCheck } = yield* prepared.pipe(Effect.catch((error) => {
               const failed = scheduled ? mapFailure(repository.transitionScheduledInvocation({
                 ...identity, _tag: "Failed", at: new Date().toISOString(), reason: fireFailureReason(error),
                 outcome: scheduledOutcome(error.details),
                 failureCategory: error.category,
+                deferredFleetCheck: error.deferredFleetCheck,
               })) : Effect.void;
               return failed.pipe(Effect.andThen(Effect.fail(error)));
             }));
@@ -1284,33 +1310,34 @@ const followerCommandsLayer = (
             // replacement process; mark the handoff so `schedule run` follows that process.
             if (scheduled) yield* mapFailure(repository.transitionScheduledInvocation({
               ...identity, _tag: "Completed", at: new Date().toISOString(),
-              ...(result === null ? { restarted: true as const } : { outcome: scheduledOutcome(result) }),
+              ...(result === null ? { restarted: true as const } : { outcome: scheduledOutcome(result), deferredFleetCheck }),
             }));
             return result;
           })));
         }));
       },
-      // An open local projection run is resolved before any follower run.
       abandon: () =>
-        mapFailure(Effect.gen(function*() {
-          return (yield* hasOpenLocalRun)
-            ? yield* abandonLocal(statePath)
-            : yield* abandonFollowerRun(statePath);
+        mapFailure(withRunLock(statePath, "abandon", Effect.gen(function*() {
+          const follower = yield* recoveryFollower;
+          return follower === localProjectionFollower
+            ? yield* abandonLocalUnderLock(statePath)
+            : yield* abandonFollowerRunUnderLock(statePath, follower);
         }).pipe(
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),
-        )).pipe(Effect.map(payload)),
+        ))).pipe(Effect.map(payload)),
       recover: () =>
-        mapFailure(Effect.gen(function*() {
-          return (yield* hasOpenLocalRun)
-            ? yield* recoverLocal(statePath)
-            : yield* recoverFollower(statePath);
+        mapFailure(withRunLock(statePath, "recover", Effect.gen(function*() {
+          const follower = yield* recoveryFollower;
+          return follower === localProjectionFollower
+            ? yield* recoverLocalUnderLock(statePath)
+            : yield* recoverFollowerUnderLock(statePath, follower);
         }).pipe(
           Effect.provideService(StateRepository, repository),
           Effect.provideService(MachineState, machine),
           Effect.provideService(Synchronization, synchronization),
           Effect.provideService(ScheduleManager, schedules),
-        )).pipe(Effect.flatMap(outcomePayload)),
+        ))).pipe(Effect.flatMap(outcomePayload)),
       // A restore belongs to whoever projected the surfaces: the follower
       // identity once enrolled (enrollment re-keys local records), else this
       // machine's local projection.
@@ -1640,6 +1667,7 @@ const followerCommandsLayer = (
         if (invocation._tag === "Failed" && invocation.failureCategory !== undefined) {
           return yield* new CliCommandFailure({
             category: invocation.failureCategory, message: invocation.reason, details: payload(result),
+            deferredFleetCheck: invocation.deferredFleetCheck,
           });
         }
         if (invocation.outcome !== undefined && invocation.outcome.outcome !== "Converged") {

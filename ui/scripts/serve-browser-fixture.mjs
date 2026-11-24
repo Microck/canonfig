@@ -12,7 +12,7 @@ process.once("SIGINT", stop);
 const stopped = new Promise((resolve) => shutdown.signal.addEventListener("abort", resolve, { once: true }));
 
 const outDir = await mkdtemp(join(tmpdir(), "canonfig-browser-"));
-const localItems = { items: [], config: {}, canonicalConfig: { local: { allow: ["instructions"] } } };
+const localItems = { items: [], config: {}, settingsFiles: {}, canonicalConfig: { local: { allow: ["instructions"] } } };
 let pending;
 
 function json(response, status, data) {

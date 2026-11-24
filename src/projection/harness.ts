@@ -153,6 +153,11 @@ export interface HarnessProjection {
   readonly diagnostics: ReadonlyArray<Diagnostic>;
 }
 
+export interface HarnessProjectionInput extends CanonicalModel {
+  /** Declared server names used by agent policy, even if a native map is left as it is. */
+  readonly mcpPermissionNames: ReadonlyArray<string>;
+}
+
 export interface HarnessAdapter {
   readonly descriptor: HarnessDescriptor;
   readonly layout: (context: RootContext, model: CanonicalModel) => HarnessLayout;
@@ -161,7 +166,7 @@ export interface HarnessAdapter {
    * content is left alone; declared settings are added by the engine.
    */
   readonly project: (
-    model: CanonicalModel,
+    model: HarnessProjectionInput,
     layout: HarnessLayout,
     runtime: ProjectionRuntime,
   ) => HarnessProjection;

@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { SynchronizationOutcomeSchema, type SynchronizationOutcome } from "../domain/synchronization.ts";
 import { TaggedError } from "../domain/tagged-error.ts";
 
 import type { InsufficientDiskError, PathTooLongError } from "../machine/machine-state.errors.ts";
@@ -212,6 +213,15 @@ export class RollbackCleanupError extends TaggedError<RollbackCleanupError>()(
   },
 ) {}
 
+/** An archive run failed before its outcome or rollback cleanup could be confirmed. */
+export class RunOutcomeFollowUpError extends TaggedError<RunOutcomeFollowUpError>()(
+  "RunOutcomeFollowUpError",
+  {
+    executionOutcome: Schema.declare<SynchronizationOutcome>(Schema.is(SynchronizationOutcomeSchema)),
+    step: Schema.Literals(["record", "cleanup"]),
+  },
+) {}
+
 export type SynchronizationPlanningError =
   | DuplicatePlannerInputError
   | MissingDesiredResourceError
@@ -236,6 +246,7 @@ export type SynchronizationExecutionInputError =
   | InvalidArtifactError
   | ActionExecutionError
   | RollbackCleanupError
+  | RunOutcomeFollowUpError
   | InsufficientDiskError
   | PathTooLongError
   | ScheduleManagerError;

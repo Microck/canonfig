@@ -22,14 +22,21 @@ export const GuiProfileFile = Schema.Struct({
 });
 export const GuiProfileItem = Schema.Struct({ path: Schema.String, digest: Schema.NullOr(Schema.String), files: Schema.Array(GuiProfileFile) });
 export interface GuiProfileItem extends Schema.Schema.Type<typeof GuiProfileItem> {}
-export const GuiProfileSnapshot = Schema.Struct({ items: Schema.Array(GuiProfileItem), config: Schema.Record(Schema.String, Schema.Json), supportedSurfaces: Schema.Record(Schema.String, Schema.Array(Schema.String)) });
+export const GuiProfileSnapshot = Schema.Struct({
+  items: Schema.Array(GuiProfileItem),
+  config: Schema.Record(Schema.String, Schema.Json),
+  supportedSurfaces: Schema.Record(Schema.String, Schema.Array(Schema.String)),
+  reservedPaths: Schema.Array(Schema.Struct({ path: Schema.String, owner: Schema.String })),
+  caseSensitive: Schema.Boolean,
+});
 export interface GuiProfileSnapshot extends Schema.Schema.Type<typeof GuiProfileSnapshot> {}
 export const GuiProfileChange = Schema.Struct({ path: Schema.NonEmptyString, expectedDigest: Schema.NullOr(Schema.String), files: Schema.Array(GuiProfileFile) });
 export const GuiProfileWrite = Schema.Struct({ changes: Schema.Array(GuiProfileChange) });
 export const GuiProfileConfigEdit = Schema.Struct({ path: Schema.Array(Schema.Union([Schema.String, Schema.Int])), value: Schema.optionalKey(Schema.Json) });
 export const GuiProfileConfigWrite = Schema.Struct({ expectedDigest: Schema.NullOr(Schema.String), edits: Schema.Array(GuiProfileConfigEdit), changes: Schema.Array(GuiProfileChange) });
 export const GuiProfileSaved = Schema.Struct({ saved: Schema.Literal(true) });
-export const GuiPublicationRequest = Schema.Struct({ reviewer: Schema.NonEmptyString });
+/** `reviewDigest` is the validation's digest: publication refuses folder content that compiles to anything else. */
+export const GuiPublicationRequest = Schema.Struct({ reviewer: Schema.NonEmptyString, reviewDigest: Schema.NonEmptyString });
 export const GuiRevisionSelection = Schema.Struct({ revision: Schema.NonEmptyString });
 export const GuiScanAcceptance = Schema.Struct({ reviewDigest: Schema.NonEmptyString, confirmAll: Schema.Literal(true) });
 export const GuiScanReview = Schema.Struct({ reviewDigest: Schema.NonEmptyString, declared: Schema.Array(Schema.String), tools: Schema.Array(Schema.Json) });
@@ -48,8 +55,15 @@ export const GuiRevisions = Schema.Struct({ revisions: Schema.Array(Schema.Struc
   approval: Schema.NullOr(GuiRevisionApproval), resourceChanges: GuiRevisionChanges,
 })) });
 export interface GuiRevisions extends Schema.Schema.Type<typeof GuiRevisions> {}
-export const GuiProfileValidation = Schema.Struct({ valid: Schema.Boolean, errors: Schema.Array(Schema.String), profile: Schema.Json });
-export interface GuiProfileValidation extends Schema.Schema.Type<typeof GuiProfileValidation> {}
+/** A valid folder carries the digest of its compiled content, which a publication must name; an invalid one carries null. */
+export const GuiProfileValidationRequest = Schema.Struct({ items: Schema.Array(Schema.Struct({
+  path: Schema.String, digest: Schema.NullOr(Schema.String),
+})) });
+export const GuiProfileValidation = Schema.Union([
+  Schema.Struct({ valid: Schema.Literal(true), errors: Schema.Array(Schema.String), reviewDigest: Schema.NonEmptyString, profile: Schema.Json }),
+  Schema.Struct({ valid: Schema.Literal(false), errors: Schema.Array(Schema.String), reviewDigest: Schema.Null, profile: Schema.Null }),
+]);
+export type GuiProfileValidation = Schema.Schema.Type<typeof GuiProfileValidation>;
 export const GuiSkillTrack = Schema.Struct({ name: Schema.NonEmptyString, source: Schema.NonEmptyString, ref: Schema.NonEmptyString, subdir: Schema.NonEmptyString });
 /** An empty check selection reads every tracked skill, matching the CLI. */
 export const GuiSkillSelection = Schema.Struct({ names: Schema.Array(Schema.NonEmptyString) });

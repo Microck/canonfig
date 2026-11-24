@@ -405,7 +405,15 @@ Rolls out the Source's exact stable Canonfig release to its enrolled followers.
 The canary goes first. Every enrolled follower accepts Fleet Updates automatically
 and checks on its next CLI `sync --apply`, including native schedules. No local
 enablement, follower daemon or immediate push is required.
-Start and stop preview unless you pass `--apply`.
+Start and stop preview unless you pass `--apply`. Plan-only and browser
+syncs do not install releases. A scheduled run restarts a managed tunnel
+that went down before checking for a Fleet Update. A tunnel you explicitly
+stopped stays stopped until you start it again.
+
+If the Source cannot complete the fleet check, the CLI reports
+`Fleet Update check deferred` and continues with configuration sync.
+`canonfig schedule status` shows a deferred fleet check from the most recent
+unattended invocation.
 
 Every follower verifies the Source signature and the official package's publisher
 provenance and integrity. Active commands or unfinished runs defer activation.
@@ -536,7 +544,7 @@ it, reports it, exits 4, and leaves its projections as they were last applied.
 
 | Option | Effect |
 | --- | --- |
-| `--plan` | Default. Downloads and compares; changes nothing. |
+| `--plan` | Default. Computes a plan without changing the mirror or managed targets. On a Follower, it downloads Profile Revision data to the local cache. |
 | `--apply` | Applies the plan and verifies every resource. Cannot be combined with `--plan`. |
 | `--no-input` | Never prompts. |
 | `--no-backup` | Takes over harness surfaces without a takeover snapshot. |
@@ -583,6 +591,10 @@ command reports one error that says the files were applied.
 When the profile suggests a schedule and you have not chosen one, the output
 says "schedule available" and names `canonfig schedule set --default`. Sync
 never installs a schedule.
+
+When a Follower download is interrupted, the next sync can reuse verified
+files and resume a partial file from the same Source and Profile Revision.
+Canonfig checks the expected length and digest before using the complete file.
 
 A scheduled run restarts a managed tunnel that is down, once, before fetching.
 If the Source Machine is still unreachable, the run exits 6 and says to run
@@ -1062,7 +1074,8 @@ canonfig mcp run github
 Runs the enabled MCP server named `github` from this machine's applied
 `~/.canonfig/canonfig.jsonc`, including allowed local additions and explicit
 overlays from `local/local.jsonc`. It does not fetch a Source revision or sync
-secrets. Harness configs use this command automatically for `fromSecret`.
+secrets. Harness configs use this command for `fromSecret` entries unless the
+server opts into the shared proxy.
 
 For stdio servers it inherits stdin, stdout and stderr, forwards termination
 signals and returns the child's exit code. Canonfig writes no status text to
@@ -1083,6 +1096,34 @@ Launcher failures print an actionable message on stderr:
 Child exit codes pass through unchanged, so they can overlap these launcher
 codes. See [Share MCP credentials](/docs/how-to/share-mcp-credentials).
 
+### Shared MCP proxy
+
+```bash
+canonfig mcp proxy
+```
+
+Runs one foreground Streamable HTTP proxy on `127.0.0.1` for enabled servers
+with `proxy: true`. Start it on each machine that projects those servers,
+in a login session with access to the credential store. A service manager
+can supervise the same command. SIGINT and SIGTERM stop the listener and close
+active streams.
+
+The default port is 17343. To choose another port on first start, use
+`canonfig mcp proxy --port 18443`. The machine keeps its chosen port and
+local authorization seed in `~/.canonfig/mcp-proxy.json`. To change the port,
+stop the proxy, remove that binding file, start it on the new port and sync
+your harnesses again.
+
+The proxy reads the applied MCP declarations and resolves their credentials
+on each request. It connects directly to the configured upstream URL and sends
+the configured headers. It rejects redirects and returns generic errors for
+upstream HTTP failures. Doctor omits the text of upstream JSON-RPC errors for
+these routes because the server can include credentials in that text.
+If the upstream URL changes, the proxy rejects old session IDs with HTTP 404
+so harnesses initialize a new session at the new destination.
+Harnesses use a separate local access token for each route. Keep their
+configuration files and the binding file private.
+
 ## Shared secrets
 
 ```bash
@@ -1100,7 +1141,7 @@ canonfig secrets bootstrap
 | `list` | Lists names and where each came from. Never values. |
 | `remove <name>` | Deletes a stored secret. Removing a name the Source Machine owns discards that value on this Follower Machine. |
 | `sync` | Fetches authorized secrets from the Source Machine. `sync --apply` already does this. |
-| `bootstrap` | Checks the credential store end to end and reports the storage it selected. |
+| `bootstrap` | Checks Linux credential storage and reports the selected policy, backup encryption and persistence evidence. |
 
 `secrets set` never takes the value as an argument:
 
@@ -1118,9 +1159,11 @@ A credential-store failure exits 3 with the store's recovery text. See
 
 ### Headless Linux storage
 
-`secrets bootstrap` runs as you, never uses `sudo`, and stores only test items
-it removes again. Install `libsecret-tools` and a Secret Service provider such
-as `gnome-keyring` first. From a background shell, point it at your session bus:
+`secrets bootstrap` runs as you, never uses `sudo`, and stores only disposable
+test items. One may stay until doctor verifies persistence. Secret Service
+bootstrap requires `secret-tool`, `busctl`, and a provider such as
+`gnome-keyring` with a default collection. From a background shell, point it at
+your session bus:
 
 ```bash
 env -i HOME=$HOME PATH=$PATH XDG_RUNTIME_DIR=/run/user/$(id -u) canonfig secrets bootstrap
@@ -1128,8 +1171,11 @@ env -i HOME=$HOME PATH=$PATH XDG_RUNTIME_DIR=/run/user/$(id -u) canonfig secrets
 
 If `/run/user/<uid>/bus` does not exist, run `sudo loginctl enable-linger
 <user>`. The login keyring must be unlocked, which a password login does. When
-it cannot prove storage survives a logout without disturbing your session, the
-result says `manual`: restart, then run the same command.
+bootstrap can identify the provider and its default collection, it saves a
+test credential for the restart check. After Secret Service restarts or you
+log in again, run `canonfig doctor` with the same keyring unlocked. See the
+[credentials probe](/docs/reference/diagnostics#credentials) for how to read
+the result.
 
 On a machine without Secret Service, you can choose unencrypted files with
 mode `0600` instead. Shared secrets still require a secure store.

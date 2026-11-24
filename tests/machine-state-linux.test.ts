@@ -1,4 +1,7 @@
+import { openAnchoredDirectory } from "../src/machine/anchored-directory.ts";
+import { copyPosixAnchoredFile, listPosixAnchoredDirectory, readPosixAnchoredFile, writePosixAnchoredFile } from "../src/machine/posix-anchored-process.ts";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -11,6 +14,8 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { open } from "node:fs/promises";
+import { sha256BytesHex } from "../src/profile/profile-codec.ts";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -502,6 +507,128 @@ describe("portable safe-root mutation", () => {
         operation: "mutate managed path",
       });
       expect(readFileSync(outsideFile, "utf8")).toBe("outside");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("reads through a pinned POSIX working directory without following links", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-posix-anchor-"));
+    const home = join(root, "home");
+    const real = join(home, "real");
+    const linked = join(home, "linked");
+    const outside = join(root, "outside");
+    mkdirSync(real, { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(join(real, "file"), "inside");
+    writeFileSync(join(outside, "file"), "outside");
+    symlinkSync(outside, linked);
+    try {
+      expect(await readPosixAnchoredFile(home, join(real, "file"), 64, 3)).toEqual(Buffer.from("ins"));
+      await expect(readPosixAnchoredFile(home, join(linked, "file"), 64)).rejects.toThrow(/real directory/u);
+      await expect(readPosixAnchoredFile(home, join(outside, "file"), 64)).rejects.toThrow(/not below/u);
+      await expect(readPosixAnchoredFile(home, join(real, "file"), 2)).rejects.toMatchObject({ _tag: "FileSizeLimitError" });
+      const destination = join(home, "new", "file");
+      const request = { content: Buffer.from("created"), mode: 0o600, createParents: true, noReplace: true };
+      await writePosixAnchoredFile(home, destination, request);
+      expect(readFileSync(destination, "utf8")).toBe("created");
+      await expect(writePosixAnchoredFile(home, destination, { ...request, content: Buffer.from("different") }))
+        .rejects.toThrow(/EEXIST/u);
+      await expect(writePosixAnchoredFile(home, join(linked, "file"), request)).rejects.toThrow(/real directory/u);
+      expect(readFileSync(join(outside, "file"), "utf8")).toBe("outside");
+      expect(await listPosixAnchoredDirectory(home, real)).toEqual([{ path: "file", kind: "regular" }]);
+      await expect(listPosixAnchoredDirectory(home, linked)).rejects.toThrow(/real directory/u);
+      const copy = join(root, "copy");
+      const handle = await open(copy, "wx");
+      try {
+        const digest = sha256BytesHex(Buffer.from("inside"));
+        await copyPosixAnchoredFile(home, { file: join(real, "file"), digest }, handle.fd);
+        await expect(copyPosixAnchoredFile(home, { file: join(linked, "file"), digest }, handle.fd))
+          .rejects.toThrow(/real directory/u);
+        expect(readFileSync(copy, "utf8")).toBe("inside");
+      } finally {
+        await handle.close();
+      }
+
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== "linux")("refuses an anchored publication after its destination parent changes identity", async () => {
+    const home = mkdtempSync(join(tmpdir(), "canonfig-anchored-identity-"));
+    const parent = join(home, "notes");
+    mkdirSync(parent);
+    const held = await openAnchoredDirectory(home, parent);
+    try {
+      renameSync(parent, join(home, "previous"));
+      mkdirSync(parent);
+      await expect(held.verify()).rejects.toThrow(/directory identity changed/u);
+    } finally {
+      await held.close();
+      rmSync(home, { recursive: true });
+    }
+  });
+
+  it.skipIf(process.platform !== "linux")("traverses a searchable unreadable ancestor and restores a mode-zero directory", async () => {
+    const home = mkdtempSync(join(tmpdir(), "canonfig-anchored-modes-"));
+    const ancestor = join(home, "search-only");
+    const parent = join(ancestor, "parent");
+    const leaf = join(parent, "leaf");
+    mkdirSync(leaf, { recursive: true });
+    writeFileSync(join(parent, "settings"), "inside");
+    chmodSync(ancestor, 0o100);
+    chmodSync(leaf, 0o000);
+    try {
+      await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const anchor = yield* machine.normalizePath({ path: home });
+        const settings = yield* machine.normalizePath({ path: join(parent, "settings") });
+        const target = yield* machine.normalizePath({ path: leaf });
+        const bytes = yield* machine.readFile({ path: settings, anchor, maximumBytes: 100 });
+        expect(Buffer.from(bytes).toString()).toBe("inside");
+
+        const initial = yield* machine.inspectPath(target, anchor);
+        yield* machine.setPermissions({ path: target, anchor, identity: initial.identity, mode: 0o700 });
+        expect(statSync(leaf).mode & 0o777).toBe(0o700);
+
+        chmodSync(leaf, 0o000);
+        const restored = yield* machine.mutateWithinRoot({
+          root: anchor, anchor, path: target, mutation: { kind: "directory", mode: 0o750 },
+        });
+        expect(restored).toEqual(initial.identity);
+        expect(statSync(leaf).mode & 0o777).toBe(0o750);
+      }).pipe(Effect.provide(linuxMachineStateLayer({ environment: environment(home) }))));
+    } finally {
+      chmodSync(ancestor, 0o700);
+      chmodSync(leaf, 0o700);
+      rmSync(home, { recursive: true });
+    }
+  });
+
+  it.skipIf(process.platform !== "linux")("creates missing anchored parents without following a linked ancestor", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-anchored-parents-"));
+    const home = join(root, "home");
+    const other = join(root, "other");
+    mkdirSync(home);
+    mkdirSync(other);
+    symlinkSync(other, join(home, "linked"));
+    try {
+      const attempt = (relative: string) => Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const anchor = yield* machine.normalizePath({ path: home });
+        const path = yield* machine.normalizePath({ path: join(home, relative) });
+        return yield* machine.atomicWrite({
+          path, anchor, createAnchoredParents: true, content: Buffer.from("owned"),
+        });
+      }).pipe(Effect.provide(linuxMachineStateLayer({ environment: environment(root) }))));
+      await attempt("new/nested/config");
+      expect(readFileSync(join(home, "new", "nested", "config"), "utf8")).toBe("owned");
+      await expect(attempt("linked/nested/config")).rejects.toMatchObject({
+        _tag: "MachineFilesystemError",
+        operation: "atomically write file",
+      });
+      expect(readdirSync(other)).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

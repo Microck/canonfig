@@ -95,7 +95,8 @@ The workflow performs the release in this order:
 1. resolve the package version and verify that `CHANGELOG.md` has a non-empty
    section for it;
 2. verify that npm and Git do not already contain the version;
-3. install locked dependencies and rerun the complete validation matrix;
+3. install locked dependencies and run the release validation steps on Ubuntu;
+   cross-platform acceptance runs on the preparation pull request;
 4. publish `@microck/canonfig` through npm trusted publishing, which generates
    provenance automatically;
 5. create the matching `vX.Y.Z` tag and GitHub release from that version's
@@ -179,7 +180,7 @@ rerun publication or reuse the version. Verification can also be run independent
 with Node.js 24.15+ and npm on the release runner:
 
 ```bash
-node tools/release/verify-published.mjs 7.8.1
+node tools/release/verify-published.mjs 7.8.2
 ```
 
 The verification helper only reads from npm and installs into a disposable local

@@ -35,12 +35,14 @@ export const ScheduledInvocation = Schema.Union([
   Schema.TaggedStruct("Completed", {
     ...ScheduledInvocationFields, at: Schema.NonEmptyString,
     outcome: Schema.optional(SynchronizationOutcomeSchema),
+    deferredFleetCheck: Schema.optional(Schema.String),
     // This process activated a Fleet Update and handed the run to a
     // replacement process, which records its own invocation.
     restarted: Schema.optional(Schema.Literal(true)),
   }),
   Schema.TaggedStruct("Failed", {
     ...ScheduledInvocationFields, at: Schema.NonEmptyString, reason: Schema.NonEmptyString,
+    deferredFleetCheck: Schema.optional(Schema.String),
     outcome: Schema.optional(SynchronizationOutcomeSchema),
     failureCategory: Schema.optional(Schema.Literals([
       "usage-or-configuration", "human-action-required", "conflict-or-drift",

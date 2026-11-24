@@ -23,7 +23,6 @@ import {
   HARNESS_NAMES,
   LOCAL_CATEGORIES,
   PLAIN,
-  RESERVED_PATHS,
   SECRETS_GROUP,
   itemPath,
   type AppendLocalCategory,
@@ -33,8 +32,9 @@ import {
   type Resource,
 } from "@/shared/metadata";
 import { sharedKey, useSharedState, useWorkspace } from "./store";
-import { authoredItems, draftFiles, type ExactDraft } from "./profile-authoring";
+import { authoredItems, draftFiles, fieldValue, MCP_HARNESSES_LABEL, type ExactDraft } from "./profile-authoring";
 import type { GuiProfileSnapshot } from "../../../src/gui/contract/profile";
+import { TARGET_IDS } from "../../../src/projection/model";
 import { GuiRequestError } from "../gui-client";
 import { ExactItemFields, ProfileActionNotice } from "./profile-authoring-controls";
 import { ArchiveExportButton, ArchiveImportButton } from "./archive-transfer";
@@ -265,7 +265,8 @@ function preview(r: Resource): { where: string; text: string } | null {
     const server = stdio(d)
       ? { transport: "stdio", command: d.Command, ...(d.Args?.trim() ? { args: d.Args.trim().split(/\s+/) } : {}) }
       : { transport: d.Transport, url: d.URL };
-    return { where, text: `${key}: ${JSON.stringify(server, null, 2)}` };
+    const harnesses = listOf(d[MCP_HARNESSES_LABEL]);
+    return { where, text: `${key}: ${JSON.stringify(harnesses.length ? { ...server, harnesses } : server, null, 2)}` };
   }
   if (r.category === "hooks") {
     const hook = {
@@ -335,6 +336,29 @@ function GroupPicker({ idPrefix, value, onChange }: { idPrefix: string; value: s
         );
       })}
     </div>
+  );
+}
+
+function McpHarnessPicker({ value, onChange }: { value: string[]; onChange: (harnesses: string[]) => void }) {
+  return (
+    <Collapsible className="grid gap-2">
+      <CollapsibleTrigger type="button" className="flex min-h-10 items-center gap-2 text-left text-sm pointer-coarse:min-h-11">
+        <CaretRight />
+        <span>{MCP_HARNESSES_LABEL}</span>
+        <span className="text-muted-foreground">{value.length === 0 ? "All eligible" : `${value.length} selected`}</span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <fieldset className="grid gap-1 sm:grid-cols-2">
+          <legend className="pb-2 text-sm text-muted-foreground">Select the harnesses that receive this server. Clear the selection to include all eligible harnesses.</legend>
+          {TARGET_IDS.map((id) => (
+            <Label key={id} className="flex min-h-10 cursor-pointer items-center gap-2 text-sm font-normal pointer-coarse:min-h-11">
+              <Checkbox checked={value.includes(id)} onCheckedChange={(checked) => onChange(checked ? [...value, id] : value.filter((harness) => harness !== id))} />
+              {HARNESS_NAMES[id]}
+            </Label>
+          ))}
+        </fieldset>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -654,10 +678,13 @@ const RESOURCE_SOURCE = /^files\/(?:[^/\\\0]+\/)*[^/\\\0]+$/;
 /**
  * The checks Canonfig runs on `resources.<id>.target` and `.source`, with its own messages: the loader's shape,
  * `.`/`..` and overlap rules (loadResources in src/projection/folder.ts) and projection's refusal of any place the
- * Canonfig folder, ~/.agents or a harness owns (projectResources in src/projection/plan.ts). Overlap ignores case,
- * as the loader does, because a folder reaches machines whose file systems do.
+ * Canonfig folder, ~/.agents or a harness owns. Authored sibling targets fold case across machines.
+ * Adapter paths use the local machine’s case rules.
  */
-function resourcePathError(field: "Target" | "Source", value: string, name: string, others: Resource[]): string | null {
+function resourcePathError(
+  field: "Target" | "Source", value: string, name: string, others: Resource[],
+  layout?: Pick<GuiProfileSnapshot, "reservedPaths" | "caseSensitive">,
+): string | null {
   const label = `resources.${name || "new"}`;
   const dotted = (segments: string[]) => segments.some((s) => s === "." || s === "..");
   if (field === "Source") {
@@ -666,16 +693,16 @@ function resourcePathError(field: "Target" | "Source", value: string, name: stri
   }
   if (!RESOURCE_TARGET.test(value)) return "Write a path in the home folder, starting with ~/, for example ~/.gitconfig.";
   if (dotted(value.slice(2).split("/"))) return `Remove the . or .. part: “${label}.target ${value} has a . or .. segment”.`;
-  const fold = value.toLowerCase();
-  const overlaps = (path: string) => {
-    const other = path.toLowerCase();
-    return fold === other || fold.startsWith(`${other}/`) || other.startsWith(`${fold}/`);
-  };
-  const sibling = others.find((r) => r.category === "resources" && r.change !== "removed" && overlaps(r.detail.Target ?? ""));
+  const overlaps = (left: string, right: string) =>
+    left === right || left.startsWith(right + "/") || right.startsWith(left + "/");
+  const foldedTarget = value.toLowerCase();
+  const sibling = others.find((r) => r.category === "resources" && r.change !== "removed"
+    && overlaps(foldedTarget, (r.detail.Target ?? "").toLowerCase()));
   if (sibling) return `${sibling.id} already writes there: “${label}.target ${value} overlaps ${sibling.id.replace("/", ".")}.target ${sibling.detail.Target}”.`;
-  const reserved = RESERVED_PATHS.find(([path]) => overlaps(path));
+  const target = layout?.caseSensitive ? value : foldedTarget;
+  const reserved = layout?.reservedPaths.find(({ path }) => overlaps(target, path));
   return reserved
-    ? `That place belongs to ${reserved[1]}: “${label}.target ${value} overlaps ${reserved[0]}, which belongs to ${reserved[1]}; author harness configuration through the folder instead”.`
+    ? `That place belongs to ${reserved.owner}: “${label}.target ${value} overlaps ${reserved.path}, which belongs to ${reserved.owner}; author harness configuration through the folder instead”.`
     : null;
 }
 
@@ -697,6 +724,12 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
   const returnFocus = useRef<HTMLElement | null>(null);
   const [tried, setTried] = useState(false);
   const setDetail = (k: string, v: string) => setDraft((d) => ({ ...d, detail: { ...d.detail, [k]: v } }));
+  const setMcpHarnesses = (harnesses: string[]) => setDraft((resource) => {
+    const detail = { ...resource.detail };
+    if (harnesses.length === 0) delete detail[MCP_HARNESSES_LABEL];
+    else detail[MCP_HARNESSES_LABEL] = harnesses.join(", ");
+    return { ...resource, detail };
+  });
   const category = draft.category;
   const exactContent = exact && (exact.json !== undefined || category !== "hooks" || authored?.itemPath);
   const isSettings = category === "settings";
@@ -766,7 +799,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
   const fieldError = (f: FieldSpec) => {
     const value = draft.detail[f.label]?.trim() ?? "";
     if (f.required && !value) return `Enter ${f.label === "URL" ? "the URL" : `a ${f.label.toLowerCase()}`}.`;
-    return category === "resources" && (f.label === "Target" || f.label === "Source") ? resourcePathError(f.label, value, trimmed, others) : null;
+    return category === "resources" && (f.label === "Target" || f.label === "Source") ? resourcePathError(f.label, value, trimmed, others, ws.profileLive?.snapshot ?? ws.demoProjection) : null;
   };
   const asWritten: Resource = { ...draft, id, path: itemPath(category, trimmed) };
 
@@ -968,6 +1001,12 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
             </Field>
           );
         })}
+        {category === "mcp" && (exactContent
+          ? <p className="text-sm text-muted-foreground">To limit this server, add a harness list such as <code className="font-mono">"harnesses": ["codex"]</code>.</p>
+          : <McpHarnessPicker value={listOf(draft.detail[MCP_HARNESSES_LABEL])} onChange={setMcpHarnesses} />)}
+        {ws.profileLive && category === "mcp" && draft.detail.Transport === "streamable-http" && !exactContent && (
+          <Button type="button" variant="outline" size="sm" onClick={() => setExact({ json: JSON.stringify(fieldValue(draft), null, 2), files: [] })}>Edit MCP JSON</Button>
+        )}
         {ws.profileLive && category === "hooks" && !exactContent && (exact ? <ExactItemFields value={exact} onChange={setExact} path={`hooks/${trimmed}.sh`} /> : <Button type="button" variant="outline" size="sm" onClick={() => setExact({ files: [] })}>Add supporting files</Button>)}
         {ws.profileLive && category === "skills" && !isNew && !exact && <Button type="button" variant="outline" size="sm" disabled={dirty} onClick={() => setExact({ files: draftFiles(snapshot?.items.find((item) => item.path === authored?.itemPath)?.files ?? []) })}>Edit full file tree</Button>}
 
@@ -1273,7 +1312,7 @@ function GroupsTab() {
           >
             <DialogHeader>
               <DialogTitle>New group</DialogTitle>
-              <DialogDescription className="text-base text-pretty">Machines join a group through their invitation. After you add it, open the group to add machines.</DialogDescription>
+              <DialogDescription className="text-base text-pretty">To add a machine to this group, open Machines and select the group when you create an invitation.</DialogDescription>
             </DialogHeader>
             <div className="grid gap-3">
               <Field label="Name" htmlFor="g-name" error={nameError}>

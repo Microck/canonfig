@@ -1,4 +1,6 @@
 import { version } from "../../../package.json";
+import type { SurfaceCategory } from "../../../src/projection/model";
+export { SURFACE_CATEGORIES, type SurfaceCategory } from "../../../src/projection/model";
 import type { GuiRevisions } from "../../../src/gui/contract/profile";
 
 // Shared labels and presentation types. No demo records or simulated actions.
@@ -189,40 +191,6 @@ export const HARNESS_NAMES: Record<HarnessId, string> = {
   qwen: "Qwen Code",
 };
 
-/**
- * Places a `resources.<id>` target may not overlap, with the owner Canonfig names when it refuses one
- * (projectResources in src/projection/plan.ts): the Canonfig folder, the shared ~/.agents, and every adapter's
- * root, surfaces and never-touch paths, whether or not that harness is listed. Reduced to the outermost paths of
- * each adapter's layout with the default environment on Linux and macOS; Windows keeps some under AppData, and
- * each machine checks again with its own paths.
- */
-const HARNESS_PATHS: Record<HarnessId, string[]> = {
-  codex: ["~/.codex"],
-  "claude-code": ["~/.claude", "~/.claude.json"],
-  amp: ["~/.config/amp", "~/.local/share/amp/secrets.json", "~/.local/share/amp/threads", "~/.cache/amp"],
-  "oh-my-pi": ["~/.omp/agent", "~/.omp/logs", "~/.omp/install-id"],
-  pi: ["~/.pi/agent"],
-  "factory-droid": ["~/.factory"],
-  cursor: ["~/.cursor"],
-  devin: ["~/.config/devin", "~/.devin/rules", "~/.local/share/devin"],
-  opencode: ["~/.config/opencode", "~/.local/share/opencode", "~/.cache/opencode"],
-  "grok-build": ["~/.grok"],
-  antigravity: ["~/.gemini"],
-  "copilot-cli": ["~/.copilot"],
-  kimi: ["~/.kimi-code"],
-  kilo: ["~/.config/kilo", "~/.local/share/kilo", "~/.local/state/kilo/daemon.json", "~/.cache/kilo"],
-  hermes: ["~/.hermes"],
-  qwen: ["~/.qwen"],
-};
-export const RESERVED_PATHS: ReadonlyArray<readonly [path: string, owner: string]> = [
-  ["~/.canonfig", "the Canonical Folder"],
-  ["~/.agents", "the shared agent directory"],
-  ...(Object.keys(HARNESS_PATHS) as HarnessId[]).flatMap((h) => HARNESS_PATHS[h].map((path) => [path, HARNESS_NAMES[h]] as const)),
-];
-
-/** canonfig.jsonc `surfaces` categories, in the order of SURFACE_CATEGORIES in src/projection/model.ts. */
-export const SURFACE_CATEGORIES = ["instructions", "rules", "skills", "agents", "commands", "hooks", "mcp", "settings"] as const;
-export type SurfaceCategory = (typeof SURFACE_CATEGORIES)[number];
 export const SURFACE_NAMES: Record<SurfaceCategory, string> = {
   instructions: "AGENTS.md",
   rules: "Rules",
@@ -232,56 +200,6 @@ export const SURFACE_NAMES: Record<SurfaceCategory, string> = {
   hooks: "Hooks",
   mcp: "MCP servers",
   settings: "Settings",
-};
-
-/** Every category minus the ones a harness cannot take. */
-const allBut = (...missing: SurfaceCategory[]): SurfaceCategory[] => SURFACE_CATEGORIES.filter((c) => !missing.includes(c));
-
-/**
- * The categories each harness can be given, as `supportedCategories` in src/projection/plan.ts derives them from
- * the adapters. tests/projection-adapters.test.ts fails when the two disagree.
- */
-export const SURFACE_SUPPORT: Record<HarnessId, SurfaceCategory[]> = {
-  codex: allBut(),
-  "claude-code": allBut(),
-  amp: allBut(),
-  "oh-my-pi": allBut(),
-  pi: allBut("agents"),
-  "factory-droid": allBut(),
-  cursor: allBut("instructions", "rules"),
-  devin: allBut(),
-  opencode: allBut(),
-  "grok-build": allBut(),
-  antigravity: allBut(),
-  "copilot-cli": allBut(),
-  kimi: allBut(),
-  kilo: allBut(),
-  hermes: allBut("instructions", "rules", "agents", "settings"),
-  qwen: allBut(),
-};
-
-/**
- * Each harness's settings file as the adapters declare it (the config surface with `settings` in
- * src/projection/adapters): the keys Canonfig always owns there, each written as one value, and the keys the
- * harness keeps for itself (`*` matches one segment). A key claim, `settings/<harness>#<key>`, may name only a
- * harness listed here and never a reserved key. tests/projection-adapters.test.ts fails when the two disagree.
- */
-export const SETTINGS_FILES: Partial<Record<HarnessId, { readonly owned: string[]; readonly reserved: string[] }>> = {
-  codex: { owned: ["mcp_servers"], reserved: [] },
-  "claude-code": { owned: ["hooks"], reserved: [] },
-  amp: { owned: ["amp\\.mcpServers"], reserved: [] },
-  "oh-my-pi": { owned: [], reserved: [] },
-  pi: { owned: [], reserved: [] },
-  "factory-droid": { owned: [], reserved: [] },
-  cursor: { owned: [], reserved: [] },
-  devin: { owned: ["hooks"], reserved: [] },
-  opencode: { owned: ["mcp"], reserved: ["provider"] },
-  "grok-build": { owned: ["mcp_servers"], reserved: ["model.*.api_key"] },
-  antigravity: { owned: [], reserved: ["trustedWorkspaces", "gcp"] },
-  "copilot-cli": { owned: [], reserved: [] },
-  kimi: { owned: ["hooks"], reserved: ["providers", "services.*.api_key"] },
-  kilo: { owned: ["mcp"], reserved: ["provider"] },
-  qwen: { owned: ["mcpServers", "hooks"], reserved: [] },
 };
 
 /**

@@ -69,6 +69,7 @@ export const SetupInventoryTool = Schema.Struct({
   executable: Schema.String,
   version: Schema.optional(Schema.String),
   verified: Schema.Boolean,
+  reason: Schema.optional(Schema.String),
 });
 export type SetupInventoryTool = typeof SetupInventoryTool.Type;
 

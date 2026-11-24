@@ -7,7 +7,7 @@ import { CliExitCode } from "./exit-codes.ts";
 
 export const programName = "canonfig";
 export const programDisplayName = "Canonfig";
-export const programVersion = "7.8.1";
+export const programVersion = "7.8.2";
 
 const helpHeader = `${programDisplayName} ${programVersion}`;
 
@@ -48,14 +48,16 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     ],
   },
   {
-    title: "MCP launcher",
+    title: "MCP launcher and proxy",
     areas: ["mcp"],
-    usage: ["mcp run <name>"],
+    usage: ["mcp run <name>", "mcp proxy [--port <port>]"],
     notes: [
       "Launch an applied MCP server with shared secrets resolved only in memory.",
       "Reads ~/.canonfig/ and its allowed local overlays. Stdout is reserved for MCP frames.",
       "Exit 20: missing secret; 21: credential store unavailable; 22: child could not start.",
       "Use secrets sync or secrets set to supply a missing secret, then restart the server.",
+      "Share one loopback process for Streamable HTTP servers marked proxy: true.",
+      "Start the proxy before syncing harnesses. Its default port is 17343.",
     ],
   },
   {
@@ -63,14 +65,14 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     areas: ["ui"],
     usage: [uiUsage],
     notes: [
-      "Open the local browser interface with live Overview status for this machine.",
+      "Set up this machine or manage its configuration in the browser. The workspace follows the machine's role.",
       "Runs in the foreground on 127.0.0.1 with a random port by default.",
       "--tailnet detects Tailscale or Headscale and binds only its local interface, with a MagicDNS sign-in URL.",
       "It requires kernel networking and MagicDNS, refuses --host/--origin, and never changes Serve or Funnel.",
       "--host binds a loopback or Tailscale address (100.64.0.0/10, fd7a:115c:a1e0::/48) to reach it over your tailnet.",
       "--origin also accepts an https proxy origin, such as tailscale serve's, and prints its sign-in URL; it needs --port.",
       "The printed sign-in URL works once. --no-open leaves opening it to you.",
-      "Press Ctrl-C to stop. Other screens remain available only in the public demo.",
+      "Press Ctrl-C to stop the browser server.",
     ],
   },
   {
@@ -145,7 +147,8 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     title: "Synchronization",
     areas: ["sync"],
     usage: [
-      "sync [--plan | --apply] [--no-input] [--review-local] [--no-backup]",
+      "sync [--plan | --apply] [--no-input] [--no-backup]",
+      "sync --plan --review-local [--no-backup]",
     ],
     notes: [
       "On an enrolled follower, sync fetches the latest authorized revision, mirrors its",
@@ -160,12 +163,13 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
       "lists every harness surface it would take over and whether it keeps a backup.",
       "--apply journals every action and verifies each resource independently. Before",
       "Canonfig first writes a harness surface it copies the prior content to a takeover",
-      "snapshot in ~/.canonfig/.backups/ (the first snapshot and the 4 most recent are kept).",
+      "snapshot in ~/.canonfig/.backups/. Canonfig keeps the first harness snapshot,",
+      "the first folder snapshot taken during import, and the four most recent snapshots.",
       "--no-backup takes over without a snapshot, as does \"backups\": false in",
       "~/.canonfig/local/local.jsonc.",
       "Outputs that canonfig.jsonc local.appendLocal shares with this machine keep its own",
       "text below the Source section, or its own entries beside Canonfig's. --review-local",
-      "with --plan writes each first adoption's exact text to private JSON files under",
+      "with an interactive plan writes each first adoption's exact text to private JSON files under",
       "~/.canonfig/.reviews/. They may hold secrets: read them locally, never share them.",
       "--no-input never prompts. Native schedules run: sync --apply --no-input --scheduled",
     ],
@@ -392,7 +396,14 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
   {
     title: "Upstream skills (details: canonfig skills --help)",
     areas: ["skills"],
-    usage: ["skills track|list|check|update [--root <path>] [--name <id>...] [--apply]", "skills auto [--root <path>] [--name <id>...] [--apply] [--once] [--interval <seconds>]"],
+    usage: [
+      "skills track --name <id> --path <path> --source <repo> --ref <ref> [--subdir <path>]",
+      "skills list",
+      "skills check [--name <id>]...",
+      "skills update [--name <id>]... [--apply | --dry-run]",
+      "skills auto [--name <id>]... [--apply | --dry-run] [--once] [--interval <seconds>]",
+    ],
+    notes: ["All skills commands accept --root <path> and --config <path>."],
   },
   {
     title: "Installer bindings (details: canonfig installer --help)",

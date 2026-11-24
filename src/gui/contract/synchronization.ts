@@ -59,6 +59,7 @@ export const GuiLocalItems = Schema.Struct({
   items: Schema.Array(GuiLocalItem),
   config: Schema.Record(Schema.String, Schema.Json),
   canonicalConfig: Schema.Record(Schema.String, Schema.Json),
+  settingsFiles: Schema.Record(Schema.String, Schema.Struct({ owned: Schema.Array(Schema.String), reserved: Schema.Array(Schema.String) })),
 });
 export interface GuiLocalItems extends Schema.Schema.Type<typeof GuiLocalItems> {}
 export const GuiLocalChange = Schema.Struct({

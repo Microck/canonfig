@@ -3,11 +3,12 @@ import { join, posix, win32 } from "node:path";
 
 import { Effect, Schema } from "effect";
 
-import { ContentDigest } from "../domain/brand.ts";
+import { ContentDigest, resourcesOwner } from "../domain/brand.ts";
 import type { RunId } from "../domain/brand.ts";
 import { TaggedError } from "../domain/tagged-error.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
-import type { MachinePath } from "../machine/machine-state.types.ts";
+import type { FileContent, MachinePath } from "../machine/machine-state.types.ts";
+import { sha256Hex } from "../profile/profile-codec.ts";
 import { getConfigPath, parseConfigDocument } from "../synchronization/config-codec.ts";
 import type { ConfigJson } from "../synchronization/config-value.ts";
 import type { ConfigFormat } from "./harness.ts";
@@ -133,11 +134,11 @@ export interface Snapshot {
 
 const snapshotName = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(?:-\d+)?$/u;
 /**
- * A snapshot is built under `.tmp-<id>` and renamed to `<id>` once its
+ * A snapshot is staged under its run's private name and renamed to its id once its
  * manifest is complete, so a capture that fails or is killed never leaves a
  * directory that looks like a snapshot.
  */
-const temporaryPrefix = ".tmp-";
+const stagingName = (run: RunId) => `.tmp-${sha256Hex(run)}`;
 
 /** Wrap a typed failure (machine, schema) with the path it concerns. */
 const snapshotError = (path: string) => (error: { readonly message: string }) =>
@@ -157,6 +158,9 @@ const backupEntries = (backups: string): Effect.Effect<ReadonlyArray<string>, Ta
     catch: (error) => new TakeoverSnapshotError({ path: backups, message: String(error) }),
   });
 
+const snapshotCandidates = (backups: string) =>
+  backupEntries(backups).pipe(Effect.map((names) => names.filter((name) => snapshotName.test(name)).sort()));
+
 /**
  * Snapshot ids, oldest first. Names sort chronologically. Only a directory
  * with a valid manifest is a snapshot; anything else in `.backups/` is never
@@ -164,7 +168,7 @@ const backupEntries = (backups: string): Effect.Effect<ReadonlyArray<string>, Ta
  */
 export const listSnapshots = (backups: string): Effect.Effect<ReadonlyArray<string>, TakeoverSnapshotError> =>
   Effect.gen(function*() {
-    const named = (yield* backupEntries(backups)).filter((name) => snapshotName.test(name)).sort();
+    const named = yield* snapshotCandidates(backups);
     return yield* Effect.filter(named, (id) => readManifest(join(backups, id), id).pipe(Effect.isSuccess));
   });
 
@@ -175,19 +179,19 @@ export const deleteSnapshot = (backups: string, id: string): Effect.Effect<void,
     catch: (error) => new TakeoverSnapshotError({ path: join(backups, id), message: String(error) }),
   });
 
+export const discardSnapshotStaging = (backups: string, run: RunId) =>
+  deleteSnapshot(backups, stagingName(run));
+
 /**
  * Keep the first harness snapshot, the harnesses' state before Canonfig ever
  * wrote, the first folder snapshot, the folder before an import first
  * replaced it, and the four most recent. Kept apart, so a folder backup taken
  * before any takeover never pushes the first harness snapshot out. Called
- * after a run that wrote a new snapshot did not roll back. Runs hold the run
- * lock, so a temporary directory left then belongs to a capture that was
- * killed and is removed too.
+ * after a run that wrote a new snapshot did not roll back. Recovery reconciles
+ * staging directories by the run that owns them.
  */
 export const pruneSnapshots = (backups: string): Effect.Effect<ReadonlyArray<string>, TakeoverSnapshotError> =>
   Effect.gen(function*() {
-    const stale = (yield* backupEntries(backups)).filter((name) => name.startsWith(temporaryPrefix));
-    yield* Effect.forEach(stale, (name) => deleteSnapshot(backups, name), { discard: true });
     const snapshots = yield* listSnapshots(backups);
     const holdsFolder = new Set<string>();
     for (const id of snapshots) {
@@ -216,7 +220,7 @@ const readManifest = (directory: string, id: string) =>
 /** The snapshot a run wrote, if it wrote one. */
 export const snapshotOfRun = (backups: string, run: RunId) =>
   Effect.gen(function*() {
-    for (const id of yield* listSnapshots(backups)) {
+    for (const id of yield* snapshotCandidates(backups)) {
       const manifest = yield* readManifest(join(backups, id), id).pipe(Effect.option);
       if (manifest._tag === "Some" && manifest.value.run === run) return id;
     }
@@ -331,8 +335,8 @@ const isNotFound = (error: { readonly message: string }) => /\b(?:ENOENT|ENOTDIR
 /**
  * Copy every unit's prior state into a new snapshot and return its id.
  * Nothing outside the units' targets is read. The snapshot is built under a
- * temporary name, removed again if the capture fails, and renamed to its id
- * only once the manifest is complete.
+ * run-specific staging directory and renamed to its id once complete. A
+ * Preparing run already owns this directory before capture begins.
  */
 export const writeTakeoverSnapshot = (
   backups: string,
@@ -349,8 +353,8 @@ export const writeTakeoverSnapshot = (
     const createdAt = new Date();
     const base = createdAt.toISOString().replaceAll(":", "-").replace(".", "-");
     let id = base;
-    for (let suffix = 1; existing.includes(id) || existing.includes(`${temporaryPrefix}${id}`); suffix += 1) id = `${base}-${suffix}`;
-    const directory = paths.join(backups, `${temporaryPrefix}${id}`);
+    for (let suffix = 1; existing.includes(id); suffix += 1) id = `${base}-${suffix}`;
+    const directory = paths.join(backups, stagingName(run));
     const fail = (path: string, message: string) => new TakeoverSnapshotError({ path, message });
     const at = (path: string) => machine.normalizePath({ path }).pipe(Effect.mapError(snapshotError(path)));
     const ensure = (path: string) =>
@@ -358,7 +362,7 @@ export const writeTakeoverSnapshot = (
     /** The copy location of a target, relative to the snapshot, with forward slashes. */
     const copyPath = (harness: string, target: string) =>
       [harness, ...paths.relative(home, target).split(paths.sep)].join("/");
-    const write = (copy: string, content: Uint8Array | { readonly file: string; readonly digest: ContentDigest }) =>
+    const write = (copy: string, content: FileContent) =>
       Effect.gen(function*() {
         const absolute = paths.join(directory, ...copy.split("/"));
         const relative = paths.relative(directory, absolute);
@@ -368,41 +372,44 @@ export const writeTakeoverSnapshot = (
         yield* ensure(paths.dirname(absolute));
         yield* machine.atomicWrite({ path: yield* at(absolute), content, mode: 0o600 }).pipe(Effect.mapError(snapshotError(absolute)));
       });
-    const inspect = (path: MachinePath) =>
-      machine.inspectPath(path).pipe(
+    const inspect = (path: MachinePath, anchor?: MachinePath) =>
+      machine.inspectPath(path, anchor).pipe(
         Effect.map((object) => object.kind),
         Effect.catchTag("MachineFilesystemError", (error) =>
           isNotFound(error) ? Effect.succeed("absent" as const) : Effect.fail(error)
         ),
         Effect.mapError(snapshotError(path.absolute)),
       );
-    const copyRegular = (path: MachinePath, copy: string) =>
+    const copyRegular = (path: MachinePath, copy: string, anchor?: MachinePath) =>
       Effect.gen(function*() {
-        const digest = yield* machine.digestFile({ path }).pipe(Effect.mapError(snapshotError(path.absolute)));
+        const digest = yield* machine.digestFile({ path, anchor }).pipe(Effect.mapError(snapshotError(path.absolute)));
         const sha256 = Schema.decodeUnknownSync(ContentDigest)(digest.value);
-        const mode = (yield* machine.permissions(path).pipe(Effect.mapError(snapshotError(path.absolute)))).mode;
-        yield* write(copy, { file: path.absolute, digest: sha256 });
+        const mode = (yield* machine.permissions(path, anchor).pipe(Effect.mapError(snapshotError(path.absolute)))).mode;
+        yield* write(copy, { file: path.absolute, anchor: anchor?.absolute, digest: sha256 });
         return { mode, sha256 };
       });
 
     const capture = Effect.gen(function*() {
+      for (const unit of units) {
+        const relative = paths.relative(home, unit.target);
+        if (paths.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${paths.sep}`)) {
+          return yield* fail(unit.target, "takeover target must remain inside the home directory");
+        }
+      }
       yield* ensure(directory);
       const entries: Array<SnapshotEntry> = [];
       const keys = new Map<string, Record<string, Record<string, ConfigJson>>>();
       for (const unit of units) {
         const base = { harness: unit.harness, surface: unit.surface, root: unit.root, target: unit.target };
-        const relative = paths.relative(home, unit.target);
-        if (paths.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${paths.sep}`)) {
-          return yield* fail(unit.target, "takeover target must remain inside the home directory");
-        }
         const path = yield* at(unit.target);
-        const object = yield* inspect(path);
+        const anchor = unit.harness === resourcesOwner ? yield* at(home) : undefined;
+        const object = yield* inspect(path, anchor);
         if (unit.kind === "config") {
           const format = unit.format!;
           const key = unit.key!;
           let value: ConfigJson | undefined;
           if (object === "regular") {
-            const bytes = yield* machine.readFile({ path, maximumBytes: 8 * 1024 * 1024 }).pipe(Effect.mapError(snapshotError(unit.target)));
+            const bytes = yield* machine.readFile({ path, anchor, maximumBytes: 8 * 1024 * 1024 }).pipe(Effect.mapError(snapshotError(unit.target)));
             const document = yield* Effect.try({
               try: () => parseConfigDocument(format, new TextDecoder().decode(bytes)),
               catch: (error) => fail(unit.target, `cannot read the owned keys: ${String(error)}`),
@@ -425,33 +432,33 @@ export const writeTakeoverSnapshot = (
         }
         if (unit.kind === "file") {
           if (object === "symlink") {
-            const symlinkTo = yield* machine.readSymlink(path).pipe(Effect.mapError(snapshotError(unit.target)));
+            const symlinkTo = yield* machine.readSymlink(path, anchor).pipe(Effect.mapError(snapshotError(unit.target)));
             entries.push({ ...base, kind: "file", state: "present", object: "symlink", symlinkTo });
             continue;
           }
           if (object !== "regular") return yield* fail(unit.target, `is a ${object}, not a regular file`);
           const copy = copyPath(unit.harness, unit.target);
-          entries.push({ ...base, kind: "file", state: "present", object: "regular", copy, ...(yield* copyRegular(path, copy)) });
+          entries.push({ ...base, kind: "file", state: "present", object: "regular", copy, ...(yield* copyRegular(path, copy, anchor)) });
           continue;
         }
         if (object !== "directory") return yield* fail(unit.target, `is a ${object}, not a directory`);
-        const mode = (yield* machine.permissions(path).pipe(Effect.mapError(snapshotError(unit.target)))).mode;
-        const listed = yield* machine.listDirectory(path).pipe(Effect.mapError(snapshotError(unit.target)));
+        const mode = (yield* machine.permissions(path, anchor).pipe(Effect.mapError(snapshotError(unit.target)))).mode;
+        const listed = yield* machine.listDirectory(path, anchor).pipe(Effect.mapError(snapshotError(unit.target)));
         const directoryEntries: Array<SnapshotDirectoryEntry> = [];
         for (const entry of listed) {
           const child = yield* machine.normalizePath({ path: entry.path, base: path }).pipe(Effect.mapError(snapshotError(unit.target)));
           if (entry.kind === "directory") {
-            const childMode = (yield* machine.permissions(child).pipe(Effect.mapError(snapshotError(child.absolute)))).mode;
+            const childMode = (yield* machine.permissions(child, anchor).pipe(Effect.mapError(snapshotError(child.absolute)))).mode;
             directoryEntries.push({ path: entry.path, object: "directory", mode: childMode });
           } else if (entry.kind === "symlink") {
             directoryEntries.push({
               path: entry.path,
               object: "symlink",
-              symlinkTo: yield* machine.readSymlink(child).pipe(Effect.mapError(snapshotError(child.absolute))),
+              symlinkTo: yield* machine.readSymlink(child, anchor).pipe(Effect.mapError(snapshotError(child.absolute))),
             });
           } else if (entry.kind === "regular") {
             const copy = `${copyPath(unit.harness, unit.target)}/${entry.path}`;
-            directoryEntries.push({ path: entry.path, object: "regular", copy, ...(yield* copyRegular(child, copy)) });
+            directoryEntries.push({ path: entry.path, object: "regular", copy, ...(yield* copyRegular(child, copy, anchor)) });
           } else {
             return yield* fail(child.absolute, `is a ${entry.kind}; Canonfig cannot back it up`);
           }
@@ -469,9 +476,7 @@ export const writeTakeoverSnapshot = (
       });
       return id;
     });
-    return yield* capture.pipe(
-      Effect.onError(() => Effect.tryPromise(() => rm(directory, { recursive: true, force: true })).pipe(Effect.ignore)),
-    );
+    return yield* capture;
   }).pipe(Effect.mapError((error) => error instanceof TakeoverSnapshotError ? error : snapshotError(backups)(error)));
 
 /** Where a snapshot entry's copied bytes live. */

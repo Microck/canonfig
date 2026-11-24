@@ -188,6 +188,46 @@ describe("self-update policy and package activation",()=>{
    expect(lease.suspended).toBe(false);
   } finally {lease.close();}
  });
+ it("holds a resident's lease only for its work and reports a package replaced while it was idle",async()=>{
+  const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
+  const lease=managedCommandLease(f.root,f.home);const readers=join(updateDirectory(f.root),"readers");
+  const replaced:string[]=[];
+  try {
+   lease.becomeResident(installed=>{replaced.push(installed);});
+   expect(readdirSync(readers)).toEqual([]);
+   const first=lease.hold();const second=lease.hold();
+   expect(readdirSync(readers)).toHaveLength(1);
+   expect((await update(f.root,true,"manual",f.runner,undefined,f.home)).status).toBe("deferred");
+   first();
+   expect(readdirSync(readers)).toHaveLength(1);
+   second();
+   expect(readdirSync(readers)).toEqual([]);
+   expect((await update(f.root,true,"manual",f.runner,undefined,f.home)).status).toBe("updated");
+   expect(()=>lease.hold()).toThrow("restarting on the new release");
+   expect(replaced).toEqual(["4.2.1"]);
+   expect(readdirSync(readers)).toEqual([]);
+  } finally {lease.close();}
+ });
+ it("lets commands start while an updater downloads and stages, then defers instead of activating under them",async()=>{
+  const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);
+  let started:(()=>void)|undefined;
+  const runner:Runner=async(input,signal)=>{
+   if(input.args[1]==="install")started=commandLease(f.root);
+   return f.runner(input,signal);
+  };
+  try {
+   expect((await update(f.root,true,"manual",runner,undefined,f.home)).status).toBe("deferred");
+   expect(started).toBeTypeOf("function");
+   expect(readdirSync(updateDirectory(f.root)).filter(name=>name.startsWith("stage-"))).toEqual([]);
+  } finally {started?.();}
+  expect(installation(f.root,f.home).version).toBe("4.2.0");
+  const updater=acquireGate(updateDirectory(f.root),0,"updater");
+  try {
+   await expect(update(f.root,true,"manual",f.runner,undefined,f.home)).rejects.toThrow("busy");
+   const release=commandLease(f.root)!;release();
+  } finally {updater();}
+  expect((await update(f.root,true,"manual",f.runner,undefined,f.home)).status).toBe("updated");
+ });
  it.each(["never enabled", "disabled"])("activates fleet releases while standalone updates are %s without bypassing active commands",async(state)=>{
   const f=fixture();
   if(state==="disabled") { await enable(f.root,f.npmCli,true,f.runner,f.home); disable(f.root); }
@@ -236,6 +276,24 @@ describe("self-update policy and package activation",()=>{
    await expect(lease.selfUpdate(async()=>undefined,()=>true)).rejects.toThrow("already stopping or performing");
    expect(readdirSync(join(updateDirectory(f.root),"readers"))).toEqual([]);
    expect(existsSync(join(updateDirectory(f.root),"pending.json"))).toBe(true);
+  } finally {lease.close();}
+ });
+ it("refuses a resident's work while a failed activation's journal is pending, then admits it once resolved",async()=>{
+  const f=fixture();await enable(f.root,f.npmCli,true,f.runner,f.home);const lease=managedCommandLease(f.root);
+  const journal=join(updateDirectory(f.root),"pending.json");
+  try {
+   lease.becomeResident(()=>{throw new Error("not replaced");});
+   await expect(lease.selfUpdate(async()=>{
+    writeFileSync(journal,"{}");
+    throw new Error("activation interrupted");
+   },()=>true)).rejects.toThrow("activation interrupted");
+   expect(lease.suspended).toBe(false);
+   expect(()=>lease.hold()).toThrow("Interrupted self-update");
+   expect(readdirSync(join(updateDirectory(f.root),"readers"))).toEqual([]);
+   rmSync(journal);
+   const release=lease.hold();
+   expect(readdirSync(join(updateDirectory(f.root),"readers"))).toHaveLength(1);
+   release();
   } finally {lease.close();}
  });
  it("refuses concurrent handoffs and never reacquires after close during a handoff",async()=>{

@@ -89,6 +89,8 @@ export interface StartSourceServerInput {
   /** Source limit must be a safe integer >= the 1 MiB publication limit. */
   readonly maximumMetadataBytes?: number | undefined;
   readonly maximumBlobBytes?: number | undefined;
+  /** Takes the command lease for one request and returns its release (see ManagedCommandLease.hold). */
+  readonly hold?: (() => () => void) | undefined;
 }
 
 export interface SourceServerHandle {

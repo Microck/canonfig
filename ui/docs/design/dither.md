@@ -41,7 +41,7 @@ Empty-state and guidance art revealed once on mount in 600ms. Pass `motif` for a
 
 ## StateBand
 
-The dithered band behind a machine-state header. `mode="idle"` drifts in the tone's own way (ok calm, warn breathing, act flowing, bad glitching, muted nearly still); `mode="running"` replaces that with a sweep during a publish or sync. Place it as the first child of a `relative isolate overflow-hidden` section with `className="-z-10"`.
+The dithered band behind a machine-state header. Each state renders its own right-weighted motif in a four-stop Ender palette (`paper -> dim -> tone -> bright`) so state reads by shape as well as colour: `ok` orbital iso-contours (Bayer 8x8), `warn` diagonal moire fault seam (Bayer 4x4), `act` right-pointing beacon chevrons (Bayer 4x4), `bad` WCAG-safe telemetry shear and dropouts (Bayer 4x4), `muted` quiet strata (Bayer 8x8), and `mode="running"` a propagating packet wavefront (Bayer 8x8). Place it as the first child of a `relative isolate overflow-hidden` section with `className="-z-10"`.
 
 ```tsx
 // Correct (kit.tsx StateHeader)
