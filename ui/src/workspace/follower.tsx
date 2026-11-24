@@ -1,4 +1,5 @@
 import type { GuiLocalItems } from "../../../src/gui/contract/synchronization";
+import type { FollowerLive } from "./follower-types";
 import { ArchiveExportButton } from "./archive-transfer";
 // Shared Follower screens read machine data and operations from the workspace provider.
 import { useState, useSyncExternalStore, type ReactNode } from "react";
@@ -483,6 +484,78 @@ export function SyncView() {
 }
 
 
+/** 24-hour local time, with the date when it isn't today. */
+function passTime(at: string) {
+  const when = new Date(at);
+  const time = when.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  return when.toDateString() === new Date().toDateString() ? `today at ${time}` : `${when.toLocaleDateString("en-GB")} at ${time}`;
+}
+
+/**
+ * The folder watcher (`canonfig watch`): a native service on this Source that
+ * applies the Canonfig folder about a second after each change.
+ */
+function WatchSetting({ live }: { live: FollowerLive }) {
+  const [saving, setSaving] = useState(false);
+  const watch = live.watch;
+  if (!watch) {
+    // A failed status read keeps the section and says why, instead of the switch silently vanishing.
+    return live.watchError && <div className="space-y-2 border-t border-border px-[18px] py-5">
+      <SectionLabel>Apply changes automatically</SectionLabel>
+      <p role="alert" className="text-sm text-bad">Canonfig couldn't check the watcher: {live.watchError.failure.message}</p>
+    </div>;
+  }
+  const on = watch.manager.installed;
+  const healthy = watch.state === "running";
+  const last = watch.lastPass;
+  const change = async (enabled: boolean) => {
+    setSaving(true);
+    try { await live.setWatch(enabled); } finally { setSaving(false); }
+  };
+  return (
+    <div className="space-y-2 border-t border-border px-[18px] py-5">
+      <SectionLabel>
+        Apply changes automatically{" "}
+        <Hint label="applying changes automatically">
+          Canonfig applies this machine's Canonfig folder to its harnesses about a second after each change, including skills you add. Other machines still get changes only when you publish.
+        </Hint>
+      </SectionLabel>
+      <div className="flex min-h-10 flex-wrap items-center gap-3 pointer-coarse:min-h-11">
+        <Switch aria-label="Apply changes automatically" checked={on} disabled={saving} onCheckedChange={(enabled) => { void change(enabled); }} />
+        {on && <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          <StatusMark kind={healthy ? "ok" : "bad"} />
+          {healthy ? "Watching the Canonfig folder" : watch.state === "drifted" ? "Set up by another Canonfig installation" : "Not running"}
+        </span>}
+        {on && !healthy && <Button variant="outline" size="sm" disabled={saving} onClick={() => { void change(true); }}>{saving ? "Starting…" : "Start watching"}</Button>}
+      </div>
+      {on && !healthy && <p className="text-sm text-muted-foreground">Logs: <Mono>{watch.logs}</Mono></p>}
+      {last && <p className="text-sm text-muted-foreground">
+        {last.outcome === "applied" ? `Last applied ${passTime(last.at)}.` : `A change ${passTime(last.at)} wasn't applied: ${last.message}`}
+      </p>}
+    </div>
+  );
+}
+
+/**
+ * A watcher installed while this machine was a Source or unenrolled. It can't
+ * run on a Follower (it refuses and its service manager keeps restarting it),
+ * so the Follower's Sync page offers to remove it.
+ */
+function LeftoverWatcher({ live }: { live: FollowerLive }) {
+  const [removing, setRemoving] = useState(false);
+  if (!live.watch?.manager.installed) return null;
+  return (
+    <div className="space-y-2 border-t border-border px-[18px] py-5">
+      <SectionLabel>Folder watcher</SectionLabel>
+      <p className="text-sm text-muted-foreground">A watcher from before this machine joined is still installed. It can't run on a follower, which gets changes when it syncs, so remove it.</p>
+      <Button variant="outline" size="sm" disabled={removing} onClick={() => {
+        setRemoving(true);
+        void live.setWatch(false).finally(() => { setRemoving(false); });
+      }}>{removing ? "Removing…" : "Remove watcher"}</Button>
+    </div>
+  );
+}
+
 function SyncForm() {
   const ws = useWorkspace();
   const live = ws.followerLive;
@@ -588,6 +661,7 @@ function SyncForm() {
             </SectionLabel>
             <Button variant="outline" size="sm" disabled={running || blocks.blocked !== null} onClick={live.createReview}>Write preview</Button>
           </div>
+          {localProjection ? <WatchSetting live={live} /> : <LeftoverWatcher live={live} />}
         </> : <>
         <section data-tour="sync-summary" className="relative isolate overflow-hidden border-b border-border" aria-live="polite">
           <StateBand tone={ws.phase === "plan" || held > 0 ? "warn" : "ok"} mode={running ? "running" : "idle"} className="-z-10 opacity-70" />

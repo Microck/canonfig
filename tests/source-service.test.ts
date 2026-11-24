@@ -11,10 +11,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { CertificateFingerprint } from "../src/domain/brand.ts";
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
-import { renderSourceService } from "../src/source-service/source-service.render.ts";
+import { type NativeServiceSpecification, renderNativeService } from "../src/machine/native-service.ts";
 import { sourceServiceLayer } from "../src/source-service/source-service.layer.ts";
 import { SourceService } from "../src/source-service/source-service.service.ts";
-import type { SourceServiceSpecification } from "../src/source-service/source-service.types.ts";
 
 const decode = Schema.decodeUnknownSync;
 const sourceFingerprint = decode(CertificateFingerprint)("b".repeat(64));
@@ -37,8 +36,9 @@ const serveArguments = [
 ];
 
 const specification = (
-  overrides: Partial<SourceServiceSpecification>,
-): SourceServiceSpecification => ({
+  overrides: Partial<NativeServiceSpecification>,
+): NativeServiceSpecification => ({
+  name: { stem: "canonfig-source", launchdLabel: "dev.canonfig.source", description: "Canonfig Source server" },
   platform: "linux",
   home: "/home/source",
   executable: "/usr/local/bin/node",
@@ -50,7 +50,7 @@ const specification = (
 
 describe("source service definitions", () => {
   it("quotes systemd paths and escapes native argument expansion", async () => {
-    const rendered = await Effect.runPromise(renderSourceService(specification({
+    const rendered = await Effect.runPromise(renderNativeService(specification({
       home: "/home/100% source",
       executable: "/home/100% source/.nvm/node",
       environment: [
@@ -76,7 +76,7 @@ describe("source service definitions", () => {
   });
 
   it("renders a launchd agent that runs at login and restarts after a crash", async () => {
-    const rendered = await Effect.runPromise(renderSourceService(specification({
+    const rendered = await Effect.runPromise(renderNativeService(specification({
       platform: "macos",
       home: "/Users/source",
       executable: "/opt/homebrew/opt/node@24/bin/node",
@@ -108,7 +108,7 @@ describe("source service definitions", () => {
   });
 
   it("renders an at-logon Task Scheduler task without a time limit", async () => {
-    const rendered = await Effect.runPromise(renderSourceService(specification({
+    const rendered = await Effect.runPromise(renderNativeService(specification({
       platform: "windows",
       home: "C:\\Users\\Source User",
       executable: "C:\\Program Files\\nodejs\\node.exe",
@@ -135,7 +135,7 @@ describe("source service definitions", () => {
   });
 
   it("refuses environment Task Scheduler cannot carry", async () => {
-    const error = await Effect.runPromise(Effect.flip(renderSourceService(specification({
+    const error = await Effect.runPromise(Effect.flip(renderNativeService(specification({
       platform: "windows",
       home: "C:\\Users\\source",
       principal: "HOST\\source",
@@ -203,7 +203,7 @@ describe.skipIf(process.platform === "win32")("systemd Source service lifecycle"
     const notServing = await run(Effect.flip(Effect.flatMap(SourceService, (service) =>
       service.install({ hostname: "127.0.0.1", port }, identity)
     )));
-    expect(notServing).toMatchObject({ _tag: "SourceServiceVerificationError", state: "not-serving" });
+    expect(notServing).toMatchObject({ _tag: "NativeServiceVerificationError", state: "not-serving" });
     const unit = await readFile(
       join(root, ".config", "systemd", "user", "canonfig-source.service"),
       "utf8",
@@ -266,7 +266,7 @@ describe.skipIf(process.platform === "win32")("systemd Source service lifecycle"
         sourceFingerprint,
       })
     )));
-    expect(error._tag).toBe("SourceServiceManagerError");
+    expect(error._tag).toBe("NativeServiceManagerError");
     const status = await run(Effect.flatMap(SourceService, (service) => service.status(undefined)));
     expect(status).toMatchObject({
       endpoint: `https://127.0.0.1:${port}`,
@@ -281,7 +281,7 @@ describe.skipIf(process.platform === "win32")("systemd Source service lifecycle"
     await mkdir(join(root, ".canonfig"), { recursive: true });
     await writeFile(join(root, ".canonfig/source-service.json"), "{ broken");
     const error = await run(Effect.flip(Effect.flatMap(SourceService, (service) => service.status(undefined))));
-    expect(error).toMatchObject({ _tag: "SourceServiceConfigurationError" });
+    expect(error).toMatchObject({ _tag: "NativeServiceConfigurationError" });
     expect(error.message).toContain("source-service.json");
   });
 
@@ -290,13 +290,13 @@ describe.skipIf(process.platform === "win32")("systemd Source service lifecycle"
     await mkdir(join(root, ".canonfig"), { recursive: true });
     await writeFile(join(root, ".canonfig/source-service.json.lock"), "other operation");
     const removed = await run(Effect.flip(Effect.flatMap(SourceService, (service) => service.remove())));
-    expect(removed).toMatchObject({ _tag: "SourceServiceConfigurationError" });
+    expect(removed).toMatchObject({ _tag: "NativeServiceConfigurationError" });
     const installed = await run(Effect.flip(Effect.flatMap(SourceService, (service) =>
       service.install({ hostname: "127.0.0.1", port: 23456 }, {
         tlsFingerprint: decode(CertificateFingerprint)("a".repeat(64)), sourceFingerprint,
       })
     )));
-    expect(installed).toMatchObject({ _tag: "SourceServiceConfigurationError" });
+    expect(installed).toMatchObject({ _tag: "NativeServiceConfigurationError" });
     await expect(access(join(root, "systemctl.calls"))).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("retains interrupted removal intent and refuses reinstall until removal finishes", async () => {
@@ -311,7 +311,7 @@ describe.skipIf(process.platform === "win32")("systemd Source service lifecycle"
     await mkdir(join(root, ".config/systemd/user"), { recursive: true });
     await writeFile(join(root, ".config/systemd/user/canonfig-source.service"), "installed definition");
     const removed = await run(Effect.flip(Effect.flatMap(SourceService, (service) => service.remove())));
-    expect(removed._tag).toBe("SourceServiceManagerError");
+    expect(removed._tag).toBe("NativeServiceManagerError");
     expect(JSON.parse(await readFile(join(root, ".canonfig/source-service.json"), "utf8")))
       .toMatchObject({ version: 2, registration: { _tag: "Removing", requested } });
     const installed = await run(Effect.flip(Effect.flatMap(SourceService, (service) =>
@@ -319,7 +319,7 @@ describe.skipIf(process.platform === "win32")("systemd Source service lifecycle"
         tlsFingerprint: decode(CertificateFingerprint)("a".repeat(64)), sourceFingerprint,
       })
     )));
-    expect(installed).toMatchObject({ _tag: "SourceServiceConfigurationError" });
+    expect(installed).toMatchObject({ _tag: "NativeServiceConfigurationError" });
     expect(installed.message).toContain("finish");
     const status = await run(Effect.flatMap(SourceService, (service) => service.status(undefined)));
     expect(status.endpoint).toBe("https://127.0.0.1:23456");
@@ -337,7 +337,7 @@ describe.skipIf(process.platform === "win32")("systemd Source service lifecycle"
       })
     )));
 
-    expect(error._tag).toBe("SourceServiceManagerError");
+    expect(error._tag).toBe("NativeServiceManagerError");
     expect(error.message).toContain("no user session bus");
     expect(error.message).toContain("loginctl enable-linger");
   });

@@ -1,9 +1,7 @@
 import type { CertificateFingerprint } from "../domain/brand.ts";
 import type { TailnetReport } from "../domain/tailnet.ts";
-import type {
-  MachinePlatform,
-  ProcessEnvironmentEntry,
-} from "../machine/machine-state.types.ts";
+import type { MachinePlatform } from "../machine/machine-state.types.ts";
+import type { NativeServiceManagerState, NativeServiceMechanism } from "../machine/native-service.ts";
 
 export type SourceServiceHost = "127.0.0.1" | "::1" | "tailnet";
 
@@ -19,50 +17,6 @@ export interface SourceServiceIdentity {
   readonly sourceFingerprint: string;
 }
 
-export type SourceServiceMechanism =
-  | "systemd-user-service"
-  | "launchd-user-agent"
-  | "task-scheduler-logon";
-
-/** Everything a native definition is rendered from; pure data, no machine access. */
-export interface SourceServiceSpecification {
-  readonly platform: MachinePlatform;
-  readonly home: string;
-  readonly executable: string;
-  readonly arguments: ReadonlyArray<string>;
-  /** Carried into the service where the manager supports it (not Task Scheduler). */
-  readonly environment: ReadonlyArray<ProcessEnvironmentEntry>;
-  /** launchd output file; systemd uses the journal and Task Scheduler its history. */
-  readonly logPath: string;
-  /** Windows account the logon trigger and principal name. */
-  readonly principal?: string | undefined;
-}
-
-export interface RenderedSourceService {
-  readonly platform: MachinePlatform;
-  readonly mechanism: SourceServiceMechanism;
-  /** Unit name, launchd label, or Task Scheduler path. */
-  readonly serviceName: string;
-  /** Where the definition file lives; Task Scheduler keeps its own store. */
-  readonly definitionPath?: string | undefined;
-  readonly definition: string;
-  /** Fingerprint embedded where the manager rewrites the definition (Task Scheduler). */
-  readonly fingerprint: string;
-}
-
-/**
- * What the native manager reports. `active` means the manager says the
- * process is running now; `enabled` means it will start at login or boot.
- */
-export interface SourceServiceManagerState {
-  readonly installed: boolean;
-  readonly matches: boolean;
-  readonly enabled: boolean;
-  readonly active: boolean;
-  readonly state: string;
-  readonly pid?: number | undefined;
-}
-
 export type SourceServiceState =
   | "not-installed"
   | "running"
@@ -73,13 +27,13 @@ export type SourceServiceState =
 export interface SourceServiceStatus {
   readonly state: SourceServiceState;
   readonly platform: MachinePlatform;
-  readonly mechanism: SourceServiceMechanism;
+  readonly mechanism: NativeServiceMechanism;
   readonly serviceName: string;
   readonly definitionPath?: string | undefined;
   readonly endpoint: string;
   readonly requested: SourceServiceInput;
   readonly tailnet: TailnetReport;
-  readonly manager: SourceServiceManagerState;
+  readonly manager: NativeServiceManagerState;
   /** The endpoint answered with this Source's pinned TLS and signing identity. */
   readonly serving: boolean;
   /** Manager lifecycle and credential-access constraints for unattended operation. */

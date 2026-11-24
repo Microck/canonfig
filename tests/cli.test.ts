@@ -102,6 +102,10 @@ const recordingLayers = (
     scheduleStatus: () => invoke("schedule.status"),
     runSchedule: (input) => invoke("schedule.run", input),
     removeSchedule: () => invoke("schedule.remove"),
+    watch: () => invoke("watch"),
+    watchStatus: () => invoke("watch.status"),
+    enableWatch: () => invoke("watch.enable"),
+    disableWatch: () => invoke("watch.disable"),
     doctor: () => invoke("doctor"),
     startTunnel: (input) => invoke("tunnel.start", input),
     restartTunnel: (input) => invoke("tunnel.restart", input),
@@ -233,6 +237,10 @@ describe("typed CLI command boundary", () => {
     [["schedule", "run"], "schedule.run"],
     [["schedule", "run", "--timeout-ms", "600000"], "schedule.run"],
     [["schedule", "remove"], "schedule.remove"],
+    [["watch"], "watch"],
+    [["watch", "enable"], "watch.enable"],
+    [["watch", "status"], "watch.status"],
+    [["watch", "disable"], "watch.disable"],
   ] as const)("routes %j through %s", async (arguments_, expectedRoute) => {
     const result = await execute([...arguments_, "--json"]);
     expect(result.exitCode).toBe(CliExitCode.success);

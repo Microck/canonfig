@@ -12,6 +12,7 @@ import type {
 } from "./source-commands.ts";
 import type { FollowerAgentHarnessConfiguration } from
   "../synchronization/follower-sync-config.ts";
+import type { WatchPass } from "../gui/contract/synchronization.ts";
 
 export interface FollowerEnrollInput {
   readonly invitation: EnrollmentInvitationGrant;
@@ -32,6 +33,17 @@ export interface SynchronizeInput {
   readonly reviewLocal?: boolean | undefined;
   /** GUI Apply must match the plan the person reviewed. CLI apply plans immediately. */
   readonly expectedPlanDigest?: string | undefined;
+}
+
+export interface WatchInput {
+  /**
+   * Take the self-update lease for one pass and return its release. Between
+   * passes the watcher holds none, so an update is never deferred by an idle
+   * watcher.
+   */
+  readonly hold: () => () => void;
+  /** Called after each pass with what it did. */
+  readonly report: (pass: WatchPass) => void;
 }
 
 /** CLI-specific work runs inside the same invocation boundary as synchronization. */
@@ -167,6 +179,16 @@ export interface FollowerCommandsService {
     input: { readonly timeoutMilliseconds: number },
   ) => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly removeSchedule: () => Effect.Effect<CliPayload, CliCommandFailure>;
+  /**
+   * Apply the Canonical Folder each time it changes, until interrupted. A
+   * Source or unenrolled machine only: a Follower applies its Source's
+   * revisions on its schedule instead.
+   */
+  readonly watch: (input: WatchInput) => Effect.Effect<CliPayload, CliCommandFailure>;
+  readonly watchStatus: () => Effect.Effect<CliPayload, CliCommandFailure>;
+  /** Install and start the native user service that runs `canonfig watch`. */
+  readonly enableWatch: () => Effect.Effect<CliPayload, CliCommandFailure>;
+  readonly disableWatch: () => Effect.Effect<CliPayload, CliCommandFailure>;
   readonly doctor: (
     input: DoctorCommandInput,
   ) => Effect.Effect<CliPayload, CliCommandFailure>;

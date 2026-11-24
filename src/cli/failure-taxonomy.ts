@@ -546,15 +546,15 @@ export const failureTaxonomy = {
     (error) =>
       `the managed tunnel ${text(error.endpoint)} is down; run \`canonfig tunnel start\``,
   ),
-  SourceServiceConfigurationError: declared(
+  NativeServiceConfigurationError: declared(
     "usage-or-configuration",
     (error) => `${text(error.operation)} cannot be configured on this machine`,
   ),
-  SourceServiceManagerError: declared(
+  NativeServiceManagerError: declared(
     "human-action-required",
     (error) => `the native service manager could not ${text(error.operation)}`,
   ),
-  SourceServiceVerificationError: declared(
+  NativeServiceVerificationError: declared(
     "verification-or-apply-failure",
     (error) => `${text(error.operation)} did not converge: ${text(error.state)}`,
   ),

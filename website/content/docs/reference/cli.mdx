@@ -1065,6 +1065,53 @@ next invocation's synchronization outcome and run id in human output or the
 Timeout exits 7 and does not stop the job, which may still be running. Check
 `canonfig schedule status` and `canonfig status` before retrying.
 
+## Automatic local sync
+
+```bash
+canonfig watch
+canonfig watch enable
+canonfig watch status
+canonfig watch disable
+```
+
+`watch` runs on the Source or an unenrolled machine. It runs
+`sync --apply --no-input` when it starts, then again 0.5 seconds after the last
+change to the folder entries that projection reads: `canonfig.jsonc`,
+`AGENTS.md`, `rules/`, `skills/`, `agents/`, `commands/`, `hooks/`, `files/`
+and `local/`. Changes Canonfig makes to its own state, journals and backups do
+not start a run. Each run reports its result: applied runs on stdout, failed
+runs on stderr with their exit category. A failed run does not stop the
+watcher. It waits for the next change, and retries once after 10 seconds when
+another run held the lock. `watch` runs until you stop it. A Follower refuses
+it with exit 2, because it applies its Source's revisions when it syncs. Use
+[`schedule set`](#scheduling) there.
+
+`watch enable` runs `watch` as a user service: a systemd user unit
+`canonfig-watch.service` on Linux, a LaunchAgent `dev.canonfig.watch` on macOS,
+or a Task Scheduler at-logon task `Canonfig\canonfig-watch` on Windows. It
+waits up to 10 seconds for the manager to report the watcher running, and exits
+7 otherwise, leaving the service installed so you can inspect it. Running it
+again on a running, current service changes nothing. On Linux it does not
+enable lingering, so the watcher runs while you have a login session. The
+service starts with the manager's environment, not your shell's. If a harness
+root moves only through a variable your shell sets, such as `CODEX_HOME`, the
+watcher's runs refuse to project into a second location until the service sees
+the same value.
+
+`watch status` reports one of the following states, plus the latest run in
+`lastPass`:
+
+| State | Exit | Meaning |
+| --- | ---: | --- |
+| `running` | 0 | Installed and running. |
+| `not-installed` | 0 | No service. |
+| `not-running` | 3 | Installed but stopped. |
+| `drifted` | 4 | The service definition changed. Run `watch enable` again. |
+
+`watch disable` stops and deletes the service. Publishing to Followers stays
+[`source publish`](#source-publish). See
+[Apply changes automatically](/docs/how-to/apply-changes-automatically).
+
 ## MCP launcher
 
 ```bash

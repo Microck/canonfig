@@ -218,6 +218,8 @@ it("serves real role-gated secrets and a verified Source archive without leaking
   ] as const) expect((await api.call(path, method, body)).payload, path).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   const unconfigured = await gui(fixture("unconfigured"));
   expect((await unconfigured.call("/api/schedule", "DELETE", {})).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  // A Source can turn on the folder watcher; reading it never starts the service manager.
+  expect((await api.call("/api/watch")).payload).toMatchObject({ state: "not-installed", manager: { installed: false } });
   const exported = await api.call("/api/exports", "POST", { includeHarnesses: false });
   expect(exported.status).toBe(200);
   const archive = Schema.decodeUnknownSync(GuiArchiveDownload)(exported.payload);
@@ -378,6 +380,11 @@ it("plans and applies an enrolled follower and performs digest-checked local ope
     const refused = await api.call(path, path === "/api/enrollment" || path === "/api/schedule" ? "DELETE" : "POST", { unexpected: true });
     expect(refused.payload, path).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   }
+  // A Follower's folder is its Source's mirror: it can't turn the watcher on,
+  // but it can read and remove one it kept from before it enrolled.
+  expect((await api.call("/api/watch", "PUT", {})).payload).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+  expect((await api.call("/api/watch")).payload).toMatchObject({ state: "not-installed" });
+  expect((await api.call("/api/watch", "DELETE", {})).payload).toMatchObject({ change: "unchanged" });
   const plan = await api.operation("/api/sync/plan");
   expect(plan.state).toBe("succeeded");
   const applied = await api.operation("/api/sync/apply", Schema.decodeUnknownSync(GuiSyncApplyRequest)(plan.result));

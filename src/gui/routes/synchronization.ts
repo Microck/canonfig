@@ -67,6 +67,8 @@ export const synchronizationRoutes = Effect.gen(function*() {
   );
   const follower = <A>(operation: Effect.Effect<A, CliCommandFailure>) =>
     role(["follower"]).pipe(Effect.andThen(operation), Effect.map(printable));
+  const anyRole = <A>(operation: Effect.Effect<A, CliCommandFailure>) =>
+    role(["source", "follower", "unconfigured"]).pipe(Effect.andThen(operation), Effect.map(printable));
   const both = <A>(operation: Effect.Effect<A, CliCommandFailure>) =>
     role(["source", "follower"]).pipe(Effect.andThen(operation), Effect.map(printable));
   const localTarget = role(["source", "follower"]).pipe(Effect.map((session) => ({
@@ -158,6 +160,15 @@ export const synchronizationRoutes = Effect.gen(function*() {
     )),
     mutationRoute("PUT", "/api/schedule", GuiScheduleRequest, (input) => follower(commands.setSchedule(input))),
     mutationRoute("DELETE", "/api/schedule", EmptyBody, () => follower(commands.removeSchedule())),
+    // Every role can read and remove a watcher: a machine that enrolled after
+    // turning it on must be able to clean it up. enableWatch itself refuses on
+    // a Follower, whose folder is its Source's mirror.
+    // An unhealthy watcher fails the CLI status with the report as details; the page shows that report.
+    queryRoute("/api/watch", () => anyRole(commands.watchStatus().pipe(
+      Effect.catch((error) => error.details === undefined ? Effect.fail(error) : Effect.succeed(error.details)),
+    ))),
+    mutationRoute("PUT", "/api/watch", EmptyBody, () => anyRole(commands.enableWatch())),
+    mutationRoute("DELETE", "/api/watch", EmptyBody, () => anyRole(commands.disableWatch())),
     queryRoute("/api/harnesses", () => both(commands.harnesses({}))),
     mutationRoute("PUT", "/api/harnesses", GuiHarnessRequest, (change) => both(commands.harnesses({ change }))),
     queryRoute("/api/local/overlays", () => localTarget.pipe(

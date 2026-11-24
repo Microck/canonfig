@@ -1,5 +1,5 @@
 import type { Schema } from "effect";
-import type { GuiLocalItems, GuiLocalWrite, GuiLocalConfigRequest, GuiSecretSummary, GuiScheduleStatus } from "../../../src/gui/contract/synchronization";
+import type { GuiLocalItems, GuiLocalWrite, GuiLocalConfigRequest, GuiSecretSummary, GuiScheduleStatus, GuiWatchStatus } from "../../../src/gui/contract/synchronization";
 import type { GuiEnrollment, GuiEnrollmentTunnelInput, GuiInvitationInspection } from "../../../src/gui/contract/enrollment";
 import type { GuiOperation } from "../../../src/gui/contract/operations";
 import type { Schedule } from "./schedule";
@@ -34,6 +34,12 @@ export interface FollowerLive {
   createReview: () => void;
   saveSchedule: (schedule: Schedule) => Promise<boolean>;
   removeSchedule: () => Promise<boolean>;
+  /** The folder watcher: a Source's setting, or one a Follower kept from before it enrolled. Null before it loads. */
+  watch: GuiWatchStatus | null;
+  /** Why the watcher's status couldn't be read; shown in place of the control. */
+  watchError: GuiRequestError | null;
+  /** Install (true) or remove (false) the native service that applies folder changes automatically. */
+  setWatch: (enabled: boolean) => Promise<boolean>;
   saveItems: (input: typeof GuiLocalWrite.Type) => Promise<boolean>;
   savePreferences: (input: typeof GuiLocalConfigRequest.Type) => Promise<boolean>;
   refreshSecrets: () => void;

@@ -1,0 +1,75 @@
+---
+title: Apply changes automatically
+description: Make the Source or an unenrolled machine apply its Canonfig folder to its harnesses each time you edit AGENTS.md, add a skill or change canonfig.jsonc.
+---
+
+Without a watcher, an edit to `~/.canonfig/` reaches this machine's harnesses
+only when you run `canonfig sync --apply`. The folder watcher runs that sync
+for you about a second after each change, so a new skill or an edited
+`AGENTS.md` is in place before you start the next agent session. Claude Code
+also picks up a changed skill in a session that is already open.
+
+The watcher applies this machine's own folder. Other machines still get your
+changes only when you [publish a revision](/docs/how-to/publish-from-the-folder).
+A Follower Machine syncs [on a schedule](/docs/how-to/manage-schedules) instead.
+
+## Use the browser
+
+Open `canonfig ui` on the Source and choose **Local sync**. Turn on **Apply
+changes automatically**. The page then shows whether the watcher is running and
+what its latest run did. Turn the switch off to remove the watcher.
+
+## Turn it on from the command line
+
+```bash
+canonfig watch enable
+```
+
+This installs a user service that starts at login: a systemd user unit on
+Linux, a LaunchAgent on macOS, or a Task Scheduler at-logon task on Windows. It
+applies the folder once when it starts, then after each change. On macOS, run
+the command from the logged-in desktop session, not over SSH.
+
+Check it:
+
+```bash
+canonfig watch status
+```
+
+`state` is `running` while the watcher is applying changes, and `lastPass`
+shows when its latest run finished and whether it applied the folder. Turn it
+off:
+
+```bash
+canonfig watch disable
+```
+
+To watch only while a terminal is open, run `canonfig watch` and stop it with
+Ctrl+C. Each run reports its result in the terminal.
+
+## What a run does
+
+Each run is the same as `canonfig sync --apply --no-input`, with the same
+takeover snapshots, drift protection and journal. A run waits until the folder
+has been quiet for half a second, so an installer writing a skill file by file
+gets one run, not one per file.
+
+A run that cannot finish is reported and the watcher keeps going. If a harness
+file was edited outside Canonfig, the run reports Follower Drift and leaves that
+file as you left it, as a manual sync would. Fix the cause, then save any file
+in the folder or run `canonfig sync --apply` yourself.
+
+## If the watcher stops
+
+`watch status` exits 3 with `not-running` when the service manager stopped the
+watcher. Its logs are in the location `logs` names: `journalctl --user -u
+canonfig-watch.service` on Linux, `~/.canonfig/watch.log` on macOS, and Task
+Scheduler history on Windows. Run `canonfig watch enable` to start it again.
+
+On Linux the watcher runs while you have a login session. To keep it running
+after you log out, run `loginctl enable-linger "$USER"`.
+
+The service does not see variables your shell sets. If you moved a harness with
+a variable such as `CODEX_HOME` or `CLAUDE_CONFIG_DIR`, set it where the
+service manager reads it too, or the watcher's runs refuse to write into a
+second location.
