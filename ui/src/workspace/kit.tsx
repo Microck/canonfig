@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Kbd } from "@/components/ui/kbd";
 import { ShortcutHint, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { AnimatedNumber, DitherBlock, Hint, StateBand, StatusMark, type StatusKind } from "@/shared/shared";
+import { AnimatedNumber, Hint, StateBand, StatusMark, type StatusKind } from "@/shared/shared";
 import { PLAIN, type ItemCategory } from "@/shared/metadata";
 import { useScreenContext, type ScreenGroup } from "./screen-context";
 import { followLink, holdNavigation } from "./routes";
@@ -776,15 +776,12 @@ export function CommandBox({ children }: { children: string }) {
  * action) used to leave the 96px strip climbing over the title, and a parent taller than the message left
  * the strip's dense edge floating mid-card.
  */
-export function EmptyState({ title, body, action, tone = "muted" }: { title: string; body: ReactNode; action?: ReactNode; tone?: "muted" | "ok" }) {
+export function EmptyState({ title, body, action }: { title: string; body: ReactNode; action?: ReactNode }) {
   return (
-    <div className="flex grow flex-col">
-      <div className="flex grow flex-col items-center justify-center px-6 pt-16 pb-4 text-center">
-        <h3 className="text-base font-medium">{title}</h3>
-        <p className="mt-1 max-w-xs text-sm text-pretty text-muted-foreground">{body}</p>
-        {action && <div className="mt-4">{action}</div>}
-      </div>
-      <DitherBlock tone={tone} edge="bottom" motif={tone === "ok" ? "strata" : "radar"} className="h-24 shrink-0 opacity-85" />
+    <div className="flex grow flex-col items-center justify-center px-6 py-16 text-center">
+      <h3 className="text-base font-medium">{title}</h3>
+      <p className="mt-1 max-w-xs text-sm text-pretty text-muted-foreground">{body}</p>
+      {action && <div className="mt-4">{action}</div>}
     </div>
   );
 }
@@ -1020,9 +1017,8 @@ function Unwalked({ content }: { content: ReactNode }) {
 /**
  * Page body: a scrolling main column and an optional detail panel.
  * The column is a size container, so page layouts follow its width (narrowed by the panel), not the window's.
- * It is a flex column so a child can `grow` into the leftover height (EmptyState anchors its dither to the
- * bottom that way); `*:shrink-0` keeps every child at its content height, as block flow did, so a tall page
- * scrolls instead of squeezing overflow-hidden children. Skullet's wrappers carry that column on
+ * It is a flex column so a child can `grow` into the leftover height (EmptyState centres itself in it that
+ * way); `*:shrink-0` keeps every child at its content height, as block flow did, so a tall page scrolls instead of squeezing overflow-hidden children. Skullet's wrappers carry that column on
  * (`.skeleton-column` in index.css).
  * The detail panel sits in one AnimatePresence slot with a fixed key, so it can play a closing animation
  * when `detail` goes empty, while a row change (pages key their panel by row) stays a plain remount.

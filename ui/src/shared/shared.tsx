@@ -477,7 +477,7 @@ export function StateBand({ tone = "ok", mode = "idle", className }: { tone?: ke
   );
 }
 
-export type DitherBlockMotif = "fade" | "route" | "strata" | "radar";
+export type DitherBlockMotif = "fade" | "route";
 
 const TONE_DITHER_STOPS: Record<keyof typeof TONE_DITHER, readonly [string, string, string]> = {
   ok: ["var(--dither-ok-dim)", "var(--dither-color-green)", "var(--dither-ok-bright)"],
@@ -493,8 +493,6 @@ interface BlockArt {
   readonly height: number;
   readonly paths: readonly [string, string, string];
 }
-
-const blockArtCache = new Map<Exclude<DitherBlockMotif, "fade">, BlockArt>();
 
 const clamp01 = (value: number) => (value < 0 ? 0 : value > 1 ? 1 : value);
 const fract = (value: number) => value - Math.floor(value);
@@ -541,70 +539,47 @@ const fbm2 = (x: number, y: number) => {
   return clamp01(0.5 + (0.5 * sum) / 0.9375);
 };
 
-function motifTone(motif: Exclude<DitherBlockMotif, "fade">, u: number, v: number, aspect: number) {
+/** The route motif's waypoints as (u, v): fraction of the width from the left, of the height from the bottom. */
+const ROUTE_NODES = [
+  [0.18, 0.3],
+  [0.52, 0.68],
+  [0.84, 0.42],
+] as const;
+
+/** The route motif: three waypoint nodes joined by a dashed trail over faint contours. */
+function routeTone(u: number, v: number, aspect: number) {
   const px = u * aspect;
-  if (motif === "route") {
-    // Three waypoint nodes connected by a curving dashed trail over faint contours.
-    const pts: readonly (readonly [number, number])[] = [
-      [0.18 * aspect, 0.3],
-      [0.52 * aspect, 0.68],
-      [0.84 * aspect, 0.42],
-    ];
-    const curveY = 0.3 + 0.38 * Math.sin(u * Math.PI * 1.15) - 0.12 * Math.sin(u * Math.PI * 2.1);
-    const distCurve = Math.abs(v - curveY);
-    const dash = fract(u * 14 - 0.3) > 0.38 ? 1 : 0;
-    const trail =
-      smoothstep(0.085, 0.01, distCurve) *
-      (0.45 + 0.55 * dash) *
-      smoothstep(0.06, 0.16, u) *
-      smoothstep(0.94, 0.84, u);
-    let nodes = 0;
-    for (const [nx, ny] of pts) {
-      const d = Math.hypot(px - nx, v - ny);
-      const halo = Math.exp(-d * 4.5) * 0.88;
-      const ring = smoothstep(0.06, 0, Math.abs(d - 0.24)) * 0.52;
-      nodes = Math.max(nodes, halo, ring);
-    }
-    const topo = Math.abs(fract(fbm2(px * 1.4, v * 1.4) * 2.2 + v * 0.8) - 0.5) * 2;
-    const contour = smoothstep(0.76, 0.98, topo) * 0.32 * smoothstep(0.95, 0.1, v);
-    return clamp01(Math.max(contour, trail * 0.78, nodes));
+  // The trail eases from one node centre to the next (flat at each node), so it passes through every
+  // centre and ends at the first and last.
+  const [first, middle, last] = ROUTE_NODES;
+  const [from, to] = u < middle[0] ? [first, middle] : [middle, last];
+  const curveY = from[1] + (to[1] - from[1]) * smoothstep(from[0], to[0], u);
+  const distCurve = Math.abs(v - curveY);
+  const dash = fract(u * 14 - 0.3) > 0.38 ? 1 : 0;
+  const onRoute = u >= first[0] && u <= last[0] ? 1 : 0;
+  const trail = smoothstep(0.085, 0.01, distCurve) * (0.45 + 0.55 * dash) * onRoute;
+  let nodes = 0;
+  for (const [nu, nv] of ROUTE_NODES) {
+    const d = Math.hypot(px - nu * aspect, v - nv);
+    const halo = Math.exp(-d * 4.5) * 0.88;
+    const ring = smoothstep(0.06, 0, Math.abs(d - 0.24)) * 0.52;
+    nodes = Math.max(nodes, halo, ring);
   }
-  if (motif === "strata") {
-    // Layered calm isometric ridge planes with crisp bright crests.
-    const r1 = 0.62 + 0.12 * Math.sin(u * 5.2 + 0.6) + 0.05 * Math.cos(u * 11);
-    const r2 = 0.4 + 0.1 * Math.sin(u * 6.8 + 2.4) + 0.04 * Math.sin(u * 13);
-    const r3 = 0.18 + 0.07 * Math.cos(u * 8 + 1.1);
-    let tone = 0;
-    if (v < r1) tone = Math.max(tone, 0.28 * smoothstep(0, 0.35, r1 - v) + 0.35 * Math.exp(-Math.abs(v - r1) * 18));
-    if (v < r2) tone = Math.max(tone, 0.52 * smoothstep(0, 0.25, r2 - v) + 0.45 * Math.exp(-Math.abs(v - r2) * 22));
-    if (v < r3) tone = Math.max(tone, 0.78);
-    const crest1 = Math.exp(-Math.abs(v - r1) * 26) * 0.55;
-    const crest2 = Math.exp(-Math.abs(v - r2) * 30) * 0.88;
-    const crest3 = Math.exp(-Math.abs(v - r3) * 32) * 0.96;
-    return clamp01(Math.max(tone, crest1, crest2, crest3) * smoothstep(0.98, 0.72, v));
-  }
-  // radar: half-compass range arcs and cardinal ticks radiating from bottom center.
-  const dx = (u - 0.5) * aspect;
-  const r = Math.hypot(dx, v);
-  const ang = Math.atan2(v, dx);
-  const ringDist = Math.abs(fract(r * 2.8) - 0.5) * 2;
-  const rings = smoothstep(0.76, 0.99, ringDist) * smoothstep(1.45, 0.12, r) * 0.78;
-  const ticks = smoothstep(0.94, 0.995, Math.abs(Math.cos(ang * 6))) * smoothstep(1.25, 0.15, r) * 0.52;
-  // The approved still frame's beam angle (the preview's sweep at t = 1.2s, the same frame the route motif freezes).
-  const beam = Math.exp(-Math.abs(ang - 2.25) * 5) * smoothstep(1.35, 0.05, r) * 0.88;
-  const core = Math.exp(-r * 5.2) * 0.98;
-  return clamp01(Math.max(rings, ticks, beam, core));
+  const topo = Math.abs(fract(fbm2(px * 1.4, v * 1.4) * 2.2 + v * 0.8) - 0.5) * 2;
+  const contour = smoothstep(0.76, 0.98, topo) * 0.32 * smoothstep(0.95, 0.1, v);
+  return clamp01(Math.max(contour, trail * 0.78, nodes));
 }
 
+let routeArt: BlockArt | undefined;
+
 /**
- * Memoized 3-stop Bayer 8x8 SVG paths for a static DitherBlock motif.
- * Computed once per motif; zero WebGL contexts, zero repaints, SSR-safe.
+ * Memoized 3-stop Bayer 8x8 SVG paths for the route motif, sized to the tour offer's 280x80 box.
+ * Computed once; zero WebGL contexts, zero repaints, SSR-safe.
  */
-function blockMotifArt(motif: Exclude<DitherBlockMotif, "fade">): BlockArt {
-  const cached = blockArtCache.get(motif);
-  if (cached) return cached;
-  const width = motif === "route" ? 140 : 180;
-  const height = motif === "route" ? 40 : 48;
+function routeMotifArt(): BlockArt {
+  if (routeArt) return routeArt;
+  const width = 140;
+  const height = 40;
   const aspect = width / height;
   const layers = ["", "", ""];
   const { size, thresholds } = BAYER_8;
@@ -622,7 +597,7 @@ function blockMotifArt(motif: Exclude<DitherBlockMotif, "fade">): BlockArt {
     for (let col = 0; col <= width; col += 1) {
       let stop = 0;
       if (col < width) {
-        const tone = motifTone(motif, (col + 0.5) / width, v, aspect);
+        const tone = routeTone((col + 0.5) / width, v, aspect);
         const threshold = thresholds[my * size + (col % size)] ?? 1;
         const scaled = tone * 3;
         let idx = Math.floor(scaled);
@@ -637,15 +612,13 @@ function blockMotifArt(motif: Exclude<DitherBlockMotif, "fade">): BlockArt {
     }
   }
 
-  const art: BlockArt = { width, height, paths: [layers[0], layers[1], layers[2]] };
-  blockArtCache.set(motif, art);
-  return art;
+  routeArt = { width, height, paths: [layers[0], layers[1], layers[2]] };
+  return routeArt;
 }
 
 /**
- * Static dither art for empty states and guidance cards, revealed once on mount (600ms).
- * `motif` picks a 3-stop Bayer 8x8 composition (`route`, `strata`, `radar`) or the plain
- * edge `fade`. Decoration, so a loading skeleton skips it.
+ * Static dither art for guidance cards, revealed once on mount (600ms).
+ * `motif` picks the 3-stop Bayer 8x8 `route` composition or the plain edge `fade`. Decoration, so a loading skeleton skips it.
  */
 export function DitherBlock({
   tone = "muted",
@@ -665,14 +638,14 @@ export function DitherBlock({
       </div>
     );
   }
-  const art = blockMotifArt(motif);
+  const art = routeMotifArt();
   const [dim, mid, bright] = TONE_DITHER_STOPS[tone];
   return (
     <div skullet-ignore="" aria-hidden data-edge={edge} data-motif={motif} className={cn("dither-reveal pointer-events-none relative overflow-hidden", className)}>
       <svg
         className="absolute inset-0 size-full"
         viewBox={`0 0 ${art.width} ${art.height}`}
-        preserveAspectRatio={motif === "route" ? "xMidYMid slice" : "xMidYMax slice"}
+        preserveAspectRatio="xMidYMid slice"
         shapeRendering="crispEdges"
       >
         <path d={art.paths[0]} style={{ fill: dim }} />
