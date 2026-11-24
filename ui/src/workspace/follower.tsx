@@ -510,7 +510,7 @@ function WatchSetting({ live }: { live: FollowerLive }) {
   const watch = live.watch;
   if (!watch) {
     // A failed status read keeps the section and says why, instead of the switch silently vanishing.
-    return live.watchError && <div className="space-y-2 border-t border-border px-[18px] py-5">
+    return live.watchError && <div className="space-y-2 border-b border-border px-[18px] py-4">
       <SectionLabel>Apply changes automatically</SectionLabel>
       <p role="alert" className="text-sm text-bad">Canonfig couldn't check the watcher: {live.watchError.failure.message}</p>
     </div>;
@@ -523,7 +523,7 @@ function WatchSetting({ live }: { live: FollowerLive }) {
     try { await live.setWatch(enabled); } finally { setSaving(false); }
   };
   return (
-    <div className="space-y-2 border-t border-border px-[18px] py-5">
+    <div className="space-y-2 border-b border-border px-[18px] py-4">
       <SectionLabel>
         Apply changes automatically{" "}
         <Hint label="applying changes automatically">
@@ -655,6 +655,8 @@ function SyncForm() {
       >
         {live ? <>
           {localProjection && <p className="border-b border-border px-[18px] py-3 text-sm text-muted-foreground">Applies this machine's Canonical Folder to its installed, selected harnesses.</p>}
+          {/* First on the page: with it on, planning and applying by hand become the fallback. */}
+          {localProjection && <WatchSetting live={live} />}
           <InterruptedNotice />
           {!live.operation && <EmptyState title="No plan yet" body={localProjection ? "Plan local changes to see the affected files." : "Check for updates to see the affected files."} />}
           <FollowerOperationEvidence />
@@ -671,7 +673,7 @@ function SyncForm() {
             </SectionLabel>
             <Button variant="outline" size="sm" disabled={running || blocks.blocked !== null} onClick={live.createReview}>Write preview</Button>
           </div>
-          {localProjection ? <WatchSetting live={live} /> : <LeftoverWatcher live={live} />}
+          {!localProjection && <LeftoverWatcher live={live} />}
         </> : <>
         <section data-tour="sync-summary" className="relative isolate overflow-hidden border-b border-border" aria-live="polite">
           <StateBand tone={ws.phase === "plan" || held > 0 ? "warn" : "ok"} mode={running ? "running" : "idle"} className="-z-10 opacity-70" />
