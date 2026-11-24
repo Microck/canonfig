@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { parseSelfUpdateArguments } from "../../src/runtime/self-update/cli.ts";
 import { parseSkillsArguments } from "../../src/skills/cli.ts";
 import { evaluateCli } from "../../src/cli/cli.ts";
-import { installerArguments, parseReportIssueArguments, validMcpRunArguments } from "../../src/runtime/command-routing.ts";
+import { installerArguments, parseMcpProxyArguments, parseReportIssueArguments, validMcpRunArguments } from "../../src/runtime/command-routing.ts";
 import { parseInstallerArguments } from "../../src/runtime/installer-cli.ts";
 import {
   isPrivateEnrollmentCommand,
@@ -159,7 +159,8 @@ export const validateDocumentation = async (
           throw new Error(`${path} contains an invalid CLI example: ${example}`);
         }
       } else if (arguments_[0] === "mcp") {
-        if (!validMcpRunArguments(arguments_.slice(1))) {
+        const mcp = arguments_.slice(1);
+        if (!validMcpRunArguments(mcp) && parseMcpProxyArguments(mcp) === undefined) {
           throw new Error(`${path} contains an invalid CLI example: ${example}`);
         }
       } else if (arguments_[0] === "installer") {

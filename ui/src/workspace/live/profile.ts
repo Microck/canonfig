@@ -1,3 +1,4 @@
+import { toast } from "sonner";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Schema } from "effect";
 import { HARNESS_NAMES, LOCAL_CATEGORIES, APPEND_LOCAL_CATEGORIES, SURFACE_CATEGORIES, type HarnessId, type SurfaceCategory } from "@/shared/metadata";
@@ -171,8 +172,16 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
     validate: async () => {
       publishEvent({ kind: "Validate", snapshot: observation });
       const accepted = await run(async (signal) => {
-        const validation = await backend.request(profileEndpoints.validate, GuiProfileValidation, signal, { method: "POST", body: {} });
-        publishEvent({ kind: "Validated", snapshot: observation, validation });
+        const displayed = items.data ?? await backend.request(profileEndpoints.items, GuiProfileSnapshot, signal);
+        try {
+          const validation = await backend.request(profileEndpoints.validate, GuiProfileValidation, signal, {
+            method: "POST", body: { items: displayed.items.map(({ path, digest }) => ({ path, digest })) },
+          });
+          publishEvent({ kind: "Validated", snapshot: observation, validation });
+        } catch (cause) {
+          if (cause instanceof GuiRequestError && cause.failure.category === "conflict-or-drift") refresh();
+          throw cause;
+        }
       }, false);
       if (!accepted) publishEvent({ kind: "Failed", stage: "validation", error: new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: "Folder validation did not finish. Retry validation before publishing." }) });
       return accepted;
@@ -226,9 +235,14 @@ export function useLiveProfile(backend: WorkspaceBackend, session: GuiSession, r
     setSecrets: (update) => { const current = [...(secrets.data?.secrets ?? [])]; const next = typeof update === "function" ? update(current) : update; const removed = current.find((entry) => !next.some((after) => after.name === entry.name)); if (removed) void profileLive.removeSecret(removed.name); },
     pending, markProfileEdit: (edit) => setPending((previous) => [...previous.filter((entry) => entry.id !== edit.id), edit]), removeProfileEdit: (edit) => setPending((previous) => previous.filter((entry) => entry.id !== edit.id)), nextSequence: undefined, publishing,
     publish: (reviewer, onDone) => { void run(async (signal) => {
+      // Name the reviewed digest so the Source refuses content that changed after validation.
+      const reviewDigest = publicationRef.current.kind === "Validated" ? publicationRef.current.validation.reviewDigest : null;
       publishEvent({ kind: "Publish", snapshot: observation });
       try {
-        await operations.operation(profileEndpoints.publications, { reviewer }, signal);
+        if (reviewDigest === null) throw new GuiRequestError({ category: "usage-or-configuration", exitCode: 2, message: "Validate the current folder before publishing." });
+        const completed = await operations.operation(profileEndpoints.publications, { reviewer, reviewDigest }, signal);
+        const result = object(completed.result);
+        if (typeof result.retainedReviewer === "string") toast.info(`This revision already exists. Its approval by ${result.retainedReviewer} was kept.`);
         publishEvent({ kind: "Published" }); setPending([]); onDone(); reload();
       } catch (cause) { publishEvent({ kind: "Failed", stage: "publication", error: requestError(cause) }); throw cause; }
     }, false); },

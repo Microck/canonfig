@@ -213,8 +213,13 @@ describe("StateRepository SQLite adapter", () => {
       expect((yield* repository.loadRecovery(follower().id))?.run.lifecycle._tag).toBe("Preparing");
       yield* repository.recordHarnessTakeovers([{ ...reservation, backup: { _tag: "Snapshot", id: "captured" } }]);
       expect(yield* Effect.flip(repository.recordHarnessTakeovers([{ ...reservation, backup: { _tag: "Disabled" } }]))).toBeInstanceOf(InvalidRunTransitionError);
-      yield* repository.beginRun(run);
-      expect((yield* repository.loadRecovery(follower().id))?.run.lifecycle._tag).toBe("Applying");
+      const reference = "/disposable/cache/rollback/action-1.json";
+      yield* repository.beginRun(run, new Map([[asActionId("action-1"), reference]]));
+      const recovery = yield* repository.loadRecovery(follower().id);
+      expect(recovery?.run.lifecycle._tag).toBe("Applying");
+      expect(recovery?.actions).toContainEqual(expect.objectContaining({
+        action: asActionId("action-1"), state: "pending", rollbackReference: reference,
+      }));
     }));
   });
 

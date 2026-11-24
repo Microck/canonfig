@@ -80,9 +80,23 @@ A probe that runs past `--timeout-ms` fails with `<probe> probe timed out`.
 | warning | `not-verified` | What is missing and what to do, for example `secret-tool was not found on PATH. Install it with ...`. The same text is in `details.recovery`. |
 | fail, Human Action Required | | `credential capability check failed: <detail>` |
 
-On Linux and Windows the check stores a fixed non-secret test item under a
-unique name, reads it back, and deletes it. Existing credentials are never read
-or changed.
+On Linux and Windows the session probe writes a non-secret test item under
+a unique name, reads it back, and deletes it.
+
+On Linux, a successful session probe proves the current Secret Service session
+can store credentials. For evidence across a provider restart, first run
+`canonfig secrets bootstrap` in the intended session. It can save a disposable
+test credential. After Secret Service restarts, run `canonfig doctor` with the
+same keyring unlocked.
+
+When doctor finds restart evidence, the JSON report includes
+`details.restartPersistence` and `details.persistenceDetail`:
+
+| Verdict | Meaning |
+| --- | --- |
+| `manual` | Canonfig still needs a restart or could not verify the item. Read the detail for the next step. |
+| `verified` | Canonfig read the saved test credential after the restart and attempts to remove it. |
+| `failed` | The same keyring no longer held the test credential after the restart. The credentials check reports Human Action Required. |
 
 ### source
 
@@ -171,10 +185,18 @@ entry sets a startup timeout gets that, up to 120 seconds; any other server gets
 10 seconds, or `--timeout-ms` when that is longer. `details` has
 one line per server with the harnesses that declare it.
 
+On Windows, doctor uses [Codex 0.171.0's stdio environment rules](https://github.com/openai/codex/blob/ccf9be8cc458bd6b8336fe84d68d8893f2691a5e/codex-rs/rmcp-client/src/utils.rs#L16-L59). A server receives the core Windows variables and variables named in `env_vars`. Values in `env` override them, with case-insensitive names.
+
+Streamable HTTP and HTTP+SSE checks also verify that the server accepts
+replies to its ping requests. HTTP+SSE uses the stream's advertised message
+endpoint on the same origin. For Streamable HTTP, Canonfig allows up to two
+seconds to close an opened session and reports cleanup failures in that
+server's detail. The check result still reflects the handshake and tool listing.
+
 | Result | Message |
 | --- | --- |
 | pass | `<n> MCP server(s) started and listed their tools` |
-| warning | Remote servers that sign in with OAuth, and the legacy SSE transport, are not checked. |
+| warning | Remote servers that require OAuth sign-in are left to the harness. |
 | skipped | `no installed harness declares an MCP server` |
 | fail, apply failure | `<n> of <total> MCP server(s) failed to start or answer: <servers>`, with each server's reason in `details` |
 

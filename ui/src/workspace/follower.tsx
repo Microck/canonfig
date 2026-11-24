@@ -1,3 +1,4 @@
+import type { GuiLocalItems } from "../../../src/gui/contract/synchronization";
 import { ArchiveExportButton } from "./archive-transfer";
 // Shared Follower screens read machine data and operations from the workspace provider.
 import { useState, useSyncExternalStore, type ReactNode } from "react";
@@ -24,7 +25,6 @@ import {
   SECRETS_GROUP,
   SOURCE_TEXT_END,
   SOURCE_TEXT_START,
-  SETTINGS_FILES,
   type Harness,
   type HarnessId,
   type KeptSurface,
@@ -512,6 +512,12 @@ function SyncForm() {
   const current = steps.find((p) => p.resource === selected);
   const unchanged = Math.max(0, sent - steps.length);
   const running = ws.phase === "running";
+  const command = live?.command;
+  const activeCommand = running && command && "command" in command ? command.command : undefined;
+  const planning = checking || activeCommand === "plan";
+  const applying = live ? activeCommand === "apply" : running;
+  const planLabel = localProjection ? "Plan local changes" : "Check for updates";
+  const planningLabel = localProjection ? "Planning…" : "Checking…";
   const step = ws.progress === undefined ? undefined : Math.min(steps.length, Math.floor((ws.progress / 100) * steps.length) + 1);
 
   return (
@@ -537,7 +543,7 @@ function SyncForm() {
                 }, 900);
               }}
             >
-              {checking && <HourglassMedium />} {checking ? "Checking…" : localProjection ? "Plan local changes" : "Check for updates"}
+              {planning && <HourglassMedium />} {planning ? planningLabel : planLabel}
             </Button>
             {ws.phase !== "done" && (
               <Button
@@ -547,7 +553,7 @@ function SyncForm() {
                 onClick={ws.applyPlan}
                 data-tour="sync-apply"
               >
-                {running ? "Applying…" : "Apply changes"}
+                {applying ? "Applying…" : "Apply changes"}
               </Button>
             )}
           </>
@@ -1054,12 +1060,14 @@ function claimOf(entry: string): { harness: HarnessId; key: string } | null {
 /** Whether `key` is the claimed key or sits inside it, which is what a claim covers. */
 const covers = (claimed: string, key: string) => key === claimed || key.startsWith(`${claimed}.`);
 
+type SettingsFile = GuiLocalItems["settingsFiles"][string];
+
 /**
  * The keys Canonfig writes in a harness's settings file here: the ones its adapter always owns and the ones
  * SOURCE publishes in settings.<harness>.
  */
-function writtenKeys(harness: HarnessId, resources: Resource[]) {
-  return [...(SETTINGS_FILES[harness]?.owned ?? []), ...Object.keys(resources.find((r) => r.id === `settings/${harness}`)?.keys ?? {})];
+function writtenKeys(settings: SettingsFile | undefined, harness: HarnessId, resources: Resource[]) {
+  return [...(settings?.owned ?? []), ...Object.keys(resources.find((r) => r.id === `settings/${harness}`)?.keys ?? {})];
 }
 
 /**
@@ -1068,16 +1076,15 @@ function writtenKeys(harness: HarnessId, resources: Resource[]) {
  * a claim inside a value only at the next update; here the claim is refused up front, as the local editor refuses
  * a name collision.
  */
-function claimError(harness: HarnessId | "", key: string, overlays: string[], local: LocalItem[], resources: Resource[]): string | null {
-  if (!harness) return "Choose a harness.";
+function claimError(settings: SettingsFile, harness: HarnessId, key: string, overlays: string[], local: LocalItem[], resources: Resource[]): string | null {
   if (!key) return "Enter a key, such as model.";
   if (!/^(?:[^.\\]|\\[.\\])+(?:\.(?:[^.\\]|\\[.\\])+)*$/.test(key)) return "Use a settings path such as model or tui.theme; write \\. for a dot inside a key name.";
   const item = `settings/${harness}#${key}`;
   if (overlays.includes(item)) return `${key} is already yours in ${HARNESS_NAMES[harness]}'s settings.`;
   const segments = key.split(".");
-  const reserved = SETTINGS_FILES[harness]?.reserved.find((pattern) => pattern.split(".").every((part, i) => i >= segments.length || part === "*" || part === segments[i]));
+  const reserved = settings.reserved.find((pattern) => pattern.split(".").every((part, i) => i >= segments.length || part === "*" || part === segments[i]));
   if (reserved) return `${HARNESS_NAMES[harness]} keeps ${reserved} for itself, so Canonfig never writes it and there is nothing to claim.`;
-  const whole = writtenKeys(harness, resources).find((written) => key.startsWith(`${written}.`));
+  const whole = writtenKeys(settings, harness, resources).find((written) => key.startsWith(`${written}.`));
   if (whole) return `Canonfig writes ${whole} as one value, so the update would stop: “overlay ${item} claims part of ${whole}, which Canonfig writes as one value; claim ${whole} instead”. Claim ${whole} instead.`;
   const localKey = Object.keys(local.find((l) => l.id === `settings/${harness}`)?.keys ?? {}).find((k) => overlaps(k, key));
   if (localKey) return `Your local settings also set ${localKey} for ${harness}, so the update would stop: “local setting ${harness} ${localKey} overlaps the key claim ${item}; remove one of them”. Remove that key first.`;
@@ -1393,6 +1400,7 @@ function LocalForm() {
  */
 function LocalHarnesses({ onToggle }: { onToggle: (id: HarnessId, on: boolean) => void }) {
   const ws = useWorkspace();
+  const settingsFiles = ws.followerLive?.local?.settingsFiles ?? ws.demoProjection?.settingsFiles;
   const [removing, setRemoving] = useState<string | null>(null);
   const claims = ws.overlays.flatMap((item) => {
     const claim = claimOf(item);
@@ -1401,37 +1409,40 @@ function LocalHarnesses({ onToggle }: { onToggle: (id: HarnessId, on: boolean) =
   const busy = ws.followerLive?.action.loading;
   const removed = removing === null ? null : claimOf(removing);
   const removedValue = removed && ws.resources.find((r) => r.id === `settings/${removed.harness}`)?.keys?.[removed.key];
-  const keys = (h: Harness) => <>
-    {claims.filter((c) => c.harness === h.id).map((c) => {
-      const name = HARNESS_NAMES[c.harness];
-      const written = writtenKeys(c.harness, ws.resources);
-      const whole = written.find((k) => c.key.startsWith(`${k}.`));
-      const covered = written.filter((k) => covers(c.key, k));
-      // The refusal buildProjection gives, and the plan's CLAIM_UNUSED warning (src/projection/plan.ts).
-      const [kind, note]: [StatusKind, string] = ws.followerLive
-        ? ["ok", "This key belongs to this machine. The next sync checks the claim against published settings."] : whole
-        ? ["act", `Canonfig writes ${whole} as one value, so the next update stops. Claim ${whole} instead.`]
-        : covered.length === 0
-          ? ["warn", `Canonfig writes no ${c.key} in ${name}'s settings file, so this changes nothing.`]
-          : ["ok", `${ws.sourceMachine.hostname} sets ${covered.join(", ")}. Here you set it in ${name}'s settings file, and Canonfig leaves it alone.`];
-      return <Chip key={c.item} name={c.item} label={c.key} kind={kind} note={note} removeLabel={`Remove claim ${c.item}`} busy={busy} onRemove={() => setRemoving(c.item)} />;
-    })}
-    {SETTINGS_FILES[h.id] !== undefined && h.listed && h.installed && !h.excluded && (
-      <ChipAdd
-        label={`Claim a ${h.name} settings key`}
-        placeholder="model"
-        busy={busy}
-        validate={(key) => claimError(h.id, key, ws.overlays, ws.local, ws.resources)}
-        onAdd={(key) => {
-          ws.setOverlays((prev) => [...prev, `settings/${h.id}#${key}`]);
-          if (!ws.followerLive) toast.success(`${key} is yours in ${h.name}'s settings`, {
-            description: `Saved as a key claim in ~/.canonfig/local/local.jsonc.\nThe next update stops writing it; set it in ${h.name}'s own settings file.${DEMO ? "\nSaved in this demo workspace." : ""}`,
-          });
-          return null;
-        }}
-      />
-    )}
-  </>;
+  const keys = (h: Harness) => {
+    const settings = settingsFiles?.[h.id];
+    return <>
+      {claims.filter((c) => c.harness === h.id).map((c) => {
+        const name = HARNESS_NAMES[c.harness];
+        const written = writtenKeys(settings, c.harness, ws.resources);
+        const whole = written.find((k) => c.key.startsWith(`${k}.`));
+        const covered = written.filter((k) => covers(c.key, k));
+        // The refusal buildProjection gives, and the plan's CLAIM_UNUSED warning (src/projection/plan.ts).
+        const [kind, note]: [StatusKind, string] = ws.followerLive
+          ? ["ok", "This key belongs to this machine. The next sync checks the claim against published settings."] : whole
+          ? ["act", `Canonfig writes ${whole} as one value, so the next update stops. Claim ${whole} instead.`]
+          : covered.length === 0
+            ? ["warn", `Canonfig writes no ${c.key} in ${name}'s settings file, so this changes nothing.`]
+            : ["ok", `${ws.sourceMachine.hostname} sets ${covered.join(", ")}. Here you set it in ${name}'s settings file, and Canonfig leaves it alone.`];
+        return <Chip key={c.item} name={c.item} label={c.key} kind={kind} note={note} removeLabel={`Remove claim ${c.item}`} busy={busy} onRemove={() => setRemoving(c.item)} />;
+      })}
+      {settings !== undefined && h.listed && h.installed && !h.excluded && (
+        <ChipAdd
+          label={`Claim a ${h.name} settings key`}
+          placeholder="model"
+          busy={busy}
+          validate={(key) => claimError(settings, h.id, key, ws.overlays, ws.local, ws.resources)}
+          onAdd={(key) => {
+            ws.setOverlays((prev) => [...prev, `settings/${h.id}#${key}`]);
+            if (!ws.followerLive) toast.success(`${key} is yours in ${h.name}'s settings`, {
+              description: `Saved as a key claim in ~/.canonfig/local/local.jsonc.\nThe next update stops writing it; set it in ${h.name}'s own settings file.${DEMO ? "\nSaved in this demo workspace." : ""}`,
+            });
+            return null;
+          }}
+        />
+      )}
+    </>;
+  };
 
   return (
     <>
@@ -1442,7 +1453,7 @@ function LocalHarnesses({ onToggle }: { onToggle: (id: HarnessId, on: boolean) =
         title={`Let Canonfig manage ${removed?.key} again?`}
         body={
           ws.followerLive ? "The next sync may write the published value to this key again." :
-          removed && writtenKeys(removed.harness, ws.resources).some((k) => covers(removed.key, k))
+          removed && writtenKeys(settingsFiles?.[removed.harness], removed.harness, ws.resources).some((k) => covers(removed.key, k))
             ? `Canonfig removes the claim from ~/.canonfig/local/local.jsonc. The next update writes ${ws.sourceMachine.hostname}'s ${removed.key}${removedValue ? ` (${removedValue})` : ""} over yours in ${HARNESS_NAMES[removed.harness]}'s settings file, and an edit after that counts as a local change.`
             : `Canonfig removes the claim from ~/.canonfig/local/local.jsonc. It writes no ${removed?.key} there, so nothing else changes.`
         }

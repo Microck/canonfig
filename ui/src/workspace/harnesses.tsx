@@ -4,7 +4,7 @@ import { CaretDown } from "@/components/icons";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { HARNESS_NAMES, DEMO, SURFACE_CATEGORIES, SURFACE_NAMES, SURFACE_SUPPORT, type Harness, type HarnessId, type Snapshot, type SurfaceCategory } from "@/shared/metadata";
+import { HARNESS_NAMES, DEMO, SURFACE_CATEGORIES, SURFACE_NAMES, type Harness, type HarnessId, type Snapshot, type SurfaceCategory } from "@/shared/metadata";
 import { Mono, StatusMark, type StatusKind } from "@/shared/shared";
 import { useWorkspace } from "./store";
 import { AnimatedRow, Body, EmptyState, ListHead, ListRow, PageHeader, RowPresence } from "./kit";
@@ -43,7 +43,8 @@ function sameSurfaces(a: SurfaceCategory[] | undefined, b: SurfaceCategory[] | u
  */
 function SurfacesMenu({ harness }: { harness: Harness }) {
   const ws = useWorkspace();
-  const supported = ws.profileLive?.snapshot ? SURFACE_CATEGORIES.filter((category) => ws.profileLive!.snapshot!.supportedSurfaces[harness.id]?.includes(category)) : SURFACE_SUPPORT[harness.id];
+  const surfaces = ws.profileLive?.snapshot?.supportedSurfaces ?? ws.demoProjection?.supportedSurfaces;
+  const supported = SURFACE_CATEGORIES.filter((category) => surfaces?.[harness.id]?.includes(category));
   const selected = ws.surfaces[harness.id];
   const label = surfacesLabel(selected);
   // Radix puts focus back on the trigger when the menu closes, which draws its focus ring even after a

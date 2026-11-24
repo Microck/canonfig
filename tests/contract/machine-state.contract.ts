@@ -1,5 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
-import { access, mkdir, open, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, open, readFile, readdir, rename, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -126,6 +126,67 @@ export const machineStateContract = (
         data: { platform: adapter.platform, absolute: expectedDirectories.data },
         cache: { platform: adapter.platform, absolute: expectedDirectories.cache },
       });
+    });
+
+    it.skipIf(!nativeOperations)("contains authored writes, reads and snapshots under the home directory", async () => {
+      const root = temporaryDirectory();
+      const home = pathJoin(root, "home");
+      const outside = pathJoin(root, "outside");
+      const outsideFile = pathJoin(outside, "profile");
+      await mkdir(home, { recursive: true });
+      await mkdir(outside);
+      await writeFile(outsideFile, "outside");
+      await symlink(outside, pathJoin(home, "redirect"), adapter.platform === "windows" ? "junction" : "dir");
+      const originalHome = await stat(home, { bigint: true });
+      const check = await runWith(adapter.localFileLayer(root), Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const anchor = yield* machine.normalizePath({ path: home });
+        const path = yield* machine.normalizePath({ path: pathJoin(home, "profiles", "profile") });
+        const redirect = yield* machine.normalizePath({ path: pathJoin(home, "redirect", "profile") });
+        const content = new TextEncoder().encode("inside");
+        yield* machine.atomicWrite({ path, anchor, createAnchoredParents: true, content, mode: 0o600 });
+        const saved = yield* machine.readFile({ path, anchor, maximumBytes: 100 });
+        const snapshot = yield* machine.snapshotPermissions(path, anchor);
+        const rejected = yield* Effect.result(machine.atomicWrite({ path: redirect, anchor, content }));
+        yield* machine.removeFile({ path, anchor });
+        return { saved: new TextDecoder().decode(saved), snapshot, rejected };
+      }));
+      expect(check.saved).toBe("inside");
+      expect(check.snapshot.mode).toBe(0o600);
+      expect(check.rejected).toMatchObject({ _tag: "Failure", failure: { _tag: "MachineFilesystemError" } });
+      expect(await readFile(outsideFile, "utf8")).toBe("outside");
+      expect(await stat(home, { bigint: true })).toMatchObject({ dev: originalHome.dev, ino: originalHome.ino });
+      await expect(access(pathJoin(home, "profiles", "profile"))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it.skipIf(!nativeOperations)("refuses to finalize permissions on a replacement directory", async () => {
+      const root = temporaryDirectory();
+      const home = pathJoin(root, "home");
+      const target = pathJoin(home, "owned");
+      const previous = pathJoin(home, "previous");
+      await mkdir(home, { recursive: true });
+      const result = await runWith(adapter.localFileLayer(root), Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const anchor = yield* machine.normalizePath({ path: home });
+        const path = yield* machine.normalizePath({ path: target });
+        const identity = yield* machine.mutateWithinRoot({
+          root: anchor, anchor, path, mutation: { kind: "directory", mode: 0o700 },
+        });
+        if (!identity) throw new Error("the prepared directory has no identity");
+        yield* Effect.promise(async () => {
+          await rename(target, previous);
+          await mkdir(target);
+        });
+        return yield* Effect.result(machine.setPermissions({ path, anchor, identity, mode: 0o750 }));
+      }));
+      expect(result).toMatchObject({ _tag: "Failure", failure: { _tag: "AnchoredMutationUnconfirmedError" } });
+      const layer = adapter.localFileLayer(root);
+      const replacementMode = await runWith(layer, Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const path = yield* machine.normalizePath({ path: target });
+        return (yield* machine.permissions(path)).mode;
+      }));
+      expect(replacementMode).not.toBe(0o750);
     });
 
     it.skipIf(!nativeOperations)(

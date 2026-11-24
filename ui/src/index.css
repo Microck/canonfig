@@ -214,18 +214,24 @@
   --dither-color-grey: #4d6460;
   --dither-color-gold: #f1c332;
   --dither-track-dot: #263a3b;
-  --dither-ok-dim: #284730;
-  --dither-ok-bright: #d5fad0;
-  --dither-warn-dim: #4d3c11;
-  --dither-warn-bright: #fff0a8;
-  --dither-act-dim: #4d2b16;
-  --dither-act-bright: #ffd1ab;
+  --dither-ok-dim: #193023;
+  --dither-ok-bright: #a9dca7;
+  --dither-warn-dim: #3c3012;
+  --dither-warn-bright: #f6d667;
+  --dither-act-dim: #472614;
+  --dither-act-bright: #ffc699;
   --dither-bad-dim: #45181b;
-  --dither-bad-bright: #ffb0b0;
+  --dither-bad-bright: #ff9e9e;
   --dither-muted-dim: #1d2e2d;
   --dither-muted-bright: #9ec0ba;
-  --dither-purple-dim: #362759;
-  --dither-purple-bright: #e4d9ff;
+  --dither-purple-dim: #2c224a;
+  --dither-purple-bright: #cbb8ff;
+  --dither-converge-dim: #192a27;
+  --dither-converge-mid: #3c6b53;
+  --dither-converge-bright: #8ac789;
+  --dither-converge-settled-dim: #1c3827;
+  --dither-converge-settled-mid: #5d9a62;
+  --dither-converge-settled-bright: #b8ebb5;
 
   color-scheme: dark;
 }

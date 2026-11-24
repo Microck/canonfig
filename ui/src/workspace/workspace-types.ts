@@ -401,5 +401,6 @@ export interface FollowerSlice {
 
 /** The single store contract consumed by all workspace screens. */
 export interface Workspace extends OverviewSlice, ProfileSlice, MachinesSlice, FollowerSlice {
+  demoProjection?: typeof import("./demo-projection").demoProjection;
   admin: AdministrationSlice;
 }

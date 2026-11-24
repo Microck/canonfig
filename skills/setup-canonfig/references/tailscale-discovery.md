@@ -103,7 +103,7 @@ in invitations. Headscale uses the same path. Preserve TLS and signing pins.
 See [the tailnet guide](https://canonfig.micr.dev/docs/how-to/connect-over-tailnet/)
 for prerequisites and policy examples.
 
-Loopback invitations still require an explicitly approved tunnel. Discovery
+Remote enrollment with a loopback invitation requires an approved tunnel. Discovery
 creates no tunnel and grants no permission to change network policy or logins.
 Do not assume Tailscale SSH is enabled or supports forwarding.
 Only after explicit device, account, and connection approval may the setup agent

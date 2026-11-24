@@ -43,10 +43,11 @@ The examples use `a.example` and `b.example` as host names and `maria` as the
 user on both machines. Replace them with your own.
 
 <Callout title="Canonfig replaces what it manages" type="warning">
-  The first time Canonfig writes to a harness, it copies the files it is about
-  to manage into a Takeover Snapshot, then replaces them. Afterward,
-  `~/.claude/skills/` holds exactly the skills in your folder. Anything you do
-  not import in step 2 leaves the harness and stays only in the snapshot.
+  The first time Canonfig writes to a harness, it copies the content it is
+  about to manage into a Takeover Snapshot. In the default setup used here,
+  `~/.claude/skills/` holds the skills in your Canonical Folder after apply.
+  Import any existing Claude Code skills you want to keep in this directory
+  during step 2.
 </Callout>
 
 ## 1. Install Canonfig on both machines
@@ -54,12 +55,12 @@ user on both machines. Replace them with your own.
 Run on A and on B:
 
 ```bash
-npm install --global @microck/canonfig@7.8.1
+npm install --global @microck/canonfig@7.8.2
 canonfig --version
 canonfig doctor --no-input
 ```
 
-`canonfig --version` prints `7.8.1`. `doctor` prints one line per check. Look
+`canonfig --version` prints `7.8.2`. `doctor` prints one line per check. Look
 at the `credentials` line: Canonfig keeps its keys in the system credential
 store (Secret Service on Linux, Keychain on macOS). If that line reports a
 problem, follow the fix it prints, or see

@@ -140,13 +140,22 @@ The second command prints `Linger=yes`. If `loginctl` refuses, the machine's
 polkit rules do not let you change it; run `sudo loginctl enable-linger "$USER"`.
 
 Lingering keeps the user manager running. It does not unlock an encrypted login
-keyring, so check that a background process can read your credentials:
+keyring. Install `secret-tool` and `busctl`, and select the login keyring as
+your Secret Service provider's default collection. Then check that a background
+process can read your credentials:
 
 ```bash
 env -i HOME="$HOME" PATH="$PATH" XDG_RUNTIME_DIR="/run/user/$(id -u)" canonfig secrets bootstrap
 ```
 
-This runs with the environment a scheduled job has. If it fails:
+This runs with the environment a scheduled job has. If bootstrap reports a
+saved persistence test, run `canonfig doctor` after the next login or natural
+provider restart. Doctor checks the original test credential and removes it
+once verified. If the provider lost the credential, Doctor reports a failed
+credential check. Fix the provider's persistence settings and run
+`canonfig secrets bootstrap` to start a new test.
+
+If bootstrap fails:
 
 - `/run/user/<uid>/bus` does not exist: no user manager runs for you. Turn
   lingering on and try again.

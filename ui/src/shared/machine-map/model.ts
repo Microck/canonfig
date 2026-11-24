@@ -344,6 +344,7 @@ export function defaultLayout(ids: readonly string[]): Record<string, XY> {
 /** What a node can ask of the map. Context, not node data, so node data stays plain values. */
 export interface MapActions {
   open: (id: string) => void;
+  reveal: (id: string) => void;
   invite: () => void;
   /** Open the Customize sheet for this machine, or close it if it is already open for it. */
   toggleCustomize: (id: string) => void;
@@ -353,6 +354,7 @@ export interface MapActions {
 
 export const MapActionsContext = createContext<MapActions>({
   open: () => {},
+  reveal: () => {},
   invite: () => {},
   toggleCustomize: () => {},
   customizingId: null,

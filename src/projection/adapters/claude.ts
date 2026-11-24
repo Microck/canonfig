@@ -80,7 +80,7 @@ export const claudeAdapter: HarnessAdapter = {
     }
     if (model.skills.length > 0) contents.push({ kind: "directory", surface: "skills", files: skillDirectoryFiles(model.skills) });
     if (model.agents.length > 0) {
-      const mcpTools = model.mcp.map(([name]) => `mcp__${name}`);
+      const mcpTools = model.mcpPermissionNames.map((name) => `mcp__${name}`);
       contents.push({
         kind: "directory", surface: "agents",
         files: documentFiles(model.agents, ".md", (agent) =>

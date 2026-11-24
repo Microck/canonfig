@@ -106,45 +106,126 @@ export function parseRoute(href: string): AppRoute {
   return { kind: "workspace", role, view: view ?? "not-found", profileTab, machinesMode, focus: url.searchParams.get("focus") };
 }
 
-const LOCATION_EVENT = "canonfig:navigate";
-const locationSnapshot = () => `${window.location.pathname}${window.location.search}${window.location.hash}`;
+type HistoryEntry = { href: string; position: number };
+
+const locationHref = () => `${window.location.pathname}${window.location.search}${window.location.hash}`;
+const historyPosition = (): number | undefined => window.history.state?.canonfigPosition;
+const pageAddress = (href: string) => href.split("#", 1)[0];
+const locationListeners = new Set<() => void>();
+let currentEntry: HistoryEntry | null = null;
+let restore: { proceed?: () => void } | null = null;
+let approvedPosition: number | undefined;
+let guard: NavigationGuard | null = null;
+
+/** The guard returns true when it owns the decision and can call proceed after confirmation. */
+export type NavigationGuard = (proceed: () => void) => boolean;
+
+function registerEntry(positionIfNew = 0): HistoryEntry {
+  const savedPosition = historyPosition();
+  const position = savedPosition ?? positionIfNew;
+  if (savedPosition === undefined) {
+    window.history.replaceState({ canonfigPosition: position }, "");
+  }
+  return { href: locationHref(), position };
+}
+
+function publishEntry(entry: HistoryEntry) {
+  currentEntry = entry;
+  for (const notify of locationListeners) notify();
+}
+
+function onHistoryTraversal() {
+  const from = currentEntry;
+  const position = historyPosition();
+  if (!from || position === undefined) {
+    // Native fragment navigation creates a same-document entry without state.
+    // Previous entries have already been indexed, so stamp the new successor.
+    publishEntry(registerEntry(from ? from.position + 1 : 0));
+    return;
+  }
+  const offset = position - from.position;
+  const href = locationHref();
+  if (restore) {
+    if (offset !== 0) {
+      // Another browser traversal can supersede the queued return.
+      window.history.go(-offset);
+      return;
+    }
+    const { proceed } = restore;
+    restore = null;
+    proceed?.();
+    return;
+  }
+  const approved = approvedPosition === position;
+  approvedPosition = undefined;
+  const fromPage = pageAddress(from.href);
+  const draft = guard;
+  if (offset !== 0 && pageAddress(href) !== fromPage && !approved && draft?.(() => {
+    const proceed = () => {
+      // Fragment traversal changes the offset without changing the guarded draft.
+      if (!currentEntry || guard !== draft || pageAddress(currentEntry.href) !== fromPage) return;
+      approvedPosition = position;
+      window.history.go(position - currentEntry.position);
+    };
+    if (restore) restore.proceed = proceed;
+    else proceed();
+  })) {
+    // popstate fires after the address changes. Keep rendering the draft and
+    // return to its history entry without pushing or replacing anything.
+    restore = {};
+    window.history.go(-offset);
+    return;
+  }
+  publishEntry({ href, position });
+}
 
 function subscribeLocation(onChange: () => void) {
-  window.addEventListener("popstate", onChange);
-  window.addEventListener(LOCATION_EVENT, onChange);
+  if (locationListeners.size === 0) {
+    currentEntry = registerEntry();
+    window.addEventListener("popstate", onHistoryTraversal);
+  }
+  locationListeners.add(onChange);
   return () => {
-    window.removeEventListener("popstate", onChange);
-    window.removeEventListener(LOCATION_EVENT, onChange);
+    locationListeners.delete(onChange);
+    if (locationListeners.size === 0) {
+      currentEntry = null;
+      restore = null;
+      approvedPosition = undefined;
+      window.removeEventListener("popstate", onHistoryTraversal);
+    }
   };
 }
 
+const routeSnapshot = () => currentEntry?.href ?? locationHref();
+
 export function useAppRoute(): AppRoute {
-  const href = useSyncExternalStore(subscribeLocation, locationSnapshot);
+  const href = useSyncExternalStore(subscribeLocation, routeSnapshot);
   return useMemo(() => parseRoute(href), [href]);
 }
 
-/**
- * One screen with unsaved edits can hold up in-app navigation. The guard receives the pending
- * navigation and returns true when it took over: it shows its own confirmation and calls `proceed`
- * if the person chooses to discard. Browser Back/Forward and full reloads are not intercepted.
- * Forms register through `useLeaveGuard` in kit.tsx rather than calling this directly.
- */
-export type NavigationGuard = (proceed: () => void) => boolean;
-let guard: NavigationGuard | null = null;
+function confirmDocumentExit(event: BeforeUnloadEvent) {
+  event.preventDefault();
+  event.returnValue = true;
+}
 
-/** Registers `next` as the only guard; the returned disposer removes it only if it is still the active one. */
+/** Installs the same draft's guard for workspace navigation and document exits. */
 export function holdNavigation(next: NavigationGuard) {
   guard = next;
+  window.addEventListener("beforeunload", confirmDocumentExit);
   return () => {
-    if (guard === next) guard = null;
+    if (guard !== next) return;
+    guard = null;
+    window.removeEventListener("beforeunload", confirmDocumentExit);
   };
 }
 
 export const navigate: Navigate = (href, { replace = false } = {}) => {
-  if (href === locationSnapshot()) return;
+  if (restore || href === routeSnapshot()) return;
   const proceed = () => {
-    window.history[replace ? "replaceState" : "pushState"](null, "", href);
-    window.dispatchEvent(new Event(LOCATION_EVENT));
+    const current = currentEntry ?? registerEntry();
+    const position = replace ? current.position : current.position + 1;
+    window.history[replace ? "replaceState" : "pushState"]({ canonfigPosition: position }, "", href);
+    if (locationListeners.size) publishEntry({ href: locationHref(), position });
   };
   if (guard?.(proceed)) return;
   proceed();

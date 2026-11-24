@@ -5,21 +5,23 @@ description: Write your AI agent setup once in ~/.canonfig/ and use it in Claude
 
 You keep one folder, `~/.canonfig/`, with your agent setup: instructions,
 rules, skills, subagents, commands, MCP servers, hooks, settings, and the tools
-they need. Canonfig writes that folder into the global configuration of every
-harness you list, such as Claude Code, Codex, and OpenCode, translating it into
-each harness's own files and formats. This is a **Projection**.
+they need. Canonfig writes that folder into the global configuration of
+listed harnesses that are installed and included on this machine. It
+translates the setup into each harness's own files and formats. This is a
+**Projection**.
 
 The machine where you edit the folder is the **Source Machine**. It publishes
 the folder as a signed **Profile Revision**. Each **Follower Machine** checks
 the signature, mirrors the folder into its own `~/.canonfig/`, and projects it
 into the harnesses installed there. Follower Machines never send changes back.
 
-Before Canonfig first writes to a harness, it copies what was there into a
-**Takeover Snapshot** under `~/.canonfig/.backups/`, and `canonfig restore`
-puts it back.
+By default, before Canonfig first writes to a harness, it copies the content
+it will replace into a **Takeover Snapshot** under `~/.canonfig/.backups/`.
+`canonfig restore` can put that content back.
 
-To see the commands and their output before you install anything, try the
-[interactive demo](https://canonfig.micr.dev/demo/). It runs on simulated data.
+Try the [interactive demo](https://canonfig.micr.dev/demo/) to explore the
+browser interface with simulated machines. After installing, open the live
+workspace for this machine with [`canonfig ui`](/docs/reference/cli#browser-interface).
 
 ## Where to start
 

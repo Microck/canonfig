@@ -37,6 +37,8 @@ import {
   ProfileRevisionId,
   ResourceId,
   RunId,
+  resourcesOwner,
+  surfaceResourceId,
 } from "../../src/domain/brand.ts";
 import { FollowerIdentity } from "../../src/domain/identity.ts";
 import type { ProfileRevision, PublishedResource } from "../../src/domain/profile.ts";
@@ -2186,9 +2188,9 @@ process.exit(1);
     expect(managedMode).toBe(0o500);
   });
 
-  it("temporarily makes restrictive managed parents writable during removal", async () => {
+  it("retires an authored read-only directory and restores the surviving parent mode", async () => {
     const root = temporaryDirectory();
-    const managed = join(root, "managed");
+    const managed = join(root, "home", "managed");
     const nested = join(managed, "nested");
     const target = join(nested, "settings.json");
     mkdirSync(nested, { recursive: true });
@@ -2205,10 +2207,13 @@ process.exit(1);
       "owned content",
     );
     if (baseContext.desired.kind !== "directory") throw new Error("expected directory context");
+    const resource = surfaceResourceId(resourcesOwner, "managed-directory");
     const context: ResourceExecutionContext = {
       ...baseContext,
+      resource: { ...baseContext.resource, id: resource },
       action: {
         ...baseContext.action,
+        resource,
         kind: "remove-resource",
         detail: {
           kind: "remove-resource",
@@ -3431,6 +3436,108 @@ process.exit(1);
           }))))
           : service.atomicWrite(input),
     }));
+
+  it("retains the authored preimage if a published file was replaced", async () => {
+    const base = nestedFileFixture(temporaryDirectory(), "run-authored-replacement", "notes");
+    const authored = decode(ResourceId)("harness:resources:notes");
+    const revision = {
+      ...base.revision,
+      resources: base.revision.resources.map((resource) => ({ ...resource, id: authored })),
+      desired: base.revision.desired.map((entry) => ({ ...entry, resource: authored })),
+    };
+    const fixture = {
+      ...base,
+      revision,
+      input: {
+        ...base.input,
+        revision,
+        plan: reencodePlan({
+          ...base.input.plan,
+          actions: base.input.plan.actions.map((action) => ({ ...action, resource: authored })),
+        }),
+      },
+    };
+    mkdirSync(dirname(fixture.target), { recursive: true });
+    await writeFile(fixture.target, "original");
+    const machine = decorateMachine(fixture.root, (service) => ({
+      ...service,
+      atomicWrite: (input) => input.path.absolute !== fixture.target ? service.atomicWrite(input)
+        : service.atomicWrite(input).pipe(Effect.flatMap((published) => Effect.gen(function*() {
+          yield* Effect.promise(async () => {
+            const replacement = join(dirname(fixture.target), "replacement");
+            await writeFile(replacement, "external edit");
+            renameSync(replacement, fixture.target);
+          });
+          return yield* new UnconfirmedPublicationError({
+            path: fixture.target, state: "replaced", published, message: "publication encountered a replacement",
+          });
+        }))),
+    }));
+
+    const outcome = await seedAndRun(fixture, machine);
+    expect(outcome).toMatchObject({ outcome: "Failed", rollbackIncomplete: true });
+    const reference = decode(Schema.String)(actionRows(fixture.database).find((row) => row.state === "failed")?.rollback_reference);
+    expect(await readFile(fixture.target, "utf8")).toBe("external edit");
+    expect(existsSync(reference)).toBe(true);
+    expect(await readFile(`${reference}.${sha256Hex(fixture.target)}.bin`, "utf8")).toBe("original");
+  });
+
+  it("retains the rollback snapshot if a nested directory is replaced before restoring permissions", async () => {
+    const root = temporaryDirectory();
+    const home = join(root, "home");
+    const target = join(home, "notes");
+    const nested = join(target, "nested");
+    const resourceId = decode(ResourceId)("harness:resources:notes");
+    const base = mirrorContext(root, target, "nested/settings.json", "managed");
+    const context = {
+      ...base,
+      action: { ...base.action, resource: resourceId },
+      resource: { ...base.resource, id: resourceId },
+    };
+    await mkdir(nested, { recursive: true, mode: 0o750 });
+    await writeFile(join(nested, "settings.json"), "previous");
+    const normal = machineLayer(root);
+    const prepared = await Effect.runPromise(prepareResourceAction(context).pipe(Effect.provide(normal)));
+    await Effect.runPromise(prepared.execute.pipe(Effect.provide(normal)));
+    const replaced = decorateMachine(root, (service) => ({
+      ...service,
+      setPermissions: (input) => input.path.absolute !== nested || input.permissions === undefined
+        ? service.setPermissions(input)
+        : Effect.promise(async () => {
+          renameSync(nested, join(target, "prepared"));
+          await mkdir(nested, { mode: 0o700 });
+        }).pipe(Effect.andThen(service.setPermissions(input))),
+    }));
+    await expect(Effect.runPromise(prepared.rollback!.pipe(Effect.provide(replaced))))
+      .rejects.toMatchObject({ _tag: "AnchoredMutationUnconfirmedError" });
+    expect(statSync(nested).mode & 0o777).toBe(0o700);
+    expect(existsSync(prepared.rollbackReference!)).toBe(true);
+  });
+
+  it("cleans an interrupted authored mirror while its directory replacement is still a file", async () => {
+    const root = temporaryDirectory();
+    const home = join(root, "home");
+    const target = join(home, "notes");
+    const temporary = join(home, ".cf-123456789abc.tmp");
+    const resourceId = decode(ResourceId)("harness:resources:notes");
+    const base = mirrorContext(root, target, "nested/settings.json", "managed");
+    const context = {
+      ...base,
+      action: { ...base.action, resource: resourceId },
+      resource: { ...base.resource, id: resourceId },
+    };
+    mkdirSync(home, { recursive: true });
+    await writeFile(target, "previous");
+    await writeFile(temporary, "interrupted");
+    const layer = machineLayer(root);
+    const prepared = await Effect.runPromise(prepareResourceAction(context).pipe(Effect.provide(layer)));
+    await Effect.runPromise(removeRunTemporaryEntries([context.action], context.run).pipe(Effect.provide(layer)));
+    expect(existsSync(temporary)).toBe(false);
+    expect(await readFile(target, "utf8")).toBe("previous");
+    expect(existsSync(prepared.rollbackReference!)).toBe(true);
+    await Effect.runPromise(prepared.execute.pipe(Effect.provide(layer)));
+    expect(await readFile(join(target, "nested", "settings.json"), "utf8")).toBe("managed");
+  });
 
   it("removes the parents a failed write created and keeps the ones that existed", async () => {
     const fixture = nestedFileFixture(temporaryDirectory(), "run-created-parents", "kept", "new", "deeper");

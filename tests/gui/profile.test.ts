@@ -81,6 +81,21 @@ describe("authoring base64 contracts", () => {
 });
 
 describe("profile GUI endpoints", () => {
+  it("reports the Source Machine's resolved projection metadata through the editor endpoints", async () => {
+    const machine = fixture();
+    machine.env["CODEX_HOME"] = join(machine.home, "tool-config", "codex");
+    const initialized = machine.invoke(["source", "init"]);
+    expect(initialized.status, initialized.stderr).toBe(0);
+    const gui = await server(machine.env);
+    const snapshot = await gui.snapshot();
+    expect(snapshot.reservedPaths).toContainEqual({ path: "~/tool-config/codex", owner: "OpenAI Codex" });
+    expect(snapshot.reservedPaths).not.toContainEqual({ path: "~/.codex", owner: "OpenAI Codex" });
+    expect(snapshot.supportedSurfaces["codex"]).toContain("settings");
+    expect((await gui.request("/api/local/items")).value).toMatchObject({
+      settingsFiles: { opencode: { owned: ["mcp"], reserved: ["provider"] } },
+    });
+  });
+
   it.each(["/api/profile/items", "/api/profile/config"])("saves an authored item above the default request limit through %s", async (endpoint) => {
     const machine = fixture();
     const initialized = machine.invoke(["source", "init"]);
@@ -177,23 +192,37 @@ describe("profile GUI endpoints", () => {
     });
     expect(moreCategories.status, JSON.stringify(moreCategories.value)).toBe(200);
     expect((await gui.request("/api/profile/scan", "POST", {})).status).toBe(200);
-    const validation = await gui.request("/api/profile/validate", "POST", {}); expect(validation.value).toMatchObject({ valid: true });
-    const started = await gui.request("/api/publications", "POST", { reviewer: "GUI test" }); expect(started.status).toBe(202);
+    const validationInput = async () => ({ items: (await gui.snapshot()).items.map(({ path, digest }) => ({ path, digest })) });
+    const validate = async () => Schema.decodeUnknownSync(Schema.Struct({ valid: Schema.Literal(true), reviewDigest: Schema.String }))((await gui.request("/api/profile/validate", "POST", await validationInput())).value).reviewDigest;
+    const reviewDigest = await validate();
+    expect((await gui.request("/api/publications", "POST", { reviewer: "GUI test" })).value).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
+    const started = await gui.request("/api/publications", "POST", { reviewer: "GUI test", reviewDigest }); expect(started.status).toBe(202);
     const ticket = Schema.decodeUnknownSync(Schema.Struct({ id: Schema.String }))(started.value);
     let operation = Schema.decodeUnknownSync(GuiOperation)((await gui.request(`/api/operations/${ticket.id}`)).value);
     for (let attempt = 0; operation.state === "running" && attempt < 100; attempt++) operation = Schema.decodeUnknownSync(GuiOperation)((await gui.request(`/api/operations/${ticket.id}`)).value);
     expect(operation.state, formatResult(operation)).toBe("succeeded"); expect(operation.journal).not.toBeNull();
     const revisions = Schema.decodeUnknownSync(GuiRevisions)((await gui.request("/api/revisions")).value); expect(revisions.revisions).toHaveLength(1);
     const first = revisions.revisions[0]!;
-    expect(first.approval).toMatchObject({ reviewer: "GUI test", revision: first.id, revisionDigest: first.digest });
+    expect(first.approval).toMatchObject({ reviewer: "GUI test", revision: first.id, revisionDigest: first.digest, proposalDigest: reviewDigest });
+    expect(first.digest).toBe(reviewDigest);
     expect(first.resourceChanges.previousRevision).toBeNull();
     expect(first.resourceChanges.added).toContain("instructions");
     const inspected = await gui.request("/api/revisions/inspect", "POST", { revision: first.id });
     expect(inspected.status).toBe(200);
     expect(inspected.value).toMatchObject({ id: first.id, profileId: first.profileId, canonicalBytes: expect.any(String), signature: expect.any(String), resources: expect.any(Array), groups: expect.any(Array), approval: first.approval });
+    expect(await gui.operation("/api/publications", { reviewer: "Other reviewer", reviewDigest })).toMatchObject({
+      state: "succeeded", result: { id: first.id, retainedReviewer: "GUI test" },
+    });
+    const previousObservation = await validationInput();
     const instructions = (await gui.snapshot()).items.find((item) => item.path === "AGENTS.md")!;
+    // An edit after validation needs a new review: the old digest is refused and nothing is published.
+    const reviewedBeforeEdit = await validate();
     expect((await put("AGENTS.md", "# Instructions\nReview exact revision IDs.\n", instructions.digest)).status).toBe(200);
-    expect((await gui.operation("/api/publications", { reviewer: "Second reviewer" })).state).toBe("succeeded");
+    expect((await gui.request("/api/profile/validate", "POST", previousObservation)).value).toMatchObject({ category: "conflict-or-drift" });
+    const stalePublication = await gui.operation("/api/publications", { reviewer: "Second reviewer", reviewDigest: reviewedBeforeEdit });
+    expect(stalePublication).toMatchObject({ state: "failed", failure: { category: "usage-or-configuration", message: expect.stringContaining("changed after it was validated") } });
+    expect(Schema.decodeUnknownSync(GuiRevisions)((await gui.request("/api/revisions")).value).revisions).toHaveLength(1);
+    expect((await gui.operation("/api/publications", { reviewer: "Second reviewer", reviewDigest: await validate() })).state).toBe("succeeded");
     const history = Schema.decodeUnknownSync(GuiRevisions)((await gui.request("/api/revisions")).value).revisions;
     expect(history).toHaveLength(2);
     const second = history.find((revision) => revision.id !== first.id)!;
@@ -418,7 +447,7 @@ if (args.includes("fetch")) {
     for (const path of ["/api/profile/items", "/api/revisions", "/api/skills"]) expect((await gui.request(path)).value).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
     expect((await gui.request("/api/profile/scan/accept", "POST", { reviewDigest: "reviewed", confirmAll: true })).value).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
     for (const [path, method, body] of [
-      ["/api/profile/items", "PUT", { changes: [] }], ["/api/profile/config", "PUT", { expectedDigest: null, edits: [], changes: [] }], ["/api/profile/scan", "POST", {}], ["/api/profile/validate", "POST", {}], ["/api/publications", "POST", { reviewer: "reviewer" }], ["/api/revisions/inspect", "POST", { revision: "missing" }], ["/api/skills/track", "POST", { name: "review", source: "/missing", ref: "main", subdir: "." }], ["/api/skills/check", "POST", { names: [] }], ["/api/skills/update", "POST", { expected: [{ name: "review", path: "skills/review", previousCommit: "a", nextCommit: "b", previousDigest: "c", nextDigest: "d" }] }],
+      ["/api/profile/items", "PUT", { changes: [] }], ["/api/profile/config", "PUT", { expectedDigest: null, edits: [], changes: [] }], ["/api/profile/scan", "POST", {}], ["/api/profile/validate", "POST", { items: [] }], ["/api/publications", "POST", { reviewer: "reviewer", reviewDigest: "reviewed" }], ["/api/revisions/inspect", "POST", { revision: "missing" }], ["/api/skills/track", "POST", { name: "review", source: "/missing", ref: "main", subdir: "." }], ["/api/skills/check", "POST", { names: [] }], ["/api/skills/update", "POST", { expected: [{ name: "review", path: "skills/review", previousCommit: "a", nextCommit: "b", previousDigest: "c", nextDigest: "d" }] }],
     ] as const) expect((await gui.request(path, method, body)).value).toMatchObject({ category: "usage-or-configuration", exitCode: 2 });
   }, 60_000);
 });

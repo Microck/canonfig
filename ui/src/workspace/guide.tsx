@@ -269,7 +269,7 @@ export function TourOffer() {
         >
           {/* Purple (the focus-ring violet) keeps gold for the page's own primary action. */}
           <div className="relative h-20 border-b border-border bg-panel">
-            <DitherBlock tone="purple" edge="bottom" className="absolute inset-0" />
+            <DitherBlock tone="purple" edge="bottom" motif="route" className="absolute inset-0" />
             <Button variant="overlay" size="icon-xs" aria-label="Dismiss tour offer" onClick={ws.dismissTourOffer} className="absolute top-2 right-2">
               <X />
             </Button>

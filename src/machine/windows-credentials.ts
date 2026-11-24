@@ -30,13 +30,15 @@ export const windowsPowerShellExecutable = (
  * Both PowerShell editions use the native generic Credential Manager API,
  * with chunked payloads rather than PasswordVault's smaller password limit.
  */
-const winCredSource = String.raw`
+export const windowsCredentialNativeSource = String.raw`
 using System;
 using System.ComponentModel;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
+using System.Threading;
 
 public static class CanonfigWinCred
 {
@@ -72,6 +74,9 @@ public static class CanonfigWinCred
     [DllImport("advapi32.dll", EntryPoint = "CredDeleteW", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool CredDelete(string target, uint type, uint flags);
 
+    [DllImport("advapi32.dll", EntryPoint = "CredEnumerateW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CredEnumerate(string filter, uint flags, out uint count, out IntPtr credentials);
+
     [DllImport("advapi32.dll", EntryPoint = "CredFree")]
     private static extern void CredFree(IntPtr credential);
 
@@ -83,9 +88,14 @@ public static class CanonfigWinCred
         public int Parts;
     }
 
+    private static string PartPrefix(string target)
+    {
+        return target + ".canonfig.v1.";
+    }
+
     private static string PartName(string target, string id, int index)
     {
-        return target + ".canonfig.v1." + id + "." + index.ToString(CultureInfo.InvariantCulture);
+        return PartPrefix(target) + id + "." + index.ToString(CultureInfo.InvariantCulture);
     }
 
     private static string HexDigest(byte[] bytes)
@@ -185,9 +195,76 @@ public static class CanonfigWinCred
         }
     }
 
+    // A credential belongs to a Windows user, even across separate login
+    // sessions. Keep the root and its parts alive for the whole native call.
+    private static T WithCredentialLock<T>(string target, Func<T> use)
+    {
+        string sid;
+        using (WindowsIdentity identity = WindowsIdentity.GetCurrent()) sid = identity.User.Value;
+        string key;
+        using (SHA256 sha = SHA256.Create())
+            key = HexDigest(sha.ComputeHash(Encoding.UTF8.GetBytes(target.ToUpperInvariant())));
+        using (Mutex mutex = new Mutex(false, @"Global\CanonfigWinCred-" + sid + "-" + key))
+        {
+            try { mutex.WaitOne(); }
+            catch (AbandonedMutexException) { /* Windows transferred ownership to this operation. */ }
+            try { return use(); }
+            finally { mutex.ReleaseMutex(); }
+        }
+    }
+
+    // A killed writer can leave chunks without ever publishing their root.
+    // Only the generation named by the current root may survive a sweep.
+    private static void ReclaimRetiredParts(string target, string keepId)
+    {
+        string prefix = PartPrefix(target);
+        uint count;
+        IntPtr credentials;
+        if (!CredEnumerate(prefix + "*", 0, out count, out credentials))
+        {
+            int error = Marshal.GetLastWin32Error();
+            if (error == NotFound) return;
+            throw new Win32Exception(error);
+        }
+        try
+        {
+            Win32Exception firstFailure = null;
+            byte[] zero = new byte[ChunkSize];
+            for (uint index = 0; index < count; index++)
+            {
+                IntPtr pointer = Marshal.ReadIntPtr(credentials, checked((int)index * IntPtr.Size));
+                Credential credential = Marshal.PtrToStructure<Credential>(pointer);
+                if (credential.CredentialBlob != IntPtr.Zero && credential.CredentialBlobSize <= ChunkSize)
+                    Marshal.Copy(zero, 0, credential.CredentialBlob, (int)credential.CredentialBlobSize);
+                string name = credential.TargetName;
+                if (credential.Type != Generic || !name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                string[] part = name.Substring(prefix.Length).Split('.');
+                Guid generation;
+                int ordinal;
+                if (part.Length != 2 || !Guid.TryParseExact(part[0], "N", out generation)
+                    || !int.TryParse(part[1], NumberStyles.None, CultureInfo.InvariantCulture, out ordinal)
+                    || ordinal >= (MaximumLength + ChunkSize - 1) / ChunkSize
+                    || !string.Equals(name, PartName(target, generation.ToString("N"), ordinal), StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (string.Equals(part[0], keepId, StringComparison.OrdinalIgnoreCase)) continue;
+                try { Delete(name, true); }
+                catch (Win32Exception error) { if (firstFailure == null) firstFailure = error; }
+            }
+            if (firstFailure != null) throw firstFailure;
+        }
+        finally { CredFree(credentials); }
+    }
+
     public static void Store(string target, string value)
     {
+        WithCredentialLock(target, () => { StoreLocked(target, value); return true; });
+    }
+
+    private static void StoreLocked(string target, string value)
+    {
         Header previous = ReadHeader(target, true);
+        ReclaimRetiredParts(target, previous == null ? null : previous.Id);
         byte[] bytes = new UTF8Encoding(false, true).GetBytes(value);
         if (bytes.Length > MaximumLength)
         {
@@ -233,63 +310,53 @@ public static class CanonfigWinCred
 
     public static string Load(string target)
     {
-        // An overwrite publishes the new root before deleting old parts. A
-        // reader that observed the old root may have to retry that race.
-        for (int attempt = 0; attempt < 3; attempt++)
+        return WithCredentialLock(target, () => LoadLocked(target));
+    }
+
+    private static string LoadLocked(string target)
+    {
+        Header header = ReadHeader(target, false);
+        byte[] bytes = new byte[header.Length];
+        try
         {
-            Header header = ReadHeader(target, false);
-            byte[] bytes = new byte[header.Length];
-            try
+            for (int i = 0; i < header.Parts; i++)
             {
-                for (int i = 0; i < header.Parts; i++)
-                {
-                    byte[] part = ReadBytes(PartName(target, header.Id, i), false);
-                    try
-                    {
-                        int size = Math.Min(ChunkSize, bytes.Length - i * ChunkSize);
-                        if (part.Length != size) throw new InvalidOperationException("Credential part is invalid");
-                        Buffer.BlockCopy(part, 0, bytes, i * ChunkSize, size);
-                    }
-                    finally { Array.Clear(part, 0, part.Length); }
-                }
-                byte[] digest;
-                using (SHA256 sha = SHA256.Create()) digest = sha.ComputeHash(bytes);
+                byte[] part = ReadBytes(PartName(target, header.Id, i), false);
                 try
                 {
-                    if (!string.Equals(HexDigest(digest), header.Digest, StringComparison.OrdinalIgnoreCase))
-                        throw new InvalidOperationException("Credential digest does not match");
+                    int size = Math.Min(ChunkSize, bytes.Length - i * ChunkSize);
+                    if (part.Length != size) throw new InvalidOperationException("Credential part is invalid");
+                    Buffer.BlockCopy(part, 0, bytes, i * ChunkSize, size);
                 }
-                finally { Array.Clear(digest, 0, digest.Length); }
-                return new UTF8Encoding(false, true).GetString(bytes);
+                finally { Array.Clear(part, 0, part.Length); }
             }
-            catch
+            byte[] digest;
+            using (SHA256 sha = SHA256.Create()) digest = sha.ComputeHash(bytes);
+            try
             {
-                if (attempt == 2 || ReadHeader(target, false).Id == header.Id) throw;
+                if (!string.Equals(HexDigest(digest), header.Digest, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Credential digest does not match");
             }
-            finally { Array.Clear(bytes, 0, bytes.Length); }
+            finally { Array.Clear(digest, 0, digest.Length); }
+            return new UTF8Encoding(false, true).GetString(bytes);
         }
-        throw new InvalidOperationException("Credential changed during read");
+        finally { Array.Clear(bytes, 0, bytes.Length); }
     }
 
     public static void Remove(string target)
     {
-        Header header = ReadHeader(target, false);
-        Delete(target, false);
-        Win32Exception failure = null;
-        for (int i = 0; i < header.Parts; i++)
-        {
-            try { Delete(PartName(target, header.Id, i), true); }
-            catch (Win32Exception error) { if (failure == null) failure = error; }
-        }
-        if (failure != null) throw new InvalidOperationException("Could not remove every credential part", failure);
+        WithCredentialLock(target, () => {
+            Header header = ReadHeader(target, true);
+            if (header != null) Delete(target, false);
+            ReclaimRetiredParts(target, null);
+            if (header == null) throw new Win32Exception(NotFound);
+            return true;
+        });
     }
 }
 `;
-const winCredAssemblyName = `CanonfigWinCred-${createHash("sha256").update(winCredSource).digest("hex").slice(0, 16)}`;
-
-export const windowsCredentialScript = (
-  operation: "store" | "load" | "remove",
-): string => {
+export const windowsCredentialAssemblyScript = (source = windowsCredentialNativeSource): string => {
+  const assemblyName = `CanonfigWinCred-${createHash("sha256").update(source).digest("hex").slice(0, 16)}`;
   const prelude = [
     "$ErrorActionPreference='Stop'",
     "[Console]::InputEncoding=[System.Text.UTF8Encoding]::new($false)",
@@ -299,21 +366,25 @@ export const windowsCredentialScript = (
     "$nativeData=if($env:LOCALAPPDATA){$env:LOCALAPPDATA}else{[Environment]::GetFolderPath('LocalApplicationData')}",
     "if(-not $nativeData){throw 'Windows local application data directory is unavailable'}",
     "$assemblyRoot=Join-Path $nativeData 'canonfig\\native'",
-    `$assembly=Join-Path $assemblyRoot ('${winCredAssemblyName}-'+$PSVersionTable.PSEdition+'-'+[Environment]::Version.Major+'.dll')`,
+    `$assembly=Join-Path $assemblyRoot ('${assemblyName}-'+$PSVersionTable.PSEdition+'-'+[Environment]::Version.Major+'.dll')`,
     "if(-not (Test-Path -LiteralPath $assembly)){",
     "$null=New-Item -ItemType Directory -Force -Path $assemblyRoot",
     "$staging=Join-Path $assemblyRoot ([IO.Path]::GetRandomFileName()+'.dll')",
-    `$source=@'\n${winCredSource}\n'@`,
+    `$source=@'\n${source}\n'@`,
     "Add-Type -TypeDefinition $source -OutputAssembly $staging",
     "try{Move-Item -LiteralPath $staging -Destination $assembly}",
     "catch{Remove-Item -LiteralPath $staging -Force;if(-not (Test-Path -LiteralPath $assembly)){throw}}",
     "}",
     "$null=[Reflection.Assembly]::LoadFrom($assembly)",
-    operation === "store"
-      ? "[CanonfigWinCred]::Store($env:CANONFIG_TARGET,[Console]::In.ReadToEnd())"
-      : operation === "load"
-      ? "[Console]::Out.Write([CanonfigWinCred]::Load($env:CANONFIG_TARGET))"
-      : "[CanonfigWinCred]::Remove($env:CANONFIG_TARGET)",
   ].join("\n");
   return [...prelude, native].join(";");
 };
+
+const credentialCommand = {
+  store: "[CanonfigWinCred]::Store($env:CANONFIG_TARGET,[Console]::In.ReadToEnd())",
+  load: "[Console]::Out.Write([CanonfigWinCred]::Load($env:CANONFIG_TARGET))",
+  remove: "[CanonfigWinCred]::Remove($env:CANONFIG_TARGET)",
+};
+
+export const windowsCredentialScript = (operation: keyof typeof credentialCommand): string =>
+  windowsCredentialAssemblyScript() + "\n" + credentialCommand[operation];

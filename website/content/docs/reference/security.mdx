@@ -175,9 +175,12 @@ do not, Canonfig signs and serves nothing and fails with exit 4:
 
 ## Transport trust
 
-`canonfig source serve` listens on a loopback address only (`127.0.0.1` or
-`::1`). A Follower Machine on another host connects through the managed SSH
-tunnel, `canonfig tunnel start`.
+`canonfig source serve` listens on loopback (`127.0.0.1` or `::1`) by
+default. A remote Follower Machine can reach that listener through a managed
+SSH tunnel started with `canonfig tunnel start`. With
+`canonfig source serve --tailnet`, the Source binds to its detected Tailscale
+interface and advertises its MagicDNS HTTPS endpoint. The Follower connects
+directly over the tailnet and still checks both pins from the invitation.
 
 Trust is set on first use, at enrollment. The invitation file carries the
 Source Machine's HTTPS certificate fingerprint and signing key fingerprint,

@@ -1,10 +1,11 @@
 // Machine map nodes: one card per machine, plus the dashed "Add machine" slot.
-import { memo, use, type ComponentProps } from "react";
+import { memo, use, useCallback, type ComponentProps } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Handle, NodeToolbar, Position, type Node, type NodeProps } from "@xyflow/react";
 import { ArrowSquareOut, PaintBrush, Plus } from "@/components/icons";
 import { cn, SNAP } from "@/lib/utils";
-import { DitherShader, fillStyle, usePrefersReducedMotion } from "@/lib/dither";
+import { DitherShader, usePrefersReducedMotion } from "@/lib/dither";
+import { cornerWashPaths, syncSheenPath } from "@/lib/dither/geometry";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { Mono, StateLabel, Term } from "@/shared/shared";
@@ -50,6 +51,14 @@ float field(vec2 uv, vec2 res, float t) {
 `;
 const GLOW_PALETTE = ["transparent", "green"] as const;
 
+// Crisp Bayer 4x4 diagonal corner wash (24x24 cells = 1.5px cells on the 36px tile).
+const TILE_CELLS = 24;
+const TILE_WASH = {
+  source: cornerWashPaths(TILE_CELLS, true),
+  follower: cornerWashPaths(TILE_CELLS, false),
+  syncSheen: syncSheenPath(TILE_CELLS),
+} as const;
+
 function ToolbarButton({ className, ...props }: ComponentProps<"button">) {
   return (
     <Button
@@ -82,6 +91,11 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
   const { look } = data;
   const actions = use(MapActionsContext);
   const reduced = usePrefersReducedMotion();
+  const { reveal } = actions;
+  // The toolbar is portalled and mounts after selection. Its ref runs when its bounds can be measured.
+  const revealToolbar = useCallback((element: HTMLDivElement | null) => {
+    if (element) reveal(id);
+  }, [id, reveal]);
   const customizing = actions.customizingId === id;
   // The sheet's machine keeps its ring even when the sheet was opened from outside the map.
   const lit = selected || customizing;
@@ -93,8 +107,15 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
   return (
     <>
       {/* Outside viewport scaling; above the Source, below followers, away from the edges between them. */}
-      <NodeToolbar isVisible={selected} position={data.kind === "source" ? Position.Top : Position.Bottom} offset={8} align="end">
+      <NodeToolbar
+        isVisible={selected}
+        position={data.kind === "source" ? Position.Top : Position.Bottom}
+        offset={8}
+        align="end"
+        data-cf-machine-toolbar={id}
+      >
         <div
+          ref={revealToolbar}
           className={cn(
             "nodrag nopan flex animate-in items-center gap-0.5 rounded-md border border-border-strong bg-popover p-0.5 shadow-md shadow-black/40 duration-150 ease-snap fade-in-0",
             data.kind === "source" ? "slide-in-from-bottom-1" : "slide-in-from-top-1",
@@ -156,9 +177,13 @@ export const MachineNode = memo(function MachineNode({ id, data, selected }: Nod
             className="relative grid size-9 shrink-0 place-items-center overflow-hidden rounded-md"
             style={{ color: accent, backgroundColor: `color-mix(in oklab, ${accent} ${Math.round(ICON_TILE_TINT * 100)}%, transparent)` }}
           >
-            <span aria-hidden className="absolute inset-0 opacity-70" style={fillStyle("gradient", { color: accent, cell: 1.5, edge: "bottom", length: 12, from: 0.5, to: 0 })} />
-            {/* A working machine's tile carries a still hatch; the source's dither glow is the map's one moving signal. */}
-            {data.active && <span aria-hidden className="absolute inset-0 opacity-30" style={fillStyle("hatched", { color: accent, cell: 1.5 })} />}
+            <svg aria-hidden className="pointer-events-none absolute inset-0 size-full" viewBox={`0 0 ${TILE_CELLS} ${TILE_CELLS}`} shapeRendering="crispEdges">
+              <path d={TILE_WASH[data.kind][0]} fill="currentColor" fillOpacity={0.28} />
+              <path d={TILE_WASH[data.kind][1]} fill="currentColor" fillOpacity={0.72} />
+              <path d={TILE_WASH[data.kind][2]} style={{ fill: "color-mix(in oklab, currentColor 64%, var(--foreground))" }} />
+              {/* A working machine's tile carries a still carved diagonal sheen; the source's dither glow is the map's one moving signal. */}
+              {data.active && <path d={TILE_WASH.syncSheen} style={{ fill: "color-mix(in oklab, currentColor 64%, var(--foreground))" }} />}
+            </svg>
             <span aria-hidden className="absolute inset-0 rounded-md border" style={{ borderColor: `color-mix(in oklab, ${accent} 40%, transparent)` }} />
             <LookIcon look={look} bold={lit} className="relative size-5" />
           </span>

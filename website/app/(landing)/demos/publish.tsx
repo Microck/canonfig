@@ -35,8 +35,8 @@ export function PublishScene() {
         </div>
 
         <div className="pub-head">
-          <DitherBand className="pub-band pub-band-warn" />
-          <DitherBand className="pub-band pub-band-ok" />
+          <DitherBand tone="warn" className="pub-band pub-band-warn" />
+          <DitherBand tone="ok" className="pub-band pub-band-ok" />
           <span className="pub-titles">
             {TITLES.map((title, index) => (
               <span key={title} className={`pub-title pub-title-${index + 1}`}>

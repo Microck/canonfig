@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { request } from "node:http";
 import { createServer as createPortListener } from "node:net";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { createGuiSelfUpdateFixture, candidate, previous, type GuiSelfUpdateFixture } from "../gui/self-update-fixture.ts";
@@ -107,6 +108,22 @@ async function start(machine: GuiSelfUpdateFixture): Promise<GuiServer> {
   } finally { clearTimeout(deadline); }
 }
 
+/** A separate process holding an ordinary command lease for its whole life, as a running sync does. */
+async function holdLease(machine: GuiSelfUpdateFixture): Promise<ChildProcess> {
+  const coordination = pathToFileURL(join(machine.root, "dist", "runtime", "self-update", "coordination.js")).href;
+  const script = `const { managedCommandLease } = await import(${JSON.stringify(coordination)});
+    const lease = managedCommandLease(${JSON.stringify(machine.root)});
+    process.once("exit", lease.close);
+    process.on("SIGINT", () => process.exit(130));
+    process.on("SIGTERM", () => process.exit(143));
+    process.stdout.write("held\\n");
+    setInterval(() => undefined, 1 << 30);`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { env: machine.env, stdio: ["ignore", "pipe", "inherit"] });
+  children.add(child);
+  await once(child.stdout, "data");
+  return child;
+}
+
 async function operation(server: GuiServer, id: string) {
   let completed: GuiOperation | undefined;
   await expect.poll(async () => {
@@ -180,7 +197,9 @@ describe("GUI self-update with a disposable npm installation", () => {
       slow.destroy();
       await enabled.promise.catch(() => undefined);
     }
-    expect(machine.readers()).toHaveLength(1);
+    // An idle GUI holds no lease, so it never defers an update by itself. It
+    // releases a request's lease just after sending the response.
+    await expect.poll(() => machine.readers()).toEqual([]);
     const checked = await server.api("/api/self-update/check", {});
     expect(checked.status).toBe(200);
     expect(Schema.decodeUnknownSync(GuiSelfUpdateCheck)(checked.body)).toMatchObject({ current: previous, candidate, status: "available" });
@@ -188,11 +207,11 @@ describe("GUI self-update with a disposable npm installation", () => {
     expect(detail).toContain("Source and Followers only pair on the same major.minor");
     expect(detail).toContain(`npm install --global @microck/canonfig@${newMajor}`);
     expect(machine.version()).toBe(previous);
-    // A forcibly killed GUI cannot release its lease on any platform. Activation
+    // A forcibly killed command cannot release its lease on any platform. Activation
     // must reclaim that dead reader under its gate, without touching this GUI.
-    const crashed = await start(machine);
-    await stop(crashed.child, "SIGKILL");
-    expect(machine.readers()).toHaveLength(2);
+    const crashed = await holdLease(machine);
+    await stop(crashed, "SIGKILL");
+    expect(machine.readers()).toHaveLength(1);
     const id = await apply(server);
     await machine.downloadStarted;
     const running = Schema.decodeUnknownSync(GuiOperation)((await server.api(`/api/operations/${id}`)).body);
@@ -239,7 +258,7 @@ describe("GUI self-update with a disposable npm installation", () => {
     });
     expect(await server.exited).toEqual({ code: 0, signal: null });
     expect(machine.version()).toBe(candidate);
-    expect(machine.readers()).toEqual([]);
+    await expect.poll(() => machine.readers()).toEqual([]);
     expect(JSON.parse(readFileSync(join(directory, "pending.json"), "utf8")))
       .toMatchObject({ _tag: "Committed", version: 2 });
   }, 120_000);
@@ -248,16 +267,15 @@ describe("GUI self-update with a disposable npm installation", () => {
     const machine = await fixture();
     const server = await start(machine);
     await enable(server, machine.npmCli);
-    const second = await start(machine);
-    const otherLease = machine.readers().find((name) => name.startsWith(`${second.child.pid}-`));
+    const second = await holdLease(machine);
+    const otherLease = machine.readers().find((name) => name.startsWith(`${second.pid}-`));
     expect(otherLease).toBeDefined();
-    expect(machine.readers()).toHaveLength(2);
+    await expect.poll(() => machine.readers()).toEqual([otherLease]);
     const completed = await operation(server, await apply(server));
     expect(completed.state).toBe("succeeded");
     expect(Schema.decodeUnknownSync(GuiSelfUpdateCheck)(completed.result)).toMatchObject({ status: "deferred", current: previous, candidate,
       detail: expect.stringContaining("Canonfig commands are active (or left a stale lease). Retry after they finish; do not remove live leases.") });
-    expect(machine.readers()).toContain(otherLease);
-    expect(machine.readers()).toHaveLength(2);
+    await expect.poll(() => machine.readers()).toEqual([otherLease]);
     expect(machine.version()).toBe(previous);
     const cli = machine.invoke(["self-update", "disable", "--apply", "--json"]);
     expect(cli.status).toBe(3);
@@ -265,26 +283,37 @@ describe("GUI self-update with a disposable npm installation", () => {
     const refused = await server.api("/api/self-update/disable", {});
     expect(refused.status).toBe(400);
     expect(Schema.decodeUnknownSync(GuiError)(refused.body)).toEqual({ category: "human-action-required", exitCode: 3, message: cliFailure.message });
-    expect(machine.readers()).toContain(otherLease);
+    await expect.poll(() => machine.readers()).toEqual([otherLease]);
     expect((await server.api("/api/self-update")).status).toBe(200);
-    await stop(second.child, signal);
+    await stop(second, signal);
     // Windows child.kill is not console Ctrl-C and cannot run finalizers. The
     // next ordinary command must reclaim its dead reader, never a live one.
-    expect(machine.readers()).toHaveLength(process.platform === "win32" || signal === "SIGKILL" ? 2 : 1);
+    expect(machine.readers()).toHaveLength(process.platform === "win32" || signal === "SIGKILL" ? 1 : 0);
     const nextCommand = machine.invoke(["--version"]);
     expect(nextCommand.status, nextCommand.stderr).toBe(0);
-    const port = createPortListener();
-    port.listen(Number(new URL(second.origin).port), "127.0.0.1");
-    await once(port, "listening");
-    const closed = once(port, "close"); port.close(); await closed;
-    expect(machine.readers()).toHaveLength(1);
+    await expect.poll(() => machine.readers()).toEqual([]);
     const disabled = await server.api("/api/self-update/disable", {});
     expect(disabled.status).toBe(200);
     expect(Schema.decodeUnknownSync(GuiSelfUpdateStatus)(disabled.body)).toMatchObject({ enabled: false, settings: null });
-    expect(machine.readers()).toHaveLength(1);
+    await expect.poll(() => machine.readers()).toEqual([]);
     expect((await server.api("/api/session")).status).toBe(200);
     await enable(server, machine.npmCli);
-    expect(machine.readers()).toHaveLength(1);
+    await expect.poll(() => machine.readers()).toEqual([]);
+  }, 120_000);
+
+  it("lets a command-line update replace an idle GUI, which then exits for its supervisor to restart it", async () => {
+    const machine = await fixture();
+    machine.allowDownload();
+    const server = await start(machine);
+    await enable(server, machine.npmCli);
+    await expect.poll(() => machine.readers()).toEqual([]);
+    const applied = await invokeCli(machine, ["self-update", "apply", "--apply"]);
+    expect(applied.data).toMatchObject({ status: "updated", candidate });
+    expect(machine.version()).toBe(candidate);
+    // The next request finds the replaced package before running any of its code.
+    const replaced = await fetch(`${server.origin}/api/session`, { headers: server.headers }).catch(() => undefined);
+    expect(replaced?.ok ?? false).toBe(false);
+    expect(await server.exited).toEqual({ code: 75, signal: null });
   }, 120_000);
 
   it.each(["manual", "auto"] as const)("uses the %s selection policy through the installed CLI", async (mode) => {

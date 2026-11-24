@@ -5,10 +5,11 @@ description: Understand how the Source Machine publishes ~/.canonfig/, how Follo
 
 You keep one agent setup in `~/.canonfig/`: instructions, rules, skills,
 subagents, commands, hooks, MCP servers, settings, and the tools they need.
-Canonfig writes that setup into the global configuration of every harness you
-use, on every machine. One **Source Machine** owns the setup. Every other
-machine is a **Follower Machine**: it receives the setup and never sends
-changes back.
+Canonfig writes that setup into the global configuration of each listed
+harness that is installed and included on the machine. One **Source Machine**
+owns the setup. Machines that enroll as **Follower Machines** receive it
+without sending their changes back. You can also use Canonfig locally on a
+machine without enrolling it.
 
 ## Who owns what
 
@@ -31,10 +32,11 @@ place.
 1. You edit `~/.canonfig/` on the Source Machine and run
    `canonfig source publish --reviewer <name>`. Publication reads only the
    authoring allowlist (`canonfig.jsonc`, `AGENTS.md`, `rules/`, `skills/`,
-   `agents/`, `commands/`, `hooks/`), validates it, and signs a **Profile
+   `agents/`, `commands/`, `hooks/`, `files/`), validates it, and signs a **Profile
    Revision** with the next sequence number. One item becomes one Profile
    Resource, so Follower Groups can include or leave out each one. A Profile
-   Revision never changes after you publish it.
+   Revision never changes after you publish it. Publishing the same content as
+   the latest revision returns that revision.
 2. A Follower Machine fetches the latest revision only when you run
    `canonfig sync`, or when its native schedule runs
    `canonfig sync --apply --no-input --scheduled`. Canonfig does not push
@@ -43,14 +45,17 @@ place.
    to see into its own `~/.canonfig/`, the mirror, with a `canonfig.jsonc`
    rendered from that subset. In the same run it projects the mirror plus
    `local/` into its harnesses. `canonfig sync --plan`, the default, shows the
-   plan and changes nothing.
+   proposed changes without writing the mirror or harness configuration.
 
 To roll back, publish the earlier content again; it becomes the next Profile
 Revision.
 
-The Source Machine serves Profile Revisions on a loopback address only. A
-Follower Machine on another host reaches it through `canonfig tunnel`, an SSH
-tunnel Canonfig manages. See
+The Source Machine serves Profile Revisions over HTTPS on a loopback address
+by default. A remote Follower Machine can reach this address through
+`canonfig tunnel`, an SSH tunnel Canonfig manages. To allow direct
+connections over a private tailnet, start the Source with the
+[`--tailnet` option](/docs/how-to/connect-over-tailnet). Both connection
+paths use the Source identities pinned during enrollment. See
 [Security and credentials](/docs/reference/security#transport-trust).
 
 ## Projection on every machine
@@ -78,12 +83,13 @@ Canonfig reports that and writes the feature nowhere else. The
 
 ## Taking over a harness
 
-The first time Canonfig writes a surface of a harness, it copies what was
-there into a takeover snapshot under `~/.canonfig/.backups/`, then replaces
-it. From then on, an owned file or directory holds exactly the folder's items.
-Configuration you had there before is gone from the harness but kept in the
-snapshot, and `canonfig restore` writes it back. For an owned key, the
-snapshot keeps only that key's prior value.
+Before the first write to a harness surface, Canonfig normally copies what
+it will replace into a Takeover Snapshot under `~/.canonfig/.backups/`. For
+an owned key, the snapshot keeps only that key's prior value.
+`canonfig restore` can write the snapshot back. With the Append-local Apply
+Policy, Canonfig updates only its marked section of a text file or its own
+entries in a directory. Other content stays in the harness. See
+[Keep a machine's own instructions and skills](/docs/how-to/keep-local-content).
 
 Canonfig also pins the harness's root at takeover. If a later run resolves a
 different root, for example because an environment variable such as
@@ -115,11 +121,12 @@ and undo the edit, then run `canonfig sync --apply` again.
   otherwise the item needs Human Action Required. Shared secrets are a
   separate, opt-in channel; see
   [Opt-in shared secrets](/docs/reference/security#opt-in-shared-secrets).
-- **The local folder.** `~/.canonfig/local/` is never published and never
-  replaced. Projection adds its items within the Source Machine's
-  `local.allow`. A local item with the same name as a published one is Human
-  Action Required, because Canonfig will not choose between them. See
-  [Add items only one machine uses](/docs/how-to/add-machine-local-items).
+- **The local folder.** Publishing leaves `~/.canonfig/local/` out of the
+  revision, and Follower sync leaves it in place. Projection adds its items
+  within the Source Machine's `local.allow`. A Local Overlay lets a local
+  item take precedence over a published item with the same name. Without an
+  overlay, Canonfig reports Human Action Required. See
+  [Replace a published item on one machine](/docs/how-to/use-local-overlays).
 - **Keys Canonfig does not own.** In a shared file, every key outside
   Canonfig's owned set stays the machine's own, with no declaration needed.
 - **Snapshots and journals.** They are never published or sent anywhere.
@@ -151,11 +158,12 @@ item's verification, and only that verification counts. See
 Canonfig records a Synchronization Run's plan and each action as it runs, so
 one run behaves as one transaction for file, directory, and key changes:
 
-- **A failed action rolls back the whole run.** Canonfig restores every file,
-  directory, and key it changed in that run, including ones unrelated to the
-  failure, and deletes a takeover snapshot the run created. The run fails with
-  exit 7 and names the cause: "resource `<id>` could not be applied to
-  `<target>`: `<cause>`". Fix the cause and run `canonfig sync --apply` again.
+- **A failed action triggers rollback.** Canonfig attempts to restore every
+  file, directory, and key it changed in the run, including changes unrelated
+  to the failed action. If rollback completes, Canonfig removes any Takeover
+  Snapshot created by the run. The failure reports exit 7 and names the cause.
+  If rollback is blocked, the failure also names the rollback error and recovery
+  files are kept.
 - **Tool installs are not rolled back.** Canonfig cannot reverse a package
   manager, a login, or an agent's commands. The next run's verification finds
   an installed tool and leaves it in place.

@@ -941,21 +941,32 @@ export interface ExportInput {
   readonly sourceSigner: Effect.Effect<ArchiveSigner, ArchiveSignerError>;
 }
 
-/**
- * Journal an export or import that stopped with an error in
- * `archive_events`, with what the request says (the outcome itself is
- * journaled where it is known). Journaling the error is best effort: when the
- * state database fails too, the command's own error is still the one
- * reported, since it says what happened and what to do, where a state error
- * would hide it.
- */
+/** Keep the operation's failure and report which follow-up step also failed. */
+export class ArchiveSecondaryError extends TaggedError<ArchiveSecondaryError>()(
+  "ArchiveSecondaryError",
+  { primary: Schema.instanceOf(Error), secondary: Schema.String },
+) {}
+
+export const onArchiveError = <Failure, Requirements>(
+  attempt: Effect.Effect<void, Failure, Requirements>,
+  secondary: string,
+) =>
+<Success, Primary extends Error, Services>(effect: Effect.Effect<Success, Primary, Services>) =>
+  effect.pipe(Effect.catch((primary): Effect.Effect<never, Primary | ArchiveSecondaryError, Requirements> =>
+    Effect.gen(function*() {
+      if (yield* Effect.isFailure(attempt)) return yield* new ArchiveSecondaryError({ primary, secondary });
+      return yield* Effect.fail(primary);
+    })
+  ));
+
+/** Record a failed export or import. The database error may contain private data. */
 export const journalError = (command: ArchiveEvent["command"], archive: string) =>
-<A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(Effect.tapError(() =>
+  onArchiveError(
     Effect.flatMap(StateRepository, (repository) =>
       repository.recordArchiveEvent({ occurredAt: new Date().toISOString(), command, outcome: "Error", archive })
-    ).pipe(Effect.ignore)
-  ));
+    ),
+    "Canonfig could not record this failure in the archive history",
+  );
 
 /**
  * `canonfig export`: write the folder (and with `includeHarnesses` the

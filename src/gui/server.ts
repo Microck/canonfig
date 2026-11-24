@@ -18,7 +18,7 @@ import { profileRoutes } from "./routes/profile.ts";
 import { enrollmentRoutes } from "./routes/enrollment.ts";
 import { synchronizationRoutes } from "./routes/synchronization.ts";
 import { administrationRoutes } from "./routes/administration.ts";
-import { managedCommandLease, type ManagedCommandLease } from "../runtime/self-update/coordination.ts";
+import { exitForReplacement, managedCommandLease, type ManagedCommandLease } from "../runtime/self-update/coordination.ts";
 import { detectTailnet, isTailnetAddress, tailnetBinding } from "../enrollment/tailnet.ts";
 
 export interface GuiOptions {
@@ -177,7 +177,7 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
   const stopped = yield* Deferred.make<void>();
   let updating = false;
   const updateSettled = () => { if (!lease.suspended) updating = false; };
-  const operations = yield* makeGuiOperations;
+  const operations = yield* makeGuiOperations(lease.hold);
   // Area registration is complete here. Area owners only fill their own modules.
   const routes = (yield* Effect.all([
     sessionRoutes,
@@ -298,6 +298,16 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
   };
 
   const server = createServer((request, response) => {
+    // Every request, assets included, reads this release's files. Operation
+    // polls only read results this process already holds, and must stay
+    // reachable while a failed update's journal refuses other work.
+    const operationPoll = request.method === "GET" && /^\/api\/operations\/[^/]+$/u.test(new URL(request.url ?? "/", "http://canonfig.invalid").pathname);
+    let release: () => void;
+    try { release = operationPoll ? () => undefined : lease.hold(); }
+    catch (error) {
+      json(response, 503, failureBody("human-action-required", error instanceof Error ? error.message : "Canonfig is updating. Retry shortly."));
+      return;
+    }
     const controller = new AbortController();
     pending.add(controller);
     response.once("close", () => controller.abort());
@@ -305,7 +315,7 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
       if (!response.destroyed && !response.headersSent) {
         json(response, 500, failureBody("internal", "The browser request failed. Check canonfig status in a terminal."));
       } else response.destroy();
-    }).finally(() => pending.delete(controller));
+    }).finally(() => { pending.delete(controller); release(); });
   });
   if (tailnet !== undefined) server.on("connection", (socket) => {
     if (!isTailnetAddress(socket.remoteAddress ?? "")) socket.destroy();
@@ -342,6 +352,9 @@ export const runGui = Effect.fn("Gui.run")(function*(options: GuiOptions, io: Cl
   io.writeStdout(`${url}\n`);
   io.writeStderr("Canonfig browser interface is running. Press Ctrl-C to stop.\n");
   if (options.open) openBrowser(url, io);
+  // Startup has loaded the server; from here it holds the lease only per
+  // request or operation, so an update can proceed while the GUI sits idle.
+  lease.becomeResident(exitForReplacement(io.writeStderr));
   yield* Deferred.await(stopped);
   return { stopped: true };
 }, Effect.scoped);

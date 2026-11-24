@@ -141,13 +141,14 @@ const runFollower = <Value, Failure>(
 const start = async (
   setup: Fixture,
   hostname = "127.0.0.1",
+  hold?: () => () => void,
 ): Promise<SourceServerHandle> => {
   const server = await runSource(
     setup,
     Effect.gen(function*() {
       const enrollment = yield* Enrollment;
       yield* enrollment.initializeSource();
-      return yield* startSourceServer({ hostname });
+      return yield* startSourceServer({ hostname, hold });
     }),
   );
   openServers.push(server);
@@ -234,6 +235,35 @@ describe("loopback HTTPS enrollment", () => {
     // A reset removes the saved look, so Followers fall back to their defaults.
     await runSource(setup, writeSourceLook(undefined));
     expect(await runFollower(setup, fetchSourceLook(input))).toBeUndefined();
+  });
+
+  it("holds the command lease for each request and refuses requests it cannot hold", async () => {
+    const setup = fixture();
+    const events: string[] = [];
+    let refuse = false;
+    const server = await start(setup, "127.0.0.1", () => {
+      if (refuse) throw new Error("Canonfig was replaced; this server is restarting on the new release.");
+      events.push("held");
+      return () => { events.push("released"); };
+    });
+    const status = (path: string) => {
+      const { promise, resolve, reject } = Promise.withResolvers<number>();
+      const endpoint = new URL(server.endpoint);
+      const request = httpsRequest({
+        hostname: endpoint.hostname, port: endpoint.port, path, method: "GET", rejectUnauthorized: false,
+        headers: { [canonfigVersionHeader]: buildIdentity.packageVersion },
+      }, (response) => { response.resume(); response.once("end", () => resolve(response.statusCode ?? 0)); });
+      request.once("error", reject);
+      request.end();
+      return promise;
+    };
+    expect(await status("/v1/enrollment/source")).toBe(200);
+    expect(events).toEqual(["held", "released"]);
+    expect(await status("/v1/unknown")).toBe(404);
+    expect(events).toEqual(["held", "released", "held", "released"]);
+    refuse = true;
+    expect(await status("/v1/enrollment/source")).toBeGreaterThanOrEqual(500);
+    expect(events).toHaveLength(4);
   });
 
   it("allows concurrent Source initialization to publish only one immutable identity", async () => {

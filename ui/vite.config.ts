@@ -2,8 +2,9 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig, normalizePath, type Plugin } from "vite";
 import { demoOutputDirectory } from "./src/build-paths.ts";
+import { demoProjection } from "./src/workspace/demo-projection.ts";
 
 const SITE_URL = "https://canonfig.micr.dev/";
 // The public demo is a separate app under /demo/ (scripts/build-pages.mjs).
@@ -102,6 +103,14 @@ export default defineConfig((env) => ({
     tailwindcss(),
     demoSite(),
     applicationEntrypoint(),
+    {
+      name: "canonfig-demo-projection",
+      enforce: "pre",
+      transform(_source, id) {
+        if (id !== normalizePath(path.resolve(import.meta.dirname, "src/workspace/demo-projection.ts"))) return;
+        return "export const demoProjection = " + JSON.stringify(demoProjection);
+      },
+    },
     {
       name: "canonfig-ignore-demo-output",
       apply: "serve",

@@ -1,8 +1,8 @@
 // Shared components for the first-run flow.
-import { useContext, useEffect, useId, useLayoutEffect, useRef, type ComponentType, type ReactNode } from "react";
-import { AnimatePresence, motion, PresenceContext, useIsPresent, useReducedMotion, type Variants } from "motion/react";
+import { createContext, useContext, useEffect, useEffectEvent, useId, useLayoutEffect, useRef, type ComponentType, type ReactNode } from "react";
+import { AnimatePresence, motion, PresenceContext, useIsPresent, usePresence, usePresenceData, useReducedMotion } from "motion/react";
 import { CaretRight, Check, Question, WarningCircle } from "@/components/icons";
-import { cn, riseIn, SNAP } from "@/lib/utils";
+import { cn, riseIn, SNAP, SNAP_EASING } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { CollapsibleTrigger } from "@/components/ui/collapsible";
 import { RadioGroupItem } from "@/components/ui/radio-group";
@@ -35,23 +35,8 @@ export function useFocusOnMount<T extends HTMLElement>() {
 export const STEP_MS = 240;
 const STEP_MOVE = { duration: STEP_MS / 1000, ease: SNAP };
 
-// Steps slide 20px in the direction of travel: Continue brings the next step in from the
-// right, Back from the left. The pane itself only moves; its items fade in one after
-// another as they rise (StepPane), so the step reads as built up rather than swapped.
-// The leaving step fades and drifts 12px the other way in 120ms, clearing the stage
-// before the new items arrive. 20px stays inside the card's padding at every width.
-// Transform strings, not `x`: motion hands a plain transform to the compositor.
-const STEP_SLIDE: Variants = {
-  enter: (direction: number) => ({ transform: `translateX(${direction * 20}px)` }),
-  center: { transform: "translateX(0px)", opacity: 1, transition: STEP_MOVE },
-  exit: (direction: number) => ({ transform: `translateX(${direction * -12}px)`, opacity: 0, transition: { duration: 0.12, ease: SNAP } }),
-};
-// Reduced motion: no movement. The new step fades in; the old one leaves at once, so two steps never overlap.
-const STEP_FADE: Variants = {
-  enter: { opacity: 0 },
-  center: { opacity: 1, transition: { duration: 0.15, ease: SNAP } },
-  exit: { opacity: 0, transition: { duration: 0 } },
-};
+const STEP_CENTER = { opacity: 1, transform: "translateX(0px)" };
+const StepMotion = createContext(true);
 
 /**
  * Swaps wizard steps with a direction-aware slide. The leaving step is popped out of
@@ -61,14 +46,18 @@ const STEP_FADE: Variants = {
  */
 export function StepTransition({ step, direction, children }: { step: number; direction: 1 | -1; children: ReactNode }) {
   const reduced = useReducedMotion();
+  const wizardPresent = useIsPresent();
   return (
-    // The pop-out is positioned against this box.
+    // The outgoing pane is positioned against this box.
     <div className="relative">
-      <AnimatePresence initial={false} mode="popLayout" custom={direction}>
-        <StepPane key={step} direction={direction} reduced={!!reduced}>
-          {children}
-        </StepPane>
-      </AnimatePresence>
+      {/* Context reaches exiting panes even while Motion retains their previous props. */}
+      <StepMotion value={wizardPresent && !reduced}>
+        <AnimatePresence initial={false} custom={direction}>
+          <StepPane key={step} direction={direction}>
+            {children}
+          </StepPane>
+        </AnimatePresence>
+      </StepMotion>
     </div>
   );
 }
@@ -77,40 +66,72 @@ export function StepTransition({ step, direction, children }: { step: number; di
 export const STEP_ITEMS = "[data-step-pane] > * > *";
 
 /**
- * One step's content. Inert while leaving, so its fields can't take a click or focus
- * during the exit. A step that arrives by Continue or Back rises its top-level items in,
- * 30ms apart, all done within 290ms, alongside the card's 240ms height tween on the same
- * curve. The wizard's first step is left alone: the wizard's entrance staggers it.
- * AnimatePresence's pop-out finds the pane itself (its outermost motion element).
+ * A step can enter once during its presence. An exiting step leaves layout
+ * immediately, but its pane can turn around from the painted position.
  */
-function StepPane({ direction, reduced, children }: { direction: 1 | -1; reduced: boolean; children: ReactNode }) {
-  const present = useIsPresent();
-  // AnimatePresence marks the children of its first render with initial: false.
+function StepPane({ direction, children }: { direction: 1 | -1; children: ReactNode }) {
+  const animateStep = useContext(StepMotion);
+  const [present, safeToRemove] = usePresence();
+  const completeExit = useEffectEvent(() => safeToRemove?.());
+  const exitDirection = usePresenceData() === -1 ? -1 : 1;
+  // A live step can request the next direction while it waits for a plan.
+  // Read that direction only when a pane actually changes presence.
+  const transitionDirection = useEffectEvent(() => present ? direction : exitDirection);
+  // The wizard handles its first step's entrance.
   const first = useContext(PresenceContext)?.initial === false;
+  const entranceAvailable = useRef(!first);
+  const paintedFrame = useRef<{ opacity: string | number; transform: string } | null>(null);
   const pane = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // AnimatePresence records exiting keys in its layout effect.
+    if (!animateStep && !present) completeExit();
+  }, [animateStep, present]);
+
   useLayoutEffect(() => {
-    if (first || reduced) return;
-    // Start the rise on the frame the step changed, where the pane's slide (motion's own clock) starts.
-    // Left alone, WAAPI starts on the first frame it renders, so a large step whose first frame runs
-    // long (Import's offer list) would rise its items that much behind the slide.
-    const start = document.timeline.currentTime;
-    for (const animation of riseIn(pane.current!.querySelectorAll(":scope > * > *"), { gap: 30, duration: 200, distance: 6, cap: 3 })) animation.startTime = start;
-    // Mount only: a step that turns around mid-exit is already built.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const element = pane.current;
+    if (!element) return;
+    const enter = present && entranceAvailable.current;
+    if (!present || !animateStep) entranceAvailable.current = false;
+
+    if (!animateStep) {
+      paintedFrame.current = null;
+      return;
+    }
+
+    const previous = paintedFrame.current;
+    if (present && !enter && !previous) return;
+    const slideDirection = transitionDirection();
+    const from = previous ?? (enter ? { opacity: 1, transform: `translateX(${slideDirection * 20}px)` } : STEP_CENTER);
+    const to = present ? STEP_CENTER : { opacity: 0, transform: `translateX(${slideDirection * -12}px)` };
+    // Start the slide and stagger together on the document's native timeline.
+    const slide = element.animate([from, to], {
+      duration: present ? STEP_MS : 120,
+      easing: SNAP_EASING,
+      fill: present ? "backwards" : "both",
+    });
+    const cancelRise = enter
+      ? riseIn(element.querySelectorAll(`:scope${STEP_ITEMS}`), { gap: 30, duration: 200, distance: 6, cap: 3 })
+      : undefined;
+
+    // A reversal cancels the current slide without completing an exit.
+    void slide.finished.then(() => { if (!present) completeExit(); }, () => {});
+    return () => {
+      if (slide.playState === "finished") {
+        paintedFrame.current = to;
+      } else {
+        const style = getComputedStyle(element);
+        paintedFrame.current = { opacity: style.opacity, transform: style.transform };
+      }
+      slide.cancel();
+      cancelRise?.();
+    };
+  }, [animateStep, present]);
+
   return (
-    <motion.div
-      ref={pane}
-      data-step-pane
-      custom={direction}
-      variants={reduced ? STEP_FADE : STEP_SLIDE}
-      initial="enter"
-      animate="center"
-      exit="exit"
-      inert={!present}
-    >
+    <div ref={pane} data-step-pane className={present ? undefined : "absolute inset-x-0 top-0"} inert={!present}>
       {children}
-    </motion.div>
+    </div>
   );
 }
 

@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises";
-import { execFile, spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { execFile, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { createInterface } from "node:readline";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { dirname, join } from "node:path";
@@ -11,13 +13,16 @@ import { createRequire } from "node:module";
 
 import { describe, expect, it } from "vitest";
 import { Cause, Effect, Layer, Redacted } from "effect";
+import { openAnchoredDirectory } from "../src/machine/anchored-directory.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
-import { ActionId, ResourceId, RunId } from "../src/domain/brand.ts";
+import { windowsCredentialAssemblyScript, windowsCredentialNativeSource, windowsPowerShellExecutable } from "../src/machine/windows-credentials.ts";
+import { ActionId, ResourceId, RunId, resourcesOwner, surfaceResourceId } from "../src/domain/brand.ts";
 import { CredentialStorageError } from "../src/machine/machine-state.errors.ts";
 import { stateRepositoryLayer } from "../src/state/state-repository.layer.ts";
 import { StateRepository } from "../src/state/state-repository.service.ts";
 import { sha256BytesHex } from "../src/profile/profile-codec.ts";
-import { defaultSynchronizationExecutionLimits } from "../src/synchronization/executor.ts";
+import { mcpProxyBindingFile, newMcpProxyBinding, readMcpProxyBinding } from "../src/projection/mcp-launcher.ts";
+import { defaultSynchronizationExecutionLimits, removeRunTemporaryEntries } from "../src/synchronization/executor.ts";
 import {
   prepareResourceAction,
   type ResourceExecutionContext,
@@ -84,6 +89,78 @@ const environment = (root: string) => {
     { name: "SystemRoot", value: process.env.SystemRoot ?? "C:\\Windows" },
   ];
 };
+
+it.skipIf(process.platform !== "win32")("pins Windows ancestors without moving the home directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "canonfig-directory-lease-"));
+  const inside = join(root, "inside");
+  const renamed = join(root, "renamed");
+  try {
+    await mkdir(inside);
+    const held = await openAnchoredDirectory(root, inside);
+    try {
+      await expect(rename(inside, renamed)).rejects.toThrow();
+      await writeFile(join(held.base, "probe.txt"), "inside");
+      expect(await readFile(join(inside, "probe.txt"), "utf8")).toBe("inside");
+      await held.verify();
+    } finally {
+      await held.close();
+    }
+    await rename(inside, renamed);
+    await symlink(renamed, inside, "junction");
+    await expect(openAnchoredDirectory(root, inside)).rejects.toThrow(/real directory/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it.skipIf(process.platform !== "win32")("opens a Windows directory lease with only the unattended environment", async () => {
+  const root = await mkdtemp(join(tmpdir(), "canonfig-unattended-lease-"));
+  try {
+    const module = new URL("../src/machine/anchored-directory.ts", import.meta.url).href;
+    const script = `
+      import { openAnchoredDirectory } from ${JSON.stringify(module)};
+      const lease = await openAnchoredDirectory(process.env.USERPROFILE, process.env.USERPROFILE);
+      await lease.verify();
+      await lease.close();
+    `;
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-"], {
+      env: { USERPROFILE: root, HOME: root, TMPDIR: root, PATH: root },
+      input: script,
+      encoding: "utf8",
+      timeout: 45_000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}, 60_000);
+
+it.skipIf(process.platform !== "win32")("skips missing Windows ancestors while cleaning an interrupted authored write", async () => {
+  const root = await mkdtemp(join(tmpdir(), "canonfig-recovery-lease-"));
+  const localEnvironment = environment(root);
+  const home = win32.join(windowsRoot(root), "home");
+  try {
+    await mkdir(home, { recursive: true });
+    const removed = await Effect.runPromise(removeRunTemporaryEntries([{
+      id: ActionId.make("action:recovery-lease:0:write"),
+      kind: "write-file",
+      resource: surfaceResourceId(resourcesOwner, "recovery-lease"),
+      detail: {
+        kind: "write-file", target: win32.join(home, "new", "nested", "profile"),
+        digest: sha256BytesHex(Buffer.from("pending")), executable: false,
+        mode: 0o600, textTransition: { kind: "whole-file" },
+      },
+      before: [],
+    }], RunId.make("run-recovery-lease")).pipe(
+      Effect.provide(windowsMachineStateLayer({ environment: localEnvironment })),
+    ));
+    expect(removed).toEqual([]);
+    expect(await readdir(home)).toEqual([]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 describe.skipIf(process.platform !== "win32")("Windows executable lookup", () => {
   it("finds a tool an installer added to the saved PATH after this process started", async () => {
@@ -238,6 +315,25 @@ describe.skipIf(process.platform !== "win32")("Windows file permission ownership
     ], { env: { ...process.env, CANONFIG_TEST_PATH: path } });
     return output.stdout.trim();
   };
+
+  it("accepts a private MCP proxy binding and rejects a broadened ACL", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-proxy-acl-"));
+    const target = join(root, mcpProxyBindingFile);
+    const binding = newMcpProxyBinding(17343);
+    try {
+      await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const path = yield* machine.normalizePath({ path: target });
+        yield* machine.atomicWrite({ path, content: Buffer.from(JSON.stringify(binding)), mode: 0o600, noReplace: true });
+      }).pipe(Effect.provide(windowsMachineStateLayer())));
+      await expect(readMcpProxyBinding(root)).resolves.toEqual(binding);
+      await promisify(execFile)(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "icacls.exe"),
+        [target, "/grant", "*S-1-1-0:(R)"]);
+      await expect(readMcpProxyBinding(root)).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   it.each(["file", "directory"] as const)("restores persisted %s permissions in a fresh process", async (kind) => {
     const root = await mkdtemp(join(tmpdir(), "canonfig-native-rollback-"));
@@ -843,6 +939,130 @@ describe("Windows ACL command rendering", () => {
       { name: "COMPUTERNAME", value: "WORKSTATION" },
     ], "C:\\Users\\operator")).toBe("MICR\\operator");
   });
+});
+
+describe.skipIf(process.platform !== "win32")("Windows Credential Manager generation lifetime", () => {
+  it("holds the selected generation through a concurrent rotation and reclaims chunks after removal", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-native-credential-"));
+    const variables = environment(root);
+    const layer = windowsMachineStateLayer({ credentialPolicy: { kind: "secure-store" }, environment: variables });
+    const use = <A, E>(operation: (machine: MachineState["Service"]) => Effect.Effect<A, E>) =>
+      Effect.runPromise(Effect.flatMap(MachineState, operation).pipe(Effect.provide(layer)));
+    const name = `canonfig-rotation-fixture-${randomUUID()}`;
+    const previous = "first fixture".repeat(700);
+    const replacement = "second fixture".repeat(650);
+    const store = (value: string) => use((machine) => machine.storeCredential({ name, value: Redacted.make(value) }));
+    const children: Array<{ child: ReturnType<typeof spawn>; completed: Promise<unknown> }> = [];
+    try {
+      const reference = await store(previous);
+      const load = () => use((machine) => machine.loadCredential({ reference })).then(Redacted.value);
+      const remove = () => use((machine) => machine.removeCredential(reference));
+      const target = `dev.canonfig.${String(reference).slice("credential-manager:".length)}`;
+      const orphan = `${target}.canonfig.v1.${randomUUID().replaceAll("-", "")}.0`;
+      const script = windowsCredentialAssemblyScript() + "\n$flags=[Reflection.BindingFlags]'NonPublic,Static';";
+      const activePart = "$header=[CanonfigWinCred].GetMethod('ReadHeader',$flags).Invoke($null,[object[]]@($env:CANONFIG_TARGET,$false));"
+        + "$id=$header.GetType().GetField('Id').GetValue($header);"
+        + "$part=[CanonfigWinCred].GetMethod('PartName',$flags).Invoke($null,[object[]]@($env:CANONFIG_TARGET,$id,[int]0));";
+      const runNative = async (command: string, part = orphan) => {
+        const { stdout } = await promisify(execFile)(windowsPowerShellExecutable(), [
+          "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script + command,
+        ], {
+          encoding: "utf8", timeout: 30_000,
+          env: { ...process.env, ...Object.fromEntries(variables.map(({ name, value }) => [name, value])),
+            CANONFIG_TARGET: target, CANONFIG_TEST_PART: part },
+        });
+        return stdout;
+      };
+      // Instrument only the native fixture assembly. Both processes call
+      // the public operations with the same lock and generation logic as production.
+      const selection = "Header header = ReadHeader(target, false);";
+      const wait = "mutex.WaitOne();";
+      expect(windowsCredentialNativeSource.split(selection)).toHaveLength(2);
+      expect(windowsCredentialNativeSource.split(wait)).toHaveLength(2);
+      const instrumented = windowsCredentialAssemblyScript(windowsCredentialNativeSource
+        .replace(selection, selection + '\n        Console.WriteLine("selected"); Console.ReadLine();')
+        .replace(wait, 'if (!mutex.WaitOne(0)) { Console.WriteLine("blocked"); mutex.WaitOne(); }'));
+      const startNative = (command: string, signal: "selected" | "blocked") => {
+        const processOptions = { ...process.env, ...Object.fromEntries(variables.map(({ name, value }) => [name, value])),
+          CANONFIG_TARGET: target };
+        const child = spawn(windowsPowerShellExecutable(), [
+          "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", instrumented + "\n" + command,
+        ], { stdio: "pipe", env: processOptions });
+        const lines = createInterface({ input: child.stdout });
+        let output = "";
+        let stderr = "";
+        lines.on("line", (line) => { if (line !== signal) output += line; });
+        child.stderr.setEncoding("utf8").on("data", (text) => { stderr += text; });
+        const deadline = setTimeout(() => child.kill(), 25_000);
+        const completed = once(child, "close")
+          .then(([code]) => ({ code, output, stderr }))
+          .finally(() => clearTimeout(deadline));
+        children.push({ child, completed });
+        const ready = Promise.race([
+          once(lines, "line", { signal: AbortSignal.timeout(20_000) }).then(([line]) => { expect(line).toBe(signal); }),
+          completed.then((outcome) => { throw new Error(`Windows credential fixture exited before ${signal}: ${outcome.stderr}`); }),
+        ]);
+        return { child, completed, ready };
+      };
+      const nativeChecks = `
+function Test-Part([string]$name){
+  return $null -ne [CanonfigWinCred].GetMethod('ReadBytes',$flags).Invoke($null,[object[]]@($name,$true))
+}
+function Add-Orphan(){
+  [CanonfigWinCred].GetMethod('WriteBytes',$flags).Invoke($null,[object[]]@($env:CANONFIG_TEST_PART,[byte[]]@(1,2,3)))
+}
+`;
+      try {
+        const oldPart = await runNative(nativeChecks + activePart + `
+Add-Orphan
+if (!(Test-Part $env:CANONFIG_TEST_PART)){throw 'The orphan fixture was not created'}
+[Console]::Write($part)
+`);
+        const reader = startNative(
+          "[Console]::Out.WriteLine([CanonfigWinCred]::Load($env:CANONFIG_TARGET))", "selected",
+        );
+        await reader.ready;
+        const writer = startNative(
+          "[CanonfigWinCred]::Store($env:CANONFIG_TARGET,[Console]::In.ReadToEnd())", "blocked",
+        );
+        writer.child.stdin.end(replacement);
+        await writer.ready;
+        // A third process can read the old part while the rotation waits.
+        expect(await runNative(nativeChecks + "[Console]::Write((Test-Part $env:CANONFIG_TEST_PART))", oldPart)).toBe("True");
+        expect(writer.child.exitCode).toBeNull();
+        reader.child.stdin.end("\n");
+        expect(await reader.completed).toMatchObject({ code: 0, output: previous });
+        expect(await writer.completed).toMatchObject({ code: 0 });
+        expect(await load()).toBe(replacement);
+
+        await runNative(nativeChecks + activePart + `
+if (Test-Part ${JSON.stringify(oldPart)}){throw 'The retired generation survived rotation'}
+if (Test-Part $env:CANONFIG_TEST_PART){throw 'The orphan survived rotation'}
+if (!(Test-Part $part)){throw 'The current generation is missing'}
+[CanonfigWinCred]::Remove($env:CANONFIG_TARGET)
+if (Test-Part $part){throw 'The current generation survived removal'}
+Add-Orphan
+if (!(Test-Part $env:CANONFIG_TEST_PART)){throw 'The interrupted removal fixture was not created'}
+try {
+  [CanonfigWinCred]::Remove($env:CANONFIG_TARGET)
+  throw 'Removal did not report the missing root'
+} catch {
+  if ($_.Exception.InnerException.NativeErrorCode -ne 1168){throw}
+}
+if (Test-Part $env:CANONFIG_TEST_PART){throw 'The interrupted generation survived removal'}
+`);
+      } finally {
+        for (const { child } of children) {
+          if (child.exitCode === null && child.signalCode === null) child.kill();
+        }
+        await Promise.allSettled(children.map(({ completed }) => completed));
+        await remove().catch(() => undefined);
+      }
+      await expect(load()).rejects.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 150_000);
 });
 
 describe.skipIf(process.platform !== "win32")("Windows scheduled task policy repair", () => {

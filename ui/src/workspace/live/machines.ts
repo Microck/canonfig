@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { Schema } from "effect";
 import { GuiEnrollment, GuiInvitationDownload, GuiMachines, GuiSetupStatus, GuiSourceLook } from "../../../../src/gui/contract/enrollment";
 import type { GuiSession, WorkspaceBackend } from "../../gui-client";
 import type { ChangeGroupsRequest, MachinesSlice } from "../workspace-types";
-import { resourceState, useLiveResource } from "./resource";
+import { LiveResourcesContext, resourceState, useLiveResource } from "./resource";
 import type { MachineHealthView } from "@/shared/metadata";
 import { failingItems } from "../administration-types";
 
@@ -49,6 +49,15 @@ export function useLiveMachines(backend: WorkspaceBackend, session: GuiSession, 
     groups: [...enrollment.data.follower.groups],
     note: enrollment.data.follower.revoked ? "Revoked" : enrollment.data.pending ? "Enrollment pending" : "Enrolled",
   } : undefined;
+  const invitations = inventory.data?.invitations;
+  const resources = useContext(LiveResourcesContext);
+  useEffect(() => {
+    const nextExpiry = invitations?.reduce((earliest, invitation) => !invitation.consumed
+      && invitation.remainingMilliseconds > 0 ? Math.min(earliest, invitation.remainingMilliseconds) : earliest, Infinity);
+    if (nextExpiry === undefined || !Number.isFinite(nextExpiry)) return;
+    const timer = window.setTimeout(() => resources?.cache.invalidate(["/api/machines"]), Math.min(nextExpiry, 2_147_483_647));
+    return () => window.clearTimeout(timer);
+  }, [invitations, resources?.cache]);
   return {
     enrollmentBackend: backend,
     ...(enrollment.data ? { enrollment: enrollment.data } : {}),
@@ -77,10 +86,12 @@ export function useLiveMachines(backend: WorkspaceBackend, session: GuiSession, 
       reload();
       return invitation;
     },
-    invitations: (inventory.data?.invitations ?? []).filter((invitation) => !invitation.consumed).map((invitation, index) => ({
-      id: `${invitation.endpoint}:${invitation.expiresAt}:${index}`,
-      file: invitation.endpoint, name: "Single-use invitation", groups: [...invitation.groups], expires: invitation.expiresAt,
-    })),
+    invitations: (invitations ?? [])
+      .filter((invitation) => !invitation.consumed && invitation.remainingMilliseconds > 0)
+      .map((invitation, index) => ({
+        id: `${invitation.endpoint}:${invitation.expiresAt}:${index}`,
+        file: invitation.endpoint, name: "Single-use invitation", groups: [...invitation.groups], expires: invitation.expiresAt,
+      })),
     syncing: [], changeGroups, setChangeGroups,
   };
 }
