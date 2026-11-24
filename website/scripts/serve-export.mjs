@@ -1,29 +1,29 @@
-// Serves the static export in out/ the way GitHub Pages serves it on
+// Serves the static export in a local directory the way GitHub Pages serves it on
 // https://canonfig.micr.dev, for the browser suite and local previews.
 // `next start` cannot serve an `output: "export"` build.
 //
-// Usage: node scripts/serve-export.mjs [--hostname 127.0.0.1] [--port 3000]
+// Usage: node scripts/serve-export.mjs [--directory PATH] [--hostname 127.0.0.1] [--port 3000]
 //
 // It mirrors the Pages behaviour the export relies on: a directory answers with
 // its index.html, a directory path without its trailing slash redirects to the
-// slashed path, and unknown paths get 404.html with status 404. In production
-// the UI demo's 404.html answers unknown paths instead (scripts/build-pages.mjs),
-// so the demo's own routes are not served here.
+// slashed path, and unknown paths get 404.html with status 404. Pass the combined
+// _site export to exercise the demo and its deep links.
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer } from "node:http";
-import { extname, join, sep } from "node:path";
+import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-const outDir = fileURLToPath(new URL("../out", import.meta.url));
-
 const { values } = parseArgs({
   options: {
+    directory: { type: "string" },
     hostname: { type: "string", default: "127.0.0.1" },
     port: { type: "string", default: "3000" },
   },
 });
+
+const outDir = values.directory ? resolve(values.directory) : fileURLToPath(new URL("../out", import.meta.url));
 
 // The static search index (docs/api/search) has no extension and holds JSON.
 const contentTypes = {
@@ -67,7 +67,7 @@ createServer(async (request, response) => {
     notFound(response); // malformed percent-encoding
     return;
   }
-  // join() normalizes "..", and a decoded "%2F.." could still climb, so check the result stays in out/.
+  // join() normalizes "..", and a decoded "%2F.." could still climb, so check the result stays in a local directory.
   const path = join(outDir, relative);
   if (path !== outDir && !path.startsWith(`${outDir}${sep}`)) {
     notFound(response);

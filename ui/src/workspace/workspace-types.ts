@@ -1,4 +1,4 @@
-import type { FollowerLive } from "./follower-types";
+import type { FollowerLive, FolderWatch } from "./follower-types";
 import type { PublishedLook } from "@/shared/machine-map/model";
 import type { Dispatch, SetStateAction } from "react";
 import type { AppendLocalCategory, Follower, FollowerState, Harness, HarnessId, ItemCategory, KeptSurface, LocalCategory, LocalItem, MachineHealthView, Resource, Revision, SkillSource, Snapshot, SurfaceCategory, UpstreamSkill } from "@/shared/metadata";
@@ -38,7 +38,7 @@ export type View = SourceView | FollowerView | "not-found";
  * What a plan step does to a surface: replace a file or folder, write Canonfig's marked section and keep the machine's
  * own text (append-local), set owned keys, install a tool, or hold a drifted item.
  */
-export type PlanAction = "write" | "append" | "merge" | "install" | "skip-drift";
+export type PlanAction = "write" | "append" | "merge" | "remove" | "install" | "skip-drift";
 
 export interface PlanItem {
   /** The folder item, like `skills/code-review`. */
@@ -346,6 +346,7 @@ export interface MachinesSlice {
 export interface FollowerSlice {
   /** Real command evidence and digest-aware authoring; absent in the simulated provider. */
   followerLive?: FollowerLive;
+  demoWatch?: FolderWatch;
   followerState: ResourceState;
   followerStates: Record<"harnesses" | "local" | "schedule" | "backups" | "overlays" | "tunnel", ResourceState>;
   followerSchedule: Schedule | null;

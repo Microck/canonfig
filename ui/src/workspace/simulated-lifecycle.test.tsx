@@ -68,6 +68,19 @@ it("keeps Source and Follower onboarding choices ahead of demo defaults", async 
   }
 });
 
+it("blocks a Source backup restore while local apply is running", async () => {
+  const close = await fixture("source");
+  try {
+    const snapshot = ws.snapshots.find((entry) => entry.harnesses.includes("claude-code"));
+    assert.ok(snapshot);
+    await act(async () => { ws.applyPlan(); });
+    assert.equal(ws.phase, "running");
+    await act(async () => { ws.restore(snapshot.id); });
+    assert.equal(ws.phase, "running");
+    assert.ok(!ws.excluded.includes("claude-code"));
+  } finally { await close(); }
+});
+
 it("held plan entries never become pending, running or done", async () => {
   const close = await fixture("follower");
   try {

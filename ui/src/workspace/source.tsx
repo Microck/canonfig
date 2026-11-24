@@ -393,6 +393,7 @@ export function SourceOverview() {
             <section data-tour="overview-this-machine">
               <SectionLabel>This machine</SectionLabel>
               <div className="border-t border-border">
+                <AutomaticApplyStatus />
                 <StatusRow
                   status={serviceInstalled ? "ok" : "off"}
                   label="Source service"
@@ -435,13 +436,28 @@ const LIFECYCLE_STEPS = [
   ["converged", "Up to date"],
 ] as const;
 
+function AutomaticApplyStatus() {
+  const { role, followerLive, demoWatch, setView } = useWorkspace();
+  const watch = role === "source" ? (followerLive ?? demoWatch)?.watch : undefined;
+  if (!watch) return null;
+  const installed = watch.manager.installed;
+  const running = watch.state === "running";
+  return <Prop label="Automatic apply">
+    <span className="flex flex-wrap items-center gap-x-3">
+      <span className="flex items-center gap-1.5">
+        <StatusMark kind={!installed ? "off" : running ? "ok" : "bad"} />
+        {!installed ? "Off" : running ? "On" : "Not running"}
+      </span>
+      <SectionLink onClick={() => setView("sync")}>Local sync</SectionLink>
+    </span>
+  </Prop>;
+}
+
 /** Only recorded session and status evidence belongs on a live Overview. */
 export function WorkspaceEvidence() {
-  const { session, status, setView, followerLive } = useWorkspace();
+  const { session, status, setView } = useWorkspace();
   if (!session || !status) return null;
   const { machineRole, lifecycle, tunnel } = status;
-  // Only a Source reads the watcher here; a Follower's leftover watcher is on its Sync page.
-  const watch = session.role === "source" ? followerLive?.watch : undefined;
   return (
     <>
       <section>
@@ -451,15 +467,7 @@ export function WorkspaceEvidence() {
           <Prop label="Canonfig version"><Mono>{session.version}</Mono></Prop>
           <Prop label="Canonical Folder"><Mono>{session.folderPath}</Mono></Prop>
           {machineRole.follower !== undefined && <Prop label="Follower identity"><Mono>{machineRole.follower}</Mono></Prop>}
-          {watch && <Prop label="Automatic apply">
-            <span className="flex flex-wrap items-center gap-x-3">
-              <span className="flex items-center gap-1.5">
-                <StatusMark kind={!watch.manager.installed ? "off" : watch.state === "running" ? "ok" : "bad"} />
-                {!watch.manager.installed ? "Off" : watch.state === "running" ? "On" : "Not running"}
-              </span>
-              <SectionLink onClick={() => setView("sync")}>Local sync</SectionLink>
-            </span>
-          </Prop>}
+          <AutomaticApplyStatus />
         </div>
         <details className="mt-3 text-sm">
           <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
