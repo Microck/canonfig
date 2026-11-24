@@ -71,6 +71,9 @@
   /* StateBand midtones, matching --dither-*-mid in the GUI. */
   --sa-ok-mid: #5e9460;
   --sa-warn-mid: #c79c24;
+  --sa-running-dim: #1a3526;
+  --sa-running-mid: #6ca86c;
+  --sa-running-bright: #ccf5c6;
   --sa-track-dot: #263a3b;
   --sa-warn: #f1c332;
   --sa-warn-dim: #3c3012;

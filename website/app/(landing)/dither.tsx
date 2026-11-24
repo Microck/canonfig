@@ -83,12 +83,24 @@ const smoothstep = (edge0: number, edge1: number, x: number) => {
 
 const fract = (x: number) => x - Math.floor(x);
 
+const hash21 = (px: number, py: number) => {
+  let x = fract(px * 123.34);
+  let y = fract(py * 456.21);
+  const d = x * (x + 45.32) + y * (y + 45.32);
+  x += d;
+  y += d;
+  return fract(x * y);
+};
+
+export type BandTone = 'ok' | 'warn' | 'running';
+
 /**
- * The GUI `StateBand` still frame for `ok` (orbital iso-contours at t=4) and
- * `warn` (moire fault seam at t=0.63). `u` runs 0 to 1 left to right, `v` 0 to 1
- * bottom to top; `aspect` is the band's width over its height.
+ * The GUI `StateBand` still frame for `ok` (orbital iso-contours at t=4),
+ * `warn` (moire fault seam at t=0.63), and `running` (mint packet wavefront
+ * at t=2). `u` runs 0 to 1 left to right, `v` 0 to 1 bottom to top; `aspect`
+ * is the band's width over its height.
  */
-export function horizonLevel(u: number, v: number, aspect: number, tone: 'ok' | 'warn' = 'ok') {
+export function horizonLevel(u: number, v: number, aspect: number, tone: BandTone = 'ok') {
   const px = u * aspect;
   if (tone === 'warn') {
     const t = 0.63;
@@ -99,6 +111,18 @@ export function horizonLevel(u: number, v: number, aspect: number, tone: 'ok' | 
     const faultGlow = Math.exp(-Math.abs(seam) * 5.2) * (0.65 + 0.35 * Math.sin(t * 2.4));
     const base = smoothstep(0.28, 0.82, u) * (0.35 + 0.45 * interference);
     return Math.min(1, Math.max(0, base * 0.72 + faultGlow * 0.88 * smoothstep(0.2, 0.55, u)));
+  }
+  if (tone === 'running') {
+    const t = 2;
+    const frontX = fract(t * 0.32) * 1.35 - 0.15;
+    const d = frontX - u;
+    const wake = d >= 0 ? Math.exp(-d * 4.2) : Math.exp(d * 24);
+    const lane = Math.floor(v * 8);
+    const packetPhase = fract(u * 2.5 - t * (0.9 + 0.4 * hash21(lane, 2.1)) + hash21(lane, 9.7));
+    const packet = smoothstep(0.72, 0.98, packetPhase) * smoothstep(0.45, 0, Math.abs(fract(v * 8) - 0.5));
+    const grid = fract(px * 4) > 0.92 || fract(v * 4) > 0.92 ? 0.18 : 0;
+    const crest = Math.exp(-Math.abs(d) * 28) * 0.95;
+    return Math.min(1, Math.max(0, (grid + wake * 0.58 + packet * 0.52 * (0.4 + wake) + crest) * (0.28 + 0.82 * smoothstep(0.12, 0.52, u))));
   }
   const t = 4;
   const dx = px - 0.86 * aspect;

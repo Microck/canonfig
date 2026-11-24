@@ -36,6 +36,7 @@ export function PublishScene() {
 
         <div className="pub-head">
           <DitherBand tone="warn" className="pub-band pub-band-warn" />
+          <DitherBand tone="running" className="pub-band pub-band-running" />
           <DitherBand tone="ok" className="pub-band pub-band-ok" />
           <span className="pub-titles">
             {TITLES.map((title, index) => (
@@ -62,7 +63,7 @@ export function PublishScene() {
           {FOLLOWERS.map((machine, index) => (
             <li key={machine.name} style={{ '--animation-delay': `${index * 250}ms` }}>
               <svg className="pub-tile" viewBox="0 0 26 26">
-                <IconTile id={`pub-${machine.name}`} accent={machine.accent} icon={machine.icon} />
+                <IconTile id={`pub-${machine.name}`} accent={machine.accent} icon={machine.icon} syncOverlayClass="pub-tile-sync" />
               </svg>
               <span className="pub-name">
                 <b>{machine.name}</b>
@@ -76,10 +77,12 @@ export function PublishScene() {
                   <FillPattern id={`pub-bar-tip-${machine.name}`} fill="ramp-x" color="var(--sa-ok-bright)" cell={1} x={48} width={12} from={0.9} to={0} />
                 </defs>
                 <rect width="60" height="6" fill={`url(#pub-track-${machine.name})`} />
-                <rect width="60" height="6" fill={`url(#pub-bar-dim-${machine.name})`} />
-                <rect width="60" height="6" fill={`url(#pub-bar-${machine.name})`} />
-                <rect x="48" width="12" height="6" fill={`url(#pub-bar-tip-${machine.name})`} />
-                <rect x="58" width="2" height="6" fill="var(--sa-ok-bright)" />
+                <g className="pub-progress-fill">
+                  <rect width="60" height="6" fill={`url(#pub-bar-dim-${machine.name})`} />
+                  <rect width="60" height="6" fill={`url(#pub-bar-${machine.name})`} />
+                  <rect x="48" width="12" height="6" fill={`url(#pub-bar-tip-${machine.name})`} />
+                  <rect x="58" width="2" height="6" fill="var(--sa-ok-bright)" />
+                </g>
               </svg>
               <span className="pub-states">
                 <span className="pub-old">
