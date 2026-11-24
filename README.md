@@ -255,9 +255,12 @@ see [security and credentials](https://canonfig.micr.dev/docs/reference/security
 
 ## agent skills
 
-let an AI agent install, set up or operate canonfig for you with the
-[install](skills/install-canonfig/SKILL.md), [setup](skills/setup-canonfig/SKILL.md)
-and [operate](skills/operate-canonfig/SKILL.md) skills.
+let an AI agent set up or operate canonfig for you with the
+[setup](skills/setup-canonfig/SKILL.md) and
+[operate](skills/operate-canonfig/SKILL.md) skills. `setup-canonfig` installs
+canonfig if needed and defaults to sharing skills, MCP servers, and global
+instructions across harnesses on one computer, or routes to Source/Follower
+setup for multiple machines.
 
 ## development
 

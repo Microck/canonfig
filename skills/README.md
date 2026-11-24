@@ -1,29 +1,16 @@
 # Canonfig skills
 
-- [`setup-canonfig`](setup-canonfig/SKILL.md): guided setup in Simple or Advanced
-  (in-depth) mode. It inspects first, offers numbered choices plus custom input,
-  explains each question, recommends safe defaults, chooses harnesses and what
-  to import into `~/.canonfig/`, then plans and verifies the requested Source
-  Machine or Follower Machine outcome.
-- [`install-canonfig`](install-canonfig/SKILL.md): direct installation and safe
-  upgrades of `@microck/canonfig@7.8.2`, first-time role establishment, the first
-  `~/.canonfig/` projection and publication, and follower enrollment.
-- [`operate-canonfig`](operate-canonfig/SKILL.md): evidence-first folder edits
-  and publication, tool discovery, the Source service and tunnel,
-  synchronization, harness exclusions, takeover snapshots and restore, `local/`
-  items, client trust after apply, scheduling, diagnostics, drift handling,
-  recovery, and unenrollment.
+- [`setup-canonfig`](setup-canonfig/SKILL.md): install and set up Canonfig.
+  Defaults to sharing skills, MCP servers, and global instructions across
+  installed harnesses on this computer, with a clear preview before writing.
+  Routes to Source Machine or Follower Machine setup when syncing multiple
+  computers.
+- [`operate-canonfig`](operate-canonfig/SKILL.md): day-2 operations and
+  recovery. Edit `~/.canonfig/`, plan and apply syncs, manage harness
+  exclusions and MCP preservation, restore Takeover Snapshots, resolve
+  Follower Drift or Human Action Required, recover interrupted runs, and
+  manage Source or Follower machines.
 
-Start with `Use $setup-canonfig in simple mode to set up this machine` or
-`Use $setup-canonfig in advanced mode to review my configuration`.
-Answer with an option number, a label, or custom text. Multi-select accepts
-comma-separated numbers; a batch can use `ROLE=2; NAME=3: studio-laptop`.
-`Use recommendations` accepts shown settings, not execution or discovery consent.
-Switch modes at any time without restarting.
-
-For multi-machine work, the skill can optionally list peers already visible to
-the local Tailscale client. Discovery is opt-in and read-only, never port scanning
-or automatic remote setup. Manual machine entry works without Tailscale.
-
-Use the narrower install or operate skill when the requested command path is
-already known.
+Start with `Use $setup-canonfig to set up Canonfig on this computer`.
+Once set up, use `Use $operate-canonfig` for ongoing changes, diagnostics, or
+recovery.

@@ -1,288 +1,166 @@
 ---
 name: setup-canonfig
-description: Guide Canonfig setup across Linux, macOS, and Windows in Simple or Advanced mode, with numbered questions, explanations, recommended answers, custom input, harness selection and import into ~/.canonfig/, optional Tailscale device discovery, and verified Source Machine or Follower Machine setup.
+description: Guide first-time Canonfig install and setup on this computer. Find installed harnesses, share skills, MCPs, and global instructions locally by default, or set up a Source Machine or Follower Machine for multi-machine sync.
 ---
 
-# Set Up Canonfig
+# Set up Canonfig
 
-Inspect first, offer choices rather than blank forms, and turn the requested
-outcome into verified state. Simple and Advanced change interview depth, never
-permissions, trust checks, or the definition of completion.
+Canonfig keeps one Canonical Folder (`~/.canonfig/`) and projects it into every
+Target Harness you use. Start from what is already on this computer, explain
+what will change in plain language, and wait for approval before writing.
 
-## Interaction contract
+## 1. Inspect
 
-1. Inspect before asking. Observe local platform, architecture, user, home,
-   shell, Node.js/npm, Canonfig version, existing state, the contents of
-   `~/.canonfig/`, installed harnesses, credential capability, and scheduler.
-   Do not discover network peers until the operator selects discovery. Do not
-   claim access to remote machines or inspect an agent sandbox as though it
-   were the operator's computer.
-2. Do not ask for facts already established by inspection or an earlier answer.
-   A detected value is editable; it is not permission to replace existing state.
-3. Ask no more than four related unresolved questions per round. Simple should
-   normally need one to three essential decisions after mode selection. Advanced
-   uses short sections, not a wall of every possible question.
-4. Every configurable question, in every branch, has a stable field ID, a short
-   `Why it matters`, optional `Detected`, a justified `Recommended` answer (or
-   `No automatic recommendation`), numbered `Options`, and a numbered
-   `Other (type your own)` escape. Give each option a brief consequence. Do not
-   invent alternatives for a field that has only one supported value.
-5. Accept an option number, its label, or custom text. Multi-select fields accept
-   comma-separated numbers. In a batch use `ROLE=2; NAME=3: studio-laptop`.
-   Resolve an ambiguous bare number before any mutation; never silently choose
-   which question it answers.
-6. `Use recommendations` accepts only displayed configuration recommendations.
-   `Skip optional` leaves new optional features disabled and preserves existing
-   settings. `Show advanced options`, `advanced`, `in-depth`, and `complex` select
-   Advanced; `simple` selects Simple. Switch without restarting or losing answers.
-7. Do not ask about optional shared secrets in Simple mode unless relevant.
-   Likewise, keep agent execution out of the essential interview. Show editable defaults once. In Advanced, offer each relevant
-   section, including a numbered keep/disabled choice before detailed fields.
-8. Never request passwords, tokens, private keys, credential values, or invitation
-   payloads in chat or custom answers. Ask for a secure local input method, not
-   the secret. Never retain raw peer maps or secrets in a setup record.
-9. A recommendation is not approval. Publication, first apply (which takes over
-   harness surfaces), shared-secret authority, identity replacement, `--force`,
-   `--no-backup`, agent execution, elevation, restart, and reboot require
-   explicit, scoped approval after showing their consequences. Reuse approval
-   only for the unchanged displayed stage; do not ask repeatedly.
+On the user's computer, run `canonfig --version`, `canonfig status --json`, and
+`canonfig harnesses --json`.
 
-Read [questions](references/questions.md) before presenting choices. The
-[configuration catalogue](references/configuration-choices.md) covers editable
-fields, including free-form values and nested folder records.
+- If `canonfig` is missing, confirm Node.js 24.15+ or 26+ and npm are present,
+  then ask before running `npm install --global @microck/canonfig` and
+  `canonfig doctor --no-input --timeout-ms 5000`. If you can only see a
+  sandbox, say so and hand off the commands instead.
+- If this machine is already a Source Machine or Follower Machine, show its
+  current state and switch to [operate-canonfig](../operate-canonfig/SKILL.md).
+- If `~/.canonfig/` already holds unenrolled local config, start from it.
+- Read known global config files and skill directories for installed harnesses
+  using detected roots and the installed version's adapters. Parse configs as
+  data and keep credentials out of chat, tables, and command arguments.
 
-## Setup modes
+Show one inventory table. Name excluded harnesses separately and mark any
+unreadable category `Unchecked`.
 
-Ask MODE once unless the request or resumed session already specifies it:
+| Harness | Skills | MCPs | Hooks | Other config found |
+| --- | ---: | ---: | ---: | --- |
+| Installed harness name | Count | Count | Count | Instructions, rules, subagents, commands, or settings |
 
-```text
-Question: [MODE] How much setup detail would you like?
-Why it matters: Both modes make the same safety checks; only the questions differ.
-Recommended: 1. Simple keeps routine choices out of the way.
-Options:
-1. Simple: essentials and editable recommended defaults.
-2. Advanced (in-depth): review each relevant configuration section.
-3. Other (type your own): describe the guidance you need.
-```
+## 2. Ask the setup questions
 
-There are exactly two modes. Map a typed preference to Simple or Advanced; ask
-only when the preference is ambiguous. Do not infer agent permission from mode.
+Use numbered options and one short **Recommended** line with a reason for each
+question. Accept numbers, labels, or custom answers. Skip questions the user
+already answered. "Use recommendations" accepts displayed configuration choices
+and opens the preview; applying changes always requires its own approval.
 
-### Simple
+**1. Are you syncing harnesses on this computer, or across multiple machines?**
 
-Inspect, show essentials with choices, then show one numbered summary whose rows
-can be edited through the same choice menus. Prefer existing valid settings;
-propose conservative defaults for new settings. A custom answer opens only its
-necessary follow-up, not the entire Advanced interview.
+Default recommendation: **Just this computer** (fastest way to start; no
+server, enrollment, or schedule required, and you can turn it into a Source
+Machine later).
 
-If every remaining value has a safe, reversible default in Simple mode, show the
-editable summary and continue to the bounded plan rather than asking each field.
-Always surface ownership conflicts, import collisions, missing requirements,
-unsupported work, and shared-secret authority, even when they are inconvenient.
+1. Just this computer: share config across harnesses here via `~/.canonfig/`.
+2. Source Machine: own `~/.canonfig/` here and publish signed revisions to other computers.
+3. Follower Machine: receive config from an existing Source Machine.
 
-### Advanced
+If the user picks **2**, read [references/source.md](references/source.md) and
+follow it from here. If they pick **3**, read
+[references/follower.md](references/follower.md) and follow it from here.
+Otherwise continue below for local setup.
 
-Offer these relevant sections in small batches: environment/install, machines
-and connectivity, harnesses and import, folder contents, credentials, agent
-bounds, and schedule. Skip unrelated branches. Populate existing values and
-let the operator keep a whole section; do not force empty hooks or MCP records.
-Every field must remain editable through numbered options plus custom input.
+**2. Which harness do you use most?**
 
-For both modes, keep a non-secret decision record: field ID, value, provenance
-(Detected/Operator/Recommended default), validation, scope, and approval. Include
-mode, deferred requirements, and selected device IDs; re-observe on resume. Keep
-it in the session and the final report. The persisted plan of record is the CLI's
-setup journal, `~/.canonfig/setup.json` next to `state.sqlite`: it records the
-intent, decisions, exclusions, import review, evidence, and approvals against the
-plan digest. Pass the chosen mode as `setup plan --mode simple|advanced`; the
-journal also keeps the discovery paths that were read. Switching modes keeps
-approvals. `canonfig setup status --json` reads role, scope, mode, intent,
-discovery paths, approver, and completed stages back. Write no other record file
-unless the operator asks.
+List installed harnesses plus **Other**. Recommend the harness the user named
+or the installed harness they invoked this from. If you have neither, ask
+without guessing from history or auth stores.
 
-## Route the request
+**3. What should Canonfig manage?**
 
-- Source identity, the `~/.canonfig/` folder, harness selection and import,
-  publication, invitations: [source setup](references/source-setup.md).
-- Follower enrollment, convergence, `local/` items, schedule, recovery:
-  [follower setup](references/follower-setup.md).
-- Machine choices from Tailscale, only when relevant and opted in:
-  [device discovery](references/tailscale-discovery.md).
-- Evidence and final report:
-  [completion](references/completion.md).
+Default recommendation: **Skills, MCP servers, and global instructions from
+[primary harness]** (starts from what you already use and leaves hooks local).
 
-CLI-only installation needs no machine identity, folder, or schedule.
+1. Share skills, MCPs, and global instructions.
+2. Share skills and global instructions. Keep each harness's own MCP list.
+3. Also include rules, subagents, commands, and supported hooks.
+4. Pick specific items or bring items in from other harnesses.
 
-## Workflow
+When MCPs are in scope, show a cross-harness matrix with one column per
+installed harness, marking each server `Present`, `Missing`, `Differs`, or
+`Unchecked` (noting aliases and disabled entries). Compare actual launchers,
+URLs, and options privately. Default to enabled servers, recommend the primary
+harness's definition for same-name conflicts, and ask when intent is unclear.
+Group long skill inventories by shared, unique, and conflicting names.
 
-### 1. Observe and establish scope
+**4. Where should the shared config apply?**
 
-Inspect locally with bounded probes appropriate to the installed version. These
-commands are examples, not an unconditional script:
+Default recommendation: **All installed supported harnesses** (retaining any
+existing exclusions).
 
-For a sandboxed setup agent, establish the scoped state-directory and native
-execution approvals in
-[setup-agent execution permissions](references/completion.md#setup-agent-execution-permissions)
-before these probes. A blocked sandbox probe does not diagnose the host.
+1. Apply to all listed harnesses.
+2. Choose harnesses.
+3. Preview only.
 
-```text
-node --version
-npm --version
-canonfig --version
-canonfig doctor --no-input --timeout-ms 5000 --json
-canonfig status --json
-canonfig setup status --json
-canonfig harnesses
-canonfig schedule status
-canonfig agent policy
-canonfig agent harness
-```
+Mention shared paths such as `~/.agents/skills/` when a harness outside the
+selection also reads them.
 
-A missing command is an observation, not permission to install it. Diagnostic
-commands may write lifecycle logs or local bookkeeping; never initialize or
-repair an identity just to inspect it. Label examples as examples, never as
-observations. Inspect only approved files, not the entire home directory.
+## 3. Preview the changes
 
-If scope is unclear, offer ROLE choices from `references/questions.md`. Select
-MODE once. If there is no access to the intended machine, state that limitation
-and offer local handoff instead of fabricated diagnostics.
+Check `canonfig --help` and the
+[harness reference](https://canonfig.micr.dev/docs/reference/harnesses/) for
+the installed schema. Start a new local folder with
+`{"version":1,"harnesses":[...]}` in `canonfig.jsonc`, shared instructions in
+`AGENTS.md`, and complete skill trees in `skills/<name>/`. Translate only
+reviewed items. Map MCP servers into `mcp.<name>` using `{ "fromEnv": "NAME" }`
+for credentials, and list any missing env vars or unsupported options in the
+review. Review each hook command and trigger before migrating it.
 
-### 2. Collect only the selected mode's decisions
+- To keep all native MCP lists untouched, set `preserveMcp: true` in
+  `~/.canonfig/local/local.jsonc`. To preserve individual harnesses when the
+  preview shows unwanted removals, offer
+  `canonfig local mcp preserve --harness <id>`.
+- To keep destination-only instructions or skills alongside shared ones, use
+  `local.appendLocal` (it does not merge MCP lists or resolve skill name
+  conflicts).
 
-Present 1 to 4 useful numbered choices plus Other for each question. Paginate longer
-inventories. Prefer detected candidates; mark proposals and unavailable choices
-honestly. Reuse existing configuration without erasing it to apply a new default.
+Draft privately. For a first-time setup, preview in a disposable `HOME` with
+copies of affected configs (isolating state and every harness root override).
+When existing Canonfig ownership is present, preview against the live Canonical
+Folder; if that needs draft files in `~/.canonfig/`, ask to stage only those
+files with backups first, then run `canonfig sync --plan --json`.
 
-New-setting recommendations: user-level operation, the documented exact package,
-the installed harnesses, no import until the operator reviews the offered items,
-takeover snapshots on, `deterministic-only`, no shared secrets, no force, and no
-elevated capabilities. Scheduling remains an explicit choice; there is no
-universal working-hour or timezone assumption.
+Always show the full category summary (including unchanged categories):
 
-Resolve custom text against the installed CLI and folder schema before proposing
-execution. A name, hostname, path, or menu selection is data, never a shell
-command.
-
-### 3. Validate and show one bounded plan
-
-Verify role/state separation, sole publishing authority, group access, harness
-roots, MCP `requires` references, policies, recipes, and independent
-verification. Inspect conflicts, existing `~/.canonfig/` content, and harnesses
-Canonfig already took over (`canonfig harnesses` shows pinned roots and
-snapshots). For requested automation, check native user scheduling, secure
-noninteractive credentials, executable environment, and source/tunnel
-availability. No secrets may enter the folder, reports, or arguments except the
-CLI's documented ephemeral invitation input.
-
-Show changed settings, harness surfaces, pending requirements, and verification.
-Unchanged rows can stay collapsed. Use the approval question pattern in
-`references/questions.md`; never treat mode selection, a device selection, or
-`Use recommendations` as authorization to execute.
-
-After the role and discovery files are selected, use the shipped setup
-controller as the bootstrap plan of record:
-
-```text
-canonfig setup plan --role <source|follower> --scope <full|cli-only> --mode <simple|advanced> --file <approved-path> --intent "<selected outcome>"
-canonfig setup approve --approver <operator>
-canonfig setup apply
-canonfig setup status --json
-```
-
-Pass `--scope` explicitly from the selected goal: `cli-only` for the CLI-only
-goal (no machine identity or schedule), and the `full` default otherwise. A
-narrow goal planned without `--scope` would silently become full setup and,
-for a Source plan, could establish an identity after approval. `--file` bounds
-tool discovery only; omit it when no discovery file was approved.
-
-A full Source plan also selects harnesses and offers an import. Plan once
-without harness or import flags, then show the operator, from the plan:
-
-- the harness list in the `canonfig-folder` item (`harnesses`) next to
-  `detected`, and run `canonfig harnesses` when they want the full table;
-- every `imports.offered` item with its id (`<harness>/<category>/<name>`,
-  or `agents/skills/<name>` for the shared `~/.agents/skills/`), target and
-  any `secrets` lines (literal credentials that become `fromEnv` references
-  the operator must export before syncing);
-- every `import collision` and `import skipped` line in `exclusions`.
-
-Ask which harnesses to keep and, per item, what to import, using the HARNESSES
-and IMPORT menus in `references/questions.md`. A collision needs one chosen id.
-Then plan again with their answer and present that plan for approval:
-
-```text
-canonfig setup plan --role source --harness <id> --harness <id> --import <harness-or-item-id> --import <item-id>
-canonfig setup plan --role source --import-all
-canonfig setup plan --role source --no-import
-```
-
-`--harness` replaces the detected list. Nothing is imported unless the
-operator names it; `--no-import` does not read the harness files at all.
-Declined items stay in the harness and are covered by the takeover snapshot
-the first `canonfig sync --apply` takes.
-
-Show the plan digest, intent, exclusions, inventory, and item graph before the
-approval command. An unchanged journal resumes; preserve its approval and
-completed evidence. Changing the harness list or an import choice changes the
-digest and needs a new approval.
-
-Setup apply scaffolds `~/.canonfig/` (`canonfig.jsonc` with `version`, the
-approved `harnesses`, and a `profile` whose `name` is the hostname and whose
-`id` is its slug, or `workstation`; an empty `AGENTS.md`; and `skills/`) and
-writes the chosen imports. It replaces nothing that exists and keeps a
-`profile` the file already holds. The plan shows the proposed profile and its
-digest covers it; to use other values, edit `profile` in `canonfig.jsonc`
-before the first publish. Everything after that is folder authoring:
-[source setup](references/source-setup.md) covers the folder, the first local
-projection, and publication.
-
-### 4. Execute and resume idempotently
-
-Read the selected branch and execute only approved stages. Node.js 24.15+ or 26+
-and npm are required.
-
-Check installed help when it differs; do not downgrade silently. On a new
-installation, use:
-
-```bash
-npm install --global @microck/canonfig@7.8.2
-canonfig --version
-canonfig doctor --no-input --timeout-ms 5000
-```
-
-| Platform | Secure credentials | User scheduler |
+| Category | Now | After setup |
 | --- | --- | --- |
-| Linux | Secret Service | systemd user timer |
-| macOS | Keychain | launchd user agent |
-| Windows | Credential Manager | per-user Task Scheduler |
+| Skills, instructions (`AGENTS.md`), MCPs, hooks, rules, subagents, commands, settings | Observed count or status | Already shared, share, keep local, none configured, or needs attention |
 
-Preserve pins, identity, SQLite state, journals, cache, takeover snapshots,
-`local/`, and follower edits. Resume from evidence; do not reinstall, reenroll,
-republish, reset trust, or force ownership just because setup is invoked again.
+Follow with a per-harness table of concrete changes:
 
-A machine set up with the direct commands (`source init`, `source publish`,
-`follower enroll`, `sync --apply`, `schedule set`) has no setup journal. An
-empty journal does not mean setup is missing: read `canonfig status --json`,
-`canonfig harnesses`, `canonfig source service status --json` and
-`canonfig schedule status --json`, and treat those as the completed-stage
-evidence instead of rerunning setup.
+| Harness or shared path | Adds or updates | Removes or replaces | Exceptions |
+| --- | --- | --- | --- |
+| Affected target | Meaningful changes | Exact names or paths | Unsupported or blocked items |
 
-### 5. Verify and report
+Compare original and proposed MCP lists by name (including aliases and disabled
+entries) because one config write can replace a whole list. Mark any removal
+summary with a single `⚠️`. Show where `~/.canonfig/` and Takeover Snapshots
+live. If a removal cannot be explained, hold that category or narrow targets.
 
-Use the completion checklist in both modes. Separate discovered, selected,
-reachable, enrolled, converged, and scheduled machines. Use each follower's
-own `canonfig status` as its completion evidence. After an apply, give the client trust and hook review steps
-from [completion](references/completion.md); `clientLoaded` stays
-`not-verified`. Unavailable optional discovery does not prevent an otherwise
-verified local setup from completing.
+**5. Apply the changes shown above?**
 
-## Stop conditions
+Recommend applying when the preview matches the user's choices. If it exposes
+unintended loss, recommend one concrete fix (such as adding a needed MCP or
+preserving that harness's MCP list) and preview again. Offer **Apply the
+changes shown** (or **Apply and remove the listed entries**), **Change my
+selections**, and **Stop after preview**. Wait for approval of the displayed
+changes.
 
-Stop the affected stage for conflicting identity, unapproved mutation, changed
-publication inputs, guessed recipes, unavailable required secure storage, drift,
-a harness root that differs from the one pinned at takeover, or failed
-verification. Preserve Human Action Required and Follower Drift.
-Use the invited HTTPS origin and verify the selected
-[transport](references/tailscale-discovery.md#discovery-is-not-connectivity-or-enrollment).
-Do not disable trust checks, overwrite evidence, or silently mark deferred
-requirements complete in either mode.
+## 4. Apply, verify, and orient the user
+
+Run `canonfig sync --plan --json` on the real machine. If additions, removals,
+or targets differ from the approved preview, show the updated diff and ask
+again. Keep Takeover Snapshots enabled, then run
+`canonfig sync --apply --no-input --json`. Leave recovery evidence intact if
+the run stops or reports drift.
+
+Re-run `canonfig sync --plan --json` to confirm zero pending changes, and
+inspect the projected output for each harness. If the user asks whether MCPs
+work, check initialization and tool listing on approved servers and report
+configuration and connectivity separately (without invoking MCP tools or hooks
+as a test).
+
+End with:
+
+1. Which harnesses synced, any exceptions, and the Takeover Snapshot path.
+2. Three lines so the user leaves with the mental model:
+   - Edit shared skills, instructions, and MCPs in `~/.canonfig/`, then run
+     `canonfig sync` to project changes to every harness.
+   - Put machine-only exceptions in `~/.canonfig/local/` (never overwritten or
+     published).
+   - First writes save a Takeover Snapshot in `~/.canonfig/.backups/`; run
+     `canonfig restore` to hand a harness back.
