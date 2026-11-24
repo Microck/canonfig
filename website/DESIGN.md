@@ -95,10 +95,11 @@ Ordered dithering is the only texture, as in the GUI (`ui/docs/design/dither.md`
 and it appears where the GUI puts it:
 
 - The hero map stands on the GUI's state-band field (`dither-band.tsx`): the
-  still frame of its calm horizon, Bayer 4x4 in 2px cells at 45%, full width
-  behind the map. An elliptical mask wholly inside its box fades it out on
-  every side, so it has no edge of its own. A canvas draws it once per size;
-  it never animates. No gradient slab sits under the map.
+  still frame of its orbital iso-contours (`ok`), Bayer 8x8 in 2px cells in a
+  3-stop Ender ramp at 45%, full width behind the map. An elliptical mask wholly
+  inside its box fades it out on every side, so it has no edge of its own. A
+  canvas draws it once per size; it never animates. No gradient slab sits under
+  the map.
 - The pictures use the GUI's fills as SVG patterns (`dither.tsx`): the map's
   dithered icon tiles, and the matrix's solid (up to date), hatched (edited
   there) and dotted (not sent) cells.

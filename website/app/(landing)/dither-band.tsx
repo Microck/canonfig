@@ -1,20 +1,21 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { horizonLevel, thresholdAt, thresholdAt8 } from './dither';
+import { type BandTone, horizonLevel, thresholdAt, thresholdAt8 } from './dither';
 
 // The GUI band's cell, in CSS pixels.
 const CELL = 2;
 
 /**
- * The GUI's `StateBand` field as a still: orbital iso-contours (`ok`, Bayer 8x8)
- * or the diagonal moire fault seam (`warn`, Bayer 4x4) in a 3-stop Ender ramp,
- * faded out by the mask on `.dither-band` (page.css) or `.pub-band` (publish.css).
+ * The GUI's `StateBand` field as a still: orbital iso-contours (`ok`, Bayer 8x8),
+ * the diagonal moire fault seam (`warn`, Bayer 4x4), or the mint packet
+ * wavefront (`running`, Bayer 8x8) in a 3-stop Ender ramp, faded out by the
+ * mask on `.dither-band` (page.css) or `.pub-band` (publish.css).
  * Drawn once per size on a canvas of one pixel per cell, scaled up without
  * smoothing; it never animates. Place it as the first child of a
  * `position: relative; isolation: isolate` box.
  */
-export function DitherBand({ className, tone = 'ok' }: { className?: string; tone?: 'ok' | 'warn' }) {
+export function DitherBand({ className, tone = 'ok' }: { className?: string; tone?: BandTone }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   // Redraw only when the box changes size or tone changes: the band is a function

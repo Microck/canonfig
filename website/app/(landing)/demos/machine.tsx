@@ -50,18 +50,34 @@ const TILE_SCALE = 26 / TILE_CELLS;
 const TILE_WASH = {
   source: cornerWashPaths(TILE_CELLS, true),
   follower: cornerWashPaths(TILE_CELLS, false),
+  syncing: cornerWashPaths(TILE_CELLS, false, 0.7),
 } as const;
 
 /**
  * A machine's icon tile as the GUI's map draws it (machine-node.tsx): a 9%
  * tint of its accent, a 3-stop Bayer 4x4 diagonal corner wash carved around
  * the icon (with a top-right emitter glint on the Source), a 40% border and
- * the device icon. SVG elements in a 26-unit box at the origin, so it drops
- * into a larger SVG or into `<svg viewBox="0 0 26 26">` on its own.
- * `id` must be unique on the page: it names the tile's clip path.
+ * the device icon. When `syncOverlayClass` is set, an extra syncing-sheen
+ * layer (the GUI's mid-tile diagonal sheen) is rendered on top so CSS can
+ * fade it in while a machine row is updating. SVG elements in a 26-unit box
+ * at the origin, so it drops into a larger SVG or into `<svg viewBox="0 0 26 26">`
+ * on its own. `id` must be unique on the page: it names the tile's clip path.
  */
-export function IconTile({ id, accent, icon, source = false }: { id: string; accent: string; icon: MachineIcon; source?: boolean }) {
+export function IconTile({
+  id,
+  accent,
+  icon,
+  source = false,
+  syncOverlayClass,
+}: {
+  id: string;
+  accent: string;
+  icon: MachineIcon;
+  source?: boolean;
+  syncOverlayClass?: string;
+}) {
   const paths = source ? TILE_WASH.source : TILE_WASH.follower;
+  const syncPaths = TILE_WASH.syncing;
   return (
     <>
       <defs>
@@ -76,6 +92,12 @@ export function IconTile({ id, accent, icon, source = false }: { id: string; acc
           <path d={paths[1]} fill={accent} fillOpacity="0.72" />
           <path d={paths[2]} fill={`color-mix(in oklab, ${accent} 64%, var(--sa-12))`} />
         </g>
+        {syncOverlayClass && (
+          <g className={`dither-cells ${syncOverlayClass}`} transform={`scale(${TILE_SCALE})`}>
+            <path d={syncPaths[1]} fill={accent} fillOpacity="0.78" />
+            <path d={syncPaths[2]} fill={`color-mix(in oklab, ${accent} 64%, var(--sa-12))`} />
+          </g>
+        )}
       </g>
       <rect x="0.5" y="0.5" width="25" height="25" rx="4.5" fill="none" stroke={accent} strokeOpacity="0.4" />
       <g transform="translate(5 5) scale(0.667)" fill="none" stroke={accent} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
