@@ -221,8 +221,10 @@
   --dither-act-bright: #ffc699;
   --dither-bad-dim: #45181b;
   --dither-bad-bright: #ff9e9e;
-  --dither-muted-dim: #192626;
-  --dither-muted-bright: #8aa6a0;
+  --dither-muted-dim: #1d2e2d;
+  --dither-muted-bright: #9ec0ba;
+  --dither-purple-dim: #2c224a;
+  --dither-purple-bright: #cbb8ff;
   --dither-converge-dim: #192a27;
   --dither-converge-mid: #3c6b53;
   --dither-converge-bright: #8ac789;

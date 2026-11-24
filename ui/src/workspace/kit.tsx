@@ -784,7 +784,7 @@ export function EmptyState({ title, body, action, tone = "muted" }: { title: str
         <p className="mt-1 max-w-xs text-sm text-pretty text-muted-foreground">{body}</p>
         {action && <div className="mt-4">{action}</div>}
       </div>
-      <DitherBlock tone={tone} edge="bottom" className="h-24 shrink-0 opacity-60" />
+      <DitherBlock tone={tone} edge="bottom" motif={tone === "ok" ? "strata" : "radar"} className="h-24 shrink-0 opacity-85" />
     </div>
   );
 }
