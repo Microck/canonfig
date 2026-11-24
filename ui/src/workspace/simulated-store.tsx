@@ -10,6 +10,7 @@ import {
 import { toast } from "sonner";
 import { keyClaimCovers, parseKeyClaim } from "@/shared/metadata";
 import { demoProjection } from "./demo-projection";
+import { unsettledCollisions } from "./local-collisions";
 import {
   DEMO,
   APP_VERSION,
@@ -157,9 +158,9 @@ const SEED_RUNS: Run[] = [
 type SourceProjectionItem = { step: PlanItem; content: string };
 
 /** The Source demo projects sample rules and settings into Claude Code. */
-function sourceLocalChanges(resources: Resource[], surfaces: SurfaceCategory[] | undefined, applied: Map<string, SourceProjectionItem>, overlays: readonly string[]) {
-  const rules = surfaces?.includes("rules") ?? true;
-  const settings = surfaces?.includes("settings") ?? true;
+function sourceLocalChanges(resources: Resource[], listed: boolean, surfaces: SurfaceCategory[] | undefined, applied: Map<string, SourceProjectionItem>, overlays: readonly string[]) {
+  const rules = listed && (surfaces?.includes("rules") ?? true);
+  const settings = listed && (surfaces?.includes("settings") ?? true);
   const claudeClaims = overlays.map(parseKeyClaim).flatMap((claim) => claim?.harness === "claude-code" ? [claim.key] : []);
   const desired = new Map<string, SourceProjectionItem>();
   for (const item of resources) {
@@ -183,7 +184,7 @@ function sourceLocalChanges(resources: Resource[], surfaces: SurfaceCategory[] |
     if (applied.get(id)?.content !== item.content) changes.push({ step: item.step, desired: item });
   }
   for (const [id, { step }] of applied) {
-    if (desired.has(id) || !(step.category === "rules" ? rules : settings)) continue;
+    if (desired.has(id)) continue;
     const reason = step.category === "rules" ? "Removes the rule Canonfig wrote." : "Removes the settings keys Canonfig set and keeps the other keys.";
     changes.push({ step: { ...step, action: "remove", reason }, desired: null });
   }
@@ -287,11 +288,17 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     [listed, excluded, fresh],
   );
   const [backups, setBackups] = useState(true);
+  const [local, setLocal] = useState<LocalItem[]>(() => (joined ? [] : followerSelf.local));
   const [overlays, setOverlays] = useState<string[]>(() => (joined ? [] : followerSelf.overlays));
   const [watchEnabled, setWatchEnabled] = useState(false);
   const [appliedSourceItems, setAppliedSourceItems] = useState(() => new Map<string, SourceProjectionItem>());
-  const managedClaude = role === "source" && harnessRows.some((harness) => harness.id === "claude-code" && harness.installed && harness.listed && !harness.excluded);
-  const sourceChanges = useMemo(() => managedClaude ? sourceLocalChanges(resources, surfaces["claude-code"], appliedSourceItems, overlays) : [], [managedClaude, resources, surfaces, appliedSourceItems, overlays]);
+  const claude = harnessRows.find((harness) => harness.id === "claude-code");
+  const sourceChanges = useMemo(() => {
+    // Local exclusion and temporary non-detection hold ownership. Unlisting retires it.
+    if (role !== "source" || !claude || claude.excluded || (claude.listed && !claude.installed)) return [];
+    return sourceLocalChanges(resources, claude.listed, surfaces["claude-code"], appliedSourceItems, overlays);
+  }, [role, claude, resources, surfaces, appliedSourceItems, overlays]);
+  const sourceHasCollisions = role === "source" && unsettledCollisions(local, overlays, { resources, profile }).length > 0;
   const snapshots = fresh ? [] : seedSnapshots;
 
   // Follower state. One that just joined has downloaded revision 7 and applied nothing: no runs,
@@ -328,7 +335,6 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     if (value) throw new TransitionError("Demo follower", current.kind, "create human action");
     sendFollower({ kind: "acknowledge" });
   };
-  const [local, setLocal] = useState<LocalItem[]>(() => (joined ? [] : followerSelf.local));
   const kept = joined ? [] : followerSelf.kept;
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearInterval(timer.current), []);
@@ -394,7 +400,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
   const applyPlan = useCallback(() => {
     const local = role === "source";
     const current = followerCurrent.current;
-    if (local && (sourceChanges.length === 0 || (current.kind === "enrolled" && current.run.kind === "applying"))) return;
+    if (local && (sourceHasCollisions || sourceChanges.length === 0 || (current.kind === "enrolled" && current.run.kind === "applying"))) return;
     const started = sendFollower({
       kind: "apply", target: targetRevision,
       plan: local ? sourceChanges.map(({ step }) => step) : undefined,
@@ -432,12 +438,12 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
       if (held) toast(`Revision ${targetRevision} applied, ${heldText}`, { description: `${held === 1 ? "It keeps" : "They keep"} your local edit.\nSee Sync for how to settle ${held === 1 ? "it" : "them"}.${next.evidence.humanAction ? "\nAlso sign in to the GitHub CLI." : ""}` });
       else toast.success(`Revision ${targetRevision} applied`, { description: next.evidence.humanAction ? "One step needs you: sign in to the GitHub CLI." : "This machine is up to date." });
     }, 140);
-  }, [role, sourceChanges, targetRevision, followerCurrent, sendFollower]);
+  }, [role, sourceChanges, sourceHasCollisions, targetRevision, followerCurrent, sendFollower]);
   useEffect(() => {
-    if (!watchEnabled || phase !== "plan" || sourceChanges.length === 0) return;
+    if (!watchEnabled || phase !== "plan" || sourceHasCollisions || sourceChanges.length === 0) return;
     const debounce = window.setTimeout(applyPlan, 500);
     return () => window.clearTimeout(debounce);
-  }, [applyPlan, phase, sourceChanges.length, watchEnabled]);
+  }, [applyPlan, phase, sourceChanges.length, sourceHasCollisions, watchEnabled]);
   const [followerSchedule] = useSharedState(followerScheduleKey);
   const [tunnelUp] = useSharedState(tunnelUpKey);
   const [secretsRefresh] = useSharedState(secretsRefreshKey);

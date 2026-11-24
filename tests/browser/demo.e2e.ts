@@ -87,3 +87,46 @@ test("the public demo automatically reapplies a settings key after its claim is 
   await expect(screen.getByRole("button", /^Done Set keys settings\/claude-code/)).toBeVisible({ timeout: 10_000 });
   await expect(screen.getByText("1 change", { exact: true })).toBeVisible();
 });
+
+test("the public demo retires projections when a surface or harness is unlisted", async ({ app, screen }) => {
+  await app.open("/demo/source/sync");
+  await screen.getByRole("switch", { name: "Apply changes automatically" }).tap();
+  await expect(screen.getByRole("heading", { name: "Local changes applied", exact: true })).toBeVisible({ timeout: 10_000 });
+
+  const localSync = screen.getByRole("link", { name: "Local sync", exact: true });
+  await screen.getByRole("link", /^Profile/).tap();
+  await screen.getByRole("link", /^Harnesses/).tap();
+  await screen.getByRole("button", { name: "What Claude Code gets: Everything" }).tap();
+  const rules = screen.getByRole("menuitemcheckbox", { name: "Rules", exact: true });
+  await rules.tap();
+  await rules.press("Escape");
+  await localSync.tap();
+  await expect(screen.getByRole("button", /^Done Remove rules\/typescript/)).toBeVisible({ timeout: 10_000 });
+
+  await screen.getByRole("link", /^Profile/).tap();
+  await screen.getByRole("link", /^Harnesses/).tap();
+  await screen.getByRole("checkbox", { name: "List Claude Code", exact: true }).tap();
+  await localSync.tap();
+  await expect(screen.getByRole("button", /^Done Remove settings\/claude-code/)).toBeVisible({ timeout: 10_000 });
+});
+
+test("the public demo waits for an item collision to be settled before applying", async ({ app, screen }) => {
+  await app.open("/demo/source/local-settings");
+  await screen.getByRole("button", { name: "Remove overlay mcp/docs", exact: true }).tap();
+  const confirm = screen.getByRole("dialog", { name: "Stop replacing mcp/docs?" });
+  await confirm.getByRole("button", { name: "Remove", exact: true }).tap();
+
+  const localSync = screen.getByRole("link", { name: "Local sync", exact: true });
+  const localSettings = screen.getByRole("link", { name: "Local settings", exact: true });
+  await localSync.tap();
+  await screen.getByRole("switch", { name: "Apply changes automatically" }).tap();
+  await expect(screen.getByText(/mcp\/docs clashes with what atlas publishes/)).toBeVisible();
+  await screen.getByRole("button", { name: "Plan local changes", exact: true }).tap();
+  await expect(screen.getByText("Local changes planned", { exact: true })).toBeVisible();
+  await expect(screen.getByRole("button", { name: "Apply changes", exact: true, disabled: true })).toBeVisible();
+
+  await localSettings.tap();
+  await screen.getByRole("button", /mcp\/docs.*Use mine/).tap();
+  await localSync.tap();
+  await expect(screen.getByRole("heading", { name: "Local changes applied", exact: true })).toBeVisible({ timeout: 10_000 });
+});
