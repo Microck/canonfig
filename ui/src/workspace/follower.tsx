@@ -21,6 +21,8 @@ import {
   CATEGORY_LABEL,
   DEMO,
   HARNESS_NAMES,
+  keyClaimCovers,
+  parseKeyClaim,
   LOCAL_CATEGORIES,
   PLAIN,
   SECRETS_GROUP,
@@ -1148,15 +1150,6 @@ function unsettledCollisions(local: LocalItem[], overlays: string[], ws: Pick<Wo
   return local.filter((l) => !overlays.includes(l.id) && collisionOf(l, ws) !== null);
 }
 
-/** A key claim, `settings/<harness>#<key>` in local.jsonc `overlays`, or null for an item overlay. */
-function claimOf(entry: string): { harness: HarnessId; key: string } | null {
-  const match = /^settings\/([^#]+)#(.+)$/.exec(entry);
-  return match ? { harness: match[1] as HarnessId, key: match[2]! } : null;
-}
-
-/** Whether `key` is the claimed key or sits inside it, which is what a claim covers. */
-const covers = (claimed: string, key: string) => key === claimed || key.startsWith(`${claimed}.`);
-
 type SettingsFile = GuiLocalItems["settingsFiles"][string];
 
 /**
@@ -1243,7 +1236,7 @@ function LocalForm() {
   const [disableBackups, setDisableBackups] = useState(false);
   const [preservation, setPreservation] = useSharedState(preservationKey);
   // local.jsonc keeps item overlays and key claims in one list; "Kept on this machine" shows the items, LocalHarnesses the claims.
-  const itemOverlays = ws.overlays.filter((o) => claimOf(o) === null);
+  const itemOverlays = ws.overlays.filter((o) => parseKeyClaim(o) === null);
   const collisions = unsettledCollisions(ws.local, ws.overlays, ws);
   // An item's state as `sync --plan` sees it: ignored outside local.allow, stopping on an unsettled name collision,
   // or projected (replacing the published item when an overlay names it).
@@ -1500,11 +1493,11 @@ function LocalHarnesses({ onToggle }: { onToggle: (id: HarnessId, on: boolean) =
   const settingsFiles = ws.followerLive?.local?.settingsFiles ?? ws.demoProjection?.settingsFiles;
   const [removing, setRemoving] = useState<string | null>(null);
   const claims = ws.overlays.flatMap((item) => {
-    const claim = claimOf(item);
+    const claim = parseKeyClaim(item);
     return claim ? [{ item, ...claim }] : [];
   });
   const busy = ws.followerLive?.action.loading;
-  const removed = removing === null ? null : claimOf(removing);
+  const removed = removing === null ? null : parseKeyClaim(removing);
   const removedValue = removed && ws.resources.find((r) => r.id === `settings/${removed.harness}`)?.keys?.[removed.key];
   const keys = (h: Harness) => {
     const settings = settingsFiles?.[h.id];
@@ -1513,7 +1506,7 @@ function LocalHarnesses({ onToggle }: { onToggle: (id: HarnessId, on: boolean) =
         const name = HARNESS_NAMES[c.harness];
         const written = writtenKeys(settings, c.harness, ws.resources);
         const whole = written.find((k) => c.key.startsWith(`${k}.`));
-        const covered = written.filter((k) => covers(c.key, k));
+        const covered = written.filter((k) => keyClaimCovers(c.key, k));
         // The refusal buildProjection gives, and the plan's CLAIM_UNUSED warning (src/projection/plan.ts).
         const [kind, note]: [StatusKind, string] = ws.followerLive
           ? ["ok", "This key belongs to this machine. The next sync checks the claim against published settings."] : whole
@@ -1550,7 +1543,7 @@ function LocalHarnesses({ onToggle }: { onToggle: (id: HarnessId, on: boolean) =
         title={`Let Canonfig manage ${removed?.key} again?`}
         body={
           ws.followerLive ? "The next sync may write the published value to this key again." :
-          removed && writtenKeys(settingsFiles?.[removed.harness], removed.harness, ws.resources).some((k) => covers(removed.key, k))
+          removed && writtenKeys(settingsFiles?.[removed.harness], removed.harness, ws.resources).some((k) => keyClaimCovers(removed.key, k))
             ? `Canonfig removes the claim from ~/.canonfig/local/local.jsonc. The next update writes ${ws.sourceMachine.hostname}'s ${removed.key}${removedValue ? ` (${removedValue})` : ""} over yours in ${HARNESS_NAMES[removed.harness]}'s settings file, and an edit after that counts as a local change.`
             : `Canonfig removes the claim from ~/.canonfig/local/local.jsonc. It writes no ${removed?.key} there, so nothing else changes.`
         }
@@ -1639,7 +1632,7 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
     const key = r.key.trim();
     if (!key) return "Name this key, or remove the row.";
     // The loader refuses a local setting for a key this machine claims (loadCanonicalFolder in src/projection/folder.ts).
-    const claimed = ws.overlays.map(claimOf).find((c) => c?.harness === trimmed && overlaps(c.key, key));
+    const claimed = ws.overlays.map(parseKeyClaim).find((c) => c?.harness === trimmed && overlaps(c.key, key));
     if (claimed) return `You claimed ${claimed.key} for ${trimmed}, so the update would stop: “local setting ${trimmed} ${key} overlaps the key claim settings/${trimmed}#${claimed.key}; remove one of them”. Remove the key, or remove the claim under Settings keys you set yourself.`;
     const clash = keyClash(key);
     return clash && !replace

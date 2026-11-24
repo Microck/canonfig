@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { toast } from "sonner";
+import { keyClaimCovers, parseKeyClaim } from "@/shared/metadata";
 import { demoProjection } from "./demo-projection";
 import {
   DEMO,
@@ -156,19 +157,25 @@ const SEED_RUNS: Run[] = [
 type SourceProjectionItem = { step: PlanItem; content: string };
 
 /** The Source demo projects sample rules and settings into Claude Code. */
-function sourceLocalChanges(resources: Resource[], surfaces: SurfaceCategory[] | undefined, applied: Map<string, SourceProjectionItem>) {
+function sourceLocalChanges(resources: Resource[], surfaces: SurfaceCategory[] | undefined, applied: Map<string, SourceProjectionItem>, overlays: readonly string[]) {
   const rules = surfaces?.includes("rules") ?? true;
   const settings = surfaces?.includes("settings") ?? true;
+  const claudeClaims = overlays.map(parseKeyClaim).flatMap((claim) => claim?.harness === "claude-code" ? [claim.key] : []);
   const desired = new Map<string, SourceProjectionItem>();
   for (const item of resources) {
     if (item.change === "removed") continue;
     let step: PlanItem;
+    let content: string;
     if (rules && item.category === "rules") {
       step = { resource: item.id, category: "rules", target: `~/.claude/${item.path}`, action: "write", reason: "Projects this machine's rule to Claude Code." };
+      content = JSON.stringify(item.detail);
     } else if (settings && item.id === "settings/claude-code") {
-      step = { resource: item.id, category: "settings", target: "~/.claude/settings.json", action: "merge", reason: "Sets the keys from the Canonical Folder and keeps the other settings." };
+      step = { resource: item.id, category: "settings", target: "~/.claude/settings.json", action: "merge", reason: "Applies Canonical Folder keys that this machine lets Canonfig manage." };
+      // A Key Claim releases ownership even if every authored key in the file is claimed.
+      const keys = Object.entries(item.keys ?? {}).filter(([key]) => !claudeClaims.some((claim) => keyClaimCovers(claim, key)));
+      content = JSON.stringify(keys);
     } else continue;
-    desired.set(item.id, { step, content: JSON.stringify([item.detail, item.keys]) });
+    desired.set(item.id, { step, content });
   }
 
   const changes: { step: PlanItem; desired: SourceProjectionItem | null }[] = [];
@@ -280,10 +287,11 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     [listed, excluded, fresh],
   );
   const [backups, setBackups] = useState(true);
+  const [overlays, setOverlays] = useState<string[]>(() => (joined ? [] : followerSelf.overlays));
   const [watchEnabled, setWatchEnabled] = useState(false);
   const [appliedSourceItems, setAppliedSourceItems] = useState(() => new Map<string, SourceProjectionItem>());
   const managedClaude = role === "source" && harnessRows.some((harness) => harness.id === "claude-code" && harness.installed && harness.listed && !harness.excluded);
-  const sourceChanges = useMemo(() => managedClaude ? sourceLocalChanges(resources, surfaces["claude-code"], appliedSourceItems) : [], [managedClaude, resources, surfaces, appliedSourceItems]);
+  const sourceChanges = useMemo(() => managedClaude ? sourceLocalChanges(resources, surfaces["claude-code"], appliedSourceItems, overlays) : [], [managedClaude, resources, surfaces, appliedSourceItems, overlays]);
   const snapshots = fresh ? [] : seedSnapshots;
 
   // Follower state. One that just joined has downloaded revision 7 and applied nothing: no runs,
@@ -321,7 +329,6 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     sendFollower({ kind: "acknowledge" });
   };
   const [local, setLocal] = useState<LocalItem[]>(() => (joined ? [] : followerSelf.local));
-  const [overlays, setOverlays] = useState<string[]>(() => (joined ? [] : followerSelf.overlays));
   const kept = joined ? [] : followerSelf.kept;
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearInterval(timer.current), []);

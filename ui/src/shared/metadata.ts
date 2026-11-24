@@ -202,6 +202,15 @@ export const SURFACE_NAMES: Record<SurfaceCategory, string> = {
   settings: "Settings",
 };
 
+/** A key claim, `settings/<harness>#<key>` in local.jsonc `overlays`, or null for an item overlay. */
+export function parseKeyClaim(entry: string): { harness: HarnessId; key: string } | null {
+  const match = /^settings\/([^#]+)#(.+)$/.exec(entry);
+  return match ? { harness: match[1] as HarnessId, key: match[2]! } : null;
+}
+
+/** Whether `key` is the claimed key or sits inside it, which is what a claim covers. */
+export const keyClaimCovers = (claimed: string, key: string) => key === claimed || key.startsWith(`${claimed}.`);
+
 /**
  * One harness as `canonfig harnesses` reports it on this machine. Canonfig projects a harness that is listed
  * in canonfig.jsonc, installed here and not excluded in local/local.jsonc.
