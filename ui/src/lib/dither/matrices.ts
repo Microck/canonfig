@@ -1,4 +1,4 @@
-import { BAYER_4, bayerRanks, fromRanks, type ThresholdMap } from "./geometry";
+import { BAYER_4, BAYER_8, bayerRanks, fromRanks, type ThresholdMap } from "./geometry";
 import { BLUE_NOISE_64_BASE64 } from "@/lib/dither/blue-noise";
 
 /**
@@ -23,9 +23,8 @@ const decodeBase64 = (value: string): Uint8Array => {
 };
 
 export const BAYER_2: ThresholdMap = fromRanks(2, bayerRanks(2), 4);
-export { BAYER_4 };
+export { BAYER_4, BAYER_8 };
 export type { ThresholdMap };
-export const BAYER_8: ThresholdMap = fromRanks(8, bayerRanks(8), 64);
 
 /** 64x64 void-and-cluster blue noise, 256 levels of 16 cells each. */
 export const BLUE_NOISE_64: ThresholdMap = fromRanks(

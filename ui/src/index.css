@@ -213,6 +213,16 @@
   --dither-color-red: #ef6b6b;
   --dither-color-grey: #4d6460;
   --dither-color-gold: #f1c332;
+  --dither-ok-dim: #193023;
+  --dither-ok-bright: #a9dca7;
+  --dither-warn-dim: #3c3012;
+  --dither-warn-bright: #f6d667;
+  --dither-act-dim: #472614;
+  --dither-act-bright: #ffc699;
+  --dither-bad-dim: #45181b;
+  --dither-bad-bright: #ff9e9e;
+  --dither-muted-dim: #192626;
+  --dither-muted-bright: #8aa6a0;
   --dither-converge-dim: #192a27;
   --dither-converge-mid: #3c6b53;
   --dither-converge-bright: #8ac789;

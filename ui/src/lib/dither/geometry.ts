@@ -37,6 +37,7 @@ export const bayerRanks = (size: number): Uint8Array => {
 };
 
 export const BAYER_4: ThresholdMap = fromRanks(4, bayerRanks(4), 16);
+export const BAYER_8: ThresholdMap = fromRanks(8, bayerRanks(8), 64);
 
 /** The side of a shape where a gradient fill is densest. */
 export type FillEdge = "top" | "bottom" | "left" | "right";
