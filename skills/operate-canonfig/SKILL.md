@@ -42,6 +42,12 @@ canonfig sync --apply
 canonfig status --json
 ```
 
+Check `canonfig watch status --json` on a Source or unenrolled machine. When
+it reports `running`, every saved change to `~/.canonfig/` applies within about
+a second, so describe the change and get approval before you write the file.
+`canonfig watch enable|disable` turns automatic apply on or off; a Follower
+refuses both.
+
 Use `--no-input --json` only for noninteractive callers. Keep Takeover
 Snapshots enabled unless `--no-backup` is explicitly approved. `Converged`
 proves files are verified on disk; `clientLoaded` stays `not-verified`, so

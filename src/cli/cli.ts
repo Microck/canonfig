@@ -109,6 +109,11 @@ export type CliCommand =
     /** With `--plan`: write private append-local adoption reviews. */
     readonly reviewLocal: boolean;
   }
+  /** Apply the Canonical Folder after each change, until interrupted. */
+  | { readonly _tag: "Watch" }
+  | { readonly _tag: "WatchEnable" }
+  | { readonly _tag: "WatchDisable" }
+  | { readonly _tag: "WatchStatus" }
   | { readonly _tag: "Restore"; readonly snapshot?: string | undefined }
   | {
     readonly _tag: "Export";
@@ -922,6 +927,18 @@ const evaluateCommand = (
         reviewLocal: options.switches.has("--review-local"),
       }, format);
     }
+    if (area === "watch") {
+      const options = parseOptions(arguments_.slice(1), new Set(), new Set());
+      const [watchAction, ...extra] = options.positionals;
+      if (extra.length > 0) return invalid("Usage: canonfig watch [enable|disable|status]");
+      switch (watchAction) {
+        case undefined: return command({ _tag: "Watch" }, format);
+        case "enable": return command({ _tag: "WatchEnable" }, format);
+        case "disable": return command({ _tag: "WatchDisable" }, format);
+        case "status": return command({ _tag: "WatchStatus" }, format);
+        default: return invalid("Usage: canonfig watch [enable|disable|status]");
+      }
+    }
     if (area === "overlay") {
       const options = parseOptions(rest, new Set(), new Set());
       const [item, ...extra] = options.positionals;
@@ -1084,6 +1101,10 @@ export const commandName = (value: CliCommand): string => {
     case "FollowerEnroll": return "follower.enroll";
     case "FollowerUnenroll": return "follower.unenroll";
     case "Synchronize": return `sync.${value.mode}`;
+    case "Watch": return "watch";
+    case "WatchEnable": return "watch.enable";
+    case "WatchDisable": return "watch.disable";
+    case "WatchStatus": return "watch.status";
     case "Overlays": return value.change === undefined ? "overlay.list" : `overlay.${value.change.action}`;
     case "LocalPreservation": return "local.preservation";
     case "Restore": return "restore";
@@ -1165,6 +1186,10 @@ const executeCommand = Effect.fn("Cli.executeCommand")(function*(
         noBackup: value.noBackup,
         reviewLocal: value.reviewLocal,
       }, executeSynchronization);
+    case "Watch": return yield* follower.watch({ hold: () => () => undefined, report: () => undefined });
+    case "WatchEnable": return yield* follower.enableWatch();
+    case "WatchDisable": return yield* follower.disableWatch();
+    case "WatchStatus": return yield* follower.watchStatus();
     case "Overlays": return yield* follower.overlays({ change: value.change });
     case "LocalPreservation": return yield* follower.localPreservation(value.change);
     case "Restore": return yield* follower.restore({ snapshot: value.snapshot });
@@ -1268,6 +1293,26 @@ export const runCli = Effect.fn("runCli")(function*(
       const served = yield* source.serve({ hostname: outcome.command.hostname, port: outcome.command.port, hold: lease.hold });
       lease.becomeResident(exitForReplacement(io.writeStderr));
       return served;
+    }
+    if (outcome.command._tag === "Watch") {
+      // Like a resident Source: once the watcher is running it holds the
+      // self-update lease only during a pass, and exits for its supervisor to
+      // restart it when an update replaced the release it loaded.
+      lease?.becomeResident(exitForReplacement(io.writeStderr));
+      const follower = yield* FollowerCommands;
+      return yield* follower.watch({
+        hold: () => lease?.hold() ?? (() => undefined),
+        report: (pass) => {
+          const rendered = renderCliResult({
+            command: name,
+            message: `${pass.at} ${pass.message}`,
+            data: outcome.format === "json" ? { ...pass } : undefined,
+            exitCode: pass.outcome === "applied" ? CliExitCode.success : exitCodeForFailure(pass.category),
+          }, outcome.format);
+          if (pass.outcome === "applied") io.writeStdout(rendered);
+          else io.writeStderr(rendered);
+        },
+      });
     }
     if (outcome.command._tag === "ScheduleRun" && lease !== undefined) {
       // The job this command waits for may activate a Fleet Update, and activation

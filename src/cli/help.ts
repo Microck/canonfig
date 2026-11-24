@@ -383,6 +383,25 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
     ],
   },
   {
+    title: "Automatic local sync",
+    areas: ["watch"],
+    usage: [
+      "watch",
+      "watch enable",
+      "watch status",
+      "watch disable",
+    ],
+    notes: [
+      "On the Source or an unenrolled machine, watch runs sync --apply --no-input at",
+      "start and again 0.5 s after each change to ~/.canonfig/ (canonfig.jsonc, AGENTS.md,",
+      "rules/, skills/, agents/, commands/, hooks/, files/, local/), until stopped.",
+      "A failed pass is reported and the watcher waits for the next change.",
+      "enable runs the watcher as a native user service (systemd user unit, launchd",
+      "agent, or Task Scheduler logon task); disable removes it. Publishing to",
+      "Followers stays a separate source publish, and a Follower refuses watch.",
+    ],
+  },
+  {
     title: "Shared secrets (details: canonfig secrets --help)",
     areas: ["secrets"],
     usage: [

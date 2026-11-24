@@ -68,6 +68,9 @@ import {
   type ProfileRevisionSigner,
 } from "../profile/publication.ts";
 import { ScheduleManager } from "../schedule/schedule-manager.service.ts";
+import type { WatchPass } from "../gui/contract/synchronization.ts";
+import { runCancellablePromise } from "./cancellable-promise.ts";
+import { recordWatchPass, watchFolder, watchService } from "./watch.ts";
 import {
   desiredScheduleInput,
   type ResolvedScheduleInput,
@@ -104,6 +107,7 @@ import {
 } from "../synchronization/follower-orchestration.ts";
 import {
   abandonLocalUnderLock,
+  folderOf,
   harnessesLocal,
   importLocal,
   overlaysLocal,
@@ -608,6 +612,17 @@ const followerCommandsLayer = (
     const synchronization = yield* Synchronization;
     const agentResolution = yield* AgentResolution;
     const tunnel = yield* Tunnel;
+    const stateDirectory = dirname(statePath);
+    const watches = yield* watchService({ stateDirectory });
+    // A Follower's folder is its Source's mirror, applied on the sync schedule.
+    // Checked again before every pass, since the machine can enroll while a
+    // watcher runs.
+    const refuseFollowerWatch = mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
+      Effect.flatMap((configuration) => configuration === undefined ? Effect.void : Effect.fail(new CliCommandFailure({
+        category: "usage-or-configuration",
+        message: `the folder watcher runs on a Source or an unenrolled machine, and this machine follows a Source; it applies its Source's revisions when it syncs. Choose when with \`canonfig schedule set\`, and remove a watcher installed earlier with \`canonfig watch disable\``,
+      }))),
+    );
     const withEnrollmentLock = <A>(operation: Effect.Effect<A, CliCommandFailure>) =>
       withRunLock(statePath, "change follower enrollment", operation).pipe(
         Effect.mapError((error) => error instanceof CliCommandFailure ? error : commandFailure(error)),
@@ -1688,6 +1703,60 @@ const followerCommandsLayer = (
           Effect.andThen(mapFailure(schedules.remove())),
           Effect.map(payload),
         ),
+      watch: (input) => Effect.gen(function*() {
+        yield* refuseFollowerWatch;
+        // One pass is the ordinary unattended apply. A failed pass is reported
+        // and recorded, and the watcher waits for the next change; only a
+        // change of role, or a defect, stops it.
+        const pass = async (): Promise<WatchPass> => {
+          const release = input.hold();
+          try {
+            // Enrolling while the watcher runs turns this folder into a mirror: stop.
+            const refusal = await Effect.runPromise(refuseFollowerWatch.pipe(Effect.flip, Effect.option));
+            if (Option.isSome(refusal)) throw refusal.value;
+            const result = await Effect.runPromise(service.synchronize({ mode: "apply", noInput: true }).pipe(
+              Effect.match({
+                onSuccess: (): WatchPass => ({ at: new Date().toISOString(), outcome: "applied", message: "applied the Canonical Folder" }),
+                onFailure: (failure): WatchPass => ({ at: new Date().toISOString(), outcome: "failed", message: failure.message, category: failure.category }),
+              }),
+            ));
+            await Effect.runPromise(recordWatchPass(stateDirectory, result).pipe(Effect.ignore));
+            return result;
+          } finally {
+            release();
+          }
+        };
+        // Interrupting the command (SIGINT, SIGTERM) aborts the watcher and then
+        // waits for it, so a pass that is applying finishes before the runtime
+        // tears down its layers. Effect.tryPromise would not wait.
+        let stoppedBy: CliCommandFailure | undefined;
+        yield* runCancellablePromise((signal) =>
+          watchFolder(folderOf(statePath), pass, input.report, signal).catch((cause: Error) => {
+            stoppedBy = cause instanceof CliCommandFailure ? cause : new CliCommandFailure({
+              category: "internal",
+              message: `the folder watcher stopped: ${cause.message}`,
+            });
+          })
+        );
+        if (stoppedBy !== undefined) return yield* stoppedBy;
+        return payload({ stopped: true });
+      }),
+      // Exit codes follow `source service status`: a watcher that is installed
+      // but not applying changes needs a person (3), a stale definition is drift (4).
+      watchStatus: () => mapFailure(watches.status()).pipe(Effect.flatMap((status) =>
+        status.state === "running" || status.state === "not-installed"
+          ? Effect.succeed(payload(status))
+          : Effect.fail(new CliCommandFailure({
+            category: status.state === "drifted" ? "conflict-or-drift" : "human-action-required",
+            message: status.detail,
+            details: payload(status),
+          }))
+      )),
+      enableWatch: () => refuseFollowerWatch.pipe(
+        Effect.andThen(mapFailure(watches.enable())),
+        Effect.map(payload),
+      ),
+      disableWatch: () => mapFailure(watches.disable()).pipe(Effect.map(payload)),
       startTunnel: (input) =>
         Effect.gen(function*() {
           const invitation = yield* mapFailure(readInvitationEnvelope({

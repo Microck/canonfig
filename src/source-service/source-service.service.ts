@@ -1,6 +1,6 @@
 import { Context, type Effect } from "effect";
 
-import type { SourceServiceError } from "./source-service.errors.ts";
+import type { NativeServiceError } from "../machine/native-service.ts";
 import type {
   SourceServiceChange,
   SourceServiceIdentity,
@@ -19,10 +19,10 @@ export class SourceService extends Context.Service<SourceService, {
   readonly install: (
     input: SourceServiceInput,
     identity: SourceServiceIdentity,
-  ) => Effect.Effect<SourceServiceChange, SourceServiceError>;
+  ) => Effect.Effect<SourceServiceChange, NativeServiceError>;
   /** What the manager reports and whether the endpoint serves `identity`. */
   readonly status: (
     identity: SourceServiceIdentity | undefined,
-  ) => Effect.Effect<SourceServiceStatus, SourceServiceError>;
-  readonly remove: () => Effect.Effect<SourceServiceRemoval, SourceServiceError>;
+  ) => Effect.Effect<SourceServiceStatus, NativeServiceError>;
+  readonly remove: () => Effect.Effect<SourceServiceRemoval, NativeServiceError>;
 }>()("canonfig/source-service/SourceService") {}

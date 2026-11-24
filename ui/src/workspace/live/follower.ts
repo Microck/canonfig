@@ -1,13 +1,13 @@
-import { useRef, useState } from "react";
+import { useCallback, useContext, useRef, useState } from "react";
 import { Schema } from "effect";
-import { GuiArchiveDownload, GuiBackups, GuiHarnessReport, GuiLocalItems, GuiLocalSynchronization, GuiScheduleStatus, GuiSecrets, GuiSecretSummary, GuiSecretRemoval, GuiSecretSync, GuiSynchronizationResult } from "../../../../src/gui/contract/synchronization";
+import { GuiArchiveDownload, GuiBackups, GuiHarnessReport, GuiLocalItems, GuiLocalSynchronization, GuiScheduleStatus, GuiSecrets, GuiSecretSummary, GuiSecretRemoval, GuiSecretSync, GuiSynchronizationResult, GuiWatchStatus } from "../../../../src/gui/contract/synchronization";
 import { GuiEnrollment, GuiInvitationInspection } from "../../../../src/gui/contract/enrollment";
 import { GuiOperationTicket, type GuiOperation } from "../../../../src/gui/contract/operations";
 import { GuiRequestError, type GuiSession, type GuiStatus, type WorkspaceBackend } from "../../gui-client";
 import { LOCAL_CATEGORIES, type LocalItem } from "../../shared/metadata";
 import type { FollowerSlice } from "../workspace-types";
 import type { FollowerCommand, FollowerCommandState, FollowerLive } from "../follower-types";
-import { requestError, resourceState, useLiveActions, useLiveResource } from "./resource";
+import { LiveResourcesContext, requestError, resourceState, useLiveActions, useLiveResource } from "./resource";
 import { WEEK } from "../schedule";
 
 export function record(value: Schema.Json | undefined): Record<string, Schema.Json> {
@@ -77,6 +77,11 @@ export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, 
   const enrollment = useLiveResource(backend, "/api/enrollment", GuiEnrollment, follower);
   const secrets = useLiveResource(backend, "/api/secrets", GuiSecrets, follower);
   const localSynchronization = useLiveResource(backend, "/api/local/synchronization", GuiLocalSynchronization, !follower);
+  const watch = useLiveResource(backend, "/api/watch", GuiWatchStatus, session.role !== "unconfigured");
+  const resources = useContext(LiveResourcesContext);
+  // Stable, so the Local sync page's refresh timer isn't restarted on every render.
+  const cache = resources?.cache;
+  const refreshWatch = useCallback(() => cache?.invalidate(["/api/watch"]), [cache]);
   const actions = useLiveActions(backend, reload);
   // Inspection is read-only. Invalidating page resources here would unmount and erase the connection draft.
   const inspectionActions = useLiveActions(backend, () => {});
@@ -162,6 +167,8 @@ export function useLiveFollower(backend: WorkspaceBackend, session: GuiSession, 
         { kind: "weekly", localTime: draft.time, weekdays: draft.cadence === "weekdays" ? ["Mon", "Tue", "Wed", "Thu", "Fri"] : draft.days, timezone: draft.timezone },
     }),
     removeSchedule: () => mutation("/api/schedule", "DELETE", {}),
+    watch: watch.data, watchError: watch.error, refreshWatch,
+    setWatch: (enabled) => mutation("/api/watch", enabled ? "PUT" : "DELETE", {}),
     saveItems: (input) => run((signal) => backend.request("/api/local/items", GuiLocalItems, signal, { method: "PUT", body: input })),
     savePreferences,
     setSecret: (name, value) => run((signal) => backend.request("/api/secrets", GuiSecretSummary, signal, { method: "PUT", body: { name, value } })),

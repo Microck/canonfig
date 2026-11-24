@@ -79,10 +79,10 @@ invalid settings and update errors stop the worker. Finish or recover unfinished
 runs using their original build first.
 
 Long-running processes hold a lease only while they work: the Source server and
-`canonfig ui` per request or operation, and `skills auto --apply` per pass. An idle
-one never defers an update. When its next request or pass finds that an update
+`canonfig ui` per request or operation, and `skills auto --apply` and `canonfig watch`
+per pass. An idle one never defers an update. When its next request or pass finds that an update
 replaced the package, it exits with status 75 before running any new code, and its
-supervisor (the Source service, launchd or the Windows task) starts it again on the
+supervisor (the Source or watch service, launchd or the Windows task) starts it again on the
 new release. A foreground `canonfig ui` or watcher prints why it stopped; run it
 again. Self-update itself does not kill or restart services.
 Use a Fleet Update below to bring followers to the Source's release after that

@@ -26,7 +26,7 @@ export function livePageResources(session: GuiSession, route: WorkspaceRoute): r
     revisions: ["/api/revisions"],
     machines: session.role === "source" ? ["/api/machines", "/api/profile/items", "/api/source-look"] : ["/api/enrollment", "/api/source-look"],
     secrets: session.role === "source" ? ["/api/secrets", "/api/machines"] : ["/api/secrets", "/api/tunnel"],
-    sync: session.role === "follower" ? ["/api/tunnel"] : ["/api/local/synchronization"],
+    sync: session.role === "follower" ? ["/api/tunnel", "/api/watch"] : ["/api/local/synchronization", "/api/watch"],
     schedule: ["/api/schedule"],
     local: ["/api/local/items", "/api/harnesses", "/api/local/overlays"],
     backups: ["/api/backups", ...(session.role === "follower" ? ["/api/local/items"] : [])],

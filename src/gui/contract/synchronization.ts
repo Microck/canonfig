@@ -2,6 +2,8 @@ import { Schema } from "effect";
 import { ContentDigest } from "../../domain/brand.ts";
 import { TARGET_IDS } from "../../projection/model.ts";
 import { SyncScheduleSchema } from "../../schedule/schedule-manager.types.ts";
+import { cliFailureCategories } from "../../cli/exit-codes.ts";
+import { GuiSourceServiceStatus } from "./administration.ts";
 import { GuiBase64 } from "./profile.ts";
 
 export const GuiTunnelStartInput = Schema.Struct({
@@ -18,6 +20,34 @@ export const GuiScheduleStatus = Schema.StructWithRest(
 );
 export type GuiScheduleStatus = typeof GuiScheduleStatus.Type;
 export const GuiSyncApplyRequest = Schema.Struct({ planDigest: ContentDigest });
+/** One sync the watcher ran, recorded for `watch status` and the GUI. */
+export const WatchPass = Schema.Union([
+  Schema.Struct({ at: Schema.String, outcome: Schema.Literal("applied"), message: Schema.String }),
+  Schema.Struct({
+    at: Schema.String,
+    outcome: Schema.Literal("failed"),
+    message: Schema.String,
+    /** The CLI failure category, which sets the exit status a manual sync would have had. */
+    category: Schema.Literals(cliFailureCategories),
+  }),
+]);
+export type WatchPass = typeof WatchPass.Type;
+// Both services run under the same native service manager, so they report it in one shape.
+const nativeService = GuiSourceServiceStatus.fields;
+/** `canonfig watch status`: the supervised folder watcher on a Source or unenrolled machine. */
+export const GuiWatchStatus = Schema.Struct({
+  state: Schema.Literals(["not-installed", "running", "not-running", "drifted"]),
+  platform: nativeService.platform,
+  mechanism: nativeService.mechanism,
+  serviceName: Schema.String,
+  definitionPath: Schema.optionalKey(Schema.String),
+  manager: nativeService.manager,
+  supportedModes: Schema.String,
+  logs: Schema.String,
+  detail: Schema.String,
+  lastPass: Schema.optionalKey(WatchPass),
+});
+export type GuiWatchStatus = typeof GuiWatchStatus.Type;
 export const GuiLocalSynchronization = Schema.Struct({
   activeRecovery: Schema.NullOr(Schema.Struct({ run: Schema.String })),
 });

@@ -11,14 +11,17 @@ export const CliExitCode = {
 
 export type CliExitCode = (typeof CliExitCode)[keyof typeof CliExitCode];
 
-export type CliFailureCategory =
-  | "usage-or-configuration"
-  | "human-action-required"
-  | "conflict-or-drift"
-  | "authentication-or-revocation"
-  | "transport"
-  | "verification-or-apply-failure"
-  | "internal";
+export const cliFailureCategories = [
+  "usage-or-configuration",
+  "human-action-required",
+  "conflict-or-drift",
+  "authentication-or-revocation",
+  "transport",
+  "verification-or-apply-failure",
+  "internal",
+] as const;
+
+export type CliFailureCategory = (typeof cliFailureCategories)[number];
 
 export const exitCodeForFailure = (
   category: CliFailureCategory,
