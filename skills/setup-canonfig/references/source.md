@@ -82,7 +82,9 @@ Keep the Source serving as a native user service so Followers can sync:
 Verify with `canonfig source service status`.
 
 Create a short-lived, single-use invitation (never print its contents in chat
-and delete the temporary file once consumed):
+and delete the temporary file once consumed). Use the loopback endpoint for
+SSH-tunnel followers, or the MagicDNS HTTPS endpoint printed by
+`source service install --tailnet` for direct-tailnet followers:
 
 ```bash
 canonfig source invite --endpoint https://127.0.0.1:17342 --output ./canonfig-invite --expires 15m

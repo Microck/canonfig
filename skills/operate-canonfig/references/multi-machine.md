@@ -41,13 +41,14 @@ schedules, tunnels, or platform-specific credential stores.
 - **Agent policy (Followers only):** Inspect with `canonfig agent policy` and
   `canonfig agent harness`. Keep `deterministic-only` by default; `agent-apply`
   requires explicit path, executable, and exact HTTPS origin allowlists.
-- **Rotate, replace, or unenroll:** Re-enrolling with the same name rotates the
-  credential and keeps settings. `--replace` revokes the old identity and
-  resets policy, bindings, and schedule (get approval first).
-  `canonfig follower unenroll` revokes the identity and deletes local pins and
-  received secrets while keeping `~/.canonfig/local/` and Takeover Snapshots.
-  If the Source was unreachable, also run `canonfig source revoke <id>` on the
-  Source.
+- **Rotate, replace, or unenroll:** To rotate credentials under the same name
+  while keeping local settings, revoke the active Follower on the Source first
+  (`canonfig source revoke <id>`), then re-enroll it with a fresh invitation.
+  `--replace` revokes the old identity and resets policy, bindings, and
+  schedule (get approval first). `canonfig follower unenroll` revokes the
+  identity and deletes local pins and received secrets while keeping
+  `~/.canonfig/local/` and Takeover Snapshots. If the Source was unreachable,
+  also run `canonfig source revoke <id>` on the Source.
 - **Fleet reporting:** The Source has no fleet convergence view; verify each
   Follower from its own `canonfig status`.
 

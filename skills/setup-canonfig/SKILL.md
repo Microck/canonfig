@@ -158,8 +158,9 @@ End with:
 
 1. Which harnesses synced, any exceptions, and the Takeover Snapshot path.
 2. Three lines so the user leaves with the mental model:
-   - Edit shared skills, instructions, and MCPs in `~/.canonfig/`, then run
-     `canonfig sync` to project changes to every harness.
+   - Edit shared skills, instructions, and MCPs in `~/.canonfig/`, then review
+     with `canonfig sync --plan` and apply with `canonfig sync --apply` to
+     project changes to every harness.
    - Put machine-only exceptions in `~/.canonfig/local/` (never overwritten or
      published).
    - First writes save a Takeover Snapshot in `~/.canonfig/.backups/`; run
