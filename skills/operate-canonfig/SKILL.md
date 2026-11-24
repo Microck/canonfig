@@ -69,7 +69,7 @@ changed.
 | Outcome | Exit | What to do |
 | --- | ---: | --- |
 | **Human Action Required** | 3 | Show the recorded resource, reason, and exact non-secret step (login, locked credential store, parse error, changed pinned root, `local/` name collision). Re-plan after the user completes it. |
-| **Follower Drift** | 4 | Keep the local file and show the conflict. Let the user choose: keep the Source version (move local copy aside, then sync), promote the change on the Source, or keep it machine-local under `~/.canonfig/local/` with another name. Never force-overwrite drift. |
+| **Follower Drift** | 4 | Keep the local file and show the conflict. Let the user choose: keep the Source version (move local copy aside, then sync), promote the change on the Source, or keep it machine-local under `~/.canonfig/local/` with another name (when `local.allow` admits that category) and restore the mirror copy. Never force-overwrite drift. |
 | **Interrupted run** | - | Run `canonfig status`, then after approval resume from the journal with `canonfig recover` (or `--no-input --json`). Only if Canonfig reports it cannot be recovered, get approval to run `canonfig abandon` and then `canonfig sync --apply`. |
 | **Run lock held** | 4 | Wait for the named PID to finish rather than deleting lock or state files. |
 

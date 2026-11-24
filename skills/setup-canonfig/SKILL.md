@@ -142,9 +142,11 @@ changes.
 
 ## 4. Apply, verify, and orient the user
 
-Run `canonfig sync --plan --json` on the real machine. If additions, removals,
-or targets differ from the approved preview, show the updated diff and ask
-again. Keep Takeover Snapshots enabled, then run
+Write the approved `~/.canonfig/` folder (and any `local/local.jsonc` settings)
+on the real machine if it was drafted in a disposable `HOME`, then run
+`canonfig sync --plan --json` on the real machine. If additions, removals, or
+targets differ from the approved preview, show the updated diff and ask again.
+Keep Takeover Snapshots enabled, then run
 `canonfig sync --apply --no-input --json`. Leave recovery evidence intact if
 the run stops or reports drift.
 
