@@ -58,7 +58,7 @@ Only Overview (through `StateHeader`) and the Sync page's header use it. A new p
 
 ## DitherProgress
 
-A 6px track whose fill is a dither ramp densest at the leading edge. `value` is 0 to 100, `label` is required (the progressbar's accessible name, naming the operation), `running` adds the shimmer until 100. Use it for any operation that reports progress; there is no other progress bar.
+A 6px dotted telemetry track whose fill layers a deep midtone wake under the primary dither ramp and finishes with a crisp bright leading edge. `value` is 0 to 100 (clamped), `label` is required (the progressbar's accessible name, naming the operation), `running` adds the shimmer until 100. Use it for any operation that reports progress; there is no other progress bar.
 
 ```tsx
 // Correct (settings.tsx DoctorView): the wrapper reserves the bar's height while it comes and goes
