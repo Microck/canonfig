@@ -125,7 +125,7 @@ describe("source service definitions", () => {
     );
     expect(rendered.definition).toContain("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>");
     expect(rendered.definition).toContain(
-      "<RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>",
+      "<RestartOnFailure><Interval>PT1M</Interval><Count>255</Count></RestartOnFailure>",
     );
     expect(rendered.definition).toContain(
       "<Command>C:\\Program Files\\nodejs\\node.exe</Command>"
@@ -209,6 +209,9 @@ describe.skipIf(process.platform === "win32")("systemd Source service lifecycle"
       "utf8",
     );
     expect(unit).toContain(`"--port" "${port}"`);
+    // Installed Source units match only when byte-identical, so the watcher's
+    // stop behaviour must not leak into them and mark them drifted.
+    expect(unit).not.toContain("KillMode");
     const calls = await readFile(join(root, "systemctl.calls"), "utf8");
     expect(calls).toContain("--user daemon-reload");
     expect(calls).toContain("--user enable canonfig-source.service");

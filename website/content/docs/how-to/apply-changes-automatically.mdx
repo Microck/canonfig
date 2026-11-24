@@ -51,8 +51,11 @@ Ctrl+C. Each run reports its result in the terminal.
 
 Each run is the same as `canonfig sync --apply --no-input`, with the same
 takeover snapshots, drift protection and journal. A run waits until the folder
-has been quiet for half a second, so an installer writing a skill file by file
-gets one run, not one per file.
+has been quiet for half a second, so writes that come close together, such as an
+editor saving or an installer copying a skill, share one run. A change that
+pauses longer between files can be applied partway and then again when it
+finishes. If a multi-file change must land whole, turn the watcher off, make the
+change, and turn it on again; it applies the folder when it starts.
 
 A run that cannot finish is reported and the watcher keeps going. If a harness
 file was edited outside Canonfig, the run reports Follower Drift and leaves that

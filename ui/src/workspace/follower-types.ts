@@ -38,6 +38,8 @@ export interface FollowerLive {
   watch: GuiWatchStatus | null;
   /** Why the watcher's status couldn't be read; shown in place of the control. */
   watchError: GuiRequestError | null;
+  /** Read the watcher's status again, keeping the current one on screen meanwhile. */
+  refreshWatch: () => void;
   /** Install (true) or remove (false) the native service that applies folder changes automatically. */
   setWatch: (enabled: boolean) => Promise<boolean>;
   saveItems: (input: typeof GuiLocalWrite.Type) => Promise<boolean>;

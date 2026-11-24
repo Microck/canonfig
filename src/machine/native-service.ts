@@ -79,6 +79,13 @@ export interface NativeServiceName {
   readonly launchdLabel: string;
   /** systemd Description= and the Task Scheduler task description. */
   readonly description: string;
+  /**
+   * The process finishes its current work after SIGTERM before it exits (the
+   * watcher completing a pass). systemd then signals only the main process
+   * (KillMode=mixed), so children it started are not stopped mid-way.
+   * Absent for the Source server, whose installed units must stay unchanged.
+   */
+  readonly drainsOnStop?: true | undefined;
 }
 
 /** Everything a native definition is rendered from; pure data, no machine access. */
@@ -193,6 +200,8 @@ const renderSystemd = (
           ].join(" ")
         }`,
         "Restart=on-failure",
+        // systemd still kills what is left once the main process exits.
+        ...specification.name.drainsOnStop ? ["KillMode=mixed"] : [],
         "RestartSec=30",
         "",
         "[Install]",
@@ -324,7 +333,7 @@ const renderTaskScheduler = (
         "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
         "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate>",
         "<StartWhenAvailable>true</StartWhenAvailable>",
-        "<RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>",
+        "<RestartOnFailure><Interval>PT1M</Interval><Count>255</Count></RestartOnFailure>",
         "<Enabled>true</Enabled><Hidden>true</Hidden><ExecutionTimeLimit>PT0S</ExecutionTimeLimit></Settings>",
         `<Actions Context="Author"><Exec><Command>${xml(executable)}</Command>`,
         `<Arguments>${xml(arguments_.map(windowsArgument).join(" "))}</Arguments>`,
@@ -465,11 +474,12 @@ export const nativeServiceHost = (
     const run = (
       executable: string,
       arguments_: ReadonlyArray<string>,
+      timeoutMilliseconds = 30_000,
     ): Effect.Effect<ProcessResult, NativeServiceError> =>
       machine.runProcess({
         executable: { platform, absolute: executable },
         arguments: arguments_,
-        timeoutMilliseconds: 30_000,
+        timeoutMilliseconds,
         maximumOutputBytes: 1024 * 1024,
       });
 
@@ -488,8 +498,8 @@ export const nativeServiceHost = (
             : `\`systemctl --user\` failed (exit ${result.exitCode ?? "signal"}): ${tailOf(output)}`,
         });
       };
-      const systemctlUser = (operation: string, arguments_: ReadonlyArray<string>) =>
-        run(systemctl, ["--user", ...arguments_]).pipe(
+      const systemctlUser = (operation: string, arguments_: ReadonlyArray<string>, timeoutMilliseconds?: number) =>
+        run(systemctl, ["--user", ...arguments_], timeoutMilliseconds).pipe(
           Effect.flatMap((result) =>
             result.exitCode === 0
               ? Effect.succeed(result)
@@ -543,7 +553,9 @@ export const nativeServiceHost = (
           Effect.gen(function*() {
             const stored = yield* readOptional(rendered.definitionPath!);
             if (stored === undefined) return false;
-            yield* systemctlUser(`stop the ${label}`, ["disable", "--now", rendered.serviceName]);
+            // Stopping waits for the process to exit, and a watcher first finishes
+            // its running pass; allow systemd's whole default stop window (90 s).
+            yield* systemctlUser(`stop the ${label}`, ["disable", "--now", rendered.serviceName], 120_000);
             yield* removeOptional(rendered.definitionPath!);
             yield* systemctlUser("reload the systemd user manager", ["daemon-reload"]);
             return true;
@@ -610,7 +622,19 @@ export const nativeServiceHost = (
           Effect.gen(function*() {
             const stored = yield* readOptional(rendered.definitionPath!);
             if (stored === undefined) return false;
-            yield* run(launchctl, ["bootout", domain, rendered.definitionPath!]).pipe(Effect.ignore);
+            // bootout fails both for a job that is not loaded (fine) and for one
+            // it could not unload; only the job's absence lets the plist go,
+            // which keeps the definition for a retry while the job still runs.
+            yield* run(launchctl, ["bootout", domain, rendered.definitionPath!], 120_000).pipe(Effect.ignore);
+            const printed = yield* run(launchctl, ["print", `${domain}/${rendered.serviceName}`]);
+            if (!/could not find service/iu.test(outputOf(printed))) {
+              return yield* printed.exitCode === 0
+                ? new NativeServiceManagerError({
+                  operation: `stop the ${label}`,
+                  message: `launchd still has ${rendered.serviceName} loaded after bootout; its definition ${rendered.definitionPath} is kept. Retry once the job has exited`,
+                })
+                : unavailable(`stop the ${label}`, printed);
+            }
             yield* removeOptional(rendered.definitionPath!);
             return true;
           }),
@@ -655,6 +679,22 @@ export const nativeServiceHost = (
             ),
             Effect.catch(() => Effect.fail(unavailable(operation, failed))),
           );
+      /** Task Scheduler's state for the task (Running, Ready, Disabled), or "unknown". */
+      const taskState = (rendered: RenderedNativeService) =>
+        run(powershell, [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `(Get-ScheduledTask -TaskPath '\\Canonfig\\' -TaskName '${
+            rendered.serviceName.slice(rendered.serviceName.lastIndexOf("\\") + 1)
+          }').State`,
+        ]).pipe(
+          Effect.map((result) =>
+            result.exitCode === 0
+              ? Buffer.from(result.standardOutput).toString("utf8").trim()
+              : "unknown"
+          ),
+        );
       return {
         inspect: (rendered) =>
           Effect.gen(function*() {
@@ -667,20 +707,7 @@ export const nativeServiceHost = (
             }
             const xml = decodeWindowsTaskXml(query.standardOutput);
             const settings = /<Settings>([\s\S]*?)<\/Settings>/u.exec(xml)?.[1] ?? "";
-            const state = yield* run(powershell, [
-              "-NoProfile",
-              "-NonInteractive",
-              "-Command",
-              `(Get-ScheduledTask -TaskPath '\\Canonfig\\' -TaskName '${
-                rendered.serviceName.slice(rendered.serviceName.lastIndexOf("\\") + 1)
-              }').State`,
-            ]).pipe(
-              Effect.map((result) =>
-                result.exitCode === 0
-                  ? Buffer.from(result.standardOutput).toString("utf8").trim()
-                  : "unknown"
-              ),
-            );
+            const state = yield* taskState(rendered);
             return {
               installed: true,
               matches: xml.includes(taskMarker(rendered.fingerprint)),
@@ -715,6 +742,14 @@ export const nativeServiceHost = (
         remove: (rendered) =>
           Effect.gen(function*() {
             yield* run(schtasks, ["/End", "/TN", rendered.serviceName]).pipe(Effect.ignore);
+            // Deleting a task does not stop its running instance, and afterwards
+            // nothing would name it for a retry: delete only once it has stopped.
+            if ((yield* taskState(rendered)) === "Running") {
+              return yield* new NativeServiceManagerError({
+                operation: `stop the ${label} task`,
+                message: `${rendered.serviceName} is still running after Task Scheduler was asked to end it; the task is kept. Retry once it has stopped`,
+              });
+            }
             const deleted = yield* run(schtasks, ["/Delete", "/TN", rendered.serviceName, "/F"]);
             if (deleted.exitCode === 0) return true;
             if (yield* taskAbsent(rendered, deleted, `delete the ${label} task`)) return false;

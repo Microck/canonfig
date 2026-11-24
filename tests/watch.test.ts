@@ -222,6 +222,8 @@ describe.skipIf(process.platform === "win32")("systemd watch service", () => {
     expect(enabled).toMatchObject({ change: "installed", status: { state: "running", serviceName: "canonfig-watch.service" } });
     const unit = await readFile(join(root, ".config", "systemd", "user", "canonfig-watch.service"), "utf8");
     expect(unit).toContain("Description=Canonfig folder watcher");
+    // Stop signals only the watcher, which finishes its pass before exiting.
+    expect(unit).toContain("KillMode=mixed");
     expect(unit).toMatch(/ExecStart=.*"watch"$/mu);
     const calls = await readFile(join(root, "systemctl.calls"), "utf8");
     expect(calls).toContain("--user enable canonfig-watch.service");

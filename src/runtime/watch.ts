@@ -107,10 +107,12 @@ export const watchFolder = (
       for (const watcher of directories.values()) watcher.close();
       directories.clear();
     };
+    // Like an abort, a failure stops watching at once but settles only after
+    // the running pass, which still uses the caller's services and journal.
     const fail = (error: Error) => {
       if (stopped) return;
       stop();
-      reject(error);
+      void (inflight ?? Promise.resolve()).then(() => reject(error), () => reject(error));
     };
     const schedule = (delay: number) => {
       clearTimeout(timer);
@@ -156,7 +158,15 @@ export const watchFolder = (
       } catch {
         return;
       }
-      const watcher = watch(path, { recursive: true }, changed);
+      let watcher: FSWatcher;
+      try {
+        watcher = watch(path, { recursive: true }, changed);
+      } catch (error) {
+        // Removed or replaced by a file since the check: the folder watcher sees that and rearms.
+        if (error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR")) return;
+        fail(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
       // A directory removed while watched errors on some platforms; the
       // folder watcher sees the removal and rearms, so only that is expected.
       watcher.on("error", (error) => {
@@ -203,6 +213,8 @@ const watchServiceName: NativeServiceName = {
   stem: "canonfig-watch",
   launchdLabel: "dev.canonfig.watch",
   description: "Canonfig folder watcher",
+  // Stopping lets the running pass finish, including installers it started.
+  drainsOnStop: true,
 };
 
 export type WatchServiceState = "not-installed" | "running" | "not-running" | "drifted";

@@ -46,7 +46,7 @@ async function fixture(category: LocalCategory = "skills", existing = false) {
       { path: "skills/example/SKILL.md", base64: "b3JpZ2luYWw=", executable: false, digest: "text-digest" },
       { path: "skills/example/asset.bin", base64: "/wCA", executable: true, digest: "binary-digest" },
     ] }] : [])], config: {}, settingsFiles: {}, canonicalConfig: {} },
-    schedule: null, watch: null, watchError: null, tunnel: null, enrollment: null, secrets: [], archive: null,
+    schedule: null, watch: null, watchError: null, refreshWatch: unexpected, tunnel: null, enrollment: null, secrets: [], archive: null,
     saveItems: save, savePreferences: save, check: unexpected, createReview: unexpected, saveSchedule: unexpected, removeSchedule: unexpected, setWatch: unexpected,
     refreshSecrets: unexpected, setSecret: unexpected, removeSecret: unexpected, inspectTunnelInvitation: unexpected, configureTunnel: unexpected, startTunnel: unexpected, stopTunnel: unexpected, exportArchive: unexpected,
   };

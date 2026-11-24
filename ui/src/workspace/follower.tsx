@@ -2,7 +2,7 @@ import type { GuiLocalItems } from "../../../src/gui/contract/synchronization";
 import type { FollowerLive } from "./follower-types";
 import { ArchiveExportButton } from "./archive-transfer";
 // Shared Follower screens read machine data and operations from the workspace provider.
-import { useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { toast } from "sonner";
 import { ArrowRight, CaretRight, Check, DotsThree, HourglassMedium, Plus, X } from "@/components/icons";
 import { cn, removeKeepingFocus } from "@/lib/utils";
@@ -484,6 +484,9 @@ export function SyncView() {
 }
 
 
+/** How often an open Local sync page reads the watcher's status again. */
+const WATCH_REFRESH_MILLISECONDS = 15_000;
+
 /** 24-hour local time, with the date when it isn't today. */
 function passTime(at: string) {
   const when = new Date(at);
@@ -497,6 +500,13 @@ function passTime(at: string) {
  */
 function WatchSetting({ live }: { live: FollowerLive }) {
   const [saving, setSaving] = useState(false);
+  const { refreshWatch } = live;
+  // The watcher runs in the background, so a later run's result (or a stopped
+  // service) reaches this page only by reading its status again.
+  useEffect(() => {
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") refreshWatch(); }, WATCH_REFRESH_MILLISECONDS);
+    return () => window.clearInterval(timer);
+  }, [refreshWatch]);
   const watch = live.watch;
   if (!watch) {
     // A failed status read keeps the section and says why, instead of the switch silently vanishing.
