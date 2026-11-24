@@ -22,6 +22,12 @@ requests or spies. Landmines reports test doubles as warnings in root lint and
 errors in GUI lint. GUI lint also rejects fixed sleeps, retries, and per-test
 timeout overrides.
 
+## Changelog
+
+- A pull request that changes what users see or do adds entries under `## Unreleased` at the top of `CHANGELOG.md`, creating it if absent. That covers commands, flags, exit codes, GUI flows, file formats, platform behavior and user-visible bug fixes. Refactors, tests, CI and website-only changes add none.
+- Follow the existing sections: `###` topic headings such as "Synchronization" or "Browser interface", and one bullet per change, written for users as a full sentence saying what now happens. Put commands and paths in backticks. Leave out PR numbers and internal names.
+- Never edit a released section. The release pull request renames `## Unreleased` to `## vX.Y.Z - YYYY-MM-DD` ([release runbook](docs/release-runbook.md)), and `release.yml` publishes that section as the GitHub release notes.
+
 ## Domain glossary
 
 Canonfig keeps declared AI agent configuration aligned across a set of machines. One machine owns the desired configuration, while follower machines consume it without becoming additional authorities.
