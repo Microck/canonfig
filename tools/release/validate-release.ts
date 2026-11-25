@@ -231,6 +231,7 @@ const validatePackageContents = (
       || path === "README.md"
       || path === "package.json"
       || path === guardCheckerContract
+      || path === guardModelChecker
       || /^dist\/.+\.(?:js|d\.ts)$/u.test(path)
       || /^dist\/ui\/.+\.(?:html|js|css|svg|png|ico|woff2?|txt)$/u.test(path)
     ) continue;
