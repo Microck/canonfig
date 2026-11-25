@@ -51,6 +51,24 @@ canonfig doctor --no-input
 check the `credentials` result before continuing. canonfig uses Secret Service
 on linux, Keychain on macos, and Credential Manager on windows.
 
+## set up with an agent
+
+paste this into Claude Code, Codex, or any agent that runs shell commands:
+
+```text
+Set up Canonfig on this computer.
+1. Install it: npm install --global @microck/canonfig@latest
+2. Install its agent skills: npx skills add https://github.com/Microck/canonfig.git --skill '*' --global --yes
+3. Follow the skill named setup-canonfig. If new skills only load after a restart, read ~/.agents/skills/setup-canonfig/SKILL.md.
+```
+
+the setup skill inspects first, explains what will change, and waits for your
+approval before writing. it defaults to sharing skills, MCP servers, and global
+instructions across harnesses on one computer, or routes to Source/Follower
+setup for multiple machines. after setup, use the
+[operate](skills/operate-canonfig/SKILL.md) skill for edits, syncs, and
+recovery.
+
 ## browser interface
 
 <img src="https://raw.githubusercontent.com/Microck/canonfig/main/.github/assets/readme/walkthrough.gif" width="880" alt="the canonfig browser interface: the Source overview, the machine map, the profile, then a follower's sync page checking for updates">
@@ -255,12 +273,10 @@ see [security and credentials](https://canonfig.micr.dev/docs/reference/security
 
 ## agent skills
 
-let an AI agent set up or operate canonfig for you with the
-[setup](skills/setup-canonfig/SKILL.md) and
-[operate](skills/operate-canonfig/SKILL.md) skills. `setup-canonfig` installs
-canonfig if needed and defaults to sharing skills, MCP servers, and global
-instructions across harnesses on one computer, or routes to Source/Follower
-setup for multiple machines.
+the [setup](skills/setup-canonfig/SKILL.md) and
+[operate](skills/operate-canonfig/SKILL.md) skills let an AI agent set up or
+operate canonfig for you. see [set up with an agent](#set-up-with-an-agent) to
+install them.
 
 ## development
 
