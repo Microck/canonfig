@@ -2,6 +2,12 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
+## Unreleased
+
+### Synchronization
+
+- Generated Python bytecode caches inside projected skills no longer block skill updates or automatic local sync.
+
 ## v7.9.0 - 2026-11-24
 
 ### Automatic local sync
