@@ -40,7 +40,7 @@ import {
   InsufficientDiskError,
   type MachineStateError,
 } from "../machine/machine-state.errors.ts";
-import { SourceLook } from "./source-look.ts";
+import { SourceLook } from "../domain/source-look.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { withSqliteWriteLock } from "../state/sqlite-write-lock.ts";
 import { blobCacheCheckpoint } from "./blob-cache-checkpoint.ts";

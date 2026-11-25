@@ -8,8 +8,8 @@ import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { ProfileRevisionId, ResourceId } from "../../src/domain/brand.ts";
+import { installerRecipeProvenance } from "../../src/synchronization/resource-plans.ts";
 import {
-  installerRecipeProvenance,
   mcpQualificationReady,
   type McpQualificationStageEvidence,
   unresolvedMcpIntegrations,
