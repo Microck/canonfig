@@ -23,6 +23,21 @@ Try the [interactive demo](https://canonfig.micr.dev/demo/) to explore the
 browser interface with simulated machines. After installing, open the live
 workspace for this machine with [`canonfig ui`](/docs/reference/cli#browser-interface).
 
+## Set up with an agent
+
+Paste this prompt into Claude Code, Codex, or any agent that can run shell
+commands:
+
+```text
+Set up Canonfig on this computer.
+1. Install it: npm install --global @microck/canonfig@latest
+2. Install its agent skills: npx skills add https://github.com/Microck/canonfig.git --skill '*' --global --yes
+3. Follow the skill named setup-canonfig. If new skills only load after a restart, read ~/.agents/skills/setup-canonfig/SKILL.md.
+```
+
+The setup skill inspects this computer first, explains what will change, and
+waits for your approval before it writes anything.
+
 ## Where to start
 
 <Cards>
