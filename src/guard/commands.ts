@@ -14,6 +14,7 @@ import { folderGuardItems } from "./candidates.ts";
 import { GuardApprovalChange } from "./contract.ts";
 import { changeGuardApproval, enforceGuard, GuardHold, guardMessage, guardStatus, readGuardPolicy } from "./guard.ts";
 import { isManagedFollower } from "./local-role.ts";
+import { guardModel, installGuardModel, removeGuardModel } from "./model.ts";
 
 const decodeMirrorRevision = Schema.decodeUnknownSync(Schema.Struct({ resources: Schema.Array(TransportPublishedResourceSchema) }));
 
@@ -50,8 +51,8 @@ export async function scanGuardFolder(root: string, follower: boolean, signal: A
   return enforceGuard(folderGuardItems(files, mirror?.hookPositions), { root, trigger: "guard.scan", staticOnly: follower, signal });
 }
 
-const usage = "Usage: canonfig guard <scan|status|approve|revoke> [--json]\n"
-  + "  approve <item> --digest <sha256> [--note <text>]\n  revoke <item>\n";
+const usage = "Usage: canonfig guard <scan|status|approve|revoke|model> [--json]\n"
+  + "  approve <item> --digest <sha256> [--note <text>]\n  revoke <item>\n  model <install|remove>\n";
 
 export function parseGuardArguments(args: readonly string[]) {
   const commandIndex = args.indexOf("guard");
@@ -70,6 +71,7 @@ export function parseGuardArguments(args: readonly string[]) {
       ? { action: command, approval: { item, digest, note } } : { action: command, item });
     return { command, json, change };
   }
+  if (command === "model" && (item === "install" || item === "remove")) return { command, json, model: item } as const;
   if (item !== undefined) throw new Error(usage);
   if (command === "scan" || command === "status") return { command, json };
   if (command === undefined || command === "help") return { command: "help", json } as const;
@@ -101,11 +103,32 @@ export async function runGuardCli(args: readonly string[], io: CliIo, signal: Ab
       return;
     }
     const follower = await isManagedFollower(root);
+    if (parsed.model !== undefined) {
+      if (follower) throw new CanonfigError("GUARD_CHECKER_NOT_ALLOWED", "Followers use offline Guard.");
+      if (parsed.model === "install") {
+        let stage = "";
+        await installGuardModel((progress) => {
+          if (json || progress.stage === stage) return;
+          stage = progress.stage;
+          io.writeStderr(progress.stage === "download" ? `Downloading ${guardModel.name}…\n` : "Preparing the model runtime…\n");
+        }, signal);
+        renderCommandResult(io, { command: "guard.model.install", message: `Installed ${guardModel.name}. Turn it on in guard.jsonc with "checker": { "kind": "skill-update" }.`,
+          exitCode: 0, json });
+        return;
+      }
+      if ((await readGuardPolicy(root)).policy.checker?.kind === "skill-update") {
+        throw new CanonfigError("GUARD_MODEL_IN_USE", "Remove the skill-update checker from guard.jsonc before removing the model.");
+      }
+      await removeGuardModel();
+      renderCommandResult(io, { command: "guard.model.remove", message: `Removed ${guardModel.name}.`, exitCode: 0, json });
+      return;
+    }
     if (command === "status") {
       const status = await guardStatus(root, follower);
       const checker = status.policy.checker?.kind;
       const latest = status.latest;
-      const mode = checker ?? "offline static rules";
+      const rules = status.policy.builtInRules === false ? "built-in rules off" : "offline static rules";
+      const mode = checker === undefined ? rules : `${rules} and ${checker === "skill-update" ? guardModel.name : checker}`;
       const message = latest === null ? `Guard uses ${mode}. No result recorded.`
         : `Guard uses ${mode}. Last result from ${latest.trigger} at ${latest.at}: ${guardMessage(latest)}`;
       const approvals = status.approvals.map(({ item, digest, status, note }) =>

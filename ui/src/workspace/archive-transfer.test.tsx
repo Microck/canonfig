@@ -147,7 +147,7 @@ it("shows the completed import's Guard warning after resuming the same ticket", 
     assert.ok(document.body.textContent?.includes("apply"));
     await click("Resume observation");
     await until(() => !!document.querySelector('[role="status"]')?.textContent?.includes("Import complete"));
-    assert.match(document.querySelector('[role="dialog"] li')?.textContent ?? "", /instructions \/ AGENTS\.md invisible-control \(static\)/u);
+    assert.match(document.querySelector('[role="dialog"] li')?.textContent ?? "", /instructions \/ AGENTS\.md Hidden or invisible characters \(Built-in rules\)/u);
     assert.equal(app.submissions, 1);
     assert.equal(app.observations, 2);
   } finally { await app.close(); }

@@ -450,7 +450,7 @@ it("shows structured findings when Guard holds the first harness import", async 
     await until(() => !!app.container.textContent?.includes("Guard held the import"));
     const alert = app.container.querySelector('[role="alert"]');
     assert.ok(alert?.textContent?.includes("skills:demo / SKILL.md"));
-    assert.ok(alert?.textContent?.includes("instruction-credential-concealment (static)"));
+    assert.ok(alert?.textContent?.includes("Tells the agent to leak secrets and hide it (Built-in rules)"));
     assert.ok(alert?.textContent?.includes("remove them from the selection"));
   } finally { await app.close(); }
 });

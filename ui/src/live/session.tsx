@@ -1,4 +1,4 @@
-import { followerPublicationWarning, type GuardReport } from "../../../src/guard/contract";
+import { followerPublicationWarning, guardCheckerNames, guardFindingNames, type GuardReport } from "../../../src/guard/contract";
 import type { ReactNode } from "react";
 import { WarningCircle } from "@/components/icons";
 import { CliText } from "@/shared/shared";
@@ -50,7 +50,7 @@ export function GuardFindings({ report }: { report: typeof GuardReport.Type }) {
         {report.findings.map((finding, index) => (
           <li key={`${finding.digest}-${index}`} className="break-all">
             <code>{finding.item}{finding.path ? ` / ${finding.path}` : ""}{finding.line ? `:${finding.line}` : ""}</code>
-            {" "}<code>{finding.code}</code> ({finding.checker})
+            {" "}{guardFindingNames.get(finding.code) ?? finding.code} ({guardCheckerNames[finding.checker]})
             {finding.overriddenBy && ` · ${finding.severity === "off" ? "Suppressed by rule" : `${finding.severity} by ${finding.overriddenBy}`}`}
           </li>
         ))}

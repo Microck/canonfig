@@ -1,6 +1,8 @@
 import { scanGuardFolder } from "../../guard/commands.ts";
-import { changeGuardApproval, guardEffect, guardStatus, saveGuardPolicy } from "../../guard/guard.ts";
-import { guardEndpoints, GuiGuardApproval, GuiGuardWrite } from "../../guard/contract.ts";
+import { changeGuardApproval, guardEffect, guardStatus, readGuardPolicy, saveGuardPolicy } from "../../guard/guard.ts";
+import { installGuardModel, removeGuardModel } from "../../guard/model.ts";
+import { CanonfigError } from "../../skills/errors.ts";
+import { guardEndpoints, GuiGuardApproval, GuiGuardWrite, type GuardModelProgress } from "../../guard/contract.ts";
 import { FleetStart } from "../../domain/fleet-update.ts";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -56,6 +58,14 @@ const harnessResponse = (value: CliPayload) => {
   };
 };
 
+
+/** The Skill Update 396M install a GUI session runs, kept after a failure so the page can show why. */
+interface ModelInstall {
+  readonly controller: AbortController;
+  progress: typeof GuardModelProgress.Type | null;
+  failure: string | null;
+}
+
 export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () => void, onSettled: () => void) => Effect.gen(function*() {
   const source = yield* SourceCommands;
   const follower = yield* FollowerCommands;
@@ -99,10 +109,58 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
     }
     return { root: session.folderPath, follower: session.role === "follower" };
   });
+  // The model is machine-wide and Source-only: Followers run offline rules alone.
+  const modelLocation = guardLocation.pipe(Effect.flatMap(({ root, follower }) => follower
+    ? Effect.fail(new CliCommandFailure({ category: "usage-or-configuration", message: "Followers use offline Guard." }))
+    : Effect.succeed(root)));
+  // At most one install runs per GUI session. Guard status reports it, so any page load can follow it.
+  let modelInstall: ModelInstall | undefined;
   const routes: GuiRoute[] = [
+    mutationRoute("POST", guardEndpoints.model, EmptyBody, () => modelLocation.pipe(
+      Effect.flatMap(() => {
+        if (modelInstall !== undefined && modelInstall.failure === null) return Effect.fail(new CliCommandFailure({
+          category: "usage-or-configuration", message: "Skill Update 396M is already installing.",
+        }));
+        const install: ModelInstall = { controller: new AbortController(), progress: null, failure: null };
+        modelInstall = install;
+        return operations.start(
+          guardEffect(async (signal) => {
+            try {
+              await installGuardModel((progress) => { install.progress = progress; }, AbortSignal.any([signal, install.controller.signal]));
+              modelInstall = undefined;
+            } catch (error) {
+              // A cancel just ends the install; any other failure stays in status until the next attempt.
+              if (install.controller.signal.aborted) modelInstall = undefined;
+              else install.failure = error instanceof Error ? error.message : String(error);
+              throw error;
+            }
+          }).pipe(Effect.as(toJson({ installed: true })), Effect.mapError(commandFailure)),
+          () => Effect.succeed(null),
+        ).pipe(Effect.tapError(() => Effect.sync(() => { modelInstall = undefined; })));
+      }),
+      Effect.map(toJson),
+    ), 202),
+    mutationRoute("POST", `${guardEndpoints.model}/cancel`, EmptyBody, () => modelLocation.pipe(
+      Effect.tap(() => Effect.sync(() => modelInstall?.controller.abort())), Effect.as({ cancelled: true }),
+    )),
+    mutationRoute("DELETE", guardEndpoints.model, EmptyBody, () => modelLocation.pipe(
+      Effect.flatMap((root) => guardEffect(async () => {
+        // Removing the model while the saved policy uses it would hold every skill update.
+        if ((await readGuardPolicy(root)).policy.checker?.kind === "skill-update") {
+          throw new CanonfigError("GUARD_MODEL_IN_USE", "Turn off Skill Update 396M and save the policy before removing it.");
+        }
+        await removeGuardModel();
+      })),
+      Effect.mapError(commandFailure), Effect.as({ removed: true }),
+    )),
     queryRoute(guardEndpoints.status, () => guardLocation.pipe(
       Effect.flatMap(({ root, follower }) => guardEffect(() => guardStatus(root, follower))),
-      Effect.map(toJson), Effect.mapError(commandFailure),
+      // Only a Source or standalone status has a model to report an install for.
+      Effect.map((status) => toJson(!("model" in status) ? status : {
+        ...status, model: { ...status.model, install: modelInstall === undefined ? null
+          : { progress: modelInstall.progress, failure: modelInstall.failure } },
+      })),
+      Effect.mapError(commandFailure),
     )),
     mutationRoute("PUT", guardEndpoints.status, GuiGuardWrite, (input) => guardLocation.pipe(
       Effect.flatMap(({ root, follower }) => guardEffect(() => saveGuardPolicy(root, input, follower))),

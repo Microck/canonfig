@@ -81,7 +81,7 @@ export const createBuildReceipt = (root: string): BuildReceipt => {
     throw new Error("Cannot create a build receipt before compiling the CLI");
   }
   const compiledFiles = describeFiles(root, compiled.filter((path) =>
-    path.endsWith(".js") || path.endsWith(".json") || path.startsWith(`dist${sep}ui${sep}`)
+    path.endsWith(".js") || path.endsWith(".json") || path.endsWith(".py") || path.startsWith(`dist${sep}ui${sep}`)
   ));
   return {
     schema: "canonfig.build/v1",

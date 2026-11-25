@@ -212,6 +212,8 @@ const validatePackageContents = (
   }
   const paths = artifact.files.map((file) => file.path);
   const guardCheckerContract = "dist/guard/checker-wire.json";
+  // Guard starts this script to run the local Skill Update 396M model.
+  const guardModelChecker = "dist/guard/skill-update-checker.py";
   for (const required of [
     "LICENSE",
     "README.md",
@@ -219,6 +221,7 @@ const validatePackageContents = (
     "dist/runtime/main.js",
     "dist/ui/index.html",
     guardCheckerContract,
+    guardModelChecker,
   ]) {
     if (!paths.includes(required)) fail(`package omits required file: ${required}`);
   }
@@ -228,6 +231,7 @@ const validatePackageContents = (
       || path === "README.md"
       || path === "package.json"
       || path === guardCheckerContract
+      || path === guardModelChecker
       || /^dist\/.+\.(?:js|d\.ts)$/u.test(path)
       || /^dist\/ui\/.+\.(?:html|js|css|svg|png|ico|woff2?|txt)$/u.test(path)
     ) continue;
