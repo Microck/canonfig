@@ -52,7 +52,8 @@ import {
   versionMismatchMessage,
 } from "./version-handshake.ts";
 import { buildIdentity } from "../runtime/build-identity.ts";
-import { readSourceLook, type SourceLook } from "./source-look.ts";
+import type { SourceLook } from "../domain/source-look.ts";
+import { readSourceLook } from "./source-look.ts";
 
 const maximumRequestBytes = 64 * 1024;
 

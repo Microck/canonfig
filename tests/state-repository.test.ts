@@ -34,10 +34,8 @@ import {
   type SynchronizationOutcome,
   type SynchronizationPlan,
 } from "../src/domain/synchronization.ts";
-import {
-  installerRecipeProvenance,
-  McpQualificationReceipt,
-} from "../src/domain/mcp-qualification.ts";
+import { McpQualificationReceipt } from "../src/domain/mcp-qualification.ts";
+import { installerRecipeProvenance } from "../src/synchronization/resource-plans.ts";
 import {
   ActiveRunExistsError,
   EarlierStateFormatError,

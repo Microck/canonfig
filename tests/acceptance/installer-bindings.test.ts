@@ -9,7 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { Effect, Layer, Schema } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActionId, ResourceId, RunId } from "../../src/domain/brand.ts";
-import { installerRecipeProvenance } from "../../src/domain/mcp-qualification.ts";
+import { installerRecipeProvenance } from "../../src/synchronization/resource-plans.ts";
 import { isLocalInstallerPath, parseInstallerBinding } from "../../src/domain/installer-binding.ts";
 import { installerMethods } from "../../src/domain/installer-method.ts";
 import { GuiInstallerMethod } from "../../src/gui/contract/administration.ts";

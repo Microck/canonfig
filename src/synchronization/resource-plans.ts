@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Schema } from "effect";
 import { configPathsOverlap } from "../domain/config-path.ts";
 
@@ -18,10 +19,7 @@ import {
   recipeSourceDetails,
 } from "../domain/recipe-versions.ts";
 import { installedVersionMatches } from "./installed-tool-version.ts";
-import {
-  installerRecipeProvenance,
-  type InstallerRecipeProvenance,
-} from "../domain/mcp-qualification.ts";
+import { InstallerRecipeProvenance } from "../domain/mcp-qualification.ts";
 import { InvalidObservedStateError } from "./synchronization.errors.ts";
 import type {
   DesiredResource,
@@ -32,6 +30,38 @@ import type {
   ToolRecipe,
 } from "./synchronization.types.ts";
 import { binaryRecipeProblem } from "./binary-artifact.ts";
+
+// Hashes with node:crypto, so it lives here rather than in domain/mcp-qualification.ts, which the browser GUI loads.
+const canonicalRecipeFields = (
+  recipe: Omit<InstallerRecipeProvenance, "fingerprint" | "schema">,
+) => ({
+  architecture: recipe.architecture,
+  artifactDigest: recipe.artifactDigest,
+  compatibility: recipe.compatibility,
+  dependencyPolicy: recipe.dependencyPolicy,
+  entrypoint: recipe.entrypoint,
+  executionContext: recipe.executionContext,
+  method: recipe.method,
+  package: recipe.package,
+  platform: recipe.platform,
+  target: recipe.target,
+  upstream: recipe.upstream,
+  version: recipe.version,
+});
+
+export const installerRecipeProvenance = (
+  recipe: Omit<InstallerRecipeProvenance, "fingerprint" | "schema">,
+): InstallerRecipeProvenance => {
+  const fingerprint = createHash("sha256")
+    .update(JSON.stringify(canonicalRecipeFields(recipe)))
+    .digest("hex");
+  return InstallerRecipeProvenance.make({
+    schema: "canonfig.recipe-provenance/v1",
+    ...recipe,
+    fingerprint: Schema.decodeUnknownSync(ContentDigestSchema)(fingerprint),
+  });
+};
+
 
 export interface ResourceActionDraft {
   readonly kind: Exclude<PlannedActionKind, "transfer-blob">;

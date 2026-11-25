@@ -3,24 +3,8 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { Effect, Schema } from "effect";
 
+import { SourceLook } from "../domain/source-look.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
-
-/** A preset key from the browser map (`desktop`, `orange`, `custom`); the browser falls back on one it does not know. */
-const PresetKey = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,31}$/u));
-
-/**
- * How the Source's card looks on the machine map, as customized on the Source.
- * Followers fetch it so their maps show the Source the same way. An uploaded
- * icon stays on the Source; a Follower draws the preset it falls back to.
- */
-export const SourceLook = Schema.Struct({
-  name: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
-  purpose: Schema.optional(Schema.String.check(Schema.isMaxLength(120))),
-  icon: Schema.optional(PresetKey),
-  accent: Schema.optional(PresetKey),
-  customAccent: Schema.optional(Schema.String.check(Schema.isPattern(/^#[0-9a-fA-F]{6}$/u))),
-});
-export type SourceLook = typeof SourceLook.Type;
 
 /** `~/.canonfig/source-look.json`: Source state beside `source-service.json`, never part of a published revision. */
 const sourceLookPath = Effect.gen(function*() {

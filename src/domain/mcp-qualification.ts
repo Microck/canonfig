@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import { Schema } from "effect";
 
 import { ContentDigest } from "./brand.ts";
@@ -112,36 +110,6 @@ export const McpQualificationReceipt = Schema.Struct({
   recordedAt: Schema.NonEmptyString,
 });
 export type McpQualificationReceipt = Schema.Schema.Type<typeof McpQualificationReceipt>;
-
-const canonicalRecipeFields = (
-  recipe: Omit<InstallerRecipeProvenance, "fingerprint" | "schema">,
-) => ({
-  architecture: recipe.architecture,
-  artifactDigest: recipe.artifactDigest,
-  compatibility: recipe.compatibility,
-  dependencyPolicy: recipe.dependencyPolicy,
-  entrypoint: recipe.entrypoint,
-  executionContext: recipe.executionContext,
-  method: recipe.method,
-  package: recipe.package,
-  platform: recipe.platform,
-  target: recipe.target,
-  upstream: recipe.upstream,
-  version: recipe.version,
-});
-
-export const installerRecipeProvenance = (
-  recipe: Omit<InstallerRecipeProvenance, "fingerprint" | "schema">,
-): InstallerRecipeProvenance => {
-  const fingerprint = createHash("sha256")
-    .update(JSON.stringify(canonicalRecipeFields(recipe)))
-    .digest("hex");
-  return InstallerRecipeProvenance.make({
-    schema: "canonfig.recipe-provenance/v1",
-    ...recipe,
-    fingerprint: Schema.decodeUnknownSync(ContentDigest)(fingerprint),
-  });
-};
 
 const acceptable = (status: QualificationEvidenceStatus): boolean =>
   status === "passed" || status === "not-required";
