@@ -9,6 +9,7 @@ import { act } from "react";
 import { Schema } from "effect";
 import { request, type WorkspaceBackend } from "../gui-client";
 import { GuiOperation, GuiSession, GuiStatus } from "../../../src/gui/contract";
+import { guardFindingNames } from "../../../src/guard/contract";
 import { GuiSkillSelection, GuiSkillUpdate, type GuiSkillCheck } from "../../../src/gui/contract/profile";
 import { useWorkspace } from "../workspace/store";
 import { navigate, useAppRoute } from "../workspace/routes";
@@ -182,34 +183,42 @@ for (const path of ["/source/secrets", "/source/profile/groups"]) {
   });
 }
 
-it("locks the checker policy and consent while saving", async () => {
+const guardModel = (installed: boolean) => ({ installed, running: false, uv: true, downloadBytes: 1_587_000_000 });
+const toggle = (selector: string) => act(async () => {
+  const control = document.querySelector<HTMLButtonElement>(selector);
+  assert.ok(control, `Missing control ${selector}`);
+  control.click();
+});
+const enabled = (label: string) => [...document.querySelectorAll("button")].some((button) => button.textContent === label && !button.disabled);
+
+it("locks Guard controls while saving and saves the model switch", async () => {
   const saving = Promise.withResolvers<ServerResponse>();
+  let saved: unknown;
   const app = await fixture("/source/settings/guard", {
     ...sourceResponses(),
-    "/api/guard": { mode: "static", policy: { version: 1 }, digest: "fixture-digest", latest: null, bearerAvailable: false, approvals: [] },
-  }, (path, method, _body, outgoing) => {
+    "/api/guard": { mode: "static", policy: { version: 1 }, digest: "fixture-digest", latest: null, bearerAvailable: false, approvals: [], model: guardModel(true) },
+  }, (path, method, body, outgoing) => {
     if (path !== "/api/guard" || method !== "PUT") return false;
+    saved = body;
     saving.resolve(outgoing);
     return true;
   });
   try {
-    await until(() => app.container.querySelector("#guard-policy") !== null, "Guard policy did not load");
-    await click("Edit checker policy");
-    const policy = app.container.querySelector<HTMLTextAreaElement>("#guard-policy");
-    const consent = app.container.querySelector<HTMLButtonElement>('[role="checkbox"]');
-    assert.ok(policy && consent);
-    assert.equal(policy.readOnly, false);
-    assert.equal(consent.disabled, false);
+    await until(() => app.container.querySelector("#guard-model") !== null, "The model switch did not load");
+    await toggle("#guard-model");
+    await until(() => app.container.querySelector("#guard-model-down") !== null, "The fallback choice did not appear");
     await click("Save policy");
     const response = await saving.promise;
-    assert.equal(policy.readOnly, true);
-    assert.equal(consent.disabled, true);
+    assert.deepEqual(saved, { policy: { version: 1, checker: { kind: "skill-update" } }, digest: "fixture-digest", consent: false });
+    assert.equal(app.container.querySelector<HTMLButtonElement>("#guard-model")?.disabled, true);
+    assert.equal(app.container.querySelector<HTMLButtonElement>("#guard-rules")?.disabled, true);
     await act(async () => { response.end(JSON.stringify({ saved: true })); });
-    await until(() => app.container.querySelector('[role="checkbox"]') === null, "Guard policy edit did not finish");
+    await until(() => !enabled("Save policy") && app.container.querySelector<HTMLButtonElement>("#guard-model")?.disabled === false,
+      "Guard save did not finish");
   } finally { await app.close(); }
 });
 
-it("protects a checker policy draft until save or cancel", async () => {
+it("protects a Guard draft until save or discard", async () => {
   let rejectSave = true;
   const app = await fixture("/source/settings/guard", {
     ...sourceResponses(),
@@ -218,38 +227,35 @@ it("protects a checker policy draft until save or cancel", async () => {
     if (path !== "/api/guard" || method !== "PUT") return false;
     if (rejectSave) {
       outgoing.statusCode = 409;
-      outgoing.end(JSON.stringify({ category: "usage-or-configuration", exitCode: 2, message: "Checker policy changed." }));
+      outgoing.end(JSON.stringify({ category: "usage-or-configuration", exitCode: 2, message: "Guard policy changed." }));
     } else {
       outgoing.end(JSON.stringify({ saved: true }));
     }
     return true;
   });
   const leave = () => act(async () => { navigate("/source/overview"); });
-  const draft = JSON.stringify({ version: 1, checker: { kind: "http", endpoint: "http://127.0.0.1:9000" } });
   try {
-    await until(() => app.container.querySelector("#guard-policy") !== null, "Guard policy did not load");
-    await click("Edit checker policy");
-    await fill("#guard-policy", draft);
+    await until(() => app.container.querySelector("#guard-rules") !== null, "Guard policy did not load");
+    await toggle("#guard-rules");
+    await until(() => app.container.textContent?.includes("Guard is off. Nothing is checked.") === true, "Turning rules off did not show the off state");
     await leave();
     assert.ok(document.querySelector('[role="dialog"]')?.textContent?.includes("Discard unsaved changes?"));
     await click("Keep editing");
     await click("Save policy");
-    await until(() => app.container.textContent?.includes("Checker policy changed.") === true, "The save failure did not appear");
+    await until(() => app.container.textContent?.includes("Guard policy changed.") === true, "The save failure did not appear");
     await leave();
     assert.ok(document.querySelector('[role="dialog"]')?.textContent?.includes("Discard unsaved changes?"));
     await click("Keep editing");
-    assert.equal(app.container.querySelector<HTMLTextAreaElement>("#guard-policy")?.value, draft);
-    await click("Cancel");
+    await click("Discard changes");
     await leave();
     assert.equal(window.location.pathname, "/source/overview");
 
     await act(async () => { navigate("/source/settings/guard"); });
-    await click("Edit checker policy");
-    await fill("#guard-policy", draft);
+    await until(() => app.container.querySelector("#guard-rules") !== null, "Guard policy did not reload");
+    await toggle("#guard-rules");
     rejectSave = false;
     await click("Save policy");
-    await until(() => app.container.querySelector<HTMLTextAreaElement>("#guard-policy")?.readOnly === true
-      && app.container.querySelector('[role="checkbox"]') === null, "The save did not close the draft");
+    await until(() => !enabled("Save policy") && !app.container.textContent?.includes("Discard changes"), "The save did not close the draft");
     await leave();
     assert.equal(window.location.pathname, "/source/overview");
   } finally { await app.close(); }
@@ -260,19 +266,49 @@ it("shows an unsaved scan result when Guard status still reports an older verdic
   const report = { ...guardWarning("guard.scan", "skills:current"), recordUnavailable: true };
   const app = await fixture("/source/settings/guard", {
     ...sourceResponses(),
-    "/api/guard": { mode: "static", latest: older, approvals: [] },
+    "/api/guard": { mode: "static", policy: { version: 1 }, digest: "d", latest: older, approvals: [] },
     "/api/guard/scan": { id: "scan" },
     "/api/operations/scan": { id: "scan", journal: null, state: "succeeded", result: report },
   });
   try {
-    await until(() => app.container.textContent?.includes("allow · profile.publish") === true, "The recorded verdict did not appear");
-    await click("Scan current folder");
-    await until(() => app.requests.filter((request) => request === "GET /api/guard").length === 2
-      && [...app.container.querySelectorAll("button")].some((button) => button.textContent === "Scan current folder" && !button.disabled),
-    "Guard status did not finish refreshing");
-    assert.ok(app.container.textContent?.includes("warn · guard.scan"));
-    assert.ok(app.container.textContent?.includes("skills:current encoded-looking-text (static)"));
+    await until(() => app.container.textContent?.includes("Last scan: 1 file, 0 held") === true, "The recorded result did not appear");
+    assert.ok(!app.container.textContent?.includes("skills:current"));
+    await click("Scan folder");
+    await until(() => app.requests.filter((request) => request === "GET /api/guard").length === 2 && enabled("Scan folder"),
+      "Guard status did not finish refreshing");
+    assert.ok(app.container.textContent?.includes("skills:current Long encoded text (Built-in rules)"));
     assert.ok(app.container.textContent?.includes("The local result could not be saved."));
+  } finally { await app.close(); }
+});
+
+it("installs the model with progress, then turns it on", async () => {
+  let installed = false;
+  let polls = 0;
+  const app = await fixture("/source/settings/guard", {}, (path, method, _body, outgoing) => {
+    if (path === "/api/guard" && method === "GET") {
+      outgoing.end(JSON.stringify({ mode: "static", policy: { version: 1 }, digest: "d", latest: null, approvals: [], model: guardModel(installed) }));
+      return true;
+    }
+    if (path === "/api/guard/model" && method === "POST") { outgoing.statusCode = 202; outgoing.end(JSON.stringify({ id: "install" })); return true; }
+    if (path !== "/api/operations/install") return false;
+    polls++;
+    if (polls < 3) {
+      outgoing.end(JSON.stringify({ id: "install", state: "running", journal: { stage: "download", received: 800_000_000, total: 1_587_000_000 } }));
+    } else {
+      installed = true;
+      outgoing.end(JSON.stringify({ id: "install", state: "succeeded", journal: null, result: { installed: true } }));
+    }
+    return true;
+  });
+  try {
+    await until(() => app.container.textContent?.includes("Not installed") === true, "The model card did not load");
+    await click("Install");
+    await until(() => document.body.textContent?.includes("Runs on this machine. Files never leave it.") === true, "The install popover did not open");
+    await click("Download 1.6 GB");
+    await until(() => app.container.textContent?.includes("0.8 / 1.6 GB") === true, "Download progress did not appear");
+    await until(() => app.container.querySelector<HTMLButtonElement>("#guard-model")?.getAttribute("aria-checked") === "true",
+      "The installed model was not switched on");
+    assert.ok(enabled("Save policy"));
   } finally { await app.close(); }
 });
 
@@ -308,15 +344,10 @@ for (const role of ["source", "follower"] as const) it(`confirms and revokes an 
   });
   try {
     await until(() => app.container.textContent?.includes("Approve this exact version") === true, "The held item never appeared");
+    // Without a model status (Followers, or a Source whose status has none) there is no model card.
+    assert.equal(app.container.querySelector("#guard-model"), null);
+    await click("9 rules");
     assert.equal(app.container.querySelectorAll('button[role="combobox"]').length, 9);
-    if (role === "source") {
-      await click("Edit checker policy");
-      await click("Prompt Guard 2 (local adapter)");
-      assert.deepEqual(JSON.parse(app.container.querySelector<HTMLTextAreaElement>("#guard-policy")?.value ?? ""), {
-        version: 1, checker: { kind: "http", endpoint: "http://127.0.0.1:8787/v1/guard" },
-      });
-      await click("Cancel");
-    } else assert.equal(app.container.querySelector("#guard-policy"), null);
     await click("Approve this exact version");
     const dialog = document.querySelector('[role="dialog"]');
     assert.ok(dialog?.textContent?.includes(item));
@@ -329,14 +360,14 @@ for (const role of ["source", "follower"] as const) it(`confirms and revokes an 
     await until(() => app.container.textContent?.includes("No approvals") === true, "Revocation never appeared");
     assert.equal(app.mutations.length, 2);
     const rule = app.container.querySelector<HTMLButtonElement>(`#rule-${code}`);
-    assert.ok(rule && rule.textContent?.includes("Default (warn)"));
+    assert.ok(rule && rule.textContent?.trim() === "Warn");
     await act(async () => rule.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
     const off = [...document.querySelectorAll('[role="option"]')].find((option) => option.textContent === "Off");
     assert.ok(off);
     await act(async () => off.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
     await click("Save policy");
-    await until(() => ruleSaved && app.container.querySelector(`#rule-${code}`)?.textContent?.trim() === "Off"
-      && !app.container.textContent?.includes("Save policy"), "The saved rule override did not appear");
+    await until(() => ruleSaved && app.container.querySelector(`#rule-${code}`)?.textContent?.trim() === "Off" && !enabled("Save policy"),
+      "The saved rule override did not appear");
   } finally { await app.close(); }
 });
 
@@ -691,7 +722,7 @@ for (const verdict of ["block", "warn"] as const) {
       await until(() => app.container.querySelector("li code")?.textContent === "skills:fixture / references/review.md:2",
         "Sync did not show the Guard finding location");
       const finding = app.container.querySelector("li");
-      assert.ok(finding?.textContent?.includes(`${code} (static)`));
+      assert.ok(finding?.textContent?.includes(`${guardFindingNames.get(code)} (Built-in rules)`));
       assert.equal(app.container.querySelector('[data-testid="can-apply"]')?.textContent, String(verdict === "warn"));
     } finally { await app.close(); }
   });
@@ -764,7 +795,7 @@ it("the counted discovery action confirms accepted tools and retains a failed ac
     assert.ok(document.querySelector('[role="dialog"]'));
     await click("Add 1 accepted tool");
     await until(() => !document.querySelector('[role="dialog"]'), "Successful acceptance did not close");
-    assert.match(app.container.textContent ?? "", /tools:ruff encoded-looking-text \(static\)/u);
+    assert.match(app.container.textContent ?? "", /tools:ruff Long encoded text \(Built-in rules\)/u);
     assert.deepEqual(app.mutations.filter(({ path }) => path === "/api/profile/scan/accept").map(({ body }) => body), [
       { reviewDigest: "reviewed", confirmAll: true }, { reviewDigest: "reviewed", confirmAll: true },
     ]);
@@ -839,7 +870,7 @@ it("shows the publication warning after navigating to Revisions", async () => {
     await until(() => !submit.disabled, "Publication validation did not finish");
     await act(async () => { submit.click(); });
     await until(() => window.location.pathname === "/source/revisions" && !document.querySelector('[role="dialog"]'), "Publication did not finish");
-    assert.match(app.container.textContent ?? "", /instructions encoded-looking-text \(static\)/u);
+    assert.match(app.container.textContent ?? "", /instructions Long encoded text \(Built-in rules\)/u);
   } finally { await app.close(); }
 });
 
@@ -1036,7 +1067,7 @@ it("shows the Guard warning in the skill editor after tracking succeeds", async 
     await fill("#track-ref", skill.ref);
     await click("Track skill");
     await until(() => !document.querySelector('[role="dialog"]'), "Skill tracking did not finish");
-    assert.match(app.container.textContent ?? "", /skills:review encoded-looking-text \(static\)/u);
+    assert.match(app.container.textContent ?? "", /skills:review Long encoded text \(Built-in rules\)/u);
   } finally { await app.close(); }
 });
 
@@ -1172,7 +1203,7 @@ for (const verdict of ["block", "warn"] as const) it(`refreshes cached Guard set
   };
   const app = await fixture("/source/settings/guard", responses);
   try {
-    await until(() => app.container.textContent?.includes("No result recorded") === true, "Initial Guard status did not load");
+    await until(() => app.container.textContent?.includes("No scan yet.") === true, "Initial Guard status did not load");
     await act(async () => { navigate("/source/profile"); });
     await until(() => !app.container.querySelector('[aria-busy="true"]'), "Profile did not load");
     const publish = app.container.querySelector<HTMLButtonElement>('button[data-tour="publish"]');
@@ -1192,7 +1223,7 @@ for (const verdict of ["block", "warn"] as const) it(`refreshes cached Guard set
       assert.match(app.container.textContent ?? "", /Local Guard policy relaxed default blocks for skills:first\. Followers evaluate these items under their own Guard policy and may hold this revision\./u);
     }
     await act(async () => { navigate("/source/settings/guard"); });
-    await until(() => app.container.textContent?.includes(`${verdict} · source.publish`) === true, "Guard Settings showed the stale result");
+    await until(() => app.container.textContent?.includes(`Last scan: 1 file, ${held ? 2 : 0} held`) === true, "Guard Settings showed the stale result");
     if (held) {
       const approvals = app.container.querySelector('[aria-label="Exact-version approvals"]');
       assert.match(approvals?.textContent ?? "", /skills:second/u);

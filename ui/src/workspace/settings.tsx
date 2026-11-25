@@ -1,11 +1,12 @@
 import { Schema } from "effect";
-import { GuardChecker, GuardReport, GuiGuardStatus, guardEndpoints, guardRules, promptGuardLocalEndpoint, type GuardApprovalChange, type GuardPolicy } from "../../../src/guard/contract";
+import { GuardModelProgress, GuardReport, GuiGuardStatus, guardEndpoints, guardFindingNames, guardRules, type GuardApprovalChange, type GuardPolicy } from "../../../src/guard/contract";
 import { GuiRequestError, type WorkspaceBackend } from "@/gui-client";
 import { GuardFindings } from "@/live/session";
 import { LiveResourcesContext, useLiveActions, useLiveResource } from "./live/resource";
 // Settings shared by both machine roles where the feature exists on both.
-import { useContext, useEffect, useState } from "react";
-import { Check, Circle, HourglassMedium, Warning, WarningCircle, X } from "@/components/icons";
+import { Fragment, useContext, useEffect, useState } from "react";
+import { toast } from "sonner";
+import { ArrowSquareOut, CaretDown, CaretRight, Check, Circle, CloudDownload, Cpu, HourglassMedium, ListChecks, Warning, WarningCircle, X } from "@/components/icons";
 import { cn, removeKeepingFocus } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -14,6 +15,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { agentHarnessOriginProblem, parseAgentSecretBinding } from "../../../src/domain/agent-harness-bounds";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverHeader, PopoverTitle, PopoverTrigger } from "@/components/ui/popover";
+import { Switch } from "@/components/ui/switch";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CliText, DitherProgress, Hint, Mono, StatusMark, Term } from "@/shared/shared";
@@ -1066,62 +1069,71 @@ export function GuardView() {
   return enrollmentBackend ? <LiveGuardSettings backend={enrollmentBackend} source={role === "source"} /> : null;
 }
 
-const CheckerDraft = Schema.Struct({ version: Schema.Literal(1), checker: Schema.optional(GuardChecker) });
 const GuardSaved = Schema.Struct({ saved: Schema.Boolean });
+const GuardModelProgressJournal = Schema.NullOr(GuardModelProgress);
+type Severity = "block" | "warn" | "off";
+const SEVERITY_LABEL: Record<Severity, string> = { block: "Block", warn: "Warn", off: "Off" };
+const MODEL_NAME = "Skill Update 396M";
+const MODEL_CARD = "https://huggingface.co/Microck/canonfig-guard-skill-update-396m";
+const gigabytes = (bytes: number) => (bytes / 1e9).toFixed(1);
+const plural = new Intl.PluralRules("en");
+const files = (count: number) => `${count} ${plural.select(count) === "one" ? "file" : "files"}`;
 
+/** The editable part of guard.jsonc. Everything else in the saved policy is kept as it is. */
 interface GuardDraft {
-  readonly policy: typeof GuardPolicy.Type;
-  readonly digest: string;
-  readonly rules: NonNullable<typeof GuardPolicy.Type["rules"]>;
-  readonly checkerText: string | null;
+  readonly builtInRules: boolean;
+  readonly rules: Readonly<Record<string, Severity>>;
+  readonly model: boolean;
+  readonly onUnavailable: "block" | "warn";
 }
+const draftOf = (policy: typeof GuardPolicy.Type): GuardDraft => ({
+  builtInRules: policy.builtInRules !== false,
+  rules: policy.rules ?? {},
+  model: policy.checker?.kind === "skill-update",
+  onUnavailable: policy.checker?.kind === "skill-update" && policy.checker.onUnavailable === "warn" ? "warn" : "block",
+});
+const sameDraft = (a: GuardDraft, b: GuardDraft) => JSON.stringify(a) === JSON.stringify(b);
 
+/**
+ * Settings > Guard. Two checkers, each with its own switch: the built-in rules (both roles) and,
+ * on the Source, the Skill Update 396M model with install, progress and remove. Rules and the model
+ * switch save together with Save policy; install and remove act at once.
+ */
 function LiveGuardSettings({ backend, source }: { backend: WorkspaceBackend; source: boolean }) {
   const resources = useContext(LiveResourcesContext);
   const current = useLiveResource(backend, guardEndpoints.status, GuiGuardStatus, true);
   const actions = useLiveActions(backend, () => resources?.cache.invalidate([guardEndpoints.status]));
-  const [draft, setDraft] = useState<GuardDraft | null>(null);
-  const [consent, setConsent] = useState(false);
-  const [invalidPolicy, setInvalidPolicy] = useState(false);
+  const [edited, setEdited] = useState<GuardDraft | null>(null);
+  const [rulesOpen, setRulesOpen] = useState(false);
   const [scanReport, setScanReport] = useState<typeof GuardReport.Type | null>(null);
-  const recorded = current.data?.latest;
-  const latest = scanReport && (!recorded || scanReport.at >= recorded.at) ? scanReport : recorded;
+  const [progress, setProgress] = useState<typeof GuardModelProgress.Type | null>(null);
   const policy = current.data?.policy;
   const digest = current.data?.digest;
-  const checkerJson = (policy: typeof GuardPolicy.Type) => JSON.stringify({ version: 1, checker: policy.checker }, null, 2);
-  const changed = draft !== null && (
-    JSON.stringify(draft.rules) !== JSON.stringify(draft.policy.rules ?? {})
-    || (draft.checkerText !== null && draft.checkerText !== checkerJson(draft.policy)) || consent
-  );
-  const { dialog: leaveDialog } = useLeaveGuard(changed, "the Guard policy");
+  const saved = policy ? draftOf(policy) : null;
+  const draft = edited ?? saved;
+  const dirty = edited !== null && saved !== null && !sameDraft(edited, saved);
+  const { dialog: leaveDialog } = useLeaveGuard(dirty, "the Guard policy");
   const busy = current.loading || actions.state.loading;
-  const edit = (change: (draft: GuardDraft) => GuardDraft) => {
-    if (policy && digest) setDraft((existing) => change(existing ?? {
-      policy, digest, rules: policy.rules ?? {}, checkerText: null,
-    }));
-  };
-  const cancelEdit = () => {
-    setDraft(null);
-    setConsent(false);
-    setInvalidPolicy(false);
-  };
+  const recorded = current.data?.latest;
+  const latest = scanReport && (!recorded || scanReport.at >= recorded.at) ? scanReport : recorded;
+  const model = current.data?.model;
+  const otherChecker = policy?.checker !== undefined && policy.checker.kind !== "skill-update";
+  const edit = (change: Partial<GuardDraft>) => { if (draft) setEdited({ ...draft, ...change }); };
+
   const save = () => {
-    if (draft === null) return;
-    let checker = draft.policy.checker;
-    if (draft.checkerText !== null) {
-      try {
-        checker = Schema.decodeUnknownSync(CheckerDraft, { onExcessProperty: "error" })(JSON.parse(draft.checkerText)).checker;
-      } catch {
-        setInvalidPolicy(true);
-        return;
-      }
-    }
+    if (!policy || !digest || !draft) return;
     void actions.run(async (signal) => {
-      const policy = { ...draft.policy, rules: Object.keys(draft.rules).length ? draft.rules : undefined, checker };
-      await backend.request(guardEndpoints.status, GuardSaved, signal, {
-        method: "PUT", body: { policy, digest: draft.digest, consent },
-      });
-      cancelEdit();
+      const checker = draft.model
+        ? { kind: "skill-update" as const, ...(draft.onUnavailable === "warn" ? { onUnavailable: "warn" as const } : {}) }
+        : policy.checker?.kind === "skill-update" ? undefined : policy.checker;
+      const next = {
+        ...policy, checker,
+        builtInRules: draft.builtInRules ? undefined : false,
+        rules: Object.keys(draft.rules).length ? draft.rules : undefined,
+      };
+      await backend.request(guardEndpoints.status, GuardSaved, signal, { method: "PUT", body: { policy: next, digest, consent: false } });
+      setEdited(null);
+      toast.success("Guard policy saved");
     });
   };
   const scan = () => void actions.run(async (signal) => {
@@ -1133,95 +1145,179 @@ function LiveGuardSettings({ backend, source }: { backend: WorkspaceBackend; sou
       else throw error;
     }
   });
+  const install = () => void actions.run(async (signal) => {
+    setProgress({ stage: "download", received: 0, total: model?.downloadBytes ?? 0 });
+    try {
+      await actions.operation(guardEndpoints.model, {}, signal, (journal) => {
+        const decoded = Schema.decodeUnknownOption(GuardModelProgressJournal)(journal);
+        if (decoded._tag === "Some" && decoded.value !== null) setProgress(decoded.value);
+      });
+      toast.success(`${MODEL_NAME} installed`);
+      // A fresh install is meant to be used: turn the switch on, ready to save.
+      edit({ model: true });
+    } catch (error) {
+      if (!(error instanceof GuiRequestError && /cancelled/iu.test(error.failure.message))) throw error;
+    } finally {
+      setProgress(null);
+    }
+  });
+  const cancelInstall = () => { void backend.request(`${guardEndpoints.model}/cancel`, Schema.Unknown, new AbortController().signal, { method: "POST", body: {} }); };
+  const remove = () => void actions.run(async (signal) => {
+    await backend.request(guardEndpoints.model, Schema.Unknown, signal, { method: "DELETE", body: {} });
+    toast.success(`${MODEL_NAME} removed`);
+  });
   const changeApproval = (change: typeof GuardApprovalChange.Type) => {
     if (!digest) return;
     void actions.run(async (signal) => {
-      await backend.request(guardEndpoints.approval, GuardSaved, signal, {
-        method: "POST", body: { change, digest },
-      });
+      await backend.request(guardEndpoints.approval, GuardSaved, signal, { method: "POST", body: { change, digest } });
     });
   };
+
+  const unprotected = draft !== null && !draft.builtInRules && !draft.model && !otherChecker;
+  const installing = progress !== null;
   return <>
-    <PageHeader crumbs={["Settings", "Guard"]} actions={
-      <>
-        <Button variant="outline" size="sm" disabled={busy} onClick={scan}>Scan current folder</Button>
-        <Button variant="outline" size="sm" disabled={busy} onClick={() => resources?.cache.invalidate([guardEndpoints.status])}>Reload status</Button>
-      </>
-    } />
-    <Body reloading={current.loading}><Column>
+    <PageHeader crumbs={["Settings", "Guard"]} actions={<>
+      <Button variant="outline" size="sm" disabled={busy} onClick={scan}>Scan folder</Button>
+      {dirty && <Button variant="ghost" size="sm" disabled={busy} onClick={() => setEdited(null)}>Discard changes</Button>}
+      <Button variant="primary" size="sm" disabled={busy || !dirty} onClick={save}>Save policy</Button>
+    </>} />
+    <Body reloading={current.loading && !installing}><Column>
       {current.error && <ErrorNotice error={current.error} />}
       {actions.state.error && <ErrorNotice error={actions.state.error} />}
-      {(current.data || latest) && <div className={settingsGroup}>
-        {current.data && <>
-          <SettingRow title="Built-in rules">Offline</SettingRow>
-          {source && <SettingRow title="Optional checker">{policy?.checker?.kind ?? "Off"}</SettingRow>}
-          {source && policy?.checker?.authentication === "bearer-env" && <SettingRow title="Bearer credential">{current.data.bearerAvailable ? "Available" : "Missing"}</SettingRow>}
-        </>}
-        <SettingRow title={scanReport && latest === scanReport ? "Scan result" : "Last recorded scan"}>{latest
-          ? `${latest.verdict} · ${latest.trigger} · ${latest.at}`
-          : "No result recorded"}</SettingRow>
-        {latest && <div className="px-4 pb-4">
-          <p className="mt-2 text-sm">{latest.checked} files checked, {latest.unsupported} unsupported, {latest.unavailable} unavailable</p>
-          <GuardFindings report={latest} />
-          {latest.next && <p className="mt-2 text-sm">{latest.next}</p>}
-        </div>}
+      {draft && <div className="mb-6 rounded-lg border border-border bg-raised/30 px-[16px] py-[10px] text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="flex items-center gap-2">
+            <StatusMark kind={unprotected || latest?.verdict === "block" ? "bad" : latest?.verdict === "warn" ? "warn" : latest ? "ok" : "off"} />
+            {unprotected ? "Guard is off. Nothing is checked."
+              : latest ? `Last scan: ${files(latest.checked)}, ${latest.blockedItems?.length ?? 0} held` : "No scan yet."}
+          </span>
+          {!unprotected && latest && <Mono className="text-xs text-faint">{latest.at.slice(11, 16)}</Mono>}
+        </div>
+        {!unprotected && latest && <GuardFindings report={latest} />}
+        {!unprotected && latest?.next && <p className="mt-2">{latest.next}</p>}
       </div>}
-      {current.data && digest && policy && <>
-        <GuardApprovals status={current.data} latest={latest} disabled={busy || draft !== null} onChange={changeApproval} />
-        <div className="mt-8">
-          <SectionLabel>Rule overrides</SectionLabel>
-          <div className={cn(settingsGroup, "max-sm:[&>div]:flex-col max-sm:[&>div]:items-start max-sm:[&>div]:gap-2")}>
-            {Object.entries(guardRules).map(([code, severity]) => <SettingRow key={code} title={<Mono>{code}</Mono>} htmlFor={`rule-${code}`}>
-              <Select disabled={busy} value={(draft?.rules ?? policy.rules)?.[code] ?? "default"} onValueChange={(value) => edit((existing) => {
-                const rules = { ...existing.rules };
-                if (value === "default") delete rules[code];
-                else if (value === "warn" || value === "block" || value === "off") rules[code] = value;
-                return { ...existing, rules };
-              })}>
-                <SelectTrigger id={`rule-${code}`} className="w-40"><SelectValue /></SelectTrigger>
+
+      {draft && <div className={settingsGroup}>
+        <div>
+          <div className="flex items-start justify-between gap-4 px-[16px] py-[12px]">
+            <div className="flex min-w-0 items-start gap-3">
+              <ListChecks className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="guard-rules" className="text-base font-medium">Built-in rules</Label>
+                  <Button variant="ghost" size="xs" aria-expanded={rulesOpen} className="font-mono text-faint" onClick={() => setRulesOpen((open) => !open)}>
+                    {rulesOpen ? <CaretDown /> : <CaretRight />}{Object.keys(guardRules).length} rules
+                  </Button>
+                </div>
+                <p className="mt-0.5 text-sm text-pretty text-muted-foreground">Catches obvious secret leaks and unsafe commands, offline.</p>
+              </div>
+            </div>
+            <Switch id="guard-rules" checked={draft.builtInRules} disabled={busy} onCheckedChange={(builtInRules) => edit({ builtInRules })} />
+          </div>
+          {rulesOpen && <div className={cn("border-t border-border/60", !draft.builtInRules && "opacity-40")} inert={!draft.builtInRules}>
+            {(Object.entries(guardRules) as Array<[string, Severity]>).map(([code, severity]) => <div key={code} className="flex items-center justify-between gap-4 py-2 pr-[16px] pl-11">
+              <Label htmlFor={`rule-${code}`} className="font-normal">{guardFindingNames.get(code) ?? code}</Label>
+              <Select disabled={busy} value={draft.rules[code] ?? severity} onValueChange={(value) => {
+                if (value !== "block" && value !== "warn" && value !== "off") return;
+                const rules = { ...draft.rules };
+                // Choosing the default clears the override, so guard.jsonc only lists what you changed.
+                if (value === severity) delete rules[code];
+                else rules[code] = value;
+                edit({ rules });
+              }}>
+                <SelectTrigger id={`rule-${code}`} size="sm" className="w-32 shrink-0"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="default">Default ({severity})</SelectItem>
-                  <SelectItem value="block">Block</SelectItem>
-                  <SelectItem value="warn">Warn</SelectItem>
-                  <SelectItem value="off">Off</SelectItem>
+                  {(["block", "warn", "off"] as const).map((value) => <SelectItem key={value} value={value}>{SEVERITY_LABEL[value]}</SelectItem>)}
                 </SelectContent>
               </Select>
-            </SettingRow>)}
-          </div>
+            </div>)}
+          </div>}
         </div>
-        {source && <div className="mt-8 space-y-3">
-          <Label htmlFor="guard-policy">Checker policy</Label>
-          <Textarea id="guard-policy" className="font-mono" rows={8} spellCheck={false} readOnly={draft?.checkerText == null || busy}
-            value={draft?.checkerText ?? checkerJson(policy)}
-            onChange={(event) => {
-              const checkerText = event.target.value;
-              edit((existing) => ({ ...existing, checkerText }));
-              setInvalidPolicy(false);
-            }} />
-          {draft?.checkerText == null ? <Button variant="outline" disabled={busy} onClick={() => {
-            edit((existing) => ({ ...existing, checkerText: checkerJson(existing.policy) }));
-          }}>Edit checker policy</Button> : <>
-            <Button variant="outline" disabled={busy} onClick={() => {
-              const checkerText = JSON.stringify({ version: 1, checker: { kind: "http", endpoint: promptGuardLocalEndpoint } }, null, 2);
-              edit((existing) => ({ ...existing, checkerText }));
-              setConsent(false);
-              setInvalidPolicy(false);
-            }}>Prompt Guard 2 (local adapter)</Button>
-            <Label className="flex items-start gap-2">
-              <Checkbox checked={consent} disabled={busy} onCheckedChange={(checked) => setConsent(checked === true)} />
-              I allow this checker to receive eligible instruction and script text. This can include confidential material. A local proxy can forward it, and remote services may charge for requests.
-            </Label>
-            {invalidPolicy && <p role="alert" className="text-bad">Enter a valid checker policy in JSON.</p>}
-          </>}
+
+        {source && model && <div>
+          <div className="flex items-start justify-between gap-4 px-[16px] py-[12px]">
+            <div className="flex min-w-0 items-start gap-3">
+              <Cpu className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <Label htmlFor="guard-model" className="text-base font-medium">{MODEL_NAME}</Label>
+                  {!installing && <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <StatusMark kind={model.running ? "ok" : "off"} />
+                    {model.running ? "Running" : model.installed ? "Installed" : "Not installed"}
+                  </span>}
+                </div>
+                <p className="mt-0.5 text-sm text-pretty text-muted-foreground">An AI model that runs on this machine and catches harmful changes in skill updates that the rules miss.</p>
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center">
+              {installing ? <Button variant="ghost" size="sm" onClick={cancelInstall}>Cancel</Button>
+                : model.installed ? <Switch id="guard-model" checked={draft.model} disabled={busy} onCheckedChange={(on) => edit({ model: on })} />
+                : <InstallModelPopover uv={model.uv} downloadBytes={model.downloadBytes} disabled={busy} onDownload={install} />}
+            </div>
+          </div>
+          {installing && <div className="grid gap-1.5 border-t border-border/60 py-[10px] pr-[16px] pl-11">
+            <span className="text-right font-mono text-xs text-muted-foreground tabular-nums">
+              {progress.stage === "runtime" ? "Preparing the model…" : `${gigabytes(progress.received)} / ${gigabytes(progress.total)} GB`}
+            </span>
+            <DitherProgress label={`Installing ${MODEL_NAME}`} tone="act" running
+              value={progress.stage === "runtime" || progress.total === 0 ? 100 : (progress.received / progress.total) * 100} />
+          </div>}
+          {model.installed && !installing && draft.model && <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 py-[10px] pr-[16px] pl-11">
+            <Label htmlFor="guard-model-down" className="font-normal">If the model isn't running</Label>
+            <Select disabled={busy} value={draft.onUnavailable} onValueChange={(value) => { if (value === "block" || value === "warn") edit({ onUnavailable: value }); }}>
+              <SelectTrigger id="guard-model-down" size="sm" className="w-64"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="block">Hold updates until it's back</SelectItem>
+                <SelectItem value="warn">Let updates through with a warning</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>}
+          {model.installed && !installing && !draft.model && saved?.model === false && <div className="flex items-center justify-between gap-3 border-t border-border/60 py-[10px] pr-[16px] pl-11">
+            <span className="text-sm text-muted-foreground">Installed, using {gigabytes(model.downloadBytes)} GB</span>
+            <Button variant="ghost" size="sm" disabled={busy} onClick={remove}>Remove model</Button>
+          </div>}
+          {otherChecker && !draft.model && <p className="border-t border-border/60 py-[10px] pr-[16px] pl-11 text-sm text-muted-foreground">
+            guard.jsonc sets another checker. Turning this on replaces it.
+          </p>}
         </div>}
-        {draft !== null && <div className="mt-4 flex gap-2">
-          <Button variant="primary" disabled={busy || (!changed && draft.checkerText === null)} onClick={save}>Save policy</Button>
-          <Button variant="outline" disabled={busy} onClick={cancelEdit}>Cancel</Button>
-        </div>}
-      </>}
+      </div>}
+
+      {current.data && digest && <GuardApprovals status={current.data} latest={latest} disabled={busy || dirty} onChange={changeApproval} />}
     </Column></Body>
     {leaveDialog}
   </>;
+}
+
+/** What installing costs, shown before the download starts. Without uv, it says what to install first. */
+function InstallModelPopover({ uv, downloadBytes, disabled, onDownload }: { uv: boolean; downloadBytes: number; disabled: boolean; onDownload: () => void }) {
+  const [open, setOpen] = useState(false);
+  const facts = [
+    ["Download", `${gigabytes(downloadBytes)} GB, once`],
+    ["Memory", "About 2 GB while it runs"],
+    ["Privacy", "Runs on this machine. Files never leave it."],
+    ["License", "Apache-2.0"],
+  ] as const;
+  return <Popover open={open} onOpenChange={setOpen}>
+    <PopoverTrigger asChild>
+      <Button variant="outline" size="sm" disabled={disabled}><CloudDownload />Install</Button>
+    </PopoverTrigger>
+    <PopoverContent align="end" className="w-80">
+      <PopoverHeader><PopoverTitle>{MODEL_NAME}</PopoverTitle></PopoverHeader>
+      <dl className="mt-3 grid grid-cols-[72px_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-sm">
+        {facts.map(([term, value]) => <Fragment key={term}><dt className="text-muted-foreground">{term}</dt><dd>{value}</dd></Fragment>)}
+      </dl>
+      {!uv && <p className="mt-3 text-sm">The model runs with uv. <a className="underline underline-offset-2" href="https://docs.astral.sh/uv/getting-started/installation/" target="_blank" rel="noreferrer">Install uv</a>, then come back.</p>}
+      <div className="mt-4 flex items-center justify-between gap-2">
+        <a href={MODEL_CARD} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+          Model details<ArrowSquareOut className="size-3.5" />
+        </a>
+        <div className="flex gap-2">
+          <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>Cancel</Button>
+          <Button variant="primary" size="sm" disabled={!uv} onClick={() => { setOpen(false); onDownload(); }}>Download {gigabytes(downloadBytes)} GB</Button>
+        </div>
+      </div>
+    </PopoverContent>
+  </Popover>;
 }
 
 function GuardApprovals({ status, latest, disabled, onChange }: {

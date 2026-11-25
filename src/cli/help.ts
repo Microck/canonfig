@@ -392,7 +392,7 @@ export const helpGroups: ReadonlyArray<HelpGroup> = [
   {
     title: "Configuration admission",
     areas: ["guard"],
-    usage: ["guard scan [--json]", "guard status [--json]", "guard approve <item> --digest <sha256> [--note <text>] [--json]", "guard revoke <item> [--json]"],
+    usage: ["guard scan [--json]", "guard status [--json]", "guard approve <item> --digest <sha256> [--note <text>] [--json]", "guard revoke <item> [--json]", "guard model install|remove [--json]"],
   },
   {
     title: "Upstream skills (details: canonfig skills --help)",

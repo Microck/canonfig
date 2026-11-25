@@ -264,9 +264,10 @@ export async function updateSkills(location: SkillLocation, names: readonly stri
     if (prepared.some((item) => item.check.status === "local-edits")) throw new CanonfigError("SKILL_LOCAL_EDITED", "Local edits detected. No skill was updated; check the preview and reconcile changes before applying");
     const changed = prepared.filter((item) => item.check.status === "update-available");
     if (!changed.length) return prepared.map((item) => item.check);
-    const guard = await enforceGuard(changed.map(({ skill, files }) => skillGuardItem(skill.name, files)), {
-      root: location.root, trigger: "skills.update", signal,
-    });
+    // prepare() refused local edits, so the installed tree is exactly the approved previous version.
+    const guard = await enforceGuard(await Promise.all(changed.map(async ({ skill, files }) => ({
+      ...skillGuardItem(skill.name, files), baseline: await readLocalSkill(location.root, skill.path),
+    }))), { root: location.root, trigger: "skills.update", signal });
     if (guard.verdict === "warn" || guard.recordUnavailable) changed[0]!.check.guard = guard;
     const swaps: SkillSwap[] = [];
     for (const item of changed) {

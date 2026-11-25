@@ -53,6 +53,12 @@ keep their original severity under rule overrides.
 | Block | `instruction-credential-concealment`, `unverified-download-execute` |
 | Warn | `instruction-risk-mention`, `download-execute`, `invisible-control`, `encoded-looking-text`, `credential-file-reference`, `tool-call-steering`, `unscanned-file` |
 
+Set `"builtInRules": false` to turn every built-in rule off, for example when
+the Skill Update 396M model checks updates instead. Guard still records what
+the rules would have found, with severity `off`, so a Source that publishes
+with the rules off still warns that Followers on default rules may hold the
+revision.
+
 ## Approve an exact version
 
 After reviewing a held item, use the item ID and full digest from its finding.
@@ -72,16 +78,51 @@ saw a different digest for its item, or unseen when that scan has no observation
 for the item. The file stores approvals as `{ item, digest, note? }` entries
 in the optional `approvals` array.
 
-On Source and Follower Machines, Settings > Guard has rule controls, approval
-revocation and an **Approve this exact version** action for items in the latest
-held result. On a Follower, local rules and approvals apply to offline checks
+On Source and Follower Machines, Settings > Guard has an on/off switch and a
+Block, Warn or Off choice for each built-in rule, approval revocation and an
+**Approve this exact version** action for items in the latest held result. On a Follower, local rules and approvals apply to offline checks
 for both received and Local items before Sync. The Follower sends no candidate
 text to an external checker.
 
-## Optional checker
+## Skill Update 396M
 
-Source and standalone operators can configure a checker in `guard.jsonc`.
-Source Settings also provides checker configuration.
+Skill Update 396M is an optional AI model that runs on the Source or a
+standalone machine. It compares each changed Markdown file in a skill update
+with the installed, approved version of the same file and flags edits that
+change what the skill does. It catches reworded instructions the built-in
+rules miss. It only scores skill updates: a newly tracked skill, an import and
+a publish have no approved version to compare against, so the built-in rules
+check those alone. The [model card](https://huggingface.co/Microck/canonfig-guard-skill-update-396m)
+lists its benchmarks and limits.
+
+In Settings > Guard, select **Install**. Canonfig downloads one pinned model
+revision (1.6 GB) into the user cache, outside `~/.canonfig`, verifies every
+file's SHA-256 digest and prepares a Python runtime with
+[uv](https://docs.astral.sh/uv/). The model needs about 2 GB of memory while it
+runs. Set `CANONFIG_GUARD_MODEL_DIR` to keep it somewhere else, in every
+environment that runs Canonfig. Without the GUI, run
+`canonfig guard model install` and set the checker in `guard.jsonc`:
+
+```jsonc
+{
+  "version": 1,
+  "checker": { "kind": "skill-update", "onUnavailable": "block" }
+}
+```
+
+Canonfig starts the model on loopback the first time a check needs it, from the
+CLI, the skills worker or the GUI, and the model exits after 15 idle minutes.
+The first check after a start waits for the model to load. File text never
+leaves the machine, so this checker needs no outbound consent. `onUnavailable`
+works as for other checkers: the default holds the update when the model can't
+answer, and `warn` lets it through checked by the built-in rules only. Turn the
+checker off before `canonfig guard model remove` or **Remove model**.
+Followers can't run the model.
+
+## Other checkers
+
+Source and standalone operators can configure a different checker in
+`guard.jsonc`. The policy holds one checker.
 
 ```jsonc
 {
@@ -112,10 +153,11 @@ operations with incomplete coverage. Completed checker verdicts are cached for
 24 hours. Change `protocolRevision` when the checker model or policy changes
 behind the configured endpoint.
 
-The HTTP adapter accepts a POST with the following body.
+The HTTP adapter accepts a POST with the following body. For a skill update,
+`item.baseline` carries the approved version of the same files.
 
 ```json
-{"schema":"canonfig.guard/v1","item":{"kind":"skills","digest":"<sha256>","files":[{"path":"SKILL.md","text":"Summarize the meeting notes."}]}}
+{"schema":"canonfig.guard/v1","item":{"kind":"skills","digest":"<sha256>","files":[{"path":"SKILL.md","text":"Summarize the meeting notes."}],"baseline":[{"path":"SKILL.md","text":"Summarize the notes."}]}}
 ```
 
 Return `{"schema":"canonfig.guard/v1","verdict":"allow","findings":[]}`.
@@ -126,17 +168,9 @@ and 1-based `line`. Codes are `prompt-injection`, `credential-disclosure`,
 The versioned [checker contract](../src/guard/checker-wire.json) defines the
 request and response byte caps, the maximum findings per verdict, and the
 ordered line breaks. CRLF counts as one break. An empty file has one line, and
-a trailing break starts an empty last line.
-
-### Local Prompt Guard 2 adapter
-
-Start the [local adapter](../tools/guard-adapters/prompt-guard/README.md) with
-`uv run tools/guard-adapters/prompt-guard/server.py`. In Source Settings,
-choose **Prompt Guard 2 (local adapter)** while editing the checker policy.
-The preset uses kind `http` and endpoint `http://127.0.0.1:8787/v1/guard`.
-
-The model is gated on Hugging Face and requires accepting the Llama 4 license
-there. Set `HF_TOKEN` for the initial download.
+a trailing break starts an empty last line. Skill Update 396M's own adapter,
+[skill-update-checker.py](../src/guard/skill-update-checker.py), implements
+the same contract.
 
 Guard checks declared content. Disabled hooks stay in scope so enabling one
 later cannot bypass the check. Its coverage excludes live MCP tool lists,

@@ -1235,3 +1235,9 @@ turns blocks into warnings for the exact item version you reviewed. Use the
 item ID and full digest reported by Guard. `canonfig guard revoke <item>
 [--json]` removes that item's approval. Approvals are local to the machine
 that records them, including when that machine is a Follower.
+
+`canonfig guard model install [--json]` downloads the Skill Update 396M model
+(1.6 GB) into the user cache and prepares its runtime with `uv`. Turn it on
+with `"checker": { "kind": "skill-update" }` in `guard.jsonc`, or in Guard
+settings. `canonfig guard model remove [--json]` deletes it; remove the
+checker from the policy first. Followers can't install the model.

@@ -7,9 +7,14 @@ const fields = {
   allowRemote: Schema.optional(Schema.Boolean),
   onUnavailable: Schema.optional(Schema.Literals(["block", "warn"])),
 };
+/**
+ * One optional checker. `skill-update` is the local Skill Update 396M model that
+ * Canonfig downloads and runs itself (guard/model.ts), so it has no endpoint.
+ */
 export const GuardChecker = Schema.Union([
   Schema.Struct({ ...fields, kind: Schema.Literal("openai-compatible"), model: Schema.NonEmptyString }),
   Schema.Struct({ ...fields, kind: Schema.Literal("http") }),
+  Schema.Struct({ kind: Schema.Literal("skill-update"), onUnavailable: fields.onUnavailable }),
 ]);
 export const guardRules = {
   "instruction-credential-concealment": "block",
@@ -45,6 +50,8 @@ export const GuardApprovalChange = Schema.Union([
 ]);
 export const GuardPolicy = Schema.Struct({
   version: Schema.Literal(1), checker: Schema.optional(GuardChecker),
+  /** false turns the built-in rules off. Their findings are still recorded, with severity "off". */
+  builtInRules: Schema.optional(Schema.Boolean),
   rules: Schema.optional(GuardRuleOverrides),
   approvals: Schema.optional(Schema.Array(GuardApproval).check(
     Schema.isMaxLength(guardApprovalLimit),
@@ -53,7 +60,7 @@ export const GuardPolicy = Schema.Struct({
   )),
 });
 export const GuardFinding = Schema.Struct({
-  checker: Schema.Literals(["static", "openai-compatible", "http"]),
+  checker: Schema.Literals(["static", "openai-compatible", "http", "skill-update"]),
   severity: GuardRuleSeverity,
   code: Schema.String, item: Schema.String, digest: Schema.String,
   path: Schema.optional(Schema.String), line: Schema.optional(Schema.Number),
@@ -75,13 +82,49 @@ export const GuardReport = Schema.Struct({
 });
 export const GuiGuardWrite = Schema.Struct({ policy: GuardPolicy, digest: Schema.String, consent: Schema.Boolean });
 export const GuiGuardApproval = Schema.Struct({ change: GuardApprovalChange, digest: Schema.String });
+/** The local model on this machine. `uv` runs its Python runtime. */
+export const GuardModelStatus = Schema.Struct({
+  installed: Schema.Boolean, running: Schema.Boolean, uv: Schema.Boolean,
+  downloadBytes: Schema.Number,
+});
+/** Install progress, reported as the operation journal. */
+export const GuardModelProgress = Schema.Struct({
+  stage: Schema.Literals(["download", "runtime"]), received: Schema.Number, total: Schema.Number,
+});
 export const GuiGuardStatus = Schema.Struct({
   mode: Schema.Literals(["static", "operator"]),
   policy: Schema.optionalKey(GuardPolicy), digest: Schema.optionalKey(Schema.String),
   bearerAvailable: Schema.optionalKey(Schema.Boolean), latest: Schema.NullOr(GuardReport),
+  model: Schema.optionalKey(GuardModelStatus),
   approvals: Schema.Array(Schema.Struct({
     ...GuardApproval.fields, status: Schema.Literals(["current", "stale", "unseen"]),
   })),
 });
-export const guardEndpoints = { status: "/api/guard", scan: "/api/guard/scan", approval: "/api/guard/approval" } as const;
-export const promptGuardLocalEndpoint = "http://127.0.0.1:8787/v1/guard";
+/** Plain names for built-in rules and checker findings. The GUI shows these; the CLI and JSON keep the codes. */
+export const guardFindingNames = new Map(Object.entries({
+  "instruction-credential-concealment": "Tells the agent to leak secrets and hide it",
+  "unverified-download-execute": "Downloads and runs code with checks turned off",
+  "instruction-risk-mention": "Mentions leaking secrets or hiding actions",
+  "download-execute": "Downloads and runs code",
+  "tool-call-steering": "Tells the agent to ignore other tools",
+  "credential-file-reference": "Points at credential files",
+  "invisible-control": "Hidden or invisible characters",
+  "encoded-looking-text": "Long encoded text",
+  "unscanned-file": "Files it can't scan",
+  "prompt-injection": "Changes what the agent is told to do",
+  "credential-disclosure": "Asks to reveal secrets",
+  "unsafe-execution": "Runs unsafe commands",
+  "obfuscation": "Hidden or obfuscated content",
+  "other-risk": "Other risk",
+  "checker-unavailable": "The checker didn't answer",
+  "checker-input": "Too large or too sensitive to check",
+  "checker-credentials": "The checker credential is missing",
+  "checker-budget": "The checker ran out of time",
+}));
+export const guardCheckerNames = {
+  static: "Built-in rules", "skill-update": "Skill Update 396M", http: "HTTP checker", "openai-compatible": "Model checker",
+} satisfies Record<typeof GuardFinding.Type["checker"], string>;
+
+export const guardEndpoints = {
+  status: "/api/guard", scan: "/api/guard/scan", approval: "/api/guard/approval", model: "/api/guard/model",
+} as const;

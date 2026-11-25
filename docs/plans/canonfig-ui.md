@@ -459,7 +459,8 @@ The Raft workspace and all disposable browser processes, homes and npm prefixes 
 | Capability | CLI | Source GUI | Follower GUI |
 | --- | --- | --- | --- |
 | Current scan and latest result | `guard scan`, `guard status` | Settings | Settings |
-| Built-in rule overrides | `guard.jsonc` rules | Settings rule controls | Settings rule controls |
+| Built-in rules on/off and overrides | `guard.jsonc` `builtInRules` and `rules` | Settings switch and per-rule Block, Warn or Off | Settings switch and per-rule Block, Warn or Off |
 | Exact-version approvals | `guard approve`, `guard revoke`, `guard status` | Approve from the latest hold and revoke in Settings | Approve from the latest hold and revoke in Settings |
-| Optional checker policy | Machine-local `guard.jsonc` | Settings with outbound consent and a local Prompt Guard 2 preset | Offline Guard summary |
+| Skill Update 396M model | `guard model install`, `guard model remove`, `guard.jsonc` `skill-update` checker | Settings install popover with download progress, on/off switch, "If the model isn't running" choice, Remove model | Not available (offline rules only) |
+| Other checkers (OpenAI-compatible, HTTP) | Machine-local `guard.jsonc` | Not in Settings: CLI-only, because they need endpoint, credential and consent details an operator sets once by hand | Offline Guard summary |
 | Held operation and recovery | Human Action Required, exit 3 | Structured findings in operation and first-time import results | Structured findings in the Sync result |

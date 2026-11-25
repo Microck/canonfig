@@ -114,10 +114,12 @@ export function useLiveActions(backend: WorkspaceBackend, reload: () => void) {
       controller.current = null;
     }
   }
-  async function operation(path: string, body: unknown, signal: AbortSignal) {
+  /** Start an operation and poll it to the end. `onJournal` sees each progress journal the service reports. */
+  async function operation(path: string, body: unknown, signal: AbortSignal, onJournal?: (journal: unknown) => void) {
     const ticket = await backend.request(path, GuiOperationTicket, signal, { method: "POST", body });
     let operation = await backend.operation(ticket.id, signal);
     while (operation.state === "running") {
+      onJournal?.(operation.journal);
       await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
       signal.throwIfAborted();
       operation = await backend.operation(operation.id, signal);

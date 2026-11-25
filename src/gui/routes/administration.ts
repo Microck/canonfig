@@ -1,5 +1,7 @@
 import { scanGuardFolder } from "../../guard/commands.ts";
-import { changeGuardApproval, guardEffect, guardStatus, saveGuardPolicy } from "../../guard/guard.ts";
+import { changeGuardApproval, guardEffect, guardStatus, readGuardPolicy, saveGuardPolicy } from "../../guard/guard.ts";
+import { installGuardModel, removeGuardModel } from "../../guard/model.ts";
+import { CanonfigError } from "../../skills/errors.ts";
 import { guardEndpoints, GuiGuardApproval, GuiGuardWrite } from "../../guard/contract.ts";
 import { FleetStart } from "../../domain/fleet-update.ts";
 import { existsSync } from "node:fs";
@@ -56,6 +58,10 @@ const harnessResponse = (value: CliPayload) => {
   };
 };
 
+
+/** The one Skill Update 396M install a GUI session runs: cancel it, or read its progress as the operation journal. */
+interface ModelInstall { readonly controller: AbortController; progress: Schema.Json }
+
 export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () => void, onSettled: () => void) => Effect.gen(function*() {
   const source = yield* SourceCommands;
   const follower = yield* FollowerCommands;
@@ -99,7 +105,50 @@ export const administrationRoutes = (lease: ManagedCommandLease, onUpdated: () =
     }
     return { root: session.folderPath, follower: session.role === "follower" };
   });
+  // The model is machine-wide and Source-only: Followers run offline rules alone.
+  const modelLocation = guardLocation.pipe(Effect.flatMap(({ root, follower }) => follower
+    ? Effect.fail(new CliCommandFailure({ category: "usage-or-configuration", message: "Followers use offline Guard." }))
+    : Effect.succeed(root)));
+  // At most one install runs per GUI session; its progress is the operation journal.
+  let modelInstall: ModelInstall | undefined;
   const routes: GuiRoute[] = [
+    mutationRoute("POST", guardEndpoints.model, EmptyBody, () => modelLocation.pipe(
+      Effect.flatMap(() => {
+        if (modelInstall !== undefined) return Effect.fail(new CliCommandFailure({
+          category: "usage-or-configuration", message: "Skill Update 396M is already installing.",
+        }));
+        const install: ModelInstall = { controller: new AbortController(), progress: null };
+        modelInstall = install;
+        return operations.start(
+          guardEffect(async (signal) => {
+            try {
+              await installGuardModel((progress) => { install.progress = progress; }, AbortSignal.any([signal, install.controller.signal]));
+            } catch (error) {
+              if (install.controller.signal.aborted) throw new CanonfigError("GUARD_MODEL_CANCELLED", "Download cancelled.");
+              throw error;
+            }
+          }).pipe(
+            Effect.ensuring(Effect.sync(() => { modelInstall = undefined; })),
+            Effect.as(toJson({ installed: true })), Effect.mapError(commandFailure),
+          ),
+          () => Effect.succeed(install.progress),
+        ).pipe(Effect.tapError(() => Effect.sync(() => { modelInstall = undefined; })));
+      }),
+      Effect.map(toJson),
+    ), 202),
+    mutationRoute("POST", `${guardEndpoints.model}/cancel`, EmptyBody, () => modelLocation.pipe(
+      Effect.tap(() => Effect.sync(() => modelInstall?.controller.abort())), Effect.as({ cancelled: true }),
+    )),
+    mutationRoute("DELETE", guardEndpoints.model, EmptyBody, () => modelLocation.pipe(
+      Effect.flatMap((root) => guardEffect(async () => {
+        // Removing the model while the saved policy uses it would hold every skill update.
+        if ((await readGuardPolicy(root)).policy.checker?.kind === "skill-update") {
+          throw new CanonfigError("GUARD_MODEL_IN_USE", "Turn off Skill Update 396M and save the policy before removing it.");
+        }
+        await removeGuardModel();
+      })),
+      Effect.mapError(commandFailure), Effect.as({ removed: true }),
+    )),
     queryRoute(guardEndpoints.status, () => guardLocation.pipe(
       Effect.flatMap(({ root, follower }) => guardEffect(() => guardStatus(root, follower))),
       Effect.map(toJson), Effect.mapError(commandFailure),

@@ -1,4 +1,4 @@
-import { globSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, globSync, readFileSync, writeFileSync } from "node:fs";
 
 import { build } from "esbuild";
 import ts from "typescript";
@@ -52,5 +52,8 @@ for (const file of globSync("dist/{projection,setup,skills,machine,runtime,enrol
   const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
   writeFileSync(file, printer.printFile(source));
 }
+
+// tsc emits only JavaScript and JSON. Guard runs this Python script beside checker-wire.json.
+copyFileSync("src/guard/skill-update-checker.py", "dist/guard/skill-update-checker.py");
 
 writeBuildReceipt(process.cwd());
