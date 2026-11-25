@@ -82,14 +82,21 @@ export const GuardReport = Schema.Struct({
 });
 export const GuiGuardWrite = Schema.Struct({ policy: GuardPolicy, digest: Schema.String, consent: Schema.Boolean });
 export const GuiGuardApproval = Schema.Struct({ change: GuardApprovalChange, digest: Schema.String });
-/** The local model on this machine. `uv` runs its Python runtime. */
+/** Install progress. */
+export const GuardModelProgress = Schema.Struct({
+  stage: Schema.Literals(["download", "runtime"]), received: Schema.Number, total: Schema.Number,
+});
+/**
+ * The local model on this machine. `uv` runs its Python runtime. `install` is the GUI
+ * session's install: running (failure null, progress once known) or failed. It lives in
+ * status, not in the page, so leaving Guard settings and coming back still shows it.
+ */
 export const GuardModelStatus = Schema.Struct({
   installed: Schema.Boolean, running: Schema.Boolean, uv: Schema.Boolean,
   downloadBytes: Schema.Number,
-});
-/** Install progress, reported as the operation journal. */
-export const GuardModelProgress = Schema.Struct({
-  stage: Schema.Literals(["download", "runtime"]), received: Schema.Number, total: Schema.Number,
+  install: Schema.optionalKey(Schema.NullOr(Schema.Struct({
+    progress: Schema.NullOr(GuardModelProgress), failure: Schema.NullOr(Schema.String),
+  }))),
 });
 export const GuiGuardStatus = Schema.Struct({
   mode: Schema.Literals(["static", "operator"]),

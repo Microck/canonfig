@@ -281,24 +281,20 @@ it("shows an unsaved scan result when Guard status still reports an older verdic
   } finally { await app.close(); }
 });
 
-it("installs the model with progress, then turns it on", async () => {
-  let installed = false;
-  let polls = 0;
+it("follows a model install through Guard status, even after leaving the page, then turns it on", async () => {
+  let reads = 0;
+  let started = false;
   const app = await fixture("/source/settings/guard", {}, (path, method, _body, outgoing) => {
     if (path === "/api/guard" && method === "GET") {
-      outgoing.end(JSON.stringify({ mode: "static", policy: { version: 1 }, digest: "d", latest: null, approvals: [], model: guardModel(installed) }));
+      // Once started, the install reports progress for a few reads, then finishes.
+      if (started) reads++;
+      const install = !started || reads > 2 ? null : { progress: { stage: "download", received: 800_000_000, total: 1_587_000_000 }, failure: null };
+      outgoing.end(JSON.stringify({ mode: "static", policy: { version: 1 }, digest: "d", latest: null, approvals: [],
+        model: { ...guardModel(started && reads > 2), install } }));
       return true;
     }
-    if (path === "/api/guard/model" && method === "POST") { outgoing.statusCode = 202; outgoing.end(JSON.stringify({ id: "install" })); return true; }
-    if (path !== "/api/operations/install") return false;
-    polls++;
-    if (polls < 3) {
-      outgoing.end(JSON.stringify({ id: "install", state: "running", journal: { stage: "download", received: 800_000_000, total: 1_587_000_000 } }));
-    } else {
-      installed = true;
-      outgoing.end(JSON.stringify({ id: "install", state: "succeeded", journal: null, result: { installed: true } }));
-    }
-    return true;
+    if (path === "/api/guard/model" && method === "POST") { started = true; outgoing.statusCode = 202; outgoing.end(JSON.stringify({ id: "install" })); return true; }
+    return false;
   });
   try {
     await until(() => app.container.textContent?.includes("Not installed") === true, "The model card did not load");
@@ -306,9 +302,57 @@ it("installs the model with progress, then turns it on", async () => {
     await until(() => document.body.textContent?.includes("Runs on this machine. Files never leave it.") === true, "The install popover did not open");
     await click("Download 1.6 GB");
     await until(() => app.container.textContent?.includes("0.8 / 1.6 GB") === true, "Download progress did not appear");
+    // Leaving and returning reconnects to the same install from status.
+    await act(async () => { navigate("/source/overview"); });
+    await act(async () => { navigate("/source/settings/guard"); });
+    await until(() => app.container.textContent?.includes("0.8 / 1.6 GB") === true || reads > 2, "Progress was lost after navigation");
     await until(() => app.container.querySelector<HTMLButtonElement>("#guard-model")?.getAttribute("aria-checked") === "true",
       "The installed model was not switched on");
     assert.ok(enabled("Save policy"));
+  } finally { await app.close(); }
+});
+
+it("saves a draft against the policy it was edited from, so a concurrent change conflicts", async () => {
+  let digest = "first";
+  const saves: unknown[] = [];
+  const app = await fixture("/source/settings/guard", {}, (path, method, body, outgoing) => {
+    if (path === "/api/guard" && method === "GET") {
+      outgoing.end(JSON.stringify({ mode: "static", policy: { version: 1 }, digest, latest: null, approvals: [] }));
+      return true;
+    }
+    if (path === "/api/guard" && method === "PUT") { saves.push(body); outgoing.end(JSON.stringify({ saved: true })); return true; }
+    if (path === "/api/guard/scan") { outgoing.statusCode = 202; outgoing.end(JSON.stringify({ id: "scan" })); return true; }
+    if (path === "/api/operations/scan") {
+      outgoing.end(JSON.stringify({ id: "scan", state: "succeeded", journal: null, result: { ...guardWarning("guard.scan", "skills:x"), verdict: "allow", findings: [], findingCount: 0 } }));
+      return true;
+    }
+    return false;
+  });
+  try {
+    await until(() => app.container.querySelector("#guard-rules") !== null, "Guard policy did not load");
+    await toggle("#guard-rules");
+    // Another session saves meanwhile; a scan reloads status with the new digest.
+    digest = "second";
+    await click("Scan folder");
+    await until(() => app.requests.filter((request) => request === "GET /api/guard").length >= 2 && enabled("Scan folder"), "Status did not reload");
+    await click("Save policy");
+    await until(() => saves.length === 1, "The draft was not saved");
+    assert.equal((saves[0] as { digest: string }).digest, "first");
+  } finally { await app.close(); }
+});
+
+it("keeps the model switch when a configured model's files are missing", async () => {
+  const app = await fixture("/source/settings/guard", {
+    ...sourceResponses(),
+    "/api/guard": { mode: "operator", policy: { version: 1, checker: { kind: "skill-update" } }, digest: "d", latest: null, approvals: [], model: guardModel(false) },
+  });
+  try {
+    await until(() => app.container.textContent?.includes("The model files are missing.") === true, "The missing-files row did not appear");
+    assert.ok(app.container.querySelector("#guard-model-down"), "The availability choice stays reachable");
+    await toggle("#guard-model");
+    // Turned off and not installed, the switch gives way to Install, and the change is ready to save.
+    await until(() => enabled("Save policy") && app.container.querySelector("#guard-model") === null && enabled("Install"),
+      "The checker could not be turned off");
   } finally { await app.close(); }
 });
 

@@ -935,3 +935,13 @@ it("verifies each model file, resumes after a failure and needs uv", async () =>
   await expect(installGuardModel(() => undefined, signal, { ...environment, uv: async () => undefined }))
     .rejects.toMatchObject({ code: "GUARD_MODEL_UV_MISSING" });
 });
+
+it("rejects the install, without crashing, when a model file cannot be written", async () => {
+  const directory = await fixture();
+  const encoderScan = await readFile(join(import.meta.dirname, "fixtures/guard/model/encoder_scan.py"));
+  const baseUrl = await listen((_request, response) => { response.end(encoderScan); });
+  // A directory where the partial download should go makes opening it fail, like an unwritable cache.
+  await mkdir(join(directory, guardModel.revision, "encoder_scan.py.part"), { recursive: true });
+  await expect(installGuardModel(() => undefined, new AbortController().signal, { directory, baseUrl, uv: async () => "uv" }, async () => undefined))
+    .rejects.toMatchObject({ code: "GUARD_MODEL_DOWNLOAD_FAILED" });
+});

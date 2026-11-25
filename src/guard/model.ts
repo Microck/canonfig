@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { constants, createReadStream, createWriteStream } from "node:fs";
-import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { constants, createReadStream } from "node:fs";
+import { access, mkdir, open, readFile, rename, rm, writeFile, type FileHandle } from "node:fs/promises";
 import { request } from "node:http";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
@@ -196,19 +196,26 @@ export async function installGuardModel(
     const partial = `${target}.part`;
     const hash = createHash("sha256");
     const start = received;
-    const sink = createWriteStream(partial, { mode: 0o600 });
+    // A FileHandle turns a full disk or an unwritable cache into a rejected write, not an unhandled stream error.
+    // getReader() works under both the Node and DOM typings that compile this file.
+    const reader = response.body.getReader();
+    let sink: FileHandle | undefined;
     try {
-      for await (const chunk of response.body) {
-        hash.update(chunk);
-        received += chunk.byteLength;
+      sink = await open(partial, "w", 0o600);
+      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+        hash.update(chunk.value);
+        received += chunk.value.byteLength;
         if (received - start > file.bytes) throw new Error("Unexpected download size");
-        if (!sink.write(chunk)) await new Promise<void>((resolve) => sink.once("drain", () => resolve()));
+        await sink.write(chunk.value);
         report();
       }
-      await new Promise<void>((resolve, reject) => sink.end((error?: Error | null) => error ? reject(error) : resolve()));
+      await sink.close();
+      sink = undefined;
     } catch (error) {
-      sink.destroy();
-      await rm(partial, { force: true });
+      await reader.cancel().catch(() => undefined);
+      await sink?.close().catch(() => undefined);
+      // Best effort: a failed cleanup must not hide why the download failed.
+      await rm(partial, { force: true }).catch(() => undefined);
       signal.throwIfAborted();
       throw new CanonfigError("GUARD_MODEL_DOWNLOAD_FAILED", `Couldn't download Skill Update 396M. Check your connection and try again. (${String(error)})`);
     }

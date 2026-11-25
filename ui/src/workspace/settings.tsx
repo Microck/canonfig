@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { GuardModelProgress, GuardReport, GuiGuardStatus, guardEndpoints, guardFindingNames, guardRules, type GuardApprovalChange, type GuardPolicy } from "../../../src/guard/contract";
+import { GuardReport, GuiGuardStatus, guardEndpoints, guardFindingNames, guardRules, type GuardApprovalChange, type GuardPolicy } from "../../../src/guard/contract";
 import { GuiRequestError, type WorkspaceBackend } from "@/gui-client";
 import { GuardFindings } from "@/live/session";
 import { LiveResourcesContext, useLiveActions, useLiveResource } from "./live/resource";
@@ -1070,7 +1070,6 @@ export function GuardView() {
 }
 
 const GuardSaved = Schema.Struct({ saved: Schema.Boolean });
-const GuardModelProgressJournal = Schema.NullOr(GuardModelProgress);
 type Severity = "block" | "warn" | "off";
 const SEVERITY_LABEL: Record<Severity, string> = { block: "Block", warn: "Warn", off: "Off" };
 const MODEL_NAME = "Skill Update 396M";
@@ -1103,25 +1102,45 @@ function LiveGuardSettings({ backend, source }: { backend: WorkspaceBackend; sou
   const resources = useContext(LiveResourcesContext);
   const current = useLiveResource(backend, guardEndpoints.status, GuiGuardStatus, true);
   const actions = useLiveActions(backend, () => resources?.cache.invalidate([guardEndpoints.status]));
-  const [edited, setEdited] = useState<GuardDraft | null>(null);
+  // The draft keeps the digest it was edited from, so a policy changed elsewhere meanwhile is a save conflict, not overwritten.
+  const [edited, setEdited] = useState<{ readonly draft: GuardDraft; readonly digest: string } | null>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [scanReport, setScanReport] = useState<typeof GuardReport.Type | null>(null);
-  const [progress, setProgress] = useState<typeof GuardModelProgress.Type | null>(null);
   const policy = current.data?.policy;
   const digest = current.data?.digest;
   const saved = policy ? draftOf(policy) : null;
-  const draft = edited ?? saved;
-  const dirty = edited !== null && saved !== null && !sameDraft(edited, saved);
+  const draft = edited?.draft ?? saved;
+  const dirty = edited !== null && saved !== null && !sameDraft(edited.draft, saved);
   const { dialog: leaveDialog } = useLeaveGuard(dirty, "the Guard policy");
-  const busy = current.loading || actions.state.loading;
+  // The install runs in the GUI server and is reported through status, so it survives leaving this page.
+  const install = current.data?.model?.install ?? null;
+  const installing = install !== null && install.failure === null;
+  const progress = install?.progress ?? null;
+  // Status polls twice a second during an install; those reloads don't lock the page.
+  const busy = (current.loading && !installing) || actions.state.loading;
   const recorded = current.data?.latest;
   const latest = scanReport && (!recorded || scanReport.at >= recorded.at) ? scanReport : recorded;
   const model = current.data?.model;
   const otherChecker = policy?.checker !== undefined && policy.checker.kind !== "skill-update";
-  const edit = (change: Partial<GuardDraft>) => { if (draft) setEdited({ ...draft, ...change }); };
+  const edit = (change: Partial<GuardDraft>) => {
+    const base = edited?.digest ?? digest;
+    if (draft && base) setEdited({ draft: { ...draft, ...change }, digest: base });
+  };
+  useEffect(() => {
+    if (!installing) return;
+    const timer = window.setInterval(() => resources?.cache.invalidate([guardEndpoints.status]), 500);
+    return () => window.clearInterval(timer);
+  }, [installing, resources]);
+  // When an install finishes, turn the switch on, ready to save: a fresh install is meant to be used.
+  const [wasInstalling, setWasInstalling] = useState(installing);
+  if (wasInstalling !== installing) {
+    setWasInstalling(installing);
+    if (!installing && model?.installed && draft && !draft.model) edit({ model: true });
+  }
 
   const save = () => {
-    if (!policy || !digest || !draft) return;
+    const base = edited?.digest ?? digest;
+    if (!policy || !base || !draft) return;
     void actions.run(async (signal) => {
       const checker = draft.model
         ? { kind: "skill-update" as const, ...(draft.onUnavailable === "warn" ? { onUnavailable: "warn" as const } : {}) }
@@ -1131,7 +1150,7 @@ function LiveGuardSettings({ backend, source }: { backend: WorkspaceBackend; sou
         builtInRules: draft.builtInRules ? undefined : false,
         rules: Object.keys(draft.rules).length ? draft.rules : undefined,
       };
-      await backend.request(guardEndpoints.status, GuardSaved, signal, { method: "PUT", body: { policy: next, digest, consent: false } });
+      await backend.request(guardEndpoints.status, GuardSaved, signal, { method: "PUT", body: { policy: next, digest: base, consent: false } });
       setEdited(null);
       toast.success("Guard policy saved");
     });
@@ -1145,23 +1164,12 @@ function LiveGuardSettings({ backend, source }: { backend: WorkspaceBackend; sou
       else throw error;
     }
   });
-  const install = () => void actions.run(async (signal) => {
-    setProgress({ stage: "download", received: 0, total: model?.downloadBytes ?? 0 });
-    try {
-      await actions.operation(guardEndpoints.model, {}, signal, (journal) => {
-        const decoded = Schema.decodeUnknownOption(GuardModelProgressJournal)(journal);
-        if (decoded._tag === "Some" && decoded.value !== null) setProgress(decoded.value);
-      });
-      toast.success(`${MODEL_NAME} installed`);
-      // A fresh install is meant to be used: turn the switch on, ready to save.
-      edit({ model: true });
-    } catch (error) {
-      if (!(error instanceof GuiRequestError && /cancelled/iu.test(error.failure.message))) throw error;
-    } finally {
-      setProgress(null);
-    }
+  const startInstall = () => void actions.run(async (signal) => {
+    await backend.request(guardEndpoints.model, Schema.Unknown, signal, { method: "POST", body: {} });
   });
-  const cancelInstall = () => { void backend.request(`${guardEndpoints.model}/cancel`, Schema.Unknown, new AbortController().signal, { method: "POST", body: {} }); };
+  const cancelInstall = () => void actions.run(async (signal) => {
+    await backend.request(`${guardEndpoints.model}/cancel`, Schema.Unknown, signal, { method: "POST", body: {} });
+  });
   const remove = () => void actions.run(async (signal) => {
     await backend.request(guardEndpoints.model, Schema.Unknown, signal, { method: "DELETE", body: {} });
     toast.success(`${MODEL_NAME} removed`);
@@ -1174,7 +1182,6 @@ function LiveGuardSettings({ backend, source }: { backend: WorkspaceBackend; sou
   };
 
   const unprotected = draft !== null && !draft.builtInRules && !draft.model && !otherChecker;
-  const installing = progress !== null;
   return <>
     <PageHeader crumbs={["Settings", "Guard"]} actions={<>
       <Button variant="outline" size="sm" disabled={busy} onClick={scan}>Scan folder</Button>
@@ -1250,19 +1257,26 @@ function LiveGuardSettings({ backend, source }: { backend: WorkspaceBackend; sou
               </div>
             </div>
             <div className="flex shrink-0 items-center">
-              {installing ? <Button variant="ghost" size="sm" onClick={cancelInstall}>Cancel</Button>
-                : model.installed ? <Switch id="guard-model" checked={draft.model} disabled={busy} onCheckedChange={(on) => edit({ model: on })} />
-                : <InstallModelPopover uv={model.uv} downloadBytes={model.downloadBytes} disabled={busy} onDownload={install} />}
+              {installing ? <Button variant="ghost" size="sm" disabled={actions.state.loading} onClick={cancelInstall}>Cancel</Button>
+                // A configured checker keeps its switch even if its files went missing, so it can always be turned off.
+                : model.installed || draft.model ? <Switch id="guard-model" checked={draft.model} disabled={busy || !model.installed && !draft.model}
+                  onCheckedChange={(on) => edit({ model: on })} />
+                : <InstallModelPopover uv={model.uv} downloadBytes={model.downloadBytes} disabled={busy} onDownload={startInstall} />}
             </div>
           </div>
           {installing && <div className="grid gap-1.5 border-t border-border/60 py-[10px] pr-[16px] pl-11">
             <span className="text-right font-mono text-xs text-muted-foreground tabular-nums">
-              {progress.stage === "runtime" ? "Preparing the model…" : `${gigabytes(progress.received)} / ${gigabytes(progress.total)} GB`}
+              {progress === null ? "Starting…" : progress.stage === "runtime" ? "Preparing the model…" : `${gigabytes(progress.received)} / ${gigabytes(progress.total)} GB`}
             </span>
             <DitherProgress label={`Installing ${MODEL_NAME}`} tone="act" running
-              value={progress.stage === "runtime" || progress.total === 0 ? 100 : (progress.received / progress.total) * 100} />
+              value={progress === null || progress.total === 0 ? 0 : progress.stage === "runtime" ? 100 : (progress.received / progress.total) * 100} />
           </div>}
-          {model.installed && !installing && draft.model && <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 py-[10px] pr-[16px] pl-11">
+          {install?.failure && <p role="alert" className="border-t border-border/60 py-[10px] pr-[16px] pl-11 text-sm text-bad">{install.failure}</p>}
+          {!model.installed && !installing && draft.model && <div className="flex items-center justify-between gap-3 border-t border-border/60 py-[10px] pr-[16px] pl-11">
+            <span className="text-sm">The model files are missing. Install them again, or turn the model off.</span>
+            <InstallModelPopover uv={model.uv} downloadBytes={model.downloadBytes} disabled={busy} onDownload={startInstall} />
+          </div>}
+          {!installing && draft.model && <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 py-[10px] pr-[16px] pl-11">
             <Label htmlFor="guard-model-down" className="font-normal">If the model isn't running</Label>
             <Select disabled={busy} value={draft.onUnavailable} onValueChange={(value) => { if (value === "block" || value === "warn") edit({ onUnavailable: value }); }}>
               <SelectTrigger id="guard-model-down" size="sm" className="w-64"><SelectValue /></SelectTrigger>
