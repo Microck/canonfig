@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 
-import { ContentDigest, CredentialReference, type ResourceId } from "../domain/brand.ts";
+import { ContentDigest, CredentialReference, parseSurfaceResourceId, resourcesOwner, type ResourceId } from "../domain/brand.ts";
 import type { ProfileRevision, VerificationInput } from "../domain/profile.ts";
 import type { AppliedResourceRecord, ObservedResourceState } from "../domain/synchronization.ts";
 import { parseTextComposition } from "../domain/text-composition.ts";
@@ -201,6 +201,9 @@ export const observeFollowerResource = (
       ProfileRevision["resources"][number],
       "kind" | "target" | "policy"
     > & { readonly id?: ResourceId };
+    // Restore preflight and retirement reconstruct desired paths from the
+    // applied record. Those paths describe what exists, not what stays.
+    readonly retainsDesiredDirectories?: boolean;
   },
   desired: DesiredResource,
   verification: VerificationInput,
@@ -273,11 +276,36 @@ export const observeFollowerResource = (
               if (kind?.kind !== "directory") return [];
               return (yield* machine.listDirectory(entry, anchor)).map((child) => ({ ...child, path: `${name}/${child.path}` }));
             })).pipe(Effect.map((lists) => lists.flat()));
+        const surface = decoded.resource.id === undefined ? undefined : parseSurfaceResourceId(decoded.resource.id);
+        const individualSkill = surface?.surface.startsWith("skill.") === true;
+        const projectedSkills = surface !== undefined && surface.harness !== resourcesOwner
+          && (surface.surface === "skills" || individualSkill);
+        let observedEntries = listed;
+        if (projectedSkills && decoded.retainsDesiredDirectories) {
+          const managed = new Set(managedPaths);
+          const retainedDirectories = new Set([...desired.directories.map((entry) => entry.path), ...relativePathAncestors(desiredPaths)]);
+          // Only a per-skill resource has the skill itself at the observation root.
+          if (individualSkill) retainedDirectories.add("");
+          // Python imports create bytecode beside skill scripts. Keep those
+          // undeclared runtime files local, but never hide an owned path or link.
+          observedEntries = listed.filter((entry) => {
+            if (managed.has(entry.path)) return true;
+            const parts = entry.path.split("/");
+            const name = parts.at(-1)!;
+            const cacheDirectory = entry.kind === "directory" && name === "__pycache__";
+            const bytecode = entry.kind === "regular" && parts.at(-2) === "__pycache__" && name.endsWith(".pyc");
+            if (!cacheDirectory && !bytecode) return true;
+            // A cache cannot be left behind when its parent is removed or
+            // replaced. Keep the existing drift protection for those operations.
+            const parent = parts.slice(0, cacheDirectory ? -1 : -2).join("/");
+            return !retainedDirectories.has(parent);
+          });
+        }
         const ancestors = [...relativePathAncestors(managedPaths)]
           .sort((left, right) => left.split("/").length - right.split("/").length);
         const candidates = new Set([
           ...ancestors,
-          ...listed.map((entry) => entry.path),
+          ...observedEntries.map((entry) => entry.path),
           ...ownedPaths,
           ...desiredPaths,
         ]);

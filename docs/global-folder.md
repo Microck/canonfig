@@ -106,6 +106,14 @@ permissions because an existing native map can still hold those servers. The sha
 Agent Skills before computing the private or shared skill surfaces. Generated
 skills use the same takeover, drift and removal rules as authored skills.
 
+Inside projected skills, undeclared regular `.pyc` files directly inside
+`__pycache__/` and their cache directory are runtime output, not drift.
+Canonfig leaves them on the machine when updating a skill while retaining
+their parent directory. Clear the caches before removing or replacing that
+parent, or before restoring the skill's Takeover Snapshot. Explicitly managed
+cache paths, symlinks, and other local additions still receive normal drift
+checks. This exception applies only to projected skills.
+
 ## Adapters and owned surfaces
 
 Each adapter in `src/projection/adapters/` returns a `HarnessLayout`
