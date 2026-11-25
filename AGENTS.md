@@ -8,6 +8,11 @@ Canonfig is a config synchronizer. The sync can be local (between harnesses) or 
 - Keep scripting, machine-readable output, process launch and supervision, and low-level overrides in the CLI by default. For a CLI-only decision, document why and give users the command to run or the equivalent GUI workflow. If needed GUI work is deferred, record why and link a follow-up issue.
 - Record the coverage decision in the CLI/GUI capability matrix. [Issue #323](https://github.com/Microck/canonfig/issues/323)
 
+## Interactive demo parity
+
+- Treat the installed GUI as the reference for `/demo/`. When a GUI change affects a demo flow, update its simulated state and actions in the same PR. Share the screen, labels, and role rules wherever possible.
+- Update the browser test when a change adds or alters a workflow the demo shows. Run `node scripts/build-pages.mjs` and `npm run test:e2e -- demo.e2e.ts` against the built site. Pages normally publishes the demo with each Canonfig release.
+
 ## Design lint
 
 - For GUI and demo changes, read [ui/DESIGN.md](ui/DESIGN.md) and run `npm run ui:lint` from the repository root. Install the UI dependencies with `npm ci --prefix ui`.

@@ -12,7 +12,7 @@ export type SimulatedFollowerState =
   | { kind: "enrolled"; run: SimulatedRun; evidence: FollowerEvidence }
   | { kind: "unenrolled"; plan: PlanItem[]; lastEvidence: FollowerEvidence };
 export type SimulatedFollowerEvent =
-  | { kind: "apply"; target: number }
+  | { kind: "apply"; target: number; plan?: PlanItem[] }
   | { kind: "advance"; id: number; progress: number }
   | { kind: "recover" | "abandon" | "unenroll" | "acknowledge" }
   | { kind: "restore"; snapshot: string };
@@ -22,7 +22,7 @@ export function transitionSimulatedFollower(state: SimulatedFollowerState, event
   switch (event.kind) {
     case "apply":
       if (run.kind !== "planned" && run.kind !== "applied") break;
-      return { ...state, run: { kind: "applying", id: (evidence.runs[0]?.n ?? 0) + 1, plan: run.plan, progress: 0, target: event.target } };
+      return { ...state, run: { kind: "applying", id: (evidence.runs[0]?.n ?? 0) + 1, plan: event.plan ?? run.plan, progress: 0, target: event.target } };
     case "advance": {
       if (run.kind !== "applying" || run.id !== event.id || event.progress < run.progress || event.progress > 100) break;
       if (event.progress < 100) return { ...state, run: { ...run, progress: event.progress } };

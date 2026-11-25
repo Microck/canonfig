@@ -205,6 +205,7 @@ const RECENT_KEPT = 4;
 export function BackupsView() {
   const ws = useWorkspace();
   const [restoring, setRestoring] = useState<Snapshot | null>(null);
+  const sourceApplying = ws.demoWatch !== undefined && ws.phase === "running";
   const cols = "minmax(220px,280px) minmax(160px,1fr) 64px 120px";
   const colsMin = 220 + 160 + 64 + 120 + 3 * 12 + 20;
   const recent = ws.snapshots.filter((s) => s.first === false).length;
@@ -252,7 +253,7 @@ export function BackupsView() {
                       </span>
                       <span className="text-sm text-muted-foreground tabular-nums">{s.files ?? "Not reported"}</span>
                       <span className="flex justify-end">
-                        <Button variant="outline" size="xs" disabled={done || ws.followerLive?.action.loading} title={done ? "Its harnesses are already excluded on this machine." : undefined} onClick={() => setRestoring(s)}>
+                        <Button variant="outline" size="xs" disabled={done || sourceApplying || ws.followerLive?.action.loading} title={done ? "Its harnesses are already excluded on this machine." : sourceApplying ? "Wait for Local sync to finish." : undefined} onClick={() => setRestoring(s)}>
                           {done ? "Restored" : "Restore…"}
                         </Button>
                       </span>

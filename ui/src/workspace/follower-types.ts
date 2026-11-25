@@ -17,7 +17,15 @@ export type FollowerCommandState =
   | { kind: "Failed"; command: FollowerCommand; name: string; operation: Extract<GuiOperation, { state: "failed" }> }
   | { kind: "SubmissionFailed"; command: FollowerCommand; name: string; error: GuiRequestError };
 
-export interface FollowerLive {
+export interface FolderWatch {
+  watch: (Pick<GuiWatchStatus, "state" | "logs" | "lastPass"> & { manager: Pick<GuiWatchStatus["manager"], "installed"> }) | null;
+  watchError: GuiRequestError | null;
+  /** Live status is refreshed because the native service runs outside the GUI. */
+  refreshWatch?: () => void;
+  setWatch: (enabled: boolean) => Promise<boolean>;
+}
+
+export interface FollowerLive extends FolderWatch {
   action: ResourceState;
   operation: GuiOperation | null;
   operationName: string;
@@ -34,14 +42,6 @@ export interface FollowerLive {
   createReview: () => void;
   saveSchedule: (schedule: Schedule) => Promise<boolean>;
   removeSchedule: () => Promise<boolean>;
-  /** The folder watcher: a Source's setting, or one a Follower kept from before it enrolled. Null before it loads. */
-  watch: GuiWatchStatus | null;
-  /** Why the watcher's status couldn't be read; shown in place of the control. */
-  watchError: GuiRequestError | null;
-  /** Read the watcher's status again, keeping the current one on screen meanwhile. */
-  refreshWatch: () => void;
-  /** Install (true) or remove (false) the native service that applies folder changes automatically. */
-  setWatch: (enabled: boolean) => Promise<boolean>;
   saveItems: (input: typeof GuiLocalWrite.Type) => Promise<boolean>;
   savePreferences: (input: typeof GuiLocalConfigRequest.Type) => Promise<boolean>;
   refreshSecrets: () => void;

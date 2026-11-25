@@ -1,6 +1,7 @@
 import type { GuiLocalItems } from "../../../src/gui/contract/synchronization";
-import type { FollowerLive } from "./follower-types";
+import type { FollowerLive, FolderWatch } from "./follower-types";
 import { ArchiveExportButton } from "./archive-transfer";
+import { collisionOf, LOCAL_ONE, overlaps, unsettledCollisions } from "./local-collisions";
 // Shared Follower screens read machine data and operations from the workspace provider.
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { toast } from "sonner";
@@ -21,6 +22,8 @@ import {
   CATEGORY_LABEL,
   DEMO,
   HARNESS_NAMES,
+  keyClaimCovers,
+  parseKeyClaim,
   LOCAL_CATEGORIES,
   PLAIN,
   SECRETS_GROUP,
@@ -33,7 +36,7 @@ import {
   type LocalItem,
   type Resource,
 } from "@/shared/metadata";
-import { sharedKey, useSharedReader, useSharedState, useWorkspace, type PlanAction, type PlanItem, type Workspace } from "./store";
+import { sharedKey, useSharedReader, useSharedState, useWorkspace, type PlanAction, type PlanItem } from "./store";
 import { GetStarted } from "./guide";
 import { SecretsView, WorkspaceEvidence } from "./source";
 import { HarnessTable } from "./harnesses";
@@ -74,9 +77,10 @@ import { TunnelConfigure, useTunnelConfigureDraft } from "./tunnel-configure";
 import { TunnelTimeoutField, tunnelTimeoutError } from "@/shared/tunnel-fields";
 
 const ACTION: Record<PlanAction, { label: string; cls: string; hint: string }> = {
-  write: { label: "Write", cls: "bg-ok/12 text-ok", hint: "Replace the harness file or folder with the revision's copy." },
+  write: { label: "Write", cls: "bg-ok/12 text-ok", hint: "Replace the harness file or folder with the Canonfig-managed copy." },
   append: { label: "Add section", cls: "bg-ok/12 text-ok", hint: "Write Canonfig's marked section at the top of the file.\nEverything below it stays as this machine's text." },
   merge: { label: "Set keys", cls: "bg-ok/12 text-ok", hint: "Set only the keys Canonfig owns; every other key in the file stays as it is." },
+  remove: { label: "Remove", cls: "bg-warn/12 text-warn", hint: "Remove the files or keys Canonfig manages." },
   install: { label: "Install", cls: "bg-[oklch(0.72_0.12_240)]/14 text-[oklch(0.78_0.1_240)]", hint: "Run the tool's install recipe for this system, then check it runs." },
   "skip-drift": { label: "Held", cls: "bg-warn/12 text-warn", hint: "You edited this item's file here.\nCanonfig keeps your edit and holds what it writes from it." },
 };
@@ -498,21 +502,21 @@ function passTime(at: string) {
  * The folder watcher (`canonfig watch`): a native service on this Source that
  * applies the Canonfig folder about a second after each change.
  */
-function WatchSetting({ live }: { live: FollowerLive }) {
+function WatchSetting({ control }: { control: FolderWatch }) {
   const [saving, setSaving] = useState(false);
-  const { refreshWatch } = live;
+  const { refreshWatch, watch, watchError, setWatch } = control;
   // The watcher runs in the background, so a later run's result (or a stopped
   // service) reaches this page only by reading its status again.
   useEffect(() => {
+    if (!refreshWatch) return;
     const timer = window.setInterval(() => { if (document.visibilityState === "visible") refreshWatch(); }, WATCH_REFRESH_MILLISECONDS);
     return () => window.clearInterval(timer);
   }, [refreshWatch]);
-  const watch = live.watch;
   if (!watch) {
     // A failed status read keeps the section and says why, instead of the switch silently vanishing.
-    return live.watchError && <div className="space-y-2 border-b border-border px-[18px] py-4">
+    return watchError && <div className="space-y-2 border-b border-border px-[18px] py-4">
       <SectionLabel>Apply changes automatically</SectionLabel>
-      <p role="alert" className="text-sm text-bad">Canonfig couldn't check the watcher: {live.watchError.failure.message}</p>
+      <p role="alert" className="text-sm text-bad">Canonfig couldn't check the watcher: {watchError.failure.message}</p>
     </div>;
   }
   const on = watch.manager.installed;
@@ -520,7 +524,7 @@ function WatchSetting({ live }: { live: FollowerLive }) {
   const last = watch.lastPass;
   const change = async (enabled: boolean) => {
     setSaving(true);
-    try { await live.setWatch(enabled); } finally { setSaving(false); }
+    try { await setWatch(enabled); } finally { setSaving(false); }
   };
   return (
     <div className="space-y-2 border-b border-border px-[18px] py-4">
@@ -569,9 +573,12 @@ function LeftoverWatcher({ live }: { live: FollowerLive }) {
 function SyncForm() {
   const ws = useWorkspace();
   const live = ws.followerLive;
-  const localProjection = live !== undefined && ws.session?.role !== "follower";
-  const sent = ws.resources.filter((r) => r.groups.length === 0 || r.groups.some((group) => ws.selfFollower?.groups.includes(group))).length;
-  const notSent = ws.resources.length - sent;
+  const localProjection = ws.role !== "follower";
+  const folderWatch = live ?? ws.demoWatch;
+  const simulatedFollower = !live && !localProjection;
+  const notSent = simulatedFollower
+    ? ws.resources.filter((resource) => resource.groups.length > 0 && !resource.groups.some((group) => ws.selfFollower?.groups.includes(group))).length
+    : 0;
   const rev = ws.targetRevision;
   const steps = ws.plan;
   const held = steps.filter(isHeld).length;
@@ -593,7 +600,7 @@ function SyncForm() {
   // Column minimums + 4 gaps + row inset padding; narrower screens scroll the list sideways instead of clipping it.
   const colsMin = 18 + 92 + 150 + 200 + 220 + 4 * 12 + 20;
   const current = steps.find((p) => p.resource === selected);
-  const unchanged = Math.max(0, sent - steps.length);
+  const unchanged = Math.max(0, ws.resources.length - notSent - steps.length);
   const running = ws.phase === "running";
   const command = live?.command;
   const activeCommand = running && command && "command" in command ? command.command : undefined;
@@ -622,13 +629,17 @@ function SyncForm() {
                   setChecking(false);
                   // Syncing or the tunnel stopped during the check: the Source can't have answered.
                   if (blocks.unreachable()) return;
+                  if (localProjection) {
+                    toast(ws.phase === "done" || steps.length === 0 ? "No local changes" : "Local changes planned");
+                    return;
+                  }
                   toast(ws.phase === "done" ? "No newer revision" : `Revision ${rev} is still the latest`);
                 }, 900);
               }}
             >
               {planning && <HourglassMedium />} {planning ? planningLabel : planLabel}
             </Button>
-            {ws.phase !== "done" && (
+            {ws.phase !== "done" && (live || !localProjection || steps.length > 0) && (
               <Button
                 size="sm"
                 variant="primary"
@@ -653,10 +664,10 @@ function SyncForm() {
           ) : undefined
         }
       >
+        {localProjection && <p className="border-b border-border px-[18px] py-3 text-sm text-muted-foreground">Applies this machine's Canonical Folder to its installed, selected harnesses.</p>}
+        {/* First on the page: with it on, planning and applying by hand become the fallback. */}
+        {localProjection && folderWatch && <WatchSetting control={folderWatch} />}
         {live ? <>
-          {localProjection && <p className="border-b border-border px-[18px] py-3 text-sm text-muted-foreground">Applies this machine's Canonical Folder to its installed, selected harnesses.</p>}
-          {/* First on the page: with it on, planning and applying by hand become the fallback. */}
-          {localProjection && <WatchSetting live={live} />}
           <InterruptedNotice />
           {!live.operation && <EmptyState title="No plan yet" body={localProjection ? "Plan local changes to see the affected files." : "Check for updates to see the affected files."} />}
           <FollowerOperationEvidence />
@@ -684,6 +695,8 @@ function SyncForm() {
                   <>
                     {step !== undefined ? <>Applying step <AnimatedNumber value={step} /> of {steps.length}</> : "Applying changes"}
                   </>
+                ) : localProjection ? (
+                  ws.phase === "done" ? "Local changes applied" : "Local changes"
                 ) : ws.phase === "done" ? (
                   held > 0 ? (
                     `Update #${ws.runs[0].n} finished: revision ${rev} applied, ${held} ${held === 1 ? "item" : "items"} held`
@@ -713,7 +726,7 @@ function SyncForm() {
                 {running ? ws.progress === undefined ? "Applying" : `${ws.progress}%` : `${steps.length} ${steps.length === 1 ? "change" : "changes"}`}
               </span>
             </div>
-            {ws.progress !== undefined && <DitherProgress value={ws.progress} running={running} label={`Applying revision ${rev}`} className={cn("mt-3", !running && "invisible")} />}
+            {ws.progress !== undefined && <DitherProgress value={ws.progress} running={running} label={localProjection ? "Applying local changes" : `Applying revision ${rev}`} className={cn("mt-3", !running && "invisible")} />}
           </div>
         </section>
         {(ws.interrupted || ws.humanAction || collisions.length > 0 || adoption) && (
@@ -738,13 +751,14 @@ function SyncForm() {
             )}
           </div>
         )}
-        <ListHead cols={cols} minWidth={colsMin} data-tour="sync-plan">
+        {localProjection && steps.length === 0 && <EmptyState title="No local changes" body="There are no pending harness changes in this demo plan." />}
+        {(!localProjection || steps.length > 0) && <ListHead cols={cols} minWidth={colsMin} data-tour="sync-plan">
           <span />
           <span>Change</span>
           <span>Item</span>
           <span>Where</span>
           <span>Why</span>
-        </ListHead>
+        </ListHead>}
         {steps.map((p) => {
           const Icon = CATEGORY_ICON[p.category];
           return (
@@ -764,7 +778,7 @@ function SyncForm() {
             </ListRow>
           );
         })}
-        {(unchanged > 0 || notSent > 0) && (
+        {simulatedFollower && (unchanged > 0 || notSent > 0) && (
           <div className="mx-[8px] flex h-[36px] items-center gap-2 px-[10px] text-sm text-faint">
             <Check className="size-3.5" />
             {[
@@ -1098,9 +1112,6 @@ function ScheduleForm() {
   );
 }
 
-/** Singular names as Canonfig's collision message uses them (src/projection/folder.ts addLocal). */
-const LOCAL_ONE: Record<LocalCategory, string> = { instructions: "instructions", rules: "rule", skills: "skill", agents: "agent", commands: "command", mcp: "MCP server", settings: "setting" };
-
 /** Where a local item lives, relative to ~/.canonfig/local/. */
 function localPath(category: LocalCategory, name: string) {
   if (category === "instructions") return "AGENTS.md";
@@ -1108,43 +1119,6 @@ function localPath(category: LocalCategory, name: string) {
   return category === "skills" ? `skills/${name}/` : `${category}/${name}.md`;
 }
 
-
-/** Whether two settings key paths name the same key or one sits inside the other. */
-const overlaps = (a: string, b: string) => a === b || a.startsWith(`${b}.`) || b.startsWith(`${a}.`);
-
-/**
- * A local item's name collision with a published item, as Canonfig's message words it (addLocal and
- * mergeLocalSettings in src/projection/folder.ts), or null. Items outside local.allow aren't loaded, so they never
- * collide, and local/AGENTS.md is appended rather than compared. The message leaves out the command it suggests:
- * here that choice is a button.
- */
-function collisionOf(l: LocalItem, ws: Pick<Workspace, "profile" | "resources">): string | null {
-  if (l.category === "instructions" || !ws.profile.localAllow.includes(l.category)) return null;
-  const name = l.id.slice(l.category.length + 1);
-  if (l.category === "settings") {
-    const published = Object.keys(ws.resources.find((r) => r.id === l.id)?.keys ?? {});
-    for (const key of Object.keys(l.keys ?? {})) {
-      const clash = published.find((p) => overlaps(key, p));
-      if (clash) return `local setting ${name} ${key} overlaps published setting ${clash}; remove one of them`;
-    }
-    return null;
-  }
-  return ws.resources.some((r) => r.change !== "added" && r.id === l.id) ? `local ${LOCAL_ONE[l.category]} ${name} has the same name as a published one; rename or remove one of them` : null;
-}
-
-/** Local items whose collision no overlay settles. Any one stops the whole update before it changes anything. */
-function unsettledCollisions(local: LocalItem[], overlays: string[], ws: Pick<Workspace, "profile" | "resources">) {
-  return local.filter((l) => !overlays.includes(l.id) && collisionOf(l, ws) !== null);
-}
-
-/** A key claim, `settings/<harness>#<key>` in local.jsonc `overlays`, or null for an item overlay. */
-function claimOf(entry: string): { harness: HarnessId; key: string } | null {
-  const match = /^settings\/([^#]+)#(.+)$/.exec(entry);
-  return match ? { harness: match[1] as HarnessId, key: match[2]! } : null;
-}
-
-/** Whether `key` is the claimed key or sits inside it, which is what a claim covers. */
-const covers = (claimed: string, key: string) => key === claimed || key.startsWith(`${claimed}.`);
 
 type SettingsFile = GuiLocalItems["settingsFiles"][string];
 
@@ -1232,7 +1206,7 @@ function LocalForm() {
   const [disableBackups, setDisableBackups] = useState(false);
   const [preservation, setPreservation] = useSharedState(preservationKey);
   // local.jsonc keeps item overlays and key claims in one list; "Kept on this machine" shows the items, LocalHarnesses the claims.
-  const itemOverlays = ws.overlays.filter((o) => claimOf(o) === null);
+  const itemOverlays = ws.overlays.filter((o) => parseKeyClaim(o) === null);
   const collisions = unsettledCollisions(ws.local, ws.overlays, ws);
   // An item's state as `sync --plan` sees it: ignored outside local.allow, stopping on an unsettled name collision,
   // or projected (replacing the published item when an overlay names it).
@@ -1489,11 +1463,11 @@ function LocalHarnesses({ onToggle }: { onToggle: (id: HarnessId, on: boolean) =
   const settingsFiles = ws.followerLive?.local?.settingsFiles ?? ws.demoProjection?.settingsFiles;
   const [removing, setRemoving] = useState<string | null>(null);
   const claims = ws.overlays.flatMap((item) => {
-    const claim = claimOf(item);
+    const claim = parseKeyClaim(item);
     return claim ? [{ item, ...claim }] : [];
   });
   const busy = ws.followerLive?.action.loading;
-  const removed = removing === null ? null : claimOf(removing);
+  const removed = removing === null ? null : parseKeyClaim(removing);
   const removedValue = removed && ws.resources.find((r) => r.id === `settings/${removed.harness}`)?.keys?.[removed.key];
   const keys = (h: Harness) => {
     const settings = settingsFiles?.[h.id];
@@ -1502,7 +1476,7 @@ function LocalHarnesses({ onToggle }: { onToggle: (id: HarnessId, on: boolean) =
         const name = HARNESS_NAMES[c.harness];
         const written = writtenKeys(settings, c.harness, ws.resources);
         const whole = written.find((k) => c.key.startsWith(`${k}.`));
-        const covered = written.filter((k) => covers(c.key, k));
+        const covered = written.filter((k) => keyClaimCovers(c.key, k));
         // The refusal buildProjection gives, and the plan's CLAIM_UNUSED warning (src/projection/plan.ts).
         const [kind, note]: [StatusKind, string] = ws.followerLive
           ? ["ok", "This key belongs to this machine. The next sync checks the claim against published settings."] : whole
@@ -1539,7 +1513,7 @@ function LocalHarnesses({ onToggle }: { onToggle: (id: HarnessId, on: boolean) =
         title={`Let Canonfig manage ${removed?.key} again?`}
         body={
           ws.followerLive ? "The next sync may write the published value to this key again." :
-          removed && writtenKeys(settingsFiles?.[removed.harness], removed.harness, ws.resources).some((k) => covers(removed.key, k))
+          removed && writtenKeys(settingsFiles?.[removed.harness], removed.harness, ws.resources).some((k) => keyClaimCovers(removed.key, k))
             ? `Canonfig removes the claim from ~/.canonfig/local/local.jsonc. The next update writes ${ws.sourceMachine.hostname}'s ${removed.key}${removedValue ? ` (${removedValue})` : ""} over yours in ${HARNESS_NAMES[removed.harness]}'s settings file, and an edit after that counts as a local change.`
             : `Canonfig removes the claim from ~/.canonfig/local/local.jsonc. It writes no ${removed?.key} there, so nothing else changes.`
         }
@@ -1628,7 +1602,7 @@ function LocalEditor({ item, onClose }: { item: LocalItem | null; onClose: () =>
     const key = r.key.trim();
     if (!key) return "Name this key, or remove the row.";
     // The loader refuses a local setting for a key this machine claims (loadCanonicalFolder in src/projection/folder.ts).
-    const claimed = ws.overlays.map(claimOf).find((c) => c?.harness === trimmed && overlaps(c.key, key));
+    const claimed = ws.overlays.map(parseKeyClaim).find((c) => c?.harness === trimmed && overlaps(c.key, key));
     if (claimed) return `You claimed ${claimed.key} for ${trimmed}, so the update would stop: “local setting ${trimmed} ${key} overlaps the key claim settings/${trimmed}#${claimed.key}; remove one of them”. Remove the key, or remove the claim under Settings keys you set yourself.`;
     const clash = keyClash(key);
     return clash && !replace

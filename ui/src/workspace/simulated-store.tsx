@@ -8,7 +8,9 @@ import {
   type ReactNode,
 } from "react";
 import { toast } from "sonner";
+import { keyClaimCovers, parseKeyClaim } from "@/shared/metadata";
 import { demoProjection } from "./demo-projection";
+import { unsettledCollisions } from "./local-collisions";
 import {
   DEMO,
   APP_VERSION,
@@ -153,6 +155,42 @@ const SEED_RUNS: Run[] = [
 ];
 
 
+type SourceProjectionItem = { step: PlanItem; content: string };
+
+/** The Source demo projects sample rules and settings into Claude Code. */
+function sourceLocalChanges(resources: Resource[], listed: boolean, surfaces: SurfaceCategory[] | undefined, applied: Map<string, SourceProjectionItem>, overlays: readonly string[]) {
+  const rules = listed && (surfaces?.includes("rules") ?? true);
+  const settings = listed && (surfaces?.includes("settings") ?? true);
+  const claudeClaims = overlays.map(parseKeyClaim).flatMap((claim) => claim?.harness === "claude-code" ? [claim.key] : []);
+  const desired = new Map<string, SourceProjectionItem>();
+  for (const item of resources) {
+    if (item.change === "removed") continue;
+    let step: PlanItem;
+    let content: string;
+    if (rules && item.category === "rules") {
+      step = { resource: item.id, category: "rules", target: `~/.claude/${item.path}`, action: "write", reason: "Projects this machine's rule to Claude Code." };
+      content = JSON.stringify(item.detail);
+    } else if (settings && item.id === "settings/claude-code") {
+      step = { resource: item.id, category: "settings", target: "~/.claude/settings.json", action: "merge", reason: "Applies Canonical Folder keys that this machine lets Canonfig manage." };
+      // A Key Claim releases ownership even if every authored key in the file is claimed.
+      const keys = Object.entries(item.keys ?? {}).filter(([key]) => !claudeClaims.some((claim) => keyClaimCovers(claim, key)));
+      content = JSON.stringify(keys);
+    } else continue;
+    desired.set(item.id, { step, content });
+  }
+
+  const changes: { step: PlanItem; desired: SourceProjectionItem | null }[] = [];
+  for (const [id, item] of desired) {
+    if (applied.get(id)?.content !== item.content) changes.push({ step: item.step, desired: item });
+  }
+  for (const [id, { step }] of applied) {
+    if (desired.has(id)) continue;
+    const reason = step.category === "rules" ? "Removes the rule Canonfig wrote." : "Removes the settings keys Canonfig set and keeps the other keys.";
+    changes.push({ step: { ...step, action: "remove", reason }, desired: null });
+  }
+  return changes;
+}
+
 /** The demo follower's next revision; a follower that just joined starts on the one it downloaded. */
 const DEMO_TARGET_REVISION = 8;
 const JOINED_REVISION = 7;
@@ -250,6 +288,17 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     [listed, excluded, fresh],
   );
   const [backups, setBackups] = useState(true);
+  const [local, setLocal] = useState<LocalItem[]>(() => (joined ? [] : followerSelf.local));
+  const [overlays, setOverlays] = useState<string[]>(() => (joined ? [] : followerSelf.overlays));
+  const [watchEnabled, setWatchEnabled] = useState(false);
+  const [appliedSourceItems, setAppliedSourceItems] = useState(() => new Map<string, SourceProjectionItem>());
+  const claude = harnessRows.find((harness) => harness.id === "claude-code");
+  const sourceChanges = useMemo(() => {
+    // Local exclusion and temporary non-detection hold ownership. Unlisting retires it.
+    if (role !== "source" || !claude || claude.excluded || (claude.listed && !claude.installed)) return [];
+    return sourceLocalChanges(resources, claude.listed, surfaces["claude-code"], appliedSourceItems, overlays);
+  }, [role, claude, resources, surfaces, appliedSourceItems, overlays]);
+  const sourceHasCollisions = role === "source" && unsettledCollisions(local, overlays, { resources, profile }).length > 0;
   const snapshots = fresh ? [] : seedSnapshots;
 
   // Follower state. One that just joined has downloaded revision 7 and applied nothing: no runs,
@@ -258,15 +307,21 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
   const targetRevision = joined ? JOINED_REVISION : DEMO_TARGET_REVISION;
   const [initialFollower] = useState<SimulatedFollowerState>(() => ({
     kind: "enrolled",
-    run: joined ? { kind: "planned", plan: JOINED_PLAN } : { kind: "recovery-required", run: SEED_RUNS[0], plan: FOLLOWER_PLAN.map((item) => item.action === "skip-drift" ? { ...item, appliedRevision: followerSelf.revision } : item) },
-    evidence: { appliedRevision: joined ? 0 : followerSelf.revision, humanAction: false, runs: joined ? [] : SEED_RUNS },
+    run: role === "source"
+      ? { kind: "planned", plan: [] }
+      : joined
+        ? { kind: "planned", plan: JOINED_PLAN }
+        : { kind: "recovery-required", run: SEED_RUNS[0], plan: FOLLOWER_PLAN.map((item) => item.action === "skip-drift" ? { ...item, appliedRevision: followerSelf.revision } : item) },
+    evidence: { appliedRevision: joined || role === "source" ? 0 : followerSelf.revision, humanAction: false, runs: joined || role === "source" ? [] : SEED_RUNS },
   }));
   const followerFlow = useStateMachine<SimulatedFollowerState, SimulatedFollowerEvent>(initialFollower, transitionSimulatedFollower);
   const { send: sendFollower, current: followerCurrent } = followerFlow;
   const follower = followerFlow.state;
   const evidence = follower.kind === "enrolled" ? follower.evidence : follower.lastEvidence;
-  const plan = simulatedPlan(follower);
-  const phase = follower.kind !== "enrolled" ? "plan" : follower.run.kind === "applying" ? "running" : follower.run.kind === "applied" ? "done" : "plan";
+  const running = follower.kind === "enrolled" && follower.run.kind === "applying";
+  const completed = follower.kind === "enrolled" && follower.run.kind === "applied";
+  const phase = running ? "running" : completed && (role !== "source" || sourceChanges.length === 0) ? "done" : "plan";
+  const plan = role === "source" && phase === "plan" ? sourceChanges.map(({ step }) => step) : simulatedPlan(follower);
   const progress = follower.kind === "enrolled" && follower.run.kind === "applying" ? follower.run.progress : phase === "done" ? 100 : 0;
   const interrupted = follower.kind === "enrolled" && follower.run.kind === "recovery-required";
   const { appliedRevision, humanAction, runs } = evidence;
@@ -280,8 +335,6 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     if (value) throw new TransitionError("Demo follower", current.kind, "create human action");
     sendFollower({ kind: "acknowledge" });
   };
-  const [local, setLocal] = useState<LocalItem[]>(() => (joined ? [] : followerSelf.local));
-  const [overlays, setOverlays] = useState<string[]>(() => (joined ? [] : followerSelf.overlays));
   const kept = joined ? [] : followerSelf.kept;
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearInterval(timer.current), []);
@@ -290,15 +343,21 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     (id: string) => {
       const snapshot = seedSnapshots.find((s) => s.id === id);
       if (!snapshot) return;
+      const current = followerCurrent.current;
+      if (role === "source" && current.kind === "enrolled" && current.run.kind === "applying") {
+        toast.error("Wait for Local sync to finish before restoring a backup.");
+        return;
+      }
       const names = snapshot.harnesses.map((h) => HARNESS_NAMES[h]).join(", ");
       // `restore` runs as a journaled Synchronization Run, so it shows with the others.
       sendFollower({ kind: "restore", snapshot: id });
       setExcluded((prev) => [...new Set([...prev, ...snapshot.harnesses])]);
+      if (role === "source" && snapshot.harnesses.includes("claude-code")) setAppliedSourceItems(new Map());
       toast.success(`Restored ${names}`, {
         description: `Put back ${snapshot.files} files from ${id}.\nExcluded ${names} on this machine in ~/.canonfig/local/local.jsonc.${DEMO ? "\nSimulated in this demo; no files changed." : ""}`,
       });
     },
-    [sendFollower],
+    [role, followerCurrent, sendFollower],
   );
 
   // Export changes nothing Canonfig manages, so unlike restore it adds no run.
@@ -339,7 +398,13 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     toast(`${machineName} stopped syncing`, { description: "In the real app this screen would return to setup." });
   }, [machineName, sendFollower]);
   const applyPlan = useCallback(() => {
-    const started = sendFollower({ kind: "apply", target: targetRevision });
+    const local = role === "source";
+    const current = followerCurrent.current;
+    if (local && (sourceHasCollisions || sourceChanges.length === 0 || (current.kind === "enrolled" && current.run.kind === "applying"))) return;
+    const started = sendFollower({
+      kind: "apply", target: targetRevision,
+      plan: local ? sourceChanges.map(({ step }) => step) : undefined,
+    });
     if (started.kind !== "enrolled" || started.run.kind !== "applying") throw new TransitionError("Demo follower", started.kind, "apply");
     const id = started.run.id;
     let tick = 0;
@@ -355,12 +420,30 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
       if (value < 100) return;
       window.clearInterval(timer.current);
       if (next.kind !== "enrolled" || next.run.kind !== "applied") return;
+      if (local) {
+        // Keep the bytes from the start of the pass. A later edit still needs its own pass.
+        setAppliedSourceItems((applied) => {
+          const next = new Map(applied);
+          for (const { step, desired } of sourceChanges) {
+            if (desired) next.set(step.resource, desired);
+            else next.delete(step.resource);
+          }
+          return next;
+        });
+        toast.success("Local changes applied");
+        return;
+      }
       const held = next.run.held;
       const heldText = `${held} ${held === 1 ? "item" : "items"} held`;
       if (held) toast(`Revision ${targetRevision} applied, ${heldText}`, { description: `${held === 1 ? "It keeps" : "They keep"} your local edit.\nSee Sync for how to settle ${held === 1 ? "it" : "them"}.${next.evidence.humanAction ? "\nAlso sign in to the GitHub CLI." : ""}` });
       else toast.success(`Revision ${targetRevision} applied`, { description: next.evidence.humanAction ? "One step needs you: sign in to the GitHub CLI." : "This machine is up to date." });
     }, 140);
-  }, [targetRevision, sendFollower]);
+  }, [role, sourceChanges, sourceHasCollisions, targetRevision, followerCurrent, sendFollower]);
+  useEffect(() => {
+    if (!watchEnabled || phase !== "plan" || sourceHasCollisions || sourceChanges.length === 0) return;
+    const debounce = window.setTimeout(applyPlan, 500);
+    return () => window.clearTimeout(debounce);
+  }, [applyPlan, phase, sourceChanges.length, sourceHasCollisions, watchEnabled]);
   const [followerSchedule] = useSharedState(followerScheduleKey);
   const [tunnelUp] = useSharedState(tunnelUpKey);
   const [secretsRefresh] = useSharedState(secretsRefreshKey);
@@ -370,6 +453,11 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
   return {
     ...navigation,
     demoProjection,
+    demoWatch: role === "source" ? {
+      watch: { state: watchEnabled ? "running" : "not-installed", manager: { installed: watchEnabled }, logs: "" },
+      watchError: null,
+      setWatch: async (enabled) => { setWatchEnabled(enabled); return true; },
+    } : undefined,
     folderPath: machine.folder,
     version: APP_VERSION,
     reload: () => window.location.reload(),
@@ -408,7 +496,7 @@ function useWorkspaceState(route: WorkspaceRoute, navigate: Navigate, setup: Set
     profileName: newSource?.profileName ?? profile.name,
     endpoint: newSource ? `https://127.0.0.1:${newSource.port}` : machine.endpoint,
     justJoined: joined !== null,
-    tunnelConfigured: joined?.tunnel ?? true,
+    tunnelConfigured: role === "follower" && (joined?.tunnel ?? true),
     proposed,
     publishOpen,
     setPublishOpen,
