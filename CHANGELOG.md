@@ -2,7 +2,7 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
-## Unreleased
+## v7.9.1 - 2026-11-26
 
 ### Synchronization
 
