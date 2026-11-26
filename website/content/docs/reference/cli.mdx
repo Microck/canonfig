@@ -1093,10 +1093,12 @@ waits up to 10 seconds for the manager to report the watcher running, and exits
 7 otherwise, leaving the service installed so you can inspect it. Running it
 again on a running, current service changes nothing. On Linux it does not
 enable lingering, so the watcher runs while you have a login session. The
-service starts with the manager's environment, not your shell's. If a harness
-root moves only through a variable your shell sets, such as `CODEX_HOME`, the
-watcher's runs refuse to project into a second location until the service sees
-the same value.
+Linux and macOS watcher keeps the absolute directories from the `PATH` used to
+enable it. Run `watch enable` again after changing where a harness is installed.
+With a different `PATH`, `watch status` can report `drifted` for a running
+watcher. If a harness root moves only through a variable your shell sets,
+such as `CODEX_HOME`, the watcher refuses to project into a second location
+until the service sees the same value.
 
 `watch status` reports one of the following states, plus the latest run in
 `lastPass`:

@@ -72,7 +72,13 @@ Scheduler history on Windows. Run `canonfig watch enable` to start it again.
 On Linux the watcher runs while you have a login session. To keep it running
 after you log out, run `loginctl enable-linger "$USER"`.
 
-The service does not see variables your shell sets. If you moved a harness with
-a variable such as `CODEX_HOME` or `CLAUDE_CONFIG_DIR`, set it where the
+On Linux and macOS, the watcher keeps the absolute directories from the
+`PATH` used to enable it. If a harness moves to a new directory or an existing
+watcher misses a harness that your shell finds, run `canonfig watch enable`
+again from that shell. Check status from the same environment. A different
+`PATH` can report `drifted` while the watcher is still running.
+
+The service does not see most other shell variables. If you moved a harness
+with a variable such as `CODEX_HOME` or `CLAUDE_CONFIG_DIR`, set it where the
 service manager reads it too, or the watcher's runs refuse to write into a
 second location.

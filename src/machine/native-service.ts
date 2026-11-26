@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { access, mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir, userInfo } from "node:os";
-import { dirname, join, win32 } from "node:path";
+import { dirname, join, posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { Effect, Schema } from "effect";
@@ -354,9 +354,15 @@ export const renderNativeService = (
   }
 };
 
-/** The bounded PATH a supervised process gets: the runtime's own directory first. */
-export const nativeServicePath = (executable: string): string =>
-  [...new Set([dirname(executable), "/usr/local/bin", "/usr/bin", "/bin"])].join(":");
+/** Keep the pinned runtime first and ignore entries relative to the service's working directory. */
+export const nativeServicePath = (executable: string, searchPath = ""): string =>
+  [...new Set([
+    dirname(executable),
+    ...searchPath.split(":").filter(posix.isAbsolute),
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+  ])].join(":");
 
 /** The platform this process runs on, in Canonfig's terms. */
 export const platformOf = (): MachinePlatform =>
@@ -434,6 +440,8 @@ export interface NativeServiceHostOptions {
   readonly label: string;
   /** Where launchd writes the process's output. */
   readonly logPath: string;
+  /** Additional POSIX executable directories from the process enabling the service. */
+  readonly executableSearchPath?: string | undefined;
   /** What the systemd user manager's lifecycle means for this service, with and without linger. */
   readonly systemdModes?: ((user: string, linger: boolean) => string) | undefined;
 }
@@ -783,7 +791,7 @@ export const nativeServiceHost = (
       if (platform !== "windows") {
         return [
           { name: "HOME", value: home },
-          { name: "PATH", value: nativeServicePath(executable) },
+          { name: "PATH", value: nativeServicePath(executable, options.executableSearchPath) },
           ...credentialRoot === undefined
             ? []
             : [{ name: "CANONFIG_LOCAL_CREDENTIAL_ROOT", value: credentialRoot }],

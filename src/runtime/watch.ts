@@ -256,10 +256,12 @@ export interface WatchServiceOptions {
  */
 export const watchService = (options: WatchServiceOptions) =>
   Effect.gen(function*() {
+    const environment = options.environment ?? process.env;
     const host = yield* nativeServiceHost({
       platform: options.platform,
       home: options.home,
-      environment: options.environment,
+      environment,
+      executableSearchPath: environment.PATH,
       label: "watch service",
       logPath: join(options.stateDirectory, "watch.log"),
     });
