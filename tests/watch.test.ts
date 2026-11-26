@@ -1,12 +1,14 @@
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { Effect, Fiber } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { installedSystemdCommand } from "../src/machine/installed-scheduler-command.ts";
 import { linuxMachineStateLayer } from "../src/machine/linux.layer.ts";
+import { stableRuntimeExecutable } from "../src/schedule/schedule-command.ts";
 import type { WatchPass } from "../src/gui/contract/synchronization.ts";
 import { runCancellablePromise } from "../src/runtime/cancellable-promise.ts";
 import { recordWatchPass, watchFolder, watchService } from "../src/runtime/watch.ts";
@@ -196,6 +198,7 @@ describe.skipIf(process.platform === "win32")("systemd watch service", () => {
   const setup = async (systemctlScript: string) => {
     const root = await temporary();
     const systemctl = await fakeSystemctl(root, systemctlScript);
+    const harnessBin = join(root, "harness-bin");
     const stateDirectory = join(root, ".canonfig");
     await mkdir(stateDirectory, { recursive: true });
     const run = <Success, Failure>(
@@ -205,14 +208,14 @@ describe.skipIf(process.platform === "win32")("systemd watch service", () => {
         stateDirectory,
         platform: "linux",
         home: root,
-        environment: { CANONFIG_SYSTEMCTL: systemctl },
+        environment: { CANONFIG_SYSTEMCTL: systemctl, PATH: `:${harnessBin}:./bin:${harnessBin}` },
         readinessTimeoutMilliseconds: 500,
       }).pipe(Effect.flatMap(program), Effect.provide(linuxMachineStateLayer())));
-    return { root, stateDirectory, run };
+    return { root, stateDirectory, harnessBin, run };
   };
 
   it("installs a unit that runs `canonfig watch`, reports it with the last pass, and removes it", async () => {
-    const { root, stateDirectory, run } = await setup(
+    const { root, stateDirectory, harnessBin, run } = await setup(
       "case \"$2\" in show) printf 'LoadState=loaded\\nActiveState=active\\nSubState=running\\nUnitFileState=enabled\\nMainPID=4242\\n';; esac\nexit 0",
     );
     const before = await run((service) => service.status());
@@ -225,6 +228,10 @@ describe.skipIf(process.platform === "win32")("systemd watch service", () => {
     // Stop signals only the watcher, which finishes its pass before exiting.
     expect(unit).toContain("KillMode=mixed");
     expect(unit).toMatch(/ExecStart=.*"watch"$/mu);
+    const watcherPath = installedSystemdCommand(unit)?.searchPath;
+    expect(watcherPath).toEqual([...new Set([
+      dirname(stableRuntimeExecutable()), harnessBin, "/usr/local/bin", "/usr/bin", "/bin",
+    ])]);
     const calls = await readFile(join(root, "systemctl.calls"), "utf8");
     expect(calls).toContain("--user enable canonfig-watch.service");
     expect(calls).toContain("--user restart canonfig-watch.service");

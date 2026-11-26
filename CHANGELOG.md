@@ -2,6 +2,14 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
+## Unreleased
+
+### Automatic local sync
+
+- The Linux and macOS watcher now finds Codex and other harnesses in the
+  directories on your shell's `PATH`. After upgrading, run `canonfig watch enable`
+  again from the shell that finds those harnesses to refresh an existing watcher.
+
 ## v7.9.1 - 2026-11-26
 
 ### Synchronization
