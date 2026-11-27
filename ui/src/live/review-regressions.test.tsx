@@ -589,6 +589,24 @@ it("only a successful plan enables Apply and successful Apply reaches done", asy
   } finally { await app.close(); }
 });
 
+it("shows a tool kept at a newer version than its at-least pin instead of folding it into matching items", async () => {
+  const notice = 'Keeps @openai/codex 0.172.0, which is newer than the pinned 0.167.1 (versionPolicy "at-least"). Set versionPolicy to "exact" to install 0.167.1 instead.';
+  const plan = { planDigest: "a".repeat(64), plan: { actions: [
+    { id: "action:tools:codex:0:no-op", kind: "no-op", resource: "tools:codex", before: [], detail: { kind: "no-op", versionNotice: notice } },
+    { id: "action:tools:rg:0:no-op", kind: "no-op", resource: "tools:rg", before: [], detail: { kind: "no-op" } },
+  ] } };
+  const app = await fixture("/follower/overview", {
+    ...sourceResponses(), "/api/sync/plan": { id: "plan" },
+    "/api/operations/plan": { id: "plan", state: "succeeded", journal: {}, result: plan },
+  });
+  try {
+    await click("Check follower");
+    await until(() => app.container.textContent?.includes(notice) === true, "Plan did not show the kept tool version");
+    assert.equal(app.container.textContent?.split(notice).length, 2);
+    assert.ok(app.container.textContent?.includes("2 items already match"));
+  } finally { await app.close(); }
+});
+
 it("a profile save refresh keeps edits made after the submitted draft", async () => {
   const snapshot = (digest: string, body: string) => ({ ...profile, items: [{ path: "AGENTS.md", digest, files: [{ path: "AGENTS.md", base64: Buffer.from(body).toString("base64"), executable: false }] }] });
   let refresh: ServerResponse | undefined;

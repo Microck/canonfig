@@ -16,6 +16,14 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
   prevent those profile, overlay, tool-recipe, skill-drift, and Windows
   scheduler mistakes.
 
+### Tools
+
+- A tool recipe's `version` is now a minimum: a Follower Machine that already
+  has a newer version keeps it instead of downgrading, and `canonfig sync
+  --plan` and the Sync page say which version was kept. Add
+  `"versionPolicy": "exact"` to a recipe to install exactly the pinned version
+  as before.
+
 ### Synchronization
 
 - Python caches, bytecode, and Finder metadata no longer block skill updates

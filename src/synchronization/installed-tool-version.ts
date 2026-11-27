@@ -31,6 +31,134 @@ export const installedVersionMatches = (method: string, installed: string, pinne
     ? installed.toLowerCase() === pinned.toLowerCase()
     : installed === pinned;
 
+/**
+ * Order two digit strings without converting them, so a component wider than
+ * a safe integer still compares correctly.
+ */
+const compareDigits = (left: string, right: string): number => {
+  const a = left.replace(/^0+(?=\d)/u, "");
+  const b = right.replace(/^0+(?=\d)/u, "");
+  return a.length !== b.length ? a.length - b.length : a < b ? -1 : a > b ? 1 : 0;
+};
+
+const semver = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/u;
+
+/**
+ * SemVer 2.0 precedence: numeric core, then a release above any of its
+ * pre-releases, then pre-release identifiers left to right (numeric below
+ * alphanumeric, a shorter list below a longer one). Build metadata is ignored.
+ */
+const compareSemver = (left: string, right: string): number | undefined => {
+  const a = semver.exec(left);
+  const b = semver.exec(right);
+  if (a === null || b === null) return undefined;
+  for (const index of [1, 2, 3]) {
+    const order = compareDigits(a[index]!, b[index]!);
+    if (order !== 0) return order;
+  }
+  if (a[4] === undefined || b[4] === undefined) return (a[4] === undefined ? 1 : 0) - (b[4] === undefined ? 1 : 0);
+  const leftIds = a[4].split(".");
+  const rightIds = b[4].split(".");
+  for (let index = 0; index < Math.min(leftIds.length, rightIds.length); index += 1) {
+    const x = leftIds[index]!;
+    const y = rightIds[index]!;
+    const xNumeric = /^\d+$/u.test(x);
+    const yNumeric = /^\d+$/u.test(y);
+    const order = xNumeric && yNumeric ? compareDigits(x, y)
+      : xNumeric !== yNumeric ? (xNumeric ? -1 : 1)
+      : x < y ? -1 : x > y ? 1 : 0;
+    if (order !== 0) return order;
+  }
+  return leftIds.length - rightIds.length;
+};
+
+/** dpkg's character order: `~` before everything, then the end, then letters, then other symbols. */
+const debianCharacterOrder = (character: string | undefined): number =>
+  character === undefined || /\d/u.test(character) ? 0
+  : /[A-Za-z]/u.test(character) ? character.charCodeAt(0)
+  : character === "~" ? -1
+  : character.charCodeAt(0) + 256;
+
+/** dpkg's `verrevcmp`: alternate non-digit runs (by the order above) and digit runs (numerically). */
+const compareDebianPart = (left: string, right: string): number => {
+  let i = 0;
+  let j = 0;
+  const digit = (value: string, index: number) => index < value.length && /\d/u.test(value[index]!);
+  while (i < left.length || j < right.length) {
+    while ((i < left.length && !digit(left, i)) || (j < right.length && !digit(right, j))) {
+      const order = debianCharacterOrder(left[i]) - debianCharacterOrder(right[j]);
+      if (order !== 0) return order;
+      i += 1;
+      j += 1;
+    }
+    let leftEnd = i;
+    while (digit(left, leftEnd)) leftEnd += 1;
+    let rightEnd = j;
+    while (digit(right, rightEnd)) rightEnd += 1;
+    const order = compareDigits(left.slice(i, leftEnd) || "0", right.slice(j, rightEnd) || "0");
+    if (order !== 0) return order;
+    i = leftEnd;
+    j = rightEnd;
+  }
+  return 0;
+};
+
+const debianVersion = /^(?:(\d+):)?([0-9][0-9A-Za-z.+~:-]*?)(?:-([0-9A-Za-z.+~]+))?$/u;
+
+/** Debian policy order: epoch, then upstream version, then Debian revision. */
+const compareDebian = (left: string, right: string): number | undefined => {
+  const a = debianVersion.exec(left);
+  const b = debianVersion.exec(right);
+  if (a === null || b === null) return undefined;
+  return compareDigits(a[1] ?? "0", b[1] ?? "0")
+    || compareDebianPart(a[2]!, b[2]!)
+    || compareDebianPart(a[3] ?? "", b[3] ?? "");
+};
+
+/**
+ * Dot-separated numbers, as uv, winget and Homebrew report most releases.
+ * Homebrew's `_<revision>` suffix counts as one more component. A missing
+ * component is zero, so `1.2` equals `1.2.0`.
+ */
+const compareNumericDotted = (left: string, right: string): number | undefined => {
+  const pattern = /^\d+(?:[._]\d+)*$/u;
+  if (!pattern.test(left) || !pattern.test(right)) return undefined;
+  const a = left.split(/[._]/u);
+  const b = right.split(/[._]/u);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const order = compareDigits(a[index] ?? "0", b[index] ?? "0");
+    if (order !== 0) return order;
+  }
+  return 0;
+};
+
+/**
+ * Order an installed version against a recipe's pin with the installer's own
+ * version rules: negative when older, zero when equivalent, positive when
+ * newer. Undefined when either version is outside the grammar Canonfig can
+ * order for that installer (for example a PEP 440 pre-release such as
+ * `6.0.0rc1`); the planner then treats the tool as not satisfying the pin
+ * and installs it, as an exact pin would.
+ */
+export const compareInstalledVersion = (method: string, installed: string, pinned: string): number | undefined => {
+  switch (method) {
+    case "npm":
+    case "pnpm":
+    case "bun":
+    case "cargo":
+      return compareSemver(installed, pinned);
+    case "apt":
+      return compareDebian(installed, pinned);
+    case "uv":
+    case "winget":
+    case "brew":
+    case "homebrew":
+      return compareNumericDotted(installed, pinned);
+    default:
+      return undefined;
+  }
+};
+
 /** `uv tool list`: one `<name> v<version>` line per tool, then its entrypoints. */
 export const parseUvToolList = (output: string, packageName: string): string | undefined => {
   const wanted = pythonPackageName(packageName);

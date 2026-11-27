@@ -54,6 +54,24 @@ export type RecipeIndexPolicy = Schema.Schema.Type<typeof RecipeIndexPolicy>;
 
 export const defaultPythonIndex = "https://pypi.org/simple";
 
+/**
+ * How a recipe's pinned `version` treats a tool that is already installed.
+ * `at-least` (the default) keeps an installed version at or above the pin and
+ * installs the pin only when the tool is missing or older, so a CLI that
+ * updated itself is never downgraded. `exact` reinstalls the pin over any
+ * other version. Binary and source recipes are always exact: their pin names
+ * reviewed bytes or a revision, not a version an installer can order.
+ */
+export const RecipeVersionPolicy = Schema.Literals(["at-least", "exact"]);
+export type RecipeVersionPolicy = Schema.Schema.Type<typeof RecipeVersionPolicy>;
+
+/** The policy a recipe applies, with the default and the exact-only methods resolved. */
+export const effectiveVersionPolicy = (recipe: {
+  readonly method: string;
+  readonly versionPolicy?: RecipeVersionPolicy | undefined;
+}): RecipeVersionPolicy =>
+  recipe.method === "binary" || recipe.method === "source" ? "exact" : recipe.versionPolicy ?? "at-least";
+
 const hasUnsafeIndexUrlCharacter = (value: string): boolean =>
   [...value].some((character) => {
     const code = character.codePointAt(0) ?? 0;
@@ -163,6 +181,7 @@ export interface RecipeValidationInput {
   readonly source?: RecipeSource | undefined;
   readonly integrity?: string | undefined;
   readonly indexPolicy?: RecipeIndexPolicy | undefined;
+  readonly versionPolicy?: RecipeVersionPolicy | undefined;
   readonly architecture?: string | undefined;
   readonly entrypoint?: string | undefined;
 }
@@ -204,6 +223,9 @@ export const recipeValidationIssue = (
   }
   if (method === "source" && version === undefined) {
     return recipeIssue(["version"], "source recipes require an immutable revision");
+  }
+  if ((method === "binary" || method === "source") && input.versionPolicy === "at-least") {
+    return recipeIssue(["versionPolicy"], `${method} recipes always install their exact version; remove versionPolicy or set it to "exact"`);
   }
   if (method !== "source" && !isSafePackageArgument(packageName)) {
     return recipeIssue(["package"], "package argument is unsafe");

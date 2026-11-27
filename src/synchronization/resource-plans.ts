@@ -15,10 +15,11 @@ import {
   sha256Hex,
 } from "../profile/profile-codec.ts";
 import {
+  effectiveVersionPolicy,
   isMissingAutomaticRecipeVersion,
   recipeSourceDetails,
 } from "../domain/recipe-versions.ts";
-import { installedVersionMatches } from "./installed-tool-version.ts";
+import { compareInstalledVersion, installedVersionMatches } from "./installed-tool-version.ts";
 import { InstallerRecipeProvenance } from "../domain/mcp-qualification.ts";
 import { InvalidObservedStateError } from "./synchronization.errors.ts";
 import type {
@@ -1099,16 +1100,29 @@ const planEnsure = (context: ResourcePlanningContext): ReadonlyArray<ResourceAct
       return [{ kind: "human-action", detail: { kind: "human-action", reason: "The binary destination does not match the reviewed artifact", instructions: "Move the existing executable aside explicitly, then synchronize. Canonfig will not overwrite an unmanaged executable." } }];
     }
   }
-  // The installed version, when the recipe's installer reports one that
-  // differs from the pin. A present executable alone left a tool at its old
-  // version after the profile pinned a new one.
-  const replaces = present?.installedVersion !== undefined
-      && recipe?.version !== undefined
-      && !installedVersionMatches(recipe.method, present.installedVersion, recipe.version)
-    ? present.installedVersion
-    : undefined;
+  // The installed version, when the recipe's installer reports one that does
+  // not satisfy the pin. A present executable alone left a tool at its old
+  // version after the profile pinned a new one. Under the default `at-least`
+  // policy a newer installed version satisfies the pin, so a CLI that updated
+  // itself is not downgraded; the kept version is disclosed in the plan. A
+  // qualified MCP tool is bound to its exact reviewed artifact, so its pin is
+  // always exact.
+  const installed = present?.installedVersion;
+  const mismatch = installed !== undefined && recipe?.version !== undefined
+    && !installedVersionMatches(recipe.method, installed, recipe.version);
+  const order = mismatch && qualification === undefined && effectiveVersionPolicy(recipe) === "at-least"
+    ? compareInstalledVersion(recipe.method, installed, recipe.version) ?? -1
+    : -1;
+  const replaces = mismatch && order < 0 ? installed : undefined;
   if (qualification === undefined && present !== undefined && replaces === undefined) {
-    return [noOp()];
+    if (!mismatch) return [noOp()];
+    return [{
+      kind: "no-op",
+      detail: {
+        kind: "no-op",
+        versionNotice: `Keeps ${recipe.package} ${installed}, which is ${order > 0 ? "newer than" : "equivalent to"} the pinned ${recipe.version} (versionPolicy "at-least"). Set versionPolicy to "exact" to install ${recipe.version} instead.`,
+      },
+    }];
   }
   if (recipe === undefined) {
     return [unresolvedAgentTask(context, `Find an installation recipe for ${context.desired.toolId}`)];

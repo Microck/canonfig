@@ -102,6 +102,34 @@ describe("JSONC parsing", () => {
   });
 });
 
+describe("qualified tool version policy", () => {
+  const probe = { command: ["review-mcp", "--version"], operation: "version" };
+  const qualified = (versionPolicy?: "at-least" | "exact") => validateProfileResources([{
+    id: "tools:review-mcp", kind: "tool", target: "review-mcp",
+    spec: {
+      kind: "tool", toolId: "review-mcp",
+      recipes: [{
+        platform: "linux", method: "npm", package: "review-mcp", version: "1.2.3", versionPolicy,
+        upstream: "https://registry.npmjs.org/review-mcp", architecture: "x64", artifactDigest: "sha256-abc",
+        entrypoint: "/opt/review-mcp/bin/review-mcp", dependencyPolicy: "locked", executionContext: "user",
+      }],
+    },
+    verify: { method: "mcp-qualification", target: "codex", compatibility: "mcp-2025-06-18", launches: probe, protocolCompatible: probe },
+  }]);
+
+  it("accepts an exact or default policy, which qualification treats as exact", () => {
+    expect(qualified()).toEqual([]);
+    expect(qualified("exact")).toEqual([]);
+  });
+
+  it("refuses at-least, because a qualified recipe is bound to its reviewed artifact", () => {
+    expect(qualified("at-least")).toEqual([expect.objectContaining({
+      _tag: "InvalidRecipeError",
+      reason: 'qualified MCP recipes install their exact version; remove versionPolicy or set it to "exact"',
+    })]);
+  });
+});
+
 describe("filesystem mode bounds", () => {
   it.each([-1, 0o10000])(
     "rejects out-of-range mode %i at authoring and publication boundaries",
