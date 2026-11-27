@@ -629,11 +629,10 @@ export const planBuilt = (input: PlanBuiltInput) =>
       resource: PublishedResource,
       desiredResource: DesiredResource,
       verification: VerificationInput,
-      retainsDesiredDirectories: boolean,
     ) =>
       Effect.gen(function*() {
         const observed: ObservedResourceState = yield* observeFollowerResource(
-          { resource, retainsDesiredDirectories },
+          { resource },
           desiredResource,
           verification,
           appliedById.get(resource.id),
@@ -648,7 +647,7 @@ export const planBuilt = (input: PlanBuiltInput) =>
     for (const item of input.built) {
       resources.push(item.resource);
       desired.push(item.entry);
-      yield* observe(item.resource, item.entry.desired, item.entry.verification, input.origin !== "snapshot");
+      yield* observe(item.resource, item.entry.desired, item.entry.verification);
     }
     const removedResources: Array<ResourceIdType> = [];
     const runtimeConsumers = [...input.built.map((item) => item.resource.id), ...input.retired.map((record) => record.resource)]
@@ -671,7 +670,7 @@ export const planBuilt = (input: PlanBuiltInput) =>
       resources.push(resource);
       desired.push({ resource: resource.id, desired: state.desired, verification });
       removedResources.push(resource.id);
-      yield* observe(resource, state.desired, verification, false);
+      yield* observe(resource, state.desired, verification);
     }
     // The run's revision lists every resource whose ownership it ends; the
     // planner sees only the retired ones, so the others are planned as writes.

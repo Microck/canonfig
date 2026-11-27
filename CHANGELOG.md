@@ -16,6 +16,12 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
   prevent those profile, overlay, tool-recipe, skill-drift, and Windows
   scheduler mistakes.
 
+### Synchronization
+
+- Python caches, bytecode, and Finder metadata no longer block skill updates
+  or removals. Canonfig skips these artifacts when publishing and checking
+  managed skill, agent, and authored file trees for drift.
+
 ### Automatic local sync
 
 - The Linux and macOS watcher now finds Codex and other harnesses in the

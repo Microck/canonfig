@@ -233,9 +233,11 @@ export const folderProfile = async (folder: string, observedFiles?: ReadonlyMap<
   // Authored resources: the definition is a JSON item, each file it reads a
   // file item under files/. Like a hook script, a file goes wherever one of
   // its resources goes, and a file no resource reads is refused.
-  const files = new Map((await listFolderFiles(folder, "files", observedFiles)).map((file) => [`files/${file.path}`, file.executable]));
+  const files = new Map((await listFolderFiles(folder, "files", observedFiles, true)).map((file) => [`files/${file.path}`, file.executable]));
   const fileUsers = new Map<string, Array<string>>();
   for (const resource of authored.resources) {
+    // A named file source is explicit input, independent of directory scans.
+    if (resource.kind === "file") files.set(resource.source, resource.file.executable);
     const used = resource.kind === "file"
       ? [resource.source]
       : resource.kind === "directory"

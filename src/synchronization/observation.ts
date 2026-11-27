@@ -2,10 +2,12 @@ import { Effect, Schema } from "effect";
 
 import { ContentDigest, CredentialReference, parseSurfaceResourceId, resourcesOwner, type ResourceId } from "../domain/brand.ts";
 import type { ProfileRevision, VerificationInput } from "../domain/profile.ts";
+import { isRuntimeArtifact } from "../domain/runtime-artifacts.ts";
 import type { AppliedResourceRecord, ObservedResourceState } from "../domain/synchronization.ts";
 import { parseTextComposition } from "../domain/text-composition.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import type { MachineFilesystemError } from "../machine/machine-state.errors.ts";
+import type { MachineDirectoryEntry } from "../machine/machine-state.types.ts";
 import { sha256BytesHex, sha256Hex } from "../profile/profile-codec.ts";
 import { configKeysDigest, parseConfigDocument, renderConfigDocument } from "./config-codec.ts";
 import { defaultSynchronizationExecutionLimits } from "./executor.ts";
@@ -191,19 +193,28 @@ const observeConfig = (
     ),
   );
 
+const runtimeArtifactsIn = (listed: ReadonlyArray<MachineDirectoryEntry>, managedPaths: ReadonlySet<string>) => {
+  const artifacts = new Set<string>();
+  const visiblePaths: Array<string> = [];
+  for (const { path, kind } of listed) {
+    if (!managedPaths.has(path) && isRuntimeArtifact(path.slice(path.lastIndexOf("/") + 1), kind)) artifacts.add(path);
+    else visiblePaths.push(path);
+  }
+  // A cache directory with local work or a link must stay visible for drift.
+  if (artifacts.size > 0) {
+    for (const ancestor of relativePathAncestors(visiblePaths)) artifacts.delete(ancestor);
+  }
+  return artifacts;
+};
+
 export const observeFollowerResource = (
   decoded: {
-    // `policy` decides how much of a directory is listed: all of it under
-    // `replace` and for a `replace-if-unmodified` directory, Canonfig's
-    // top-level entries under `append-local`, and otherwise only owned and
-    // desired paths.
+    // Observation lists the whole tree under replace and replace-if-unmodified,
+    // the claimed top-level entries under append-local, or just managed paths.
     readonly resource: Pick<
       ProfileRevision["resources"][number],
       "kind" | "target" | "policy"
     > & { readonly id?: ResourceId };
-    // Restore preflight and retirement reconstruct desired paths from the
-    // applied record. Those paths describe what exists, not what stays.
-    readonly retainsDesiredDirectories?: boolean;
   },
   desired: DesiredResource,
   verification: VerificationInput,
@@ -250,8 +261,7 @@ export const observeFollowerResource = (
         // foreign, and the two policies were the same thing.
         // A projected directory keeps the same full view after takeover, so
         // an entry added to it is reported as drift instead of going unseen.
-        const listsEverything = decoded.resource.policy === "replace"
-          || decoded.resource.kind === "directory" && decoded.resource.policy === "replace-if-unmodified";
+        const listsEverything = decoded.resource.policy === "replace" || decoded.resource.policy === "replace-if-unmodified";
         // Under `append-local` Canonfig owns only the top-level entries it
         // writes or wrote (a skill directory, a file), so each of those is
         // listed in full: a file the machine adds inside one is drift. The
@@ -277,35 +287,17 @@ export const observeFollowerResource = (
               return (yield* machine.listDirectory(entry, anchor)).map((child) => ({ ...child, path: `${name}/${child.path}` }));
             })).pipe(Effect.map((lists) => lists.flat()));
         const surface = decoded.resource.id === undefined ? undefined : parseSurfaceResourceId(decoded.resource.id);
-        const individualSkill = surface?.surface.startsWith("skill.") === true;
-        const projectedSkills = surface !== undefined && surface.harness !== resourcesOwner
-          && (surface.surface === "skills" || individualSkill);
-        let observedEntries = listed;
-        if (projectedSkills && decoded.retainsDesiredDirectories) {
-          const managed = new Set(managedPaths);
-          const retainedDirectories = new Set([...desired.directories.map((entry) => entry.path), ...relativePathAncestors(desiredPaths)]);
-          // Only a per-skill resource has the skill itself at the observation root.
-          if (individualSkill) retainedDirectories.add("");
-          // Python imports create bytecode beside skill scripts. Keep those
-          // undeclared runtime files local, but never hide an owned path or link.
-          observedEntries = listed.filter((entry) => {
-            if (managed.has(entry.path)) return true;
-            const parts = entry.path.split("/");
-            const name = parts.at(-1)!;
-            const cacheDirectory = entry.kind === "directory" && name === "__pycache__";
-            const bytecode = entry.kind === "regular" && parts.at(-2) === "__pycache__" && name.endsWith(".pyc");
-            if (!cacheDirectory && !bytecode) return true;
-            // A cache cannot be left behind when its parent is removed or
-            // replaced. Keep the existing drift protection for those operations.
-            const parent = parts.slice(0, cacheDirectory ? -1 : -2).join("/");
-            return !retainedDirectories.has(parent);
-          });
-        }
         const ancestors = [...relativePathAncestors(managedPaths)]
           .sort((left, right) => left.split("/").length - right.split("/").length);
+        const ignoresRuntimeArtifacts = desired.kind === "skill" || surface?.harness === resourcesOwner
+          || surface?.surface === "skills" || surface?.surface.startsWith("skill.") || surface?.surface === "agents";
+        const runtimeArtifacts = ignoresRuntimeArtifacts
+          ? runtimeArtifactsIn(listed, new Set([...managedPaths, ...ancestors]))
+          : undefined;
+        const listedPaths = listed.map((entry) => entry.path).filter((path) => !runtimeArtifacts?.has(path));
         const candidates = new Set([
           ...ancestors,
-          ...observedEntries.map((entry) => entry.path),
+          ...listedPaths,
           ...ownedPaths,
           ...desiredPaths,
         ]);
@@ -381,6 +373,7 @@ export const observeFollowerResource = (
           objectKind: "directory",
           mode: rootPermissions.mode,
           files,
+          runtimeArtifacts: runtimeArtifacts === undefined ? undefined : [...runtimeArtifacts],
         } as const;
       }).pipe(
         Effect.catch((error) =>

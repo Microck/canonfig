@@ -214,6 +214,28 @@ describe("publishing the Canonical Folder", () => {
     expect(signing.calls).toEqual({ signed: 1, verified: 1 });
   });
 
+  it("publishes managed trees without Python caches or Finder metadata", async () => {
+    const fixture = workspace({ resources: {
+      notes: { kind: "directory", target: "~/notes", source: "files/notes" },
+      bytecode: { kind: "file", target: "~/helper.pyc", source: "files/helper.pyc" },
+    } });
+    write(join(fixture.folder, "files", "notes", "readme.md"), "Keep this.\n");
+    write(join(fixture.folder, "files", "helper.pyc"), "explicit file");
+    for (const path of [
+      "skills/__pycache__/helper.pyc", "skills/.DS_Store", "skills/deploy/.DS_Store", "skills/deploy/scripts/helper.pyo",
+      "skills/deploy/scripts/__pycache__/helper.cpython-312.pyc", "agents/.DS_Store",
+      "files/notes/.DS_Store", "files/notes/helpers/__pycache__/helper.pyc", "files/notes/helper.pyc",
+    ]) write(join(fixture.folder, path), "generated");
+
+    const revision = await publishAt(fixture, makeSigner().signer);
+    expect(resourceOf(revision, "skills:deploy")?.spec).toMatchObject({
+      files: [{ path: "SKILL.md" }, { path: "scripts/run.sh" }],
+    });
+    expect(revision.resources.filter(({ id }) => id.startsWith("files:")).map(({ target }) => target))
+      .toEqual(["files/helper.pyc", "files/notes/readme.md"]);
+    expect(resourceOf(revision, "agents:reviewer")).toBeDefined();
+  });
+
   it("does not infer execute intent from a disabled-only hook", async () => {
     const fixture = workspace({
       hooks: [{ id: "format", event: "after_tool", run: ["hooks/format.sh"], enabled: false }],

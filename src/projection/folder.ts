@@ -8,6 +8,7 @@ import { type ContentDigest, ProfileId } from "../domain/brand.ts";
 import { configPathIssue, configPathsOverlap } from "../domain/config-path.ts";
 import { AuthoredVerificationInputSchema } from "../domain/profile.ts";
 import { AgentInstallBounds, ConfigValue, LoginRequirement, ToolRecipeRef } from "../domain/resource.ts";
+import { isRuntimeArtifact } from "../domain/runtime-artifacts.ts";
 import { TaggedError } from "../domain/tagged-error.ts";
 import { canonicalJson, sha256BytesHex, sha256Hex } from "../profile/profile-codec.ts";
 import { SecretNameSchema } from "../secrets/secret-store.ts";
@@ -376,7 +377,10 @@ interface FolderSource {
    */
   readonly executable: (path: string) => Promise<boolean | undefined>;
   /** A directory's entries sorted by name, or none when it is absent. */
-  readonly entries: (directory: string) => Promise<ReadonlyArray<{ readonly name: string; readonly directory: boolean }>>;
+  readonly entries: (directory: string) => Promise<ReadonlyArray<{
+    readonly name: string;
+    readonly kind: "directory" | "regular" | "special";
+  }>>;
 }
 
 const failure = (path: string, message: string) => new CanonicalFolderError({ path, message });
@@ -448,11 +452,11 @@ const diskSource = (folder: string): FolderSource => {
       if (!found.isDirectory()) throw failure(directory, "is not a directory");
       await insideFolder(directory);
       const entries = await readdir(directory, { withFileTypes: true });
-      return entries.map((entry) => ({ name: entry.name, directory: entry.isDirectory(), link: entry.isSymbolicLink() }))
-        .map((entry) => {
-          if (entry.link) throw failure(join(directory, entry.name), "is a link; links are not authoring input");
-          return { name: entry.name, directory: entry.directory };
-        })
+      return entries.map((entry) => {
+        if (entry.isSymbolicLink()) throw failure(join(directory, entry.name), "is a link; links are not authoring input");
+        const kind = entry.isDirectory() ? "directory" : entry.isFile() ? "regular" : "special";
+        return { name: entry.name, kind } as const;
+      })
         .sort(byName);
     },
   };
@@ -484,7 +488,9 @@ const mirrorSource = (folder: string, files: ReadonlyMap<string, FolderFile>, in
         const [name, ...rest] = path.slice(prefix.length + 1).split("/");
         children.set(name!, (children.get(name!) ?? false) || rest.length > 0);
       }
-      return Promise.resolve([...children].map(([name, directory]) => ({ name, directory })).sort(byName));
+      return Promise.resolve([...children].map(([name, directory]) => ({
+        name, kind: directory ? "directory" as const : "regular" as const,
+      })).sort(byName));
     },
   };
 };
@@ -540,11 +546,13 @@ const loadDocuments = async <S extends Schema.Decoder<unknown>>(
   source: FolderSource,
   directory: string,
   schema: S,
+  ignoreArtifacts = false,
 ) => {
   const documents: Array<{ readonly id: string; readonly path: string; readonly data: S["Type"]; readonly content: string }> = [];
   for (const entry of await source.entries(directory)) {
+    if (ignoreArtifacts && isRuntimeArtifact(entry.name, entry.kind)) continue;
     const path = join(directory, entry.name);
-    if (entry.directory || !entry.name.endsWith(".md")) throw failure(path, "only <id>.md documents belong here");
+    if (entry.kind === "directory" || !entry.name.endsWith(".md")) throw failure(path, "only <id>.md documents belong here");
     const id = documentId(path, entry.name);
     const text = (await readText(source, path))!;
     let parsed;
@@ -569,7 +577,7 @@ const loadRules = async (source: FolderSource, directory: string): Promise<Reado
   }));
 
 const loadAgents = async (source: FolderSource, directory: string): Promise<ReadonlyArray<AgentDocument>> =>
-  (await loadDocuments(source, directory, AgentFrontmatter)).map((document) => ({
+  (await loadDocuments(source, directory, AgentFrontmatter, true)).map((document) => ({
     id: document.id,
     description: document.data.description,
     model: document.data.model ?? "inherit",
@@ -587,13 +595,14 @@ const loadCommands = async (source: FolderSource, directory: string): Promise<Re
   }));
 
 /** Regular files beneath a directory, relative with forward slashes, unread. */
-const listFiles = async (source: FolderSource, directory: string, prefix = ""): Promise<Array<ListedFile>> => {
+const listFiles = async (source: FolderSource, directory: string, ignoreArtifacts: boolean, prefix = ""): Promise<Array<ListedFile>> => {
   const files: Array<ListedFile> = [];
   for (const entry of await source.entries(directory)) {
+    if (ignoreArtifacts && isRuntimeArtifact(entry.name, entry.kind)) continue;
     const path = join(directory, entry.name);
     const relativePath = `${prefix}${entry.name}`;
-    if (entry.directory) {
-      files.push(...await listFiles(source, path, `${relativePath}/`));
+    if (entry.kind === "directory") {
+      files.push(...await listFiles(source, path, ignoreArtifacts, `${relativePath}/`));
       continue;
     }
     const executable = await source.executable(path);
@@ -605,7 +614,7 @@ const listFiles = async (source: FolderSource, directory: string, prefix = ""): 
 /** Regular files beneath a directory with their bytes, for projection. */
 const loadFiles = async (source: FolderSource, directory: string): Promise<Array<SkillFile>> => {
   const files: Array<SkillFile> = [];
-  for (const listed of await listFiles(source, directory)) {
+  for (const listed of await listFiles(source, directory, true)) {
     const file = await source.file(join(directory, ...listed.path.split("/")));
     if (file !== undefined) files.push({ path: listed.path, content: file.content, executable: file.executable });
   }
@@ -622,8 +631,9 @@ const loadSkills = async <File>(
 ): Promise<ReadonlyArray<LoadedSkill<File>>> => {
   const skills: Array<LoadedSkill<File>> = [];
   for (const entry of await source.entries(directory)) {
+    if (isRuntimeArtifact(entry.name, entry.kind)) continue;
     const path = join(directory, entry.name);
-    if (!entry.directory) throw failure(path, "every entry of skills/ is a skill directory");
+    if (entry.kind !== "directory") throw failure(path, "every entry of skills/ is a skill directory");
     if (!/^[a-z0-9][a-z0-9-]*$/u.test(entry.name)) {
       throw failure(path, "skill directory names are lowercase letters, digits and '-'");
     }
@@ -896,8 +906,8 @@ export const decodeFolderConfig = (path: string, text: string): FolderConfig => 
 export const decodeLocalConfig = (path: string, text: string): typeof LocalJsonc.Type => decodeJsonc(path, text, LocalJsonc);
 
 /** Every regular file under one of the folder's directories, relative to it, `/`-separated, unread. */
-export const listFolderFiles = (folder: string, directory: string, files?: ReadonlyMap<string, FolderFile>): Promise<ReadonlyArray<ListedFile>> =>
-  listFiles(files === undefined ? diskSource(folder) : mirrorSource(folder, files, true), join(folder, directory));
+export const listFolderFiles = (folder: string, directory: string, files?: ReadonlyMap<string, FolderFile>, ignoreArtifacts = false): Promise<ReadonlyArray<ListedFile>> =>
+  listFiles(files === undefined ? diskSource(folder) : mirrorSource(folder, files, true), join(folder, directory), ignoreArtifacts);
 
 /** The authoring allowlist: the only top-level entries of `~/.canonfig/` that are published or mirrored. */
 export const AUTHORING_ENTRIES = ["canonfig.jsonc", "AGENTS.md", "rules", "skills", "agents", "commands", "hooks", "files"] as const;
@@ -960,7 +970,7 @@ interface FileReader<File> {
 }
 
 const listing: FileReader<ListedFile> = {
-  tree: listFiles,
+  tree: (source, directory) => listFiles(source, directory, true),
   file: async (source, path) => {
     const executable = await source.executable(path);
     return executable === undefined ? undefined : { path: basename(path), executable };
