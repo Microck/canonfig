@@ -402,7 +402,8 @@ export const observeFollowerResource = (
             if (object.kind !== "regular") return { state: "unverifiable", reason: "Binary destination is not a regular file" } as const;
             const bytes = yield* machine.readFile({ path, maximumBytes: 128 * 1024 * 1024 });
             const permissions = yield* machine.permissions(path);
-            const integrity = recipeSourceDetails(binary.source).integrity!;
+            const source = recipeSourceDetails(binary.source);
+            const integrity = source.archive?.executableIntegrity ?? source.integrity!;
             return { state: "present", objectKind: "regular", digest: sha256BytesHex(bytes), executable: permissions.executableByOwner,
               installedVersion: verifyNpmArtifactBytes(bytes, integrity)
                 && binaryFormatProblem(bytes, platform, binary.architecture!) === undefined

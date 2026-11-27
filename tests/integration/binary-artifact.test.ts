@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { crc32, deflateRawSync, gzipSync } from "node:zlib";
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { ToolRecipeRef } from "../../src/domain/resource.ts";
@@ -13,6 +14,7 @@ import type { NpmArtifactRequest } from "../../src/synchronization/npm-artifact.
 import { observeFollowerResource } from "../../src/synchronization/observation.ts";
 import { ActionId, ResourceId, RunId } from "../../src/domain/brand.ts";
 import { defaultSynchronizationExecutionLimits } from "../../src/synchronization/executor.ts";
+import { planResource } from "../../src/synchronization/resource-plans.ts";
 import { prepareResourceAction, verifyResource, type ResourceExecutionContext } from "../../src/synchronization/resource-executors.ts";
 
 const integrity = (bytes: Uint8Array) => `sha256-${createHash("sha256").update(bytes).digest("base64")}`;
@@ -21,6 +23,163 @@ const recipeFor = (bytes: Uint8Array): ToolRecipeRef => ({
   source: { source: "https://example.com/releases/1.0.0/fixture-true", integrity: integrity(bytes) },
 });
 const transport = (bytes: Uint8Array): NpmArtifactRequest => async () => ({ statusCode: 200, body: (async function* () { yield bytes; })() });
+
+const formats = ["tar.gz", "zip"] as const;
+type ArchiveFormat = typeof formats[number];
+const entrypoint = "release/bin/tool";
+const archiveRecipeFor = (format: ArchiveFormat, archive: Buffer, executable: Buffer) => ({
+  ...recipeFor(archive),
+  entrypoint,
+  source: {
+    source: `https://example.com/releases/tool.${format === "tar.gz" ? "tgz" : format}`,
+    integrity: integrity(archive),
+    archive: { format, executableIntegrity: integrity(executable) },
+  },
+} satisfies ToolRecipeRef);
+
+interface ArchiveFixtureMember {
+  readonly path: string;
+  readonly content?: Buffer;
+  readonly kind?: "directory" | "symlink" | "hardlink" | "fifo";
+  readonly declaredSize?: number;
+}
+
+const tarArchive = (members: readonly ArchiveFixtureMember[]): Buffer => gzipSync(Buffer.concat([
+  ...members.flatMap(({ path, content = Buffer.alloc(0), kind, declaredSize = content.length }) => {
+    const header = Buffer.alloc(512);
+    header.write(path);
+    header.write(`${declaredSize.toString(8).padStart(11, "0")}\0`, 124);
+    header.fill(0x20, 148, 156);
+    header[156] = { file: 48, directory: 53, symlink: 50, hardlink: 49, fifo: 54 }[kind ?? "file"];
+    header.write("ustar\0", 257);
+    const checksum = header.reduce((sum, byte) => sum + byte, 0);
+    header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148);
+    return [header, content, Buffer.alloc((512 - (content.length % 512)) % 512)];
+  }),
+  Buffer.alloc(1024),
+]));
+
+const zipArchive = (members: readonly ArchiveFixtureMember[]): Buffer => {
+  const fileRecords: Buffer[] = [];
+  const directoryRecords: Buffer[] = [];
+  let offset = 0;
+  for (const { path, content = Buffer.alloc(0), kind, declaredSize = content.length } of members) {
+    const name = Buffer.from(path);
+    const compressed = deflateRawSync(content);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(8, 8);
+    local.writeUInt32LE(crc32(content), 14);
+    local.writeUInt32LE(compressed.length, 18);
+    local.writeUInt32LE(declaredSize, 22);
+    local.writeUInt16LE(name.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(0x0314, 4);
+    local.copy(central, 6, 4, 28);
+    const mode = { file: 0o100755, directory: 0o040755, symlink: 0o120777, hardlink: 0, fifo: 0o010644 }[kind ?? "file"];
+    central.writeUInt32LE((mode << 16) >>> 0, 38);
+    central.writeUInt32LE(offset, 42);
+    fileRecords.push(local, name, compressed);
+    directoryRecords.push(central, name);
+    offset += local.length + name.length + compressed.length;
+  }
+  const directory = Buffer.concat(directoryRecords);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(members.length, 8);
+  end.writeUInt16LE(members.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...fileRecords, directory, end]);
+};
+
+const archiveFor = (format: ArchiveFormat) => format === "zip" ? zipArchive : tarArchive;
+const maximumExpandedBytes = 128 * 1024 * 1024;
+
+describe.each(formats)("%s binary archives", (format) => {
+  const archive = archiveFor(format);
+  const payload = Buffer.from("not a native executable");
+  const validMember = { path: entrypoint, content: payload };
+  const failureFor = (members: readonly ArchiveFixtureMember[]) => {
+    const bytes = archive(members);
+    return Effect.runPromise(Effect.flip(downloadBinaryArtifact(archiveRecipeFor(format, bytes, payload), transport(bytes))));
+  };
+
+  it("requires a safe entrypoint and SHA-256 archive and executable digests", () => {
+    const recipe = archiveRecipeFor(format, archive([validMember]), payload);
+    for (const target of [undefined, "../tool", "/tool", "C:/tool", "release\\tool", "release/../tool"]) {
+      expect(() => Schema.decodeUnknownSync(ToolRecipeRef)({ ...recipe, entrypoint: target })).toThrow(/entrypoint/u);
+    }
+    const { source } = recipe;
+    expect(() => Schema.decodeUnknownSync(ToolRecipeRef)({ ...recipe, source: { ...source, integrity: `sha512-${Buffer.alloc(64).toString("base64")}` } })).toThrow(/SHA-256/u);
+    expect(() => Schema.decodeUnknownSync(ToolRecipeRef)({ ...recipe, source: { ...source, archive: { format } } })).toThrow(/executableIntegrity/u);
+  });
+
+  it("rejects an integrity mismatch before trying to parse the archive", async () => {
+    const recipe = archiveRecipeFor(format, archive([validMember]), payload);
+    const error = await Effect.runPromise(Effect.flip(downloadBinaryArtifact(recipe, transport(Buffer.from("invalid archive")))));
+    expect(error.message).toBe("binary artifact integrity mismatch");
+  });
+
+  it.each(["../evil", "/evil", "C:/evil", "nested/../evil", "nested\\evil"])("rejects unsafe member %s anywhere in the archive", async (path) => {
+    expect((await failureFor([validMember, { path }])).message).toMatch(/path|filename/iu);
+  });
+
+  it.each(["symlink", "fifo"] as const)("rejects %s members even outside the entrypoint", async (kind) => {
+    expect((await failureFor([validMember, { path: "other", kind }])).message).toMatch(/link|special file/u);
+  });
+
+  it("refuses missing and duplicate executable members", async () => {
+    expect((await failureFor([{ path: "other", content: payload }])).message).toContain("entrypoint is missing");
+    expect((await failureFor([validMember, validMember])).message).toContain("duplicate member paths");
+  });
+
+  it("refuses oversized archives and excessive entry counts", async () => {
+    expect((await failureFor([{ ...validMember, declaredSize: maximumExpandedBytes + 1 }])).message).toMatch(/oversized|expansion limit/u);
+    const members = Array.from({ length: 4_097 }, (_, index) => ({ path: `file-${index}` }));
+    expect((await failureFor(members)).message).toContain("entry limit");
+  });
+
+  it.each(["macos", "windows"] as const)("validates the extracted %s format and executable digest", async (platform) => {
+    // These headers exercise format detection on any host. The Linux workflow below runs a real executable.
+    const executable = Buffer.alloc(88);
+    if (platform === "macos") {
+      executable.writeUInt32LE(0xfeedfacf, 0);
+      executable.writeUInt32LE(0x01000007, 4);
+      executable.writeUInt32LE(2, 12);
+    } else {
+      executable.write("MZ");
+      executable.writeUInt32LE(64, 60);
+      executable.writeUInt32LE(0x4550, 64);
+      executable.writeUInt16LE(0x8664, 68);
+    }
+    const bytes = archive([{ path: entrypoint, content: executable }]);
+    const recipe = { ...archiveRecipeFor(format, bytes, executable), platform, architecture: "x64" };
+    await expect(Effect.runPromise(downloadBinaryArtifact(recipe, transport(bytes)))).resolves.toEqual(executable);
+    const wrongPin = { ...recipe, source: { ...recipe.source, archive: { format, executableIntegrity: integrity(payload) } } };
+    const error = await Effect.runPromise(Effect.flip(downloadBinaryArtifact(wrongPin, transport(bytes))));
+    expect(error.message).toBe("binary archive executable integrity mismatch");
+  });
+
+  it("refuses a non-executable payload even when both digests match", async () => {
+    expect((await failureFor([validMember])).message).toContain("Unsupported artifact");
+  });
+});
+
+it("caps gzip expansion before reading tar headers", async () => {
+  const bytes = gzipSync(Buffer.alloc(maximumExpandedBytes + 1));
+  const recipe = archiveRecipeFor("tar.gz", bytes, Buffer.alloc(0));
+  const error = await Effect.runPromise(Effect.flip(downloadBinaryArtifact(recipe, transport(bytes))));
+  expect(error.message).toContain("128 MiB expansion limit");
+});
+
+it("rejects a tar hardlink", async () => {
+  const bytes = tarArchive([{ path: entrypoint, kind: "hardlink" }]);
+  const error = await Effect.runPromise(Effect.flip(downloadBinaryArtifact(archiveRecipeFor("tar.gz", bytes, Buffer.alloc(0)), transport(bytes))));
+  expect(error.message).toContain("link");
+});
 
 describe("native binary artifacts", () => {
   it("rejects malformed source and destination metadata at the profile boundary", () => {
@@ -86,11 +245,16 @@ describe("native binary artifacts", () => {
     expect(error.message).toContain("HTTPS");
   });
 
-  it.runIf(process.platform === "linux" && ["x64", "arm64"].includes(process.arch))("installs verified bytes, resolves under bounded PATH, and runs the actual executable", async () => {
+  it.runIf(process.platform === "linux" && ["x64", "arm64"].includes(process.arch)).each(["bare", ...formats] as const)("installs and runs the verified %s executable", async (format) => {
     const home = mkdtempSync(join(tmpdir(), "canonfig-binary-"));
     mkdirSync(join(home, ".local", "bin"), { recursive: true });
     const bytes = readFileSync("/bin/true");
-    const recipe = recipeFor(bytes);
+    const download = format === "bare" ? bytes : archiveFor(format)([
+      { path: "release/", kind: "directory" },
+      { path: entrypoint, content: bytes },
+      { path: "release/README", content: Buffer.from("Only the executable is installed") },
+    ]);
+    const recipe = format === "bare" ? recipeFor(bytes) : archiveRecipeFor(format, download, bytes);
     const shadowDirectory = join(home, ".npm-global", "bin");
     mkdirSync(shadowDirectory, { recursive: true });
     writeFileSync(join(shadowDirectory, recipe.package), "#!/bin/sh\nexit 73\n", { mode: 0o755 });
@@ -98,25 +262,31 @@ describe("native binary artifacts", () => {
     try {
       const checked = await Effect.runPromise(Effect.gen(function* () {
         const id = Schema.decodeUnknownSync(ResourceId)("binary-tool");
+        const resource = { id, kind: "tool", policy: "ensure", target: recipe.package, dependsOn: [], blobs: [] } satisfies ResourceExecutionContext["resource"];
+        const desired = {
+          kind: "tool", toolId: recipe.package, loginRequired: false,
+          recipes: [Schema.decodeUnknownSync(ToolRecipeRef)(recipe), { method: "npm", platform: "linux", package: recipe.package, version: "0.9.0" }],
+        } satisfies ResourceExecutionContext["desired"];
+        const [planned] = planResource({ resource, desired, platform: "linux", observed: { state: "absent" } });
+        expect(planned?.kind).toBe("install-tool");
         const context: ResourceExecutionContext = {
           run: Schema.decodeUnknownSync(RunId)("binary-run"),
           action: {
             id: Schema.decodeUnknownSync(ActionId)("binary-install"), resource: id, kind: "install-tool", before: [],
-            detail: { ...recipe, method: "binary", kind: "install-tool", toolId: recipe.package },
+            detail: Schema.decodeUnknownSync(ActionDetailSchema)(planned?.detail),
           },
-          resource: { id, kind: "tool", policy: "ensure", target: recipe.package, dependsOn: [], blobs: [] },
-          desired: { kind: "tool", toolId: recipe.package, recipes: [recipe, { method: "npm", platform: "linux", package: recipe.package, version: "0.9.0" }], loginRequired: false },
+          resource, desired,
           verification: { method: "command", command: [recipe.package] },
           artifacts: new Map(), limits: defaultSynchronizationExecutionLimits,
-          binaryArtifactRequest: transport(bytes),
+          binaryArtifactRequest: transport(download),
         };
         const prepared = yield* prepareResourceAction(context);
         yield* prepared.execute;
-        const installed = yield* installBinaryArtifact(recipe, transport(bytes));
+        const installed = yield* installBinaryArtifact(recipe, transport(download));
         const machine = yield* MachineState;
         const discovered = yield* machine.findExecutable({ name: recipe.package, searchPath: [], installMethods: [{ method: "binary" }] });
         const result = yield* machine.runProcess({ executable: discovered.path, arguments: [], timeoutMilliseconds: 5_000, maximumOutputBytes: 1024 });
-        const repeated = yield* installBinaryArtifact(recipe, transport(bytes));
+        const repeated = yield* installBinaryArtifact(recipe, transport(download));
         const observed = yield* observeFollowerResource({ resource: { kind: "tool", target: recipe.package, policy: "ensure" } },
           { kind: "tool", toolId: "fixture-true", recipes: [recipe], loginRequired: false },
           { method: "command", command: [recipe.package] });
@@ -130,6 +300,7 @@ describe("native binary artifacts", () => {
       expect(checked.repeated.digest).toBe(checked.installed.digest);
       expect(checked.observed).toMatchObject({ state: "present", objectKind: "regular", installedVersion: "1.0.0", digest: checked.installed.digest });
       expect(readFileSync(checked.installed.path.absolute)).toEqual(bytes);
+      expect(readdirSync(join(home, ".local", "bin"))).toEqual([recipe.package]);
       expect(checked.commandVerification.passed).toBe(true);
       expect(checked.presenceVerification.passed).toBe(true);
       rmSync(checked.installed.path.absolute);
