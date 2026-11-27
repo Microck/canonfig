@@ -10,7 +10,13 @@
   exclusions and MCP preservation, restore Takeover Snapshots, resolve
   Follower Drift or Human Action Required, recover interrupted runs, and
   manage Source or Follower machines.
+- [`debug-canonfig`](debug-canonfig/SKILL.md): cross-machine diagnosis and
+  A-vs-B triage. Inspect Source and Follower state, catch common profile and
+  local-machine misconfigurations (such as stale `preserveMcp` locks, broken
+  overlays, non-portable paths or tool recipes, and skill drift), fix operator
+  errors safely, and file focused GitHub issues for Canonfig product bugs.
 
 Start with `Use $setup-canonfig to set up Canonfig on this computer`.
-Once set up, use `Use $operate-canonfig` for ongoing changes, diagnostics, or
-recovery.
+Once set up, use `Use $operate-canonfig` for ongoing changes and recovery, or
+`Use $debug-canonfig` to diagnose sync failures and separate config errors from
+Canonfig bugs.

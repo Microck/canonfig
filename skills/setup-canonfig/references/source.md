@@ -48,13 +48,21 @@ for schema details.
 
 Keep these rules while authoring:
 
-- Keep MCP secrets as `{ "fromEnv": "NAME" }` references (publication rejects
-  literal credentials).
+- Keep MCP secrets as `{ "fromSecret": "name" }` or `{ "fromEnv": "NAME" }`
+  references (publication rejects literal credentials). Never embed plaintext
+  tokens or API keys in `canonfig.jsonc` or `local/local.jsonc`.
 - Review every hook script and stdio MCP command because they run on every
-  Follower.
+  Follower. Avoid OS-specific absolute paths (such as `/home/...`) in shared
+  entries, and link every stdio MCP binary to a `tools.<id>` entry via
+  `requires`.
 - Run `canonfig source scan` (read-only) to discover `tools` entries, review
-  each proposal and its exact pinned `version`, then run
-  `canonfig source scan --write` if approved.
+  each proposal and its exact pinned `version` against target platforms (avoid
+  Linux-only npm packages on macOS/Windows and avoid stale pins that downgrade
+  newer local CLIs), and add `login: { "required": true, "howTo": "..." }` for
+  CLIs that still need authentication after install. Run
+  `canonfig source scan --write` only after approval.
+- Strip runtime or OS artifacts (`__pycache__`, `*.pyc`, `.DS_Store`) from
+  `skills/` trees before publishing.
 
 Plan and apply on the Source first so the user sees every takeover surface:
 

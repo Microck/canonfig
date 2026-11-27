@@ -95,18 +95,22 @@ Check `canonfig --help` and the
 [harness reference](https://canonfig.micr.dev/docs/reference/harnesses/) for
 the installed schema. Start a new local folder with
 `{"version":1,"harnesses":[...]}` in `canonfig.jsonc`, shared instructions in
-`AGENTS.md`, and complete skill trees in `skills/<name>/`. Translate only
-reviewed items. Map MCP servers into `mcp.<name>` using `{ "fromEnv": "NAME" }`
-for credentials, and list any missing env vars or unsupported options in the
-review. Review each hook command and trigger before migrating it.
+`AGENTS.md`, and complete skill trees in `skills/<name>/`. Translate only reviewed items. Map MCP credentials to `{ "fromSecret": "name" }`
+(for shared secrets) or `{ "fromEnv": "NAME" }`, never plaintext tokens or API
+keys, and list any missing env vars or unsupported options in the review. Avoid
+OS-specific absolute paths in shared MCPs or hooks, declare `tools` plus
+`requires` for stdio MCP binaries, and review each hook command and trigger
+before migrating it.
 
 - To keep all native MCP lists untouched, set `preserveMcp: true` in
   `~/.canonfig/local/local.jsonc`. To preserve individual harnesses when the
   preview shows unwanted removals, offer
-  `canonfig local mcp preserve --harness <id>`.
+  `canonfig local mcp preserve --harness <id>`. Note that `preserveMcp` freezes
+  MCP projection until explicitly re-enabled with `canonfig local mcp project`.
 - To keep destination-only instructions or skills alongside shared ones, use
   `local.appendLocal` (it does not merge MCP lists or resolve skill name
-  conflicts).
+  conflicts). Clean runtime clutter (`__pycache__`, `.DS_Store`) and resolve
+  pre-existing unmanaged skill folders before applying.
 
 Draft privately. For a first-time setup, preview in a disposable `HOME` with
 copies of affected configs (isolating state and every harness root override).

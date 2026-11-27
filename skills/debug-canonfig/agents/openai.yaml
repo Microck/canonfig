@@ -1,0 +1,4 @@
+interface:
+  display_name: "Debug Canonfig"
+  short_description: "Triage Canonfig issues into operator fixes vs product bugs"
+  default_prompt: "Use $debug-canonfig to inspect Source and Follower state, check common failure classes, and separate operator fixes from Canonfig bugs."

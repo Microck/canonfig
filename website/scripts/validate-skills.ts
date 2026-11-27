@@ -79,6 +79,37 @@ const contracts: ReadonlyArray<SkillContract> = [
       "Task Scheduler",
     ],
   },
+  {
+    name: "debug-canonfig",
+    descriptionTerms: [
+      "Source Machine",
+      "Follower Machines",
+      "Category A",
+      "Category B",
+    ],
+    files: [
+      "SKILL.md",
+      "agents/openai.yaml",
+    ],
+    bodyTerms: [
+      "canonfig status --json",
+      "canonfig sync --plan --json",
+      "canonfig doctor --no-input --timeout-ms 5000 --json",
+      "canonfig local mcp status",
+      "canonfig overlay list",
+      "canonfig schedule run --timeout-ms 600000 --json",
+      "canonfig report-issue",
+      "preserveMcp",
+      "fromSecret",
+      "EBADPLATFORM",
+      "__pycache__",
+      ".DS_Store",
+      "\\Canonfig\\canonfig-sync",
+      "Category A",
+      "Category B",
+      "Microck/canonfig",
+    ],
+  },
 ];
 
 const assertIncludes = (
