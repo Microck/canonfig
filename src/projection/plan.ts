@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-import { Effect, Schema } from "effect";
+import { Effect, Redacted, Schema } from "effect";
 
 import { ContentDigest, parseSurfaceResourceId, ProfileRevisionId, ResourceId, resourcesOwner, surfaceResourceId } from "../domain/brand.ts";
 import type {
@@ -27,6 +27,7 @@ import {
   sha256BytesHex,
   sha256Hex,
 } from "../profile/profile-codec.ts";
+import { loadNamedSecret } from "../secrets/secret-bindings.ts";
 import type { HarnessTakeover } from "../state/state-repository.types.ts";
 import { getConfigPath, parseConfigDocument, renderConfigDocument } from "../synchronization/config-codec.ts";
 import type { ConfigJson } from "../synchronization/config-value.ts";
@@ -48,7 +49,7 @@ import type {
 } from "../synchronization/synchronization.types.ts";
 import { adapterFor } from "./adapters/index.ts";
 import { commandSkill, groupProjectedSkillNames, skillDirectoryFiles } from "./adapters/shared-documents.ts";
-import { CanonicalFolderError, itemResourceId, type KeyClaim, type LoadedFolder } from "./folder.ts";
+import { CanonicalFolderError, itemResourceId, type KeyClaim, type LoadedFolder, mapStoredSecrets, storedSecretNames } from "./folder.ts";
 import { diagnoseMcpConfiguration } from "./mcp-diagnostics.ts";
 import { mcpProxyBindingFile, proxyMcpServer, readMcpProxyBinding } from "./mcp-launcher.ts";
 import { pathsFor, reservedResourcePaths, settingsSurfaceOf, supportedCategories, within } from "./layout-metadata.ts";
@@ -60,7 +61,7 @@ import type {
   RootContext,
   SurfaceContent,
 } from "./harness.ts";
-import { type CanonicalModel, modelFor, type SkillTree, type SurfaceCategory, TARGET_IDS, type TargetId } from "./model.ts";
+import { type CanonicalModel, modelFor, type SettingsKey, type SkillTree, type SurfaceCategory, TARGET_IDS, type TargetId } from "./model.ts";
 import { hookRegistryJson, hookRunnerSource } from "./templates/runtime.ts";
 import type { Snapshot, SnapshotEntry, TakeoverUnit } from "./takeover.ts";
 import { canonicalFolderOwner, snapshotCopy } from "./takeover.ts";
@@ -567,6 +568,7 @@ const configResource = (
   format: ConfigFormat,
   keys: ReadonlyArray<{ readonly path: string; readonly value: ConfigJson }>,
   releases?: ReadonlyArray<string>,
+  holdsSecrets = false,
 ): BuiltResource => {
   const content = renderConfigDocument({ format, keys });
   const digest = sha256BytesHex(content);
@@ -580,12 +582,48 @@ const configResource = (
         format,
         keys: keys.map((entry) => entry.path).sort((left, right) => left.localeCompare(right)),
         releases: releases === undefined ? undefined : [...releases].sort((left, right) => left.localeCompare(right)),
+        // Omitted unless true, so revisions without secrets keep their digests.
+        holdsSecrets: holdsSecrets || undefined,
       },
       verification: { method: "digest", digest },
     },
     artifacts: [{ digest, content }],
   };
 };
+
+/**
+ * An authored config resource's keys with each `{ "fromSecret": name }`
+ * replaced by the value this machine's secret store holds for `name`.
+ *
+ * Only the file gets the value. The folder, the published revision, plans and
+ * the state database keep the reference or a digest; the resolved bytes live
+ * in this run's memory and its private artifact directory (0700, files 0600),
+ * which the run removes when it finishes. A missing or unreadable secret
+ * stops planning, so no file is touched.
+ */
+const resolveResourceSecrets = (id: string, target: string, keys: ReadonlyArray<SettingsKey>) =>
+  Effect.gen(function*() {
+    const names = new Set(keys.flatMap((key) => storedSecretNames(key.value)));
+    if (names.size === 0) return { keys, holdsSecrets: false };
+    const values = new Map<string, string>();
+    for (const name of [...names].sort()) {
+      const loaded = yield* loadNamedSecret(name).pipe(Effect.mapError(() => new ProjectionHumanActionError({
+        harness: resourcesOwner,
+        message: `resources.${id} needs secret ${name}, which could not be read. Unlock the native credential store in this session, then sync again. Canonfig has not changed ${target}.`,
+      })));
+      if (loaded === undefined) {
+        return yield* new ProjectionHumanActionError({
+          harness: resourcesOwner,
+          message: `resources.${id} needs secret ${name}, which is missing on this machine. Run canonfig secrets sync on a follower enrolled in canonfig:secrets, or canonfig secrets set ${name}, then sync again. Canonfig has not changed ${target}.`,
+        });
+      }
+      values.set(name, Redacted.value(loaded));
+    }
+    return {
+      keys: keys.map((key) => ({ path: key.path, value: mapStoredSecrets(key.value, (name) => values.get(name)!) })),
+      holdsSecrets: true,
+    };
+  });
 
 export interface LocalRevisionPlan {
   readonly revision: PlanningLocalRevision;
@@ -909,13 +947,18 @@ export const buildProjection = (
         const previous = applied.get(id);
         const anyOwned = (previous?.ownership === "ConfigKeys" && previous.ownedKeys.length > 0)
           || takeoverUnits(entry).length > pending.length;
+        // Only authored resources take `fromSecret`; harness settings keep their values as written.
+        const resolved = entry.harness === resourcesOwner
+          ? yield* resolveResourceSecrets(entry.surface.id, entry.surface.target, content.keys)
+          : { keys: content.keys, holdsSecrets: false };
         built.push(configResource(
           id,
           entry.surface.target,
           anyOwned ? "replace-if-unmodified" : "merge",
           entry.surface.format,
-          content.keys,
+          resolved.keys,
           releases.length > 0 ? releases : undefined,
+          resolved.holdsSecrets,
         ));
       }
     }

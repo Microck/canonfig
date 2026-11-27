@@ -63,6 +63,13 @@ export type DesiredResource =
      * written, removed or checked (a key claim).
      */
     readonly releases?: ReadonlyArray<string> | undefined;
+    /**
+     * The desired content holds values resolved from this machine's secret
+     * store (an authored resource's `fromSecret`). The file is then kept
+     * owner-only (0600, a private ACL on Windows), and parser messages about
+     * it are withheld because they can quote its text.
+     */
+    readonly holdsSecrets?: boolean | undefined;
   }
   | {
     readonly kind: "skill";

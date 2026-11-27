@@ -9,7 +9,7 @@ import { MachineState } from "../machine/machine-state.service.ts";
 import type { MachineFilesystemError } from "../machine/machine-state.errors.ts";
 import type { MachineDirectoryEntry } from "../machine/machine-state.types.ts";
 import { sha256BytesHex, sha256Hex } from "../profile/profile-codec.ts";
-import { configKeysDigest, parseConfigDocument, renderConfigDocument } from "./config-codec.ts";
+import { configFailureDetail, configKeysDigest, parseConfigDocument, renderConfigDocument } from "./config-codec.ts";
 import { defaultSynchronizationExecutionLimits } from "./executor.ts";
 import { toolInstallMethods } from "./installer-bindings.ts";
 import { installedToolVersion } from "./installed-tool-version.ts";
@@ -152,6 +152,9 @@ const observeConfig = (
       anchor,
       maximumBytes: 8 * 1024 * 1024,
     });
+    // A file holding resolved secrets must stay owner-only, so its mode is
+    // part of what matches; other config files are not mode-checked.
+    const mode = desired.holdsSecrets === true ? (yield* machine.permissions(path, anchor)).mode : undefined;
     // An unparseable follower file blocks only the resources that merge into
     // it. Parsing used to throw inside this generator, which escaped as a
     // defect and aborted the whole synchronization with a raw stack trace.
@@ -170,6 +173,7 @@ const observeConfig = (
           executable: false,
           objectKind: "regular",
           appliedKeysDigest,
+          mode,
         };
       },
       catch: (error) => error,
@@ -178,7 +182,7 @@ const observeConfig = (
         Effect.succeed({
           state: "unverifiable",
           reason: `${decoded.resource.target} is not valid ${desired.format.toUpperCase()}: ${
-            error instanceof Error ? error.message : String(error)
+            configFailureDetail(desired.holdsSecrets, error instanceof Error ? error.message : String(error))
           }`,
         } as const)
       ),
@@ -550,6 +554,7 @@ export const removedResourceState = (
           digest,
           format: applied.configFormat,
           keys: applied.ownedKeys,
+          holdsSecrets: applied.holdsSecrets,
         },
       };
     case "QualifiedTool":

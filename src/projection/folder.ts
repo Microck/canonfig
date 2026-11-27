@@ -12,6 +12,7 @@ import { isRuntimeArtifact } from "../domain/runtime-artifacts.ts";
 import { TaggedError } from "../domain/tagged-error.ts";
 import { canonicalJson, sha256BytesHex, sha256Hex } from "../profile/profile-codec.ts";
 import { SecretNameSchema } from "../secrets/secret-store.ts";
+import { isConfigScalar } from "../synchronization/config-value.ts";
 import { parseMarkdownDocument } from "./frontmatter.ts";
 import { isMcpProxyUpstream, usesSharedSecret } from "./mcp-launcher.ts";
 import type { McpDiagnosticInput } from "./mcp-diagnostics.ts";
@@ -69,10 +70,11 @@ const identifier = Schema.String.check(
 const environmentName = Schema.String.check(
   Schema.isPattern(/^[A-Za-z_][A-Za-z0-9_]*$/u, { expected: "an environment variable name" }),
 );
+const StoredSecretInput = Schema.Struct({ fromSecret: SecretNameSchema });
 const SecretValueInput = Schema.Union([
   Schema.String,
   Schema.Struct({ fromEnv: environmentName, default: Schema.optional(Schema.String) }),
-  Schema.Struct({ fromSecret: SecretNameSchema }),
+  StoredSecretInput,
 ]);
 const SecretMap = Schema.Record(Schema.String, SecretValueInput);
 const ToolList = Schema.Array(Schema.NonEmptyString);
@@ -782,6 +784,46 @@ const checkedKeys = (
   return entries.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
 };
 
+const isConfigArray = (value: ConfigValue): value is ReadonlyArray<ConfigValue> => Array.isArray(value);
+const isStoredSecret = Schema.is(StoredSecretInput);
+
+/**
+ * A config resource value may hold `{ "fromSecret": "<name>" }` anywhere a
+ * string fits; projection replaces it with this machine's stored secret. An
+ * object that names `fromSecret` beside other fields, or a name the secret
+ * store cannot hold, would otherwise be written into the file as it is.
+ */
+const checkSecretReferences = (value: ConfigValue, label: string, path: string): void => {
+  if (isConfigScalar(value)) return;
+  if (!isConfigArray(value) && "fromSecret" in value) {
+    if (Object.keys(value).length === 1 && isStoredSecret(value)) return;
+    throw failure(path, `${label}: write a shared secret as { "fromSecret": "<name>" } with nothing beside it; a name starts with a letter or digit and holds letters, digits, '.', '_', ':' or '-'`);
+  }
+  for (const entry of isConfigArray(value) ? value : Object.values(value)) checkSecretReferences(entry, label, path);
+};
+
+/** The secret names a config resource value references, in document order. */
+export const storedSecretNames = (value: ConfigValue): ReadonlyArray<string> =>
+  isConfigScalar(value)
+    ? []
+    : isStoredSecret(value)
+    ? [value.fromSecret]
+    : (isConfigArray(value) ? value : Object.values(value)).flatMap(storedSecretNames);
+
+/**
+ * A config resource value with each `{ "fromSecret": name }` replaced by
+ * `replace(name)`. The loader has refused every other object naming
+ * `fromSecret`, so a match is always a whole reference.
+ */
+export const mapStoredSecrets = (value: ConfigValue, replace: (name: string) => ConfigValue): ConfigValue =>
+  isConfigScalar(value)
+    ? value
+    : isStoredSecret(value)
+    ? replace(value.fromSecret)
+    : isConfigArray(value)
+    ? value.map((entry) => mapStoredSecrets(entry, replace))
+    : Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, mapStoredSecrets(entry, replace)]));
+
 const settingsFor = (
   input: Readonly<Record<string, Readonly<Record<string, ConfigValue>>>> | undefined,
   path: string,
@@ -1065,7 +1107,9 @@ const loadResources = async <File extends { readonly executable: boolean }>(
     const overlap = resources.find((other) => targetsOverlap(other.target, input.target));
     if (overlap !== undefined) throw failure(path, `${label}.target ${input.target} overlaps resources.${overlap.id}.target ${overlap.target}`);
     if (input.kind === "config") {
-      resources.push({ id, kind: "config", target: input.target, format: input.format, keys: checkedKeys(input.keys, label, path) });
+      const keys = checkedKeys(input.keys, label, path);
+      for (const key of keys) checkSecretReferences(key.value, `${label} key ${key.path}`, path);
+      resources.push({ id, kind: "config", target: input.target, format: input.format, keys });
       continue;
     }
     if (input.source.split("/").some(dotSegment)) throw failure(path, `${label}.source ${input.source} has a . or .. segment`);

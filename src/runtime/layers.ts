@@ -1295,24 +1295,37 @@ const followerCommandsLayer = (
               const run = mapFailure(repository.getFollowerSynchronizationConfiguration()).pipe(
                 Effect.flatMap((current) => current === undefined ? local : follower),
               );
-              const synchronize = guard((failure) => failure.category === "transport", run).pipe(
-                Effect.catchTag("TunnelDownError", (error) => Effect.fail(commandFailure(error))),
-                // Retain completed file-run evidence if shared-secret refresh fails.
-                Effect.tap((result) => input.mode === "apply" ? guard(
+              // An apply refreshes shared secrets before the file run, so a
+              // resource that references one writes the value the Source holds
+              // now. Wrapping the refresh in the tunnel guard retries once if
+              // Canonfig recovers a dropped managed tunnel. A refresh failure
+              // does not stop the file run: the command fails after it and
+              // keeps its evidence.
+              const refreshSecrets = input.mode === "apply"
+                ? guard(
                   (error) => error.category === "transport",
                   synchronizeSharedSecrets().pipe(
                     Effect.provideService(MachineState, machine),
                     Effect.provideService(StateRepository, repository),
                   ),
                   { retryAfterRestart: true },
-                ).pipe(
-                  Effect.mapError((error) => new CliCommandFailure({
+                ).pipe(Effect.result)
+                : Effect.succeed(undefined);
+              const synchronize = Effect.gen(function*() {
+                const refreshed = yield* refreshSecrets;
+                const result = yield* guard((failure) => failure.category === "transport", run).pipe(
+                  Effect.catchTag("TunnelDownError", (error) => Effect.fail(commandFailure(error))),
+                );
+                if (refreshed !== undefined && Result.isFailure(refreshed)) {
+                  const error = refreshed.failure;
+                  return yield* new CliCommandFailure({
                     category: error._tag === "TunnelDownError" ? "transport" : secretFailureCategory(error),
                     message: `File synchronization completed, but shared-secret synchronization failed: ${error.message}`,
                     details: result,
-                  })),
-                ) : Effect.void),
-              );
+                  });
+                }
+                return result;
+              });
               return yield* execute === undefined
                 ? synchronize.pipe(Effect.map((data) => ({ payload: data, deferredFleetCheck: undefined })))
                 : execute(synchronize);

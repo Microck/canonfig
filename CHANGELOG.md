@@ -61,6 +61,18 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
 - Scheduled Follower syncs retry shared-secret transfer once if Canonfig
   recovers a dropped managed tunnel. If secret sync still fails, Canonfig
   keeps the file synchronization receipt and reports the transport failure.
+- `canonfig sync --apply` on a Follower now fetches the Source's shared secrets
+  before it writes files, so a rotated secret reaches config files in the same
+  sync.
+
+### Files outside the harnesses
+
+- A `config` resource's key values can hold `{ "fromSecret": "<name>" }`. Each
+  machine writes the value from its own secret store into the target file,
+  which stays readable by its owner alone (`0600`, or a user-only ACL on
+  Windows). The published revision, plans, logs and state keep only the name.
+- A sync stops before it changes any file when a referenced secret is missing,
+  and names the secret and the command that supplies it.
 
 ## v7.9.1 - 2026-11-26
 

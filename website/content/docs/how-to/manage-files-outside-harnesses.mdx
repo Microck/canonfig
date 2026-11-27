@@ -27,7 +27,7 @@ canonfig source publish --reviewer "$USER"
 | --- | --- | --- |
 | `file` | The file at `source`, with its executable bit. | `replace` (default): Canonfig owns the whole file. `append-local`: Canonfig owns a marked section at the top and keeps the machine's text after it, as in [Keep a machine's own instructions and skills](/docs/how-to/keep-local-content). |
 | `directory` | Every file under the `source` directory. | `replace` (default): Canonfig owns the whole directory. `append-local`: Canonfig owns only the entries it writes. |
-| `config` | Only the `keys`, merged into a `json`, `toml`, or `yaml` file. Every other key stays. | Always merged. Keys are written like [settings](/docs/reference/canonfig-folder#settings). |
+| `config` | Only the `keys`, merged into a `json`, `toml`, or `yaml` file. Every other key stays. A value can be a [shared secret](#put-a-shared-secret-in-a-config-file). | Always merged. Keys are written like [settings](/docs/reference/canonfig-folder#settings). |
 
 Each resource is published and mirrored like any other item and is not
 affected by `surfaces`. A resource no group names reaches every Follower
@@ -40,6 +40,54 @@ Afterwards a change you make to a target is Follower Drift: kept, reported,
 exit 4. Removing a resource from `canonfig.jsonc` removes what Canonfig wrote
 and nothing else. `canonfig restore` gives a resource back and adds its id to
 `excludeResources` in `~/.canonfig/local/local.jsonc`.
+
+## Put a shared secret in a config file
+
+A command-line tool often keeps its API key in its own config file. Store the
+key on the Source with `canonfig secrets set`, then write a `fromSecret`
+reference where the value goes, in a `config` resource's `keys`:
+
+```bash
+canonfig secrets set kagi-api-key
+```
+
+```jsonc title="part of ~/.canonfig/canonfig.jsonc"
+{
+  "resources": {
+    "kagi": {
+      "kind": "config",
+      "target": "~/.config/kagi-cli/config.toml",
+      "format": "toml",
+      "keys": { "auth.api_key": { "fromSecret": "kagi-api-key" }, "auth.region": "eu" }
+    }
+  }
+}
+```
+
+A reference can stand anywhere a string fits, including inside an object or a
+list, and must have nothing beside `fromSecret`. The name follows the rules of
+[secret values](/docs/reference/canonfig-folder#secret-values).
+
+The published revision, the Follower's mirrored folder, plans, logs and the
+state database keep only the reference. Each machine reads the value from its
+own secret store when it syncs and writes it only into the target file. That
+file is readable by its owner alone: mode `0600` on Linux and macOS, an ACL for
+the user alone on Windows. A sync that finds the file's mode widened puts it
+back.
+
+A Follower needs the secret too. Enroll it with `--group canonfig:secrets`;
+`canonfig sync --apply` fetches the Source's shared secrets before it writes
+files, so a rotated value reaches the file in the same sync. `canonfig sync
+--plan` only reads the secrets this machine already holds. Send a resource only
+to Followers that receive secrets by naming it in a [group](/docs/reference/canonfig-folder#groups).
+
+When a referenced secret is missing, the sync stops before it changes any
+file. Its message names the resource and the secret: on a Follower, run
+`canonfig secrets sync`, or store the value on this machine with
+`canonfig secrets set kagi-api-key`, then sync again.
+
+A file that holds a secret and no longer parses is reported without the
+parser's message, since that message can quote the secret.
 
 ## Limits
 

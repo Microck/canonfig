@@ -22,6 +22,7 @@ import type { RootContext } from "../src/projection/harness.ts";
 import { projectResources } from "../src/projection/plan.ts";
 import { ampPluginSource } from "../src/projection/templates/runtime.ts";
 import { TARGET_IDS } from "../src/projection/model.ts";
+import type { ConfigValue } from "../src/domain/resource.ts";
 
 const roots: Array<string> = [];
 afterEach(() => {
@@ -377,6 +378,21 @@ describe("authored resource targets", () => {
     expect(() => surfaceResourceId("codex:extra", "instructions")).toThrow("Invalid projection resource owner or surface");
     expect(parseSurfaceResourceId(surfaceResourceId("codex", "skill:name")))
       .toEqual({ harness: "codex", surface: "skill:name" });
+  });
+
+  it("keeps fromSecret references in config resources and refuses ones it would write literally", async () => {
+    const keys = { "auth.api_key": { fromSecret: "kagi.key" }, tokens: ["plain", { fromSecret: "kagi.key" }] };
+    const accepted = folder({ "canonfig.jsonc": config({ kagi: { kind: "config", target: "~/.config/kagi/config.toml", format: "toml", keys } }) });
+    const { model } = await loadCanonicalFolder(accepted);
+    expect(model.resources).toMatchObject([{ id: "kagi", keys: [
+      { path: "auth.api_key", value: { fromSecret: "kagi.key" } },
+      { path: "tokens", value: ["plain", { fromSecret: "kagi.key" }] },
+    ] }]);
+    const refusedValues: ReadonlyArray<ConfigValue> = [{ fromSecret: "kagi.key", extra: true }, { fromSecret: "../escape" }, { nested: { fromSecret: 7 } }];
+    for (const value of refusedValues) {
+      const refused = folder({ "canonfig.jsonc": config({ kagi: { kind: "config", target: "~/.config/kagi/config.toml", format: "toml", keys: { auth: value } } }) });
+      await expect(loadCanonicalFolder(refused)).rejects.toThrow('resources.kagi key auth: write a shared secret as { "fromSecret": "<name>" }');
+    }
   });
 
   it("refuses two targets that differ only in case, since the folder reaches case-insensitive file systems", async () => {

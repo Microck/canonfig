@@ -124,7 +124,7 @@ does not list is an error, so a typo fails instead of being ignored.
 | `groups` | No | object: group name to array of item references | Items only Follower Machines in that Follower Group receive. See [Groups](#groups). |
 | `scheduleDefault` | No | `daily@HH:mm` or `weekly:Mon,Thu@HH:mm` | A suggested schedule. Sync never installs it; a Follower Machine accepts it with `canonfig schedule set --default`. |
 | `local` | No | `{ "allow"?: array, "appendLocal"?: array }` | `allow`: which categories machines may add in `local/`: any of `instructions`, `rules`, `skills`, `agents`, `commands`, `mcp`, `settings`. `appendLocal`: `instructions`, `skills`, or both; those harness outputs keep each machine's own text and skills (see [Keep a machine's own instructions and skills](/docs/how-to/keep-local-content)). Default: none. |
-| `resources` | No | object: id to resource | Files, directories, and config keys outside every harness. See [Manage files outside the harnesses](/docs/how-to/manage-files-outside-harnesses). |
+| `resources` | No | object: id to resource | Files, directories, and config keys outside every harness. A `config` resource's key values can hold `{ "fromSecret": name }`. See [Manage files outside the harnesses](/docs/how-to/manage-files-outside-harnesses). |
 
 Names used as object keys (MCP servers, hook ids, tools, credentials, groups)
 start with a letter or digit and contain only letters, digits, `-`, and `_`.
@@ -184,6 +184,9 @@ shared-secret reference:
 starting with a letter or digit, followed by letters, digits, `.`, `_`, `:`,
 or `-`. It cannot have a default or be combined with `fromEnv`. Both
 `canonfig.jsonc` and allowed `local/local.jsonc` MCP entries accept it.
+A `config` resource accepts it in its key values too: sync writes the value
+into the target file and keeps that file private to its owner. See
+[Put a shared secret in a config file](/docs/how-to/manage-files-outside-harnesses#put-a-shared-secret-in-a-config-file).
 
 If any value uses `fromSecret` and the entry omits `proxy`, every harness receives a stdio command for
 `canonfig mcp run <name>`, bound to the absolute installed Node executable and
@@ -453,7 +456,7 @@ failure exits 2 and nothing is signed. Most messages start with
 | `<path> <file> needs path segments of letters, digits, '.', '_' or '-', none of them only dots` | Rename the file under `hooks/` or `files/`. A `:` or a name of only dots cannot reach a follower. |
 | `<path> mcp.<name> requires <tools/id>, which "tools" does not declare` | Declare the tool, or drop it from `requires`. |
 | `<path> groups.<group> names <reference>, which the folder does not declare` | Fix the reference, or add the item. |
-| `config resource <id> at <path> contains a literal credential [REDACTED]; ...` | Replace the value with a `{ "fromEnv": ... }` reference, or store it with `canonfig secrets set`. |
+| `config resource <id> at <path> contains a literal credential [REDACTED]; ...` | Replace the value with a `{ "fromEnv": ... }` reference, or store it with `canonfig secrets set` and write `{ "fromSecret": ... }` in its place. |
 | `installer <method> requires an exact "version" so every follower installs the same build` | Add the exact version to the recipe. |
 
 Publishing content equal to the latest Profile Revision returns that
