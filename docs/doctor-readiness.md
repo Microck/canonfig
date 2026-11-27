@@ -4,14 +4,24 @@
 of an enrolled Follower Machine. Environment hints remain a fallback only before
 enrollment; they cannot silently replace its selected authority.
 
-`doctor` runs ten probes (`doctorProbeNames` in `src/runtime/doctor.ts`):
+`doctor` runs eleven probes (`doctorProbeNames` in `src/runtime/doctor.ts`):
 `runtime`, `state`, `credentials`, `source`, `scheduler`, `package-managers`,
-`agent-adapter`, `harnesses`, `mcp` and `tailscale`. The `harnesses` probe prints the same report
+`agent-adapter`, `harnesses`, `mcp`, `mcp-config` and `tailscale`. The `harnesses` probe prints the same report
 as `canonfig harnesses`: the folder's list, local exclusions, detected
 harnesses, pinned roots and takeover snapshots. It is skipped while
 `~/.canonfig/canonfig.jsonc` does not exist, and warns
 `listed but not installed: <harnesses>` when a listed harness is missing; the
 run still converges without it.
+
+The `mcp-config` probe checks `~/.canonfig/canonfig.jsonc` and
+`~/.canonfig/local/local.jsonc` without launching servers. It reports
+non-blocking warnings for active `preserveMcp` locks, local overlays that
+disable published cross-platform MCP servers or reference paths for another OS,
+local overlays that drop `fromSecret` bindings or embed plaintext tokens
+(without echoing token values), and enabled stdio MCP commands whose executable
+path is missing locally or whose bare command is neither on `PATH` nor backed
+by a `tools` recipe or `requires` entry. `canonfig sync --plan` reports the
+same diagnostics.
 
 The `mcp` probe checks enabled servers in installed harnesses' native
 configuration, including preserved and hand-written entries. It requires

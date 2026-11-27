@@ -2,10 +2,11 @@ import { Schema } from "effect";
 import { CertificateFingerprint, FollowerId } from "./brand.ts";
 
 /**
- * How a doctor probe detail value marks a failing item, such as one MCP server
- * (`fail · codex · command not found: ...`). The GUI lists those items.
+ * How a doctor probe detail value marks a failing or warning item, such as one MCP server
+ * (`fail · codex · command not found: ...`) or an MCP config warning. The GUI lists those items.
  */
 export const failingDetailPrefix = "fail · ";
+export const warningDetailPrefix = "warning · ";
 /** The longest message or detail value a machine health report carries. */
 export const machineHealthTextLimit = 512;
 /** The longest detail key a machine health report carries. */
