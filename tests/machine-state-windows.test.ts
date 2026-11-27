@@ -733,7 +733,7 @@ describe.skipIf(process.platform !== "win32")("Windows file permission ownership
   it("restores exact permissions on paths with quotes, dollars and Unicode through one worker", async () => {
     const root = await mkdtemp(join(tmpdir(), "canonfig-acl-worker-"));
     const targets = [
-      { path: join(root, "it's $env:PATH & [x] (1).txt"), directory: false },
+      { path: join(root, "it's $HOME & [x] (1).txt"), directory: false },
       { path: join(root, "ünïcødé 🙂 spaced.txt"), directory: false },
       { path: join(root, "dir $(whoami) ü"), directory: true },
     ];
