@@ -69,6 +69,17 @@ const failure = (
   message: string,
 ): SecretTransferError => new SecretTransferError({ category, operation, message });
 
+const isTransportCode = Schema.is(Schema.String.check(Schema.isPattern(/^[A-Z][A-Z0-9_]{1,63}$/u)));
+
+const transportFailure = (operation: string, message: string, cause: unknown): SecretTransferError => {
+  if (cause instanceof SecretTransferError) return cause;
+  // Node error messages may include request or peer data. Keep only the code.
+  const code = cause instanceof Error && "code" in cause ? cause.code : undefined;
+  return failure("transport", operation, isTransportCode(code)
+    ? `${message} (${code})`
+    : message);
+};
+
 const checkedEndpoint = (
   endpoint: string,
   timeoutMilliseconds: number,
@@ -100,7 +111,9 @@ const inspectCertificate = (
           try {
             const peer = socket.getPeerCertificate();
             if (peer.raw === undefined) {
-              throw new Error("source did not provide a certificate");
+              socket.destroy();
+              rejectCertificate(failure("transport", "inspect secret source", "the secret source did not provide a certificate"));
+              return;
             }
             const fingerprint = Schema.decodeUnknownSync(CertificateFingerprint)(
               createHash("sha256").update(peer.raw).digest("hex"),
@@ -114,15 +127,15 @@ const inspectCertificate = (
           }
         });
         socket.once("timeout", () => {
-          socket.destroy(new Error("TLS connection timed out"));
+          socket.destroy(failure("transport", "inspect secret source", "the secret source TLS connection timed out"));
         });
         socket.once("error", rejectCertificate);
       }),
-    catch: () =>
-      failure(
-        "transport",
+    catch: (cause) =>
+      transportFailure(
         "inspect secret source",
         "the secret source certificate could not be inspected",
+        cause,
       ),
   });
 
@@ -157,14 +170,14 @@ const requestSecrets = (
           let exceeded = false;
           response.once("error", rejectResponse);
           response.once("aborted", () => {
-            rejectResponse(new Error("secret response was interrupted"));
+            rejectResponse(failure("transport", "fetch shared secrets", "the secret response was interrupted"));
           });
           response.on("data", (chunk: Buffer) => {
             if (exceeded) return;
             bytes += chunk.byteLength;
             if (bytes > maximumResponseBytes) {
               exceeded = true;
-              request.destroy(new Error("secret response exceeds the size limit"));
+              request.destroy(failure("transport", "fetch shared secrets", "the secret response exceeds the size limit"));
               return;
             }
             chunks.push(chunk);
@@ -178,16 +191,16 @@ const requestSecrets = (
           });
         });
         request.setTimeout(timeoutMilliseconds, () => {
-          request.destroy(new Error("secret request timed out"));
+          request.destroy(failure("transport", "fetch shared secrets", "the secret request timed out"));
         });
         request.once("error", rejectResponse);
         request.end();
       }),
-    catch: () =>
-      failure(
-        "transport",
+    catch: (cause) =>
+      transportFailure(
         "fetch shared secrets",
         "the secret source could not be reached",
+        cause,
       ),
   });
 

@@ -1298,11 +1298,16 @@ const followerCommandsLayer = (
               const synchronize = guard((failure) => failure.category === "transport", run).pipe(
                 Effect.catchTag("TunnelDownError", (error) => Effect.fail(commandFailure(error))),
                 // Retain completed file-run evidence if shared-secret refresh fails.
-                Effect.tap((result) => input.mode === "apply" ? synchronizeSharedSecrets().pipe(
-                  Effect.provideService(MachineState, machine),
-                  Effect.provideService(StateRepository, repository),
+                Effect.tap((result) => input.mode === "apply" ? guard(
+                  (error) => error.category === "transport",
+                  synchronizeSharedSecrets().pipe(
+                    Effect.provideService(MachineState, machine),
+                    Effect.provideService(StateRepository, repository),
+                  ),
+                  { retryAfterRestart: true },
+                ).pipe(
                   Effect.mapError((error) => new CliCommandFailure({
-                    category: secretFailureCategory(error),
+                    category: error._tag === "TunnelDownError" ? "transport" : secretFailureCategory(error),
                     message: `File synchronization completed, but shared-secret synchronization failed: ${error.message}`,
                     details: result,
                   })),
