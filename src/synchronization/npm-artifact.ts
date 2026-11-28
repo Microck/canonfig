@@ -16,13 +16,14 @@ import { gunzipSync } from "node:zlib";
 import { Effect, Schema } from "effect";
 import { TaggedError } from "../domain/tagged-error.ts";
 import type { JsonValue } from "../profile/profile-codec.ts";
+import { tarBlockBytes, tarChecksumValid, tarOctal, tarString } from "./tar-headers.ts";
 
 const defaultMaximumBytes = 32 * 1024 * 1024;
 const defaultTimeoutMilliseconds = 30_000;
 const maximumArchiveEntries = 4_096;
 const maximumArchiveBytes = 128 * 1024 * 1024;
 const maximumManifestBytes = 1 * 1024 * 1024;
-const tarBlockBytes = 512;
+const textDecoder = new TextDecoder("utf-8", { fatal: true });
 
 export class NpmArtifactError extends TaggedError<NpmArtifactError>()(
   "NpmArtifactError",
@@ -111,43 +112,6 @@ interface NpmArchiveEntry {
   readonly kind: "file" | "directory";
   readonly bytes?: Uint8Array | undefined;
 }
-
-const textDecoder = new TextDecoder("utf-8", { fatal: true });
-
-const tarString = (
-  header: Uint8Array,
-  offset: number,
-  length: number,
-): string => {
-  const end = header.subarray(offset, offset + length).indexOf(0);
-  const value = header.subarray(
-    offset,
-    offset + (end < 0 ? length : end),
-  );
-  return textDecoder.decode(value);
-};
-
-const tarOctal = (
-  header: Uint8Array,
-  offset: number,
-  length: number,
-): number | undefined => {
-  const raw = tarString(header, offset, length).replace(/^\s+|\s+$/gu, "");
-  if (raw.length === 0) return 0;
-  if (!/^[0-7]+$/u.test(raw)) return undefined;
-  const value = Number.parseInt(raw, 8);
-  return Number.isSafeInteger(value) ? value : undefined;
-};
-
-const tarChecksumValid = (header: Uint8Array): boolean => {
-  const expected = tarOctal(header, 148, 8);
-  if (expected === undefined) return false;
-  let actual = 0;
-  for (let index = 0; index < header.byteLength; index += 1) {
-    actual += index >= 148 && index < 156 ? 0x20 : header[index]!;
-  }
-  return actual === expected;
-};
 
 const normalizedArchivePath = (name: string, prefix: string): string | undefined => {
   const rawPath = `${prefix}${prefix.length > 0 && name.length > 0 ? "/" : ""}${name}`;

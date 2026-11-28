@@ -33,10 +33,19 @@ export const AutomaticRecipeMethod = Schema.Literals([
 ]);
 export type AutomaticRecipeMethod = Schema.Schema.Type<typeof AutomaticRecipeMethod>;
 
+const sha256Integrity = /^sha256-[A-Za-z0-9+/]{43}=$/u;
+const binaryArchive = Schema.Struct({
+  format: Schema.Literals(["tar.gz", "zip"]),
+  executableIntegrity: Schema.String.check(Schema.isPattern(sha256Integrity)),
+});
+
+export type BinaryArchive = Schema.Schema.Type<typeof binaryArchive>;
+
 /** Canonical source metadata retained for reviewed package recipes. */
 export const RecipeSourceMetadata = Schema.Struct({
   source: Schema.NonEmptyString,
   integrity: Schema.optional(Schema.NonEmptyString),
+  archive: Schema.optional(binaryArchive),
 });
 export type RecipeSourceMetadata = Schema.Schema.Type<typeof RecipeSourceMetadata>;
 export type RecipeSource = string | RecipeSourceMetadata;
@@ -95,7 +104,13 @@ export const canonicalRecipeIndexUrl = (
 export interface RecipeSourceDetails {
   readonly source?: string | undefined;
   readonly integrity?: string | undefined;
+  readonly archive?: BinaryArchive | undefined;
 }
+
+export const isBinaryArchiveMemberPath = (path: string): boolean =>
+  // oxlint-disable-next-line eslint/no-control-regex -- Archive member names cannot contain control characters.
+  !/[\\:\x00-\x1f\x7f]/u.test(path)
+  && path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 
 /**
  * Recipe methods that can express a version as a single deterministic
@@ -194,7 +209,7 @@ export const recipeValidationIssue = (
     }
     if (version === undefined) return recipeIssue(["version"], "binary recipes require an exact version");
     if (input.architecture !== undefined && !["x64", "arm64"].includes(input.architecture)) return recipeIssue(["architecture"], "binary architecture must be x64 or arm64");
-    if (input.entrypoint !== undefined && input.entrypoint !== packageName) return recipeIssue(["entrypoint"], "binary entrypoint must equal the executable package name, not a path");
+    if (sourceValue(input.source)?.archive === undefined && input.entrypoint !== undefined && input.entrypoint !== packageName) return recipeIssue(["entrypoint"], "binary entrypoint must equal the executable package name, not a path");
   }
   if (
     (method === "npm" || method === "pnpm" || method === "bun")
@@ -290,7 +305,7 @@ export const isMissingAutomaticRecipeVersion = (input: {
 
 const sourceValue = (
   source: RecipeSource | undefined,
-): { readonly source: string; readonly integrity?: string | undefined } | undefined =>
+): RecipeSourceMetadata | undefined =>
   source === undefined
     ? undefined
     : Schema.is(Schema.String)(source)
@@ -342,9 +357,16 @@ const recipeSourceValidationIssue = (
     } catch {
       return recipeIssue(["source"], "binary source must be an HTTPS artifact URL");
     }
-    if (integrity !== undefined && !/^(?:sha256-[A-Za-z0-9+/]{43}=|sha512-[A-Za-z0-9+/]{86}==)$/u.test(integrity)) return recipeIssue(["integrity"], "binary integrity must be a full sha256 or sha512 SRI digest");
+    if (metadata.archive !== undefined) {
+      if (!Schema.is(binaryArchive)(metadata.archive)) return recipeIssue(["source", "archive"], "binary archive requires a tar.gz or zip format and SHA-256 executable integrity");
+      if (integrity === undefined || !sha256Integrity.test(integrity)) return recipeIssue(["source", "integrity"], "binary archive integrity must be a full SHA-256 SRI digest");
+      if (input.entrypoint === undefined || !isBinaryArchiveMemberPath(input.entrypoint)) return recipeIssue(["entrypoint"], "binary archive requires a safe relative entrypoint with forward slashes");
+    } else if (integrity !== undefined && !/^(?:sha256-[A-Za-z0-9+/]{43}=|sha512-[A-Za-z0-9+/]{86}==)$/u.test(integrity)) {
+      return recipeIssue(["integrity"], "binary integrity must be a full sha256 or sha512 SRI digest");
+    }
     return undefined;
   }
+  if (metadata?.archive !== undefined) return recipeIssue(["source", "archive"], "archive metadata is only supported for binary recipes");
   if (input.integrity !== undefined && metadata?.integrity !== undefined) {
     return recipeIssue(["integrity"], "recipe source integrity is duplicated");
   }
@@ -420,7 +442,8 @@ export const recipeSourceDetails = (
   return {
     source: metadata?.source,
     integrity: metadata?.integrity ?? integrity,
-  } satisfies RecipeSourceDetails;
+    archive: metadata?.archive,
+  };
 };
 
 export const isSafeRecipe = (input: {

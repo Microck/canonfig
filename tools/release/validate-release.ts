@@ -168,6 +168,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
   }
   const runtimeDependencies = Object.keys(metadata.dependencies).sort();
   // Sigstore verifies Fleet Update provenance. Koffi opens native Windows directory handles.
+  // Yauzl extracts verified zip binary tool archives.
   const expectedRuntimeDependencies = [
     "@canonfig/effect-platform-node-shared",
     "@canonfig/effect-sql-sqlite-node",
@@ -179,6 +180,7 @@ const validatePackageMetadata = (metadataPath: string): void => {
     "sigstore",
     "smol-toml",
     "yaml",
+    "yauzl",
   ];
   if (JSON.stringify(runtimeDependencies) !== JSON.stringify(expectedRuntimeDependencies)) {
     fail(`unexpected runtime dependencies: ${runtimeDependencies.join(", ")}`);

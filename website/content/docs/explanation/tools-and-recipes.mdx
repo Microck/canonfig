@@ -175,20 +175,35 @@ instead of your pin. After installation, it checks the installed version too.
 
 ## Verified native binaries
 
-Use `method: "binary"` for a single prebuilt executable. Declare its platform,
+Use `method: "binary"` for a prebuilt executable distributed on its own or in an archive. Declare its platform,
 `architecture` (`x64` or `arm64`), exact `version`, executable name in `package`,
 and `source: { source: "https://…", integrity: "sha256-…" }` with the real URL
-and full SRI digest. SHA-512 integrity is also supported. The source URL must
+and full SRI digest. Bare executables also support SHA-512. The source URL must
 not contain credentials, a query, or a fragment. HTTPS redirects are allowed;
 downloads are limited to 128 MiB and 30 seconds.
 
 Canonfig verifies the digest and native format before publishing the executable
 under `~/.local/bin` (`%USERPROFILE%\.local\bin` on Windows, with `.exe` appended
-when needed). Create that directory first. Its parents must be real directories,
-not symlinks. Archives, scripts, universal macOS binaries, and build steps are
-not supported by this method.
+when needed). Create that directory first. Its parents must be real directories.
+This method accepts native executables built for the recipe's platform and
+architecture.
 On Windows, a package name containing a dot must end in `.exe`: use
 `tool.v1.exe`, not `tool.v1`, so command and presence verification find the file.
+
+For a ZIP or a gzip-compressed tar archive (`.tar.gz` or `.tgz`), set
+`source.archive.format` to `"zip"` or `"tar.gz"` and set `entrypoint` to the
+exact member path from the archive root, such as `release/bin/tool`. Use
+forward slashes. `source.integrity` must contain the archive's SHA-256 SRI
+digest. Set `source.archive.executableIntegrity` to the SHA-256 SRI digest of
+the executable inside the archive. For each digest, prefix the base64-encoded
+32-byte hash with `sha256-`.
+
+Canonfig checks the archive's digest before opening it and installs only the
+selected executable under the name in `package`. The executable digest lets
+Canonfig recognize the installed version offline. Archives can contain up to
+4,096 entries and expand to at most 128 MiB. Canonfig rejects unsafe paths,
+links, and special files. Tar archives must use regular tar headers without
+PAX or GNU extensions.
 
 An existing executable is accepted only when its bytes match. Canonfig does not
 replace different bytes automatically, including an older binary version. Move

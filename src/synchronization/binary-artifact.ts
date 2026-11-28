@@ -5,6 +5,7 @@ import { recipeSourceDetails, recipeValidationIssue } from "../domain/recipe-ver
 import type { ToolRecipeRef } from "../domain/resource.ts";
 import { MachineState } from "../machine/machine-state.service.ts";
 import { sha256BytesHex } from "../profile/profile-codec.ts";
+import { extractBinaryArchiveMember } from "./binary-archive.ts";
 import { incomingMessageRequest, verifyNpmArtifactBytes, type NpmArtifactRequest } from "./npm-artifact.ts";
 
 const maximumBytes = 128 * 1024 * 1024;
@@ -94,10 +95,16 @@ export const downloadBinaryArtifact = (recipe: ToolRecipeRef, request: NpmArtifa
           if (size > maximumBytes) throw new Error("binary artifact exceeds 128 MiB limit");
           chunks.push(chunk);
         }
-        const bytes = Buffer.concat(chunks, size);
-        if (!verifyNpmArtifactBytes(bytes, metadata.integrity!)) throw new Error("binary artifact integrity mismatch");
+        const downloaded = Buffer.concat(chunks, size);
+        if (!verifyNpmArtifactBytes(downloaded, metadata.integrity!)) throw new Error("binary artifact integrity mismatch");
+        const bytes = metadata.archive === undefined
+          ? downloaded
+          : await extractBinaryArchiveMember(downloaded, metadata.archive.format, recipe.entrypoint!, signal);
         const invalid = binaryFormatProblem(bytes, recipe.platform, recipe.architecture!);
         if (invalid !== undefined) throw new Error(invalid);
+        if (metadata.archive !== undefined && !verifyNpmArtifactBytes(bytes, metadata.archive.executableIntegrity)) {
+          throw new Error("binary archive executable integrity mismatch");
+        }
         return bytes;
       }
       throw new Error("binary redirect limit exceeded");

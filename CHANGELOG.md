@@ -4,6 +4,11 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
 
 ## Unreleased
 
+### Tool recipes
+
+- Binary tool recipes can install a named executable from a verified `.tar.gz`,
+  `.tgz`, or `.zip` archive.
+
 ### Agent skills
 
 - Added the `debug-canonfig` skill (`skills/debug-canonfig/SKILL.md`) with a
