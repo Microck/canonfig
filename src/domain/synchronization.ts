@@ -724,6 +724,8 @@ export const AppliedResourceRecordSchema = Schema.Union([
     policy: Schema.Literals(["merge", "replace", "replace-if-unmodified"]),
     ownedKeys: Schema.Array(Schema.NonEmptyString),
     configFormat: Schema.Literals(["toml", "json", "yaml"]),
+    /** The keys held values resolved from the secret store; retirement withholds parser text too. */
+    holdsSecrets: Schema.optional(Schema.Boolean),
   }).annotate({ parseOptions: { onExcessProperty: "error" } }),
   Schema.Struct({
     ...appliedResourceFields,
@@ -780,7 +782,9 @@ export const createAppliedResourceRecord = (input: {
     case "skill":
       return decodeAppliedResourceRecord({ ...common, ownership: "DirectoryEntries", mode: desired.mode, ownedFiles: input.ownedFiles });
     case "config":
-      return decodeAppliedResourceRecord({ ...common, ownership: "ConfigKeys", ownedKeys: input.ownedKeys, configFormat: desired.format });
+      return decodeAppliedResourceRecord({
+        ...common, ownership: "ConfigKeys", ownedKeys: input.ownedKeys, configFormat: desired.format, holdsSecrets: desired.holdsSecrets,
+      });
     case "tool":
       return input.installerRecipe === undefined ? undefined : decodeAppliedResourceRecord({
         ...common,
@@ -950,6 +954,7 @@ export const PlanningLocalRevisionSchema = Schema.Struct({
         format: Schema.Literals(["toml", "json", "yaml"]),
         keys: Schema.Array(Schema.String),
         releases: Schema.optional(Schema.Array(Schema.String)),
+        holdsSecrets: Schema.optional(Schema.Boolean),
       }),
       Schema.Struct({
         kind: Schema.Literal("skill"),

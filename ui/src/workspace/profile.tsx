@@ -1107,6 +1107,7 @@ function ItemEditor({ resource, isNew, onClose, onSaved }: { resource: Resource;
             <p className="text-xs text-pretty text-faint">
               Values are JSON: put text in quotes, like "high"; numbers and true/false without. Canonfig translates them into{" "}
               {isSettings ? "the harness's own file format" : (draft.detail.Format ?? "json").toUpperCase()} and leaves every other key in that file as it is.
+              {!isSettings && ' For a credential, store it under Secrets and write {"fromSecret": "name"}: each machine fills in its own copy and keeps the file private to its user.'}
             </p>
           </div>
         )}

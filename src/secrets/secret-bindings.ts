@@ -8,6 +8,38 @@ import {
   SecretTransferError,
 } from "./secret-store.ts";
 
+/**
+ * Load one shared secret by name, or undefined when this machine has no
+ * secret of that name. Any read failure is a `storage` error that names the
+ * secret, never its value.
+ *
+ * Rotation publishes the new native reference before removing the old one,
+ * so a failed read resolves the name again and retries once with a changed
+ * reference. A locked or unchanged credential gets only one native read.
+ */
+export const loadNamedSecret = (
+  name: string,
+): Effect.Effect<Redacted.Redacted<string> | undefined, SecretTransferError, MachineState> =>
+  Effect.gen(function*() {
+    const machine = yield* MachineState;
+    const unreadable = new SecretTransferError({
+      category: "storage",
+      operation: "load shared secret",
+      message: `shared secret ${name} could not be read from secure credential storage`,
+    });
+    const reference = yield* findSecretReference(name);
+    if (reference === undefined) return undefined;
+    return yield* machine.loadCredential({ reference }).pipe(Effect.catch(() =>
+      findSecretReference(name).pipe(Effect.flatMap((current) =>
+        current === undefined
+          ? Effect.succeed(undefined)
+          : current === reference
+          ? Effect.fail(unreadable)
+          : machine.loadCredential({ reference: current }).pipe(Effect.mapError(() => unreadable))
+      ))
+    ));
+  });
+
 /** Bind one process environment or header name to a shared secret by name. */
 export interface SecretProcessBinding {
   readonly name: string;

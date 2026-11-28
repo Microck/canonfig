@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,7 +24,8 @@ import {
 } from "../../src/synchronization/config-codec.ts";
 import { defaultSynchronizationExecutionLimits } from "../../src/synchronization/executor.ts";
 import { planResource } from "../../src/synchronization/resource-plans.ts";
-import { prepareResourceAction, type ResourceExecutionContext } from "../../src/synchronization/resource-executors.ts";
+import { observeFollowerResource } from "../../src/synchronization/observation.ts";
+import { prepareResourceAction, verifyResource, type ResourceExecutionContext } from "../../src/synchronization/resource-executors.ts";
 import type { ResourcePlanningContext } from "../../src/synchronization/synchronization.types.ts";
 
 const decode = Schema.decodeUnknownSync;
@@ -310,5 +311,65 @@ describe.runIf(process.platform === "linux")("native config ownership transition
       yield* prepared.rollback;
     }).pipe(Effect.provide(layer)));
     expect(readFileSync(target, "utf8")).toBe(original);
+  });
+});
+
+describe("config files that hold resolved secrets", () => {
+  const secret = "synthetic-config-secret-7f3a";
+  const secretPlanning = (mode: number, applied: boolean): ResourcePlanningContext => {
+    const base = planning(["auth.token"], ["auth.token"]);
+    return {
+      ...base,
+      desired: { kind: "config", format: "json", digest, keys: ["auth.token"], holdsSecrets: true },
+      observed: { state: "present", objectKind: "regular", digest, executable: false, mode, appliedKeysDigest: digest },
+      applied: applied ? base.applied : undefined,
+    };
+  };
+
+  it("rewrites a matching file whose mode is no longer owner-only, and adopts one once", () => {
+    expect(planResource(secretPlanning(0o600, true))).toMatchObject([{ kind: "no-op" }]);
+    expect(planResource(secretPlanning(0o644, true))).toMatchObject([{ kind: "write-config", detail: { keys: ["auth.token"] } }]);
+    // Before Canonfig owns the file it writes it once, even when the values already match.
+    expect(planResource(secretPlanning(0o600, false))).toMatchObject([{ kind: "write-config" }]);
+  });
+
+  it.runIf(process.platform === "linux")("writes owner-only, verifies the mode, and withholds parser text that could quote the secret", async () => {
+    const root = mkdtempSync(join(tmpdir(), "canonfig-config-secret-"));
+    roots.push(root);
+    const home = join(root, "home");
+    mkdirSync(home);
+    const target = join(home, "credentials.yaml");
+    writeFileSync(target, "theme: dark\n", { mode: 0o644 });
+    const content = new TextEncoder().encode(serializeConfigDocument("yaml", { auth: { token: secret } }));
+    const artifactDigest = sha256BytesHex(content);
+    const context: ResourceExecutionContext = {
+      run: decode(RunId)("config-secret"),
+      action: { id: decode(ActionId)("config-secret-write"), resource: resourceId, kind: "write-config", before: [],
+        detail: { kind: "write-config", target, keys: ["auth.token"] } },
+      resource: { id: resourceId, kind: "config", policy: "merge", target, dependsOn: [], blobs: [] },
+      desired: { kind: "config", format: "yaml", digest: artifactDigest, keys: ["auth.token"], holdsSecrets: true },
+      verification: { method: "digest", digest: artifactDigest },
+      artifacts: new Map([[artifactDigest, { digest: artifactDigest, content }]]),
+      limits: defaultSynchronizationExecutionLimits,
+    };
+    const layer = linuxMachineStateLayer({ environment: [{ name: "HOME", value: home }], credentialPolicy: { kind: "local-file", path: join(root, "credentials") } });
+    await Effect.runPromise(Effect.gen(function*() {
+      const prepared = yield* prepareResourceAction(context);
+      yield* prepared.execute;
+      expect(parseConfigDocument("yaml", readFileSync(target, "utf8"))).toEqual({ theme: "dark", auth: { token: secret } });
+      expect(statSync(target).mode & 0o777).toBe(0o600);
+      expect(yield* verifyResource(context)).toEqual({ passed: true, method: "config-keys+permissions" });
+      chmodSync(target, 0o644);
+      expect(yield* verifyResource(context)).toMatchObject({ passed: false });
+
+      // A broken file that holds the secret: neither observation nor the merge may quote it.
+      writeFileSync(target, `auth: ${secret}\n  token: [\n`);
+      const observed = yield* observeFollowerResource({ resource: { ...context.resource, id: resourceId } }, context.desired, context.verification);
+      expect(observed).toMatchObject({ state: "unverifiable", reason: expect.stringContaining("is not valid YAML") });
+      expect(JSON.stringify(observed)).not.toContain(secret);
+      const merge = yield* Effect.flip(prepareResourceAction({ ...context, run: decode(RunId)("config-secret-broken") }));
+      expect(merge.message).toContain("withheld because the file holds shared secrets");
+      expect(merge.message).not.toContain(secret);
+    }).pipe(Effect.provide(layer)));
   });
 });

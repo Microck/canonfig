@@ -181,6 +181,7 @@ export type FolderResource<File = SkillFile> =
     readonly kind: "config";
     readonly target: string;
     readonly format: "json" | "toml" | "yaml";
+    /** A value may hold `{ "fromSecret": name }`; projection resolves it on each machine. */
     readonly keys: ReadonlyArray<SettingsKey>;
   };
 

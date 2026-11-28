@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { Schema } from "effect";
 import { configPathsOverlap } from "../domain/config-path.ts";
+import { secretConfigMode } from "./config-codec.ts";
 
 import {
   AgentTaskId,
@@ -276,7 +277,8 @@ const observedMatchesDesired = (
     case "config":
       return observed.state === "present"
         && observed.digest === desired.digest
-        && observed.objectKind === "regular";
+        && observed.objectKind === "regular"
+        && (desired.holdsSecrets !== true || observed.mode === secretConfigMode);
     case "directory":
     case "skill": {
       const desiredEntries = desiredDirectoryEntries(desired);
@@ -721,7 +723,11 @@ const planMerge = (context: ResourcePlanningContext): ReadonlyArray<ResourceActi
   }
   // An ownership hand-over is planned even when the values already match, so
   // the plan says which keys were left behind instead of reading `no-op`.
-  if (retained.length === 0 && observedMatchesDesired(context.desired, context.observed)) return [noOp()];
+  // A file holding secrets is written once before Canonfig owns it even when
+  // its values match: Windows planning reads no ACL, and only Canonfig's own
+  // write makes the file private there.
+  const adoptsSecrets = context.desired.holdsSecrets === true && context.applied === undefined;
+  if (retained.length === 0 && !adoptsSecrets && observedMatchesDesired(context.desired, context.observed)) return [noOp()];
   return [{
     kind: "write-config",
     detail: {

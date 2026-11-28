@@ -36,6 +36,18 @@ export interface ConfigDocument {
 
 const formatName = { json: "JSON", toml: "TOML", yaml: "YAML" } satisfies Record<ConfigFormat, string>;
 
+/** The owner-only mode of a config file that holds values resolved from the secret store. */
+export const secretConfigMode = 0o600;
+
+/**
+ * The detail of a failure to parse, edit or verify a config file. A file that
+ * holds resolved secrets gets none of the parser's message: the YAML and TOML
+ * parsers quote the offending line, which can be a secret, and the message
+ * reaches plans, logs and the state database.
+ */
+export const configFailureDetail = (holdsSecrets: boolean | undefined, message: string): string =>
+  holdsSecrets === true ? "the details are withheld because the file holds shared secrets" : message;
+
 /**
  * YAML 1.1 readers (PyYAML, and so Python clients) resolve these plain scalars
  * to booleans, null, numbers or timestamps. YAML 1.2 writers leave most of them

@@ -51,9 +51,11 @@ import type {
   SynchronizationExecutionLimits,
 } from "./synchronization.types.ts";
 import {
+  configFailureDetail,
   editConfigText,
   getConfigPath,
   parseConfigDocument,
+  secretConfigMode,
 } from "./config-codec.ts";
 import { configValuesEqual } from "./config-value.ts";
 import { installedToolVersion, installedVersionMatches } from "./installed-tool-version.ts";
@@ -142,6 +144,7 @@ export interface ResourceExecutionContext {
   readonly verification: VerificationInput;
   readonly artifacts: ReadonlyMap<string, SynchronizationArtifact>;
   readonly limits: SynchronizationExecutionLimits;
+  readonly previouslyHeldSecrets?: boolean | undefined;
   readonly previousSchedule?: SyncSchedule | undefined;
   /**
    * The default is the bounded HTTPS artifact transport. This optional seam
@@ -1086,7 +1089,13 @@ const intendedStates = (
             single.path,
             before === undefined
               ? { state: "absent" }
-              : regularState(yield* configRemovalContent(desired, detail.target, detail.keys, before)),
+              : regularState(yield* configRemovalContent(
+                desired,
+                detail.target,
+                detail.keys,
+                before,
+                context.previouslyHeldSecrets,
+              )),
           );
           return intended;
         }
@@ -1410,13 +1419,17 @@ export const configRemovalContent = (
   target: string,
   keys: ReadonlyArray<string>,
   currentBytes: Uint8Array,
+  previouslyHeldSecrets?: boolean,
 ): Effect.Effect<Uint8Array, SynchronizationExecutionInputError> =>
   Effect.try({
     try: () => encoder.encode(editConfigText(config.format, decoder.decode(currentBytes), { removes: keys, sets: [] })),
     catch: (error) =>
       new InvalidExecutionPlanError({
         message: `cannot remove keys from config ${target}: ${
-          error instanceof Error ? error.message : String(error)
+          configFailureDetail(
+            config.holdsSecrets === true || previouslyHeldSecrets === true,
+            error instanceof Error ? error.message : String(error),
+          )
         }. The file was left unchanged.`,
       }),
   });
@@ -1474,7 +1487,10 @@ export const configMergeContent = (
       catch: (error) =>
         new InvalidExecutionPlanError({
           message: `cannot merge config ${target}: ${
-            error instanceof Error ? error.message : String(error)
+            configFailureDetail(
+              config.holdsSecrets === true || context.previouslyHeldSecrets === true,
+              error instanceof Error ? error.message : String(error),
+            )
           }. The file was left unchanged.`,
         }),
     });
@@ -1498,9 +1514,13 @@ const prepareConfig = (
     const currentBytes = yield* readIfPresent(path, context.limits.maximumFileBytes, anchor);
     const content = yield* configMergeContent(context, context.desired, target, keys, removes, currentBytes);
     const rollback = yield* captureRollback(context, [path]);
+    // A config write always replaces the file with a private one (0600, a
+    // private ACL on Windows); a file holding secrets names that mode itself
+    // rather than leaning on the default.
+    const mode = context.desired.holdsSecrets === true ? secretConfigMode : undefined;
     const execute = Effect.gen(function*() {
       const machine = yield* MachineState;
-      yield* machine.atomicWrite({ path, content, anchor, createAnchoredParents: anchor !== undefined });
+      yield* machine.atomicWrite({ path, content, mode, anchor, createAnchoredParents: anchor !== undefined });
     });
     return {
       rollbackReference: rollback.reference,
@@ -1736,7 +1756,13 @@ const prepareRemoval = (
             anchor,
           );
           if (currentBytes === undefined) return;
-          const content = yield* configRemovalContent(config, detail.target, detail.keys, currentBytes);
+          const content = yield* configRemovalContent(
+            config,
+            detail.target,
+            detail.keys,
+            currentBytes,
+            context.previouslyHeldSecrets,
+          );
           const machine = yield* MachineState;
           yield* machine.atomicWrite({ path, content, anchor, createAnchoredParents: anchor !== undefined });
         });
@@ -3181,6 +3207,7 @@ const verifyConfig = (
       catch: (error) =>
         new InvalidArtifactError({ digest, message: String(error) }),
     });
+    const holdsSecrets = context.desired.holdsSecrets === true;
     const machine = yield* MachineState;
     const path = yield* machine.normalizePath({ path: context.resource.target });
     const observedBytes = yield* machine.readFile({
@@ -3196,7 +3223,9 @@ const verifyConfig = (
         ),
       catch: (error) =>
         new InvalidExecutionPlanError({
-          message: `cannot verify non-object config ${context.resource.target}: ${String(error)}`,
+          message: `cannot verify non-object config ${context.resource.target}: ${
+            configFailureDetail(holdsSecrets || context.previouslyHeldSecrets === true, String(error))
+          }`,
         }),
     });
     // Key order is not compared: digests use a canonical sorted form and the
@@ -3204,5 +3233,7 @@ const verifyConfig = (
     const passed = keys.every((key) =>
       configValuesEqual(getConfigPath(observed, key), getConfigPath(desired, key))
     );
-    return { passed, method: "config-keys" };
+    if (!holdsSecrets) return { passed, method: "config-keys" };
+    const permissions = yield* machine.permissions(path, anchor);
+    return { passed: passed && permissions.mode === secretConfigMode, method: "config-keys+permissions" };
   });
