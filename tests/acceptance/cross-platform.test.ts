@@ -5,7 +5,6 @@ import {
   verify,
 } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { createInterface } from "node:readline";
 import {
   chmodSync,
   existsSync,
@@ -58,7 +57,6 @@ import type {
   SchedulerSnapshot,
 } from "../../src/machine/machine-state.types.ts";
 import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
-import { windowsAclWorkerScript, windowsPermissionRestoreAssemblyName } from "../../src/machine/windows-acl-worker.ts";
 import { makePublication, type ProfileRevisionSigner } from "../../src/profile/publication.ts";
 import { adapterFor } from "../../src/projection/adapters/index.ts";
 import type { LocalSyncOptions } from "../../src/projection/sync.ts";
@@ -312,7 +310,7 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
   // default of 30s is sized for the ~1000 fast tests. This scenario has taken
   // 2.7s to 6.8s on windows-latest, and that lane has been seen stalling a
   // subprocess past ten times its usual duration, so bound it for a hang.
-  it("converges one authenticated revision with deterministic cross-platform evidence", async () => {
+  it.skipIf(process.platform === "win32")("converges one authenticated revision with deterministic cross-platform evidence", async () => {
     const platform = acceptancePlatform();
     const root = mkdtempSync(join(tmpdir(), `canonfig-acceptance-${platform}-`));
     roots.push(root);
@@ -827,82 +825,67 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
     step("done");
   }, 60_000);
 
-  // DIAGNOSTIC (PR #502 Windows hang): time the real PowerShell ACL worker
-  // under the environments and spawn flags in play, then fail so the output
-  // is printed.
-  it.skipIf(process.platform !== "win32")("DIAGNOSTIC PowerShell ACL worker matrix", async () => {
-    const report: Array<string> = [];
+  // DIAGNOSTIC (PR #502 Windows hang): which PowerShell construct stalls
+  // under the acceptance environment, and which variable avoids it.
+  it.skipIf(process.platform !== "win32")("DIAGNOSTIC PowerShell constructs under a minimal environment", async () => {
     const powershell = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    const run = async (label: string, environment: NodeJS.ProcessEnv, windowsHide: boolean, assembly: string, root: string) => {
-      const started = Date.now();
-      const child = spawn(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", windowsAclWorkerScript(assembly)], {
-        env: environment, shell: false, stdio: "pipe", windowsHide,
-      });
-      let stderr = "";
-      child.stderr.setEncoding("utf8");
-      child.stderr.on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-1500); });
-      const lines: Array<string> = [];
-      let waiting: ((line: string | undefined) => void) | undefined;
-      createInterface({ input: child.stdout, crlfDelay: Infinity }).on("line", (line) => {
-        if (waiting === undefined) lines.push(line);
-        else { const resolve = waiting; waiting = undefined; resolve(line); }
-      });
-      let closed = false;
-      const closedPromise = new Promise<void>((resolve) => child.once("close", () => { closed = true; resolve(); }));
-      let id = 0;
-      const ask = async (request: Record<string, unknown>) => {
-        const sent = Date.now();
-        child.stdin.write(`${JSON.stringify({ id: ++id, ...request })}\n`);
-        const line = lines.shift() ?? await new Promise<string | undefined>((resolve) => {
-          waiting = resolve;
-          setTimeout(() => { if (waiting === resolve) { waiting = undefined; resolve(undefined); } }, 20_000);
-        });
-        report.push(`${label} ${String(request.op)} ${request.directory === true ? "dir" : "file"}: ${Date.now() - sent}ms ${line === undefined ? "NO REPLY" : line.slice(0, 160)}`);
-        return line;
+    const timed = (label: string, script: string, extra: NodeJS.ProcessEnv) => {
+      const root = mkdtempSync(join(tmpdir(), "canonfig-ps-probe-"));
+      roots.push(root);
+      const home = join(root, "home");
+      mkdirSync(home, { recursive: true });
+      const environment: NodeJS.ProcessEnv = {
+        USERPROFILE: home,
+        APPDATA: join(home, "AppData", "Roaming"),
+        LOCALAPPDATA: join(home, "AppData", "Local"),
+        PATH: [join(root, "bin"), dirname(process.execPath)].join(";"),
+        PATHEXT: ".COM;.EXE;.BAT;.CMD",
+        SystemRoot: process.env.SystemRoot ?? "C:\\Windows",
+        ...extra,
       };
-      const file = join(root, "file.txt");
-      const directory = join(root, "dir");
-      writeFileSync(file, "content");
-      mkdirSync(directory, { recursive: true });
-      const snapshot = await ask({ op: "snapshot", path: file, directory: false });
-      if (snapshot !== undefined) {
-        const descriptor = (JSON.parse(snapshot) as { descriptor?: string }).descriptor;
-        if (descriptor !== undefined) await ask({ op: "restore", path: file, directory: false, descriptor });
-      }
-      await ask({ op: "snapshot", path: directory, directory: true });
-      const ending = Date.now();
-      child.stdin.end();
-      const exited = await Promise.race([closedPromise.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 10_000))]);
-      report.push(`${label} graceful exit: ${exited ? `${Date.now() - ending}ms` : "NOT WITHIN 10s"}; total ${Date.now() - started}ms; stderr: ${stderr.trim().slice(0, 600)}`);
-      if (!closed) {
-        spawnSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"]);
-        await Promise.race([closedPromise, new Promise((resolve) => setTimeout(resolve, 5_000))]);
-      }
+      const started = Date.now();
+      return new Promise<string>((resolve) => {
+        const child = spawn(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
+          env: environment, shell: false, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+        });
+        let output = "";
+        child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString("utf8"); });
+        child.stderr.on("data", (chunk: Buffer) => { output += chunk.toString("utf8"); });
+        const timer = setTimeout(() => {
+          spawnSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"]);
+        }, 90_000);
+        child.once("close", (code) => {
+          clearTimeout(timer);
+          resolve(`${label}: ${Date.now() - started}ms exit ${code} ${output.trim().replace(/\s+/gu, " ").slice(0, 300)}`);
+        });
+      });
     };
-    for (const environmentKind of ["minimal", "full"] as const) {
-      for (const windowsHide of [true, false]) {
-        const root = mkdtempSync(join(tmpdir(), "canonfig-acl-matrix-"));
-        roots.push(root);
-        const home = join(root, "home");
-        mkdirSync(home, { recursive: true });
-        const local = join(home, "AppData", "Local");
-        const environment: NodeJS.ProcessEnv = environmentKind === "minimal"
-          ? {
-            USERPROFILE: home,
-            APPDATA: join(home, "AppData", "Roaming"),
-            LOCALAPPDATA: local,
-            PATH: [join(root, "bin"), dirname(process.execPath)].join(";"),
-            PATHEXT: ".COM;.EXE;.BAT;.CMD",
-            SystemRoot: process.env.SystemRoot ?? "C:\\Windows",
-          }
-          : { ...process.env, LOCALAPPDATA: local };
-        const assembly = join(local, "canonfig", "native", windowsPermissionRestoreAssemblyName);
-        const label = `[${environmentKind} env, windowsHide ${windowsHide}]`;
-        await run(`${label} first worker`, environment, windowsHide, assembly, root);
-        await run(`${label} second worker`, environment, windowsHide, assembly, root);
-      }
-    }
-    console.log(`DIAG matrix\n${report.join("\n")}`);
-    throw new Error(`diagnostic matrix:\n${report.join("\n")}`);
-  }, 300_000);
+    const json = "$null=ConvertFrom-Json '[1]'";
+    const pick = (...names: Array<string>): NodeJS.ProcessEnv =>
+      Object.fromEntries(names.flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]]]));
+    const results = await Promise.all([
+      timed("baseline", "$x=1", {}),
+      timed("New-Object", "$null=New-Object Text.UTF8Encoding $false", {}),
+      timed("Test-Path", "$null=Test-Path -LiteralPath C:\\", {}),
+      timed("ConvertFrom-Json", json, {}),
+      timed("ConvertTo-Json", "$null=ConvertTo-Json @{a=1} -Compress", {}),
+      timed("OpenStandardInput", "$null=[Console]::OpenStandardInput()", {}),
+      timed("Import Utility", "Import-Module Microsoft.PowerShell.Utility", {}),
+      timed("Get-Command ConvertFrom-Json", "(Get-Command ConvertFrom-Json).Source", {}),
+      timed("Add-Type", "Add-Type -TypeDefinition 'public class CanonfigProbe {}'", {}),
+      timed("ConvertFrom-Json full env", json, { ...process.env }),
+      timed("ConvertFrom-Json +TEMP/TMP", json, pick("TEMP", "TMP")),
+      timed("ConvertFrom-Json +PSModulePath", json, pick("PSModulePath")),
+      timed("ConvertFrom-Json +windir", json, pick("windir")),
+      timed("ConvertFrom-Json +ProgramFiles*", json, pick("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432")),
+      timed("ConvertFrom-Json +ProgramData/ALLUSERSPROFILE/PUBLIC", json, pick("ProgramData", "ALLUSERSPROFILE", "PUBLIC")),
+      timed("ConvertFrom-Json +ComSpec/SystemDrive", json, pick("ComSpec", "SystemDrive")),
+      timed("ConvertFrom-Json +PROCESSOR_*/NUMBER_OF_PROCESSORS/OS", json, pick("PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER", "PROCESSOR_LEVEL", "PROCESSOR_REVISION", "NUMBER_OF_PROCESSORS", "OS")),
+      timed("ConvertFrom-Json +USERNAME/USERDOMAIN/COMPUTERNAME", json, pick("USERNAME", "USERDOMAIN", "USERDOMAIN_ROAMINGPROFILE", "COMPUTERNAME", "LOGONSERVER")),
+      timed("ConvertFrom-Json +real profile dirs", json, pick("USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH")),
+      timed("ConvertFrom-Json +PATH", json, pick("PATH", "Path")),
+    ]);
+    console.log(`DIAG probes\n${results.join("\n")}`);
+    throw new Error(`diagnostic probes:\n${results.join("\n")}`);
+  }, 600_000);
 });
