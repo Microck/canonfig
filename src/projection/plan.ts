@@ -49,6 +49,7 @@ import type {
 import { adapterFor } from "./adapters/index.ts";
 import { commandSkill, groupProjectedSkillNames, skillDirectoryFiles } from "./adapters/shared-documents.ts";
 import { CanonicalFolderError, itemResourceId, type KeyClaim, type LoadedFolder } from "./folder.ts";
+import { diagnoseMcpConfiguration } from "./mcp-diagnostics.ts";
 import { mcpProxyBindingFile, proxyMcpServer, readMcpProxyBinding } from "./mcp-launcher.ts";
 import { pathsFor, reservedResourcePaths, settingsSurfaceOf, supportedCategories, within } from "./layout-metadata.ts";
 import type {
@@ -345,6 +346,7 @@ export const projectSurfaces = (
         code: "OVERLAY_UNUSED",
         message: `overlay ${overlay.item} finds no admitted local/ item of that name, so ${overlay.published ? "the published item is projected" : "it changes nothing"}; add the local item or run 'canonfig overlay remove ${overlay.item}'`,
       })),
+      ...(yield* diagnoseMcpConfiguration(loaded.mcpDiagnostics, context)),
     ];
     // Append-local text keeps Canonfig's section between reserved markers, so
     // the projected text must not hold them; refuse it before any write.

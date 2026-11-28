@@ -1,4 +1,4 @@
-import { failingDetailPrefix, type FleetUpdate } from "../../../src/domain/fleet-update";
+import { failingDetailPrefix, warningDetailPrefix, type FleetUpdate } from "../../../src/domain/fleet-update";
 import type { Schema } from "effect";
 import type { UpdateLifecycle } from "./live/self-update";
 import type { GuiAgentHarness, GuiAgentPolicy, GuiInstallerMethod, GuiSourceServiceStatus, GuiSelfUpdateCheck, GuiSelfUpdateStatus, GuiSelfUpdateProgress } from "../../../src/gui/contract/administration";
@@ -53,18 +53,20 @@ export type PolicySave =
   | { kind: "HarnessFirstFailed"; draft: SavedPolicy; error: GuiRequestError }
   | { kind: "PolicyLastFailed"; draft: SavedPolicy; error: GuiRequestError };
 
-/** The failing items a probe lists in its details (such as MCP servers), as `name: reason`. */
+/** The failing or warning items a probe lists in its details (such as MCP servers), as `name: reason`. */
 export const failingItems = (details: Readonly<Record<string, boolean | number | string>> | undefined): string[] =>
   Object.entries(details ?? {}).flatMap(([item, value]) => {
     const text = String(value);
-    return text.startsWith(failingDetailPrefix) ? [`${item}: ${text.slice(failingDetailPrefix.length)}`] : [];
+    if (text.startsWith(failingDetailPrefix)) return [`${item}: ${text.slice(failingDetailPrefix.length)}`];
+    if (text.startsWith(warningDetailPrefix)) return [`${item}: ${text.slice(warningDetailPrefix.length)}`];
+    return [];
   });
 
 /** Plain names for the CLI's doctor probes; the demo's names are already plain and pass through. */
 export const CHECK_LABEL: Record<string, string> = {
   runtime: "Node.js runtime", state: "Local database", credentials: "Credential storage", source: "Connection to the Source",
   scheduler: "Update schedule", "package-managers": "Package managers", "agent-adapter": "AI agent", harnesses: "AI coding tools",
-  mcp: "MCP servers",
+  mcp: "MCP servers", "mcp-config": "MCP configuration",
 };
 
 /** The health screen's mark for a doctor probe status. */

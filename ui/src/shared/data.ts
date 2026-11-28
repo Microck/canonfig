@@ -299,6 +299,7 @@ export const doctor = [
   { check: "Configuration Agent", result: "ok", detail: "codex 0.62 found" },
   { check: "Harnesses", result: "ok", detail: "Every listed harness is installed" },
   { check: "MCP servers", result: "ok", detail: "12 MCP servers started and listed their tools" },
+  { check: "MCP configuration", result: "ok", detail: "No MCP overlay, preservation, or command issues found" },
 ] as const;
 
 export const agentPolicy = {

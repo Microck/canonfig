@@ -41,6 +41,15 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
   or removals. Canonfig skips these artifacts when publishing and checking
   managed skill, agent, and authored file trees for drift.
 
+### Diagnostics
+
+- `canonfig sync --plan` and `canonfig doctor` now emit non-blocking warnings
+  for active `preserveMcp` locks, local overlays in `local/local.jsonc` that
+  disable published cross-platform MCP servers or reference another OS's paths,
+  overlays that drop `fromSecret` bindings or embed plaintext tokens (without
+  printing token values), and enabled stdio MCP commands missing on disk or on
+  `PATH` without a matching `tools` recipe.
+
 ### Automatic local sync
 
 - The Linux and macOS watcher now finds Codex and other harnesses in the

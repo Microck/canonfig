@@ -10,6 +10,8 @@ import { Effect, Option, Predicate, Redacted, Ref, Schema } from "effect";
 
 import { installerMethods } from "../domain/installer-method.ts";
 import { harnessReport } from "../projection/detect.ts";
+import { CanonicalFolderError, readMcpDiagnosticInput } from "../projection/folder.ts";
+import { diagnoseMcpConfiguration } from "../projection/mcp-diagnostics.ts";
 import { TARGET_IDS } from "../projection/model.ts";
 import { checkInstalledHarnessMcp, MCP_MAXIMUM_STARTUP_MILLISECONDS, MCP_STARTUP_TIMEOUT_MILLISECONDS, type McpCheckResult } from "./mcp-check.ts";
 import { rootContext } from "../projection/plan.ts";
@@ -25,7 +27,7 @@ import { credentialReadiness, proveCredentialStorage, scheduledDefinitionReadine
 import type { ScheduleFireEvidence } from "./readiness.ts";
 import { AgentPolicy } from "../domain/identity.ts";
 import {
-  type DoctorSourceReport, failingDetailPrefix, machineHealthKeyLimit, machineHealthTextLimit, type MachineHealthProbe, type MachineHealthReport,
+  type DoctorSourceReport, failingDetailPrefix, machineHealthKeyLimit, machineHealthTextLimit, type MachineHealthProbe, type MachineHealthReport, warningDetailPrefix,
 } from "../domain/fleet-update.ts";
 import type { CliFailureCategory } from "../cli/exit-codes.ts";
 import {
@@ -57,6 +59,7 @@ export const doctorProbeNames = [
   "agent-adapter",
   "harnesses",
   "mcp",
+  "mcp-config",
   "tailscale",
 ] as const;
 
@@ -119,7 +122,7 @@ export const machineHealthOf = (report: DoctorReport): MachineHealthReport => {
     probes: full.probes.map((probe) => probe.details === undefined ? probe : {
       ...probe,
       details: Object.fromEntries(Object.entries(probe.details).filter(([, value]) =>
-        Predicate.isString(value) && value.startsWith(failingDetailPrefix))),
+        Predicate.isString(value) && (value.startsWith(failingDetailPrefix) || value.startsWith(warningDetailPrefix)))),
     }),
   };
   if (serializedBytes(failingOnly) <= machineHealthByteBudget) return failingOnly;
@@ -677,6 +680,44 @@ const mcpProbe = (input: DoctorInput, perServerMilliseconds: number) =>
       : pass("mcp", message, details);
   });
 
+/**
+ * Checks MCP configuration in `canonfig.jsonc` and `local/local.jsonc` for
+ * active `preserveMcp` locks, stale or wrong-OS overlays, dropped `fromSecret`
+ * bindings, plaintext tokens, and missing stdio MCP binaries. Always
+ * non-blocking (`warning` severity).
+ */
+const mcpConfigProbe = (
+  statePath: string,
+  environment: (name: string) => string | undefined,
+) =>
+  Effect.gen(function*() {
+    const folder = dirname(statePath);
+    const input = yield* Effect.tryPromise({
+      try: () => readMcpDiagnosticInput(folder),
+      catch: (error) => error instanceof CanonicalFolderError
+        ? error
+        : new CanonicalFolderError({ path: folder, message: String(error) }),
+    });
+    if (input === undefined) {
+      return skipped("mcp-config", `${join(folder, "canonfig.jsonc")} does not exist yet`);
+    }
+    const diagnostics = yield* diagnoseMcpConfiguration(input, yield* rootContext(environment));
+    if (diagnostics.length === 0) {
+      return pass("mcp-config", "no MCP overlay, preservation, or command issues found", { warnings: 0 });
+    }
+    // Use neutral detail keys (`warning.1`, ...) so JSON output redaction for
+    // secret-named keys never obscures MCP_OVERLAY_*_SECRET warning messages.
+    const details = Object.fromEntries(
+      diagnostics.map((diagnostic, position) => [
+        `warning.${position + 1}`,
+        `${warningDetailPrefix}[${diagnostic.code}] ${diagnostic.message}`,
+      ]),
+    );
+    const codes = [...new Set(diagnostics.map((diagnostic) => diagnostic.code))];
+    const message = `${diagnostics.length} MCP configuration warning${diagnostics.length === 1 ? "" : "s"} (${codes.join(", ")})`;
+    return { name: "mcp-config" as const, status: "warning" as const, message, details };
+  });
+
 export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
   input: DoctorInput,
 ): Effect.fn.Return<
@@ -775,6 +816,14 @@ export const runDoctorProbes = Effect.fn("runDoctorProbes")(function*(
       mcpProbe(input, mcpPerServerMilliseconds),
       () => failed("mcp", "internal", "MCP server check failed"),
       "verification-or-apply-failure",
+    ),
+    isolated(
+      "mcp-config",
+      timeout,
+      mcpConfigProbe(input.statePath, input.environment),
+      (error) =>
+        failed("mcp-config", "usage-or-configuration", `MCP configuration could not be read: ${error.message}`),
+      "internal",
     ),
     isolated("tailscale", timeout, detectTailnet().pipe(Effect.map((report): DoctorProbe => ({
       name: "tailscale",

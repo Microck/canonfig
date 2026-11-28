@@ -14,6 +14,7 @@ import { canonicalJson, sha256BytesHex, sha256Hex } from "../profile/profile-cod
 import { SecretNameSchema } from "../secrets/secret-store.ts";
 import { parseMarkdownDocument } from "./frontmatter.ts";
 import { isMcpProxyUpstream, usesSharedSecret } from "./mcp-launcher.ts";
+import type { McpDiagnosticInput } from "./mcp-diagnostics.ts";
 import {
   APPEND_LOCAL_CATEGORIES,
   CAPABILITIES,
@@ -348,6 +349,8 @@ export interface LoadedFolder {
   /** Local items `local.allow` does not admit; reported, never projected. */
   readonly ignoredLocal: ReadonlyArray<string>;
   readonly overlays: ReadonlyArray<OverlayStatus>;
+  /** Raw published/local MCP and tool declarations for non-blocking MCP diagnostics. */
+  readonly mcpDiagnostics: McpDiagnosticInput;
 }
 
 /** An authored file: its bytes and whether its owner may execute it. */
@@ -895,6 +898,53 @@ export const readHarnessSelection = async (folder: string): Promise<HarnessSelec
   };
 };
 
+/**
+ * Read only `canonfig.jsonc` and `local/local.jsonc` for MCP overlay,
+ * preservation, and command diagnostics (`canonfig doctor`), without loading
+ * rules, skills, agents, commands, hooks, or files. Returns undefined when
+ * neither file exists yet.
+ */
+export const readMcpDiagnosticInput = async (folder: string): Promise<McpDiagnosticInput | undefined> => {
+  const source = diskSource(folder);
+  const config = await readJsonc(source, join(folder, "canonfig.jsonc"), CanonfigJsonc);
+  const local = await readJsonc(source, join(folder, "local", "local.jsonc"), LocalJsonc);
+  if (config === undefined && local === undefined) return undefined;
+
+  const publishedMcp = config?.mcp ?? {};
+  const rawLocalMcp = local?.mcp ?? {};
+  // Before canonfig.jsonc exists (e.g. a follower pre-sync), inspect local MCP entries directly.
+  const allowMcp = config === undefined ? true : (config.local?.allow?.includes("mcp") ?? false);
+  const localMcp = allowMcp ? rawLocalMcp : {};
+  const overlays = new Set(
+    (local?.overlays ?? []).flatMap((entry) => {
+      const parsed = parseOverlay(entry);
+      return parsed.kind === "item" ? [parsed.item] : [];
+    }),
+  );
+
+  // Merge without throwing on undeclared collisions so doctor still reports all config warnings.
+  const merged = new Map<string, FolderMcpServer>(Object.entries(publishedMcp));
+  for (const [name, server] of Object.entries(localMcp)) {
+    if (!merged.has(name) || overlays.has(`mcp/${name}`)) merged.set(name, server);
+  }
+  const effectiveMcp = [...merged.entries()]
+    .filter(([, server]) => server.enabled !== false)
+    .map(([name, server]) => [name, mcpServer(server)] as const)
+    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+
+  const excluded = new Set(local?.excludeHarnesses ?? []);
+  const harnesses = [...new Set(config?.harnesses ?? [])].filter((harness) => !excluded.has(harness));
+  return {
+    harnesses,
+    preserveMcp: preservedMcpHarnesses(local?.preserveMcp),
+    publishedMcp,
+    localMcp,
+    rawLocalMcp,
+    effectiveMcp,
+    tools: config?.tools ?? {},
+  };
+};
+
 /** `canonfig.jsonc` as authored, or undefined when it does not exist. */
 export const readFolderConfig = (folder: string): Promise<FolderConfig | undefined> =>
   readJsonc(diskSource(folder), join(folder, "canonfig.jsonc"), CanonfigJsonc);
@@ -1317,5 +1367,14 @@ const loadFolderSource = async (source: FolderSource): Promise<LoadedFolder> => 
     claims,
     backups: localConfig.backups ?? true,
   };
-  return { model, authoredResources: authored.resources, local, digest: modelDigest(model, local), ignoredLocal, overlays: overlayStatus };
+  const mcpDiagnostics: McpDiagnosticInput = {
+    harnesses: model.harnesses,
+    preserveMcp: local.preserveMcp,
+    publishedMcp: config.mcp ?? {},
+    localMcp: Object.fromEntries(localMcp),
+    rawLocalMcp: localConfig.mcp ?? {},
+    effectiveMcp: model.mcp,
+    tools: config.tools ?? {},
+  };
+  return { model, authoredResources: authored.resources, local, digest: modelDigest(model, local), ignoredLocal, overlays: overlayStatus, mcpDiagnostics };
 };

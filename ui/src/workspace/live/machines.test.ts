@@ -13,10 +13,14 @@ it("keeps only the checks that need attention and the items that failed", () => 
         github: "pass · codex · 49 tools · 800 ms",
         stale: "fail · codex · command not found: /old/wrapper.mjs · 10 ms",
       } },
+      { name: "mcp-config", status: "warning", message: "1 MCP configuration warning (MCP_PRESERVE_ACTIVE)", details: {
+        MCP_PRESERVE_ACTIVE: "warning · preserveMcp is active for codex in local/local.jsonc",
+      } },
     ],
   });
   assert.deepEqual(view.problems, [
     { check: "scheduler", status: "warning", message: "the last unattended run failed", items: [] },
     { check: "mcp", status: "fail", message: "1 of 2 MCP server(s) failed", items: ["stale: codex · command not found: /old/wrapper.mjs · 10 ms"] },
+    { check: "mcp-config", status: "warning", message: "1 MCP configuration warning (MCP_PRESERVE_ACTIVE)", items: ["MCP_PRESERVE_ACTIVE: preserveMcp is active for codex in local/local.jsonc"] },
   ]);
 });
