@@ -4,7 +4,6 @@ import {
   sign,
   verify,
 } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -79,46 +78,7 @@ const roots: Array<string> = [];
 const servers: Array<SourceServerHandle> = [];
 const runtimes: Array<{ readonly dispose: () => Promise<void> }> = [];
 
-// DIAGNOSTIC (PR #502 Windows hang): every MachineState call in flight and
-// every slow one, printed when the test ends or times out.
-const diagnosticStart = Date.now();
-const elapsed = () => `${((Date.now() - diagnosticStart) / 1000).toFixed(2)}s`;
-const inflight = new Map<number, string>();
-const slowCalls: Array<string> = [];
-let nextCall = 0;
-const describeArgument = (value: unknown): string => {
-  try {
-    return JSON.stringify(value, (_key, item) => typeof item === "bigint" ? String(item) : item)?.slice(0, 200) ?? "";
-  } catch {
-    return String(value).slice(0, 200);
-  }
-};
-const step = (name: string) => console.log(`DIAG ${elapsed()} step ${name}`);
-const traced = <L extends Layer.Layer<MachineState, never, never>>(label: string, layer: L) =>
-  Layer.effect(MachineState, Effect.map(Effect.service(MachineState), (machine) => {
-    const wrapped: Record<string, unknown> = {};
-    for (const [name, value] of Object.entries(machine)) {
-      wrapped[name] = typeof value !== "function" ? value : (...args: Array<unknown>) => {
-        const result = (value as (...args: Array<unknown>) => unknown)(...args);
-        if (!Effect.isEffect(result)) return result;
-        return Effect.suspend(() => {
-          const id = ++nextCall;
-          const started = Date.now();
-          const text = `${label}.${name}(${describeArgument(args[0])}) from ${elapsed()}`;
-          inflight.set(id, text);
-          return result.pipe(Effect.onExit((exit) => Effect.sync(() => {
-            inflight.delete(id);
-            const duration = Date.now() - started;
-            if (duration >= 300) slowCalls.push(`${text} took ${duration}ms ${exit._tag}`);
-          })));
-        });
-      };
-    }
-    return wrapped as unknown as MachineState["Service"];
-  })).pipe(Layer.provide(layer));
-
 afterEach(async () => {
-  console.log(`DIAG ${elapsed()} afterEach after ${nextCall} calls, in-flight:\n${[...inflight.values()].join("\n")}\nslow:\n${slowCalls.join("\n")}`);
   await Promise.all(servers.splice(0).map((server) => server.close()));
   await Promise.all(runtimes.splice(0).map((runtime) => runtime.dispose()));
   for (const root of roots.splice(0)) {
@@ -281,7 +241,7 @@ const machineFixture = (
     : platform === "macos"
     ? macosMachineStateLayer(options)
     : windowsMachineStateLayer(options);
-  return { platform, home, folder: join(home, ".canonfig"), bin, environment, layer: traced(root.endsWith("source") ? "source" : "follower", layer) };
+  return { platform, home, folder: join(home, ".canonfig"), bin, environment, layer };
 };
 
 /** The follower's most recent run: its status and the kinds of its planned actions. */
@@ -310,7 +270,7 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
   // default of 30s is sized for the ~1000 fast tests. This scenario has taken
   // 2.7s to 6.8s on windows-latest, and that lane has been seen stalling a
   // subprocess past ten times its usual duration, so bound it for a hang.
-  it.skipIf(process.platform === "win32")("converges one authenticated revision with deterministic cross-platform evidence", async () => {
+  it("converges one authenticated revision with deterministic cross-platform evidence", async () => {
     const platform = acceptancePlatform();
     const root = mkdtempSync(join(tmpdir(), `canonfig-acceptance-${platform}-`));
     roots.push(root);
@@ -338,7 +298,6 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
     const sourceRuntime = ManagedRuntime.make(sourceLayer);
     runtimes.push(sourceRuntime);
 
-    step("localCredential L340");
     const localCredential = await Effect.runPromise(
       Effect.flatMap(MachineState, (machine) =>
         machine.storeCredential({
@@ -413,7 +372,6 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
     write(join(sourceFolder, "skills", "hidden", "SKILL.md"), "---\nname: hidden\ndescription: Hidden\n---\nMust stay unauthorized.\n");
     write(join(sourceFolder, "hooks", "format.sh"), "#!/bin/sh\nexit 0\n", 0o755);
 
-    step("revision L414");
     const revision = await sourceRuntime.runPromise(Effect.gen(function*() {
       const enrollment = yield* Enrollment;
       const machine = yield* MachineState;
@@ -439,10 +397,8 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
       });
     }));
 
-    step("server L439");
     const server = await sourceRuntime.runPromise(startSourceServer());
     servers.push(server);
-    step("invitation L441");
     const invitation = await sourceRuntime.runPromise(
       Effect.flatMap(Enrollment, (enrollment) =>
         enrollment.createInvitation({
@@ -452,7 +408,6 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
         })
       ),
     );
-    step("enrollment L450");
     const enrollment = await Effect.runPromise(
       enrollFollower({
         invitation,
@@ -469,7 +424,6 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
       credentialReference: enrollment.credentialReference,
     };
     const followerRepository = stateRepositoryLayer(followerDatabase);
-    step("line466 L466");
     await Effect.runPromise(
       Effect.flatMap(StateRepository, (repository) =>
         repository.saveFollowerSynchronizationConfiguration({
@@ -575,7 +529,6 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
         ),
       );
 
-    step("metadata L571");
     const metadata = await Effect.runPromise(
       getRevisionMetadata({
         endpoint: server.endpoint,
@@ -595,7 +548,6 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
       metadata.resources.flatMap((resource) => resource.blobs),
     ).size;
 
-    step("initial L590");
     const initial = await sync("plan");
     if (!("plan" in initial) || initial.plan === undefined) {
       throw new Error("acceptance planning did not return a synchronization plan");
@@ -643,7 +595,6 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
     write(claudeSettings, `${JSON.stringify({ model: "local-choice" })}\n`);
     fakeExecutable(platform, followerMachine.bin, "acceptance-login");
     fakeExecutable(platform, followerMachine.bin, "agent-installed-tool");
-    step("first L637");
     const first = await sync("apply");
     expect(first.outcome?.outcome, JSON.stringify(first.outcome)).toBe("Converged");
     // Devin is the adapter whose root differs per platform: %APPDATA% on
@@ -708,7 +659,6 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
       expect(mode(join(claudeRoot, "CLAUDE.md"))).toBe(0o600);
     }
 
-    step("second L701");
     const second = await sync("apply");
     expect(second).toMatchObject({
       downloadedBlobs: 0,
@@ -720,13 +670,11 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
       (action) => action.kind !== "no-op",
     )).toEqual([]);
 
-    step("line712 L712");
     await Effect.runPromise(
       Effect.flatMap(MachineState, (machine) =>
         machine.removeCredential(localCredential)
       ).pipe(Effect.provide(followerMachine.layer)),
     );
-    step("human L717");
     const human = await sync("apply");
     expect(human.outcome).toMatchObject({
       outcome: "HumanActionRequired",
@@ -737,7 +685,6 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
         }),
       ],
     });
-    step("restoredCredential L727");
     const restoredCredential = await Effect.runPromise(
       Effect.flatMap(MachineState, (machine) =>
         machine.storeCredential({
@@ -752,7 +699,6 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
     // what is projected from it holds still.
     const projectedSkill = join(claudeRoot, "skills", "acceptance", "SKILL.md");
     await writeFile(join(mirrorSkill, "SKILL.md"), "# locally modified\n");
-    step("drifted L741");
     const drifted = await sync("apply");
     expect(drifted.outcome).toMatchObject({
       outcome: "FollowerDrift",
@@ -770,7 +716,6 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
     const scheduleLayer = scheduleManagerLayer.pipe(
       Layer.provide(followerMachine.layer),
     );
-    step("installedSchedule L758");
     const installedSchedule = await Effect.runPromise(
       Effect.flatMap(ScheduleManager, (manager) =>
         manager.install({ executable: process.execPath })
@@ -788,7 +733,6 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
         : "task-scheduler",
     );
     expect(scheduler.installs).toBe(1);
-    step("unchangedSchedule L775");
     const unchangedSchedule = await Effect.runPromise(
       Effect.flatMap(ScheduleManager, (manager) =>
         manager.install({ executable: process.execPath })
@@ -807,13 +751,11 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
     await rm(agentInstalledExecutable);
     await writeFile(hookRunner, "interrupted local state\n");
     interruptNextResolution = true;
-    step("line793 L793");
     await expect(sync("apply")).rejects.toThrow();
     const interrupted = latestRun(followerDatabase);
     expect(interrupted.status).toBe("Interrupted");
     expect(await readFile(hookRunner, "utf8")).toBe("interrupted local state\n");
 
-    step("recovered L798");
     const recovered = await Effect.runPromise(
       recoverFollower(followerDatabase).pipe(Effect.provide(application)),
     );
@@ -822,70 +764,5 @@ describe(`cross-platform acceptance (${acceptancePlatform()})`, () => {
     expect(existsSync(agentInstalledExecutable)).toBe(true);
     expect(await readFile(hookRunner, "utf8")).toBe(canonicalHookRunner);
     expect(await readFile(join(mirrorSkill, "SKILL.md"), "utf8")).toBe(skillContent);
-    step("done");
   }, 60_000);
-
-  // DIAGNOSTIC (PR #502 Windows hang): which PowerShell construct stalls
-  // under the acceptance environment, and which variable avoids it.
-  it.skipIf(process.platform !== "win32")("DIAGNOSTIC PowerShell constructs under a minimal environment", async () => {
-    const powershell = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    const timed = (label: string, script: string, extra: NodeJS.ProcessEnv) => {
-      const root = mkdtempSync(join(tmpdir(), "canonfig-ps-probe-"));
-      roots.push(root);
-      const home = join(root, "home");
-      mkdirSync(home, { recursive: true });
-      const environment: NodeJS.ProcessEnv = {
-        USERPROFILE: home,
-        APPDATA: join(home, "AppData", "Roaming"),
-        LOCALAPPDATA: join(home, "AppData", "Local"),
-        PATH: [join(root, "bin"), dirname(process.execPath)].join(";"),
-        PATHEXT: ".COM;.EXE;.BAT;.CMD",
-        SystemRoot: process.env.SystemRoot ?? "C:\\Windows",
-        ...extra,
-      };
-      const started = Date.now();
-      return new Promise<string>((resolve) => {
-        const child = spawn(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], {
-          env: environment, shell: false, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
-        });
-        let output = "";
-        child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString("utf8"); });
-        child.stderr.on("data", (chunk: Buffer) => { output += chunk.toString("utf8"); });
-        const timer = setTimeout(() => {
-          spawnSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"]);
-        }, 90_000);
-        child.once("close", (code) => {
-          clearTimeout(timer);
-          resolve(`${label}: ${Date.now() - started}ms exit ${code} ${output.trim().replace(/\s+/gu, " ").slice(0, 300)}`);
-        });
-      });
-    };
-    const json = "$null=ConvertFrom-Json '[1]'";
-    const pick = (...names: Array<string>): NodeJS.ProcessEnv =>
-      Object.fromEntries(names.flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]]]));
-    const results = await Promise.all([
-      timed("baseline", "$x=1", {}),
-      timed("New-Object", "$null=New-Object Text.UTF8Encoding $false", {}),
-      timed("Test-Path", "$null=Test-Path -LiteralPath C:\\", {}),
-      timed("ConvertFrom-Json", json, {}),
-      timed("ConvertTo-Json", "$null=ConvertTo-Json @{a=1} -Compress", {}),
-      timed("OpenStandardInput", "$null=[Console]::OpenStandardInput()", {}),
-      timed("Import Utility", "Import-Module Microsoft.PowerShell.Utility", {}),
-      timed("Get-Command ConvertFrom-Json", "(Get-Command ConvertFrom-Json).Source", {}),
-      timed("Add-Type", "Add-Type -TypeDefinition 'public class CanonfigProbe {}'", {}),
-      timed("ConvertFrom-Json full env", json, { ...process.env }),
-      timed("ConvertFrom-Json +TEMP/TMP", json, pick("TEMP", "TMP")),
-      timed("ConvertFrom-Json +PSModulePath", json, pick("PSModulePath")),
-      timed("ConvertFrom-Json +windir", json, pick("windir")),
-      timed("ConvertFrom-Json +ProgramFiles*", json, pick("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432")),
-      timed("ConvertFrom-Json +ProgramData/ALLUSERSPROFILE/PUBLIC", json, pick("ProgramData", "ALLUSERSPROFILE", "PUBLIC")),
-      timed("ConvertFrom-Json +ComSpec/SystemDrive", json, pick("ComSpec", "SystemDrive")),
-      timed("ConvertFrom-Json +PROCESSOR_*/NUMBER_OF_PROCESSORS/OS", json, pick("PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER", "PROCESSOR_LEVEL", "PROCESSOR_REVISION", "NUMBER_OF_PROCESSORS", "OS")),
-      timed("ConvertFrom-Json +USERNAME/USERDOMAIN/COMPUTERNAME", json, pick("USERNAME", "USERDOMAIN", "USERDOMAIN_ROAMINGPROFILE", "COMPUTERNAME", "LOGONSERVER")),
-      timed("ConvertFrom-Json +real profile dirs", json, pick("USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH")),
-      timed("ConvertFrom-Json +PATH", json, pick("PATH", "Path")),
-    ]);
-    console.log(`DIAG probes\n${results.join("\n")}`);
-    throw new Error(`diagnostic probes:\n${results.join("\n")}`);
-  }, 600_000);
 });

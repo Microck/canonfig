@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest";
 import { Cause, Effect, Fiber, Layer, Redacted } from "effect";
 import { openAnchoredDirectory } from "../src/machine/anchored-directory.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
-import { makeWindowsAclWorker } from "../src/machine/windows-acl-worker.ts";
+import { makeWindowsAclWorker, windowsAclWorkerModules, windowsAclWorkerScript } from "../src/machine/windows-acl-worker.ts";
 import { windowsCredentialAssemblyScript, windowsCredentialNativeSource, windowsPowerShellExecutable } from "../src/machine/windows-credentials.ts";
 import { ActionId, ResourceId, RunId, resourcesOwner, surfaceResourceId } from "../src/domain/brand.ts";
 import { CredentialStorageError } from "../src/machine/machine-state.errors.ts";
@@ -942,6 +942,17 @@ describe("Windows long path limit", () => {
 });
 
 describe("Windows ACL command rendering", () => {
+  // Command discovery without PSModulePath stalled the worker's first cmdlet
+  // for 45s or more on hosted Windows runners, longer than a whole run takes.
+  it("imports every module the ACL worker uses before its first cmdlet", () => {
+    const lines = windowsAclWorkerScript("C:\\cache\\helper.dll").split("\n");
+    const cmdlets = (text: string) => [...text.matchAll(/\b[A-Z][A-Za-z]+-[A-Z][A-Za-z]+\b/gu)].map(([name]) => name);
+    const firstCmdletLine = lines.findIndex((line) => cmdlets(line).length > 0);
+    expect(lines[firstCmdletLine]).toBe("Import-Module Microsoft.PowerShell.Utility,Microsoft.PowerShell.Management");
+    expect(new Set(cmdlets(lines.slice(firstCmdletLine + 1).join("\n"))))
+      .toEqual(new Set(Object.values(windowsAclWorkerModules).flat()));
+  });
+
   it("renders shell-free current-user-only ACL arguments", () => {
     expect(windowsPrivateAclArguments(
       "C:\\Users\\operator\\secret & echo exposed",

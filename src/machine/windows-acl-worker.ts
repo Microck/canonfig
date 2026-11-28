@@ -79,6 +79,16 @@ export const windowsPermissionRestoreAssemblyName = `CanonfigPermissionRestore-$
   createHash("sha256").update(nativePermissionRestore).digest("hex").slice(0, 16)
 }.dll`;
 
+/**
+ * Every cmdlet the ACL worker calls, by the module it is imported from.
+ * Keep this in step with `windowsAclWorkerScript`, which imports these
+ * modules up front so no cmdlet goes through command discovery.
+ */
+export const windowsAclWorkerModules = {
+  "Microsoft.PowerShell.Utility": ["New-Object", "ConvertFrom-Json", "ConvertTo-Json", "Add-Type"],
+  "Microsoft.PowerShell.Management": ["Test-Path", "Split-Path", "New-Item", "Join-Path", "Move-Item", "Remove-Item"],
+} as const;
+
 /** A single-quoted PowerShell string: only `'` needs escaping, by doubling. */
 export const powershellLiteral = (value: string): string =>
   `'${value.replaceAll("'", "''")}'`;
@@ -109,10 +119,20 @@ export const powershellLiteral = (value: string): string =>
  * half-written file; losing that race means the winner's identical build is
  * already there. A corrupt cached file fails each restore with the file named
  * in the error; deleting it is the recovery.
+ *
+ * The script imports the two modules its cmdlets come from before it calls
+ * any of them (`windowsAclWorkerModules`). Otherwise the first cmdlet goes
+ * through command discovery, and with no PSModulePath in the environment
+ * Windows PowerShell 5.1 then stalled for 45 seconds to over 90 seconds
+ * before running it, on hosted Windows runners, while importing the same
+ * modules by name took no measurable time. The layer environment, not the
+ * operator's shell, decides what the worker sees, so it can lack
+ * PSModulePath.
  */
 export const windowsAclWorkerScript = (assembly: string): string => [
   "$ErrorActionPreference='Stop'",
   "$ProgressPreference='SilentlyContinue'",
+  `Import-Module ${Object.keys(windowsAclWorkerModules).join(",")}`,
   "$utf8=New-Object Text.UTF8Encoding $false",
   "$reader=New-Object IO.StreamReader([Console]::OpenStandardInput(),$utf8)",
   "$writer=New-Object IO.StreamWriter([Console]::OpenStandardOutput(),$utf8)",
