@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  compareInstalledVersion,
   installedVersionMatches,
   parseBrewInstalledInfo,
   parseBunGlobalList,
@@ -101,5 +102,69 @@ describe("installed tool version listings", () => {
     expect(installedVersionMatches("uv", "6.0.0rc1", "6.0.0RC1")).toBe(true);
     expect(installedVersionMatches("uv", "6.0.1", "5.13.2")).toBe(false);
     expect(installedVersionMatches("npm", "1.0.0-Beta", "1.0.0-beta")).toBe(false);
+  });
+
+  // The sign is what the planner acts on: negative installs the pin, zero or
+  // positive keeps an `at-least` tool, undefined installs the pin as before.
+  const order = (method: string, installed: string, pinned: string) => {
+    const result = compareInstalledVersion(method, installed, pinned);
+    return result === undefined ? undefined : Math.sign(result);
+  };
+
+  it.each([
+    ["npm", "0.172.0", "0.167.1", 1],
+    ["npm", "0.167.0", "0.167.1", -1],
+    ["npm", "0.167.1", "0.167.1", 0],
+    ["pnpm", "10.0.0", "9.99.99", 1],
+    ["bun", "1.2.3+build.5", "1.2.3", 0],
+    // A release is above its own pre-releases, and a newer pre-release is above an older release.
+    ["npm", "0.172.0-alpha.1", "0.172.0", -1],
+    ["npm", "0.173.0-alpha.1", "0.172.0", 1],
+    ["npm", "1.0.0-alpha.2", "1.0.0-alpha.10", -1],
+    ["npm", "1.0.0-alpha", "1.0.0-alpha.1", -1],
+    ["npm", "1.0.0-1", "1.0.0-alpha", -1],
+    ["npm", "1.0.0-beta", "1.0.0-alpha.beta", 1],
+    ["cargo", "99999999999999999999.0.0", "9999999999999999999.0.0", 1],
+  ])("orders %s versions by SemVer precedence: %s against %s", (method, installed, pinned, expected) => {
+    expect(order(method, installed, pinned)).toBe(expected);
+  });
+
+  it.each([
+    ["14.1.1-1", "14.1.0-1", 1],
+    ["14.1.0-2", "14.1.0-1", 1],
+    ["14.1.0-1ubuntu1", "14.1.0-1", 1],
+    ["14.1.0~rc1-1", "14.1.0-1", -1],
+    ["1:1.0-1", "2.0-1", 1],
+    ["1.0", "1.0-0", 0],
+    ["1.0+dfsg-1", "1.0-1", 1],
+  ])("orders Debian versions like dpkg: %s against %s", (installed, pinned, expected) => {
+    expect(order("apt", installed, pinned)).toBe(expected);
+  });
+
+  it.each([
+    ["uv", "6.0.1", "5.13.2", 1],
+    ["uv", "5.13", "5.13.0", 0],
+    ["winget", "14.1.1.0", "14.1.1", 0],
+    ["winget", "2.0.0.1", "2.0.0", 1],
+    ["brew", "14.1.1_1", "14.1.1", 1],
+    ["brew", "1.2_3", "1.2.1", -1],
+    ["brew", "1.2.1", "1.2_3", 1],
+    ["brew", "1.2_3", "1.2_1", 1],
+    ["brew", "1.2_0", "1.2", 0],
+    ["homebrew", "1.2.0_2", "1.2_1", 1],
+    ["homebrew", "0.9.6", "0.9.7", -1],
+  ])("orders dotted numeric %s versions: %s against %s", (method, installed, pinned, expected) => {
+    expect(order(method, installed, pinned)).toBe(expected);
+  });
+
+  it.each([
+    ["uv", "6.0.0rc1", "5.13.2"],
+    ["winget", "Unknown", "1.0.0"],
+    ["npm", "latest", "1.0.0"],
+    ["apt", "14.1.0-1", "not a version"],
+    ["binary", "1.0.0", "0.9.0"],
+    ["source", "abc123", "def456"],
+  ])("cannot order %s versions %s against %s", (method, installed, pinned) => {
+    expect(compareInstalledVersion(method, installed, pinned)).toBeUndefined();
   });
 });

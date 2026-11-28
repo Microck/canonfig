@@ -13,6 +13,7 @@ import {
   decodeFolderConfig,
   decodeLocalConfig,
   type FolderResourceInput,
+  type FolderTool,
   loadCanonicalFolder,
   LocalItemCollisionError,
 } from "../src/projection/folder.ts";
@@ -294,6 +295,18 @@ describe("canonfig.jsonc validation detail", () => {
       reason: "installer uv cannot honor requested version",
     },
     {
+      name: "unknown version policy",
+      fields: { versionPolicy: "profile-disposable-value" },
+      field: "[\"versionPolicy\"]",
+      reason: "Expected \"at-least\" | \"exact\"",
+    },
+    {
+      name: "at-least policy on a source recipe",
+      fields: { method: "source", version: "abc123", versionPolicy: "at-least" },
+      field: "[\"versionPolicy\"]",
+      reason: "source recipes always install their exact version; remove versionPolicy or set it to \"exact\"",
+    },
+    {
       name: "unsafe registry package",
       fields: { method: "npm", package: "https://operator:profile-disposable-value@example.test/tool.tgz" },
       field: "[\"package\"]",
@@ -319,6 +332,31 @@ describe("canonfig.jsonc validation detail", () => {
     expect(message).toContain(`["tools"]["tool"]["recipes"][0]${field}`);
     expect(message).toContain(reason);
     expect(message).not.toContain("profile-disposable-value");
+  });
+});
+
+describe("tool version policy", () => {
+  const decodeTool = (recipe: Partial<FolderTool["recipes"][number]>) =>
+    decodeFolderConfig("/home/operator/.canonfig/canonfig.jsonc", JSON.stringify({
+      version: 1,
+      harnesses: [],
+      tools: { codex: { executable: "codex", recipes: [{ platform: "macos", method: "npm", package: "@openai/codex", version: "0.167.1", ...recipe }] } },
+    })).tools?.["codex"]?.recipes[0];
+
+  it.each(["at-least", "exact"] as const)("accepts versionPolicy %s and keeps it on the recipe", (versionPolicy) => {
+    expect(decodeTool({ versionPolicy })).toMatchObject({ versionPolicy });
+  });
+
+  it("leaves the policy unset when the recipe omits it", () => {
+    expect(decodeTool({})).not.toHaveProperty("versionPolicy");
+  });
+
+  it("refuses at-least on a binary recipe, whose pin names reviewed bytes", () => {
+    expect(() => decodeTool({
+      method: "binary", package: "codex", version: "0.167.1", architecture: "arm64", entrypoint: "codex",
+      source: { source: "https://example.test/codex", integrity: `sha256-${Buffer.alloc(32).toString("base64")}` },
+      versionPolicy: "at-least",
+    })).toThrow('binary recipes always install their exact version; remove versionPolicy or set it to "exact"');
   });
 });
 

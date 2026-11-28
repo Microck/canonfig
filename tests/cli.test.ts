@@ -711,6 +711,33 @@ describe("CLI rendering and exit semantics", () => {
     expect(rendered).not.toContain("{");
   });
 
+  it("shows which newer tool version an at-least pin keeps", () => {
+    const notice = 'Keeps @openai/codex 0.172.0, which is newer than the pinned 0.167.1 (versionPolicy "at-least"). Set versionPolicy to "exact" to install 0.167.1 instead.';
+    const rendered = renderCliResult({
+      command: "sync.plan",
+      message: "sync.plan completed",
+      exitCode: CliExitCode.success,
+      data: {
+        mode: "plan",
+        revision: "workstation:abc",
+        agentResolutions: [],
+        plan: {
+          encoded: "{\"actions\":[]}",
+          agentTasks: [],
+          actions: [{
+            id: "action:tools:codex:0:no-op",
+            kind: "no-op",
+            resource: "tools:codex",
+            before: [],
+            detail: { kind: "no-op", versionNotice: notice },
+          }],
+        },
+      },
+    }, "human");
+    expect(rendered).toMatch(/\n {2}no-op +tools:codex\n/u);
+    expect(rendered).toContain("Keeps @openai/codex 0.172.0, which is newer than the pinned 0.167.1");
+  });
+
   it("says why a planned human-action blocks its resource and what to do", () => {
     const rendered = renderCliResult({
       command: "sync.plan",

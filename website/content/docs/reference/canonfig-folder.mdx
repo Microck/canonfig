@@ -275,7 +275,7 @@ lists each harness's settings file and reserved keys.
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `executable` | Yes | The command name or entry file the tool provides. Planning checks it. |
-| `recipes` | Yes | One Installation Recipe per platform: `platform` (`linux`, `macos`, `windows`), `method`, `package`, and `version`. |
+| `recipes` | Yes | One Installation Recipe per platform: `platform` (`linux`, `macos`, `windows`), `method`, `package`, and `version`. Optional `versionPolicy`: `"at-least"` (default) keeps a newer installed version, `"exact"` installs the pin over any other version. |
 | `login` | No | `{ "required": false }`, or `{ "required": true, "howTo": string }` for a tool that needs a person to sign in. |
 | `agentInstall` | No | `{ "paths": [string, ...], "origins"?: [https-origin, ...] }`: where a Configuration Agent may install the tool when no recipe fits. |
 | `verify` | No | `command`, `executable-present`, or `mcp-qualification`. Default: `executable-present` on `executable`. |

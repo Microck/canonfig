@@ -179,7 +179,16 @@ export type PlannedActionKind =
   | "drift-conflict";
 
 export type ActionDetail =
-  | { readonly kind: "no-op"; readonly provenance?: InstallerRecipeProvenanceType | undefined }
+  | {
+    readonly kind: "no-op";
+    readonly provenance?: InstallerRecipeProvenanceType | undefined;
+    /**
+     * Set when a tool stays at an installed version other than its pin
+     * because the recipe's `at-least` policy accepts it, so the plan says
+     * which version it kept instead of reading as an exact match.
+     */
+    readonly versionNotice?: string | undefined;
+  }
   | { readonly kind: "transfer-blob"; readonly blob: string; readonly bytes: number }
   | {
     readonly kind: "write-file";
@@ -438,6 +447,7 @@ export const ActionDetailSchema = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("no-op"),
     provenance: Schema.optional(InstallerRecipeProvenance),
+    versionNotice: Schema.optional(Schema.NonEmptyString),
   }),
   Schema.Struct({
     kind: Schema.Literal("transfer-blob"),

@@ -112,12 +112,36 @@ a tool `canonfig.jsonc` declares; otherwise publication fails with
 
 ## When Canonfig installs, replaces, or leaves a tool
 
-| What the Follower Machine has | What the plan does |
-| --- | --- |
-| The tool is missing | `install-tool` with the pinned version |
-| The tool is present, and its installer reports the pinned version | Leaves it in place |
-| The tool is present, and its installer reports another version | `install-tool` with `replaces` set to the installed version. Apply installs the pin, downgrading if needed. |
-| The tool is present, but its installer does not list it (for example it came from somewhere else) | Leaves it in place |
+A recipe's `version` is a minimum by default. Many CLIs update themselves, and
+package managers move at different speeds on each platform, so a Follower
+Machine that already has a newer version keeps it. Set `versionPolicy` to
+`"exact"` on a recipe when every machine must run exactly the pinned version:
+
+```jsonc
+{ "platform": "macos", "method": "npm", "package": "@openai/codex", "version": "0.167.1", "versionPolicy": "exact" }
+```
+
+| What the Follower Machine has | `versionPolicy: "at-least"` (default) | `versionPolicy: "exact"` |
+| --- | --- | --- |
+| The tool is missing | `install-tool` with the pinned version | `install-tool` with the pinned version |
+| The installer reports the pinned version | Leaves it in place | Leaves it in place |
+| The installer reports an older version | `install-tool` with `replaces` set to the installed version. Apply upgrades to the pin. | Same |
+| The installer reports a newer version | Leaves it in place. The plan's `no-op` says which version it kept. | `install-tool` with `replaces` set to the installed version. Apply downgrades to the pin. |
+| The installer does not list the tool (for example it came from somewhere else) | Leaves it in place | Leaves it in place |
+
+Canonfig orders versions the way each installer does: SemVer precedence for
+`npm`, `pnpm`, `bun`, and `cargo` (so `0.172.0-alpha.1` is older than
+`0.172.0`), dpkg's rules for `apt`, and dot-separated numbers for `uv`,
+`winget`, and `brew` (where a `_1` revision suffix counts as newer). When it
+cannot order two versions, such as the PEP 440 pre-release `6.0.0rc1`, it
+installs the pin as `exact` would. A kept version shows in `canonfig sync
+--plan` and in the browser's Sync result:
+
+> Keeps @openai/codex 0.172.0, which is newer than the pinned 0.167.1 (versionPolicy "at-least"). Set versionPolicy to "exact" to install 0.167.1 instead.
+
+`binary` and `source` recipes are always exact, and so is a tool verified with
+`mcp-qualification`: their pin names reviewed bytes or a revision. Publishing
+refuses `"versionPolicy": "at-least"` on them.
 
 To learn the installed version, planning only reads installer state, for example
 `uv tool list --offline`, `npm ls --global --json`, `winget list --id <id>

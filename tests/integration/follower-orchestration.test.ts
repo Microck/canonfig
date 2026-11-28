@@ -284,6 +284,31 @@ const enroll = async (root: string, source: SourceMachine, options: FollowerOpti
 const kindsOf = (plan: { readonly actions: ReadonlyArray<{ readonly resource: string; readonly kind: string }> }, resource: string) =>
   plan.actions.filter((action) => action.resource === resource).map((action) => action.kind);
 
+/**
+ * A uv that keeps isort's installed version in `state`, as `uv tool list`
+ * reports it, logs each call to `calls`, and installs the requested
+ * `isort==<version>` when `honorsPin` (otherwise it exits 0 and changes nothing).
+ */
+const versionKeepingUv = (state: string, calls: string, honorsPin: boolean) => `#!${process.execPath}
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(calls)}, args.join(" ") + "\\n");
+if (args[0] === "tool" && args[1] === "list") {
+  process.stdout.write("isort v" + fs.readFileSync(${JSON.stringify(state)}, "utf8") + "\\n- isort\\n");
+} else if (args[0] === "python" && args[1] === "find") {
+  process.stdout.write(process.execPath + "\\n");
+} else if (args[0] === "venv") {
+  fs.mkdirSync(args[1], { recursive: true });
+} else if (args[0] === "pip") {
+  if (args[1] === "freeze") process.stdout.write("isort==5.13.2\\n");
+} else if (args[0] === "tool" && args[1] === "install") {
+  const requested = args.find((arg) => arg.startsWith("isort=="));
+  if (${String(honorsPin)}) fs.writeFileSync(${JSON.stringify(state)}, requested.slice("isort==".length));
+} else {
+  process.exit(42);
+}
+`;
+
 /** Parse a mirror or projected JSON file as JSONC, the way Canonfig reads it. */
 const readJson = (path: string) => parseConfigDocument("json", read(path));
 
@@ -329,38 +354,18 @@ describe("production follower orchestration", () => {
   it.each([
     { installerHonorsPin: true, outcome: "Converged" },
     { installerHonorsPin: false, outcome: "Failed" },
-  ])("reinstalls a present uv tool at its new pin and checks the installed version (installer honors pin: $installerHonorsPin)", async ({ installerHonorsPin, outcome }) => {
+  ])("reinstalls a present uv tool at its new exact pin and checks the installed version (installer honors pin: $installerHonorsPin)", async ({ installerHonorsPin, outcome }) => {
     const root = temporaryRoot("tool-pin");
     const state = join(root, "installed-version");
     const calls = join(root, "uv-calls");
     const source = await startSource(root, (folder) => authorFolder(folder, {
-      tools: { isort: { executable: "isort", recipes: [{ platform: "linux", method: "uv", package: "isort", version: "5.13.2" }] } },
+      tools: { isort: { executable: "isort", recipes: [{ platform: "linux", method: "uv", package: "isort", version: "5.13.2", versionPolicy: "exact" }] } },
     }));
     const follower = await enroll(root, source, { name: "Pin follower" });
     // The tool installed by an earlier revision that pinned 6.0.1.
     write(join(follower.home, ".local", "bin", "isort"), "#!/bin/sh\nexit 0\n", 0o755);
     await writeFile(state, "6.0.1");
-    // A uv that keeps the installed version in a file, as `uv tool list`
-    // reports it, and installs exactly the requested `isort==<version>`.
-    write(join(follower.bin, "uv"), `#!${process.execPath}
-const fs = require("node:fs");
-const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(calls)}, args.join(" ") + "\\n");
-if (args[0] === "tool" && args[1] === "list") {
-  process.stdout.write("isort v" + fs.readFileSync(${JSON.stringify(state)}, "utf8") + "\\n- isort\\n");
-} else if (args[0] === "python" && args[1] === "find") {
-  process.stdout.write(process.execPath + "\\n");
-} else if (args[0] === "venv") {
-  fs.mkdirSync(args[1], { recursive: true });
-} else if (args[0] === "pip") {
-  if (args[1] === "freeze") process.stdout.write("isort==5.13.2\\n");
-} else if (args[0] === "tool" && args[1] === "install") {
-  const requested = args.find((arg) => arg.startsWith("isort=="));
-  if (${String(installerHonorsPin)}) fs.writeFileSync(${JSON.stringify(state)}, requested.slice("isort==".length));
-} else {
-  process.exit(42);
-}
-`, 0o755);
+    write(join(follower.bin, "uv"), versionKeepingUv(state, calls, installerHonorsPin), 0o755);
 
     const planned = await follower.plan();
     expect(planned.plan.actions.filter((action) => action.resource === "tools:isort")).toEqual([
@@ -382,6 +387,36 @@ if (args[0] === "tool" && args[1] === "list") {
         reason: expect.stringContaining("reports isort 6.0.1 installed, not the pinned 5.13.2"),
       });
     }
+  });
+
+  it.each([
+    { installed: "6.0.1", expected: "no-op", after: "6.0.1" },
+    { installed: "5.0.0", expected: "install-tool", after: "5.13.2" },
+  ])("keeps a newer uv tool and upgrades an older one under the default at-least pin (installed $installed)", async ({ installed, expected, after }) => {
+    const root = temporaryRoot("tool-at-least");
+    const state = join(root, "installed-version");
+    const calls = join(root, "uv-calls");
+    const source = await startSource(root, (folder) => authorFolder(folder, {
+      tools: { isort: { executable: "isort", recipes: [{ platform: "linux", method: "uv", package: "isort", version: "5.13.2" }] } },
+    }));
+    const follower = await enroll(root, source, { name: "At-least follower" });
+    write(join(follower.home, ".local", "bin", "isort"), "#!/bin/sh\nexit 0\n", 0o755);
+    await writeFile(state, installed);
+    write(join(follower.bin, "uv"), versionKeepingUv(state, calls, true), 0o755);
+
+    const planned = (await follower.plan()).plan.actions.filter((action) => action.resource === "tools:isort");
+    expect(planned).toEqual([expected === "no-op"
+      ? expect.objectContaining({
+        kind: "no-op",
+        detail: { kind: "no-op", versionNotice: expect.stringContaining("Keeps isort 6.0.1, which is newer than the pinned 5.13.2") },
+      })
+      : expect.objectContaining({ kind: "install-tool", detail: expect.objectContaining({ version: "5.13.2", replaces: installed }) })]);
+
+    const applied = await follower.apply();
+    expect(applied.outcome).toMatchObject({ outcome: "Converged" });
+    expect(await readFile(state, "utf8")).toBe(after);
+    const installs = (await readFile(calls, "utf8")).split("\n").filter((call) => call.startsWith("tool install"));
+    expect(installs).toHaveLength(expected === "no-op" ? 0 : 1);
   });
 
   // A profile's `agentInstall.paths` is written once for every follower, so it

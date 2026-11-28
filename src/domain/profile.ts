@@ -32,6 +32,7 @@ import {
   canonicalRecipeIndexUrl,
   isMissingAutomaticRecipeVersion,
   recipeValidationIssue,
+  type RecipeVersionPolicy,
 } from "./recipe-versions.ts";
 import {
   BlobId,
@@ -124,7 +125,7 @@ export type ResourceSpecInput =
   | { readonly kind: "file"; readonly source: string; readonly executable?: boolean | undefined; readonly mode?: number | undefined }
   | { readonly kind: "config"; readonly format: "toml" | "json" | "yaml"; readonly keys: ReadonlyArray<{ readonly path: string; readonly value: ConfigValue }> }
   | { readonly kind: "skill"; readonly name: string; readonly files: ReadonlyArray<ManagedFileInput> }
-  | { readonly kind: "tool"; readonly toolId: string; readonly recipes: ReadonlyArray<{ readonly platform: Platform; readonly method: RecipeMethod; readonly package: string; readonly version?: string | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly buildPolicy?: Schema.Schema.Type<typeof BuildPolicySchema> | undefined; readonly source?: RecipeSource | undefined; readonly upstream?: string | undefined; readonly architecture?: string | undefined; readonly artifactDigest?: string | undefined; readonly entrypoint?: string | undefined; readonly dependencyPolicy?: string | undefined; readonly executionContext?: string | undefined }>; readonly login?: { readonly required: boolean; readonly howTo?: string | undefined } | undefined; readonly agentInstall?: { readonly paths: ReadonlyArray<string>; readonly origins?: ReadonlyArray<string> | undefined } | undefined }
+  | { readonly kind: "tool"; readonly toolId: string; readonly recipes: ReadonlyArray<{ readonly platform: Platform; readonly method: RecipeMethod; readonly package: string; readonly version?: string | undefined; readonly versionPolicy?: RecipeVersionPolicy | undefined; readonly indexPolicy?: RecipeIndexPolicy | undefined; readonly buildPolicy?: Schema.Schema.Type<typeof BuildPolicySchema> | undefined; readonly source?: RecipeSource | undefined; readonly upstream?: string | undefined; readonly architecture?: string | undefined; readonly artifactDigest?: string | undefined; readonly entrypoint?: string | undefined; readonly dependencyPolicy?: string | undefined; readonly executionContext?: string | undefined }>; readonly login?: { readonly required: boolean; readonly howTo?: string | undefined } | undefined; readonly agentInstall?: { readonly paths: ReadonlyArray<string>; readonly origins?: ReadonlyArray<string> | undefined } | undefined }
   | { readonly kind: "credential"; readonly reference: string };
 
 export type VerificationInput =
@@ -697,6 +698,8 @@ const validateRecipes = (
       ? undefined
       : recipe.version === undefined
       ? "qualified MCP recipes require an exact version"
+      : recipe.versionPolicy === "at-least"
+      ? "qualified MCP recipes install their exact version; remove versionPolicy or set it to \"exact\""
       : recipe.upstream === undefined
       ? "qualified MCP recipes require an upstream identity"
       : recipe.architecture === undefined

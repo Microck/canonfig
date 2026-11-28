@@ -1733,12 +1733,12 @@ describe("stable planning and bounded resolution", () => {
     expect(planFor({ state: "absent" }).actions.map((action) => action.kind)).toEqual(["human-action"]);
   });
 
-  it("reinstalls a present tool whose installer reports a version other than the pin", () => {
+  it("reinstalls a present tool whose installer reports a version other than an exact pin", () => {
     const subject = resource("isort", "tool", "ensure");
     const desired: DesiredResource = {
       kind: "tool",
       toolId: "isort",
-      recipes: [{ platform: "linux", method: "uv", package: "isort", version: "5.13.2" }],
+      recipes: [{ platform: "linux", method: "uv", package: "isort", version: "5.13.2", versionPolicy: "exact" }],
       loginRequired: false,
     };
     const present = (installedVersion?: string): ObservedResourceState => ({ state: "tool", installedVersion });
@@ -1764,6 +1764,88 @@ describe("stable planning and bounded resolution", () => {
       observed: [present("6.0.0rc1")],
     }));
     expect(prerelease.actions.map((action) => action.kind)).toEqual(["no-op"]);
+  });
+
+  describe("tool version policy", () => {
+    const subject = resource("codex", "tool", "ensure");
+    const codex = (versionPolicy?: "at-least" | "exact"): DesiredResource => ({
+      kind: "tool",
+      toolId: "codex",
+      recipes: [{
+        platform: "linux",
+        method: "npm",
+        package: "@openai/codex",
+        version: "0.167.1",
+        versionPolicy,
+      }],
+      loginRequired: false,
+    });
+    const planFor = (desired: DesiredResource, observed: ObservedResourceState) =>
+      runPlan(plannerInput([subject], { desired: [desired], observed: [observed] }));
+    // toEqual ignores an undefined `replaces`, so a fresh install compares without one.
+    const install = (replaces?: string) => ({
+      kind: "install-tool",
+      toolId: "codex",
+      method: "npm",
+      package: "@openai/codex",
+      version: "0.167.1",
+      replaces,
+    });
+
+    it.each([undefined, "at-least"] as const)("keeps a newer installed version and says so (versionPolicy %s)", (versionPolicy) => {
+      const plan = planFor(codex(versionPolicy), { state: "tool", installedVersion: "0.172.0" });
+      const notice = 'Keeps @openai/codex 0.172.0, which is newer than the pinned 0.167.1 (versionPolicy "at-least"). Set versionPolicy to "exact" to install 0.167.1 instead.';
+      expect(plan.actions.map((action) => action.detail)).toEqual([{ kind: "no-op", versionNotice: notice }]);
+      expect(JSON.parse(plan.encoded).actions[0].detail.versionNotice).toBe(notice);
+    });
+
+    it("leaves an exactly matching installation alone without a notice", () => {
+      expect(planFor(codex(), { state: "tool", installedVersion: "0.167.1" }).actions.map((action) => action.detail))
+        .toEqual([{ kind: "no-op" }]);
+    });
+
+    it("upgrades an older installed version to the pin", () => {
+      expect(planFor(codex(), { state: "tool", installedVersion: "0.160.0" }).actions.map((action) => action.detail))
+        .toEqual([install("0.160.0")]);
+    });
+
+    it("installs a missing tool at the pin", () => {
+      expect(planFor(codex(), { state: "absent" }).actions.map((action) => action.detail)).toEqual([install()]);
+    });
+
+    it("downgrades a newer installed version when the pin is exact", () => {
+      expect(planFor(codex("exact"), { state: "tool", installedVersion: "0.172.0" }).actions.map((action) => action.detail))
+        .toEqual([install("0.172.0")]);
+    });
+
+    it("installs the pin over a pre-release of the pinned version", () => {
+      expect(planFor(codex(), { state: "tool", installedVersion: "0.167.1-alpha.3" }).actions.map((action) => action.detail))
+        .toEqual([install("0.167.1-alpha.3")]);
+    });
+
+    it("keeps a pre-release of a newer version", () => {
+      expect(planFor(codex(), { state: "tool", installedVersion: "0.173.0-alpha.1" }).actions.map((action) => action.kind))
+        .toEqual(["no-op"]);
+    });
+
+    it("says an equivalent version is kept rather than newer", () => {
+      const plan = planFor(codex(), { state: "tool", installedVersion: "0.167.1+build.7" });
+      expect(plan.actions[0]?.detail).toMatchObject({ kind: "no-op", versionNotice: expect.stringContaining("equivalent to the pinned 0.167.1") });
+    });
+
+    it("installs the pin when the installed version cannot be ordered", () => {
+      const isort: DesiredResource = {
+        kind: "tool",
+        toolId: "isort",
+        recipes: [{ platform: "linux", method: "uv", package: "isort", version: "5.13.2" }],
+        loginRequired: false,
+      };
+      const plan = runPlan(plannerInput([resource("isort", "tool", "ensure")], {
+        desired: [isort],
+        observed: [{ state: "tool", installedVersion: "6.0.0rc1" }],
+      }));
+      expect(plan.actions[0]?.detail).toMatchObject({ kind: "install-tool", version: "5.13.2", replaces: "6.0.0rc1" });
+    });
   });
 
   it("routes remote npm-family artifacts without integrity to Human Action Required", () => {

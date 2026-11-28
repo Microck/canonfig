@@ -6,6 +6,7 @@ import {
   RecipeSourceMetadata as RecipeSourceMetadataSchema,
   RecipeIndexPolicy as RecipeIndexPolicySchema,
   RecipeMethod as RecipeMethodSchema,
+  RecipeVersionPolicy,
   recipeValidationIssue,
 } from "./recipe-versions.ts";
 
@@ -151,6 +152,7 @@ const ToolRecipeRefSchema = Schema.Struct({
   method: RecipeMethod,
   package: Schema.NonEmptyString,
   version: Schema.optional(Schema.NonEmptyString),
+  versionPolicy: Schema.optional(RecipeVersionPolicy),
   indexPolicy: Schema.optional(RecipeIndexPolicySchema),
   buildPolicy: Schema.optional(BuildPolicy),
   source: Schema.optional(Schema.Union([

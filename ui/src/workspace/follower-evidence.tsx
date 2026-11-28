@@ -180,6 +180,8 @@ export function FollowerOperationEvidence() {
   const actions = Array.isArray(plan.actions) ? plan.actions.map(record) : [];
   const changes = actions.filter((action) => text(action.kind) !== "no-op");
   const unchanged = actions.filter((action) => text(action.kind) === "no-op");
+  // A tool kept at a newer version than its `at-least` pin is a no-op, but it is not an exact match, so it stays visible.
+  const keptVersions = unchanged.flatMap((action) => text(record(action.detail).versionNotice) ?? []);
   const human = Array.isArray(outcome.actions) ? outcome.actions.map(record) : [];
   const conflicts = Array.isArray(outcome.conflicts) ? outcome.conflicts.map(record) : [];
   const reviews = Array.isArray(report.adoptionReviews) ? report.adoptionReviews.map(record) : [];
@@ -218,6 +220,7 @@ export function FollowerOperationEvidence() {
         {notes.map((message, index) => <p key={index} className="mt-2 text-muted-foreground"><CliText>{message}</CliText></p>)}
       </details>}
       {steps.map((message, index) => <p key={index} className="border-b border-border py-3 text-sm text-muted-foreground"><CliText>{message}</CliText></p>)}
+      {keptVersions.map((notice, index) => <p key={index} className="flex items-start gap-2 border-b border-border py-3 text-sm text-muted-foreground"><StatusMark kind="ok" className="mt-[3px]" /><CliText>{notice}</CliText></p>)}
       {report.adoptionReviews !== undefined && <>
         <SectionLabel className="mt-5">Private adoption review</SectionLabel>
         {reviews.length === 0 ? <p className="text-sm text-muted-foreground">No files need a preview.</p> : <>

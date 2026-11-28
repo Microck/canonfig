@@ -24,6 +24,7 @@ import type {
   RecipeMethod,
   RecipeSource,
 } from "../domain/resource.ts";
+import type { RecipeVersionPolicy } from "../domain/recipe-versions.ts";
 import type { McpQualificationInput } from "../domain/mcp-qualification.ts";
 import type { AgentHarnessConfiguration } from "../agent/agent-resolution.types.ts";
 import type { AgentResolution } from "../agent/agent-resolution.service.ts";
@@ -111,6 +112,7 @@ export interface ToolRecipe {
   readonly method: RecipeMethod;
   readonly package: string;
   readonly version?: string | undefined;
+  readonly versionPolicy?: RecipeVersionPolicy | undefined;
   readonly indexPolicy?: RecipeIndexPolicy | undefined;
   readonly source?: RecipeSource | undefined;
   readonly buildPolicy?: BuildPolicy | undefined;
