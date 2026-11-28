@@ -362,6 +362,18 @@ const replaceDirectory = (
   const desiredEntries = desiredDirectoryEntries(desired);
   const desiredPaths = new Set(desiredEntries.map((file) => file.path));
   const desiredAncestorPaths = relativePathAncestors([...desiredPaths]);
+  const removes = observedFiles.filter((file) =>
+    !desiredPaths.has(file.path)
+    && !(file.objectKind === "directory" && desiredAncestorPaths.has(file.path))
+  ).map((file) => file.path);
+  // Keep generated entries in surviving directories. If a directory is
+  // removed or replaced by a file, remove its generated children first.
+  if (context.observed.state === "directory" && context.observed.runtimeArtifacts !== undefined) {
+    const discarded = new Set([...removes, ...desired.files.map((file) => file.path)]);
+    removes.push(...context.observed.runtimeArtifacts.filter((path) =>
+      [...relativePathAncestors([path])].some((parent) => discarded.has(parent))
+    ));
+  }
   return {
     kind: "mirror-directory",
     detail: {
@@ -374,13 +386,7 @@ const replaceDirectory = (
         )
         .map((file) => file.path)
         .sort(compareText),
-      removes: observedFiles
-        .filter((file) =>
-          !desiredPaths.has(file.path)
-          && !(file.objectKind === "directory" && desiredAncestorPaths.has(file.path))
-        )
-        .map((file) => file.path)
-        .sort(compareText),
+      removes: removes.sort(compareText),
     },
   };
 };
@@ -1350,12 +1356,28 @@ const planRemovedResource = (
           return [];
         }
       }
+      const owned = new Set(applied.ownedFiles.map((file) => file.path));
+      let paths = [...owned];
+      if (context.observed.state === "directory" && context.observed.runtimeArtifacts !== undefined) {
+        // A skill mirror records files but not their implicit directories.
+        // Keep any directory that still contains real unowned entries.
+        const implicitDirectories = relativePathAncestors(paths);
+        const unowned = presentObservedFiles(context.observed.files).filter((file) =>
+          !owned.has(file.path) && !(file.objectKind === "directory" && implicitDirectories.has(file.path))
+        );
+        const retained = relativePathAncestors(unowned.map((file) => file.path));
+        paths = [...paths, ...implicitDirectories].filter((path) => !retained.has(path));
+        const discarded = new Set(paths);
+        paths.push(...context.observed.runtimeArtifacts.filter((path) =>
+          unowned.length === 0 || [...relativePathAncestors([path])].some((parent) => discarded.has(parent))
+        ));
+      }
       return [{
         kind: "remove-resource",
         detail: {
           kind: "remove-resource",
           target: applied.target,
-          paths: sortedUnique(applied.ownedFiles.map((file) => file.path)),
+          paths: sortedUnique(paths),
           keys: [],
         },
       }];

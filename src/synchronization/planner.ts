@@ -547,6 +547,7 @@ const buildPlan = (
       : removed(target) ? { state: "absent" }
       : observed.state === "directory" ? { ...observed,
         files: observed.files.filter((file) => !removed(normalize(`${target}/${file.path}`))),
+        runtimeArtifacts: observed.runtimeArtifacts?.filter((path) => !removed(normalize(`${target}/${path}`))),
       } : observed;
     const context = {
       resource,

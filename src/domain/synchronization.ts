@@ -366,6 +366,8 @@ export type ObservedResourceState =
     readonly objectKind: "directory";
     readonly mode: number;
     readonly files: ReadonlyArray<ObservedDirectoryFile>;
+    /** Generated entries excluded from comparisons but available for cleanup. */
+    readonly runtimeArtifacts?: ReadonlyArray<string> | undefined;
   }
   | { readonly state: "tool"; readonly installedVersion?: string | undefined }
   | { readonly state: "credential" }
@@ -620,6 +622,7 @@ export const ObservedResourceStateSchema = Schema.Union([
     state: Schema.Literal("directory"),
     objectKind: Schema.Literal("directory"),
     mode: Schema.Int,
+    runtimeArtifacts: Schema.optional(Schema.Array(Schema.NonEmptyString)),
     files: Schema.Array(Schema.Union([
       Schema.Struct({
         path: Schema.NonEmptyString,
