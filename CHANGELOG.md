@@ -2,7 +2,7 @@
 
 Every Canonfig release, newest first. Each section is the GitHub release notes for that version.
 
-## Unreleased
+## v7.10.0 - 2026-11-28
 
 ### Windows
 
