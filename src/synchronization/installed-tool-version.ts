@@ -116,20 +116,36 @@ const compareDebian = (left: string, right: string): number | undefined => {
 };
 
 /**
- * Dot-separated numbers, as uv, winget and Homebrew report most releases.
- * Homebrew's `_<revision>` suffix counts as one more component. A missing
+ * Dot-separated numbers, as uv and winget report most releases. A missing
  * component is zero, so `1.2` equals `1.2.0`.
  */
 const compareNumericDotted = (left: string, right: string): number | undefined => {
-  const pattern = /^\d+(?:[._]\d+)*$/u;
+  const pattern = /^\d+(?:\.\d+)*$/u;
   if (!pattern.test(left) || !pattern.test(right)) return undefined;
-  const a = left.split(/[._]/u);
-  const b = right.split(/[._]/u);
+  const a = left.split(".");
+  const b = right.split(".");
   for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
     const order = compareDigits(a[index] ?? "0", b[index] ?? "0");
     if (order !== 0) return order;
   }
   return 0;
+};
+
+const homebrewVersion = /^(\d+(?:\.\d+)*)(?:_(\d+))?$/u;
+
+/**
+ * Homebrew versions carry an optional `_<revision>` formula revision after the
+ * upstream dotted version (for example `1.2_3`). Compare the upstream dotted
+ * version first and use the revision only to break ties so `1.2_3` stays below
+ * `1.2.1`.
+ */
+const compareHomebrew = (left: string, right: string): number | undefined => {
+  const a = homebrewVersion.exec(left);
+  const b = homebrewVersion.exec(right);
+  if (a === null || b === null) return undefined;
+  const upstream = compareNumericDotted(a[1]!, b[1]!);
+  if (upstream === undefined || upstream !== 0) return upstream;
+  return compareDigits(a[2] ?? "0", b[2] ?? "0");
 };
 
 /**
@@ -151,9 +167,10 @@ export const compareInstalledVersion = (method: string, installed: string, pinne
       return compareDebian(installed, pinned);
     case "uv":
     case "winget":
+      return compareNumericDotted(installed, pinned);
     case "brew":
     case "homebrew":
-      return compareNumericDotted(installed, pinned);
+      return compareHomebrew(installed, pinned);
     default:
       return undefined;
   }

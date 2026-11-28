@@ -147,6 +147,11 @@ describe("installed tool version listings", () => {
     ["winget", "14.1.1.0", "14.1.1", 0],
     ["winget", "2.0.0.1", "2.0.0", 1],
     ["brew", "14.1.1_1", "14.1.1", 1],
+    ["brew", "1.2_3", "1.2.1", -1],
+    ["brew", "1.2.1", "1.2_3", 1],
+    ["brew", "1.2_3", "1.2_1", 1],
+    ["brew", "1.2_0", "1.2", 0],
+    ["homebrew", "1.2.0_2", "1.2_1", 1],
     ["homebrew", "0.9.6", "0.9.7", -1],
   ])("orders dotted numeric %s versions: %s against %s", (method, installed, pinned, expected) => {
     expect(order(method, installed, pinned)).toBe(expected);
