@@ -67,7 +67,8 @@ approval before writing. it defaults to sharing skills, MCP servers, and global
 instructions across harnesses on one computer, or routes to Source/Follower
 setup for multiple machines. after setup, use the
 [operate](skills/operate-canonfig/SKILL.md) skill for edits, syncs, and
-recovery.
+recovery, or the [debug](skills/debug-canonfig/SKILL.md) skill to triage
+cross-machine issues into local fixes vs Canonfig bugs.
 
 ## browser interface
 
@@ -273,9 +274,10 @@ see [security and credentials](https://canonfig.micr.dev/docs/reference/security
 
 ## agent skills
 
-the [setup](skills/setup-canonfig/SKILL.md) and
-[operate](skills/operate-canonfig/SKILL.md) skills let an AI agent set up or
-operate canonfig for you. see [set up with an agent](#set-up-with-an-agent) to
+the [setup](skills/setup-canonfig/SKILL.md),
+[operate](skills/operate-canonfig/SKILL.md), and
+[debug](skills/debug-canonfig/SKILL.md) skills let an AI agent set up, operate,
+or debug canonfig for you. see [set up with an agent](#set-up-with-an-agent) to
 install them.
 
 ## development

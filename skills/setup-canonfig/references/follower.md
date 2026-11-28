@@ -28,7 +28,14 @@ Human Action Required instructions rather than downgrading storage.
 If `~/.canonfig/` already holds authoring files (`canonfig.jsonc`, `AGENTS.md`,
 `rules/`, `skills/`, `agents/`, `commands/`, `hooks/`), enrollment refuses
 until the user approves moving what they want to keep into `~/.canonfig/local/`
-or removing them.
+or removing them. Also check for pre-existing unmanaged skill directories in
+harness skill folders before first sync so they do not collide with projected
+skills.
+
+Before creating any `local/local.jsonc` overlay, keep `{ "fromSecret": ... }`
+or `{ "fromEnv": ... }` references instead of plaintext tokens, use native OS
+paths for this machine, and check that no duplicate manual reverse-tunnel unit
+already occupies the Source loopback port.
 
 ## 2. Connect and enroll
 

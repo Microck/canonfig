@@ -11,6 +11,9 @@ preserve local edits, pins, journals, and backups.
 For Source publishing, services, invitations, revocation, Follower schedules,
 tunnels, unenrollment, or Linux/macOS/Windows credential and scheduler
 boundaries, read [references/multi-machine.md](references/multi-machine.md).
+For systematic multi-machine debugging and A-vs-B triage (operator error vs
+Canonfig product bug), switch to
+[debug-canonfig](../debug-canonfig/SKILL.md).
 
 ## 1. Inspect
 
@@ -62,9 +65,16 @@ changed.
   `canonfig local mcp status`, `canonfig local mcp preserve [--harness <id>]`,
   `canonfig local mcp project [--harness <id>]`. Report preserved MCP maps
   separately from synced config; preservation does not make them match
-  `~/.canonfig/`.
+  `~/.canonfig/`. Audit `canonfig local mcp status` and `canonfig overlay list`
+  whenever expected MCPs are missing so forgotten `preserveMcp` locks, stale
+  `"enabled": false` overlays, or wrong-OS paths do not mask Source updates.
+- Back up `~/.canonfig/local/local.jsonc` before editing it. Keep
+  `{ "fromSecret": "..." }` or `{ "fromEnv": "..." }` references intact in
+  local MCP overlays and never embed plaintext tokens or API keys.
 - Keep specific skills local (requires `local.appendLocal` to include
-  `skills`): `canonfig local skills list|add <name>|remove <name>`.
+  `skills`): `canonfig local skills list|add <name>|remove <name>`. Keep
+  runtime artifacts (`__pycache__`, `*.pyc`, `.DS_Store`) and unmanaged skill
+  folders out of managed skill directories.
 - Hand a harness back to its pre-Canonfig state: `canonfig restore [snapshot]`.
   Restore writes the Takeover Snapshot back and excludes those harnesses here.
   It refuses before writing if a surface was edited after Canonfig last applied

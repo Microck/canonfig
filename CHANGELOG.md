@@ -4,6 +4,18 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
 
 ## Unreleased
 
+### Agent skills
+
+- Added the `debug-canonfig` skill (`skills/debug-canonfig/SKILL.md`) with a
+  Source-and-Follower inspection checklist and a Category A (operator/config) vs
+  Category B (Canonfig product bug) triage workflow covering `preserveMcp`
+  locks, stale overlays, credential references, non-portable tool recipes,
+  forced tool downgrades, skill directory drift, unauthenticated CLIs,
+  duplicate tunnels, and Windows Task Scheduler runs.
+- Updated `setup-canonfig` and `operate-canonfig` with upfront guardrails to
+  prevent those profile, overlay, tool-recipe, skill-drift, and Windows
+  scheduler mistakes.
+
 ### Automatic local sync
 
 - The Linux and macOS watcher now finds Codex and other harnesses in the
