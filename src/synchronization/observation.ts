@@ -182,7 +182,10 @@ const observeConfig = (
         Effect.succeed({
           state: "unverifiable",
           reason: `${decoded.resource.target} is not valid ${desired.format.toUpperCase()}: ${
-            configFailureDetail(desired.holdsSecrets, error instanceof Error ? error.message : String(error))
+            configFailureDetail(
+              desired.holdsSecrets === true || (applied?.ownership === "ConfigKeys" && applied.holdsSecrets === true),
+              error instanceof Error ? error.message : String(error),
+            )
           }`,
         } as const)
       ),

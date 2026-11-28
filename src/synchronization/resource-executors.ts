@@ -144,6 +144,7 @@ export interface ResourceExecutionContext {
   readonly verification: VerificationInput;
   readonly artifacts: ReadonlyMap<string, SynchronizationArtifact>;
   readonly limits: SynchronizationExecutionLimits;
+  readonly previouslyHeldSecrets?: boolean | undefined;
   readonly previousSchedule?: SyncSchedule | undefined;
   /**
    * The default is the bounded HTTPS artifact transport. This optional seam
@@ -1088,7 +1089,13 @@ const intendedStates = (
             single.path,
             before === undefined
               ? { state: "absent" }
-              : regularState(yield* configRemovalContent(desired, detail.target, detail.keys, before)),
+              : regularState(yield* configRemovalContent(
+                desired,
+                detail.target,
+                detail.keys,
+                before,
+                context.previouslyHeldSecrets,
+              )),
           );
           return intended;
         }
@@ -1412,13 +1419,17 @@ export const configRemovalContent = (
   target: string,
   keys: ReadonlyArray<string>,
   currentBytes: Uint8Array,
+  previouslyHeldSecrets?: boolean,
 ): Effect.Effect<Uint8Array, SynchronizationExecutionInputError> =>
   Effect.try({
     try: () => encoder.encode(editConfigText(config.format, decoder.decode(currentBytes), { removes: keys, sets: [] })),
     catch: (error) =>
       new InvalidExecutionPlanError({
         message: `cannot remove keys from config ${target}: ${
-          configFailureDetail(config.holdsSecrets, error instanceof Error ? error.message : String(error))
+          configFailureDetail(
+            config.holdsSecrets === true || previouslyHeldSecrets === true,
+            error instanceof Error ? error.message : String(error),
+          )
         }. The file was left unchanged.`,
       }),
   });
@@ -1476,7 +1487,10 @@ export const configMergeContent = (
       catch: (error) =>
         new InvalidExecutionPlanError({
           message: `cannot merge config ${target}: ${
-            configFailureDetail(config.holdsSecrets, error instanceof Error ? error.message : String(error))
+            configFailureDetail(
+              config.holdsSecrets === true || context.previouslyHeldSecrets === true,
+              error instanceof Error ? error.message : String(error),
+            )
           }. The file was left unchanged.`,
         }),
     });
@@ -1742,7 +1756,13 @@ const prepareRemoval = (
             anchor,
           );
           if (currentBytes === undefined) return;
-          const content = yield* configRemovalContent(config, detail.target, detail.keys, currentBytes);
+          const content = yield* configRemovalContent(
+            config,
+            detail.target,
+            detail.keys,
+            currentBytes,
+            context.previouslyHeldSecrets,
+          );
           const machine = yield* MachineState;
           yield* machine.atomicWrite({ path, content, anchor, createAnchoredParents: anchor !== undefined });
         });
@@ -3204,7 +3224,7 @@ const verifyConfig = (
       catch: (error) =>
         new InvalidExecutionPlanError({
           message: `cannot verify non-object config ${context.resource.target}: ${
-            configFailureDetail(holdsSecrets, String(error))
+            configFailureDetail(holdsSecrets || context.previouslyHeldSecrets === true, String(error))
           }`,
         }),
     });

@@ -159,6 +159,16 @@ it.runIf(process.platform === "linux")("materializes fromSecret config resources
     await source.runPromise(storeSecret("gitquarry", "synthetic-gitquarry-value"));
     expect(JSON.stringify(await sync("apply"))).toContain("Converged");
     expect(parseToml(readFileSync(join(followerHome, ".config", "gitquarry", "credentials.toml"), "utf8"))).toEqual({ token: "synthetic-gitquarry-value" });
+
+    // Removing the last fromSecret key keeps parser diagnostics redacted while the prior secret stays on disk.
+    await profile({
+      parallel: { kind: "config", target: "~/.config/parallel/auth.yaml", format: "yaml", keys: { mode: "plain" } },
+    });
+    await publish();
+    await writeFile(parallel, `token: ${values.parallel}\n  broken: [\n`);
+    const redactedPlan = await sync("plan");
+    expect(JSON.stringify(redactedPlan)).toContain("details are withheld because the file holds shared secrets");
+    expect(leaks(JSON.stringify(redactedPlan))).toEqual([]);
   } finally {
     await closeSource?.();
     await follower.dispose();

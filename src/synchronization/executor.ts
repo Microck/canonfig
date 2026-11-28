@@ -286,6 +286,10 @@ export const executionContexts = (
       entry.digest,
       entry,
     ]));
+    const appliedByResource = new Map((input.appliedResources ?? []).map((entry) => [
+      entry.resource,
+      entry,
+    ]));
     const seen = new Set<string>();
     const completed = new Set<string>();
     const ordered: Array<ActionState> = [];
@@ -339,6 +343,7 @@ export const executionContexts = (
       }
       seen.add(action.id);
       completed.add(action.id);
+      const priorApplied = appliedByResource.get(action.resource);
       ordered.push({
         action,
         context: {
@@ -349,6 +354,9 @@ export const executionContexts = (
           verification: desiredEntry.verification,
           artifacts,
           limits,
+          previouslyHeldSecrets: priorApplied?.ownership === "ConfigKeys" && priorApplied.holdsSecrets === true
+            ? true
+            : undefined,
         },
       });
     }
