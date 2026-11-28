@@ -157,38 +157,42 @@ const droppedFromSecretFields = (
   return dropped.length === 0 ? undefined : { kind, fields: dropped };
 };
 
-const hasInstallableRecipe = (tool: FolderTool | undefined): boolean =>
-  tool !== undefined && (tool.recipes.length > 0 || tool.agentInstall !== undefined);
+const hasInstallableRecipe = (tool: FolderTool | undefined, platform: Platform): boolean =>
+  tool !== undefined
+  && (tool.recipes.some((recipe) => recipe.platform === platform) || tool.agentInstall !== undefined);
 
 const isBackedByToolsRecipe = (
   command: string,
   requires: ReadonlyArray<string> | undefined,
   tools: Readonly<Record<string, FolderTool>>,
+  platform: Platform,
 ): boolean => {
   for (const reference of requires ?? []) {
     if (!reference.startsWith("tools/")) continue;
-    if (hasInstallableRecipe(tools[reference.slice("tools/".length)])) return true;
+    if (hasInstallableRecipe(tools[reference.slice("tools/".length)], platform)) return true;
   }
-  return Object.values(tools).some((tool) => tool.executable === command && hasInstallableRecipe(tool));
+  return Object.values(tools).some((tool) => tool.executable === command && hasInstallableRecipe(tool, platform));
 };
 
-const localExecutablePathExists = async (
-  command: string,
+const expandHomePath = (value: string, context: RootContext): string => {
+  const paths = pathsFor(context.platform);
+  if (value === "~") return context.home;
+  if (value.startsWith("~/") || (context.platform === "windows" && value.startsWith("~\\"))) {
+    return paths.join(context.home, value.slice(2));
+  }
+  return value;
+};
+
+const runnablePathExists = async (
+  candidate: string,
   context: RootContext,
 ): Promise<boolean> => {
-  const paths = pathsFor(context.platform);
-  const expanded = command === "~"
-    ? context.home
-    : command.startsWith("~/") || (context.platform === "windows" && command.startsWith("~\\"))
-    ? paths.join(context.home, command.slice(2))
-    : command;
-
-  const isRunnableFile = async (candidate: string): Promise<boolean> => {
+  const isRunnableFile = async (target: string): Promise<boolean> => {
     try {
-      const info = await stat(candidate);
+      const info = await stat(target);
       if (!info.isFile()) return false;
       if (context.platform !== "windows") {
-        await access(candidate, filesystemConstants.X_OK);
+        await access(target, filesystemConstants.X_OK);
       }
       return true;
     } catch {
@@ -196,15 +200,60 @@ const localExecutablePathExists = async (
     }
   };
 
-  if (await isRunnableFile(expanded)) return true;
-  if (context.platform === "windows" && win32.extname(expanded).length === 0) {
+  if (await isRunnableFile(candidate)) return true;
+  if (context.platform === "windows" && win32.extname(candidate).length === 0) {
     const extensions = (context.environment("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD")
       .split(";")
       .filter((extension) => extension.length > 0);
     for (const extension of extensions) {
-      if (await isRunnableFile(`${expanded}${extension.toLowerCase()}`)) return true;
-      if (await isRunnableFile(`${expanded}${extension.toUpperCase()}`)) return true;
+      if (await isRunnableFile(`${candidate}${extension.toLowerCase()}`)) return true;
+      if (await isRunnableFile(`${candidate}${extension.toUpperCase()}`)) return true;
     }
+  }
+  return false;
+};
+
+const localExecutablePathExists = async (
+  command: string,
+  context: RootContext,
+  cwd?: string,
+): Promise<boolean> => {
+  const paths = pathsFor(context.platform);
+  let expanded = expandHomePath(command, context);
+  if (!paths.isAbsolute(expanded) && cwd !== undefined) {
+    const trimmedCwd = cwd.trim();
+    if (trimmedCwd.length > 0) {
+      if (ENV_TEMPLATE.test(trimmedCwd)) return true;
+      if (foreignOsPath(trimmedCwd, context.platform) !== undefined) return false;
+      expanded = paths.resolve(expandHomePath(trimmedCwd, context), expanded);
+    }
+  }
+  return runnablePathExists(expanded, context);
+};
+
+const serverEnvPathOverride = (
+  env: Readonly<Record<string, SecretValue>> | undefined,
+  platform: Platform,
+): string | undefined => {
+  if (env === undefined) return undefined;
+  const entry = platform === "windows"
+    ? Object.entries(env).find(([key]) => key.toLowerCase() === "path")?.[1]
+    : env.PATH;
+  return Predicate.isString(entry) ? entry : undefined;
+};
+
+const bareCommandExistsOnPath = async (
+  command: string,
+  pathValue: string,
+  context: RootContext,
+): Promise<boolean> => {
+  const paths = pathsFor(context.platform);
+  const separator = context.platform === "windows" ? ";" : ":";
+  for (const rawEntry of pathValue.split(separator)) {
+    const entry = rawEntry.trim();
+    if (entry.length === 0 || ENV_TEMPLATE.test(entry)) continue;
+    const directory = expandHomePath(entry, context);
+    if (await runnablePathExists(paths.join(directory, command), context)) return true;
   }
   return false;
 };
@@ -330,7 +379,9 @@ export const diagnoseMcpConfiguration = Effect.fn("Projection.diagnoseMcpConfigu
     const hasPathSeparator = command.includes("/") || command.includes("\\");
     if (hasPathSeparator) {
       const foreign = foreignOsPath(command, context.platform) !== undefined;
-      const exists = foreign ? false : yield* Effect.promise(() => localExecutablePathExists(command, context));
+      const exists = foreign
+        ? false
+        : yield* Effect.promise(() => localExecutablePathExists(command, context, server.cwd));
       if (!exists) {
         diagnostics.push({
           level: "warning",
@@ -341,11 +392,19 @@ export const diagnoseMcpConfiguration = Effect.fn("Projection.diagnoseMcpConfigu
       continue;
     }
 
-    const foundOnPath = yield* machine.findExecutable({ name: command }).pipe(
-      Effect.as(true),
-      Effect.catch(() => Effect.succeed(false)),
-    );
-    if (!foundOnPath && !isBackedByToolsRecipe(command, server.requires, input.tools)) {
+    const customPath = serverEnvPathOverride(server.env, context.platform);
+    const foundOnPath = customPath !== undefined && !ENV_TEMPLATE.test(customPath)
+      ? yield* Effect.promise(() => bareCommandExistsOnPath(command, customPath, context))
+      : yield* Effect.gen(function*() {
+        if (customPath !== undefined && (yield* Effect.promise(() => bareCommandExistsOnPath(command, customPath, context)))) {
+          return true;
+        }
+        return yield* machine.findExecutable({ name: command }).pipe(
+          Effect.as(true),
+          Effect.catch(() => Effect.succeed(false)),
+        );
+      });
+    if (!foundOnPath && !isBackedByToolsRecipe(command, server.requires, input.tools, context.platform)) {
       diagnostics.push({
         level: "warning",
         code: "MCP_COMMAND_MISSING",

@@ -330,6 +330,55 @@ describe("MCP configuration diagnostics", () => {
       expect(messages).not.toContain(clean);
     }
   });
+
+  it("respects stdio cwd, server.env.PATH, and platform-applicable tool recipes", async () => {
+    const home = tempHome();
+    const projectDir = join(home, "mcp-project");
+    const customPathBin = join(home, "custom-env-bin");
+    const machinePathBin = join(home, "machine-bin");
+    write(join(projectDir, "bin", "server"), "#!/bin/sh\nexit 0\n", 0o755);
+    write(join(customPathBin, "env-only-mcp"), "#!/bin/sh\nexit 0\n", 0o755);
+    write(join(machinePathBin, "machine-only-mcp"), "#!/bin/sh\nexit 0\n", 0o755);
+
+    const tools = {
+      macosOnly: {
+        executable: "macos-only-mcp",
+        recipes: [{ platform: "macos", method: "brew", package: "macos-only-mcp", version: "1.0.0" }],
+      },
+      linuxTool: {
+        executable: "linux-only-mcp",
+        recipes: [{ platform: "linux", method: "apt", package: "linux-only-mcp", version: "1.0.0" }],
+      },
+    } satisfies Record<string, FolderTool>;
+
+    const diagnostics = await runDiagnostics({
+      tools,
+      effectiveMcp: [
+        // Relative command resolved against cwd: exists -> clean; missing -> warns
+        ["goodRelCwd", { transport: "stdio", command: "./bin/server", cwd: projectDir, args: [], env: {} }],
+        ["badRelCwd", { transport: "stdio", command: "./bin/missing", cwd: projectDir, args: [], env: {} }],
+        // Bare command checked against server.env.PATH override
+        ["goodEnvPath", { transport: "stdio", command: "env-only-mcp", args: [], env: { PATH: customPathBin } }],
+        ["badEnvPath", { transport: "stdio", command: "machine-only-mcp", args: [], env: { PATH: customPathBin } }],
+        // Foreign-platform recipe must NOT suppress warning on linux, whereas linux recipe does
+        ["otherOsRecipe", { transport: "stdio", command: "macos-only-mcp", args: [], env: {}, requires: ["tools/macosOnly"] }],
+        ["thisOsRecipe", { transport: "stdio", command: "linux-only-mcp", args: [], env: {}, requires: ["tools/linuxTool"] }],
+      ],
+    }, home, "linux", [machinePathBin]);
+
+    expect(diagnostics.map((entry) => entry.code)).toEqual([
+      "MCP_COMMAND_MISSING",
+      "MCP_COMMAND_MISSING",
+      "MCP_COMMAND_MISSING",
+    ]);
+    const messages = diagnostics.map((entry) => entry.message).join("\n");
+    expect(messages).toContain("badRelCwd");
+    expect(messages).toContain("badEnvPath");
+    expect(messages).toContain("otherOsRecipe");
+    for (const clean of ["goodRelCwd", "goodEnvPath", "thisOsRecipe"]) {
+      expect(messages).not.toContain(clean);
+    }
+  });
 });
 
 describe("end-to-end sync --plan and doctor MCP diagnostics", () => {
@@ -345,6 +394,7 @@ describe("end-to-end sync --plan and doctor MCP diagnostics", () => {
     const folder = join(home, ".canonfig");
     const bin = join(root, "bin");
     write(join(bin, adapterFor("codex").descriptor.executables[0]!), "#!/bin/sh\nexit 0\n", 0o755);
+    write(join(bin, "npm"), "#!/bin/sh\nexit 0\n", 0o755);
     for (const name of options.binaries ?? []) {
       write(join(bin, name), "#!/bin/sh\nexit 0\n", 0o755);
     }
@@ -453,17 +503,21 @@ describe("end-to-end sync --plan and doctor MCP diagnostics", () => {
     expect(probe).toMatchObject({
       name: "mcp-config",
       status: "warning",
-      details: expect.objectContaining({
-        MCP_PRESERVE_ACTIVE: expect.stringContaining("codex"),
-        MCP_OVERLAY_DISABLED: expect.stringContaining("apify"),
-        MCP_OVERLAY_WRONG_OS_PATH: expect.stringContaining("C:\\Users\\alice\\apify.exe"),
-        MCP_OVERLAY_DROPPED_SECRET: expect.stringContaining("composio"),
-        MCP_OVERLAY_PLAINTEXT_SECRET: expect.stringContaining("headers.Authorization"),
-      }),
     });
+    const detailValues = Object.values(probe?.details ?? {}).map(String);
+    expect(detailValues).toEqual(expect.arrayContaining([
+      expect.stringContaining("[MCP_PRESERVE_ACTIVE]"),
+      expect.stringContaining("[MCP_OVERLAY_DISABLED]"),
+      expect.stringContaining("[MCP_OVERLAY_WRONG_OS_PATH]"),
+      expect.stringContaining("[MCP_OVERLAY_DROPPED_SECRET]"),
+      expect.stringContaining("[MCP_OVERLAY_PLAINTEXT_SECRET]"),
+      expect.stringContaining("[MCP_COMMAND_MISSING]"),
+    ]));
+    expect(detailValues.join("\n")).toContain("composio");
+    expect(detailValues.join("\n")).toContain("headers.Authorization");
     expect(JSON.stringify(report)).not.toContain(leakedToken);
 
-    // CLI doctor exits 0 (degraded, not unhealthy) and never prints the secret in human or JSON output.
+    // CLI doctor exits 0 (degraded, not unhealthy), keeps warning messages readable, and never prints the secret.
     for (const args of [["doctor", "--json", "--no-input", "--timeout-ms", "5000"], ["doctor", "--no-input", "--timeout-ms", "5000"]]) {
       const cli = spawnSync(
         process.execPath,
@@ -479,6 +533,7 @@ describe("end-to-end sync --plan and doctor MCP diagnostics", () => {
       const combined = `${cli.stdout}\n${cli.stderr}`;
       expect(combined).toContain("mcp-config");
       expect(combined).toContain("MCP_PRESERVE_ACTIVE");
+      expect(combined).toContain("composio");
       expect(combined).not.toContain(leakedToken);
     }
   }, 60_000);

@@ -705,17 +705,13 @@ const mcpConfigProbe = (
     if (diagnostics.length === 0) {
       return pass("mcp-config", "no MCP overlay, preservation, or command issues found", { warnings: 0 });
     }
-    const counts = new Map<string, number>();
-    for (const diagnostic of diagnostics) counts.set(diagnostic.code, (counts.get(diagnostic.code) ?? 0) + 1);
-    const seen = new Map<string, number>();
+    // Use neutral detail keys (`warning.1`, ...) so JSON output redaction for
+    // secret-named keys never obscures MCP_OVERLAY_*_SECRET warning messages.
     const details = Object.fromEntries(
-      diagnostics.map((diagnostic) => {
-        const total = counts.get(diagnostic.code) ?? 1;
-        const index = (seen.get(diagnostic.code) ?? 0) + 1;
-        seen.set(diagnostic.code, index);
-        const key = total > 1 ? `${diagnostic.code}.${index}` : diagnostic.code;
-        return [key, `${warningDetailPrefix}${diagnostic.message}`];
-      }),
+      diagnostics.map((diagnostic, position) => [
+        `warning.${position + 1}`,
+        `${warningDetailPrefix}[${diagnostic.code}] ${diagnostic.message}`,
+      ]),
     );
     const codes = [...new Set(diagnostics.map((diagnostic) => diagnostic.code))];
     const message = `${diagnostics.length} MCP configuration warning${diagnostics.length === 1 ? "" : "s"} (${codes.join(", ")})`;
