@@ -12,9 +12,10 @@ import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 
 import { describe, expect, it } from "vitest";
-import { Cause, Effect, Layer, Redacted } from "effect";
+import { Cause, Effect, Fiber, Layer, Redacted } from "effect";
 import { openAnchoredDirectory } from "../src/machine/anchored-directory.ts";
 import { MachineState } from "../src/machine/machine-state.service.ts";
+import { makeWindowsAclWorker, windowsAclWorkerModules, windowsAclWorkerScript } from "../src/machine/windows-acl-worker.ts";
 import { windowsCredentialAssemblyScript, windowsCredentialNativeSource, windowsPowerShellExecutable } from "../src/machine/windows-credentials.ts";
 import { ActionId, ResourceId, RunId, resourcesOwner, surfaceResourceId } from "../src/domain/brand.ts";
 import { CredentialStorageError } from "../src/machine/machine-state.errors.ts";
@@ -728,6 +729,53 @@ describe.skipIf(process.platform !== "win32")("Windows file permission ownership
       await rm(root, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it("restores exact permissions on paths with quotes, dollars and Unicode through one worker", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-acl-worker-"));
+    const targets = [
+      { path: join(root, "it's $HOME & [x] (1).txt"), directory: false },
+      { path: join(root, "ünïcødé 🙂 spaced.txt"), directory: false },
+      { path: join(root, "dir $(whoami) ü"), directory: true },
+    ];
+    const layer = windowsMachineStateLayer({
+      environment: [
+        ...Object.entries(process.env).flatMap(([name, value]) =>
+          value === undefined || name.toUpperCase() === "LOCALAPPDATA" ? [] : [{ name, value }]
+        ),
+        { name: "LOCALAPPDATA", value: join(root, "cache") },
+      ],
+    });
+    try {
+      for (const target of targets) {
+        if (target.directory) await mkdir(target.path);
+        else await writeFile(target.path, "content");
+      }
+      const originals = await Promise.all(targets.map(({ path }) => inspectAcl(path)));
+      const snapshots = await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const captured = [];
+        for (const target of targets) {
+          const path = yield* machine.normalizePath({ path: target.path });
+          captured.push(yield* machine.snapshotPermissions(path));
+          yield* machine.setPermissions({ path, mode: 0o700 });
+        }
+        return captured;
+      }).pipe(Effect.provide(layer)));
+      for (const [index, target] of targets.entries()) {
+        expect(await inspectAcl(target.path)).not.toBe(originals[index]);
+      }
+      await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        for (const [index, target] of targets.entries()) {
+          const path = yield* machine.normalizePath({ path: target.path });
+          yield* machine.setPermissions({ path, permissions: snapshots[index]! });
+        }
+      }).pipe(Effect.provide(layer)));
+      expect(await Promise.all(targets.map(({ path }) => inspectAcl(path)))).toEqual(originals);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 describe.skipIf(process.platform !== "win32")("Windows native skill import boundaries", () => {
@@ -894,6 +942,17 @@ describe("Windows long path limit", () => {
 });
 
 describe("Windows ACL command rendering", () => {
+  // Command discovery without PSModulePath stalled the worker's first cmdlet
+  // for 45s or more on hosted Windows runners, longer than a whole run takes.
+  it("imports every module the ACL worker uses before its first cmdlet", () => {
+    const lines = windowsAclWorkerScript("C:\\cache\\helper.dll").split("\n");
+    const cmdlets = (text: string) => [...text.matchAll(/\b[A-Z][A-Za-z]+-[A-Z][A-Za-z]+\b/gu)].map(([name]) => name);
+    const firstCmdletLine = lines.findIndex((line) => cmdlets(line).length > 0);
+    expect(lines[firstCmdletLine]).toBe("Import-Module Microsoft.PowerShell.Utility,Microsoft.PowerShell.Management");
+    expect(new Set(cmdlets(lines.slice(firstCmdletLine + 1).join("\n"))))
+      .toEqual(new Set(Object.values(windowsAclWorkerModules).flat()));
+  });
+
   it("renders shell-free current-user-only ACL arguments", () => {
     expect(windowsPrivateAclArguments(
       "C:\\Users\\operator\\secret & echo exposed",
@@ -939,6 +998,195 @@ describe("Windows ACL command rendering", () => {
       { name: "COMPUTERNAME", value: "WORKSTATION" },
     ], "C:\\Users\\operator")).toBe("MICR\\operator");
   });
+});
+
+// A real process stands in for powershell.exe: it speaks the worker's JSON
+// line protocol, logs every start, request and exit, never answers a path
+// containing "hang", and rejects a path containing "denied".
+describe.skipIf(process.platform === "win32")("Windows ACL worker protocol", () => {
+  type LogEntry =
+    | { readonly start: number; readonly argv: ReadonlyArray<string> }
+    | { readonly request: { readonly id: number; readonly op: string; readonly path: string; readonly directory: boolean; readonly descriptor?: string } }
+    | { readonly exit: number };
+
+  const fakeWorker = async (root: string) => {
+    const log = join(root, "worker.log");
+    const program = join(root, "fake-worker.mjs");
+    const executable = join(root, "powershell");
+    await writeFile(program, `
+      import { appendFileSync } from "node:fs";
+      import { createInterface } from "node:readline";
+      const log = (entry) => appendFileSync(process.env.CANONFIG_TEST_ACL_LOG, JSON.stringify(entry) + "\\n");
+      log({ start: process.pid, argv: process.argv.slice(2) });
+      for await (const line of createInterface({ input: process.stdin })) {
+        const request = JSON.parse(line);
+        log({ request });
+        if (request.path.includes("hang")) continue;
+        const reply = request.path.includes("denied")
+          ? { id: request.id, ok: false, error: "Access to the path is denied." }
+          : { id: request.id, ok: true, descriptor: request.descriptor ?? "O:BAG:BAD:P(A;;FA;;;BA)" };
+        process.stdout.write(JSON.stringify(reply) + "\\n");
+      }
+      log({ exit: process.pid });
+    `);
+    await writeFile(executable, `#!/bin/sh\nexec '${process.execPath}' '${program}' "$@"\n`, { mode: 0o755 });
+    // SAFETY: Only the fake worker above writes this log, one LogEntry per line.
+    const entries = async (): Promise<ReadonlyArray<LogEntry>> =>
+      existsSync(log)
+        ? (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as LogEntry)
+        : [];
+    return {
+      executable,
+      entries,
+      starts: async () => (await entries()).flatMap((entry) => "start" in entry ? [entry] : []),
+      requests: async () => (await entries()).flatMap((entry) => "request" in entry ? [entry.request] : []),
+      environment: [
+        ...environment(root),
+        { name: "CANONFIG_POWERSHELL", value: executable },
+        { name: "CANONFIG_TEST_ACL_LOG", value: log },
+      ],
+    };
+  };
+
+  const running = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  it("snapshots and restores every path of a run through one worker and stops it with the run", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-acl-protocol-"));
+    try {
+      const worker = await fakeWorker(root);
+      const targets = [
+        { path: join(root, "it's $HOME & \"quoted\" (1).txt"), directory: false },
+        { path: join(root, "ünïcødé 🙂 spaced`$(whoami).txt"), directory: false },
+        { path: join(root, "dir; Remove-Item -Recurse C:\\"), directory: true },
+      ];
+      for (const target of targets) {
+        if (target.directory) await mkdir(target.path);
+        else await writeFile(target.path, "content");
+      }
+      await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const snapshots = [];
+        for (const target of targets) {
+          snapshots.push(yield* machine.snapshotPermissions({ platform: "windows", absolute: target.path }));
+        }
+        for (const [index, target] of targets.entries()) {
+          yield* machine.setPermissions({ path: { platform: "windows", absolute: target.path }, permissions: snapshots[index]! });
+        }
+        expect(snapshots.map((snapshot) => snapshot.platform === "windows" && snapshot.securityDescriptor))
+          .toEqual(targets.map(() => "O:BAG:BAD:P(A;;FA;;;BA)"));
+      }).pipe(Effect.provide(windowsMachineStateLayer({ environment: worker.environment }))));
+
+      const starts = await worker.starts();
+      expect(starts).toHaveLength(1);
+      // Paths travel only as JSON data on standard input, never in the script.
+      const [script] = starts[0]!.argv.slice(4);
+      expect(starts[0]!.argv.slice(0, 4)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
+      for (const target of targets) expect(script).not.toContain(target.path);
+      expect((await worker.requests()).map(({ op, path, directory, descriptor }) => ({ op, path, directory, descriptor })))
+        .toEqual([
+          ...targets.map(({ path, directory }) => ({ op: "snapshot", path, directory, descriptor: undefined })),
+          ...targets.map(({ path, directory }) => ({ op: "restore", path, directory, descriptor: "O:BAG:BAD:P(A;;FA;;;BA)" })),
+        ]);
+      // Closing the layer closed the worker's input and waited for it to exit.
+      expect(await worker.entries()).toContainEqual({ exit: starts[0]!.start });
+      expect(running(starts[0]!.start)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a denied path, keeps the worker for the next path and stops it when the run fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-acl-reject-"));
+    try {
+      const worker = await fakeWorker(root);
+      const denied = join(root, "denied.txt");
+      const allowed = join(root, "allowed.txt");
+      await writeFile(denied, "content");
+      await writeFile(allowed, "content");
+      const errors = await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        const capture = yield* machine.snapshotPermissions({ platform: "windows", absolute: denied }).pipe(Effect.flip);
+        const snapshot = yield* machine.snapshotPermissions({ platform: "windows", absolute: allowed });
+        const restore = yield* machine.setPermissions({
+          path: { platform: "windows", absolute: denied }, permissions: snapshot,
+        }).pipe(Effect.flip);
+        return yield* Effect.fail({ capture, restore });
+      }).pipe(
+        Effect.provide(windowsMachineStateLayer({ environment: worker.environment })),
+        Effect.flip,
+      ));
+      expect(errors.capture).toMatchObject({
+        _tag: "MachineFilesystemError", operation: "capture Windows permissions", path: denied,
+        message: "Access to the path is denied.",
+      });
+      expect(errors.restore).toMatchObject({
+        _tag: "MachineFilesystemError", operation: "restore Windows permissions", path: denied,
+        message: "Access to the path is denied.",
+      });
+      const starts = await worker.starts();
+      expect(starts).toHaveLength(1);
+      expect(await worker.requests()).toHaveLength(3);
+      expect(running(starts[0]!.start)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a worker that cannot start as a process start failure", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-acl-missing-"));
+    try {
+      const target = join(root, "managed.txt");
+      await writeFile(target, "content");
+      const error = await Effect.runPromise(Effect.gen(function*() {
+        const machine = yield* MachineState;
+        return yield* machine.snapshotPermissions({ platform: "windows", absolute: target }).pipe(Effect.flip);
+      }).pipe(Effect.provide(windowsMachineStateLayer({
+        environment: [...environment(root), { name: "CANONFIG_POWERSHELL", value: join(root, "missing-powershell") }],
+      }))));
+      expect(error).toMatchObject({ _tag: "ProcessStartError", executable: join(root, "missing-powershell") });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("stops a worker that times out or is interrupted and starts a fresh one for the next path", async () => {
+    const root = await mkdtemp(join(tmpdir(), "canonfig-acl-stuck-"));
+    try {
+      const worker = await fakeWorker(root);
+      const environmentObject = Object.fromEntries(worker.environment.map(({ name, value }) => [name, value]));
+      const outcome = await Effect.runPromise(Effect.scoped(Effect.gen(function*() {
+        const acl = yield* makeWindowsAclWorker({
+          executable: worker.executable,
+          arguments: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "worker"],
+          environment: environmentObject,
+          timeoutMilliseconds: 500,
+        });
+        const timedOut = yield* acl.request({ op: "snapshot", path: "C:\\hang-timeout", directory: false }).pipe(Effect.flip);
+        const interrupted = yield* Effect.forkChild(acl.request({ op: "snapshot", path: "C:\\hang-interrupt", directory: false }));
+        // Interrupt only once the second worker holds the request.
+        while (!(yield* Effect.promise(worker.requests)).some(({ path }) => path === "C:\\hang-interrupt")) {
+          yield* Effect.sleep("20 millis");
+        }
+        yield* Fiber.interrupt(interrupted);
+        const after = yield* acl.request({ op: "snapshot", path: "C:\\after", directory: false });
+        return { timedOut, after, startsBeforeClose: yield* Effect.promise(worker.starts) };
+      })));
+      expect(outcome.timedOut).toMatchObject({ _tag: "ProcessTimeoutError", timeoutMilliseconds: 500 });
+      expect(outcome.after).toEqual({ ok: true, descriptor: "O:BAG:BAD:P(A;;FA;;;BA)" });
+      // One worker per stuck request plus the one that answered last.
+      expect(outcome.startsBeforeClose).toHaveLength(3);
+      for (const { start } of outcome.startsBeforeClose) expect(running(start)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
 
 describe.skipIf(process.platform !== "win32")("Windows Credential Manager generation lifetime", () => {

@@ -40,6 +40,12 @@ import {
 import { MachineState } from "./machine-state.service.ts";
 import { windowsCredentialScript, windowsCredentialTimeoutMilliseconds, windowsPowerShellExecutable } from "./windows-credentials.ts";
 import { relocateFileContent, writeFileContent } from "./file-content.ts";
+import {
+  makeWindowsAclWorker,
+  powershellLiteral,
+  windowsAclWorkerScript,
+  windowsPermissionRestoreAssemblyName,
+} from "./windows-acl-worker.ts";
 import { holdAnchoredWindowsEntry, openAnchoredDirectory, sameIdentity } from "./anchored-directory.ts";
 import { linuxMachineStateLayer } from "./linux.layer.ts";
 import { installDestinationDirectories } from "./install-destinations.ts";
@@ -260,93 +266,13 @@ const validateSingleLine = (
       message: `${field} must be non-empty, single-line, and contain no NUL bytes`,
     }));
 
-const powershellLiteral = (value: string): string =>
-  `'${value.replaceAll("'", "''")}'`;
-
-// Native permission snapshots and restores start a fresh PowerShell process.
-// The first restore can also compile its helper with csc.exe. These bounds
-// catch hung processes rather than tracking normal startup time: antimalware
-// and guest I/O contention can make even a plain ACL read exceed 10 seconds.
-// Scheduler PowerShell scripts use the same 60-second bound.
+// Native permission snapshots and restores share one PowerShell worker per
+// layer. The first request also starts it and the first restore can compile
+// its helper with csc.exe. This bound catches a hung worker rather than
+// tracking normal startup time: antimalware and guest I/O contention can make
+// even a plain ACL read exceed 10 seconds. Scheduler PowerShell scripts use
+// the same 60-second bound.
 const nativePermissionTimeoutMilliseconds = 60_000;
-
-// Windows PowerShell uses the .NET Framework static ACL methods; PowerShell
-// Core exposes the same operations through FileSystemAclExtensions.
-const readWindowsAcl = (nativeType: "File" | "Directory"): ReadonlyArray<string> => [
-  `$item=[IO.${nativeType}Info]::new($path)`,
-  `$acl=if($PSVersionTable.PSEdition -eq 'Core'){[IO.FileSystemAclExtensions]::GetAccessControl($item,$sections)}else{[IO.${nativeType}]::GetAccessControl($path,$sections)}`,
-];
-
-// Set native security directly: SetAccessControl recalculates inheritance from
-// the temporary guard parent and propagates changes to children. BackupWrite
-// also reassigns an unchanged owner, which can require restore privileges.
-// Keep the full descriptor but request owner/group assignment only when changed.
-const nativePermissionRestore = `
-using System;
-using System.ComponentModel;
-using System.Security.AccessControl;
-using System.Runtime.InteropServices;
-using Microsoft.Win32.SafeHandles;
-public static class CanonfigPermissionRestore {
-  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-  static extern SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
-  [DllImport("kernel32.dll", SetLastError=true)]
-  static extern SafeFileHandle ReOpenFile(SafeFileHandle file, uint access, uint share, uint flags);
-  [DllImport("advapi32.dll", SetLastError=true)]
-  static extern bool GetKernelObjectSecurity(SafeFileHandle file, uint information, byte[] descriptor, uint length, out uint needed);
-  [DllImport("ntdll.dll")]
-  static extern int NtSetSecurityObject(SafeFileHandle file, uint information, byte[] descriptor);
-  [DllImport("ntdll.dll")]
-  static extern uint RtlNtStatusToDosError(int status);
-  public static void Restore(string path, byte[] descriptor) {
-    // READ_CONTROL | WRITE_DAC does not request content access or WRITE_OWNER.
-    // No privileges are enabled. Share read/write/delete; OPEN_EXISTING;
-    // BACKUP_SEMANTICS (directories) | OPEN_REPARSE_POINT.
-    using (var handle = CreateFileW(path, 0x00060000, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
-      if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
-      uint needed;
-      if (!GetKernelObjectSecurity(handle, 3, null, 0, out needed) && Marshal.GetLastWin32Error() != 122)
-        throw new Win32Exception(Marshal.GetLastWin32Error());
-      var currentBytes = new byte[needed];
-      if (!GetKernelObjectSecurity(handle, 3, currentBytes, needed, out needed))
-        throw new Win32Exception(Marshal.GetLastWin32Error());
-      var current = new RawSecurityDescriptor(currentBytes, 0);
-      var expected = new RawSecurityDescriptor(descriptor, 0);
-      // NtSetSecurityObject retains AUTO_INHERITED only when inheritance is
-      // explicitly requested. Unlike SetAccessControl, it does not walk children.
-      if ((expected.ControlFlags & ControlFlags.DiscretionaryAclAutoInherited) != 0) {
-        expected.SetFlags(expected.ControlFlags | ControlFlags.DiscretionaryAclAutoInheritRequired);
-        expected.GetBinaryForm(descriptor, 0);
-      }
-      // Protection is an update flag, not inferred from the supplied descriptor.
-      uint information = 4 | ((expected.ControlFlags & ControlFlags.DiscretionaryAclProtected) != 0
-        ? 0x80000000u : 0x20000000u); // DACL | PROTECTED_DACL or UNPROTECTED_DACL.
-      if (!Object.Equals(current.Owner, expected.Owner)) information |= 1;
-      if (!Object.Equals(current.Group, expected.Group)) information |= 2;
-      SafeFileHandle ownerHandle = null;
-      try {
-        if ((information & 3) != 0) {
-          // Reopen the same object, not its path: a rename cannot redirect the
-          // owner update. READ_CONTROL | WRITE_DAC | WRITE_OWNER, no content access.
-          ownerHandle = ReOpenFile(handle, 0x000e0000, 7, 0x02200000);
-          if (ownerHandle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
-        }
-        int status = NtSetSecurityObject(ownerHandle ?? handle, information, descriptor);
-        if (status < 0) throw new Win32Exception((int)RtlNtStatusToDosError(status));
-      } finally {
-        if (ownerHandle != null) ownerHandle.Dispose();
-      }
-    }
-  }
-}
-`;
-
-// Names the cached helper assembly after its source, so a change to the C#
-// above lands in a new file instead of loading a stale build.
-const nativePermissionRestoreDigest = createHash("sha256")
-  .update(nativePermissionRestore)
-  .digest("hex")
-  .slice(0, 16);
 
 const weekdayXmlNames = {
   Sun: "Sunday",
@@ -1434,26 +1360,21 @@ export const windowsMachineStateLayer = (
           ),
           Effect.catch(() => Effect.succeed("")),
         ));
-      const permissionSections = "[Security.AccessControl.AccessControlSections]'Access,Owner,Group'";
-      // The executor restores one path per MachineState call, so each restore
-      // is its own powershell.exe. Compiling the helper in every one of them
-      // cost 395-891ms per path; a mirror rollback with N owned paths paid it
-      // N times. Instead the first restore on a machine compiles the helper
-      // into the data directory and every later restore, in this process or
-      // the next, loads that DLL. Assembly.LoadFrom is the loader on purpose:
-      // measured on an idle Windows 11 VM, five samples each, it added 25-100ms
-      // over a bare powershell.exe where Add-Type -LiteralPath added 170-290ms
-      // and the compile 250-350ms. Compile into a random sibling and rename it
-      // into place so a concurrent canonfig never loads a half-written file;
-      // losing that race means the winner's identical build is already there.
-      // A corrupt cached file fails the restore with the file named in the
-      // error; deleting it is the recovery.
-      const nativePermissionRestoreAssembly = win32.join(
-        localAppData,
-        "canonfig",
-        "native",
-        `CanonfigPermissionRestore-${nativePermissionRestoreDigest}.dll`,
-      );
+      // The first restore on a machine compiles the helper into the data
+      // directory; every later worker, in this run or the next, loads that DLL
+      // instead of paying the 250-350ms compile again.
+      const aclWorker = yield* makeWindowsAclWorker({
+        executable: powershell,
+        arguments: [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          windowsAclWorkerScript(win32.join(localAppData, "canonfig", "native", windowsPermissionRestoreAssemblyName)),
+        ],
+        environment: Object.fromEntries(environment.map((entry) => [entry.name, entry.value])),
+        timeoutMilliseconds: nativePermissionTimeoutMilliseconds,
+      });
       // Content-addressed like the restore helper: a changed launcher is a new
       // path, so the rendered task differs and the post-apply reconciler
       // re-registers it. Written through a random sibling and renamed, so a
@@ -1483,35 +1404,11 @@ export const windowsMachineStateLayer = (
           if (snapshot.platform !== "windows") {
             return yield* filesystemFailure("restore Windows permissions", path, "expected a Windows permission snapshot");
           }
-          const nativeType = directory ? "Directory" : "File";
-          const restored = yield* runPowerShell([
-            "$ErrorActionPreference='Stop'",
-            `$path=${powershellLiteral(path)}`,
-            `$sections=${permissionSections}`,
-            `$expected=${powershellLiteral(snapshot.securityDescriptor)}`,
-            `$assembly=${powershellLiteral(nativePermissionRestoreAssembly)}`,
-            "if(-not (Test-Path -LiteralPath $assembly)){"
-              + "$directory=Split-Path -Parent $assembly;"
-              + "$null=New-Item -ItemType Directory -Force -Path $directory;"
-              + "$staging=Join-Path $directory ([IO.Path]::GetRandomFileName()+'.dll');"
-              + `Add-Type -TypeDefinition ${powershellLiteral(nativePermissionRestore)} -OutputAssembly $staging;`
-              + "try{Move-Item -LiteralPath $staging -Destination $assembly}"
-              + "catch{Remove-Item -LiteralPath $staging -Force;if(-not (Test-Path -LiteralPath $assembly)){throw}}"
-              + "}",
-            "$null=[Reflection.Assembly]::LoadFrom($assembly)",
-            "$security=New-Object Security.AccessControl.RawSecurityDescriptor($expected)",
-            "$binary=New-Object byte[] $security.BinaryLength",
-            "$security.GetBinaryForm($binary,0)",
-            "[CanonfigPermissionRestore]::Restore($path,$binary)",
-            ...readWindowsAcl(nativeType),
-            "$actual=$acl.GetSecurityDescriptorSddlForm($sections)",
-            "if($actual -cne $expected){throw 'Restored owner, group or access rules differ from the permission snapshot'}",
-          ].join(";"), nativePermissionTimeoutMilliseconds);
-          if (restored.exitCode !== 0) {
-            return yield* filesystemFailure(
-              "restore Windows permissions", path,
-              new TextDecoder().decode(restored.standardError).trim() || "Windows refused the captured permission snapshot",
-            );
+          const reply = yield* aclWorker.request({
+            op: "restore", path, directory, descriptor: snapshot.securityDescriptor,
+          });
+          if (!reply.ok) {
+            return yield* filesystemFailure("restore Windows permissions", path, reply.error);
           }
         },
       );
@@ -1946,20 +1843,16 @@ export const windowsMachineStateLayer = (
               catch: (cause) => filesystemFailure("inspect Windows permissions", nativePath.absolute, cause),
             });
             const mode = yield* readSemanticMode(nativePath.absolute, metadata.isDirectory() ? 0o700 : 0o600);
-            const captured = yield* runPowerShell([
-              "$ErrorActionPreference='Stop'",
-              `$sections=${permissionSections}`,
-              `$path=${powershellLiteral(nativePath.absolute)}`,
-              ...readWindowsAcl(metadata.isDirectory() ? "Directory" : "File"),
-              "$acl.GetSecurityDescriptorSddlForm($sections)",
-            ].join(";"), nativePermissionTimeoutMilliseconds);
-            const securityDescriptor = new TextDecoder().decode(captured.standardOutput).trim();
-            if (captured.exitCode !== 0 || securityDescriptor.length === 0) {
+            const reply = yield* aclWorker.request({
+              op: "snapshot", path: nativePath.absolute, directory: metadata.isDirectory(),
+            });
+            if (!reply.ok || reply.descriptor.length === 0) {
               return yield* filesystemFailure(
                 "capture Windows permissions", nativePath.absolute,
-                new TextDecoder().decode(captured.standardError).trim() || "Windows did not return a permission snapshot",
+                reply.ok ? "Windows did not return a permission snapshot" : reply.error,
               );
             }
+            const securityDescriptor = reply.descriptor;
             return { platform: "windows" as const, mode, securityDescriptor };
           })),
         findExecutable: (query) => {
