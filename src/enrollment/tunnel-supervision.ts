@@ -10,7 +10,7 @@ export interface ManagedTunnelGuardInput {
   /** The endpoint the follower reaches its Source at, when it is enrolled. */
   readonly sourceEndpoint: string | undefined;
   /**
-   * Restart a down tunnel once before running. Only unattended runs do this:
+   * Allow automatic recovery of a down tunnel. Only unattended runs do this:
    * nobody is there to run `canonfig tunnel start` for them.
    */
   readonly restart: boolean;
@@ -41,13 +41,9 @@ const recoveryOf = (report: TunnelStatusReport): string =>
 /**
  * Prepares the tunnel before Source traffic and returns a guard for transport errors.
  *
- * A dead tunnel used to surface as "the source TLS certificate could not be
- * inspected", and nothing restarted it, so an unattended follower failed
- * until someone read the journal and guessed. Here a scheduled run restarts a
- * down tunnel once from its recorded configuration, and a transport failure
- * while the tunnel is not carrying traffic is reported as the tunnel outage it
- * is, naming the command that fixes it. A deliberately stopped tunnel is never
- * restarted.
+ * Scheduled runs recover a down tunnel from its recorded configuration.
+ * Replayable operations can opt into one retry if the tunnel drops mid-run.
+ * A deliberately stopped tunnel is never restarted automatically.
  */
 export const prepareManagedTunnel = (input: ManagedTunnelGuardInput) =>
   Effect.gen(function*() {
@@ -60,40 +56,41 @@ export const prepareManagedTunnel = (input: ManagedTunnelGuardInput) =>
         Effect.map((report) => tunnelCarriesSource(report, input.sourceEndpoint) ? report : undefined),
         Effect.catch(() => Effect.succeed(undefined)),
       );
-    const before = yield* status;
-    if (before?.lifecycle === "down" && before.restartable && input.restart) {
-      yield* tunnel.restartTunnel({ stateDirectory: input.stateDirectory, onlyIfDown: true }).pipe(
+    const restart = (report: TunnelStatusReport) =>
+      tunnel.restartTunnel({ stateDirectory: input.stateDirectory, onlyIfDown: true }).pipe(
         Effect.mapError((error) =>
           new TunnelDownError({
-            endpoint: before.endpoint ?? "",
+            endpoint: report.endpoint ?? "",
             message:
-              `the Source is reached through the managed tunnel ${before.endpoint ?? ""}, which is down (${before.detail}), `
-              + `and restarting it failed: ${error.message}. Fix the cause, then run \`${recoveryOf(before)}\`.`,
+              `the Source is reached through the managed tunnel ${report.endpoint ?? ""}, which is down (${report.detail}), `
+              + `and restarting it failed: ${error.message}. Fix the cause, then run \`${recoveryOf(report)}\`.`,
           })
         ),
       );
+    const before = yield* status;
+    if (before?.lifecycle === "down" && before.restartable && input.restart) {
+      yield* restart(before);
     }
     return <Success, Failure, Requirements>(
       isTransportFailure: (failure: Failure) => boolean,
       operation: Effect.Effect<Success, Failure, Requirements>,
+      // Only opt in when the operation can be replayed after a transport failure.
+      options?: { readonly retryAfterRestart: true },
     ): Effect.Effect<Success, Failure | TunnelDownError, Requirements> => before === undefined ? operation : operation.pipe(
-      Effect.catch((failure): Effect.Effect<never, Failure | TunnelDownError> =>
-        isTransportFailure(failure)
-          ? status.pipe(
-            Effect.flatMap((after): Effect.Effect<never, Failure | TunnelDownError> =>
-              after === undefined || after.lifecycle === "running"
-                ? Effect.fail(failure)
-                : Effect.fail(
-                  new TunnelDownError({
-                    endpoint: after.endpoint ?? "",
-                    message: after.lifecycle === "stopped"
-                      ? `the Source is unreachable because the managed tunnel ${after.endpoint ?? ""} is stopped. Run \`${recoveryOf(after)}\`.`
-                      : `the Source is unreachable because the managed tunnel ${after.endpoint ?? ""} is down: ${after.detail}. Run \`${recoveryOf(after)}\`.`,
-                  }),
-                )
-            ),
-          )
-          : Effect.fail(failure)
-      ),
+      Effect.catch((failure) => Effect.gen(function*() {
+        if (!isTransportFailure(failure)) return yield* Effect.fail(failure);
+        const after = yield* status;
+        if (after === undefined || after.lifecycle === "running") return yield* Effect.fail(failure);
+        if (after.lifecycle === "down" && after.restartable && input.restart && options?.retryAfterRestart) {
+          yield* restart(after);
+          return yield* operation;
+        }
+        return yield* new TunnelDownError({
+          endpoint: after.endpoint ?? "",
+          message: after.lifecycle === "stopped"
+            ? `the Source is unreachable because the managed tunnel ${after.endpoint ?? ""} is stopped. Run \`${recoveryOf(after)}\`.`
+            : `the Source is unreachable because the managed tunnel ${after.endpoint ?? ""} is down: ${after.detail}. Run \`${recoveryOf(after)}\`.`,
+        });
+      })),
     );
   });

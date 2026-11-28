@@ -22,6 +22,12 @@ Every Canonfig release, newest first. Each section is the GitHub release notes f
   directories on your shell's `PATH`. After upgrading, run `canonfig watch enable`
   again from the shell that finds those harnesses to refresh an existing watcher.
 
+### Secrets
+
+- Scheduled Follower syncs retry shared-secret transfer once if Canonfig
+  recovers a dropped managed tunnel. If secret sync still fails, Canonfig
+  keeps the file synchronization receipt and reports the transport failure.
+
 ## v7.9.1 - 2026-11-26
 
 ### Synchronization

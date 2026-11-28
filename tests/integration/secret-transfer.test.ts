@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { pathToFileURL } from "node:url";
 import { mkdtempSync, rmSync } from "node:fs";
-import { access, readFile, rm, stat } from "node:fs/promises";
+import { access, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -11,6 +11,9 @@ import { PassThrough } from "node:stream";
 import { Cause, Effect, Exit, Layer, ManagedRuntime, Redacted, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { fakeSsh, freePort, stopFakeSsh } from "../fixtures/tunnel-forwarder.ts";
+import { FollowerCommands } from "../../src/cli/follower-commands.ts";
+import { SourceCommands } from "../../src/cli/source-commands.ts";
 import {
   CertificateFingerprint,
   CredentialReference,
@@ -20,6 +23,8 @@ import { EnrollmentLive } from "../../src/enrollment/enrollment.layer.ts";
 import { Enrollment } from "../../src/enrollment/enrollment.service.ts";
 import { enrollFollower } from "../../src/enrollment/follower-client.ts";
 import { startSourceServer } from "../../src/enrollment/source-server.ts";
+import { TunnelLive } from "../../src/enrollment/tunnel.layer.ts";
+import { Tunnel } from "../../src/enrollment/tunnel.service.ts";
 import type {
   FollowerEnrollment,
   SourceServerHandle,
@@ -33,10 +38,12 @@ import {
 } from "../../src/machine/machine-state.errors.ts";
 import { MachineState } from "../../src/machine/machine-state.service.ts";
 import { windowsMachineStateLayer } from "../../src/machine/windows.layer.ts";
+import { runtimeLayer } from "../../src/runtime/layers.ts";
 import {
   applyTransferredSecrets,
   clearTransferredSecrets,
   loadSharedSecrets,
+  listSecrets,
   maximumSecretBytes,
   maximumSharedSecretPayloadBytes,
   removeSecret,
@@ -302,6 +309,116 @@ const storedValue = async (
 };
 
 describe("secure secret transfer", () => {
+  it("reports safe transport codes without exposing the follower credential", async () => {
+    const setup = fixture();
+    const server = await start(setup);
+    const token = "synthetic-private-token\ninvalid-header";
+    const credentialReference = await runFollower(setup, Effect.flatMap(MachineState, (machine) =>
+      machine.storeCredential({ name: "invalid-header", value: Redacted.make(token) })));
+    const request = { endpoint: server.endpoint, tlsFingerprint: server.fingerprint, credentialReference };
+
+    const headerError = await runFollower(setup, Effect.flip(fetchSharedSecrets(request)));
+    expect(headerError).toMatchObject({
+      category: "transport", operation: "fetch shared secrets", message: expect.stringContaining("ERR_INVALID_CHAR"),
+    });
+    expect(JSON.stringify(headerError)).not.toContain("synthetic-private-token");
+    expect(String(headerError)).not.toContain("synthetic-private-token");
+
+    await server.close();
+    const refused = await runFollower(setup, Effect.flip(fetchSharedSecrets(request)));
+    expect(refused).toMatchObject({
+      category: "transport", operation: "inspect secret source", message: expect.stringContaining("ECONNREFUSED"),
+    });
+  });
+
+  it.skipIf(process.platform === "win32").each([1, 2])(
+    "retries shared-secret sync once and preserves the file receipt after %i tunnel drop(s)",
+    async (drops) => {
+      const setup = fixture();
+      const sourceLayer = runtimeLayer({ statePath: join(setup.sourceHome, ".canonfig", "state.sqlite") }, setup.sourceMachine);
+      const source = ManagedRuntime.make(Layer.merge(sourceLayer, EnrollmentLive.pipe(Layer.provide(sourceLayer))));
+      const followerFolder = join(setup.followerHome, ".canonfig");
+      const follower = ManagedRuntime.make(runtimeLayer({ statePath: join(followerFolder, "state.sqlite") }, setup.followerMachine));
+      const tunnelDirectory = join(followerFolder, "tunnel");
+      await mkdir(tunnelDirectory, { recursive: true });
+      let server: SourceServerHandle | undefined;
+      try {
+        const sourceFolder = join(setup.sourceHome, ".canonfig");
+        await source.runPromise(Effect.flatMap(SourceCommands, (commands) => commands.initialize()));
+        await writeFile(join(sourceFolder, "canonfig.jsonc"), JSON.stringify({ version: 1, profile: { id: "secrets", name: "Secrets" }, harnesses: [] }));
+        await writeFile(join(sourceFolder, "AGENTS.md"), "Published instructions.\n");
+        await source.runPromise(Effect.flatMap(SourceCommands, (commands) => commands.publish({ reviewer: "test" })));
+        await source.runPromise(storeSecret("tunnel-token", "synthetic-shared-value"));
+        const manifest = Schema.decodeUnknownSync(Schema.fromJsonString(SecretManifestReferenceSchema))(
+          await readFile(join(sourceFolder, "secrets.json"), "utf8"),
+        );
+        const reference = manifest.secrets[0]?.reference;
+        if (reference === undefined) throw new Error("No shared credential was stored");
+        let attempts = 0;
+        let dropConnections = false;
+        const { invitation, tunnel } = await source.runPromise(Effect.gen(function*() {
+          const enrollment = yield* Enrollment;
+          const machine = yield* MachineState;
+          const credentials = yield* enrollment.sourceCredentials();
+          const started = yield* startSourceServer({ hostname: "127.0.0.1" }).pipe(
+            Effect.provideService(MachineState, {
+              ...machine,
+              loadCredential: (input) => machine.loadCredential(input).pipe(Effect.tap(() =>
+                dropConnections && input.reference === reference && ++attempts <= drops
+                  ? Effect.promise(() => stopFakeSsh(tunnelDirectory))
+                  : Effect.void)),
+            }),
+          );
+          server = started;
+          const localPort = yield* Effect.promise(freePort);
+          const sshExecutable = yield* Effect.promise(() => fakeSsh(tunnelDirectory));
+          const tunnel = yield* Effect.flatMap(Tunnel, (service) => service.startTunnel({
+            sshHost: "source.example", sshPort: 22, sshUser: "operator",
+            sshHostKey: `ssh-ed25519 ${Buffer.alloc(32, 1).toString("base64")}`,
+            localHost: "127.0.0.1", localPort,
+            remoteHost: "127.0.0.1", remotePort: Number(new URL(started.endpoint).port),
+            tlsFingerprint: credentials.material.tlsFingerprint,
+            sourceFingerprint: credentials.material.source.publicKeyFingerprint,
+            stateDirectory: tunnelDirectory, sshExecutable,
+          })).pipe(Effect.provide(TunnelLive));
+          if (tunnel.endpoint === undefined) throw new Error("Tunnel has no endpoint");
+          const invitation = yield* enrollment.createInvitation({
+            endpoint: tunnel.endpoint, expiresInMilliseconds: 60_000, groups: [group(SECRET_SHARE_GROUP)],
+          });
+          return { invitation, tunnel };
+        }));
+        await follower.runPromise(Effect.flatMap(FollowerCommands, (commands) => commands.enroll({ invitation, followerName: "Secret Follower", replace: false })));
+        dropConnections = true;
+        const receipt = { outcome: { outcome: "Converged" } };
+        const synchronized = await follower.runPromise(Effect.exit(Effect.flatMap(FollowerCommands, (commands) =>
+          commands.synchronize({ mode: "apply", noInput: true, scheduled: true }))));
+        expect(attempts).toBe(2);
+        const current = await Effect.runPromise(Effect.flatMap(Tunnel, (service) =>
+          service.tunnelStatus({ stateDirectory: tunnelDirectory })).pipe(Effect.provide(TunnelLive)));
+        expect(current.pid).not.toBe(tunnel.pid);
+        if (drops === 1) {
+          expect(synchronized).toMatchObject({ _tag: "Success", value: receipt });
+          expect(await follower.runPromise(listSecrets())).toEqual([{ name: "tunnel-token", origin: "source" }]);
+        } else {
+          if (!Exit.isFailure(synchronized)) throw new Error("Expected shared-secret synchronization to fail");
+          const failure = Cause.findErrorOption(synchronized.cause);
+          expect(failure).toMatchObject({ _tag: "Some", value: {
+            category: "transport", message: expect.stringContaining("ECONNRESET"), details: receipt,
+          } });
+          expect(JSON.stringify(failure)).not.toContain("synthetic-shared-value");
+        }
+        const invocations = await follower.runPromise(Effect.flatMap(StateRepository, (repository) => repository.listScheduledInvocations()));
+        expect(invocations).toMatchObject([{ _tag: drops === 1 ? "Completed" : "Failed", ...receipt }]);
+        expect(await readFile(join(followerFolder, "AGENTS.md"), "utf8")).toBe("Published instructions.\n");
+      } finally {
+        await stopFakeSsh(tunnelDirectory);
+        await server?.close();
+        await follower.dispose();
+        await source.dispose();
+      }
+    },
+  );
+
   it.each(["127.0.0.1", "::1"])("transfers authorized secrets over pinned TLS at %s and removes stale values", async (hostname) => {
     const setup = fixture();
     const secretValue = "github-token-value-that-never-belongs-in-json";
