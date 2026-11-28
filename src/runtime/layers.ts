@@ -1313,7 +1313,17 @@ const followerCommandsLayer = (
                 : Effect.succeed(undefined);
               const synchronize = Effect.gen(function*() {
                 const refreshed = yield* refreshSecrets;
-                const result = yield* guard((failure) => failure.category === "transport", run).pipe(
+                // If secret refresh failed after dropping the managed tunnel,
+                // bring the tunnel back up before the file run so file sync
+                // can still converge and retain its receipt.
+                const runGuard = refreshed !== undefined && Result.isFailure(refreshed)
+                  ? yield* mapFailure(prepareManagedTunnel({
+                    stateDirectory: join(dirname(statePath), "tunnel"),
+                    sourceEndpoint: configuration?.source.endpoint,
+                    restart: scheduled,
+                  }).pipe(Effect.provideService(Tunnel, tunnel)))
+                  : guard;
+                const result = yield* runGuard((failure) => failure.category === "transport", run).pipe(
                   Effect.catchTag("TunnelDownError", (error) => Effect.fail(commandFailure(error))),
                 );
                 if (refreshed !== undefined && Result.isFailure(refreshed)) {
